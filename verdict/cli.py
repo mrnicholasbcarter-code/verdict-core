@@ -4,17 +4,19 @@ import argparse
 import contextlib
 import json
 import os
-import re
 import sys
-from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import yaml
 from rich.console import Console
 from rich.prompt import Prompt
 
+import verdict.actions.helpers as _action_helpers
+
+# BOD-275: canonical implementations extracted from cli.py  ──────────────────
+from verdict.actions.helpers import _CLI_DEFAULT_PROVIDERS as _HELPERS_CLI_DEFAULT_PROVIDERS
 from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
@@ -34,7 +36,7 @@ from verdict.harness_opencode import DEFAULT_BASE_URL as OPENCODE_HARNESS_DEFAUL
 from verdict.harness_opencode import DEFAULT_TOKEN_ENV as OPENCODE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
-from verdict.models import ModelInfo, ProviderConfig, TaskSpec
+from verdict.models import ModelInfo, ProviderConfig
 from verdict.patch_executor import DEFAULT_BASE_URL
 from verdict.terminal_ui import TerminalUI
 
@@ -51,56 +53,7 @@ def _print_detection_banner() -> None:
     )
 
 
-def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-
-    return os.getenv("OMNIROUTE_API_KEY")
-
-
-def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-    """Make an authenticated request to the explicitly configured local router."""
-    token = _read_omniroute_token()
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    import json
-    import urllib.request
-    from urllib.error import URLError
-
-    base_url = os.getenv("OMNIROUTE_BASE_URL")
-    if not base_url:
-        # OMNIROUTE_BASE_URL is not wired into the environment even when a
-        # gateway is running locally. Fall back to a one-shot health probe of
-        # the known local gateway ports rather than giving up immediately.
-        for candidate_url in ("http://localhost:20128", "http://localhost:20129"):
-            try:
-                health_req = urllib.request.Request(
-                    candidate_url.rstrip("/") + "/api/health",
-                    headers={"Accept": "application/json"},
-                    method="GET",
-                )
-                with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                    payload = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(payload, dict) and payload.get("status") == "ok":
-                        base_url = candidate_url
-                        break
-            except (URLError, Exception):
-                continue
-        if not base_url:
-            return None
-    url = base_url.rstrip("/") + "/" + path.lstrip("/")
-
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    if data:
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:  # nosec B310
-            return json.loads(response.read().decode("utf-8"))
-    except (URLError, Exception):
-        return None
+import verdict.doctor_diagnostics as _doctor_diag  # noqa: E402
 
 
 def select_from_list(prompt_text: str, options: list[str], default: str | None = None) -> str:
@@ -171,7 +124,12 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
                 prompt_text = f"Enter value for {cred.env_name} (or leave empty to skip): "
                 value = getpass.getpass(prompt_text)
                 if value:
-                    store.set(cred.env_name, value)
+                    from verdict.actions.registry import run_action
+
+                    run_action(
+                        "credentials.set",
+                        {"name": cred.env_name, "value": value, "force_unregistered": False},
+                    )
                     ui.status(cred.env_name, "set", "stored securely")
                 else:
                     ui.status(cred.env_name, "skipped", "")
@@ -489,7 +447,7 @@ def cmd_setup(
         to_sync = []
         try:
             # Check existing nodes in OmniRoute
-            existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
+            existing_nodes = _doctor_diag._omniroute_api_request("GET", "/api/provider-nodes")
             existing_urls = set()
             if existing_nodes:
                 items = []
@@ -528,7 +486,9 @@ def cmd_setup(
                             "weight": 100,
                             "enabled": True,
                         }
-                        res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                        res = _doctor_diag._omniroute_api_request(
+                            "POST", "/api/provider-nodes", payload
+                        )
                         if res:
                             ui.status("Node registered", "ok", node_name)
                         else:
@@ -591,7 +551,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("Gemini Free fallback", "ok", "Registered")
                     else:
@@ -604,7 +566,9 @@ def cmd_setup(
                         "weight": 80,
                         "enabled": True,
                     }
-                    res = _omniroute_api_request("POST", "/api/provider-nodes", payload)
+                    res = _doctor_diag._omniroute_api_request(
+                        "POST", "/api/provider-nodes", payload
+                    )
                     if res:
                         ui.status("OpenRouter Free fallback", "ok", "Registered")
                     else:
@@ -695,16 +659,15 @@ def cmd_setup_plan(
     from verdict.setup_plan import build_setup_plan
 
     if not recommended and scope == "all":
-        from verdict.shared_memory import discover_shared_memory_setup
+        from verdict.actions.registry import run_action
 
-        plan = build_setup_plan().to_dict()
-        plan["shared_memory"] = discover_shared_memory_setup()
+        result = run_action("setup.plan")
         if output_json:
-            print(json.dumps(plan, indent=2, sort_keys=True))
+            print(json.dumps(result.data, indent=2, sort_keys=True))
             return
         ui = TerminalUI(console)
         ui.header("Setup plan")
-        ui.plan(plan)
+        ui.plan(result.data)
         ui.panel("Review complete", "No changes made. This plan does not probe services.")
         return
 
@@ -742,48 +705,13 @@ def _omniroute_provider_from_env() -> dict[str, ProviderConfig]:
 #: Interactive-CLI default provider set. Used only through the shared bootstrap
 #: contract, which reports it as ``field_sources["providers"] == "default"`` and
 #: refuses it under the production profile.
-_CLI_DEFAULT_PROVIDERS = {"public_ollama": "http://localhost:11434/v1"}
-
-
-def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
-    """Resolve the CLI provider/gateway bootstrap from the shared contract."""
-    from verdict.provider_bootstrap import resolve_provider_bootstrap
-
-    return resolve_provider_bootstrap(
-        allow_default_providers=True,
-        default_providers=_CLI_DEFAULT_PROVIDERS,
-        require_authoritative=require_authoritative,
-    )
-
-
-def _report_bootstrap_notes(result: Any) -> None:
-    """Print non-fatal bootstrap findings so no default stays silent."""
-    for note in result.notes():
-        if note.code == "config_file_missing":
-            continue
-        print(f"verdict: {note.describe()}", file=sys.stderr)
-
-
-def _build_route_gate(allow_offline: bool = False) -> Gate:
-    """Build the CLI Gate from the shared bootstrap contract (route/compare).
-
-    Configuration failures name the exact field, source and remediation instead
-    of failing later as an empty provider map.
-    """
-    from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
-
-    try:
-        bootstrap = _cli_bootstrap()
-    except BootstrapError as exc:
-        print(describe_bootstrap_failure(exc), file=sys.stderr)
-        raise SystemExit(1) from exc
-    _report_bootstrap_notes(bootstrap)
-    return Gate(
-        primary_model=bootstrap.primary_model,
-        providers=bootstrap.provider_configs(),
-        log_path=bootstrap.log_path,
-        allow_offline=allow_offline,
-    )
+# ---------------------------------------------------------------------------
+# CLI bootstrap + route gate — canonical: verdict.actions.helpers
+# ---------------------------------------------------------------------------
+_CLI_DEFAULT_PROVIDERS = _HELPERS_CLI_DEFAULT_PROVIDERS
+_cli_bootstrap = _action_helpers._cli_bootstrap
+_report_bootstrap_notes = _action_helpers._report_bootstrap_notes
+_build_route_gate = _action_helpers.build_route_gate  # backward-compat alias
 
 
 def _configured_completion_endpoint(
@@ -821,7 +749,7 @@ def _ensure_cli_gateway_ready() -> None:
     from verdict.provider_bootstrap import BootstrapError, describe_bootstrap_failure
 
     try:
-        bootstrap = _cli_bootstrap()
+        bootstrap = _action_helpers._cli_bootstrap()
         outcome = require_gateway_ready(bootstrap, probe=_gateway_probe_for(bootstrap))
     except BootstrapError as exc:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
@@ -881,22 +809,47 @@ def cmd_route(
     catalog/network surface; it must not imply legacy selector escape. API serve
     still forces authority.
     """
-    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+    from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
-    # Never couple offline catalog mode to the legacy-selector escape.
     if allow_legacy_selector is None:
         allow_legacy_selector = False
-    context: dict[str, object] = {}
-    if allow_legacy_selector:
-        context[CONTEXT_ALLOW_LEGACY] = True
-    # Do not force CONTEXT_REQUIRE_AUTHORITY here — development/smoke CLI must
-    # still route via the legacy feed path; production/env opt-in fail-closed.
+
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    params = {
+        "task": task,
+        "criticality": criticality,
+        "allow_offline": allow_offline,
+        "allow_legacy_selector": allow_legacy_selector,
+        "gate": gate,
+        "terse": terse,
+    }
+    if terse:
+        result = run_action("route", params)
+    else:
+        status_label = (
+            "[bold green]Evaluating static catalog (offline)..."
+            if allow_offline
+            else "[bold green]Evaluating network & heuristics..."
+        )
+        with console.status(status_label, spinner="dots"):
+            result = run_action("route", params)
+
+    data = result.data
+    gate = data["gate"]
+    dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
+    base_selection = data["selection"]
+    selection = None
+    if base_selection is not None:
+        selection = type(base_selection)(
+            strategy="DIRECT",
+            model=dec.model,
+            reasoning="CLI route/run dispatched one provider completion directly",
+            timestamp=base_selection.timestamp,
+        )
+    transport_ok = dec.transport_outcome in {"sent", "success"}
 
     if terse:
-        dec = gate.route(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        if getattr(dec, "transport_outcome", "not_sent") not in {"sent", "success"}:
+        if not transport_ok:
             error_payload = {
                 "model": getattr(dec, "model", None),
                 "provider": getattr(dec, "provider", None),
@@ -910,23 +863,9 @@ def cmd_route(
         print(dec.model)
         return
 
-    status_label = (
-        "[bold green]Evaluating static catalog (offline)..."
-        if allow_offline
-        else "[bold green]Evaluating network & heuristics..."
-    )
-    with console.status(status_label, spinner="dots"):
-        dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
-        dec = _execute_cli_decision(gate, task, dec, allow_offline=allow_offline)
-        selection = type(selection)(
-            strategy="DIRECT",
-            model=dec.model,
-            reasoning="CLI route/run dispatched one provider completion directly",
-            timestamp=selection.timestamp,
-        )
-
     from verdict import present
 
+    assert selection is not None  # non-terse always requests a strategy
     present.header("Routing Decision")
     present.kv(
         {
@@ -944,7 +883,6 @@ def cmd_route(
             "Reason": dec.reason,
         }
     )
-    # Machine-readable StrategySelection record (issue #265).
     payload: dict[str, Any] = {
         "strategy_selection": selection.to_dict(),
         "transport_outcome": dec.transport_outcome,
@@ -957,56 +895,37 @@ def cmd_route(
     if dec.execute_preview:
         payload["execute_preview"] = dec.execute_preview[:500]
     print(json.dumps(payload, sort_keys=True))
-    if dec.transport_outcome not in {"sent", "success"}:
+    if not transport_ok:
         raise SystemExit(1)
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:
     """Compare a DIRECT frontier call against the Verdict route (issue #265)."""
-    from verdict.comparison import ComparisonHarness
+    from verdict.actions.registry import run_action
 
-    gate = _build_route_gate(allow_offline=allow_offline)
-    harness = ComparisonHarness(gate=gate)
-    report = harness.compare(task, criticality=criticality)
-    print(json.dumps({"comparison_report": report.to_dict()}, sort_keys=True, indent=2))
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    result = run_action(
+        "compare",
+        {"task": task, "criticality": criticality, "allow_offline": allow_offline, "gate": gate},
+    )
+    print(json.dumps(result.data, sort_keys=True, indent=2))
 
 
 def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     """Parse JSONL logs and build analytics."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
-    if not os.path.exists(log_path):
-        present.header("Routing stats")
-        present.warn("log", f"No log file found at {log_path}")
-        return
-
-    tiers: dict[int, int] = {}
-    models: dict[str, int] = {}
-    latencies: list[float] = []
-
-    with open(log_path) as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-                decision = entry.get("decision")
-                if isinstance(decision, dict):
-                    t = decision.get("tier", 2)
-                    m = decision.get("model", "unknown")
-                    lat = decision.get("latency_ms", 0)
-                else:
-                    t = entry.get("effective_tier", entry.get("tier", 2))
-                    m = entry.get("model_chosen", entry.get("model", "unknown"))
-                    lat = entry.get("latency_ms", 0)
-                tiers[t] = tiers.get(t, 0) + 1
-                models[m] = models.get(m, 0) + 1
-                latencies.append(lat)
-            except json.JSONDecodeError:
-                continue
-
-    total = sum(tiers.values())
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-
+    result = run_action("stats", {"log_path": log_path})
+    data = result.data
     present.header("Routing stats")
+    if data.get("missing"):
+        present.warn("log", f"No log file found at {data['log_path']}")
+        return
+    tiers: dict[int, int] = data["tiers"]
+    total = data["total_requests"]
+    avg_latency = data["avg_latency_ms"]
+    top_models = data["top_models"]
     present.table(
         ["Tier", "Count", "Pct"],
         [
@@ -1017,13 +936,7 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     )
     present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
     present.section("Top Routed Models")
-    present.table(
-        ["Model", "Calls"],
-        [
-            (mod, str(count))
-            for mod, count in sorted(models.items(), key=lambda x: x[1], reverse=True)[:5]
-        ],
-    )
+    present.table(["Model", "Calls"], [(mod, str(count)) for mod, count in top_models])
 
 
 def cmd_benchmark(
@@ -1117,42 +1030,21 @@ def cmd_quickstart(
 def cmd_cost_report() -> None:
     """Calculates and prints the estimated token usage execution cost from historic routing decisions."""
     from verdict import present
+    from verdict.actions.registry import run_action
 
     present.header("Cost and Usage Report")
-
-    log_path = "verdict-decisions.jsonl"
-    if not os.path.exists(log_path):
+    result = run_action("cost-report", {"log_path": "verdict-decisions.jsonl"})
+    data = result.data
+    if data.get("missing"):
         present.warn("log", "No routing telemetry found (Verdict decision log missing).")
         return
-
-    total_requests = 0
-    t0_requests = 0
-
-    with open(log_path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                decision = data.get("decision")
-                if isinstance(decision, dict):
-                    tier = decision.get("tier", 2)
-                else:
-                    tier = data.get("effective_tier", data.get("tier", 2))
-                if tier == 0:
-                    t0_requests += 1
-                total_requests += 1
-            except Exception:
-                pass
-
-    savings = (total_requests - t0_requests) * 0.005
     present.table(
         ["Metric", "Value"],
         [
-            ("Total Routing Requests", str(total_requests)),
-            ("T0 (Critical) Forwarded", str(t0_requests)),
-            ("Offloaded Tasks (T1-T3)", str(total_requests - t0_requests)),
-            ("Estimated Savings vs T0 Only", f"${savings:.2f}"),
+            ("Total Routing Requests", str(data["total_requests"])),
+            ("T0 (Critical) Forwarded", str(data["t0_requests"])),
+            ("Offloaded Tasks (T1-T3)", str(data["offloaded_requests"])),
+            ("Estimated Savings vs T0 Only", f"${data['estimated_savings_usd']:.2f}"),
         ],
         title="Usage Summary",
     )
@@ -1165,20 +1057,24 @@ def cmd_detect(
     offline: bool = False,
 ) -> None:
     """Detect available LLM providers."""
+    from verdict.actions.registry import run_action
+
+    result = run_action("detect", {"offline": offline})
+    data = result.data
+    if data.get("status") == "failed":
+        from verdict import present
+
+        present.header("Provider detection")
+        present.fail("Detection failed", data["error"])
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
     if offline:
-        payload: dict[str, Any] = {
-            "mode": "offline",
-            "network_access": False,
-            "credentials_read": False,
-            "local_providers": [],
-            "cli_providers": [],
-            "centralized_routers": [],
-            "cloud_apis": [],
-            "custom_endpoints": [],
-            "gateways": [],
-        }
+        # For --json / --config, print the offline payload verbatim from data.
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
         elif output_config:
             print(yaml.dump({"providers": {}}, default_flow_style=False))
         else:
@@ -1189,107 +1085,48 @@ def cmd_detect(
             present.note("Offline mode reports nothing by design. Run `verdict detect` to probe.")
         return
 
-    try:
-        from verdict.provider_detection import (
-            detect_all_providers,
-            format_detection_report,
-            generate_verdict_config,
-            probe_gateways,
+    if output_json:
+        payload = {k: v for k, v in data.items() if not k.startswith("_")}
+        print(json.dumps(payload, indent=2))
+        return
+    if output_config:
+        from verdict.provider_detection import generate_verdict_config
+
+        config = generate_verdict_config(data["_result"])
+        print(yaml.dump(config, default_flow_style=False))
+        return
+
+    from verdict import present
+    from verdict.provider_detection import format_detection_report
+
+    healthy_gateways = data["_healthy_gateways"]
+    present.header("Provider detection")
+    present.note(format_detection_report(data["_result"], verbose=verbose))
+    present.section("Gateways (HTTP-validated)")
+    if healthy_gateways:
+        present.table(
+            ["Gateway", "Identity", "URL", "Port"],
+            [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
         )
-
-        result = detect_all_providers()
-
-        # T018/T019/T020: HTTP-validated gateway detection (TCP + /api/health),
-        # replacing reliance on the TCP-only centralized-router heuristic for
-        # gateway selection purposes.
-        gateways = probe_gateways()
-        healthy_gateways = [g for g in gateways if g.health_ok]
-        no_gateway_message = "No local gateway found on ports 20128, 20129, 20132."
-        multi_gateway_message = (
-            "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it."
-        )
-        gateway_message = None
-        if not healthy_gateways:
-            gateway_message = no_gateway_message
-        elif len(healthy_gateways) > 1:
-            gateway_message = multi_gateway_message
-
-        if output_json:
-            print(
-                json.dumps(
-                    {
-                        "local_servers": [p.__dict__ for p in result.local_servers],
-                        "cli_providers": [p.__dict__ for p in result.cli_providers],
-                        "centralized_routers": [p.__dict__ for p in result.centralized_routers],
-                        "cloud_apis": [p.__dict__ for p in result.cloud_apis],
-                        "custom_endpoints": [p.__dict__ for p in result.custom_endpoints],
-                        "gateways": [g.__dict__ for g in gateways],
-                        "message": gateway_message,
-                    },
-                    indent=2,
-                )
+        if len(healthy_gateways) > 1:
+            present.warn(
+                "gateway selection",
+                "Multiple gateways found. Set OMNIROUTE_BASE_URL to one of the above to select it.",
             )
-        elif output_config:
-            config = generate_verdict_config(result)
-            print(yaml.dump(config, default_flow_style=False))
-        else:
-            from verdict import present
-
-            present.header("Provider detection")
-            # Keep the established provider report as a note so its detailed
-            # wording remains available while presentation owns the framing.
-            present.note(format_detection_report(result, verbose=verbose))
-            present.section("Gateways (HTTP-validated)")
-            if healthy_gateways:
-                present.table(
-                    ["Gateway", "Identity", "URL", "Port"],
-                    [(g.display_name, g.identity, g.url, g.port) for g in healthy_gateways],
-                )
-                if len(healthy_gateways) > 1:
-                    present.warn("gateway selection", multi_gateway_message)
-            else:
-                present.warn("gateway", no_gateway_message)
-                present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
-    except Exception as e:
-        from verdict import present
-
-        present.header("Provider detection")
-        present.fail("Detection failed", str(e))
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)
+    else:
+        present.warn("gateway", "No local gateway found on ports 20128, 20129, 20132.")
+        present.note("To start OmniRoute: npm install -g omniroute && omniroute serve")
 
 
 def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -> None:
     """Emit a runtime certification report (evidence only, JSON).
 
-    Reads DetectedSnapshot fixtures from ``--from`` when provided. Does not
-    perform live network probes or mutate setup/doctor state (capability bootstrap).
+    Delegates to the ``certify`` action; the CLI only formats/prints.
     """
-    from verdict.runtime_certification import ComponentKind, DetectedSnapshot, certify_runtime
+    from verdict.actions.registry import run_action
 
-    snapshots: list[DetectedSnapshot] = []
-    if snapshot_path:
-        payload = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-        raw_items = payload.get("snapshots", payload if isinstance(payload, list) else [])
-        for item in raw_items:
-            snapshots.append(
-                DetectedSnapshot(
-                    component_id=item["component_id"],
-                    kind=ComponentKind(item["kind"]),
-                    identity=item["identity"],
-                    source=item["source"],
-                    health_claim=item.get("health_claim", "unknown"),
-                    version=item.get("version"),
-                    capabilities=frozenset(item.get("capabilities", [])),
-                    requires_probe=bool(item.get("requires_probe", False)),
-                    evidence=item.get("evidence", {}),
-                    models=tuple(item.get("models", ())),
-                )
-            )
-    report = certify_runtime(snapshots=tuple(snapshots))
-    encoded = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+    result = run_action("certify", {"snapshot_path": snapshot_path})
+    encoded = json.dumps(result.data, indent=2, sort_keys=True)
     if output_json:
         print(encoded)
     else:
@@ -1297,6 +1134,8 @@ def cmd_certify(*, snapshot_path: str | None = None, output_json: bool = True) -
 
         present.header("Runtime certification")
         present.note(encoded)
+    if result.exit_code:
+        sys.exit(result.exit_code)
 
 
 def cmd_probe(
@@ -1312,11 +1151,19 @@ def cmd_probe(
     Sends the fixed, no-user-data probe payload (max_tokens=1) so a model can be
     confirmed live before it is assigned real work (e.g. a subagent).
     """
-    from verdict.probes import ProbePolicy, ProbeRunner, _redact
+    from verdict.actions.registry import run_action
 
-    is_injected = transport is not None
-    if not is_injected and not allow_live_probe:
-        message = "live probes require explicit consent; pass --allow-live-probe"
+    params: dict[str, Any] = {
+        "models": models,
+        "base_url": base_url,
+        "timeout": timeout,
+        "allow_live_probe": allow_live_probe,
+    }
+    if transport is not None:
+        params["transport"] = transport
+    result = run_action("probe", params)
+    if not result.ok and result.exit_code == 2:
+        message = result.data.get("error", "live probes require consent")
         if output_json:
             print(json.dumps({"error": message, "diagnostics": None}, sort_keys=True))
         else:
@@ -1325,26 +1172,17 @@ def cmd_probe(
             present.header("Probe")
             present.fail("probe", message)
         raise SystemExit(2)
-    if transport is None:
-        from verdict.probes import openai_probe_transport
-
-        transport = openai_probe_transport(base_url, api_key=os.getenv("OPENAI_API_KEY"))
-    provider_name = "fixture" if is_injected else "omniroute"
-    run = ProbeRunner(ProbePolicy(timeout_seconds=timeout)).run_with_diagnostics(
-        models,
-        transport,
-        live=not is_injected,
-        consented=allow_live_probe if not is_injected else False,
-        provider=provider_name,
-    )
-    results = [_probe_result_payload(observation) for observation in run.observations]
 
     if output_json:
-        print(json.dumps({"diagnostics": run.diagnostics.to_dict(), "results": results}, indent=2))
+        print(json.dumps(result.data, indent=2))
+        if not result.ok:
+            raise SystemExit(1)
         return
 
     from verdict import present
+    from verdict.probes import _redact
 
+    results = result.data.get("results", [])
     present.header(f"Probe  /  {_redact(base_url)}")
     present.table(
         ["Model", "Status", "HTTP", "Latency (ms)"],
@@ -1358,7 +1196,7 @@ def cmd_probe(
             for entry in results
         ],
     )
-    if not all(e.get("ok") for e in results):
+    if not result.ok:
         sys.exit(1)
 
 
@@ -1745,7 +1583,9 @@ def cmd_autodev_packet_execute(
         if probe_transport is None:
             from verdict.probes import openai_probe_transport
 
-            probe_transport = openai_probe_transport(family_url, api_key=_read_omniroute_token())
+            probe_transport = openai_probe_transport(
+                family_url, api_key=_doctor_diag._read_omniroute_token()
+            )
     canary_state = None
     if canary_path:
         loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
@@ -1797,15 +1637,12 @@ def cmd_autodev_packet_execute(
 
 def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) -> None:
     """Dump an advisory shadow-learning JSON report. Does not call EligibilityGate."""
-    from verdict.autodev_run import shadow_learning_report
+    from verdict.actions.registry import run_action
 
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    if not isinstance(episodes, list):
-        message = "shadow episodes JSON must be a list or an object with episodes"
+    result = run_action("autodev.packet.shadow", {"episodes_path": episodes_path})
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.shadow failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1813,16 +1650,15 @@ def cmd_autodev_packet_shadow(episodes_path: str, *, output_json: bool = False) 
 
             present.header("Autodev packet  /  shadow")
             present.fail("episodes", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(json.dumps(report, indent=2, sort_keys=True))
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary(
     episodes_path: str, admitted_path: str, *, output_json: bool = False
 ) -> None:
     """Dump an explicit bounded canary choice. Does not call EligibilityGate."""
-    from verdict.autodev_run import apply_shadow_canary, shadow_learning_report
+    from verdict.actions.registry import run_action
 
     if not episodes_path or not admitted_path:
         message = "canary apply requires --episodes and --admitted"
@@ -1834,14 +1670,12 @@ def cmd_autodev_packet_canary(
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
         raise SystemExit(1)
-    payload = json.loads(Path(episodes_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if isinstance(payload, dict) and "episodes" in payload:
-        episodes = payload["episodes"]
-    else:
-        episodes = payload
-    admitted = json.loads(Path(admitted_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if not isinstance(episodes, list) or not isinstance(admitted, list):
-        message = "canary requires an episodes list and an admitted identity list"
+    result = run_action(
+        "autodev.packet.canary", {"episodes_path": episodes_path, "admitted_path": admitted_path}
+    )
+    data = result.data
+    if not result.ok:
+        message = str(data.get("error", "autodev.packet.canary failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1849,22 +1683,17 @@ def cmd_autodev_packet_canary(
 
             present.header("Autodev packet  /  canary")
             present.fail("inputs", message)
-        raise SystemExit(1)
-    report = shadow_learning_report(episodes)
-    print(
-        json.dumps(
-            apply_shadow_canary([str(item) for item in admitted], report), indent=2, sort_keys=True
-        )
-    )
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = False) -> None:
     """Restore the pre-canary baseline choice. Does not call EligibilityGate."""
-    from verdict.autodev_run import rollback_shadow_canary
+    from verdict.actions.registry import run_action
 
-    state = json.loads(Path(state_path).expanduser().resolve().read_text(encoding="utf-8"))
-    if not isinstance(state, dict):
-        message = "canary rollback requires a canary state object"
+    result = run_action("autodev.packet.canary-rollback", {"state_path": state_path})
+    if not result.ok:
+        message = str(result.data.get("error", "canary rollback failed"))
         if output_json:
             print(json.dumps({"error": message}, sort_keys=True))
         else:
@@ -1872,8 +1701,8 @@ def cmd_autodev_packet_canary_rollback(state_path: str, *, output_json: bool = F
 
             present.header("Autodev packet  /  canary rollback")
             present.fail("state", message)
-        raise SystemExit(1)
-    print(json.dumps(rollback_shadow_canary(state), indent=2, sort_keys=True))
+        raise SystemExit(result.exit_code or 1)
+    print(json.dumps(result.data, indent=2, sort_keys=True))
 
 
 def cmd_autodev_packet(
@@ -1887,92 +1716,81 @@ def cmd_autodev_packet(
     family_b_path: str | None = None,
 ) -> None:
     """Create or inspect a portable packet without granting execution authority."""
+    from verdict.actions.registry import run_action
 
-    from verdict.execution_packet import (
-        ExecutionPacket,
-        ExecutionPacketError,
-        ExecutionPacketStore,
-        UnsupportedSchemaVersionError,
-        schema_refusal_receipt,
-    )
+    action_map = {
+        "create": "autodev.packet.create",
+        "inspect": "autodev.packet.inspect",
+        "validate": "autodev.packet.validate",
+        "resume": "autodev.packet.resume",
+        "compare": "autodev.packet.compare",
+    }
+    action_name = action_map.get(action)
+    if action_name is None:
+        if output_json:
+            print(json.dumps({"error": f"unsupported packet action: {action}"}, sort_keys=True))
+        else:
+            from verdict import present
 
-    path = Path(packet_path).expanduser().resolve()
-    store = ExecutionPacketStore(path.parent)
-    try:
-        if action == "create":
-            if source_path is None:
-                raise ExecutionPacketError("packet create requires --from")
-            source = Path(source_path).expanduser().resolve()
-            payload = json.loads(source.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ExecutionPacketError("packet source JSON must be an object")
-            created = ExecutionPacket.from_dict(payload)
-            store.create(created, path)
-            packet = created
-        elif action in {"inspect", "validate"}:
-            packet = store.validate(path)
-        elif action == "resume":
-            if model is None:
-                raise ExecutionPacketError("packet resume requires --model")
-            packet = store.resume(path, executing_model=model)
-        elif action == "compare":
-            from verdict.autodev_run import AutodevError, compare_family_runs
+            present.header(f"Autodev packet  /  {action}")
+            present.fail("packet", f"unsupported packet action: {action}")
+        raise SystemExit(1)
 
-            if family_a_path is None or family_b_path is None:
-                raise ExecutionPacketError("packet compare requires --a and --b")
-            packet = store.validate(path)
-            family_a = json.loads(Path(family_a_path).expanduser().read_text(encoding="utf-8"))
-            family_b = json.loads(Path(family_b_path).expanduser().read_text(encoding="utf-8"))
-            if not isinstance(family_a, dict) or not isinstance(family_b, dict):
-                raise ExecutionPacketError("family run JSON must be an object")
-            try:
-                data = compare_family_runs(family_a, family_b, packet=packet)
-            except AutodevError as exc:
-                raise ExecutionPacketError(str(exc)) from exc
+    params: dict[str, Any] = {"packet_path": packet_path}
+    if action == "create":
+        params["source_path"] = source_path
+    if action == "resume":
+        params["model"] = model
+    if action == "compare":
+        params["family_a_path"] = family_a_path
+        params["family_b_path"] = family_b_path
+
+    result = run_action(action_name, params)
+
+    if not result.ok:
+        error_str = str(result.data.get("error", ""))
+        # Check if it was an unsupported schema version refusal
+        refusal_keys = {"refusal", "encountered_schema_version", "supported_schema_versions"}
+        if refusal_keys.issubset(result.data.keys()):
             if output_json:
-                print(json.dumps(data, indent=2, sort_keys=True))
+                print(json.dumps(result.data, sort_keys=True))
             else:
                 from verdict import present
 
-                present.header("Autodev packet  /  compare")
-                present.kv(
-                    {
-                        "pair": data["pair_id"],
-                        "parity claimed": data["parity_claimed"],
-                        "unknown facets": len(data["unknown_facets"]),
-                    }
+                present.header(f"Autodev packet  /  {action}")
+                present.fail(
+                    "schema",
+                    f"refused {result.data['encountered_schema_version']!r} — "
+                    f"supported: {', '.join(result.data['supported_schema_versions'])} "
+                    f"(no gateway request issued)",
                 )
-            return
-        else:
-            raise ExecutionPacketError(f"unsupported packet action: {action}")
-    except UnsupportedSchemaVersionError as exc:
-        receipt = schema_refusal_receipt(exc)
+            raise SystemExit(1)
         if output_json:
-            print(json.dumps(receipt, sort_keys=True))
+            print(json.dumps(result.data, sort_keys=True))
         else:
             from verdict import present
 
             present.header(f"Autodev packet  /  {action}")
-            present.fail(
-                "schema",
-                f"refused {receipt['encountered_schema_version']!r} — "
-                f"supported: {', '.join(receipt['supported_schema_versions'])} "
-                f"(no gateway request issued)",
+            present.fail("packet", error_str)
+        raise SystemExit(1)
+
+    data = result.data
+    if action == "compare":
+        if output_json:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Autodev packet  /  compare")
+            present.kv(
+                {
+                    "pair": data.get("pair_id", ""),
+                    "parity claimed": data.get("parity_claimed", ""),
+                    "unknown facets": len(data.get("unknown_facets", [])),
+                }
             )
-        raise SystemExit(1) from exc
-    except (ExecutionPacketError, OSError, ValueError) as exc:
-        if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
-        else:
-            from verdict import present
+        return
 
-            present.header(f"Autodev packet  /  {action}")
-            present.fail("packet", str(exc))
-        raise SystemExit(1) from exc
-
-    data = packet.to_dict()
-    if model is not None and action == "resume":
-        data["executing_model"] = model
     if output_json:
         print(json.dumps(data, indent=2, sort_keys=True))
     else:
@@ -1981,10 +1799,10 @@ def cmd_autodev_packet(
         present.header(f"Autodev packet  /  {action}")
         present.kv(
             {
-                "packet": packet.packet_id,
-                "version": f"v{packet.packet_version}",
-                "proof level": packet.proof_level.value,
-                "next safe action": packet.next_safe_action,
+                "packet": data.get("packet_id", ""),
+                "version": f"v{data.get('packet_version', '')}",
+                "proof level": data.get("proof_level", ""),
+                "next safe action": data.get("next_safe_action", ""),
             }
         )
 
@@ -2035,27 +1853,7 @@ def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
         present.fail("decomposition failed", reason)
 
 
-def _probe_result_payload(observation: Any) -> dict[str, Any]:
-    """Convert a probe observation to a credential-safe CLI result."""
-
-    status = str(observation.status)
-    http_status = observation.http_status
-    http_success = isinstance(http_status, int) and 200 <= http_status < 300
-    ok = http_success and status == "ready"
-    return {
-        "model": observation.model_id,
-        "ok": ok,
-        "status": status,
-        "availability_state": observation.availability_state,
-        "http_status": http_status,
-        "latency_ms": observation.latency_ms,
-        "usage_available": observation.usage_available,
-        "prompt_tokens": observation.prompt_tokens,
-        "completion_tokens": observation.completion_tokens,
-        "total_tokens": observation.total_tokens,
-        "error_class": observation.error_class,
-        "error": observation.error,
-    }
+_probe_result_payload = _action_helpers.probe_result_payload
 
 
 def cmd_catalog(
@@ -2072,98 +1870,36 @@ def cmd_catalog(
     allow_live_probe: bool = False,
 ) -> None:
     """Qualify one or both documented OmniRoute catalog projections."""
-    import urllib.request
+    from verdict.actions.registry import run_action
 
-    from verdict.omniroute_catalog import (
-        CATALOG_FETCH_TIMEOUT_SECONDS,
-        CatalogQualificationReport,
-        probe_catalog,
-        qualify_catalog,
-        reconcile_catalog_projections,
-        store_qualification,
+    result = run_action(
+        "catalog",
+        {
+            "base_url": base_url,
+            "management": management,
+            "expected_rows": expected_rows,
+            "freshness_seconds": freshness_seconds,
+            "db_path": db_path,
+            "probe": probe,
+            "probe_limit": probe_limit,
+            "probe_timeout": probe_timeout,
+            "allow_live_probe": allow_live_probe,
+        },
     )
-
-    if probe and not allow_live_probe:
-        message = "catalog live probes require explicit consent; pass --allow-live-probe"
+    data = result.data
+    if data.get("status") == "refused":
         if output_json:
-            print(json.dumps({"error": message, "probes": None}, sort_keys=True))
+            print(json.dumps({"error": data["error"], "probes": None}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Catalog qualification")
-            present.fail("catalog", message)
+            present.fail("catalog", data["error"])
         raise SystemExit(2)
-
-    paths = [
-        (
-            "management" if management else "public",
-            "/api/models/catalog" if management else "/v1/models",
-        )
-    ]
-    if not management:
-        paths.append(("management", "/api/models/catalog"))
-    reports: dict[str, CatalogQualificationReport] = {}
-    payloads: dict[str, bytes] = {}
-    for label, path in paths:
-        source_url = base_url.rstrip("/") + path
-        request = urllib.request.Request(source_url, headers={"Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(  # nosec B310
-                request, timeout=CATALOG_FETCH_TIMEOUT_SECONDS
-            ) as response:
-                payload = response.read()
-        except TimeoutError as exc:
-            del exc
-            reports[label] = CatalogQualificationReport(
-                "unknown", None, ("catalog_fetch_timeout", "TimeoutError")
-            )
-            continue
-        except Exception as exc:
-            reports[label] = CatalogQualificationReport("unknown", None, (type(exc).__name__,))
-            continue
-        payloads[label] = payload
-        reports[label] = qualify_catalog(
-            payload,
-            source_url=source_url,
-            expected_row_count=expected_rows,
-            freshness_seconds=freshness_seconds,
-        )
-    report = reports["management" if management else "public"]
-    reconciliation = None
-    if not management and all(label in reports for label in ("public", "management")):
-        reconciliation = reconcile_catalog_projections(reports["public"], reports["management"])
-    report_payload: dict[str, Any] = report.to_dict()
-    if not management:
-        report_payload["projections"] = {label: value.to_dict() for label, value in reports.items()}
-    probe_summary = None
-    if probe and report.snapshot and report.passed:
-        from verdict.probes import openai_probe_transport
-
-        probe_summary = probe_catalog(
-            payloads["management" if management else "public"],
-            openai_probe_transport(
-                base_url.rstrip("/") + "/v1", api_key=os.getenv("OPENAI_API_KEY")
-            ),
-            limit=probe_limit,
-            timeout_seconds=probe_timeout,
-            live=True,
-            consented=allow_live_probe,
-            provider_name="omniroute",
-        )
-    if db_path:
-        for label, projection in reports.items():
-            if projection.snapshot:
-                store_qualification(
-                    projection,
-                    memory_path=db_path,
-                    probes=probe_summary
-                    if label == ("management" if management else "public")
-                    else None,
-                )
-    if probe_summary:
-        report_payload["probes"] = probe_summary.to_dict()
-    if reconciliation:
-        report_payload["projection_reconciliation"] = reconciliation.to_dict()
+    report_payload = data["report_payload"]
+    report = data["report"]
+    reconciliation = data["reconciliation"]
+    probe_summary = data["probe_summary"]
     if output_json:
         print(json.dumps(report_payload, sort_keys=True))
     else:
@@ -2186,17 +1922,17 @@ def cmd_catalog(
             present.status("projection reconciliation", "ok" if reconciliation.passed else "failed")
         if probe_summary:
             present.note(f"probes: {json.dumps(probe_summary.to_dict(), sort_keys=True)}")
-    if not report.passed or (reconciliation is not None and not reconciliation.passed):
+    if not data["passed"]:
         sys.exit(1)
 
 
 def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from verdict import present
-    from verdict.suggestions import SuggestionService
+    from verdict.actions.registry import run_action
 
-    svc = SuggestionService(log_path=log_path)
-    suggestions = svc.generate_suggestions()
+    result = run_action("suggest", {"log_path": log_path})
+    suggestions = result.data["suggestions"]
 
     present.header("Verdict Intelligence Suggestions")
     if not suggestions:
@@ -2204,610 +1940,38 @@ def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
         return
 
     for s in suggestions:
-        present.section(f"{s.title} ({s.id})")
+        present.section(f"{s['title']} ({s['id']})")
         present.kv(
             {
-                "Category": s.category.title(),
-                "Novelty": s.novelty,
-                "Expires In": s.expiry,
-                "Description": s.description,
-                "Proposed Experiment": s.proposed_next_experiment,
-                "Confidence": f"{s.confidence * 100:.1f}%",
-                "Impact": s.expected_impact,
+                "Category": s["category"].title(),
+                "Novelty": s["novelty"],
+                "Expires In": s["expiry"],
+                "Description": s["description"],
+                "Proposed Experiment": s["proposed_next_experiment"],
+                "Confidence": f"{s['confidence'] * 100:.1f}%",
+                "Impact": s["expected_impact"],
                 "Evidence (top 3)": (
-                    ", ".join(s.evidence_references) if s.evidence_references else "None"
+                    ", ".join(s["evidence_references"]) if s["evidence_references"] else "None"
                 ),
             }
         )
 
 
-_DOCTOR_NETWORK_ERROR_MARKERS = (
-    "rate limit",
-    "http error 429",
-    "urlerror",
-    "timed out",
-    "connection refused",
-    "name or service not known",
+# ---------------------------------------------------------------------------
+# Doctor diagnostics — canonical: verdict.doctor_diagnostics
+# ---------------------------------------------------------------------------
+from verdict.doctor_diagnostics import (  # noqa: E402
+    DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
+    DoctorDiagnostics,  # noqa: F401 — backward-compat alias
+    _collect_doctor_diagnostics,  # noqa: F401 — backward-compat alias
+    _doctor_documentation_preflight_is_network_only_failure,  # noqa: F401
+    _doctor_fix_gateway,  # noqa: F401
+    _doctor_gateway_lifecycle,  # noqa: F401
+    _doctor_progress,
+    _gateway_probe_for,
+    _omniroute_api_request,  # noqa: F401 — backward-compat alias
+    _read_omniroute_token,  # noqa: F401 — backward-compat alias
 )
-
-
-def _doctor_documentation_preflight_is_network_only_failure(report: Any) -> bool:
-    """Return True only when a blocked documentation preflight is explained
-    entirely by a transient third-party network/rate-limit condition.
-
-    The preflight is network-only iff:
-
-    * the local documentation set has no real gaps (``missing == 0``,
-      ``stale == 0`` and ``orphaned == 0``), and
-    * there is at least one error, and every error is a ``resolve`` or
-      ``inventory`` fetch error that carries one of
-      ``_DOCTOR_NETWORK_ERROR_MARKERS``.
-
-    A bare ``HTTP Error 403`` (auth/permission) is NOT network-only; a 403
-    counts only when the same error text also says ``rate limit``. Anything
-    else is a real issue.
-    """
-    if getattr(report, "missing", 0) or getattr(report, "stale", 0):
-        return False
-    if getattr(report, "orphaned", 0):
-        return False
-    errors = tuple(getattr(report, "errors", ()) or ())
-    if not errors:
-        return False
-    for error in errors:
-        parts = error.split(":", 2)
-        if len(parts) < 3 or parts[1] not in {"resolve", "inventory"}:
-            return False
-        lowered = error.lower()
-        if not any(marker in lowered for marker in _DOCTOR_NETWORK_ERROR_MARKERS):
-            return False
-    return True
-
-
-class DoctorDiagnostics:
-    """Result of the single shared ``verdict doctor`` diagnostics collector.
-
-    Both text and ``--json`` modes render this same object, so they always
-    agree on ``issues`` (exit 1 iff non-empty) and ``warnings`` (non-fatal).
-    ``sections`` holds ``(label, state, detail)`` rows for text rendering;
-    ``state`` ``"section"`` / ``"header"`` render a heading, ``"note"`` a dim line.
-    """
-
-    def __init__(self) -> None:
-        self.issues: list[str] = []
-        self.warnings: list[str] = []
-        self.fixed: list[str] = []
-        self.sections: list[tuple[str, str, str]] = []
-        self.capability_report: dict[str, Any] = {}
-        self.documentation_preflight: dict[str, Any] = {}
-        self.shared_memory: Any = None
-        self.config_loaded: bool = False
-        #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
-        self.gateway_lifecycle: dict[str, Any] = {}
-
-
-DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
-
-
-def _doctor_progress(message: str) -> None:
-    """Write one doctor progress line to stderr so ``--json`` stdout stays pure."""
-    print(f"  {message}", file=sys.stderr, flush=True)
-
-
-def _doctor_fix_gateway(
-    config: dict[str, Any],
-    config_path: str,
-    sections: list[tuple[str, str, str]],
-    fixed_issues: list[str],
-) -> str | None:
-    """Persist the single healthy local gateway for an old config under --fix.
-
-    Writes ``gateway_url`` into ``verdict.yaml`` and, when the credential
-    store has no ``OMNIROUTE_BASE_URL`` yet, stores the same URL there (a URL,
-    not a secret). The process environment is never mutated. Returns the
-    repaired URL, or ``None`` when nothing was repaired.
-    """
-    from verdict import provider_detection
-    from verdict.credentials_store import CredentialsStore
-
-    try:
-        healthy = [g for g in provider_detection.probe_gateways() if g.health_ok]
-    except Exception as exc:
-        sections.append(("Gateway detection", "warn", str(exc)))
-        return None
-    if len(healthy) != 1:
-        if len(healthy) > 1:
-            sections.append(
-                (
-                    "Gateway detection",
-                    "warn",
-                    "Multiple healthy gateways found; set OMNIROUTE_BASE_URL to choose one.",
-                )
-            )
-        return None
-    url = healthy[0].url
-    config["gateway_url"] = url
-    try:
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config, f, default_flow_style=False)
-    except Exception as exc:
-        sections.append(("Gateway repair failed", "failed", str(exc)))
-        return None
-    sections.append(("Gateway configured", "ok", f"gateway_url: {url}"))
-    fixed_issues.append("No gateway URL configured")
-    try:
-        store = CredentialsStore()
-        if "OMNIROUTE_BASE_URL" not in store.load():
-            store.set("OMNIROUTE_BASE_URL", url)
-            sections.append(("Stored credential", "ok", "OMNIROUTE_BASE_URL"))
-            fixed_issues.append("Required credential OMNIROUTE_BASE_URL is not set")
-    except PermissionError as exc:
-        sections.append(("Credential store", "failed", str(exc)))
-    return url
-
-
-def _gateway_probe_for(bootstrap: Any) -> Any:
-    """Readiness probe carrying the gateway credential, when one is configured.
-
-    A gateway that requires a key answers 401 to an unauthenticated probe, which
-    would be reported as unhealthy: ``doctor`` would call a healthy gateway broken,
-    and ensure would fail closed against it. The key is read by the name the
-    provider binding declares (``api_key_env``), from the exported environment and
-    then the credential store, and is never printed.
-    """
-    from verdict.gateway_lifecycle import authenticated_gateway_probe
-    from verdict.provider_bootstrap import load_credential_store_env
-
-    names = [
-        binding.api_key_env
-        for binding in bootstrap.providers.values()
-        if getattr(binding, "api_key_env", None)
-        and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
-    ]
-    api_key: str | None = None
-    store: dict[str, str] | None = None
-    for name in names:
-        api_key = (os.getenv(str(name)) or "").strip() or None
-        if api_key is None:
-            if store is None:
-                store = load_credential_store_env()
-            api_key = (store.get(str(name)) or "").strip() or None
-        if api_key is not None:
-            break
-    return authenticated_gateway_probe(api_key)
-
-
-def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
-    """Report gateway readiness in ``verdict doctor``. Never starts anything.
-
-    The requirement and URL come from the shared bootstrap contract, and the
-    state comes from ``inspect_gateway``, which probes at most once and never
-    launches, signals or locks. Exit status is unchanged: an unready gateway is
-    already reported by the reachability check above, so this section adds the
-    named state rather than a second failure.
-    """
-    from verdict.gateway_lifecycle import inspect_gateway
-    from verdict.provider_bootstrap import BootstrapError
-
-    try:
-        bootstrap = _cli_bootstrap()
-        outcome = inspect_gateway(bootstrap, probe=_gateway_probe_for(bootstrap))
-    except BootstrapError as exc:
-        diag.gateway_lifecycle = {"state": "unknown", "reason": exc.reason_code}
-        diag.sections.append(("Gateway lifecycle", "warn", exc.reason_code))
-        return
-    diag.gateway_lifecycle = outcome.to_dict()
-    state = "ok" if outcome.ready else "warn"
-    diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
-    if outcome.diagnostic is not None:
-        diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
-
-
-def _collect_doctor_diagnostics(
-    fix: bool,
-    *,
-    interactive: bool,
-    preflight_timeout: float = DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT,
-    progress: Callable[[str], None] | None = None,
-) -> DoctorDiagnostics:
-    """Run every ``verdict doctor`` check once and return the shared result.
-
-    ``interactive`` controls only whether duplicate OmniRoute nodes may be
-    removed after a confirmation prompt (never in ``--json`` mode, which must
-    keep stdout machine-readable).
-
-    ``preflight_timeout`` bounds the documentation preflight in seconds
-    (``0`` or less means unbounded). ``progress``, when given, receives short
-    status lines before and during the (possibly slow) preflight work.
-    """
-    diag = DoctorDiagnostics()
-    sections = diag.sections
-    issues_found = diag.issues
-    warnings_found = diag.warnings
-    fixed_issues = diag.fixed
-
-    from verdict.capability_bootstrap import doctor_capability_report
-
-    capability_report = doctor_capability_report()
-    diag.capability_report = capability_report
-    capabilities = capability_report.get("capabilities", [])
-    if not isinstance(capabilities, list):
-        capabilities = []
-    covered = sum(
-        1 for item in capabilities if isinstance(item, dict) and item.get("status") == "covered"
-    )
-    total = len(capabilities)
-    sections.append(("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)"))
-
-    from verdict.documentation_preflight import run_documentation_preflight
-
-    if progress is not None:
-        progress("checking documentation memory (may take a while)...")
-    deadline_seconds = preflight_timeout if preflight_timeout > 0 else None
-    documentation_report = run_documentation_preflight(
-        fix=fix, progress=progress, deadline_seconds=deadline_seconds
-    )
-    diag.documentation_preflight = documentation_report.to_dict()
-    doc_timed_out = bool(getattr(documentation_report, "timed_out", False))
-    network_only_doc_failure = (
-        not doc_timed_out
-        and not documentation_report.passed
-        and _doctor_documentation_preflight_is_network_only_failure(documentation_report)
-    )
-    doc_state = (
-        "ok" if documentation_report.passed else "warning" if network_only_doc_failure else "failed"
-    )
-    sections.append(
-        (
-            "Documentation preflight",
-            doc_state,
-            f"{documentation_report.status} ({documentation_report.inventory} documents, "
-            f"{documentation_report.ingested} ingested, "
-            f"{documentation_report.stale} stale, "
-            f"{documentation_report.missing} missing)",
-        )
-    )
-    if doc_timed_out:
-        # An incomplete scan never counts as ready or as a transient network
-        # warning: verification did not finish, so it is an unresolved issue.
-        issues_found.append(
-            f"Documentation preflight timed out after {preflight_timeout:g}s before every "
-            "document was checked. Rerun with 'verdict doctor --preflight-timeout 0' "
-            "(unbounded) or a larger value."
-        )
-        issues_found.extend(documentation_report.errors)
-    elif not documentation_report.passed:
-        if network_only_doc_failure:
-            # A rate-limited/unreachable third-party GitHub source with no
-            # local documentation gap is a transient network condition, not
-            # a real problem with this host's routing setup.
-            warnings_found.extend(
-                ["authoritative documentation preflight unreachable", *documentation_report.errors]
-            )
-        else:
-            issues_found.extend(
-                ["authoritative documentation preflight did not pass", *documentation_report.errors]
-            )
-    elif fix and documentation_report.ingested:
-        fixed_issues.append("authoritative documentation preflight repaired")
-
-    # Memory bridge (~/.verdict/memory.db, ./.mcp.json) and shared memory.
-    from verdict.memory_bridge import run_doctor_diagnostics
-
-    memory_report = run_doctor_diagnostics(home_dir=Path.home(), cwd=Path.cwd(), fix=fix)
-    memory_issues = [str(item) for item in memory_report.get("issues", [])]
-    memory_repaired = [str(item) for item in memory_report.get("repaired", [])]
-    fixed_issues.extend(memory_repaired)
-    # Exit status reflects the state AFTER --fix: drop findings that --fix repaired.
-    repaired_by = {
-        "missing_memory_db": "created_verdict_dir",
-        "missing_memory_db_file": "initialized_memory_db",
-        "missing_mcp_config": "created_mcp_config",
-    }
-    issues_found.extend(
-        issue for issue in memory_issues if repaired_by.get(issue) not in memory_repaired
-    )
-    warnings_found.extend(
-        str(warning)
-        for warning in memory_report.get("warnings", [])
-        if repaired_by.get(str(warning)) not in memory_repaired
-    )
-    shared_memory = memory_report.get("shared_memory") or {}
-
-    # BOD-80 AC 9: when a provider IS configured, run diagnose_shared_memory
-    # with the real health data so unreachable / unwritable / schema_incompatible
-    # surface in the doctor output with named reasons.
-    if isinstance(shared_memory, dict) and shared_memory.get("configured"):
-        from verdict.runtime_certification import diagnose_shared_memory
-
-        sm_diagnosis = diagnose_shared_memory(health_fn=lambda: shared_memory)
-        shared_memory["diagnosis_state"] = sm_diagnosis.state.value
-        shared_memory["diagnosis_reason"] = sm_diagnosis.reason
-        if sm_diagnosis.state.value == "degraded":
-            warnings_found.append(f"shared memory degraded: {sm_diagnosis.reason}")
-
-    diag.shared_memory = shared_memory
-    if isinstance(shared_memory, dict):
-        # Prefer the diagnosis state when available (more specific than discovery state).
-        display_state = str(
-            shared_memory.get("diagnosis_state", shared_memory.get("state", "unknown"))
-        )
-        display_detail = shared_memory.get("diagnosis_reason") or str(
-            shared_memory.get("endpoint") or shared_memory.get("provider_id") or ""
-        )
-        sections.append(("Shared memory", display_state, str(display_detail)))
-
-    # 1. Config Check
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    config = None
-
-    if not os.path.exists(config_path):
-        issues_found.append("Configuration file (verdict.yaml) is missing.")
-    else:
-        try:
-            with open(config_path) as f:
-                config = yaml.safe_load(f) or {}
-        except Exception as exc:
-            issues_found.append(f"Configuration file is corrupted/invalid YAML: {exc}")
-
-    if config is not None and not isinstance(config, dict):
-        issues_found.append("Configuration file verdict.yaml must be a YAML mapping.")
-        config = None
-    diag.config_loaded = bool(config)
-
-    if config is not None:
-        primary_model = config.get("primary_model")
-        if not primary_model:
-            issues_found.append("No primary model configured in verdict.yaml.")
-        else:
-            from verdict.classifier import classify
-
-            tier = classify(primary_model)
-            sections.append(("Configured Primary Model", "ok", f"{primary_model} (Tier-{tier})"))
-
-        providers = config.get("providers", {})
-        if not isinstance(providers, dict):
-            issues_found.append("'providers' section in verdict.yaml is malformed.")
-        else:
-            # Check for secrets inside the config file
-            for name, p_cfg in providers.items():
-                if not isinstance(p_cfg, dict):
-                    continue
-                base_url = p_cfg.get("base_url", "")
-                if "sk-" in base_url or "api_key" in base_url.lower():
-                    issues_found.append(
-                        f"Literal API key detected inside the host URL for provider '{name}'."
-                    )
-
-            # Check duplicate URLs in config
-            urls: dict[str, str] = {}
-            for name, p_cfg in providers.items():
-                if isinstance(p_cfg, dict) and p_cfg.get("base_url"):
-                    url = p_cfg["base_url"].rstrip("/")
-                    if url in urls:
-                        issues_found.append(
-                            f"Duplicate host URL configured in verdict.yaml: provider '{name}' and '{urls[url]}' have identical hosts."
-                        )
-                    else:
-                        urls[url] = name
-
-    # 1b. Config schema version check (T023)
-    if config is not None and "schema_version" not in config:
-        if fix:
-            config["schema_version"] = 1
-            try:
-                with open(config_path, "w") as f:
-                    yaml.safe_dump(config, f, default_flow_style=False)
-                fixed_issues.append("Config written by an older Verdict version")
-            except Exception as exc:
-                issues_found.append(f"Failed to migrate config schema_version: {exc}")
-        else:
-            issues_found.append(
-                "Config written by an older Verdict version. Run 'verdict doctor --fix' to migrate."
-            )
-
-    # 1c. Config filename check (T016)
-    legacy_config_path = os.path.join(config_dir, "config.yaml")
-    if os.path.exists(legacy_config_path):
-        if os.path.exists(config_path):
-            issues_found.append(
-                f"Both {legacy_config_path} and {config_path} exist. "
-                "Remove the unused one to avoid confusion."
-            )
-        else:
-            if fix:
-                try:
-                    os.rename(legacy_config_path, config_path)
-                    sections.append(("Renamed", "ok", f"{legacy_config_path} -> {config_path}"))
-                    fixed_issues.append("Config file is named 'config.yaml'")
-                except Exception as exc:
-                    issues_found.append(f"Failed to rename config.yaml: {exc}")
-            else:
-                issues_found.append(
-                    "Config file is named 'config.yaml' but must be 'verdict.yaml'. "
-                    f"Run: mv {legacy_config_path} {config_path}"
-                )
-
-    # 1d. Gateway reachability check (T015)
-    gateway_url = os.getenv("OMNIROUTE_BASE_URL") or (config.get("gateway_url") if config else None)
-    if not gateway_url and fix and config is not None:
-        # Old-style configs (written before setup persisted gateway_url) have
-        # no gateway at all. --fix repairs this only when exactly one healthy
-        # local gateway answers the health protocol; an ambiguous or absent
-        # gateway is left as an issue for the operator to choose.
-        gateway_url = _doctor_fix_gateway(config, config_path, sections, fixed_issues)
-    if not gateway_url:
-        issues_found.append(
-            "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
-        )
-    else:
-        try:
-            import urllib.request
-            from urllib.error import URLError
-
-            health_req = urllib.request.Request(
-                gateway_url.rstrip("/") + "/api/health",
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                if resp.status != 200:
-                    raise URLError(f"status {resp.status}")
-        except Exception:
-            issues_found.append(
-                f"Gateway unreachable at {gateway_url}. "
-                "Run 'verdict detect' to find a running gateway."
-            )
-
-    # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
-    _doctor_gateway_lifecycle(diag)
-
-    # 1e. Env var format checks (T017)
-    omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
-    if omniroute_base_url_env and not re.match(
-        r"^https?://[^/]+(:[0-9]+)?$", omniroute_base_url_env
-    ):
-        issues_found.append(
-            f"OMNIROUTE_BASE_URL has invalid format: '{omniroute_base_url_env}'. "
-            "Expected http://host:port (no trailing slash)."
-        )
-
-    openai_api_key_env = os.getenv("OPENAI_API_KEY")
-    if openai_api_key_env and not openai_api_key_env.startswith("sk-"):
-        issues_found.append("OPENAI_API_KEY appears invalid (expected prefix 'sk-').")
-
-    # 1f. Env var reference note (T024)
-    sections.append(
-        (
-            "Environment reference",
-            "section",
-            "See .env.example in the repository root for the full environment variable reference.",
-        )
-    )
-
-    # 2. OmniRoute nodes check
-    existing_nodes = _omniroute_api_request("GET", "/api/provider-nodes")
-    if existing_nodes is None:
-        sections.append(
-            (
-                "OmniRoute nodes",
-                "section",
-                "OmniRoute server is not currently running/reachable to check nodes.",
-            )
-        )
-    else:
-        items = []
-        if isinstance(existing_nodes, list):
-            items = existing_nodes
-        elif isinstance(existing_nodes, dict) and "items" in existing_nodes:
-            items = existing_nodes["items"]
-
-        sections.append(
-            ("Connected to OmniRoute", "ok", f"Found {len(items)} configured node endpoints")
-        )
-
-        # Check duplicate nodes in OmniRoute
-        node_urls: dict[str, str] = {}
-        duplicates = []
-        for node in items:
-            if not isinstance(node, dict):
-                continue
-            bd_url = node.get("baseUrl")
-            node_id = node.get("id")
-            if bd_url and node_id:
-                clean_url = bd_url.rstrip("/")
-                if clean_url in node_urls:
-                    duplicates.append(
-                        (node_id, node.get("name") or node_id, bd_url, node_urls[clean_url])
-                    )
-                else:
-                    node_urls[clean_url] = node_id
-
-        if duplicates:
-            sections.append(("Duplicate nodes detected", "section", ""))
-            for node_id, name, _url, original_id in duplicates:
-                sections.append(
-                    (
-                        f"Duplicate node {name}",
-                        "warn",
-                        f"({node_id}) is a duplicate of ({original_id})",
-                    )
-                )
-                issues_found.append(f"Duplicate node '{name}' in OmniRoute configuration.")
-
-            if interactive:
-                try:
-                    if (
-                        Prompt.ask(
-                            "\nWould you like to resolve and delete the duplicate provider nodes?",
-                            default="y",
-                        )
-                        .lower()
-                        .startswith("y")
-                    ):
-                        for node_id, name, _url, _ in duplicates:
-                            res = _omniroute_api_request("DELETE", f"/api/provider-nodes/{node_id}")
-                            if res is not None:
-                                sections.append(
-                                    ("Removed", "ok", f"Removed duplicate node: {name}")
-                                )
-                                fixed_issues.append(f"Removed duplicate node {node_id}")
-                            else:
-                                sections.append(("Removal failed", "failed", f"Node {node_id}"))
-                except (KeyboardInterrupt, EOFError):
-                    pass
-
-        # Check node reachability
-        for node in items:
-            if not isinstance(node, dict):
-                continue
-            url = node.get("baseUrl")
-            name = node.get("name") or node.get("id")
-            if url:
-                import socket
-                from urllib.parse import urlparse
-
-                try:
-                    parsed = urlparse(url)
-                    host = parsed.hostname or "127.0.0.1"
-                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-                    with socket.create_connection((host, port), timeout=1.0):
-                        pass
-                except Exception:
-                    issues_found.append(
-                        f"Configured provider node '{name}' ({url}) is unreachable/offline."
-                    )
-
-    # Credentials check
-    sections.append(("Credentials", "header", ""))
-    from verdict.credentials_registry import CREDENTIALS
-    from verdict.credentials_store import CredentialsStore, get_credential_source
-
-    try:
-        store = CredentialsStore()
-        missing_required = []
-        for cred in CREDENTIALS:
-            source, masked = get_credential_source(cred.env_name, store)
-            if source == "missing" and not cred.optional:
-                missing_required.append(cred)
-                issues_found.append(
-                    f"Required credential {cred.env_name} is not set. "
-                    f"Set with: verdict credentials set {cred.env_name}"
-                )
-            elif source == "missing":
-                sections.append((cred.env_name, "optional", "not set"))
-            else:
-                sections.append((cred.env_name, source, masked))
-
-        if not missing_required:
-            sections.append(("Required credentials", "ok", "all set"))
-    except Exception as e:
-        issues_found.append(f"Credential check failed: {e}")
-
-    return diag
 
 
 def cmd_doctor(
@@ -2823,29 +1987,15 @@ def cmd_doctor(
     stdout stays pure JSON.
     """
     if output_json:
+        from verdict.actions.registry import run_action
         from verdict.runtime_daemons import RuntimeManager
         from verdict.runtime_health import build_runtime_health_report
 
-        diag = _collect_doctor_diagnostics(
-            fix, interactive=False, preflight_timeout=preflight_timeout
-        )
-        report: dict[str, Any] = {
-            "status": "issues_found" if diag.issues else "ok",
-            "issues": diag.issues,
-            "warnings": diag.warnings,
-            "repaired": diag.fixed,
-            "sections": [
-                {"label": label, "state": state, "detail": detail}
-                for label, state, detail in diag.sections
-            ],
-            "documentation_preflight": diag.documentation_preflight,
-            "gateway_lifecycle": diag.gateway_lifecycle,
-            "shared_memory": diag.shared_memory,
-            "capability_bootstrap": diag.capability_report,
-            "runtime_health": build_runtime_health_report(RuntimeManager().status()).to_dict(),
-        }
+        result = run_action("doctor", {"fix": fix, "preflight_timeout": preflight_timeout})
+        report: dict[str, Any] = dict(result.data)
+        report["runtime_health"] = build_runtime_health_report(RuntimeManager().status()).to_dict()
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
-        if diag.issues:
+        if not result.ok:
             raise SystemExit(1)
         return
 
@@ -2853,7 +2003,7 @@ def cmd_doctor(
     ui.header("Doctor")
     # Interactive only for the optional duplicate-node removal prompt; the
     # set of issues/warnings is identical to --json mode.
-    diag = _collect_doctor_diagnostics(
+    diag = _doctor_diag._collect_doctor_diagnostics(
         fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
     )
     ui.doctor(diag.capability_report)
@@ -2899,6 +2049,36 @@ def cmd_plan(output_json: bool = False) -> None:
     cmd_setup_plan(output_json=output_json)
 
 
+def _render_choose_summary(data: dict[str, Any]) -> str:
+    """Mirror ``verdict.chooser.human_summary`` for a decision returned as a dict."""
+    lines: list[str] = []
+    selected = data.get("selected")
+    if selected is None:
+        lines.append(f"no eligible target ({data.get('reason', 'unknown')})")
+    else:
+        lines.append(
+            f"selected {selected['gateway']}/{selected['provider']}/"
+            f"{selected['resource_pool']}/{selected['model']}"
+        )
+        if data.get("selected_because"):
+            lines.append(str(data["selected_because"]))
+    fallbacks = data.get("ranked_fallbacks") or []
+    if fallbacks:
+        top = fallbacks[0]
+        lines.append(
+            "top fallback: "
+            f"{top['gateway']}/{top['provider']}/{top['resource_pool']}/{top['model']}"
+        )
+    exclusions = data.get("exclusions") or []
+    if exclusions:
+        reasons = ", ".join(
+            f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
+            for item in exclusions[:3]
+        )
+        lines.append(f"excluded: {reasons}")
+    return "\n".join(lines)
+
+
 def cmd_choose(
     *,
     task_class: str,
@@ -2908,7 +2088,7 @@ def cmd_choose(
     output_json: bool = False,
 ) -> None:
     """Select an eligible execution target for Prime dispatch."""
-    from verdict.chooser import ChooserError, choose_route, human_summary, load_candidates_json
+    from verdict.actions.registry import run_action
 
     if not candidates_json:
         print(
@@ -2916,56 +2096,90 @@ def cmd_choose(
             file=sys.stderr,
         )
         sys.exit(2)
-    required = tuple(part.strip() for part in requires.split(",") if part.strip())
-    try:
-        candidates = load_candidates_json(candidates_json)
-        receipt = choose_route(
-            candidates, task_class=task_class, requires=required, explicit_model=model
-        )
-    except ChooserError as exc:
-        payload = {
+    result = run_action(
+        "choose",
+        {
             "task_class": task_class,
-            "protected": task_class
-            in {"architecture", "orchestration", "hard-debug", "final-review"},
-            "selected": None,
-            "reason": exc.reason,
-            "error": str(exc),
-            "exclusions": list(exc.exclusions),
-            "policy_version": "chooser-policy/v1",
-            "ranker_version": "chooser-ranker/v1",
-            "explicit_model": model,
-            "selected_because": f"failed because {exc.reason}",
-        }
+            "requires": requires,
+            "model": model,
+            "candidates_json": candidates_json,
+        },
+    )
+    if not result.ok:
+        payload = result.data
         if output_json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Choose route")
-            present.fail(task_class, exc.reason)
-            if exc.exclusions:
+            present.fail(task_class, payload.get("reason", "unknown"))
+            exclusions = payload.get("exclusions") or []
+            if exclusions:
                 present.note(
                     "excluded: "
                     + ", ".join(
                         f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
-                        for item in exc.exclusions[:3]
+                        for item in exclusions[:3]
                     )
                 )
-        sys.exit(1)
+        sys.exit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(result.data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Choose route")
-    present.note(human_summary(receipt))
+    present.note(_render_choose_summary(result.data))
 
 
-def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False) -> None:
-    """List the qualified model catalog used for routing and simulation."""
-    if catalog is None:
-        catalog = default_model_catalog()
-    if output_json:
+def cmd_models(
+    catalog: list[ModelInfo] | None = None,
+    output_json: bool = False,
+    provider: str | None = None,
+    search: str | None = None,
+    capability: str | None = None,
+    limit: int = 0,
+    show_all: bool = False,
+    inventory: bool = False,
+) -> None:
+    """List the authoritative model inventory from the live gateway."""
+    from verdict.actions.registry import run_action
+
+    params: dict[str, Any] = {}
+    if catalog is not None:
+        # Legacy injection: convert ModelInfo list to enriched row dicts.
+        params["catalog_rows"] = [
+            {
+                "id": m.id,
+                "provider": m.provider,
+                "capability_tier": f"T{m.capability_tier}",
+                "context_window": m.context_window if m.context_window > 0 else None,
+                "tools_support": None,
+                "structured_output": None,
+                "input_cost_per_million": None,
+                "output_cost_per_million": None,
+                "source": "config",
+                "freshness": None,
+            }
+            for m in catalog
+        ]
+    if provider:
+        params["provider"] = provider
+    if search:
+        params["search"] = search
+    if capability:
+        params["capability"] = capability
+    if limit:
+        params["limit"] = limit
+    if show_all:
+        params["show_all"] = True
+
+    if output_json and not inventory:
+        # Stable `models --json` contract (origin/main): a flat list of the
+        # configured catalog with the legacy keys; no gateway call.  The live
+        # inventory summary is opt-in via `--inventory` (BOD-277).
+        legacy_catalog = catalog if catalog is not None else default_model_catalog()
         print(
             json.dumps(
                 [
@@ -2977,75 +2191,131 @@ def cmd_models(catalog: list[ModelInfo] | None = None, output_json: bool = False
                         "cost_per_1k": m.cost_per_1k,
                         "availability_state": m.availability_state,
                     }
-                    for m in catalog
+                    for m in legacy_catalog
                 ],
                 indent=2,
                 sort_keys=True,
             )
         )
         return
+
+    result = run_action("models.list", params or None)
+    if output_json:
+        print(json.dumps(result.data, indent=2, sort_keys=True))
+        return
+
     from verdict import present
 
-    present.header("Model catalog")
+    data = result.data if isinstance(result.data, dict) else {}
+    total = data.get("total", 0)
+    shown = data.get("shown", 0)
+    total_filtered = data.get("total_filtered", 0)
+    source = data.get("source", "unknown")
+    provider_counts = data.get("provider_counts", {})
+    freshness = data.get("freshness")
+    entries = data.get("models", [])
+
+    if source == "config_only":
+        present.header("Model catalog (gateway unreachable: showing configured models only)")
+    else:
+        present.header("Model inventory")
+
+    # Summary line.
+    top_providers = sorted(provider_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    provider_summary = ", ".join(f"{p}: {c}" for p, c in top_providers)
+    present.note(f"{total} models total across {len(provider_counts)} providers")
+    if provider_summary:
+        present.note(f"Top providers: {provider_summary}")
+    if freshness:
+        present.note(f"Metadata freshness: {freshness}")
+
+    # Table of shown rows.
+    def _fmt_ctx(v: Any) -> str:
+        if v is None:
+            return "-"
+        try:
+            n = int(v)
+            return f"{n:,}" if n > 0 else "-"
+        except (TypeError, ValueError):
+            return "-"
+
+    def _fmt_cost(v: Any) -> str:
+        if v is None:
+            return "-"
+        try:
+            return f"${float(v):.2f}"
+        except (TypeError, ValueError):
+            return "-"
+
+    def _fmt_bool(v: Any) -> str:
+        if v is True:
+            return "yes"
+        if v is False:
+            return "no"
+        return "-"
+
     present.table(
-        ["ID", "Provider", "Tier", "Context", "Cost/1k", "State"],
+        ["ID", "Provider", "Tier", "Context", "Tools", "$/M in", "Source"],
         [
             (
-                m.id,
-                m.provider,
-                f"T{m.capability_tier}",
-                str(m.context_window) if m.context_window > 0 else "-",
-                f"${m.cost_per_1k:.4f}" if m.cost_per_1k else "-",
-                m.availability_state,
+                str(m.get("id", "")),
+                str(m.get("provider", "")),
+                str(m.get("capability_tier", "-")),
+                _fmt_ctx(m.get("context_window")),
+                _fmt_bool(m.get("tools_support")),
+                _fmt_cost(m.get("input_cost_per_million")),
+                str(m.get("source", "")),
             )
-            for m in catalog
+            for m in entries
         ],
-        empty="catalog is empty",
+        empty="no models found",
     )
-    present.note(f"{len(catalog)} model(s). Live eligibility: verdict eligibility --probe")
+    if total_filtered > shown:
+        present.note(
+            f"Showing {shown} of {total_filtered} filtered models "
+            f"(use --all or --limit N to see more)"
+        )
+    else:
+        present.note(f"{shown} model(s) shown. Live eligibility: verdict eligibility --probe")
 
 
 def cmd_inspect(
     model_id: str, catalog: list[ModelInfo] | None = None, output_json: bool = False
 ) -> None:
     """Inspect one model's catalog record and any stored passport evidence."""
-    if catalog is None:
-        catalog = default_model_catalog()
-    matches = [m for m in catalog if m.id == model_id or f"{m.provider}/{m.id}" == model_id]
-    if not matches:
-        message = f"model not found in catalog: {model_id}"
+    from verdict.actions.registry import run_action
+
+    params: dict[str, Any] = {"model_id": model_id}
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("inspect", params)
+
+    if not result.ok:
         if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
+            print(json.dumps(result.data, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Model inspect")
-            present.fail(model_id, "not found in catalog")
-        raise SystemExit(1)
-    model = matches[0]
-    payload: dict[str, Any] = {
-        "id": model.id,
-        "provider": model.provider,
-        "tier": model.capability_tier,
-        "context_window": model.context_window,
-        "cost_per_1k": model.cost_per_1k,
-        "capabilities": sorted(model.capabilities),
-        "availability_state": model.availability_state,
-    }
+            present.fail(model_id, result.data.get("error", "unknown error"))
+        raise SystemExit(result.exit_code)
+
+    payload = result.data
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
+
     from verdict import present
 
-    present.header(f"Model inspect  /  {model.id}")
+    present.header(f"Model inspect  /  {model_id}")
     present.kv(
         {
-            "provider": model.provider,
-            "tier": f"T{model.capability_tier}",
-            "context window": model.context_window or "-",
-            "cost per 1k": f"${model.cost_per_1k:.4f}" if model.cost_per_1k else "-",
-            "capabilities": ", ".join(sorted(model.capabilities)) or "-",
-            "availability": model.availability_state,
+            "provider": payload["provider"],
+            "tier": f"T{payload['tier']}",
+            "context window": payload["context_window"] or "-",
+            "cost per 1k": f"${payload['cost_per_1k']:.4f}" if payload["cost_per_1k"] else "-",
+            "capabilities": ", ".join(payload["capabilities"]) or "-",
+            "availability": payload["availability_state"],
         }
     )
 
@@ -3060,49 +2330,24 @@ def cmd_receipt(
     output_json: bool = False,
 ) -> None:
     """Inspect durable RoutingReceiptV1 records from ReceiptStore."""
-    from pathlib import Path
+    from verdict.actions.registry import run_action
 
-    from verdict.receipt_store import ReceiptStore
-    from verdict.routing_receipt import attempt_scope, human_summary, load_routing_receipt
-
-    if db_path:
-        db = Path(db_path)
-    else:
-        repo_db = Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
-    # List-all must scan scopes; show/export keep strict scope when a scope is known.
-    store = (
-        ReceiptStore(db, strict_scope=False)
-        if action == "list" and scope is None
-        else ReceiptStore(db, strict_scope=True)
+    result = run_action(
+        "receipt.show",
+        {
+            "action": action,
+            "receipt_id": receipt_id,
+            "attempt_id": attempt_id,
+            "scope": scope,
+            "db_path": db_path,
+        },
     )
+    data = result.data
+    if data.get("error"):
+        raise SystemExit(data["error"])
 
     if action == "list":
-        rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
-        items = []
-        for row in rows:
-            if row.parent_receipt_id:
-                continue
-            payload = row.payload
-            if payload.get("schema_version") != "routing-receipt/v1":
-                continue
-            latest = load_routing_receipt(
-                store,
-                receipt_id=row.receipt_id,
-                scope=row.scope,
-                attempt_id=payload.get("attempt_id"),
-            )
-            view = latest.to_dict() if latest is not None else payload
-            items.append(
-                {
-                    "receipt_id": row.receipt_id,
-                    "scope": row.scope,
-                    "attempt_id": view.get("attempt_id"),
-                    "state": view.get("state"),
-                    "decision_digest": view.get("decision_digest"),
-                    "created_at": view.get("created_at"),
-                }
-            )
+        items = data["receipts"]
         if output_json:
             print(json.dumps({"receipts": items}, indent=2, sort_keys=True))
             return
@@ -3127,41 +2372,24 @@ def cmd_receipt(
         return
 
     if action == "show":
-        scope_value = scope
-        if scope_value is None and attempt_id is not None:
-            scope_value = attempt_scope(story_id=None, work_unit_id=None, attempt_id=attempt_id)
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope_value, attempt_id=attempt_id
-        )
-        if receipt is None and attempt_id is not None and scope is None:
-            # Scan scopes for the attempt.
-            for row in store.query_receipts(receipt_type="decision", limit=500):
-                if row.parent_receipt_id:
-                    continue
-                if row.idempotency_key == attempt_id or row.payload.get("attempt_id") == attempt_id:
-                    receipt = load_routing_receipt(
-                        store, receipt_id=row.receipt_id, scope=row.scope, attempt_id=attempt_id
-                    )
-                    break
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
+        receipt = data["receipt"]
+        summary = data["summary"]
         if output_json:
-            print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(receipt, indent=2, sort_keys=True))
             return
         from verdict import present
 
         present.header("Routing receipt")
-        present.note(human_summary(receipt))
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        present.note(summary)
+        print(json.dumps(receipt, indent=2, sort_keys=True))
         return
 
     if action == "export":
-        receipt = load_routing_receipt(
-            store, receipt_id=receipt_id, scope=scope, attempt_id=attempt_id
-        )
-        if receipt is None:
+        if data.get("status") == "missing":
             raise SystemExit("routing receipt not found")
-        print(json.dumps(receipt.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(data["receipt"], indent=2, sort_keys=True))
         return
 
     raise SystemExit(f"unknown receipt action: {action}")
@@ -3169,36 +2397,30 @@ def cmd_receipt(
 
 def cmd_replay(session_id: str, output_json: bool = False) -> None:
     """Replay a recorded execution session from the shared MemoryPlane."""
-    try:
-        from verdict.execution_session import ExecutionSession, ExecutionSessionError
-        from verdict.memory_plane import MemoryPlane
-    except ImportError as exc:
-        message = (
-            "replay is not yet available: verdict.execution_session is still in "
-            f"development ({exc})"
-        )
+    from verdict.actions.registry import run_action
+
+    result = run_action("replay", {"session_id": session_id})
+    data = result.data
+    status = data.get("status")
+    if status == "unavailable":
         if output_json:
-            print(json.dumps({"status": "unavailable", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "unavailable", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
-            present.warn("replay", message)
-        raise SystemExit(3) from exc
-    db_path = os.environ.get("VERDICT_MEMORY_DB", str(Path.home() / ".verdict" / "memory.db"))
-    try:
-        session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
-    except ExecutionSessionError as exc:
-        message = f"no recorded session found for id: {session_id} ({exc})"
+            present.warn("replay", data["message"])
+        raise SystemExit(3)
+    if status == "missing":
         if output_json:
-            print(json.dumps({"status": "missing", "message": message}, sort_keys=True))
+            print(json.dumps({"status": "missing", "message": data["message"]}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Replay session")
             present.fail(session_id, "not found")
-        raise SystemExit(1) from exc
-    record = session.to_dict()
+        raise SystemExit(1)
+    record = data["record"]
     if output_json:
         print(json.dumps(record, indent=2, sort_keys=True))
         return
@@ -3227,16 +2449,19 @@ def cmd_simulate(
     passports: dict[str, Any] | None = None,
 ) -> None:
     """Forecast tokens, cost, risk, and the expected model before any paid call."""
-    from verdict.simulator import simulate
+    from verdict.actions.registry import run_action
 
-    spec = TaskSpec(prompt=task, criticality=criticality)
-    forecast = simulate(
-        spec,
-        model_catalog=catalog if catalog is not None else default_model_catalog(),
-        model_override=model_override,
-    )
+    params: dict[str, Any] = {
+        "task": task,
+        "criticality": criticality,
+        "model_override": model_override,
+    }
+    if catalog is not None:
+        params["catalog"] = catalog
+    result = run_action("simulate", params)
+    data = result.data
     if output_json:
-        print(json.dumps(forecast.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
@@ -3244,65 +2469,24 @@ def cmd_simulate(
     present.table(
         ["Metric", "Value"],
         [
-            ("Model", f"{forecast.model} ({forecast.provider}, T{forecast.tier})"),
-            ("Prompt tokens", str(forecast.prompt_tokens)),
-            ("Completion tokens", str(forecast.completion_tokens)),
-            ("Total tokens", str(forecast.total_tokens)),
-            ("Est. cost", f"${forecast.cost_usd:.6f}"),
-            ("Risk score", f"{forecast.risk_score} / 100"),
-            ("Capacity confidence", f"{forecast.capacity_confidence:.2f}"),
+            ("Model", f"{data['model']} ({data['provider']}, T{data['tier']})"),
+            ("Prompt tokens", str(data["prompt_tokens"])),
+            ("Completion tokens", str(data["completion_tokens"])),
+            ("Total tokens", str(data["total_tokens"])),
+            ("Est. cost", f"${data['cost_usd']:.6f}"),
+            ("Risk score", f"{data['risk_score']} / 100"),
+            ("Capacity confidence", f"{data['capacity_confidence']:.2f}"),
         ],
     )
-    present.note(forecast.rationale)
+    present.note(data["rationale"])
 
 
-def default_model_catalog() -> list[ModelInfo]:
-    """Build the default catalog from the configured verdict.yaml and classified tiers."""
-    models: list[ModelInfo] = []
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
-    raw: dict[str, Any] = {}
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            loaded = yaml.safe_load(f)
-            if isinstance(loaded, dict):
-                raw = loaded
-
-    from verdict.classifier import classify
-
-    primary = str(raw.get("primary_model", DEFAULT_PRIMARY_MODEL))
-    models.append(
-        ModelInfo(
-            id=primary,
-            provider=primary.split("/", 1)[0] if "/" in primary else "unknown",
-            capability_tier=classify(primary),
-            context_window=200_000,
-        )
-    )
-    seen = {primary}
-    providers = raw.get("providers") or {}
-    if isinstance(providers, dict):
-        for name, provider in providers.items():
-            if not isinstance(provider, dict):
-                continue
-            for model_id in provider.get("models") or {}:
-                if model_id in seen:
-                    continue
-                seen.add(model_id)
-                models.append(
-                    ModelInfo(id=model_id, provider=name, capability_tier=classify(model_id))
-                )
-    return models
+default_model_catalog = _action_helpers.default_model_catalog
 
 
 def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
-    from verdict.memory_bridge import configure_memory_bridge, detect_available_tools
-    from verdict.memory_graph_adapter import CodeGraphAdapter
-    from verdict.memory_masterdocs_adapter import MasterDocsAdapter
-    from verdict.memory_plane import MemoryPlane, MemoryRecord
+    from verdict.actions.registry import run_action
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
@@ -3312,134 +2496,147 @@ def cmd_memory(args: Any) -> None:
         present.header(f"Memory / {sub or 'help'}")
 
     if sub == "docs":
-        from verdict.documentation_preflight import run_documentation_preflight
-
-        docs_report = run_documentation_preflight(
-            repo_root=Path(getattr(args, "repo_root", Path.cwd())),
-            memory_path=Path(db_path),
-            fix=getattr(args, "fix", False),
+        result = run_action(
+            "memory.docs",
+            {
+                "repo_root": str(Path(getattr(args, "repo_root", Path.cwd()))),
+                "db_path": db_path,
+                "fix": getattr(args, "fix", False),
+            },
         )
         if getattr(args, "json", False):
-            print(json.dumps(docs_report.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(result.data, indent=2, sort_keys=True))
         else:
-            present.kv(docs_report.to_dict(), title="Documentation preflight")
-            if not docs_report.passed:
-                present.fail("documentation preflight", "failed")
-        if not docs_report.passed:
+            from verdict import present as _present
+
+            _present.kv(result.data, title="Documentation preflight")
+            if not result.ok:
+                _present.fail("documentation preflight", "failed")
+        if not result.ok:
             raise SystemExit(1)
         return
 
-    plane = MemoryPlane(db_path)
-
     if sub == "put":
-        rec = MemoryRecord(
-            record_id=f"rec_{args.key}",
-            namespace=getattr(args, "namespace", "default"),
-            key=args.key,
-            content=args.content,
-            source=getattr(args, "source", "cli"),
+        result = run_action(
+            "memory.put",
+            {
+                "db_path": db_path,
+                "key": args.key,
+                "content": args.content,
+                "namespace": getattr(args, "namespace", "default"),
+                "source": getattr(args, "source", "cli"),
+            },
         )
-        plane.put(rec)
-        present.ok("Memory record put", f"{rec.key} (ns: {rec.namespace})")
+        from verdict import present as _present
+
+        _present.ok("Memory record put", f"{result.data['key']} (ns: {result.data['namespace']})")
     elif sub == "search":
-        results = plane.search(
-            args.query, namespace=getattr(args, "namespace", None), limit=getattr(args, "limit", 10)
+        result = run_action(
+            "memory.search",
+            {
+                "db_path": db_path,
+                "query": args.query,
+                "namespace": getattr(args, "namespace", None),
+                "limit": getattr(args, "limit", 10),
+            },
         )
-        present.section(f"Found {len(results)} memory record(s):")
-        present.table(
+        from verdict import present as _present
+
+        _present.section(f"Found {result.data['count']} memory record(s):")
+        _present.table(
             ["Namespace", "Key", "Source", "Content"],
-            [(r.namespace, r.key, r.source, r.content[:100]) for r in results],
+            [
+                (r["namespace"], r["key"], r["source"], r["content"][:100])
+                for r in result.data["records"]
+            ],
         )
     elif sub == "export":
-        from verdict.memory_adapters import ImportPolicy, export_manifest
-
-        out = getattr(args, "output", "memory_manifest.json")
-        destination = Path(out).expanduser().resolve()
-        policy = ImportPolicy((destination.parent,))
-        export_report = export_manifest(
-            plane.export_records(),
-            destination,
-            policy=policy,
-            source="memory-plane",
-            adapter_id="local-manifest",
+        result = run_action(
+            "memory.export",
+            {"db_path": db_path, "output": getattr(args, "output", "memory_manifest.json")},
         )
-        if export_report.status != "ok":
-            raise SystemExit("memory manifest export failed: " + "; ".join(export_report.errors))
-        present.ok("Exported memory manifest", f"to {destination}")
-    elif sub == "import":
-        from verdict.memory_adapters import ImportPolicy, import_manifest
+        if not result.ok:
+            raise SystemExit(
+                "memory manifest export failed: " + "; ".join(result.data.get("errors", []))
+            )
+        from verdict import present as _present
 
-        man = args.manifest
-        source = Path(man).expanduser().resolve()
-        policy = ImportPolicy((source.parent,))
-        manifest_records, import_report = import_manifest(source, policy=policy)
-        count = plane.import_records(manifest_records)
-        present.ok(
+        _present.ok("Exported memory manifest", f"to {result.data['destination']}")
+    elif sub == "import":
+        result = run_action("memory.import", {"db_path": db_path, "manifest": args.manifest})
+        if not result.ok:
+            print(
+                "memory manifest import failed: " + result.data.get("error", "unknown error"),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        from verdict import present as _present
+
+        _present.ok(
             "Imported memory records",
-            f"{count[0]} record(s) ({import_report.duplicates} duplicates; "
-            f"manifest {import_report.manifest_hash})",
+            f"{result.data['imported']} record(s) ({result.data['duplicates']} duplicates; "
+            f"manifest {result.data['manifest_hash']})",
         )
     elif sub == "masterdocs":
-        db = getattr(args, "db", "MasterDocsRAG.db")
-        adapter = MasterDocsAdapter()
-        result = adapter.canonicalize_db_records(
-            db,
-            allow_legacy_sqlite=args.allow_legacy_sqlite,
-            limit=getattr(args, "limit", 1000),
-            ingest_timestamp=getattr(args, "ingest_timestamp", None),
+        result = run_action(
+            "memory.masterdocs",
+            {
+                "db_path": db_path,
+                "db": getattr(args, "db", "MasterDocsRAG.db"),
+                "allow_legacy_sqlite": args.allow_legacy_sqlite,
+                "limit": getattr(args, "limit", 1000),
+                "ingest_timestamp": getattr(args, "ingest_timestamp", None),
+                "dry_run": getattr(args, "dry_run", False),
+            },
         )
-        if result.report.status in {"unavailable", "rejected", "empty"}:
-            payload = result.to_dict()
+        payload = result.data
+        if not result.ok:
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
-                present.fail("MasterDocs import", str(result.report.status))
-                present.kv(payload["report"])
+                from verdict import present as _present
+
+                _present.fail("MasterDocs import", str(payload.get("report", {}).get("status", "")))
+                _present.kv(payload.get("report", payload))
             raise SystemExit(1)
-        if getattr(args, "dry_run", False):
-            payload = result.to_dict()
-        else:
-            imported_report = adapter.import_result(result, plane)
-            payload = {
-                "report": imported_report.to_dict(),
-                "records": [dict(record) for record in result.records],
-            }
-            if imported_report.status in {"rejected", "partial"} and imported_report.ingested == 0:
-                raise SystemExit(1)
         if getattr(args, "json", False):
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            present.ok("MasterDocs import", str(payload["report"].get("status", "ok")))
-            present.kv(payload["report"])
+            from verdict import present as _present
+
+            _present.ok("MasterDocs import", str(payload.get("report", {}).get("status", "ok")))
+            _present.kv(payload.get("report", payload))
         return
     elif sub == "graph":
-        db = getattr(args, "db", "code_graph.db")
-        graph_adapter = CodeGraphAdapter()
-        graph_rep = graph_adapter.ingest_sqlite(
-            db, plane, allow_legacy_sqlite=args.allow_legacy_sqlite
-        )
-        present.ok("Code graph ingested", f"{graph_rep.records_created} node(s)")
-    elif sub == "setup":
-        report = detect_available_tools()
-        tools_to_config = getattr(args, "tools", None)
-        if not tools_to_config:
-            tools_to_config = list(report.preselected_tools)
-        else:
-            tools_to_config = [t.strip() for t in tools_to_config.split(",") if t.strip()]
-
-        present.kv(
+        result = run_action(
+            "memory.graph",
             {
-                "Detected available AI tools": list(report.preselected_tools),
-                "Configuring memory bridge for": tools_to_config,
+                "db_path": db_path,
+                "db": getattr(args, "db", "code_graph.db"),
+                "allow_legacy_sqlite": args.allow_legacy_sqlite,
+            },
+        )
+        from verdict import present as _present
+
+        _present.ok("Code graph ingested", f"{result.data['records_created']} node(s)")
+    elif sub == "setup":
+        result = run_action(
+            "memory.setup", {"db_path": db_path, "tools": getattr(args, "tools", None)}
+        )
+        from verdict import present as _present
+
+        _present.kv(
+            {
+                "Detected available AI tools": result.data.get("detected_tools", []),
+                "Configuring memory bridge for": result.data.get("detected_tools", []),
             }
         )
-
-        res = configure_memory_bridge(tools_to_config, plane)
-        present.ok("Configured tools", str(res["configured_tools"]))
-        present.ok("Memory database ready", str(res["memory_db_path"]))
-
+        _present.ok("Configured tools", str(result.data.get("configured_tools", "")))
+        _present.ok("Memory database ready", str(result.data.get("memory_db_path", "")))
     else:
-        present.warn("Memory", "Use --help to view memory subcommands.")
+        from verdict import present as _present
+
+        _present.warn("Memory", "Use --help to view memory subcommands.")
 
 
 def cmd_uninstall(purge_data: bool = False) -> None:
@@ -3468,43 +2665,49 @@ def cmd_runtime(
     manager: Any | None = None,
 ) -> None:
     """Inspect or explicitly reconcile canonical global runtime ownership."""
-    from verdict.runtime_daemons import RuntimeManager, RuntimeManagerError
+    from verdict.actions.registry import run_action
 
-    manager = manager or RuntimeManager()
+    action_name = f"runtime.{operation}"
+    params: dict[str, Any] = {}
+    if operation == "reconcile":
+        params["apply"] = apply
+        params["consent"] = consent
+        params["service_ids"] = service_ids
+
     try:
-        if operation == "status":
-            report = manager.status()
-        elif operation == "reconcile":
-            if apply:
-                report = manager.reconcile_apply(
-                    service_ids=service_ids or [spec.service_id for spec in manager.specs],
-                    consent=consent,
-                )
-            else:
-                report = manager.reconcile_plan()
-        elif operation == "explain":
-            from verdict.runtime_health import build_runtime_health_report
-
-            report = build_runtime_health_report(manager.status())
-        else:
-            raise RuntimeManagerError(f"unsupported runtime operation: {operation}")
-    except RuntimeManagerError as exc:
-        payload = {"operation": "runtime", "status": "blocked", "errors": [str(exc)]}
+        result = run_action(action_name, params or None)
+    except KeyError:
+        payload = {
+            "operation": "runtime",
+            "status": "blocked",
+            "errors": [f"unsupported runtime operation: {operation}"],
+        }
         if output_json:
             print(json.dumps(payload, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Runtime")
-            present.fail("Runtime operation blocked", str(exc))
-        raise SystemExit(2) from exc
+            present.fail("Runtime operation blocked", f"unsupported runtime operation: {operation}")
+        raise SystemExit(2) from None
+
+    if not result.ok and result.data.get("error"):
+        payload = {"operation": "runtime", "status": "blocked", "errors": [result.data["error"]]}
+        if output_json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Runtime")
+            present.fail("Runtime operation blocked", result.data["error"])
+        raise SystemExit(2)
 
     if output_json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(result.data, indent=2, sort_keys=True))
     else:
         from verdict import present
 
-        data = report.to_dict()
+        data = result.data
         present.header(f"Runtime  /  {operation}")
         present.kv(
             {key: value for key, value in data.items() if not isinstance(value, (dict, list))}
@@ -3512,74 +2715,65 @@ def cmd_runtime(
         for key, value in data.items():
             if isinstance(value, (dict, list)):
                 present.note(f"{key}: {json.dumps(value, sort_keys=True)}")
-        present.status("runtime", "ok" if report.passed else "failed")
+        present.status("runtime", "ok" if result.ok else "failed")
     if operation == "explain":
         return
-    if not report.passed:
+    if not result.ok:
         raise SystemExit(1)
 
 
 def cmd_check() -> None:
-    """Validate the Verdict configuration file and print status."""
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    config_path = os.path.join(config_dir, "verdict.yaml")
+    """Validate the Verdict configuration file and print status.
+
+    Delegates the validation to the ``check`` action; the CLI renders the
+    result via ``present.*`` (behaviour on ``origin/main`` is the contract).
+    """
     from verdict import present
+    from verdict.actions.registry import run_action
+
+    result = run_action("check")
+    data = result.data
+    config_path = str(data.get("config_path", ""))
+    status = str(data.get("status", ""))
+    issues = list(data.get("issues", []))
 
     present.header("Configuration check")
 
-    if not os.path.exists(config_path):
+    if status == "missing":
         present.fail("Configuration file (verdict.yaml) is missing", f"at {config_path}.")
         sys.exit(1)
-
-    try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-    except Exception as exc:
-        present.fail("Configuration file is corrupted/invalid YAML", str(exc))
+    if status == "invalid":
+        present.fail("Configuration file is corrupted/invalid YAML", str(data.get("error", "")))
         sys.exit(1)
 
-    has_issue = False
-
-    primary_model = config.get("primary_model")
+    primary_model = data.get("primary_model")
     if not primary_model:
         present.fail("No primary model configured in verdict.yaml.")
-        has_issue = True
     else:
         from verdict.classifier import classify
 
-        tier = classify(primary_model)
+        tier = classify(str(primary_model))
         present.ok("Configured Primary Model", f"{primary_model} (Tier-{tier})")
 
-    providers = config.get("providers", {})
-    if not isinstance(providers, dict):
-        present.fail("'providers' section in verdict.yaml is malformed.")
-        has_issue = True
-    else:
-        urls: dict[str, str] = {}
-        for name, p_cfg in providers.items():
-            if not isinstance(p_cfg, dict):
-                present.fail(f"Provider '{name}' config is not a dictionary.")
-                has_issue = True
-                continue
-            base_url = p_cfg.get("base_url", "")
-            if "sk-" in base_url or "api_key" in base_url.lower():
-                present.fail(f"Literal API key detected inside host URL for provider '{name}'.")
-                has_issue = True
+    for issue in issues:
+        if issue == "no_primary_model":
+            continue  # already emitted above
+        if issue == "providers_not_dict":
+            present.fail("'providers' section in verdict.yaml is malformed.")
+        elif issue.startswith("provider_not_dict:"):
+            _, provider = issue.split(":", 1)
+            present.fail(f"Provider '{provider}' config is not a dictionary.")
+        elif issue.startswith("api_key_in_url:"):
+            _, provider = issue.split(":", 1)
+            present.fail(f"Literal API key detected inside host URL for provider '{provider}'.")
+        elif issue.startswith("duplicate_host:"):
+            _, provider, other = issue.split(":", 2)
+            present.fail(
+                "Duplicate host URL configured in verdict.yaml",
+                f"provider '{provider}' and '{other}' have identical hosts.",
+            )
 
-            if base_url:
-                url = base_url.rstrip("/")
-                if url in urls:
-                    present.fail(
-                        "Duplicate host URL configured in verdict.yaml",
-                        f"provider '{name}' and '{urls[url]}' have identical hosts: {url}",
-                    )
-                    has_issue = True
-                else:
-                    urls[url] = name
-
-    if has_issue:
+    if issues:
         present.fail("Config validation failed with issues.")
         sys.exit(1)
 
@@ -3592,49 +2786,27 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
     Fails closed: a missing declaration or a hash mismatch against the current
     verdict-core contracts blocks (exit 1) rather than assuming compatibility.
     """
-    from verdict.compatibility_manifest import build_compatibility_manifest, check_compatibility
+    from verdict.actions.registry import run_action
 
     if compat_command == "manifest":
-        manifest = build_compatibility_manifest()
+        result = run_action("compat.manifest")
+        data = result.data
         if output_json:
-            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Compatibility manifest")
-            present.kv({"schema": manifest.schema_version, "manifest hash": manifest.manifest_hash})
-            present.table(["Contract", "Digest"], sorted(manifest.contracts.items()))
+            present.kv({"schema": data["schema_version"], "manifest hash": data["manifest_hash"]})
+            present.table(["Contract", "Digest"], sorted(data.get("contracts", {}).items()))
+        if result.exit_code:
+            sys.exit(result.exit_code)
         return
 
     if compat_command == "check":
-
-        def _fail(reason: str) -> NoReturn:
-            if output_json:
-                print(json.dumps({"allowed": False, "reason": reason}, indent=2))
-            else:
-                from verdict import present
-
-                present.header("Compatibility check")
-                present.fail("compatibility", f"{reason} (failing closed)")
-            sys.exit(1)
-
-        if not os.path.exists(declared or ""):
-            _fail(f"Declared manifest file not found: {declared}")
-
-        try:
-            with open(declared) as f:  # type: ignore[arg-type]
-                declared_raw = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            _fail(f"Declared manifest is invalid JSON: {exc}")
-
-        declared_contracts = (
-            declared_raw.get("contracts") if isinstance(declared_raw, dict) else None
-        )
-        if not isinstance(declared_contracts, dict):
-            _fail("Declared manifest missing 'contracts' object.")
-
-        result = check_compatibility(declared_contracts)
-        if result.allowed:
+        result = run_action("compat.check", {"declared": declared})
+        data = result.data
+        if result.ok:
             if output_json:
                 print(json.dumps({"allowed": True, "reason": None}, indent=2))
             else:
@@ -3644,24 +2816,24 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
                 present.ok("compatibility", "matches the current verdict-core contracts")
             return
 
+        reason = str(data.get("reason", "unknown"))
+        mismatched = list(data.get("mismatched_contracts") or [])
         if output_json:
-            print(
-                json.dumps(
-                    {
-                        "allowed": False,
-                        "reason": result.reason,
-                        "mismatched_contracts": list(result.mismatched_contracts),
-                    },
-                    indent=2,
-                )
-            )
+            payload: dict[str, Any] = {"allowed": False, "reason": reason}
+            if mismatched:
+                payload["mismatched_contracts"] = mismatched
+            print(json.dumps(payload, indent=2))
         else:
             from verdict import present
 
             present.header("Compatibility check")
-            present.fail("compatibility", str(result.reason))
-            present.table(["Mismatched contract"], [(n,) for n in result.mismatched_contracts])
-        sys.exit(1)
+            if not mismatched:
+                # File / JSON errors follow the historical "failing closed" prefix.
+                present.fail("compatibility", f"{reason} (failing closed)")
+            else:
+                present.fail("compatibility", reason)
+                present.table(["Mismatched contract"], [(n,) for n in mismatched])
+        sys.exit(result.exit_code or 1)
 
     from verdict import present
 
@@ -3671,12 +2843,11 @@ def cmd_compat(compat_command: str | None, declared: str | None, output_json: bo
 
 def cmd_hook(args: Any) -> None:
     """Manage Verdict lifecycle hooks for Codex and Claude Code."""
-
-    from verdict.memory_bridge import configure_memory_bridge
-    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
-    from verdict.memory_plane import MemoryPlane
+    from verdict.actions.registry import run_action
 
     hook_cmd = getattr(args, "hook_command", None)
+    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+
     if hook_cmd != "claude-gate" and not (
         hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)
     ):
@@ -3706,72 +2877,77 @@ def cmd_hook(args: Any) -> None:
                 raise SystemExit(2) from exc
         return
 
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
-    plane = MemoryPlane(db_path)
-    gate = MemoryGate(plane)
-
     if hook_cmd == "recall":
-        query = getattr(args, "query", "")
-        limit = getattr(args, "limit", 5)
-        results = plane.search(query, limit=limit)
+        result = run_action(
+            "hook.recall",
+            {
+                "db_path": db_path,
+                "query": getattr(args, "query", ""),
+                "limit": getattr(args, "limit", 5),
+            },
+        )
         if getattr(args, "json", False):
-            print(json.dumps([r.to_dict() for r in results], indent=2))
+            print(json.dumps(result.data["records"], indent=2))
         else:
-            present.section(f"Recall: {len(results)} record(s)")
-            present.table(
+            from verdict import present as _present
+
+            _present.section(f"Recall: {result.data['count']} record(s)")
+            _present.table(
                 ["Namespace", "Key", "Source", "Content"],
-                [(r.namespace, r.key, r.source, r.content[:120]) for r in results],
+                [
+                    (r["namespace"], r["key"], r["source"], r["content"][:120])
+                    for r in result.data["records"]
+                ],
             )
 
     elif hook_cmd == "record":
-        key = getattr(args, "key", "session")
-        value = getattr(args, "value", "")
-        namespace = getattr(args, "namespace", "sessions")
-        source = getattr(args, "source", "cli")
-        req = MemoryWriteRequest(
-            namespace=namespace, key=key, value=value, source=source, authority="agent"
+        result = run_action(
+            "hook.record",
+            {
+                "db_path": db_path,
+                "key": getattr(args, "key", "session"),
+                "value": getattr(args, "value", ""),
+                "namespace": getattr(args, "namespace", "sessions"),
+                "source": getattr(args, "source", "cli"),
+            },
         )
-        write_res = gate.write(req)
-        if write_res.allowed:
-            present.ok("Recorded", f"[{namespace}:{key}]")
+        from verdict import present as _present
+
+        if result.data.get("allowed"):
+            _present.ok(
+                "Recorded",
+                f"[{getattr(args, 'namespace', 'sessions')}:{getattr(args, 'key', 'session')}]",
+            )
         else:
-            present.fail(f"Rejected [{namespace}:{key}]", str(write_res.reason))
+            _present.fail(
+                f"Rejected [{getattr(args, 'namespace', 'sessions')}:{getattr(args, 'key', 'session')}]",
+                str(result.data.get("reason", "")),
+            )
 
     elif hook_cmd == "configure":
-        tools_str = getattr(args, "tools", None)
-        tools = [t.strip() for t in tools_str.split(",")] if tools_str else ["codex", "claude"]
-        res = configure_memory_bridge(selected_tools=tools)
+        result = run_action("hook.configure", {"tools": getattr(args, "tools", None)})
         if getattr(args, "json", False):
-            print(json.dumps(res, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
-            present.ok("Memory bridge configured.")
-            present.kv({"DB": res["memory_db_path"], "Targets": ", ".join(res["configured_tools"])})
+            from verdict import present as _present
+
+            _present.ok("Memory bridge configured.")
+            _present.kv(
+                {
+                    "DB": result.data["memory_db_path"],
+                    "Targets": ", ".join(result.data["configured_tools"]),
+                }
+            )
 
     elif hook_cmd == "status":
-        codex_agents = Path.home() / ".codex" / "AGENTS.md"
-        claude_md = Path.cwd() / "CLAUDE.md"
-        mcp_file = Path.cwd() / ".mcp.json"
-        status = {
-            "codex_agents_md": codex_agents.exists()
-            and "Verdict Unified Memory Bridge" in codex_agents.read_text(),
-            "claude_md": claude_md.exists()
-            and "Verdict Unified Memory Bridge" in claude_md.read_text(),
-            "mcp_json": False,
-            "memory_db": Path(db_path).exists(),
-        }
-        if mcp_file.exists():
-            try:
-                data = json.loads(mcp_file.read_text())
-                status["mcp_json"] = "verdict-memory" in data.get(
-                    "mcpServers", {}
-                ) or "verdict-core" in data.get("mcpServers", {})
-            except Exception:
-                pass
+        result = run_action("hook.status", {"db_path": db_path})
         if getattr(args, "json", False):
-            print(json.dumps(status, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
-            for k, v in status.items():
-                present.status(k.replace("_", " "), "ok" if v else "missing")
+            from verdict import present as _present
+
+            for k, v in result.data.items():
+                _present.status(k.replace("_", " "), "ok" if v else "missing")
 
 
 def cmd_mcp(args: Any) -> None:
@@ -3782,35 +2958,28 @@ def cmd_mcp(args: Any) -> None:
 
         run_mcp()
     elif mcp_cmd == "init":
-        from verdict.memory_bridge import configure_memory_bridge
+        from verdict.actions.registry import run_action
 
-        res = configure_memory_bridge(selected_tools=["mcp", "codex", "claude"])
+        result = run_action("mcp.init")
         if getattr(args, "json", False):
-            print(json.dumps(res, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
             from verdict import present
 
             present.header("MCP / init")
             present.ok("Verdict MCP server initialized across tool environments.")
-            present.kv({"Memory DB": res["memory_db_path"]})
+            present.kv({"Memory DB": result.data["memory_db_path"]})
     elif mcp_cmd == "status":
-        mcp_file = Path.cwd() / ".mcp.json"
-        registered = False
-        if mcp_file.exists():
-            try:
-                data = json.loads(mcp_file.read_text("utf-8"))
-                servers = data.get("mcpServers", {})
-                registered = "verdict-memory" in servers or "verdict-core" in servers
-            except Exception:
-                pass
-        status_info = {"mcp_registered": registered, "mcp_config": str(mcp_file)}
+        from verdict.actions.registry import run_action
+
+        result = run_action("mcp.status")
         if getattr(args, "json", False):
-            print(json.dumps(status_info, indent=2))
+            print(json.dumps(result.data, indent=2))
         else:
             from verdict import present
 
             present.header("MCP / status")
-            if registered:
+            if result.data["mcp_registered"]:
                 present.ok("Verdict MCP server", "is registered in .mcp.json")
             else:
                 present.warn("Verdict MCP server", "is not registered in .mcp.json")
@@ -3822,28 +2991,11 @@ def _stdout_is_tty() -> bool:
 
 def cmd_credentials_list(*, output_json: bool = False) -> None:
     """List all registered credentials with their source and masked value."""
-    import json
+    from verdict.actions.registry import run_action
 
-    from verdict.credentials_registry import CREDENTIALS
-    from verdict.credentials_store import CredentialsStore, get_credential_source
-
-    store = CredentialsStore()
-
-    results = []
-    for cred in CREDENTIALS:
-        source, masked = get_credential_source(cred.env_name, store)
-        results.append(
-            {
-                "name": cred.env_name,
-                "source": source,
-                "value": masked,
-                "purpose": cred.purpose,
-                "optional": cred.optional,
-            }
-        )
-
+    result = run_action("credentials.list")
     if output_json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps(result.data, indent=2))
         return
 
     # Terminal output
@@ -3852,7 +3004,7 @@ def cmd_credentials_list(*, output_json: bool = False) -> None:
     ui = TerminalUI()
 
     ui.header("Credentials")
-    for item in results:
+    for item in result.data:
         ui.status(str(item["name"]), str(item["source"]), str(item["value"]))
 
 
@@ -3861,104 +3013,78 @@ def cmd_credentials_set(
 ) -> None:
     """Set a credential in the store."""
     import getpass
-    import sys
 
-    from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    from verdict.actions.registry import run_action
 
-    # Check if registered
-    cred = get_credential(name)
-    if cred is None and not force_unregistered:
-        from verdict.terminal_ui import TerminalUI
-
-        ui = TerminalUI()
-        ui.panel(
-            "Unknown credential",
-            f"{name} is not in the registry. Use --force-unregistered to set anyway.",
-            tone="WARNING",
-        )
-        raise SystemExit(1)
-
-    # Read value
+    # Read value (I/O must happen before the action call)
     if from_stdin:
         value = sys.stdin.read().strip()
     else:
         prompt_text = f"Enter value for {name}: "
         value = getpass.getpass(prompt_text)
 
-    if not value:
-        from verdict.terminal_ui import TerminalUI
-
-        ui = TerminalUI()
-        ui.panel("Empty value", "Credential value cannot be empty.", tone="WARNING")
-        raise SystemExit(1)
-
-    # Store it
-    store = CredentialsStore()
-    store.set(name, value)
-
+    result = run_action(
+        "credentials.set", {"name": name, "value": value, "force_unregistered": force_unregistered}
+    )
     from verdict.terminal_ui import TerminalUI
 
     ui = TerminalUI()
+    if not result.ok:
+        ui.panel("Credential error", str(result.data.get("error", "")), tone="WARNING")
+        raise SystemExit(result.exit_code)
     ui.status(name, "set", "in credential store")
 
 
 def cmd_credentials_unset(*, name: str) -> None:
     """Remove a credential from the store."""
-    from verdict.credentials_store import CredentialsStore
+    from verdict.actions.registry import run_action
     from verdict.terminal_ui import TerminalUI
 
-    store = CredentialsStore()
-    removed = store.unset(name)
-
+    result = run_action("credentials.unset", {"name": name})
     ui = TerminalUI()
-    if removed:
+    if result.data.get("status") == "removed":
         ui.status(name, "removed", "from credential store")
     else:
         ui.panel("Not found", f"{name} was not in the credential store.", tone="WARNING")
 
 
 def cmd_credentials_test(*, name: str) -> None:
-    """Test a credential with its live check."""
-    import os
+    """Test a credential with its live check.
 
-    from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    Delegates the live check to the ``credentials.test`` action; the CLI only
+    renders the ``ActionResult`` via ``TerminalUI`` (parity with ``origin/main``).
+    """
+    from verdict.actions.registry import run_action
     from verdict.terminal_ui import TerminalUI
 
     ui = TerminalUI()
+    result = run_action("credentials.test", {"name": name})
+    data = result.data
+    status = str(data.get("status", ""))
+    message = str(data.get("message", ""))
 
-    cred = get_credential(name)
-    if cred is None:
+    if status == "unknown":
         ui.panel("Unknown credential", f"{name} is not in the registry.", tone="WARNING")
-        raise SystemExit(1)
-
-    if cred.live_check is None:
+        raise SystemExit(result.exit_code or 1)
+    if status == "no_check":
         ui.panel("No live check", f"{name} has no live check defined.", tone="INFO")
         return
-
-    # Get the value
-    store = CredentialsStore()
-    store.load_into_env()
-
-    value = os.environ.get(name)
-    if not value:
+    if status == "missing":
         ui.panel("Missing", f"{name} is not set in env or store.", tone="WARNING")
-        raise SystemExit(1)
+        raise SystemExit(result.exit_code or 1)
+    if status == "error":
+        ui.panel("Check error", message, tone="ERROR")
+        raise SystemExit(result.exit_code or 1)
 
-    # Run the check
+    # ok / failed
+    if result.ok:
+        # Preserve origin/main sequencing: a "testing" line then the result.
+        ui.status(name, "testing", "...")
+        ui.status(name, "ok", message)
+        return
     ui.status(name, "testing", "...")
-
-    try:
-        success, message = cred.live_check(value)
-        if success:
-            ui.status(name, "ok", message)
-        else:
-            ui.status(name, "failed", message)
-            raise SystemExit(1)
-    except Exception as e:
-        ui.panel("Check error", str(e), tone="ERROR")
-        raise SystemExit(1) from None
+    ui.status(name, "failed", message)
+    raise SystemExit(result.exit_code or 1)
 
 
 def main() -> None:
@@ -4017,23 +3143,29 @@ def cmd_resume(
     ``gh`` PR discovery. Does not read proprietary chat history. ``--with`` records
     a launcher stub only.
     """
-    from verdict.resume import resume_story
-    from verdict.worktree_registry import WorktreeRegistryError
+    from verdict.actions.registry import run_action
 
     target = Path(repo) if repo is not None else Path.cwd()
-    try:
-        payload = resume_story(
-            target, story, with_harness=with_harness, create_if_missing=create_if_missing
-        )
-    except WorktreeRegistryError as exc:
+    result = run_action(
+        "resume",
+        {
+            "story": story,
+            "repo": target,
+            "with_harness": with_harness,
+            "create_if_missing": create_if_missing,
+        },
+    )
+    if not result.ok:
+        err = result.data.get("error", "resume failed")
         if output_json:
-            print(json.dumps({"error": str(exc), "story": story}, sort_keys=True))
+            print(json.dumps({"error": err, "story": story}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Resume")
-            present.fail("resume", str(exc))
-        raise SystemExit(1) from exc
+            present.fail("resume", err)
+        raise SystemExit(result.exit_code or 1)
+    payload: dict[str, Any] = dict(result.data)
 
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -4069,62 +3201,65 @@ def cmd_harness_codex(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Codex as a Verdict OpenAI-compatible client."""
-    from verdict.harness_codex import HarnessCodexError, disable, enable, status
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force)
-            from verdict import present
-
+    if command == "enable":
+        result = run_action(
+            "harness.codex.enable",
+            {"harness": "codex", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
             present.header("Codex harness")
-            present.ok("Codex harness enabled")
-            present.kv(
-                {
-                    "provider": "verdict",
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Codex harness")
-            present.ok("Codex harness disabled")
-            present.note("restored pre-enable ~/.codex/config.toml backup")
-            return
-        if command == "status":
-            report = status()
-            state = (
-                "enabled"
-                if report.enabled
-                else "configured"
-                if report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Codex harness")
-            present.status("Codex harness", "ok" if report.enabled else "warning", state)
-            present.kv(
-                {
-                    "provider": report.provider or "(none)",
-                    "base URL": report.base_url or "(none)",
-                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
-                    "config": report.config_path,
-                }
-            )
-            return
-    except HarnessCodexError as exc:
-        from verdict import present
-
+            present.fail("Codex harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Codex harness")
-        present.fail("Codex harness", str(exc))
-        raise SystemExit(1) from exc
+        present.ok("Codex harness enabled")
+        present.kv(
+            {
+                "provider": "verdict",
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.codex.disable", {"harness": "codex"})
+        if not result.ok:
+            present.header("Codex harness")
+            present.fail("Codex harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Codex harness")
+        present.ok("Codex harness disabled")
+        present.note("restored pre-enable ~/.codex/config.toml backup")
+        return
+    if command == "status":
+        result = run_action("harness.codex.status", {"harness": "codex"})
+        if not result.ok:
+            present.header("Codex harness")
+            present.fail("Codex harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Codex harness")
+        present.status("Codex harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+            }
+        )
+        return
     raise SystemExit(f"unknown harness codex command: {command}")
 
 
@@ -4137,64 +3272,67 @@ def cmd_harness_hermes(
     force: bool = False,
 ) -> None:
     """Enable, disable, or inspect Hermes as a Verdict OpenAI-compatible client."""
-    from verdict.harness_hermes import HarnessHermesError, disable, enable, status
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, model=model, force=force)
-            from verdict import present
-
+    if command == "enable":
+        result = run_action(
+            "harness.hermes.enable",
+            {"harness": "hermes", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
             present.header("Hermes harness")
-            present.ok("Hermes harness enabled")
-            present.kv(
-                {
-                    "provider": "Verdict",
-                    "base URL": result.base_url,
-                    "model": result.model,
-                    "token environment": result.token_env,
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Hermes harness")
-            present.ok("Hermes harness disabled")
-            present.note("restored pre-enable ~/.hermes/config.yaml backup")
-            return
-        if command == "status":
-            report = status()
-            state = (
-                "enabled"
-                if report.enabled
-                else "configured"
-                if report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Hermes harness")
-            present.status("Hermes harness", "ok" if report.enabled else "warning", state)
-            present.kv(
-                {
-                    "provider": report.provider or "(none)",
-                    "base URL": report.base_url or "(none)",
-                    "model": report.model or "(none)",
-                    "token environment": f"{report.token_env} (set: {'yes' if report.token_env_set else 'no'})",
-                    "config": report.config_path,
-                }
-            )
-            return
-    except HarnessHermesError as exc:
-        from verdict import present
-
+            present.fail("Hermes harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Hermes harness")
-        present.fail("Hermes harness", str(exc))
-        raise SystemExit(1) from exc
+        present.ok("Hermes harness enabled")
+        present.kv(
+            {
+                "provider": "Verdict",
+                "base URL": d.get("base_url", ""),
+                "model": d.get("model", ""),
+                "token environment": d.get("token_env", ""),
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.hermes.disable", {"harness": "hermes"})
+        if not result.ok:
+            present.header("Hermes harness")
+            present.fail("Hermes harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Hermes harness")
+        present.ok("Hermes harness disabled")
+        present.note("restored pre-enable ~/.hermes/config.yaml backup")
+        return
+    if command == "status":
+        result = run_action("harness.hermes.status", {"harness": "hermes"})
+        if not result.ok:
+            present.header("Hermes harness")
+            present.fail("Hermes harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Hermes harness")
+        present.status("Hermes harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "model": d.get("model") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+            }
+        )
+        return
     raise SystemExit(f"unknown harness hermes command: {command}")
 
 
@@ -4206,120 +3344,120 @@ def cmd_harness_claude(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Claude Code → Verdict."""
-    from verdict.harness_claude import (
-        HarnessClaudeError,
-        certify,
-        disable,
-        discover,
-        enable,
-        status,
-    )
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "discover":
-            discovery = discover()
-            from verdict import present
-
+    if command == "discover":
+        result = run_action("harness.claude.discover", {"harness": "claude"})
+        if not result.ok:
             present.header("Claude Code harness")
-            present.status(
-                "Claude Code installation",
-                "found" if discovery.installed else "missing",
-                discovery.binary_path or "(none)",
-            )
-            present.kv(
-                {
-                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
-                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
-                    "base URL": discovery.base_url or "(none)",
-                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
-                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
-                    "gate hook": "yes" if discovery.gate_hook_present else "no",
-                }
-            )
-            return
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force)
-            from verdict import present
-
-            present.header("Claude Code harness")
-            present.ok("Claude Code harness enabled")
-            present.kv(
-                {
-                    "integration": result.integration,
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Claude Code harness")
-            present.ok("Claude Code harness disabled")
-            present.note("restored pre-enable ~/.claude/settings.json backup")
-            return
-        if command == "status":
-            status_report = status()
-            state = (
-                "enabled"
-                if status_report.enabled
-                else "configured"
-                if status_report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Claude Code harness")
-            present.status(
-                "Claude Code harness", "ok" if status_report.enabled else "warning", state
-            )
-            present.kv(
-                {
-                    "provider": status_report.provider or "(none)",
-                    "base URL": status_report.base_url or "(none)",
-                    "integration": status_report.integration or "(none)",
-                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
-                    "config": status_report.config_path,
-                    "gate hook": "yes" if status_report.gate_hook_present else "no",
-                }
-            )
-            return
-        if command == "certify":
-            certification = certify(force=force)
-            from verdict import present
-
-            present.header("Claude Code harness")
-            present.status(
-                "Claude Code certification",
-                certification.overall,
-                "healthy" if certification.healthy else "not healthy",
-            )
-            present.kv(
-                {
-                    "base URL": certification.base_url or "(none)",
-                    "token environment set": "yes" if certification.token_env_set else "no",
-                }
-            )
-            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
-            if certification.notes:
-                present.section("Notes")
-                for item in certification.notes:
-                    present.note(item)
-            if certification.needs_owner:
-                present.section("Needs owner")
-                for item in certification.needs_owner:
-                    present.note(item)
-            return
-    except HarnessClaudeError as exc:
-        from verdict import present
-
+            present.fail("Claude Code harness", str(result.data.get("error", "discover failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Claude Code harness")
-        present.fail("Claude Code harness", str(exc))
-        raise SystemExit(1) from exc
+        present.status(
+            "Claude Code installation",
+            "found" if d.get("installed") else "missing",
+            d.get("binary_path") or "(none)",
+        )
+        present.kv(
+            {
+                "config": f"{d.get('config_path', '')} (exists: {'yes' if d.get('config_exists') else 'no'})",
+                "managed by Verdict": "yes" if d.get("managed_by_verdict") else "no",
+                "base URL": d.get("base_url") or "(none)",
+                "pointing at Verdict": "yes" if d.get("pointing_at_verdict") else "no",
+                "pointing at OmniRoute": "yes" if d.get("pointing_at_omniroute") else "no",
+                "gate hook": "yes" if d.get("gate_hook_present") else "no",
+            }
+        )
+        return
+    if command == "enable":
+        result = run_action(
+            "harness.claude.enable",
+            {"harness": "claude", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
+            present.header("Claude Code harness")
+            present.fail("Claude Code harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Claude Code harness")
+        present.ok("Claude Code harness enabled")
+        present.kv(
+            {
+                "integration": d.get("integration", ""),
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.claude.disable", {"harness": "claude"})
+        if not result.ok:
+            present.header("Claude Code harness")
+            present.fail("Claude Code harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Claude Code harness")
+        present.ok("Claude Code harness disabled")
+        present.note("restored pre-enable ~/.claude/settings.json backup")
+        return
+    if command == "status":
+        result = run_action("harness.claude.status", {"harness": "claude"})
+        if not result.ok:
+            present.header("Claude Code harness")
+            present.fail("Claude Code harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Claude Code harness")
+        present.status("Claude Code harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "integration": d.get("integration") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+                "gate hook": "yes" if d.get("gate_hook_present") else "no",
+            }
+        )
+        return
+    if command == "certify":
+        result = run_action("harness.claude.certify", {"harness": "claude", "force": force})
+        if not result.ok:
+            present.header("Claude Code harness")
+            present.fail("Claude Code harness", str(result.data.get("error", "certify failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Claude Code harness")
+        present.status(
+            "Claude Code certification",
+            d.get("overall", ""),
+            "healthy" if d.get("healthy") else "not healthy",
+        )
+        present.kv(
+            {
+                "base URL": d.get("base_url") or "(none)",
+                "token environment set": "yes" if d.get("token_env_set") else "no",
+            }
+        )
+        present.table(["Facet", "Level"], sorted((d.get("facets") or {}).items()), title="Facets")
+        if d.get("notes"):
+            present.section("Notes")
+            for item in d["notes"]:
+                present.note(item)
+        if d.get("needs_owner"):
+            present.section("Needs owner")
+            for item in d["needs_owner"]:
+                present.note(item)
+        return
     raise SystemExit(f"unknown harness claude command: {command}")
 
 
@@ -4332,120 +3470,122 @@ def cmd_harness_cursor(
     wrapper: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Cursor → Verdict."""
-    from verdict.harness_cursor import (
-        HarnessCursorError,
-        certify,
-        disable,
-        discover,
-        enable,
-        status,
-    )
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "discover":
-            discovery = discover()
-            from verdict import present
-
+    if command == "discover":
+        result = run_action("harness.cursor.discover", {"harness": "cursor"})
+        if not result.ok:
             present.header("Cursor harness")
-            present.status(
-                "Cursor installation",
-                "found" if discovery.installed else "missing",
-                discovery.binary_path or "(none)",
-            )
-            present.kv(
-                {
-                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
-                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
-                    "base URL": discovery.base_url or "(none)",
-                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
-                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
-                    "settings": discovery.settings_path or "(none)",
-                    "wrapper": discovery.wrapper_path or "(none)",
-                }
-            )
-            return
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force, wrapper=wrapper)
-            from verdict import present
-
-            present.header("Cursor harness")
-            present.ok("Cursor harness enabled")
-            present.kv(
-                {
-                    "integration": result.integration,
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "wrapper": result.wrapper_path or "(none)",
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Cursor harness")
-            present.ok("Cursor harness disabled")
-            present.note("restored pre-enable Cursor provider/settings/wrapper backups")
-            return
-        if command == "status":
-            status_report = status()
-            state = (
-                "enabled"
-                if status_report.enabled
-                else "configured"
-                if status_report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Cursor harness")
-            present.status("Cursor harness", "ok" if status_report.enabled else "warning", state)
-            present.kv(
-                {
-                    "provider": status_report.provider or "(none)",
-                    "base URL": status_report.base_url or "(none)",
-                    "integration": status_report.integration or "(none)",
-                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
-                    "config": status_report.config_path,
-                    "wrapper": "yes" if status_report.wrapper_present else "no",
-                }
-            )
-            return
-        if command == "certify":
-            certification = certify(force=force)
-            from verdict import present
-
-            present.header("Cursor harness")
-            present.status(
-                "Cursor certification",
-                certification.overall,
-                "healthy" if certification.healthy else "not healthy",
-            )
-            present.kv(
-                {
-                    "base URL": certification.base_url or "(none)",
-                    "token environment set": "yes" if certification.token_env_set else "no",
-                }
-            )
-            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
-            if certification.notes:
-                present.section("Notes")
-                for item in certification.notes:
-                    present.note(item)
-            if certification.needs_owner:
-                present.section("Needs owner")
-                for item in certification.needs_owner:
-                    present.note(item)
-            return
-    except HarnessCursorError as exc:
-        from verdict import present
-
+            present.fail("Cursor harness", str(result.data.get("error", "discover failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Cursor harness")
-        present.fail("Cursor harness", str(exc))
-        raise SystemExit(1) from exc
+        present.status(
+            "Cursor installation",
+            "found" if d.get("installed") else "missing",
+            d.get("binary_path") or "(none)",
+        )
+        present.kv(
+            {
+                "config": f"{d.get('config_path', '')} (exists: {'yes' if d.get('config_exists') else 'no'})",
+                "managed by Verdict": "yes" if d.get("managed_by_verdict") else "no",
+                "base URL": d.get("base_url") or "(none)",
+                "pointing at Verdict": "yes" if d.get("pointing_at_verdict") else "no",
+                "pointing at OmniRoute": "yes" if d.get("pointing_at_omniroute") else "no",
+                "settings": d.get("settings_path") or "(none)",
+                "wrapper": d.get("wrapper_path") or "(none)",
+            }
+        )
+        return
+    if command == "enable":
+        result = run_action(
+            "harness.cursor.enable",
+            {"harness": "cursor", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
+            present.header("Cursor harness")
+            present.fail("Cursor harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Cursor harness")
+        present.ok("Cursor harness enabled")
+        present.kv(
+            {
+                "integration": d.get("integration", ""),
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "wrapper": d.get("wrapper_path") or "(none)",
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.cursor.disable", {"harness": "cursor"})
+        if not result.ok:
+            present.header("Cursor harness")
+            present.fail("Cursor harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Cursor harness")
+        present.ok("Cursor harness disabled")
+        present.note("restored pre-enable Cursor provider/settings/wrapper backups")
+        return
+    if command == "status":
+        result = run_action("harness.cursor.status", {"harness": "cursor"})
+        if not result.ok:
+            present.header("Cursor harness")
+            present.fail("Cursor harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Cursor harness")
+        present.status("Cursor harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "integration": d.get("integration") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+                "wrapper": "yes" if d.get("wrapper_present") else "no",
+            }
+        )
+        return
+    if command == "certify":
+        result = run_action("harness.cursor.certify", {"harness": "cursor", "force": force})
+        if not result.ok:
+            present.header("Cursor harness")
+            present.fail("Cursor harness", str(result.data.get("error", "certify failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Cursor harness")
+        present.status(
+            "Cursor certification",
+            d.get("overall", ""),
+            "healthy" if d.get("healthy") else "not healthy",
+        )
+        present.kv(
+            {
+                "base URL": d.get("base_url") or "(none)",
+                "token environment set": "yes" if d.get("token_env_set") else "no",
+            }
+        )
+        present.table(["Facet", "Level"], sorted((d.get("facets") or {}).items()), title="Facets")
+        if d.get("notes"):
+            present.section("Notes")
+            for item in d["notes"]:
+                present.note(item)
+        if d.get("needs_owner"):
+            present.section("Needs owner")
+            for item in d["needs_owner"]:
+                present.note(item)
+        return
     raise SystemExit(f"unknown harness cursor command: {command}")
 
 
@@ -4457,111 +3597,118 @@ def cmd_harness_prime(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Prime Agent → Verdict."""
-    from verdict.harness_prime import HarnessPrimeError, certify, disable, discover, enable, status
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "discover":
-            discovery = discover()
-            from verdict import present
-
+    if command == "discover":
+        result = run_action("harness.prime.discover", {"harness": "prime"})
+        if not result.ok:
             present.header("Prime Agent harness")
-            present.status(
-                "Prime Agent installation",
-                "found" if discovery.installed else "missing",
-                discovery.binary_path or "(none)",
-            )
-            present.kv(
-                {
-                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
-                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
-                    "base URL": discovery.base_url or "(none)",
-                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
-                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
-                }
-            )
-            return
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force)
-            from verdict import present
-
-            present.header("Prime Agent harness")
-            present.ok("Prime Agent harness enabled")
-            present.kv(
-                {
-                    "integration": result.integration,
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Prime Agent harness")
-            present.ok("Prime Agent harness disabled")
-            present.note("restored pre-enable ~/.prime/agent/models.json backup")
-            return
-        if command == "status":
-            status_report = status()
-            state = (
-                "enabled"
-                if status_report.enabled
-                else "configured"
-                if status_report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Prime Agent harness")
-            present.status(
-                "Prime Agent harness", "ok" if status_report.enabled else "warning", state
-            )
-            present.kv(
-                {
-                    "provider": status_report.provider or "(none)",
-                    "base URL": status_report.base_url or "(none)",
-                    "integration": status_report.integration or "(none)",
-                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
-                    "config": status_report.config_path,
-                }
-            )
-            return
-        if command == "certify":
-            certification = certify(force=force)
-            from verdict import present
-
-            present.header("Prime Agent harness")
-            present.status(
-                "Prime Agent certification",
-                certification.overall,
-                "healthy" if certification.healthy else "not healthy",
-            )
-            present.kv(
-                {
-                    "base URL": certification.base_url or "(none)",
-                    "token environment set": "yes" if certification.token_env_set else "no",
-                }
-            )
-            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
-            if certification.notes:
-                present.section("Notes")
-                for item in certification.notes:
-                    present.note(item)
-            if certification.needs_owner:
-                present.section("Needs owner")
-                for item in certification.needs_owner:
-                    present.note(item)
-            return
-    except HarnessPrimeError as exc:
-        from verdict import present
-
+            present.fail("Prime Agent harness", str(result.data.get("error", "discover failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Prime Agent harness")
-        present.fail("Prime Agent harness", str(exc))
-        raise SystemExit(1) from exc
+        present.status(
+            "Prime Agent installation",
+            "found" if d.get("installed") else "missing",
+            d.get("binary_path") or "(none)",
+        )
+        present.kv(
+            {
+                "config": f"{d.get('config_path', '')} (exists: {'yes' if d.get('config_exists') else 'no'})",
+                "managed by Verdict": "yes" if d.get("managed_by_verdict") else "no",
+                "base URL": d.get("base_url") or "(none)",
+                "pointing at Verdict": "yes" if d.get("pointing_at_verdict") else "no",
+                "pointing at OmniRoute": "yes" if d.get("pointing_at_omniroute") else "no",
+            }
+        )
+        return
+    if command == "enable":
+        result = run_action(
+            "harness.prime.enable",
+            {"harness": "prime", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
+            present.header("Prime Agent harness")
+            present.fail("Prime Agent harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Prime Agent harness")
+        present.ok("Prime Agent harness enabled")
+        present.kv(
+            {
+                "integration": d.get("integration", ""),
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.prime.disable", {"harness": "prime"})
+        if not result.ok:
+            present.header("Prime Agent harness")
+            present.fail("Prime Agent harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Prime Agent harness")
+        present.ok("Prime Agent harness disabled")
+        present.note("restored pre-enable ~/.prime/agent/models.json backup")
+        return
+    if command == "status":
+        result = run_action("harness.prime.status", {"harness": "prime"})
+        if not result.ok:
+            present.header("Prime Agent harness")
+            present.fail("Prime Agent harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Prime Agent harness")
+        present.status("Prime Agent harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "integration": d.get("integration") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+            }
+        )
+        return
+    if command == "certify":
+        result = run_action("harness.prime.certify", {"harness": "prime", "force": force})
+        if not result.ok:
+            present.header("Prime Agent harness")
+            present.fail("Prime Agent harness", str(result.data.get("error", "certify failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Prime Agent harness")
+        present.status(
+            "Prime Agent certification",
+            d.get("overall", ""),
+            "healthy" if d.get("healthy") else "not healthy",
+        )
+        present.kv(
+            {
+                "base URL": d.get("base_url") or "(none)",
+                "token environment set": "yes" if d.get("token_env_set") else "no",
+            }
+        )
+        present.table(["Facet", "Level"], sorted((d.get("facets") or {}).items()), title="Facets")
+        if d.get("notes"):
+            present.section("Notes")
+            for item in d["notes"]:
+                present.note(item)
+        if d.get("needs_owner"):
+            present.section("Needs owner")
+            for item in d["needs_owner"]:
+                present.note(item)
+        return
     raise SystemExit(f"unknown harness prime command: {command}")
 
 
@@ -4573,118 +3720,120 @@ def cmd_harness_opencode(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify OpenCode → Verdict."""
-    from verdict.harness_opencode import (
-        HarnessOpenCodeError,
-        certify,
-        disable,
-        discover,
-        enable,
-        status,
-    )
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "discover":
-            discovery = discover()
-            from verdict import present
-
+    if command == "discover":
+        result = run_action("harness.opencode.discover", {"harness": "opencode"})
+        if not result.ok:
             present.header("OpenCode harness")
-            present.status(
-                "OpenCode installation",
-                "found" if discovery.installed else "missing",
-                discovery.binary_path or "(none)",
-            )
-            present.kv(
-                {
-                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
-                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
-                    "base URL": discovery.base_url or "(none)",
-                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
-                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
-                }
-            )
-            return
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force)
-            from verdict import present
-
-            present.header("OpenCode harness")
-            present.ok("OpenCode harness enabled")
-            present.kv(
-                {
-                    "integration": result.integration,
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "model": result.model,
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("OpenCode harness")
-            present.ok("OpenCode harness disabled")
-            present.note("restored pre-enable ~/.config/opencode/opencode.json backup")
-            return
-        if command == "status":
-            status_report = status()
-            state = (
-                "enabled"
-                if status_report.enabled
-                else "configured"
-                if status_report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("OpenCode harness")
-            present.status("OpenCode harness", "ok" if status_report.enabled else "warning", state)
-            present.kv(
-                {
-                    "provider": status_report.provider or "(none)",
-                    "base URL": status_report.base_url or "(none)",
-                    "integration": status_report.integration or "(none)",
-                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
-                    "config": status_report.config_path,
-                    "model": status_report.model or "(none)",
-                }
-            )
-            return
-        if command == "certify":
-            certification = certify(force=force)
-            from verdict import present
-
-            present.header("OpenCode harness")
-            present.status(
-                "OpenCode certification",
-                certification.overall,
-                "healthy" if certification.healthy else "not healthy",
-            )
-            present.kv(
-                {
-                    "base URL": certification.base_url or "(none)",
-                    "token environment set": "yes" if certification.token_env_set else "no",
-                }
-            )
-            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
-            if certification.notes:
-                present.section("Notes")
-                for item in certification.notes:
-                    present.note(item)
-            if certification.needs_owner:
-                present.section("Needs owner")
-                for item in certification.needs_owner:
-                    present.note(item)
-            return
-    except HarnessOpenCodeError as exc:
-        from verdict import present
-
+            present.fail("OpenCode harness", str(result.data.get("error", "discover failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("OpenCode harness")
-        present.fail("OpenCode harness", str(exc))
-        raise SystemExit(1) from exc
+        present.status(
+            "OpenCode installation",
+            "found" if d.get("installed") else "missing",
+            d.get("binary_path") or "(none)",
+        )
+        present.kv(
+            {
+                "config": f"{d.get('config_path', '')} (exists: {'yes' if d.get('config_exists') else 'no'})",
+                "managed by Verdict": "yes" if d.get("managed_by_verdict") else "no",
+                "base URL": d.get("base_url") or "(none)",
+                "pointing at Verdict": "yes" if d.get("pointing_at_verdict") else "no",
+                "pointing at OmniRoute": "yes" if d.get("pointing_at_omniroute") else "no",
+            }
+        )
+        return
+    if command == "enable":
+        result = run_action(
+            "harness.opencode.enable",
+            {"harness": "opencode", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
+            present.header("OpenCode harness")
+            present.fail("OpenCode harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("OpenCode harness")
+        present.ok("OpenCode harness enabled")
+        present.kv(
+            {
+                "integration": d.get("integration", ""),
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "model": d.get("model", ""),
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        return
+    if command == "disable":
+        result = run_action("harness.opencode.disable", {"harness": "opencode"})
+        if not result.ok:
+            present.header("OpenCode harness")
+            present.fail("OpenCode harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("OpenCode harness")
+        present.ok("OpenCode harness disabled")
+        present.note("restored pre-enable ~/.config/opencode/opencode.json backup")
+        return
+    if command == "status":
+        result = run_action("harness.opencode.status", {"harness": "opencode"})
+        if not result.ok:
+            present.header("OpenCode harness")
+            present.fail("OpenCode harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("OpenCode harness")
+        present.status("OpenCode harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "integration": d.get("integration") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+                "model": d.get("model") or "(none)",
+            }
+        )
+        return
+    if command == "certify":
+        result = run_action("harness.opencode.certify", {"harness": "opencode", "force": force})
+        if not result.ok:
+            present.header("OpenCode harness")
+            present.fail("OpenCode harness", str(result.data.get("error", "certify failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("OpenCode harness")
+        present.status(
+            "OpenCode certification",
+            d.get("overall", ""),
+            "healthy" if d.get("healthy") else "not healthy",
+        )
+        present.kv(
+            {
+                "base URL": d.get("base_url") or "(none)",
+                "token environment set": "yes" if d.get("token_env_set") else "no",
+            }
+        )
+        present.table(["Facet", "Level"], sorted((d.get("facets") or {}).items()), title="Facets")
+        if d.get("notes"):
+            present.section("Notes")
+            for item in d["notes"]:
+                present.note(item)
+        if d.get("needs_owner"):
+            present.section("Needs owner")
+            for item in d["needs_owner"]:
+                present.note(item)
+        return
     raise SystemExit(f"unknown harness opencode command: {command}")
 
 
@@ -4696,120 +3845,129 @@ def cmd_harness_cline(
     force: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Cline → Verdict."""
-    from verdict.harness_cline import HarnessClineError, certify, disable, discover, enable, status
+    from verdict import present
+    from verdict.actions.registry import run_action
 
-    try:
-        if command == "discover":
-            discovery = discover()
-            from verdict import present
-
+    if command == "discover":
+        result = run_action("harness.cline.discover", {"harness": "cline"})
+        if not result.ok:
             present.header("Cline harness")
-            present.status(
-                "Cline installation",
-                "found" if discovery.installed else "missing",
-                discovery.binary_path or "(none)",
-            )
-            present.kv(
-                {
-                    "config": f"{discovery.config_path} (exists: {'yes' if discovery.config_exists else 'no'})",
-                    "managed by Verdict": "yes" if discovery.managed_by_verdict else "no",
-                    "base URL": discovery.base_url or "(none)",
-                    "pointing at Verdict": "yes" if discovery.pointing_at_verdict else "no",
-                    "pointing at OmniRoute": "yes" if discovery.pointing_at_omniroute else "no",
-                    "CLI home": "yes" if discovery.cli_home_present else "no",
-                    "settings": discovery.settings_path or "(none)",
-                    "providers JSON": discovery.providers_json_path or "(none)",
-                }
-            )
-            return
-        if command == "enable":
-            result = enable(base_url=base_url, token_env=token_env, force=force)
-            from verdict import present
-
-            present.header("Cline harness")
-            present.ok("Cline harness enabled")
-            present.kv(
-                {
-                    "integration": result.integration,
-                    "base URL": result.base_url,
-                    "token environment": result.token_env,
-                    "providers JSON": result.providers_json_path or "(none)",
-                    "settings": result.settings_path or "(none)",
-                    "backup" if result.created_backup else "config": (
-                        result.backup_path if result.created_backup else result.config_path
-                    ),
-                }
-            )
-            if result.ui_steps:
-                present.section("Manual UI steps")
-                for step in result.ui_steps:
-                    present.note(step)
-            return
-        if command == "disable":
-            disable()
-            from verdict import present
-
-            present.header("Cline harness")
-            present.ok("Cline harness disabled")
-            present.note("restored pre-enable Cline provider/settings/providers.json backups")
-            return
-        if command == "status":
-            status_report = status()
-            state = (
-                "enabled"
-                if status_report.enabled
-                else "configured"
-                if status_report.config_exists
-                else "not configured"
-            )
-            from verdict import present
-
-            present.header("Cline harness")
-            present.status("Cline harness", "ok" if status_report.enabled else "warning", state)
-            present.kv(
-                {
-                    "provider": status_report.provider or "(none)",
-                    "base URL": status_report.base_url or "(none)",
-                    "integration": status_report.integration or "(none)",
-                    "token environment": f"{status_report.token_env} (set: {'yes' if status_report.token_env_set else 'no'})",
-                    "config": status_report.config_path,
-                    "installed": "yes" if status_report.installed else "no",
-                    "binary": status_report.binary_path or "(none)",
-                }
-            )
-            return
-        if command == "certify":
-            certification = certify(force=force)
-            from verdict import present
-
-            present.header("Cline harness")
-            present.status(
-                "Cline certification",
-                certification.overall,
-                "healthy" if certification.healthy else "not healthy",
-            )
-            present.kv(
-                {
-                    "base URL": certification.base_url or "(none)",
-                    "token environment set": "yes" if certification.token_env_set else "no",
-                }
-            )
-            present.table(["Facet", "Level"], sorted(certification.facets.items()), title="Facets")
-            if certification.notes:
-                present.section("Notes")
-                for item in certification.notes:
-                    present.note(item)
-            if certification.needs_owner:
-                present.section("Needs owner")
-                for item in certification.needs_owner:
-                    present.note(item)
-            return
-    except HarnessClineError as exc:
-        from verdict import present
-
+            present.fail("Cline harness", str(result.data.get("error", "discover failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
         present.header("Cline harness")
-        present.fail("Cline harness", str(exc))
-        raise SystemExit(1) from exc
+        present.status(
+            "Cline installation",
+            "found" if d.get("installed") else "missing",
+            d.get("binary_path") or "(none)",
+        )
+        present.kv(
+            {
+                "config": f"{d.get('config_path', '')} (exists: {'yes' if d.get('config_exists') else 'no'})",
+                "managed by Verdict": "yes" if d.get("managed_by_verdict") else "no",
+                "base URL": d.get("base_url") or "(none)",
+                "pointing at Verdict": "yes" if d.get("pointing_at_verdict") else "no",
+                "pointing at OmniRoute": "yes" if d.get("pointing_at_omniroute") else "no",
+                "CLI home": "yes" if d.get("cli_home_present") else "no",
+                "settings": d.get("settings_path") or "(none)",
+                "providers JSON": d.get("providers_json_path") or "(none)",
+            }
+        )
+        return
+    if command == "enable":
+        result = run_action(
+            "harness.cline.enable",
+            {"harness": "cline", "base_url": base_url, "token_env": token_env, "force": force},
+        )
+        if not result.ok:
+            present.header("Cline harness")
+            present.fail("Cline harness", str(result.data.get("error", "enable failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Cline harness")
+        present.ok("Cline harness enabled")
+        present.kv(
+            {
+                "integration": d.get("integration", ""),
+                "base URL": d.get("base_url", ""),
+                "token environment": d.get("token_env", ""),
+                "providers JSON": d.get("providers_json_path") or "(none)",
+                "settings": d.get("settings_path") or "(none)",
+                "backup" if d.get("created_backup") else "config": (
+                    d.get("backup_path", "")
+                    if d.get("created_backup")
+                    else d.get("config_path", "")
+                ),
+            }
+        )
+        if d.get("ui_steps"):
+            present.section("Manual UI steps")
+            for step in d["ui_steps"]:
+                present.note(step)
+        return
+    if command == "disable":
+        result = run_action("harness.cline.disable", {"harness": "cline"})
+        if not result.ok:
+            present.header("Cline harness")
+            present.fail("Cline harness", str(result.data.get("error", "disable failed")))
+            raise SystemExit(result.exit_code or 1)
+        present.header("Cline harness")
+        present.ok("Cline harness disabled")
+        present.note("restored pre-enable Cline provider/settings/providers.json backups")
+        return
+    if command == "status":
+        result = run_action("harness.cline.status", {"harness": "cline"})
+        if not result.ok:
+            present.header("Cline harness")
+            present.fail("Cline harness", str(result.data.get("error", "status failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        enabled = d.get("enabled", False)
+        config_exists = d.get("config_exists", False)
+        state = "enabled" if enabled else "configured" if config_exists else "not configured"
+        present.header("Cline harness")
+        present.status("Cline harness", "ok" if enabled else "warning", state)
+        present.kv(
+            {
+                "provider": d.get("provider") or "(none)",
+                "base URL": d.get("base_url") or "(none)",
+                "integration": d.get("integration") or "(none)",
+                "token environment": f"{d.get('token_env', '')} (set: {'yes' if d.get('token_env_set') else 'no'})",
+                "config": d.get("config_path", ""),
+                "installed": "yes" if d.get("installed") else "no",
+                "binary": d.get("binary_path") or "(none)",
+            }
+        )
+        return
+    if command == "certify":
+        result = run_action("harness.cline.certify", {"harness": "cline", "force": force})
+        if not result.ok:
+            present.header("Cline harness")
+            present.fail("Cline harness", str(result.data.get("error", "certify failed")))
+            raise SystemExit(result.exit_code or 1)
+        d = result.data
+        present.header("Cline harness")
+        present.status(
+            "Cline certification",
+            d.get("overall", ""),
+            "healthy" if d.get("healthy") else "not healthy",
+        )
+        present.kv(
+            {
+                "base URL": d.get("base_url") or "(none)",
+                "token environment set": "yes" if d.get("token_env_set") else "no",
+            }
+        )
+        present.table(["Facet", "Level"], sorted((d.get("facets") or {}).items()), title="Facets")
+        if d.get("notes"):
+            present.section("Notes")
+            for item in d["notes"]:
+                present.note(item)
+        if d.get("needs_owner"):
+            present.section("Needs owner")
+            for item in d["needs_owner"]:
+                present.note(item)
+        return
     raise SystemExit(f"unknown harness cline command: {command}")
 
 
@@ -4824,90 +3982,130 @@ def cmd_prove_at_rest(
     output_json: bool = False,
 ) -> None:
     """Run or inspect the free∩active prove-at-rest daemon."""
-    from verdict.prove_at_rest import (
-        ProveAtRestError,
-        ProveAtRestStore,
-        build_live_daemon,
-        default_state_path,
-    )
-
-    resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
     if prove_command == "status":
-        cycle = ProveAtRestStore(path=resolved_state).read()
-        if cycle is None:
-            payload = {"status": "empty", "state_path": str(resolved_state)}
+        from verdict.actions.registry import run_action
+
+        result = run_action(
+            "prove-at-rest.status", {"state_path": state_path} if state_path else None
+        )
+        data = result.data
+        if data.get("status") == "empty":
             if output_json:
-                print(json.dumps(payload, indent=2, sort_keys=True))
+                print(json.dumps(data, indent=2, sort_keys=True))
             else:
                 from verdict import present
 
                 present.header("Prove at rest")
-                present.warn("prove-at-rest", f"No prove-at-rest state at {resolved_state}")
+                present.warn("prove-at-rest", f"No prove-at-rest state at {data['state_path']}")
             return
-        payload = cycle.to_dict()
-        payload["state_path"] = str(resolved_state)
         if output_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(data, indent=2, sort_keys=True))
             return
         from verdict import present
 
-        summary = cycle.summary
         present.header("Prove at rest  /  status")
-        present.kv({"cycle": cycle.cycle_id, "state": resolved_state, **summary})
+        summary = {
+            k: v
+            for k, v in data.items()
+            if k not in {"results", "state_path", "cycle_id"} and not isinstance(v, list)
+        }
+        present.kv(
+            {"cycle": data.get("cycle_id", ""), "state": data.get("state_path", ""), **summary}
+        )
+        results = data.get("results", [])
         present.table(
             ["Status", "Identity", "Reason"],
-            [(item.status, item.identity_id, item.reason or "-") for item in cycle.results],
+            [
+                (item.get("status", ""), item.get("identity_id", ""), item.get("reason") or "-")
+                for item in results
+            ],
         )
         return
 
-    if prove_command in {"once", "daemon"} and not allow_live_probe:
-        message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
-        if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
-        else:
-            from verdict import present
-
-            present.header("Prove at rest")
-            present.fail("prove-at-rest", message)
-        raise SystemExit(2)
-
-    try:
-        daemon = build_live_daemon(
-            state_path=resolved_state,
-            base_url=base_url,
-            interval_seconds=interval,
-            probe_timeout_seconds=timeout,
-            allow_live_probe=allow_live_probe,
-        )
-    except ProveAtRestError as exc:
-        message = str(exc)
-        if output_json:
-            print(json.dumps({"error": message}, sort_keys=True))
-        else:
-            from verdict import present
-
-            present.header("Prove at rest")
-            present.fail("prove-at-rest", message)
-        raise SystemExit(2) from exc
-
     if prove_command == "once":
-        cycle = daemon.run_once()
-        payload = cycle.to_dict()
-        payload["state_path"] = str(resolved_state)
+        from verdict.actions.registry import run_action
+
+        params: dict[str, Any] = {
+            "allow_live_probe": allow_live_probe,
+            "interval": interval,
+            "timeout": timeout,
+        }
+        if base_url is not None:
+            params["base_url"] = base_url
+        if state_path is not None:
+            params["state_path"] = state_path
+
+        result = run_action("prove-at-rest.once", params)
+        if not result.ok:
+            err = result.data.get("error", "prove-at-rest failed")
+            if output_json:
+                print(json.dumps({"error": err}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", err)
+            raise SystemExit(result.exit_code or 2)
+
+        data = result.data
+        resolved_state = data.get("state_path", state_path or "")
         if output_json:
+            payload = dict(data)
+            payload["state_path"] = resolved_state
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             from verdict import present
 
-            summary = cycle.summary
+            summary = {
+                k: v
+                for k, v in data.items()
+                if k not in {"results", "state_path"} and not isinstance(v, list)
+            }
             present.header("Prove at rest  /  once")
             present.kv({"state": resolved_state, **summary})
-            present.status("prove-at-rest", "failed" if summary.get("failed", 0) else "ok")
-        if cycle.summary.get("failed", 0):
+            present.status(
+                "prove-at-rest", "failed" if data.get("summary", {}).get("failed", 0) else "ok"
+            )
+        if data.get("summary", {}).get("failed", 0):
             raise SystemExit(1)
         return
 
     if prove_command == "daemon":
+        # Daemon stays MACHINE_ONLY — not routed through run_action
+        from verdict.prove_at_rest import ProveAtRestError, build_live_daemon, default_state_path
+
+        resolved_state = Path(state_path).expanduser() if state_path else default_state_path()
+
+        if not allow_live_probe:
+            message = "live prove-at-rest requires explicit consent; pass --allow-live-probe"
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", message)
+            raise SystemExit(2)
+
+        try:
+            daemon = build_live_daemon(
+                state_path=resolved_state,
+                base_url=base_url,
+                interval_seconds=interval,
+                probe_timeout_seconds=timeout,
+                allow_live_probe=allow_live_probe,
+            )
+        except ProveAtRestError as exc:
+            message = str(exc)
+            if output_json:
+                print(json.dumps({"error": message}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest")
+                present.fail("prove-at-rest", message)
+            raise SystemExit(2) from exc
+
         from verdict import present
 
         if not output_json:
@@ -4950,20 +4148,10 @@ def cmd_prove_at_rest(
 
 def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
     """Run the offline forced-failover and replay proof, persisting the session."""
-    from verdict.failover_replay_proof import run_forced_failover_proof
-    from verdict.memory_plane import MemoryPlane
+    from verdict.actions.registry import run_action
 
-    with MemoryPlane(memory_path) as plane:
-        proof = run_forced_failover_proof(plane)
-    payload = {
-        "session_id": proof.mission_id,
-        "initial_model": "provider-a/model-a",
-        "replacement_model": proof.replacement_model,
-        "failure_status": 429,
-        "completed_steps": list(proof.completed_stages),
-        "event_sequence": [e.to_dict() for e in proof.events],
-        "replay_digest": proof.digest,
-    }
+    result = run_action("failover-proof", {"memory_path": memory_path})
+    payload = result.data
     if output_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -4973,13 +4161,15 @@ def cmd_failover_proof(memory_path: str, output_json: bool = False) -> None:
         present.ok("proof", "completed")
         present.kv(
             {
-                "Session ID": proof.mission_id,
-                "Initial model": "provider-a/model-a",
-                "Replacement model": proof.replacement_model,
-                "Completed steps": str(list(proof.completed_stages)),
-                "Digest": proof.digest,
+                "Session ID": payload["session_id"],
+                "Initial model": payload["initial_model"],
+                "Replacement model": payload["replacement_model"],
+                "Completed steps": str(payload["completed_steps"]),
+                "Digest": payload["replay_digest"],
             }
         )
+    if result.exit_code:
+        sys.exit(result.exit_code)
 
 
 def _metadata_json_file(path: str | Path | None) -> Any | None:
@@ -5033,56 +4223,32 @@ def cmd_metadata_refresh(
     now: datetime | None = None,
 ) -> None:
     """Refresh the Core metadata store from files (offline) or public HTTPS."""
-    from verdict.metadata import ModelMetadataError, file_transport, refresh_metadata
+    from verdict.actions.registry import run_action
 
-    offline = any(
-        path is not None for path in (models_dev_api_file, models_dev_models_file, litellm_file)
-    )
-    clock = now or datetime.now(timezone.utc)
-    try:
-        transport = (
-            file_transport(
-                models_dev_api=_metadata_json_file(models_dev_api_file),
-                models_dev_models=_metadata_json_file(models_dev_models_file),
-                litellm=_metadata_json_file(litellm_file),
-                fetched_at=clock.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            )
-            if offline
-            else None
-        )
-        snapshot = refresh_metadata(
-            transport=transport,
-            mapping_path=mapping_path,
-            store_path=store_path,
-            include_p1=include_p1,
-            now=clock,
-            persist=True,
-        )
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    params: dict[str, Any] = {
+        "store_path": store_path,
+        "mapping_path": mapping_path,
+        "models_dev_api_file": models_dev_api_file,
+        "models_dev_models_file": models_dev_models_file,
+        "litellm_file": litellm_file,
+        "include_p1": include_p1,
+    }
+    if now is not None:
+        params["now"] = now
+    result = run_action("metadata.refresh", params)
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata refresh failed"))
         if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
+            print(json.dumps({"error": err}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  refresh")
-            present.fail("metadata refresh", str(exc))
-        raise SystemExit(1) from exc
-    report = {
-        "schema_version": snapshot.schema_version,
-        "refreshed_at": snapshot.refreshed_at,
-        "record_count": len(snapshot.records),
-        "drop_count": len(snapshot.drops),
-        "conflict_count": len(snapshot.conflicts),
-        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
-        "mapping": snapshot.mapping,
-        "store": str(
-            Path(store_path).expanduser()
-            if store_path
-            else Path.home() / ".verdict" / "model-metadata.json"
-        ),
-    }
+            present.fail("metadata refresh", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
@@ -5090,48 +4256,45 @@ def cmd_metadata_refresh(
     present.ok("Core metadata store refreshed")
     present.kv(
         {
-            "records": report["record_count"],
-            "mapping drops": report["drop_count"],
-            "store": report["store"],
+            "records": data["record_count"],
+            "mapping drops": data["drop_count"],
+            "store": data["store"],
         }
     )
+    sources = data.get("sources") or {}
     present.table(
         ["Source", "Status", "Reason"],
-        [(name, status.status, status.reason or "-") for name, status in snapshot.sources.items()],
+        [
+            (name, status.get("status", "?"), status.get("reason") or "-")
+            for name, status in sources.items()
+        ],
     )
 
 
 def cmd_metadata_show(*, store_path: str | Path | None = None, output_json: bool = False) -> None:
-    from verdict.metadata import ModelMetadataError, default_store_path, load_store
+    from verdict.actions.registry import run_action
 
-    resolved = Path(store_path).expanduser() if store_path else default_store_path()
-    try:
-        snapshot = load_store(resolved)
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    result = run_action("metadata.show", {"store_path": store_path})
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata show failed"))
+        store_ref = str(data.get("store", ""))
         if output_json:
-            print(json.dumps({"error": str(exc), "store": str(resolved)}, sort_keys=True))
+            print(json.dumps({"error": err, "store": store_ref}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  show")
-            present.fail("metadata", str(exc))
-        raise SystemExit(1) from exc
-    payload = {
-        "store": str(resolved),
-        "schema_version": snapshot.schema_version,
-        "refreshed_at": snapshot.refreshed_at,
-        "record_count": len(snapshot.records),
-        "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
-        "drops": [item.to_dict() for item in snapshot.drops],
-    }
+            present.fail("metadata", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Metadata  /  show")
     present.kv(
-        {"refreshed": snapshot.refreshed_at, "records": len(snapshot.records), "store": resolved}
+        {"refreshed": data["refreshed_at"], "records": data["record_count"], "store": data["store"]}
     )
 
 
@@ -5143,52 +4306,51 @@ def cmd_metadata_lookup(
     required: tuple[str, ...] = (),
     output_json: bool = False,
 ) -> None:
-    from verdict.metadata import (
-        ModelMetadataError,
-        default_store_path,
-        load_identity_map,
-        load_store,
-        lookup_omniroute_id,
-    )
+    from verdict.actions.registry import run_action
 
-    resolved = Path(store_path).expanduser() if store_path else default_store_path()
-    try:
-        snapshot = load_store(resolved)
-        mapping = load_identity_map(mapping_path)
-        found = lookup_omniroute_id(snapshot, omniroute_id, required=required, identity_map=mapping)
-    except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
+    params: dict[str, Any] = {
+        "omniroute_id": omniroute_id,
+        "store_path": store_path,
+        "mapping_path": mapping_path,
+        "requires": ",".join(required) if required else "",
+    }
+    result = run_action("metadata.lookup", params)
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "metadata lookup failed"))
         if output_json:
-            print(json.dumps({"error": str(exc)}, sort_keys=True))
+            print(json.dumps({"error": err}, sort_keys=True))
         else:
             from verdict import present
 
             present.header("Metadata  /  lookup")
-            present.fail("metadata lookup", str(exc))
-        raise SystemExit(1) from exc
-    payload = found.to_dict()
+            present.fail("metadata lookup", err)
+        raise SystemExit(result.exit_code or 1)
     if output_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(data, indent=2, sort_keys=True))
         return
     from verdict import present
 
     present.header("Metadata  /  lookup")
-    if found.drop is not None:
-        present.warn("named drop", f"{found.drop.reason}: {omniroute_id}")
-        if found.drop.detail:
-            present.note(found.drop.detail)
+    drop = data.get("drop")
+    if drop is not None:
+        present.warn("named drop", f"{drop.get('reason', '?')}: {omniroute_id}")
+        if drop.get("detail"):
+            present.note(str(drop["detail"]))
         return
-    assert found.record is not None
-    present.ok("mapped", f"{omniroute_id} → {found.record.id}")
+    record = data.get("record") or {}
+    present.ok("mapped", f"{omniroute_id} → {record.get('id', '?')}")
+    provenance = data.get("provenance") or {}
     present.table(
         ["Source", "Version"],
         [
             (
                 name,
-                cited.get("source", "")
+                str(cited.get("source", ""))
                 + " "
                 + str(cited.get("version") or cited.get("fetched_at") or ""),
             )
-            for name, cited in found.provenance_for_receipt().items()
+            for name, cited in provenance.items()
         ],
     )
 

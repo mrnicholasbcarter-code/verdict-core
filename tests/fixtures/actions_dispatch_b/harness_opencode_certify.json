@@ -1,0 +1,10 @@
+{
+  "args": [
+    "harness",
+    "opencode",
+    "certify"
+  ],
+  "exit_code": 0,
+  "stdout": "\nVERDICT  /  OpenCode harness\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  - OpenCode certification  UNSUPPORTED\n    not healthy\n  base URL               (none)\n  token environment set  yes   \n\n  Facets\nFacet              Level      \nconfig_import      partial    \nhooks              unsupported\nmcp                partial    \nmodel_selection    partial    \nresume             partial    \nstructured_output  partial    \nsubagents          unsupported\ntool_interception  unsupported\n\n  Notes\n  OpenAI-compatible provider via ~/.config/opencode/opencode.json \u2192 Verdict \n:8000\n  auth.json /connect credentials are never written by this adapter\n  opencode-go binary accepted as alternate install name\n  harness not enabled for Verdict-managed OpenAI path\n\n  Needs owner\n  live enable with secrets (opencode auth login / export token_env; NEEDS_OWNER)\n",
+  "stderr": ""
+}

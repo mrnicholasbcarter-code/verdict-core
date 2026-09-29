@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from verdict import cli
+from verdict import doctor_diagnostics as dd
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +51,7 @@ def _base_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("VERDICT_SHARED_MEMORY_URL", raising=False)
     monkeypatch.delenv("VERDICT_SHARED_MEMORY_TOKEN", raising=False)
 
-    monkeypatch.setattr(cli, "_omniroute_api_request", lambda *a, **k: None)
+    monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
 
     import urllib.request
 

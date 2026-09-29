@@ -1,0 +1,6 @@
+{
+  "stdout": "\nVERDICT  /  Hook / record\nautonomous control plane  \u00b7  plan \u00b7 select \u00b7 recover \u00b7 verify \u00b7 prove\n\n  ! Rejected [sessions:testk]  FAILED\n    provenance_required\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "hook record testk testv"
+}

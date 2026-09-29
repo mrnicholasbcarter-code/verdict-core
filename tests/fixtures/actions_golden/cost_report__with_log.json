@@ -1,0 +1,5 @@
+{
+  "exit_code": 0,
+  "stderr_empty": true,
+  "stdout": "\nVERDICT  /  Cost and Usage Report\nautonomous control plane  ·  plan · select · recover · verify · prove\n\n\n  Usage Summary\nMetric                        Value\nTotal Routing Requests        15   \nT0 (Critical) Forwarded       3    \nOffloaded Tasks (T1-T3)       12   \nEstimated Savings vs T0 Only  $0.06\n"
+}

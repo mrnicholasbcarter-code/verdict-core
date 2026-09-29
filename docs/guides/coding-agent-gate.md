@@ -50,7 +50,7 @@ verdict harness codex status
 verdict harness codex disable
 ```
 
-See [codex-harness.md](codex-harness.md). Equivalent manual snippet:
+See [harnesses.md#codex](harnesses.md#codex). Equivalent manual snippet:
 
 ```toml
 model_provider = "verdict"
@@ -71,7 +71,7 @@ verdict harness cursor certify
 verdict harness cursor disable
 ```
 
-See [cursor-harness.md](cursor-harness.md). Manual fallback: set the OpenAI-compatible
+See [harnesses.md#cursor](harnesses.md#cursor). Manual fallback: set the OpenAI-compatible
 base URL to `http://127.0.0.1:8000/v1` in Cursor Models settings.
 
 Prime Agent — Architect-locked CLI (backs up `~/.prime/agent/models.json`):
@@ -83,7 +83,7 @@ verdict harness prime certify
 verdict harness prime disable
 ```
 
-See [prime-harness.md](prime-harness.md).
+See [harnesses.md#prime-agent](harnesses.md#prime-agent).
 
 OpenCode — Architect-locked CLI (backs up `~/.config/opencode/opencode.json`):
 
@@ -94,7 +94,7 @@ verdict harness opencode certify
 verdict harness opencode disable
 ```
 
-See [opencode-harness.md](opencode-harness.md).
+See [harnesses.md#opencode](harnesses.md#opencode).
 
 Cline — prefer the Architect-locked CLI (CLI providers.json and/or IDE sidecar):
 
@@ -105,7 +105,7 @@ verdict harness cline certify
 verdict harness cline disable
 ```
 
-See [cline-harness.md](cline-harness.md). Manual fallback: Cline → OpenAI Compatible
+See [harnesses.md#cline](harnesses.md#cline). Manual fallback: Cline → OpenAI Compatible
 → Base URL `http://127.0.0.1:8000/v1` (not OmniRoute `:20128`).
 
 Harness-shaped smoke (with Verdict running):
@@ -130,7 +130,7 @@ verdict harness claude certify
 verdict harness claude disable
 ```
 
-See [claude-harness.md](claude-harness.md).
+See [harnesses.md#claude-code](harnesses.md#claude-code).
 
 Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
 proxy today is OpenAI-compatible only — full Anthropic Messages passthrough via

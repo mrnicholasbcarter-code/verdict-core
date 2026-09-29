@@ -1,0 +1,7 @@
+
+VERDICT  /  Provider detection (offline)
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  network access    no
+  credentials read  no
+  Offline mode reports nothing by design. Run `verdict detect` to probe.
