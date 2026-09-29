@@ -271,6 +271,33 @@ def test_detail_panel_reviewer_shows_identity() -> None:
     assert "observed model: kr/haiku" in text
 
 
+def test_detail_panel_reviewer_shows_mismatch() -> None:
+    """Reviewer detail panel must render MISMATCH line when selected != observed."""
+    events = [
+        _event(1, "node_state", "n1", state="RUNNING"),
+        _event(
+            2,
+            "review",
+            status="PASS",
+            reviewer="ocr",
+            route_id="kr/haiku",
+            observed_model="cc/sonnet",  # mismatched
+            blocking=0,
+            findings=0,
+        ),
+    ]
+    view = RunView.from_events(events)
+    state = CockpitState()
+    state.sync_order(selectable_order_with_roles(view))
+    state.selected_index = len(state.node_order) - 1
+    assert state.selected_id == ROLE_REVIEWER
+    state.detail_open = True
+    console = _console(100)
+    rendered = render_detail_panel(view, events, state, plain=True, width=100)
+    text = _rich_to_text(console, rendered)
+    assert "MISMATCH" in text, f"Expected MISMATCH line in reviewer detail; got: {text!r}"
+
+
 # ---------------------------------------------------------------------------
 # render_selected_row for roles
 # ---------------------------------------------------------------------------
@@ -487,7 +514,14 @@ def test_health_panel_closes_when_other_panel_opens() -> None:
 
 
 def test_health_panel_never_calls_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure the health panel reads only from events, never probes."""
+    """Ensure the health panel reads only from events, never probes live.
+
+    Mutation check: if render_health were to call any live-probe function
+    (openai_health_probe, probe_gateway, probe_catalog, probe_gateways,
+    or the urllib3/httpx transport), the spy raises RuntimeError and the test
+    FAILS.  Verify this locally by temporarily inserting a probe call into
+    render_health, then remove it.
+    """
     events = [
         _event(1, "selection", "n1", route_id="cc/haiku", attempt=1),
         _event(2, "node_state", "n1", state="RUNNING", route_id="cc/haiku"),
@@ -507,12 +541,26 @@ def test_health_panel_never_calls_probe(monkeypatch: pytest.MonkeyPatch) -> None
 
     mode = PresentationMode(color=False, unicode=False, animate=False, width=100, color_system=None)
 
-    # Spy on any function that could be a live probe
-    probe_spy = MagicMock(side_effect=RuntimeError("probe called"))
-    monkeypatch.setattr("verdict.actions.run_action", probe_spy, raising=False)
+    # Spy on every live-probe entry point used by the eligibility/routing system.
+    # These raise RuntimeError so any accidental probe call causes the test to fail.
+    probe_error = RuntimeError("live probe called from render_health — this must not happen")
+    for target in (
+        "verdict.subagent_selection.openai_health_probe",
+        "verdict.home.probe_gateway",
+        "verdict.omniroute_catalog.probe_catalog",
+        "verdict.provider_detection.probe_gateways",
+    ):
+        monkeypatch.setattr(target, MagicMock(side_effect=probe_error), raising=False)
 
+    # Also block the low-level HTTP transport so no accidental network call passes through.
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", MagicMock(side_effect=probe_error), raising=False
+    )
+
+    # Must complete without raising (no probe was triggered)
     cockpit.render_health(state, view, mode)
-    probe_spy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

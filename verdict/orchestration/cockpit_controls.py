@@ -359,7 +359,7 @@ def render_health(
             for c in cooldowns:
                 lines.append(
                     Text(
-                        f"  {c.key} [{c.scope}] {c.category} until {c.until[11:19] or '-'}",
+                        f"  {c.key} [{c.scope}] {c.category} until {c.until[11:19] if len(c.until) >= 19 and 'T' in c.until else c.until or '-'}",
                         style=_style("COOLDOWN", mode),
                     )
                 )
