@@ -373,7 +373,7 @@ def capture_plain_screens(width: int, condition: str) -> str:
 
 @pytest.mark.parametrize("condition", ["plain", "no_color", "non_tty"])
 @pytest.mark.parametrize("width", [60, 100, 200])
-def test_existing_screens_plain_bytes_approved_snapshot(width: int, condition: str) -> None:
+def test_existing_screens_plain_bytes_branch_snapshot(width: int, condition: str) -> None:
     """Regression: expected snapshot for this branch (feat/cockpit-roles).
 
     These hashes differ from origin/main because feat/cockpit-roles intentionally
