@@ -76,45 +76,45 @@ flowchart TD
     DIGEST --> VERDICT["completion_verdict(receipt): COMPLETE only if every implement/integrate node final_state==VALIDATED, integration.ok, review.status==PASS, no blocking finding; else BLOCKED with a specific reason"]
     VERDICT --> OVERRIDE["outcome != runtime.outcome.value -> events.emit('controller', state='VERDICT_OVERRIDE') -- the receipt is authoritative over the in-memory run result"]
     OVERRIDE --> RESULT["GoldenRunResult(run_dir, outcome, reason, receipt_path); verify_run_receipt(run_dir) re-derives every field and flags 'events_digest mismatch' if events.jsonl changed since the receipt was written"]
-%% evidence: verdict/orchestration/run.py:356 def load_or_create_run(root, run_id)
-%% evidence: verdict/orchestration/run.py:363 def prior_validated(run_dir)
-%% evidence: verdict/orchestration/run.py:177 async def plan_with_failover(..., max_attempts=6, ...)
-%% evidence: verdict/orchestration/run.py:241-242 TaskRequirements(frontier_worthy=True, min_context_tokens=100_000, exclude_routes=frozenset(tried))
-%% evidence: verdict/orchestration/run.py:271-275 classifier.classify(source, now=now()); state="QUOTA" if category in {quota_exhausted, rate_limited} else "PLANNER_FAILED"
-%% evidence: verdict/orchestration/run.py:286-290 selector.record_failure(...) + events.emit("cooldown", ...)
-%% evidence: verdict/orchestration/run.py:300-302 events.emit("controller", state="REPLACING", ...)
-%% evidence: verdict/orchestration/run.py:341 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
+%% evidence: verdict/orchestration/run.py:440 def load_or_create_run(root, run_id)
+%% evidence: verdict/orchestration/run.py:447 def prior_validated(run_dir)
+%% evidence: verdict/orchestration/run.py:249 async def plan_with_failover(..., max_attempts=6, ...)
+%% evidence: verdict/orchestration/run.py:315-316 TaskRequirements(frontier_worthy=True, min_context_tokens=100_000, exclude_routes=frozenset(tried))
+%% evidence: verdict/orchestration/run.py:348-352 classifier.classify(source, now=now()); state="QUOTA" if category in {quota_exhausted, rate_limited} else "PLANNER_FAILED"
+%% evidence: verdict/orchestration/run.py:363-367 selector.record_failure(...) + events.emit("cooldown", ...)
+%% evidence: verdict/orchestration/run.py:377-379 events.emit("controller", state="REPLACING", ...)
+%% evidence: verdict/orchestration/run.py:425 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
 %% evidence: verdict/orchestration/planner.py:59 def choose_topology(nodes, max_parallel, risk_hint) -- deterministic rules, docstring states "Never asks a model"
-%% evidence: verdict/orchestration/planner.py:230 def parse_plan(text, goal, max_parallel) -> WorkGraph
-%% evidence: verdict/orchestration/planner.py:318,321 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:344-360)
-%% evidence: verdict/orchestration/planner.py:370-371 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
-%% evidence: verdict/orchestration/contracts.py:182 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
-%% evidence: verdict/orchestration/contracts.py:36,52 class NodeState, TRANSITIONS mapping (legal state transitions)
-%% evidence: verdict/orchestration/runtime.py:210,241 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
-%% evidence: verdict/orchestration/runtime.py:263,304,314 async def run(self), def _ready(self), def _propagate_blocks(self)
-%% evidence: verdict/orchestration/runtime.py:87,342-351 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
-%% evidence: verdict/orchestration/runtime.py:333,357-358 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:93,379-395 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
-%% evidence: verdict/orchestration/runtime.py:524 async def _attempt(self, run, failures)
-%% evidence: verdict/orchestration/runtime.py:730,745,769 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
-%% evidence: verdict/orchestration/runtime.py:1091,1108 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:764,806 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
-%% evidence: verdict/orchestration/runtime.py:808 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
-%% evidence: verdict/orchestration/runtime.py:1248-1252 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
-%% evidence: verdict/orchestration/runtime.py:1258-1283 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1306-1311
-%% evidence: verdict/orchestration/review.py:118,149 class OpenCodeReviewer, async def review(...)
-%% evidence: verdict/orchestration/review.py:202 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
-%% evidence: verdict/orchestration/contracts.py:570,581 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
-%% evidence: verdict/orchestration/recovery.py:133,141 class FailureIntelligence, def classify(terminal, now)
-%% evidence: verdict/orchestration/runtime.py:59 imports RecoveryBudget; :301 creates self._recovery_budget; :447 _handle_retry_node; :483 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1091
-%% evidence: verdict/orchestration/receipt.py:366 def build_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:428,444 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
-%% evidence: verdict/orchestration/receipt.py:173 def _sha256_file(path)
-%% evidence: verdict/orchestration/receipt.py:462,481 def write_run_receipt(run_dir); def verify_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:497-498 events_digest mismatch check: "events_digest mismatch: events.jsonl changed after receipt was written"
-%% evidence: verdict/orchestration/receipt.py:511 def completion_verdict(receipt) -> (outcome, reason)
-%% evidence: verdict/orchestration/run.py:649,653 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
-%% evidence: verdict/orchestration/contracts.py:460 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
+%% evidence: verdict/orchestration/planner.py:312 def parse_plan(text, goal, max_parallel) -> WorkGraph
+%% evidence: verdict/orchestration/planner.py:401,404 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:430-467)
+%% evidence: verdict/orchestration/planner.py:473-474 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
+%% evidence: verdict/orchestration/contracts.py:192 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
+%% evidence: verdict/orchestration/contracts.py:41,57 class NodeState, TRANSITIONS mapping (legal state transitions)
+%% evidence: verdict/orchestration/runtime.py:267,298 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
+%% evidence: verdict/orchestration/runtime.py:540,596,608 async def run(self), def _ready(self), def _propagate_blocks(self)
+%% evidence: verdict/orchestration/runtime.py:128,637-648 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
+%% evidence: verdict/orchestration/runtime.py:627,652-653 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
+%% evidence: verdict/orchestration/runtime.py:134,690-706 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
+%% evidence: verdict/orchestration/runtime.py:969 async def _attempt(self, run, failures)
+%% evidence: verdict/orchestration/runtime.py:1224,1239,1279 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
+%% evidence: verdict/orchestration/runtime.py:1152,1169 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
+%% evidence: verdict/orchestration/runtime.py:819,861 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
+%% evidence: verdict/orchestration/runtime.py:863 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
+%% evidence: verdict/orchestration/runtime.py:1309-1313 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
+%% evidence: verdict/orchestration/runtime.py:1319-1344 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1368-1374
+%% evidence: verdict/orchestration/review.py:198,231 class OpenCodeReviewer, async def review(...)
+%% evidence: verdict/orchestration/review.py:324 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
+%% evidence: verdict/orchestration/contracts.py:683,697 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
+%% evidence: verdict/orchestration/recovery.py:148,156 class FailureIntelligence, def classify(terminal, now)
+%% evidence: verdict/orchestration/runtime.py:60 imports RecoveryBudget; :306 creates self._recovery_budget; :467 _handle_retry_node; :512 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1152
+%% evidence: verdict/orchestration/receipt.py:463 def build_run_receipt(run_dir)
+%% evidence: verdict/orchestration/receipt.py:526,547 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
+%% evidence: verdict/orchestration/receipt.py:178 def _sha256_file(path)
+%% evidence: verdict/orchestration/receipt.py:570,599 def write_run_receipt(run_dir); def verify_run_receipt(run_dir)
+%% evidence: verdict/orchestration/receipt.py:615-616 events_digest mismatch check: "events_digest mismatch: events.jsonl changed after receipt was written"
+%% evidence: verdict/orchestration/receipt.py:629 def completion_verdict(receipt) -> (outcome, reason)
+%% evidence: verdict/orchestration/run.py:869,873 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
+%% evidence: verdict/orchestration/contracts.py:568 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
 classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px

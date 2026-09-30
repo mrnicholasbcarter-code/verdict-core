@@ -343,15 +343,15 @@ flowchart TD
     DISP --> DNOROUTE["selected_route is None and authorized_runtime_id is empty -> DispatchResult reason=missing_authorized_selected_route"]
     DISP --> DNOELIG["eligible candidates list is empty -> DispatchResult reason='no eligible candidates'"]
     DISP --> DMISMATCH["authorized_runtime_id has no matching eligible candidate -> raise ExecutionPathError"]
-%% evidence: verdict/api.py:944 async def route_task(request, req)
-%% evidence: verdict/api.py:909 def _authority_context(payload, *, task) -- rejects client execution_path_decision
-%% evidence: verdict/api.py:923 async def _route_with_intelligence(...)
-%% evidence: verdict/api.py:929,932 CONTEXT_REQUIRE_AUTHORITY imported from verdict.serve_path, merged.setdefault(..., True)
-%% evidence: verdict/api.py:936-940,949-952 ExecutionPathError caught -> HTTPException(400, str(exc))
-%% evidence: verdict/api.py:978 status_code = 200 if decision.decision != "denied" else 503
-%% evidence: verdict/api.py:1427 async def _relay_completion(request, *, surface)
-%% evidence: verdict/api.py:1515,1606,1608 decision.decision == "denied" branch; proxy_instance.responses / proxy_instance.chat
-%% evidence: verdict/gate.py:115,152-155 class Gate.route delegates to self.intelligence.route (sync/async bridge)
+%% evidence: verdict/api.py:1271 async def route_task(request, req)
+%% evidence: verdict/api.py:1236 def _authority_context(payload, *, task) -- rejects client execution_path_decision
+%% evidence: verdict/api.py:1250 async def _route_with_intelligence(...)
+%% evidence: verdict/api.py:1256,1259 CONTEXT_REQUIRE_AUTHORITY imported from verdict.serve_path, merged.setdefault(..., True)
+%% evidence: verdict/api.py:1263-1266,1276-1279 ExecutionPathError caught -> HTTPException(400, str(exc))
+%% evidence: verdict/api.py:1305 status_code = 200 if decision.decision != "denied" else 503
+%% evidence: verdict/api.py:1754 async def _relay_completion(request, *, surface)
+%% evidence: verdict/api.py:1848,1940,1942 decision.decision == "denied" branch; proxy_instance.responses / proxy_instance.chat
+%% evidence: verdict/gate.py:144,181-184 class Gate.route delegates to self.intelligence.route (sync/async bridge)
 %% evidence: verdict/intelligence.py:211,360 class IntelligenceService, async def route(...)
 %% evidence: verdict/intelligence.py:392-403 resolve_execution_path_decision / require_serve_path_decision imported and called
 %% evidence: verdict/intelligence.py:437 raise ExecutionPathError("missing ExecutionPathDecision; ...")
@@ -361,13 +361,13 @@ flowchart TD
 %% evidence: verdict/intelligence.py:501,507 self.static_catalog() / fetch_models(name, cfg, self.discovery_ttl)
 %% evidence: verdict/intelligence.py:514 self.eligibility_gate.evaluate(candidates, protected=(final_tier == 0), dev_mode=...)
 %% evidence: verdict/intelligence.py:576-579 select_best_eligible_model(eligibility, final_tier, self.providers) if eligibility is not None else select_best_model(candidates, final_tier, self.providers)
-%% evidence: verdict/intelligence.py:623-644 final_tier == 0 or not best_model -> fallback RoutingDecision (decision="fallback" if best_model is None else "selected")
+%% evidence: verdict/intelligence.py:626-647 final_tier == 0 or not best_model -> fallback RoutingDecision (decision="fallback" if best_model is None else "selected")
 %% evidence: verdict/eligibility.py:143,165,189 class EligibilityGate, def evaluate, def _judge
 %% evidence: verdict/router.py:7 select_best_model / router.py:44 select_best_eligible_model
 %% evidence: verdict/proxy.py:199 async def chat / proxy.py:205 async def responses / proxy.py:223 async def _forward
-%% evidence: verdict/dispatcher.py:135,147 class SwarmDispatcher, def dispatch
-%% evidence: verdict/dispatcher.py:181-195 missing_authorized_selected_route / "no eligible candidates"
-%% evidence: verdict/dispatcher.py:198-206 authorized_runtime_id mismatch -> raise ExecutionPathError
+%% evidence: verdict/dispatcher.py:135,148 class SwarmDispatcher, def dispatch
+%% evidence: verdict/dispatcher.py:182-196 missing_authorized_selected_route / "no eligible candidates"
+%% evidence: verdict/dispatcher.py:199-207 authorized_runtime_id mismatch -> raise ExecutionPathError
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
 classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
@@ -452,23 +452,23 @@ stateDiagram-v2
     FailedTask5 --> [*]
     FailedSelected --> [*]
     ProbeBudgetExhausted --> [*]
-%% evidence: verdict/orchestration/contracts.py:287 EligibilityStage enum (DISCOVERED..SELECTED, each with a docstring comment)
-%% evidence: verdict/orchestration/contracts.py:311 RouteVerdict (route_id, provider, reached, failed_stage, reason, capacity_class, plan_label, cooldown_until, rank)
-%% evidence: verdict/orchestration/contracts.py:339 TaskRequirements (required_capabilities, min_context_tokens, exclude_routes, exclude_families, frontier_worthy)
-%% evidence: verdict/orchestration/eligibility.py:23 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
-%% evidence: verdict/orchestration/eligibility.py:358-362 opaque prefix / owned_by == "combo" skipped before assessment, "opaque routers are never DISCOVERED"
-%% evidence: verdict/orchestration/eligibility.py:271-272 conn is None or not isActive -> failed_stage=ENTITLED, reason=no_active_account
-%% evidence: verdict/orchestration/eligibility.py:274-277 harness_visible check -> not_harness_visible / harness_inventory_unavailable
-%% evidence: verdict/orchestration/eligibility.py:225 _health_status(route_id, now) -> healthy|unhealthy|unprobed|stale (TTL-gated)
-%% evidence: verdict/orchestration/eligibility.py:281-282 health == "unhealthy" -> failed_stage=HEALTHY
-%% evidence: verdict/orchestration/eligibility.py:288-296 cooldown:route / cooldown:provider -> failed_stage=AVAILABLE
-%% evidence: verdict/orchestration/eligibility.py:297-301 provider_rate_limited -> failed_stage=AVAILABLE
-%% evidence: verdict/orchestration/eligibility.py:310-330 _task_gate: missing_capability, insufficient_context, excluded_route, excluded_family, frontier_restricted, effort_duplicate
-%% evidence: verdict/orchestration/eligibility.py:368-369 load(route_id) >= max_per_route (2) -> failed_stage=SELECTED, reason=at_capacity
-%% evidence: verdict/orchestration/eligibility.py:342 _rank_key (capacity order, preferred provider, load, -fit, route_id)
-%% evidence: verdict/orchestration/eligibility.py:157,384-418 select(): max_probes_per_select=8, probe_order round-robin, probe_budget_exhausted
-%% evidence: verdict/orchestration/eligibility.py:427-433 chosen route emitted with reached=SELECTED, reason="selected"
-%% evidence: verdict/orchestration/eligibility.py:86-89,33-44 cooldown_seconds_for / _CATEGORY_COOLDOWN_SECONDS per failure category
+%% evidence: verdict/orchestration/contracts.py:296 EligibilityStage enum (DISCOVERED..SELECTED, each with a docstring comment)
+%% evidence: verdict/orchestration/contracts.py:335 RouteVerdict (route_id, provider, reached, failed_stage, reason, capacity_class, plan_label, cooldown_until, rank)
+%% evidence: verdict/orchestration/contracts.py:410 TaskRequirements (required_capabilities, min_context_tokens, exclude_routes, exclude_families, frontier_worthy)
+%% evidence: verdict/orchestration/eligibility.py:38 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
+%% evidence: verdict/orchestration/eligibility.py:753-757 opaque prefix / owned_by == "combo" skipped before assessment, "opaque routers are never DISCOVERED"
+%% evidence: verdict/orchestration/eligibility.py:494-495 conn is None or not isActive -> failed_stage=ENTITLED, reason=no_active_account
+%% evidence: verdict/orchestration/eligibility.py:497-500 harness_visible check -> not_harness_visible / harness_inventory_unavailable
+%% evidence: verdict/orchestration/eligibility.py:399 _health_status(route_id, now) -> healthy|unhealthy|unprobed|stale (TTL-gated)
+%% evidence: verdict/orchestration/eligibility.py:504-505 health == "unhealthy" -> failed_stage=HEALTHY
+%% evidence: verdict/orchestration/eligibility.py:513-519 cooldown:route / cooldown:provider -> failed_stage=AVAILABLE
+%% evidence: verdict/orchestration/eligibility.py:523-527 provider_rate_limited -> failed_stage=AVAILABLE
+%% evidence: verdict/orchestration/eligibility.py:559,572,575,577,579,597,600 _task_gate: missing_capability, insufficient_context, excluded_route, excluded_family, frontier_restricted, effort_duplicate
+%% evidence: verdict/orchestration/eligibility.py:763-764 load(route_id) >= max_per_route (2) -> failed_stage=SELECTED, reason=at_capacity
+%% evidence: verdict/orchestration/eligibility.py:706 _rank_key (capacity order, preferred provider, load, -fit, route_id)
+%% evidence: verdict/orchestration/eligibility.py:229,244,800,820 select(): max_probes_per_select=8, probe_order round-robin, probe_budget_exhausted
+%% evidence: verdict/orchestration/eligibility.py:855-861 chosen route emitted with reached=SELECTED, reason="selected"
+%% evidence: verdict/orchestration/eligibility.py:60,127 cooldown_seconds_for / _CATEGORY_COOLDOWN_SECONDS per failure category
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
 classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
@@ -569,45 +569,45 @@ flowchart TD
     DIGEST --> VERDICT["completion_verdict(receipt): COMPLETE only if every implement/integrate node final_state==VALIDATED, integration.ok, review.status==PASS, no blocking finding; else BLOCKED with a specific reason"]
     VERDICT --> OVERRIDE["outcome != runtime.outcome.value -> events.emit('controller', state='VERDICT_OVERRIDE') -- the receipt is authoritative over the in-memory run result"]
     OVERRIDE --> RESULT["GoldenRunResult(run_dir, outcome, reason, receipt_path); verify_run_receipt(run_dir) re-derives every field and flags 'events_digest mismatch' if events.jsonl changed since the receipt was written"]
-%% evidence: verdict/orchestration/run.py:356 def load_or_create_run(root, run_id)
-%% evidence: verdict/orchestration/run.py:363 def prior_validated(run_dir)
-%% evidence: verdict/orchestration/run.py:177 async def plan_with_failover(..., max_attempts=6, ...)
-%% evidence: verdict/orchestration/run.py:241-242 TaskRequirements(frontier_worthy=True, min_context_tokens=100_000, exclude_routes=frozenset(tried))
-%% evidence: verdict/orchestration/run.py:271-275 classifier.classify(source, now=now()); state="QUOTA" if category in {quota_exhausted, rate_limited} else "PLANNER_FAILED"
-%% evidence: verdict/orchestration/run.py:286-290 selector.record_failure(...) + events.emit("cooldown", ...)
-%% evidence: verdict/orchestration/run.py:300-302 events.emit("controller", state="REPLACING", ...)
-%% evidence: verdict/orchestration/run.py:341 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
+%% evidence: verdict/orchestration/run.py:440 def load_or_create_run(root, run_id)
+%% evidence: verdict/orchestration/run.py:447 def prior_validated(run_dir)
+%% evidence: verdict/orchestration/run.py:249 async def plan_with_failover(..., max_attempts=6, ...)
+%% evidence: verdict/orchestration/run.py:315-316 TaskRequirements(frontier_worthy=True, min_context_tokens=100_000, exclude_routes=frozenset(tried))
+%% evidence: verdict/orchestration/run.py:348-352 classifier.classify(source, now=now()); state="QUOTA" if category in {quota_exhausted, rate_limited} else "PLANNER_FAILED"
+%% evidence: verdict/orchestration/run.py:363-367 selector.record_failure(...) + events.emit("cooldown", ...)
+%% evidence: verdict/orchestration/run.py:377-379 events.emit("controller", state="REPLACING", ...)
+%% evidence: verdict/orchestration/run.py:425 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
 %% evidence: verdict/orchestration/planner.py:59 def choose_topology(nodes, max_parallel, risk_hint) -- deterministic rules, docstring states "Never asks a model"
-%% evidence: verdict/orchestration/planner.py:230 def parse_plan(text, goal, max_parallel) -> WorkGraph
-%% evidence: verdict/orchestration/planner.py:318,321 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:344-360)
-%% evidence: verdict/orchestration/planner.py:370-371 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
-%% evidence: verdict/orchestration/contracts.py:182 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
-%% evidence: verdict/orchestration/contracts.py:36,52 class NodeState, TRANSITIONS mapping (legal state transitions)
-%% evidence: verdict/orchestration/runtime.py:210,241 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
-%% evidence: verdict/orchestration/runtime.py:263,304,314 async def run(self), def _ready(self), def _propagate_blocks(self)
-%% evidence: verdict/orchestration/runtime.py:87,342-351 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
-%% evidence: verdict/orchestration/runtime.py:333,357-358 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:93,379-395 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
-%% evidence: verdict/orchestration/runtime.py:524 async def _attempt(self, run, failures)
-%% evidence: verdict/orchestration/runtime.py:730,745,769 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
-%% evidence: verdict/orchestration/runtime.py:1091,1108 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:764,806 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
-%% evidence: verdict/orchestration/runtime.py:808 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
-%% evidence: verdict/orchestration/runtime.py:1248-1252 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
-%% evidence: verdict/orchestration/runtime.py:1258-1283 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1306-1311
-%% evidence: verdict/orchestration/review.py:118,149 class OpenCodeReviewer, async def review(...)
-%% evidence: verdict/orchestration/review.py:202 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
-%% evidence: verdict/orchestration/contracts.py:570,581 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
-%% evidence: verdict/orchestration/recovery.py:133,141 class FailureIntelligence, def classify(terminal, now)
-%% evidence: verdict/orchestration/runtime.py:59 imports RecoveryBudget; :301 creates self._recovery_budget; :447 _handle_retry_node; :483 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1091
-%% evidence: verdict/orchestration/receipt.py:366 def build_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:428,444 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
-%% evidence: verdict/orchestration/receipt.py:173 def _sha256_file(path)
-%% evidence: verdict/orchestration/receipt.py:462,481 def write_run_receipt(run_dir); def verify_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:497-498 events_digest mismatch check: "events_digest mismatch: events.jsonl changed after receipt was written"
-%% evidence: verdict/orchestration/receipt.py:511 def completion_verdict(receipt) -> (outcome, reason)
-%% evidence: verdict/orchestration/run.py:649,653 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
-%% evidence: verdict/orchestration/contracts.py:460 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
+%% evidence: verdict/orchestration/planner.py:312 def parse_plan(text, goal, max_parallel) -> WorkGraph
+%% evidence: verdict/orchestration/planner.py:401,404 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:430-467)
+%% evidence: verdict/orchestration/planner.py:473-474 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
+%% evidence: verdict/orchestration/contracts.py:192 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
+%% evidence: verdict/orchestration/contracts.py:41,57 class NodeState, TRANSITIONS mapping (legal state transitions)
+%% evidence: verdict/orchestration/runtime.py:267,298 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
+%% evidence: verdict/orchestration/runtime.py:540,596,608 async def run(self), def _ready(self), def _propagate_blocks(self)
+%% evidence: verdict/orchestration/runtime.py:128,637-648 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
+%% evidence: verdict/orchestration/runtime.py:627,652-653 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
+%% evidence: verdict/orchestration/runtime.py:134,690-706 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
+%% evidence: verdict/orchestration/runtime.py:969 async def _attempt(self, run, failures)
+%% evidence: verdict/orchestration/runtime.py:1224,1239,1279 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
+%% evidence: verdict/orchestration/runtime.py:1152,1169 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
+%% evidence: verdict/orchestration/runtime.py:819,861 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
+%% evidence: verdict/orchestration/runtime.py:863 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
+%% evidence: verdict/orchestration/runtime.py:1309-1313 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
+%% evidence: verdict/orchestration/runtime.py:1319-1344 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1368-1374
+%% evidence: verdict/orchestration/review.py:198,231 class OpenCodeReviewer, async def review(...)
+%% evidence: verdict/orchestration/review.py:324 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
+%% evidence: verdict/orchestration/contracts.py:683,697 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
+%% evidence: verdict/orchestration/recovery.py:148,156 class FailureIntelligence, def classify(terminal, now)
+%% evidence: verdict/orchestration/runtime.py:60 imports RecoveryBudget; :306 creates self._recovery_budget; :467 _handle_retry_node; :512 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1152
+%% evidence: verdict/orchestration/receipt.py:463 def build_run_receipt(run_dir)
+%% evidence: verdict/orchestration/receipt.py:526,547 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
+%% evidence: verdict/orchestration/receipt.py:178 def _sha256_file(path)
+%% evidence: verdict/orchestration/receipt.py:570,599 def write_run_receipt(run_dir); def verify_run_receipt(run_dir)
+%% evidence: verdict/orchestration/receipt.py:615-616 events_digest mismatch check: "events_digest mismatch: events.jsonl changed after receipt was written"
+%% evidence: verdict/orchestration/receipt.py:629 def completion_verdict(receipt) -> (outcome, reason)
+%% evidence: verdict/orchestration/run.py:869,873 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
+%% evidence: verdict/orchestration/contracts.py:568 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
 classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
@@ -670,9 +670,9 @@ Each claim links to the code that does it and a test that checks it, at this com
 
 **One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
 provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
-fallback ([`verdict/admission.py:940`](verdict/admission.py#L940)). The set cannot be built any other way
-([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
-([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
+fallback ([`verdict/admission.py:945`](verdict/admission.py#L945)). The set cannot be built any other way
+([`:390`](verdict/admission.py#L390)). Scope, provider family and the active controller can only narrow it
+([`verdict/orchestration/eligibility_report.py:139-140`](verdict/orchestration/eligibility_report.py#L139-L140), through [`AdmittedSet.restrict_prefixes`/`restrict_families`/`exclude_controller`](verdict/admission.py)). The ladder raises
 `AdmissionBypassError` if it ever picks a route outside the set
 ([`verdict/orchestration/eligibility.py:841`](verdict/orchestration/eligibility.py#L841), through
 [`AdmittedSet.require_launchable`](verdict/admission.py)).
@@ -707,9 +707,9 @@ action, a cooldown and a scope: route or provider
 ([`verdict/orchestration/recovery.py:148`](verdict/orchestration/recovery.py#L148)). Each failure resolves to
 exactly one outcome. `RETRY_INFRA` retries the same route after a gateway-local shed. `BLOCK` stops with
 `non-recoverable: <category>`. Every other failure reassigns the same node to the next admitted route and
-emits a `reassign` event ([`verdict/orchestration/runtime.py:430-451`](verdict/orchestration/runtime.py#L430-L451)).
+emits a `reassign` event ([`verdict/orchestration/runtime.py:788-794`](verdict/orchestration/runtime.py#L788-L794)).
 After `max_attempts_per_node` (4), or with no admitted route left, the node ends in `pool_exhausted` /
-`FAIL_CLOSED` ([`:361-371`](verdict/orchestration/runtime.py#L361-L371)). Tests:
+`FAIL_CLOSED` ([`:637-648`](verdict/orchestration/runtime.py#L637-L648)). Tests:
 [`tests/test_orch_recovery.py`](tests/test_orch_recovery.py), [`tests/test_orch_runtime.py`](tests/test_orch_runtime.py).
 
 **Relay retries stay inside the admitted set.** The OpenAI-compatible relay tries an alternative only when
@@ -719,15 +719,15 @@ selected model is outside the live set, the relay makes no attempt
 
 **Independent review.** The reviewer must not be any route that wrote code in the run. It should also be
 from a different model family; if no other family has capacity, route-level independence is used and
-recorded ([`verdict/orchestration/runtime.py:989-1014`](verdict/orchestration/runtime.py#L989-L1014)). A
+recorded ([`verdict/orchestration/runtime.py:1316-1346`](verdict/orchestration/runtime.py#L1316-L1346)). A
 non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
 ([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
 Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
 
 **Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
-([`verdict/orchestration/receipt.py:173`](verdict/orchestration/receipt.py#L173),
-[`:476`](verdict/orchestration/receipt.py#L476)). Verification recomputes it and rebuilds every other field
-from the same log ([`:525`](verdict/orchestration/receipt.py#L525)).
+([`verdict/orchestration/receipt.py:178`](verdict/orchestration/receipt.py#L178),
+[`:547`](verdict/orchestration/receipt.py#L547)). Verification recomputes it and rebuilds every other field
+from the same log ([`:599`](verdict/orchestration/receipt.py#L599)).
 Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
 (verifies the committed demo run).
 
@@ -757,7 +757,7 @@ The provider is built only when the mode is not `OFF` and `TYPESAFE_API_KEY` is 
 | Mode | What it can change | What it cannot change |
 |---|---|---|
 | `OFF` (default) | Nothing. The provider is never called. | — |
-| `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:208-230`](verdict/orchestration/run.py#L208-L230), [`:316-331`](verdict/orchestration/run.py#L316-L331)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
+| `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:281-303`](verdict/orchestration/run.py#L281-L303), [`:402-415`](verdict/orchestration/run.py#L402-L415)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
 | `ADVISORY` | On the single-route path (`IntelligenceService.route`), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py:526-608`](verdict/intelligence.py#L526-L608)). Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` behaves like `SHADOW`. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
 
 The demo run records one `SHADOW` signal from a fixture provider in its receipt. The test above shows that opposite `SHADOW` signals produce the same requirements and the same DAG.
