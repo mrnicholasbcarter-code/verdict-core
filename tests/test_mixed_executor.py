@@ -492,6 +492,80 @@ def test_executor_map_frontier_warning_via_run_golden_path(
     assert "does-not-exist" in captured.err, f"warning not found in stderr: {captured.err!r}"
 
 
+def test_executor_map_unmatched_fires_through_fault_injecting_wrapper(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """FaultInjectingExecutor(MixedExecutor(...unmatched...)) still emits the event.
+
+    When --inject is combined with --executor-map, cli.py wraps MixedExecutor
+    inside FaultInjectingExecutor.  run_golden_path must unwrap the outer layer
+    to reach MixedExecutor and check its mapped_node_ids.
+    """
+    runs_root = tmp_path / "runs"
+    workspace = tmp_path / "ws"
+    runs_root.mkdir()
+    workspace.mkdir()
+    repo = _init_repo(workspace)
+
+    ladder = EligibilityLadder(
+        INVENTORY,
+        CONNECTIONS,
+        _HealthyProbe(),
+        workspace / "health.json",
+        allow_unknown_capacity=True,
+    )
+    mix = MixedExecutor(
+        node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
+        default=_scripted(_KIND_A),
+    )
+    # Wrap in FaultInjectingExecutor (empty faults) as --inject would do
+    executor = FaultInjectingExecutor(mix, {})
+
+    reviewer = OpenCodeReviewer(
+        ladder,
+        api_key_env=_OFFLINE_OCR_ENV,
+        out_dir=workspace / "review",
+        runner=_PassingOcrRunner(),
+    )
+    old_key = os.environ.get(_OFFLINE_OCR_ENV)
+    os.environ[_OFFLINE_OCR_ENV] = "offline-scripted-no-network"
+    try:
+        result = asyncio.run(
+            run_golden_path(
+                "mixed-executor offline test",
+                repo=repo,
+                runs_root=runs_root,
+                selector=ladder,
+                executor=executor,
+                classifier=FailureIntelligence(),
+                reviewer=reviewer,
+                graph=MIXED_GRAPH,
+                run_id="mixed-wrapped-fault",
+                policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                mode="offline-scenario",
+            )
+        )
+    finally:
+        if old_key is None:
+            os.environ.pop(_OFFLINE_OCR_ENV, None)
+        else:
+            os.environ[_OFFLINE_OCR_ENV] = old_key
+
+    assert result.outcome == RunOutcome.COMPLETE.value, result.reason
+
+    events = _load_events(result.run_dir)
+    unmatched_events = [e for e in events if e["type"] == "executor_map_unmatched"]
+    assert unmatched_events, (
+        "executor_map_unmatched event not emitted when MixedExecutor is "
+        "wrapped inside FaultInjectingExecutor"
+    )
+    keys = unmatched_events[0]["data"].get("unmatched_keys", [])
+    assert "does-not-exist" in keys, keys
+
+    captured = capsys.readouterr()
+    assert "does-not-exist" in captured.err, captured.err
+
+
 # ---------------------------------------------------------------------------
 # cwd-name parsing: worktrees parent required
 # ---------------------------------------------------------------------------

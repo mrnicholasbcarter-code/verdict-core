@@ -1237,6 +1237,11 @@ class MixedExecutor:
         self._map = dict(node_map)
         self._default = default
 
+    @property
+    def mapped_node_ids(self) -> frozenset[str]:
+        """Node ids explicitly assigned to a non-default executor."""
+        return frozenset(self._map)
+
     @staticmethod
     def _node_id_from_cwd(cwd: Path) -> str | None:
         """Return the node id when *cwd* is an attempt worktree, else None.

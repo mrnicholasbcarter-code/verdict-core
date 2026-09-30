@@ -737,13 +737,29 @@ async def run_golden_path(
 
     # After the graph is known, check whether any --executor-map keys are missing
     # from the plan.  This surfaces typos regardless of whether --graph was given.
-    # MixedExecutor exposes its node map via _map; unknown keys silently fall back
-    # to the default executor which is hard to diagnose after the run.
+    # Unwrap known single-layer wrappers (FaultInjectingExecutor.inner, etc.) so
+    # the check works when --inject is combined with --executor-map.
     from verdict.orchestration.executors import MixedExecutor as _MixedExecutor
 
-    if isinstance(executor, _MixedExecutor):
+    def _find_mixed(ex: object) -> _MixedExecutor | None:
+        """Walk single-inner wrappers until we find a MixedExecutor or give up."""
+        seen: set[int] = set()
+        while ex is not None:
+            if id(ex) in seen:
+                break
+            seen.add(id(ex))
+            if isinstance(ex, _MixedExecutor):
+                return ex
+            inner = getattr(ex, "inner", None)
+            if inner is None:
+                break
+            ex = inner
+        return None
+
+    _mixed = _find_mixed(executor)
+    if _mixed is not None:
         planned_ids = {n.node_id for n in graph.nodes}
-        unmatched = sorted(k for k in executor._map if k not in planned_ids)
+        unmatched = sorted(k for k in _mixed.mapped_node_ids if k not in planned_ids)
         if unmatched:
             import sys as _sys
 
