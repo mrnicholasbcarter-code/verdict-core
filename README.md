@@ -793,9 +793,9 @@ All assets come from committed code and committed data. None of the tools below 
 | Asset | Size | Source data | Regenerate |
 |---|---|---|---|
 | [`docs/proof/demo-run/`](docs/proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
-| [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty at real time | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
-| [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~450 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
-| [`docs/assets/demo-poster.svg`](docs/assets/demo-poster.svg) | ~15 KB | first COMPLETE cockpit frame of `demo.cast` | same command as `demo.svg` |
+| [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~1 MB | the demo run above, recorded in a pty at real time | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
+| [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~165 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
+| [`docs/assets/demo-poster.svg`](docs/assets/demo-poster.svg) | ~22 KB | first COMPLETE cockpit frame of `demo.cast` | same command as `demo.svg` |
 | [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~1 MB | offline scenario (scripted workers, injected fault), replayed at 1x; gaps over 1.5 s capped | `python scripts/record_tui_demo.py --scenario --speed 1` |
 | [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~290 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
 | [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~23 KB | first COMPLETE cockpit frame of `demo-tui.cast` | same command as `demo-tui.svg` |
