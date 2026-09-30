@@ -374,6 +374,12 @@ Operator-visible fail-closed modes:
   either GET fails, it refuses with `live_admission_unavailable`. In both
   cases `supervisor.json` is `BLOCKED`. The receipt is
   `controller-admission-*.json` in the state directory.
+  A controller route-prefix scope can be set with `--scope` (flag) or
+  `VERDICT_CONTROLLER_ROUTE_PREFIXES` (env var, comma-separated). When set,
+  only admitted routes whose id starts with one of the listed prefixes are
+  eligible; the stage is `CONTROLLER_SCOPE` with reason
+  `outside_controller_route_prefix`. If the scope is non-empty but no admitted
+  route matches, the supervisor fails closed with `controller_scope_empty`.
 - Controller confirmation: the controller launches only routes that the
   budgeted confirm in `prepare` reported as confirmed, or routes that are
   proven healthy. Otherwise it refuses with `no_eligible_route`, and the

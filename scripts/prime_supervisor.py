@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
 
 def _load_py_module(name: str, path: Path) -> types.ModuleType:
@@ -1348,17 +1348,35 @@ def _live_admission_gateway() -> str:
     return bootstrap.gateway_url.strip()
 
 
-def _default_live_admission_loader(state_dir: Path) -> Callable[[datetime], Any]:
-    """Canonical live admission for controller seeds (read-only OmniRoute GETs)."""
+def _default_live_admission_loader(
+    state_dir: Path, *, scope_prefixes: Sequence[str] = ()
+) -> Callable[[datetime], Any]:
+    """Canonical live admission for controller seeds (read-only OmniRoute GETs).
+
+    When *scope_prefixes* is non-empty the returned admission is narrowed to
+    routes whose id starts with one of those prefixes (``CONTROLLER_SCOPE``
+    stage).  If no admitted route survives the narrowing, the loader raises
+    ``AdmissionUnavailableError`` with reason ``controller_scope_empty`` so the
+    supervisor fails closed rather than falling back to an unscoped route.
+    """
+    prefixes: tuple[str, ...] = tuple(scope_prefixes)
 
     def load(when: datetime) -> Any:
-        from verdict.admission import load_live_admission
+        from verdict.admission import AdmissionUnavailableError, load_live_admission
 
         gateway = _live_admission_gateway()
         key = (
             os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
         ).strip() or None
         admitted = load_live_admission(gateway, now=when, api_key=key)
+        if prefixes:
+            admitted = admitted.restrict_controller_scope(list(prefixes))
+            if not admitted:
+                scope_str = ",".join(prefixes)
+                raise AdmissionUnavailableError(
+                    "controller_scope_empty",
+                    f"no admitted route matches scope {scope_str}",
+                )
         admitted.write_receipt(state_dir / "controller-admission-latest.json")
         return admitted
 
@@ -1376,6 +1394,7 @@ def build_production_controller_selection_bundle(
     intelligence_service: Any | None = None,
     certify_runtime_fn: Callable[..., Any] | None = None,
     story_id: str | None = None,
+    controller_scope_prefixes: Sequence[str] = (),
     **factory_kwargs: Any,
 ) -> Any:
     """Build production selection bundle from real persisted inputs/env configs.
@@ -1442,7 +1461,9 @@ def build_production_controller_selection_bundle(
         # Authoritative config-built service: canonical live admission is the
         # sole seed authority before ranking (read-only GETs; fails closed).
         if service is not None and kwargs.get("admission") is None:
-            kwargs["admission"] = _default_live_admission_loader(state_dir)
+            kwargs["admission"] = _default_live_admission_loader(
+                state_dir, scope_prefixes=controller_scope_prefixes
+            )
 
         selection = _cs()
         if hasattr(selection, "build_production_controller_selection_bundle"):
@@ -1906,6 +1927,18 @@ def main() -> int:
             "Per-story state files live under <state_dir>/stories/<safe_id>/."
         ),
     )
+    parser.add_argument(
+        "--scope",
+        default=None,
+        help=(
+            "Comma-separated controller route-prefix allowlist (e.g. 'cc/,kr/'). "
+            "Hard admission boundary: only admitted routes whose id starts with one "
+            "of these prefixes are eligible for controller selection. "
+            "Empty means all admitted routes are eligible (default). "
+            "The env var VERDICT_CONTROLLER_ROUTE_PREFIXES is an equivalent "
+            "alternative; this flag takes precedence when both are set."
+        ),
+    )
     args = parser.parse_args()
     if args.skip_identity_verify and os.environ.get("VERDICT_TEST_MODE") != "1":
         parser.error("--skip-identity-verify is only allowed when VERDICT_TEST_MODE=1")
@@ -1941,6 +1974,14 @@ def main() -> int:
         state = _story_state_dir(shared_state, args.story)
     run_id = str(uuid.uuid4())
     count = 0
+    # Resolve controller route-prefix scope: --scope wins over the env var.
+    # Empty means all admitted routes are eligible (parity with no flag).
+    _raw_scope = (args.scope or "").strip() or (
+        os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or ""
+    ).strip()
+    controller_scope_prefixes: tuple[str, ...] = tuple(
+        p.strip() for p in _raw_scope.split(",") if p.strip()
+    )
 
     def interrupted(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt("supervisor interrupted")
@@ -1979,6 +2020,7 @@ def main() -> int:
                     max_issues=args.max_issues,
                     timeout=args.timeout,
                     story_id=args.story,
+                    controller_scope_prefixes=controller_scope_prefixes,
                 )
                 selection_hooks = production_bundle.hooks
             if session_state is None and selection_hooks is not None:

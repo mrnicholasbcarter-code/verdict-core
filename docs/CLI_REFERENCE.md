@@ -657,6 +657,30 @@ verdict benchmark [flags]
 
 ---
 
+## `scripts/prime_supervisor.py` — Autonomous controller supervisor
+
+```bash
+python scripts/prime_supervisor.py [flags]
+```
+
+Runs the Prime controller in automatic mode: selects a controller via live
+Verdict admission, launches it, and restarts within the retry budget on failure.
+
+| Flag | Description |
+|------|-------------|
+| `--repo REPO` | Git repository root (default: `.`) |
+| `--state-dir STATE_DIR` | Durable state directory (default: `<git-common-dir>/verdict-prime`) |
+| `--prime PRIME` | Prime agent name (default: `prime-agent`) |
+| `--provider PROVIDER` | Explicit provider override (requires `--model`); omit for automatic mode |
+| `--model MODEL` | Explicit model override (requires `--provider`); omit for automatic mode |
+| `--scope SCOPE` | Comma-separated controller route-prefix allowlist, e.g. `cc/,kr/`. Hard admission boundary: only admitted routes whose id starts with one of these prefixes are eligible. Empty means all admitted routes are eligible. The env var `VERDICT_CONTROLLER_ROUTE_PREFIXES` is an alternative; `--scope` takes precedence when both are set. |
+| `--story STORY` | Story identifier (required when `VERDICT_MULTI_STORY=on`) |
+| `--idle-seconds N` | Idle timeout in seconds (default: `600`) |
+| `--timeout N` | Overall timeout in seconds (default: `3600`) |
+| `--max-restarts N` | Controller restart budget (default: `2`) |
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
@@ -667,6 +691,8 @@ verdict benchmark [flags]
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile |
 | `LLMGATE_LOG_PATH` | Decision log path |
 | `VERDICT_RECEIPTS_DB` | Durable SQLite receipt database; required for authenticated API mode |
+| `VERDICT_CONTROLLER_ROUTE_PREFIXES` | Comma-separated controller route-prefix allowlist for `prime_supervisor.py` (e.g. `cc/,kr/`). `--scope` takes precedence when both are set. Empty means all admitted routes are eligible. |
+| `VERDICT_WORKER_ROUTE_PREFIXES` | Comma-separated worker route-prefix allowlist for `verdict orchestrate` and the worker runtime. |
 
 ---
 
