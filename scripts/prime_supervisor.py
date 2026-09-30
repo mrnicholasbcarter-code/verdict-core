@@ -1371,12 +1371,14 @@ def _default_live_admission_loader(
         admitted = load_live_admission(gateway, now=when, api_key=key)
         if prefixes:
             admitted = admitted.restrict_controller_scope(list(prefixes))
-            if not admitted:
-                scope_str = ",".join(prefixes)
-                raise AdmissionUnavailableError(
-                    "controller_scope_empty", f"no admitted route matches scope {scope_str}"
-                )
+        # Always write the receipt (including the narrowed, possibly-empty one)
+        # so operators can inspect per-route drop reasons even when no route survived.
         admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        if prefixes and not admitted:
+            scope_str = ",".join(prefixes)
+            raise AdmissionUnavailableError(
+                "controller_scope_empty", f"no admitted route matches scope {scope_str}"
+            )
         return admitted
 
     return load
