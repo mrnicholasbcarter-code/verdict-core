@@ -81,5 +81,27 @@ def test_only_posters_use_content_height(
 
 @pytest.mark.parametrize("name", ["demo", "demo-tui"])
 def test_committed_complete_frames_are_cropped_to_last_nonblank_row(name: str) -> None:
-    _, height = renderer.poster_frame(ROOT / "docs/assets" / f"{name}.cast")
-    assert height == 49
+    """The poster frame is the COMPLETE cockpit that poster_frame() selects, and
+    its crop ends exactly at that frame's last non-blank row (the bottom border
+    of the final banner), not at the full recording height."""
+    cast = ROOT / "docs/assets" / f"{name}.cast"
+    at_ms, height = renderer.poster_frame(cast)
+    lines = cast.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert height < header["height"], "poster was not cropped"
+    # Walk the cast with the same compressed clock poster_frame() uses and take
+    # the event that ends at at_ms: that is the frame the poster renders.
+    idle = float(header.get("idle_time_limit", 1e9))
+    prev, clock, frame = 0.0, 0.0, None
+    for line in lines[1:]:
+        at, kind, data = json.loads(line)
+        clock += min(float(at) - prev, idle)
+        prev = float(at)
+        if kind == "o" and round(clock * 1000) == at_ms and "COMPLETE" in renderer._visible(data):
+            frame = renderer._visible(data)
+            break
+    assert frame is not None, f"no COMPLETE frame at the poster time {at_ms} ms"
+    rows = frame.split("\n")
+    last = max(i for i, row in enumerate(rows) if row.strip()) + 1
+    assert height == last
+    assert rows[height - 1].strip().startswith("\u2517"), rows[height - 1]

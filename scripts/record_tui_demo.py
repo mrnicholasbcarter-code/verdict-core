@@ -24,6 +24,7 @@ Then render SVG:
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import pty
@@ -215,10 +216,21 @@ def to_asciicast(
     }
     lines = [json.dumps(header)]
     last = 0.0
+    # A pty read can end in the middle of a UTF-8 character (box-drawing
+    # glyphs are three bytes). Decoding each read on its own turns the split
+    # character into two U+FFFD replacement characters, one extra column that
+    # wraps the row and shifts every later redraw down a line. An incremental
+    # decoder carries the partial bytes into the next event instead.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     for at, data in chunks:
         stamp = max(last, round(at, 3))
         last = stamp
-        lines.append(json.dumps([stamp, "o", data.decode("utf-8", errors="replace")]))
+        text = decoder.decode(data)
+        if text:
+            lines.append(json.dumps([stamp, "o", text]))
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        lines.append(json.dumps([last, "o", tail]))
     return "\n".join(lines) + "\n"
 
 
