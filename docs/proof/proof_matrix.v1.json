@@ -727,7 +727,7 @@
       ],
       "verification": "verdict run-receipt --runs-dir docs/proof/mixed-harness-live-2026-09-30 run",
       "public_wording": "One live Verdict run supervised two worker harnesses (Prime Agent headless and the direct gateway) in the same cockpit, with the harness recorded per attempt.",
-      "gap": "Both nodes succeeded first try on the same route, so cross-harness failover is not exercised; the direct-gateway attempt's reported model omits the provider prefix and is recorded as a route-identity mismatch."
+      "gap": "Both nodes succeeded first try on the same selected route, so cross-harness failover is not exercised; node-2's direct-gateway attempt reported a model without the provider prefix, so its provider-qualified identity is unverified (recorded as a route-identity mismatch)."
     }
   ]
 }
