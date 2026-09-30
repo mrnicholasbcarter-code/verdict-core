@@ -215,11 +215,11 @@ See the full proof bundle in [`docs/proof/dogfood-bod-225-live-2026-09-29/`](doc
 
 ---
 
-**Recorded TUI walkthrough** (live run, kr/* workers, controller failover, independent review PASS)
+**Recorded TUI walkthrough** (offline scenario: scripted workers, one injected fault, failover to another route, independent review PASS, then a receipt check and a tampered copy that fails it)
 
-<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="TUI replay of live-controller-run" width="860"></picture>
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="TUI replay of the offline scenario: Verdict home, cockpit running with a failover, COMPLETE, then a receipt check and a rejected tampered copy" width="860"></picture>
 
-<sub>Replay of the recorded real-model run [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (about 91 s), replayed at 1x real time from the recorded run. Gaps longer than 1.5 s were shortened by the replay (three gaps, about 87 s of idle). Recorded with [`scripts/record_tui_demo.py`](scripts/record_tui_demo.py). You can run this yourself: `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg).</sub>
+<sub>Offline scenario, no model calls: the real run loop with scripted workers and an injected rate limit, replayed at 1x from real PTY read times (gaps over 1.5 s capped). It opens on the Verdict home, plays the cockpit to COMPLETE, then runs `verdict run-receipt` on the run (integrity OK, exit 0) and on a copy with one event byte changed (digest mismatch, exit 1). Recorded with `python scripts/record_tui_demo.py --scenario --speed 1`. The live-model evidence is the [proof bundle above](#proof-from-a-live-run); replay a real run yourself with `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg).</sub>
 
 ## How it works
 
@@ -796,9 +796,9 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/assets/demo.cast`](docs/assets/demo.cast) | ~12 KB | the demo run above, recorded in a pty at real time | `python scripts/record_demo.py` (stdlib only; also rewrites `docs/proof/demo-run/`) |
 | [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~450 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
 | [`docs/assets/demo-poster.svg`](docs/assets/demo-poster.svg) | ~15 KB | last frame of `demo.cast` | same command as `demo.svg` |
-| [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~700 KB | [`docs/proof/live-controller-run`](docs/proof/live-controller-run) (real-model run), replayed at 1x; gaps over 1.5 s shortened | `python scripts/record_tui_demo.py --speed 1 docs/proof/live-controller-run` |
-| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~110 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
-| [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~16 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
+| [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~1 MB | offline scenario (scripted workers, injected fault), replayed at 1x; gaps over 1.5 s capped | `python scripts/record_tui_demo.py --scenario --speed 1` |
+| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~200 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
+| [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~22 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
 | `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
