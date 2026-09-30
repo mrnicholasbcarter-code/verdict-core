@@ -579,7 +579,7 @@ flowchart TD
 %% evidence: verdict/orchestration/run.py:425 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
 %% evidence: verdict/orchestration/planner.py:59 def choose_topology(nodes, max_parallel, risk_hint) -- deterministic rules, docstring states "Never asks a model"
 %% evidence: verdict/orchestration/planner.py:312 def parse_plan(text, goal, max_parallel) -> WorkGraph
-%% evidence: verdict/orchestration/planner.py:401,404 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:344-360)
+%% evidence: verdict/orchestration/planner.py:401,404 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:430-467)
 %% evidence: verdict/orchestration/planner.py:473-474 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
 %% evidence: verdict/orchestration/contracts.py:192 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
 %% evidence: verdict/orchestration/contracts.py:41,57 class NodeState, TRANSITIONS mapping (legal state transitions)
@@ -594,12 +594,12 @@ flowchart TD
 %% evidence: verdict/orchestration/runtime.py:819,861 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
 %% evidence: verdict/orchestration/runtime.py:863 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
 %% evidence: verdict/orchestration/runtime.py:1309-1313 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
-%% evidence: verdict/orchestration/runtime.py:1319-1344 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1306-1311
+%% evidence: verdict/orchestration/runtime.py:1319-1344 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1368-1374
 %% evidence: verdict/orchestration/review.py:198,231 class OpenCodeReviewer, async def review(...)
 %% evidence: verdict/orchestration/review.py:324 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
 %% evidence: verdict/orchestration/contracts.py:683,697 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
 %% evidence: verdict/orchestration/recovery.py:148,156 class FailureIntelligence, def classify(terminal, now)
-%% evidence: verdict/orchestration/runtime.py:60 imports RecoveryBudget; :301 creates self._recovery_budget; :447 _handle_retry_node; :483 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1091
+%% evidence: verdict/orchestration/runtime.py:60 imports RecoveryBudget; :306 creates self._recovery_budget; :467 _handle_retry_node; :512 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1152
 %% evidence: verdict/orchestration/receipt.py:463 def build_run_receipt(run_dir)
 %% evidence: verdict/orchestration/receipt.py:526,547 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
 %% evidence: verdict/orchestration/receipt.py:178 def _sha256_file(path)
@@ -671,7 +671,7 @@ Each claim links to the code that does it and a test that checks it, at this com
 **One admitted set, narrowed but never widened.** `admit()` builds the admitted set from live inventory,
 provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
 fallback ([`verdict/admission.py:945`](verdict/admission.py#L945)). The set cannot be built any other way
-([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
+([`:390`](verdict/admission.py#L390)). Scope, provider family and the active controller can only narrow it
 ([`verdict/orchestration/eligibility_report.py:139-140`](verdict/orchestration/eligibility_report.py#L139-L140), through [`AdmittedSet.restrict_prefixes`/`restrict_families`/`exclude_controller`](verdict/admission.py)). The ladder raises
 `AdmissionBypassError` if it ever picks a route outside the set
 ([`verdict/orchestration/eligibility.py:841`](verdict/orchestration/eligibility.py#L841), through
@@ -725,7 +725,7 @@ non-zero exit, a timeout or output that does not parse all become `ERROR`, never
 Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
 
 **Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`
-([`verdict/orchestration/receipt.py:547`](verdict/orchestration/receipt.py#L547),
+([`verdict/orchestration/receipt.py:178`](verdict/orchestration/receipt.py#L178),
 [`:547`](verdict/orchestration/receipt.py#L547)). Verification recomputes it and rebuilds every other field
 from the same log ([`:599`](verdict/orchestration/receipt.py#L599)).
 Tests: [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py), [`tests/test_readme_assets.py`](tests/test_readme_assets.py)
