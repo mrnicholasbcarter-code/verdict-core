@@ -357,3 +357,59 @@ def test_mixed_executor_run_label_in_run_started(tmp_path: Path) -> None:
     events = _load_events(run_dir)
     run_started = next(e for e in events if e["type"] == "run_started")
     assert run_started["data"]["executor"] == "mixed", run_started["data"]
+
+
+# ---------------------------------------------------------------------------
+# Conditional harness column: only shown when ≥1 node has harness data
+# ---------------------------------------------------------------------------
+
+
+def test_workers_table_no_harness_column_when_no_harness_data() -> None:
+    """Runs with no harness data (pre-BOD-284 events, single-executor runs) must
+    render the WORKERS table WITHOUT a 'harness' column, keeping the header and
+    layout identical to origin/main."""
+    events = [
+        {
+            "seq": 1,
+            "at": "2026-01-01T00:00:01+00:00",
+            "type": "run_started",
+            "data": {"goal": "test"},
+        },
+        {
+            "seq": 2,
+            "at": "2026-01-01T00:00:02+00:00",
+            "type": "node_state",
+            "node_id": "node-1",
+            "data": {"state": "VALIDATED"},
+        },
+        {
+            "seq": 3,
+            "at": "2026-01-01T00:00:03+00:00",
+            "type": "terminal",
+            "node_id": "node-1",
+            "data": {
+                "ok": True,
+                "route_id": "cc/claude-a",
+                "reported_model": "cc/claude-a",
+                "executor_kind": "live",
+                # no 'harness' key -- pre-BOD-284 event
+                "duration_seconds": 1.0,
+                "attempt": 1,
+            },
+        },
+    ]
+    text = render_text(events, plain=True)
+    # The WORKERS header must NOT include 'harness'
+    assert "harness" not in text, "harness column appeared in a run with no harness data"
+    # The standard columns are present
+    assert "node" in text
+
+
+def test_workers_table_shows_harness_column_in_mixed_run(tmp_path: Path) -> None:
+    """Mixed runs (with harness field on terminals) render the 'harness' column."""
+    run_dir = _run_mixed(tmp_path)
+    events = read_events(run_dir / "events.jsonl")
+    text = render_text(events, plain=True)
+    assert "harness" in text, "harness column missing in a mixed run with harness data"
+    assert _KIND_A in text
+    assert _KIND_B in text

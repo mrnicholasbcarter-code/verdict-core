@@ -668,28 +668,36 @@ def _lines(items: Sequence[str], empty: str) -> Text:
 
 
 def _workers(view: RunView, plain: bool) -> Table:
+    # Show the harness column only when at least one node has harness data.
+    # Existing replays and single-executor runs carry no harness field, so
+    # the column is suppressed and the table is byte-for-byte identical to
+    # the pre-BOD-284 layout at every width.
+    show_harness = any(n.harness for n in view.nodes.values())
     table = Table(
         box=None if plain else box.SIMPLE,
         pad_edge=False,
         show_edge=False,
         header_style="" if plain else TOKENS["MUTED"],
     )
-    for name in ("node", "state", "route", "provider", "att", "elapsed", "harness", "history"):
+    base_cols = ("node", "state", "route", "provider", "att", "elapsed")
+    for name in (*base_cols, *(("harness",) if show_harness else ()), "history"):
         table.add_column(name, overflow="fold")
     for node in view.nodes.values():
         glyph, token = _glyph(node.glyph_key(), plain)
-        table.add_row(
+        base_cells = (
             Text(node.node_id),
             Text(f"{glyph} {node.state.value}", style=_style(token, plain)),
             Text(short_route(node.route_id) if node.route_id else "-"),
             Text(node.provider or "-"),
             Text(str(node.attempt)),
             Text(node.elapsed(view.now)),
-            Text(node.harness or "-"),
-            Text(_history(node, plain)),
         )
+        harness_cell = (Text(node.harness),) if show_harness else ()
+        table.add_row(*base_cells, *harness_cell, Text(_history(node, plain)))
     if not view.nodes:
-        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-", "-", "-")))
+        empty = ("-", "no workers yet", "-", "-", "-", "-")
+        harness_empty = ("-",) if show_harness else ()
+        table.add_row(*(Text(x) for x in (*empty, *harness_empty, "-")))
     return table
 
 
