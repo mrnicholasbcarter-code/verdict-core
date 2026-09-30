@@ -31,6 +31,14 @@ from verdict.metadata.records import (
 )
 from verdict.security import validate_upstream_url
 
+
+def _package_version() -> str:
+    """Installed Verdict version, so the metadata User-Agent never drifts from the release."""
+    from verdict import __version__
+
+    return __version__
+
+
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 MODELS_DEV_MODELS_URL = "https://models.dev/models.json"
 LITELLM_URL = (
@@ -122,7 +130,7 @@ class HttpxJsonTransport:
             raise ModelMetadataError(f"metadata host is not allowlisted: {host}")
         headers = {
             "Accept": "application/json",
-            "User-Agent": "verdict-core/0.4.0 (BOD-108 metadata)",
+            "User-Agent": f"verdict-core/{_package_version()} (BOD-108 metadata)",
         }
         with httpx.Client(
             transport=self._transport, timeout=self.timeout, follow_redirects=False
