@@ -251,3 +251,22 @@ def test_svg_renderer_uses_cast_dimensions_and_generic_font(
     poster_command = commands[1]
     assert poster_command[poster_command.index("--height") + 1] == "49"
     assert poster_command[-2:] == ["--at", "1000"]
+
+
+def test_utf8_character_split_across_reads_stays_one_character() -> None:
+    """A pty read can end inside a 3-byte box-drawing glyph. The cast must keep
+    the glyph whole, not two U+FFFD replacement characters (which add a column,
+    wrap the row, and shift every later redraw)."""
+    row = ("┏" + "━" * 8 + "┓").encode()
+    cut = 4  # inside the second glyph
+    cast = rec.to_asciicast([(0.1, row[:cut]), (0.2, row[cut:])], width=20, height=5, title="t")
+    events = [json.loads(line) for line in cast.splitlines()[1:]]
+    text = "".join(e[2] for e in events)
+    assert "\ufffd" not in text
+    assert text == row.decode()
+
+
+def test_trailing_partial_bytes_are_flushed() -> None:
+    cast = rec.to_asciicast([(0.1, b"ok \xe2\x94")], width=20, height=5, title="t")
+    events = [json.loads(line) for line in cast.splitlines()[1:]]
+    assert "".join(e[2] for e in events).startswith("ok ")

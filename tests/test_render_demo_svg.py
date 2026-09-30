@@ -81,5 +81,23 @@ def test_only_posters_use_content_height(
 
 @pytest.mark.parametrize("name", ["demo", "demo-tui"])
 def test_committed_complete_frames_are_cropped_to_last_nonblank_row(name: str) -> None:
-    _, height = renderer.poster_frame(ROOT / "docs/assets" / f"{name}.cast")
-    assert height == 49
+    """The poster crop ends exactly at the COMPLETE frame's last row: the
+    bottom border of the final banner, not the full recording height."""
+    cast = ROOT / "docs/assets" / f"{name}.cast"
+    _, height = renderer.poster_frame(cast)
+    lines = cast.read_text(encoding="utf-8").splitlines()
+    assert height < json.loads(lines[0])["height"], "poster was not cropped"
+    for line in lines[1:]:
+        _at, kind, data = json.loads(line)
+        text = renderer._visible(data)
+        if (
+            kind == "o"
+            and "COMPLETE" in text
+            and ("VALIDATED" in text or "REASSIGN" in text.upper())
+            and ("\u2503" in data or "\u2501" in data)
+        ):
+            rows = text.split("\n")
+            assert rows[height - 1].strip().startswith("\u2517"), rows[height - 1]
+            assert all(not row.strip() for row in rows[height:])
+            return
+    raise AssertionError("no COMPLETE cockpit frame in the cast")
