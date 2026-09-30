@@ -219,7 +219,12 @@ def register(subparsers: Any) -> None:
         "demo", help="Credential-free deterministic demo (offline scenario)"
     )
     demo_p.add_argument(
-        "--live", action="store_true", help="Use production routing path (requires credentials)"
+        "--live",
+        action="store_true",
+        help=(
+            "Do not run the offline scenario. With credentials configured, print how "
+            "to start a live run with verdict orchestrate; without them, exit 1"
+        ),
     )
     demo_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     demo_p.add_argument(

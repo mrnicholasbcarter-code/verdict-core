@@ -415,3 +415,78 @@ def test_cmd_autodev_packet_canary_reaches_run_action(tmp_path: Path) -> None:
             cli.cmd_autodev_packet_canary(str(episodes), str(admitted), output_json=True)
         called = [c.args[0] for c in spy.call_args_list]
         assert "autodev.packet.canary" in called
+
+
+def test_demo_live_without_credentials_exits_1_and_points_to_orchestrate(
+    tmp_path, monkeypatch, capsys
+):
+    """BOD-279: without credentials, `verdict demo --live` exits 1 and names the live path."""
+    import json as _json
+
+    from verdict.actions.registry import run_action
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = run_action("demo.run", {"live": True, "json": False, "width": 100})
+    assert not result.ok
+    assert result.exit_code == 1
+    message = result.data["error"]
+    assert "No credentials configured" in message
+    assert "verdict orchestrate" in message
+    assert "OFFLINE SCENARIO" not in _json.dumps(result.data)
+
+
+def test_demo_live_with_credentials_points_to_orchestrate_and_runs_nothing(monkeypatch):
+    """BOD-279: with credentials, `verdict demo --live` starts no run; it names verdict orchestrate."""
+    import json as _json
+
+    import verdict.orchestration.demo_scenario as demo_scenario
+    import verdict.orchestration.run as orch_run
+    from verdict.actions.registry import run_action
+    from verdict.credentials_store import CredentialsStore
+
+    started: list[str] = []
+
+    def _forbidden(name: str):
+        def _spy(*_args: object, **_kwargs: object) -> None:
+            started.append(name)
+            raise AssertionError(f"demo --live must not start a run ({name})")
+
+        return _spy
+
+    monkeypatch.setattr(orch_run, "run_golden_path", _forbidden("run_golden_path"))
+    monkeypatch.setattr(demo_scenario, "run_flagship_scenario", _forbidden("run_flagship_scenario"))
+    monkeypatch.setattr(CredentialsStore, "list_credentials", lambda self: ["OMNIROUTE_API_KEY"])
+    result = run_action("demo.run", {"live": True, "json": False, "width": 100})
+    assert started == []
+    assert result.ok
+    assert result.data["mode"] == "live"
+    text = result.data["text"]
+    assert "does not start a run" in text
+    assert 'verdict orchestrate "<goal>" --repo .' in text
+    blob = _json.dumps(result.data)
+    assert "OFFLINE SCENARIO" not in blob
+    assert "run_dir" not in blob and "receipt" not in blob
+
+
+def test_demo_live_cli_exit_status_is_1_without_credentials(tmp_path):
+    """BOD-279: the real `verdict demo --live` command exits 1 when no credentials exist."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("OMNIROUTE_", "LLMGATE_", "VERDICT_", "XDG_"))
+    }
+    env.update(
+        {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / "config"), "NO_COLOR": "1"}
+    )
+    proc = subprocess.run(
+        [sys.executable, "-m", "verdict", "demo", "--live"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert "verdict orchestrate" in proc.stderr
+    assert "OFFLINE SCENARIO" not in proc.stdout + proc.stderr

@@ -1158,7 +1158,7 @@ def _action_trace_view(**kwargs: Any) -> ActionResult:
 
 
 def _action_demo_run(**kwargs: Any) -> ActionResult:
-    """Run the offline flagship scenario or launch live orchestration."""
+    """Run the offline flagship scenario; with live=True, point to verdict orchestrate."""
     import json as _json
     import shutil
     import tempfile
@@ -1177,8 +1177,8 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
                 data={
                     "error": (
                         "No credentials configured. "
-                        "verdict demo --live uses the PRODUCTION routing path. "
-                        "Run: verdict credentials set"
+                        "A live run (verdict orchestrate) uses the production routing path "
+                        "and needs credentials. Run: verdict credentials set"
                     )
                 },
                 ok=False,
@@ -1187,9 +1187,9 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
         return ActionResult(
             data={
                 "text": (
-                    "Live mode uses the production routing path. "
-                    'Run: verdict orchestrate "<goal>" --repo . '
-                    "for live orchestration with real providers."
+                    "verdict demo --live does not start a run. The live path is "
+                    'verdict orchestrate "<goal>" --repo . '
+                    "(production routing with real providers)."
                 ),
                 "mode": "live",
             }
@@ -1433,7 +1433,7 @@ def _register_builtins() -> None:
                 "demo.run",
                 "traces",
                 "read",
-                "Credential-free deterministic demo or live orchestration",
+                "Credential-free offline demo scenario (--live points to verdict orchestrate)",
                 "Traces",
             ),
             _action_demo_run,
