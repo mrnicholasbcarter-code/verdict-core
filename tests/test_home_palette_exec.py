@@ -898,6 +898,15 @@ def failing_action(name, params=None):
     raise ValueError("pty boom %d" % calls["n"])
 
 home.run_palette_action = failing_action
+
+
+def _no_fallback(*args, **kwargs):
+    raise SystemExit("FALLBACK LOOP USED")
+
+
+# The test is about the prompt_toolkit session: fail loudly if the plain
+# input() fallback is used instead.
+home._fallback_input_loop = _no_fallback
 sys.exit(home.run_home(probe=False))
 """
 
@@ -980,6 +989,7 @@ def test_real_prompt_session_survives_a_failing_command(tmp_path: Path) -> None:
     assert "ValueError: pty boom 1" in text, text[-3000:]
     assert "ValueError: pty boom 2" in text, text[-3000:]
     assert "Traceback" not in text
+    assert "FALLBACK LOOP USED" not in text
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
@@ -1005,3 +1015,45 @@ def test_probe_gateway_malformed_url_never_raises() -> None:
 
     assert probe_gateway("http://[::1") == (None, None)
     assert probe_gateway("ftp://example.test") == (None, None)
+
+
+def _load_recorder() -> types.ModuleType:
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "record_home_prompt", root / "scripts" / "record_home_prompt.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_recorder_rejects_a_capture_missing_a_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _load_recorder()
+    good = [(0.1, "verdict › REACHABLE CLAIMS VERIFIED Run orchestrate on this goal?".encode())]  # noqa: RUF001
+    assert rec.recording_problems(good) == []
+    missing = [(0.1, "verdict › REACHABLE Run orchestrate on this goal?".encode())]  # noqa: RUF001
+    assert rec.recording_problems(missing) == ["missing 'CLAIMS VERIFIED'"]
+    crashed = [(0.1, good[0][1] + b" Traceback (most recent call last)")]
+    assert "traceback in output" in rec.recording_problems(crashed)
+
+    out = tmp_path / "docs" / "assets" / "home-prompt.cast"
+    monkeypatch.setattr(rec, "ROOT", tmp_path)
+    monkeypatch.setattr(rec, "read_pty_with_input", lambda *a, **k: missing)
+    assert rec.main() == 1
+    assert not out.exists(), "an incomplete capture must not be written"
+
+
+def test_recorder_redacts_cwd_and_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _load_recorder()
+    home = tmp_path / "home" / "someone"
+    monkeypatch.setenv("HOME", str(home))
+    cwd = "/srv/build/work-dir"
+    chunks = [(0.1, f"repo: {cwd}\nconfig {home}/.config/verdict/verdict.yaml".encode())]
+    text = rec.sanitize_chunks(chunks, cwd=cwd)[0][1].decode()
+    assert cwd not in text and str(home) not in text
+    assert "repo: ." in text and "~/.config/verdict/verdict.yaml" in text

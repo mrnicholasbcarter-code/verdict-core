@@ -123,6 +123,36 @@ def to_asciicast(chunks: list[tuple[float, bytes]], *, width: int, height: int, 
 CHILD_SCRIPT = (ROOT / "scripts" / "_record_home_child.py").as_posix()
 
 
+REQUIRED_MARKERS = (
+    "verdict ›",  # noqa: RUF001
+    "REACHABLE",
+    "CLAIMS VERIFIED",
+    "Run orchestrate on this goal?",
+)
+
+
+def sanitize_chunks(chunks: list[tuple[float, bytes]], *, cwd: str) -> list[tuple[float, bytes]]:
+    """Never commit host paths: the recording cwd becomes "." and HOME "~"."""
+    home = os.path.expanduser("~")
+    swaps = sorted({(cwd, "."), (home, "~")}, key=lambda kv: len(kv[0]), reverse=True)
+    out = []
+    for t, data in chunks:
+        for old, new in swaps:
+            if old and old != "/":
+                data = data.replace(old.encode(), new.encode())
+        out.append((t, data))
+    return out
+
+
+def recording_problems(chunks: list[tuple[float, bytes]]) -> list[str]:
+    """Why a capture must not be written as a cast (empty list when it is fine)."""
+    text = b"".join(data for _, data in chunks).decode("utf-8", "replace")
+    problems = [f"missing {marker!r}" for marker in REQUIRED_MARKERS if marker not in text]
+    if "Traceback" in text:
+        problems.append("traceback in output")
+    return problems
+
+
 def main() -> int:
     output = ROOT / "docs" / "assets" / "home-prompt.cast"
     python = sys.executable
@@ -156,16 +186,12 @@ def main() -> int:
         print("No output captured", file=sys.stderr)
         return 1
     # Refuse to write a cast that does not show the session it claims to.
-    text = b"".join(data for _, data in chunks).decode("utf-8", "replace")
-    required = ("verdict ›", "REACHABLE", "CLAIMS VERIFIED", "Run orchestrate on this goal?")  # noqa: RUF001
-    missing = [marker for marker in required if marker not in text]
-    if missing or "Traceback" in text:
-        print(f"Recording incomplete; missing {missing}", file=sys.stderr)
+    problems = recording_problems(chunks)
+    if problems:
+        print(f"Recording incomplete: {problems}", file=sys.stderr)
         return 1
 
-    # Never commit host paths: show the home directory as "~".
-    home = os.path.expanduser("~").encode()
-    chunks = [(t, data.replace(home, b"~")) for t, data in chunks]
+    chunks = sanitize_chunks(chunks, cwd=os.getcwd())
     body = to_asciicast(
         chunks, width=WIDTH, height=HEIGHT, title="Verdict: interactive command prompt"
     )
