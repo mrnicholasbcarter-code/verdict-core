@@ -7,10 +7,12 @@ selection or recovery decisions live here.
 
 from __future__ import annotations
 
+import difflib
 import importlib
 import json
 import os
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -25,7 +27,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from verdict.design import TOKENS, PresentationMode, panel
+from verdict.design import TOKENS, PresentationMode, panel, presentation_mode
 from verdict.terminal_ui import TerminalUI, clean
 
 WORDMARK = (
@@ -38,10 +40,12 @@ WORDMARK = (
 )
 TAGLINE = "autonomous control plane  ·  plan · select · recover · verify · prove"
 
+# ---------------------------------------------------------------------------
 # Grouped command palette: (group, command, one-line purpose). Kept in sync with
 # the parser by tests (every entry must be a registered subcommand).
 # TUI section → action name mapping. Commands with an action name invoke
 # run_action() in-process; others remain CLI-only launch hints.
+# ---------------------------------------------------------------------------
 PALETTE: tuple[tuple[str, str, str, str], ...] = (
     ("Runs", "orchestrate", "goal -> DAG -> parallel workers -> review -> receipt", ""),
     ("Runs", "supervise", "run orchestrate under a stall/quota-aware supervisor", ""),
@@ -99,6 +103,51 @@ _ACTION_PARAMS: dict[str, list[tuple[str, object]]] = {
     # Actions with no required params have no entry here.
 }
 
+# Map bare or slash-prefixed name to (palette_cmd, action_name, kind)
+# Built lazily from PALETTE on first use.
+_COMMAND_INDEX: dict[str, tuple[str, str, str]] | None = None
+
+_PROBE_MAX_BYTES = 32 * 1024 * 1024
+HISTORY_DIR = Path.home() / ".verdict"
+HISTORY_FILE = HISTORY_DIR / "prompt_history"
+HISTORY_MAX_LINES = 500
+
+
+def _build_command_index() -> dict[str, tuple[str, str, str]]:
+    """Build a lookup: bare name → (palette_cmd, action_or_launch_ref, kind).
+
+    Supports both ``/demo`` and ``demo`` as lookup keys.
+    """
+    from verdict.actions.registry import LAUNCH
+
+    index: dict[str, tuple[str, str, str]] = {}
+    for _section, cmd, _desc, action in PALETTE:
+        if action:
+            index[cmd] = (cmd, action, "action")
+            index[f"/{cmd}"] = (cmd, action, "action")
+        elif cmd in LAUNCH:
+            index[cmd] = (cmd, cmd, "launch")
+            index[f"/{cmd}"] = (cmd, cmd, "launch")
+    # Additional shorthand aliases
+    index["quit"] = ("quit", "", "builtin")
+    index["/quit"] = ("quit", "", "builtin")
+    index["exit"] = ("quit", "", "builtin")
+    index["/exit"] = ("quit", "", "builtin")
+    index["help"] = ("help", "", "builtin")
+    index["/help"] = ("help", "", "builtin")
+    index["clear"] = ("clear", "", "builtin")
+    index["/clear"] = ("clear", "", "builtin")
+    index["runs"] = ("watch", "watch", "action")
+    index["/runs"] = ("watch", "watch", "action")
+    return index
+
+
+def _get_command_index() -> dict[str, tuple[str, str, str]]:
+    global _COMMAND_INDEX
+    if _COMMAND_INDEX is None:
+        _COMMAND_INDEX = _build_command_index()
+    return _COMMAND_INDEX
+
 
 @dataclass
 class HomeState:
@@ -114,13 +163,23 @@ def _plain(console: Console) -> bool:
 
 def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int | None]:
     """Bounded, unauthenticated reachability ping; never raises."""
-    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme
+    except Exception:
+        return None, None
+    if scheme not in {"http", "https"}:
         return None, None
     try:
-        request = urllib.request.Request(url.rstrip("/") + "/v1/models")
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
-            data = json.loads(response.read(32 * 1024 * 1024)).get("data")
-            return True, len(data) if isinstance(data, list) else None
+        request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
+            # Bounded read: large catalogs are several MB; anything past the
+            # cap is treated as a failed probe rather than read into memory.
+            raw = resp.read(_PROBE_MAX_BYTES + 1)
+            if len(raw) > _PROBE_MAX_BYTES:
+                return False, None
+            data = json.loads(raw)
+        models = data.get("data", [])
+        return True, len(models) if isinstance(models, list) else None
     except Exception:
         return False, None
 
@@ -166,14 +225,16 @@ def _age(seconds: int) -> str:
 
 
 def render_home(
-    state: HomeState, *, plain: bool, width: int, reveal: int | None = None
+    state: HomeState, *, plain: bool = True, width: int = 100, interactive: bool = False
 ) -> RenderableType:
-    """Render observed facts. ``reveal`` is retained for API compatibility only.
+    """Build the home renderable. No motion, no I/O.
 
+    ``interactive=True`` omits the full command list in favour of a hint line
+    (the command prompt shows completions instead).
     Branding is stable; only the real gateway probe may animate, in run_home.
     """
     if not plain:
-        return _styled_home(state, width=width)
+        return _styled_home(state, width=width, interactive=interactive)
     blocks: list[RenderableType] = []
     blocks.append(Text("VERDICT  autonomous control plane"))
     gw = (
@@ -247,7 +308,7 @@ def render_home(
     return Group(*blocks)
 
 
-def _styled_home(state: HomeState, *, width: int) -> RenderableType:
+def _styled_home(state: HomeState, *, width: int, interactive: bool = False) -> RenderableType:
     """One stable hierarchy: identity, observed health, recent work, controls."""
     mode = PresentationMode(True, True, False, width)
     mark = Text()
@@ -293,24 +354,35 @@ def _styled_home(state: HomeState, *, width: int) -> RenderableType:
     else:
         work.append("No runs yet.\n", style=TOKENS["SECONDARY"])
         work.append('Start: verdict orchestrate "<goal>" --repo .', style=TOKENS["ACCENT"])
-    controls = Table.grid(padding=(0, 2), expand=True)
-    controls.add_column(style=TOKENS["ACCENT"], no_wrap=True)
-    controls.add_column(style=TOKENS["SECONDARY"], overflow="fold")
-    last = ""
-    for group, command, purpose, _action in PALETTE:
-        if group != last:
-            controls.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), "")
-        controls.add_row(Text(f"verdict {command}", style=TOKENS["TEXT"]), Text(purpose))
-        last = group
-    footer = Text("↑/↓ select  ·  Enter run  ·  q quit", style=TOKENS["ACCENT"])
-    footer.append("\nverdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
-    controls_panel = panel(Group(controls, footer), title="03 / COMMANDS", mode=mode)
-    return Group(
+
+    parts: list[RenderableType] = [
         panel(mark, mode=mode, tone="PRIMARY"),
         panel(gateway, title="01 / CONNECTION", mode=mode),
         panel(work, title="02 / RECENT WORK", mode=mode),
-        controls_panel,
-    )
+    ]
+
+    if interactive:
+        # Hint line instead of the full command table.
+        hint = Text(
+            "Type a goal, or / for commands · /demo to see it work · Ctrl-D to quit",
+            style=TOKENS["MUTED"],
+        )
+        parts.append(hint)
+    else:
+        controls = Table.grid(padding=(0, 2), expand=True)
+        controls.add_column(style=TOKENS["ACCENT"], no_wrap=True)
+        controls.add_column(style=TOKENS["SECONDARY"], overflow="fold")
+        last = ""
+        for group, command, purpose, _action in PALETTE:
+            if group != last:
+                controls.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), "")
+            controls.add_row(Text(f"verdict {command}", style=TOKENS["TEXT"]), Text(purpose))
+            last = group
+        footer = Text("verdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
+        controls_panel = panel(Group(controls, footer), title="03 / COMMANDS", mode=mode)
+        parts.append(controls_panel)
+
+    return Group(*parts)
 
 
 def palette_actions() -> list[tuple[str, str, str, str]]:
@@ -363,11 +435,9 @@ def _call_launch_entry(entry: str, params: dict[str, Any]) -> tuple[bool, Any]:
         return False, {"error": f"cannot import {module_path!r}: {exc}"}
     func: Callable[..., Any] | None = getattr(mod, func_name, None)
     if func is None:
-        return False, {"error": f"{func_name!r} not found in {module_path!r}"}
+        return False, {"error": f"{module_path!r} has no attribute {func_name!r}"}
     try:
         result = func(**params)
-    except (KeyboardInterrupt, SystemExit):
-        raise  # re-raise to outer handler
     except Exception as exc:
         return False, {"error": str(exc)}
     # Normalise result to (ok, data)
@@ -413,6 +483,9 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
 
     if isinstance(data, list) and data and isinstance(data[0], dict):
         _render_table(console, data, plain=tui.plain, width=effective_width)
+    elif isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
+        # Text-bearing result (e.g. demo output): print text directly
+        console.print(clean(data["text"]))
     elif isinstance(data, dict):
         _render_kv_panel(console, data, plain=tui.plain, width=effective_width)
     elif isinstance(data, list):
@@ -432,59 +505,603 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
         console.print(clean(str(data))[:2000])
 
 
-def _render_table(
-    console: Console, rows_data: list[dict[str, Any]], *, plain: bool, width: int
-) -> None:
-    """Render list[dict] as a Rich table, handling narrow terminals."""
-    if not rows_data:
-        console.print(Text("(empty)", style=TOKENS["MUTED"] if not plain else ""))
-        return
-    all_keys = list(dict.fromkeys(k for row in rows_data for k in row))
-    # Narrow: show at most 3 columns
+def _render_table(console: Console, data: list[dict[str, Any]], *, plain: bool, width: int) -> None:
+    keys = list(data[0].keys())
     narrow = width < 70
-    keys = all_keys[:3] if narrow else all_keys
-
+    if narrow:
+        keys = keys[:3]
     table = Table(
         box=None if plain else box.SIMPLE,
         pad_edge=False,
         show_edge=False,
         header_style="" if plain else TOKENS["MUTED"],
+        width=min(width, 96),
     )
-    col_width = max(8, (width - 4) // max(1, len(keys)))
     for k in keys:
-        table.add_column(str(k), max_width=col_width, overflow="fold")
-    for row in rows_data[:100]:
-        table.add_row(*(clean(str(row.get(k, "")))[:col_width] for k in keys))
+        table.add_column(clean(k), overflow="fold" if not narrow else "ellipsis")
+    for row_dict in data[:50]:
+        table.add_row(*(clean(str(row_dict.get(k, "")))[: 120 if not narrow else 30] for k in keys))
     console.print(table)
-    if len(rows_data) > 100:
-        console.print(
-            Text(
-                f"  … {len(rows_data) - 100} more rows", style=TOKENS["MUTED"] if not plain else ""
-            )
-        )
 
 
 def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, width: int) -> None:
-    """Render a dict as a key/value panel."""
-    effective_width = min(width, 96)
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="" if plain else TOKENS["MUTED"], no_wrap=True)
-    grid.add_column(overflow="fold", max_width=max(20, effective_width - 24))
+    kv = Table.grid(padding=(0, 2))
+    kv.add_column(style="" if plain else TOKENS["MUTED"])
+    kv.add_column()
     for k, v in data.items():
-        val_str = (
-            json.dumps(v, default=str, ensure_ascii=False)
-            if isinstance(v, (dict, list))
-            else clean(str(v))
-        )
-        grid.add_row(clean(str(k)), val_str[:500])
+        if isinstance(v, dict):
+            # Nested dict: render as indented lines
+            kv.add_row(Text(clean(str(k))), Text(""))
+            for sk, sv in v.items():
+                if isinstance(sv, dict):
+                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(""))
+                    for ssk, ssv in sv.items():
+                        kv.add_row(Text(f"    {clean(str(ssk))}"), Text(clean(str(ssv))[:200]))
+                else:
+                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(clean(str(sv))[:200]))
+        else:
+            kv.add_row(Text(clean(str(k))), Text(clean(str(v))[:200]))
     if plain:
-        console.print(grid)
+        console.print(kv)
     else:
-        console.print(panel(grid, mode=PresentationMode(True, True, False, width)))
+        mode = PresentationMode(True, True, False, width)
+        console.print(panel(kv, mode=mode))
 
 
 # ---------------------------------------------------------------------------
-# Param prompting helpers
+# Command prompt (replaces the old _interactive_palette selector)
+# ---------------------------------------------------------------------------
+
+
+def _suggest_command(text: str) -> str | None:
+    """Return the closest /command name for unknown input, or None."""
+    all_cmds = [f"/{cmd}" for _, cmd, _, _ in PALETTE]
+    all_cmds.extend(["/quit", "/help", "/clear", "/exit"])
+    matches = difflib.get_close_matches(
+        text if text.startswith("/") else f"/{text}", all_cmds, n=1, cutoff=0.5
+    )
+    return matches[0] if matches else None
+
+
+def _prompt_params_inline(
+    action_name: str, console: Console, *, line_reader: Callable[[], str | None] | None = None
+) -> dict[str, Any] | None:
+    """Prompt for required/optional params inline.
+
+    Returns params dict, or None if the user cancels (empty required param).
+    ``line_reader`` is used in tests to inject lines; returns None on EOF.
+    """
+    param_specs = _ACTION_PARAMS.get(action_name, [])
+    params: dict[str, Any] = {}
+    for param_name, default in param_specs:
+        required = default is _REQUIRED
+        prompt_text = (
+            f"  {param_name} (required): " if required else f"  {param_name} [{default!r}]: "
+        )
+        console.print(Text(prompt_text, style=TOKENS["MUTED"]), end="")
+        try:
+            if line_reader is not None:
+                val = line_reader()
+                if val is None:
+                    return None
+                val = val.strip()
+                console.print(val)
+            else:
+                val = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not val:
+            if required:
+                return None
+            params[param_name] = default
+        else:
+            if param_name == "models":
+                params[param_name] = [v.strip() for v in val.split(",") if v.strip()]
+            else:
+                params[param_name] = val
+    return params
+
+
+def _run_command(
+    text: str,
+    *,
+    tui: TerminalUI,
+    state: HomeState,
+    line_reader: Callable[[], str | None] | None = None,
+) -> str | None:
+    """Execute one command. Returns "quit" to exit, "clear" to clear, None to continue."""
+    console = tui.console
+    width = console.width or 100
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    # Normalize: accept both /cmd and cmd
+    index = _get_command_index()
+
+    # Check for builtins
+    lower = stripped.lower()
+    if lower in ("quit", "/quit", "exit", "/exit", "\x04"):
+        return "quit"
+    if lower in ("help", "/help"):
+        _show_help(console)
+        return None
+    if lower in ("clear", "/clear"):
+        return "clear"
+    if lower == "/":
+        # Show completions
+        _show_help(console)
+        return None
+
+    # Look up as command
+    parts = stripped.split(None, 1)
+    cmd_word = parts[0]
+    cmd_args = parts[1] if len(parts) > 1 else ""
+
+    entry = index.get(cmd_word) or index.get(cmd_word.lower())
+    if entry is not None:
+        palette_cmd, ref, kind = entry
+        if kind == "builtin":
+            if palette_cmd == "quit":
+                return "quit"
+            if palette_cmd == "help":
+                _show_help(console)
+                return None
+            if palette_cmd == "clear":
+                return "clear"
+            return None
+
+        # Resolve params: if args on the line, use them for the first required param
+        params: dict[str, Any] | None = {}
+        param_specs = _ACTION_PARAMS.get(ref, [])
+        if cmd_args and param_specs:
+            first_param = param_specs[0][0]
+            params = {first_param: cmd_args}
+            # Prompt remaining params
+            remaining = param_specs[1:]
+            if remaining:
+                for pname, pdefault in remaining:
+                    required = pdefault is _REQUIRED
+                    prompt_text = (
+                        f"  {pname} (required): " if required else f"  {pname} [{pdefault!r}]: "
+                    )
+                    console.print(Text(prompt_text, style=TOKENS["MUTED"]), end="")
+                    try:
+                        if line_reader is not None:
+                            val = line_reader()
+                            if val is None:
+                                console.print(Text("(cancelled)", style=TOKENS["MUTED"]))
+                                return None
+                            val = val.strip()
+                            console.print(val)
+                        else:
+                            val = input().strip()
+                    except (EOFError, KeyboardInterrupt):
+                        console.print(Text("(cancelled)", style=TOKENS["MUTED"]))
+                        return None
+                    if not val:
+                        if required:
+                            console.print(Text("(cancelled)", style=TOKENS["MUTED"]))
+                            return None
+                        params[pname] = pdefault
+                    else:
+                        params[pname] = val
+        elif param_specs:
+            params = _prompt_params_inline(ref, console, line_reader=line_reader)
+            if params is None:
+                console.print(Text("(cancelled)", style=TOKENS["MUTED"]))
+                return None
+
+        try:
+            if kind == "action":
+                ok, data = run_palette_action(ref, params if params else None)
+            else:
+                from verdict.actions.registry import LAUNCH
+
+                launch_val = LAUNCH.get(palette_cmd)
+                if launch_val is None:
+                    ok, data = False, {"error": f"no LAUNCH entry for {palette_cmd!r}"}
+                elif hasattr(launch_val, "entry"):
+                    ok, data = _call_launch_entry(launch_val.entry, params or {})
+                else:
+                    ok, data = (
+                        False,
+                        {
+                            "error": f"{palette_cmd!r} is a long-running launch ({launch_val}); run it directly in your terminal"
+                        },
+                    )
+        except KeyboardInterrupt:
+            ok, data = False, {"error": "cancelled"}
+        except Exception as exc:
+            # A failing command reports its error and returns to the prompt.
+            ok, data = False, {"error": f"{type(exc).__name__}: {clean(str(exc))[:200]}"}
+
+        _render_action_result(tui, ok, data, width=width)
+        return None
+
+    # Not a known command. Is it a goal (free text)?
+    if not stripped.startswith("/"):
+        repo = os.getcwd()
+        console.print()
+        console.print(
+            Text(
+                "Run orchestrate on this goal? This launches live workers and may spend credits.",
+                style=TOKENS["WARNING"],
+            )
+        )
+        console.print(Text(f"  repo: {clean(repo)}", style=TOKENS["MUTED"]))
+        console.print(Text(f"  goal: {clean(stripped)[:120]}", style=TOKENS["MUTED"]))
+        try:
+            if line_reader is not None:
+                console.print(Text("  [y/N] ", style=TOKENS["ACCENT"]), end="")
+                answer = line_reader()
+                if answer is None:
+                    answer = ""
+                answer = answer.strip()
+                console.print(answer)
+            else:
+                console.print(Text("  [y/N] ", style=TOKENS["ACCENT"]), end="")
+                answer = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.lower() == "y":
+            try:
+                from verdict.actions.registry import LAUNCH
+
+                launch_val = LAUNCH.get("orchestrate")
+                if launch_val is not None and hasattr(launch_val, "entry"):
+                    ok, data = _call_launch_entry(
+                        launch_val.entry, {"goal": stripped, "repo": repo}
+                    )
+                    _render_action_result(tui, ok, data, width=width)
+                else:
+                    console.print(
+                        Text(
+                            f'Run: verdict orchestrate "{clean(stripped)[:80]}" --repo {clean(repo)}',
+                            style=TOKENS["ACCENT"],
+                        )
+                    )
+            except KeyboardInterrupt:
+                console.print(Text("(cancelled)", style=TOKENS["MUTED"]))
+        return None
+
+    # Unknown /command
+    suggestion = _suggest_command(stripped)
+    msg = f"Unknown command: {clean(stripped)[:60]}"
+    if suggestion:
+        msg += f"  — did you mean {suggestion}?"
+    console.print(Text(msg, style=TOKENS["WARNING"]))
+    return None
+
+
+def _show_help(console: Console) -> None:
+    """Print a compact command list, each group shown once."""
+    from collections import OrderedDict
+
+    groups: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
+    for group, cmd, purpose, _action in PALETTE:
+        groups.setdefault(group, []).append((cmd, purpose))
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style=TOKENS["ACCENT"], no_wrap=True)
+    table.add_column(style=TOKENS["SECONDARY"])
+    for group, entries in groups.items():
+        table.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), Text(""))
+        for cmd, purpose in entries:
+            table.add_row(Text(f"/{cmd}"), Text(purpose))
+    table.add_row(Text("SESSION", style=TOKENS["PRIMARY"]), Text(""))
+    table.add_row(Text("/clear"), Text("clear screen"))
+    table.add_row(Text("/help"), Text("show this list"))
+    table.add_row(Text("/quit"), Text("exit (or Ctrl-D)"))
+    console.print(table)
+
+
+def _load_history(path: Path) -> list[str]:
+    """Load history (one command per line); returns empty list on failure.
+
+    Lines in prompt_toolkit's FileHistory format (``# <timestamp>`` headers and
+    ``+``-prefixed entries, written by an earlier build) are converted, so an
+    old file never shows its markers as commands.
+    """
+    try:
+        if not path.exists():
+            return []
+        entries: list[str] = []
+        for line in path.read_text().splitlines():
+            if not line.strip() or line.startswith("# "):
+                continue
+            entry = line[1:] if line.startswith("+") else line
+            if entry.strip():
+                entries.append(entry.strip())
+        return entries[-HISTORY_MAX_LINES:]
+    except Exception:
+        return []
+
+
+def _save_history(path: Path, entries: list[str]) -> None:
+    """Append and cap the history file; owner-only permissions."""
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdir's mode does not apply to an existing directory: tighten it.
+        os.chmod(path.parent, 0o700)
+        existing = _load_history(path) if path.exists() else []
+        combined = (existing + entries)[-HISTORY_MAX_LINES:]
+        # Write a new owner-only file and atomically replace the old one, so
+        # the history is never readable by others, even for a moment.
+        tmp = path.with_name(path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(combined) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Startup motion: wordmark sweep while probing in a background thread
+# ---------------------------------------------------------------------------
+
+
+def _startup_with_motion(
+    target: Console,
+    state: HomeState,
+    *,
+    probe_fn: Callable[[], tuple[bool | None, int | None]] | None = None,
+    max_sweep_s: float = 1.2,
+) -> None:
+    """Show wordmark line-by-line while probing gateway in a background thread.
+
+    Single deadline: the sweep and the checking state share ``max_sweep_s``.
+    After the budget the "checking…" line stays until the probe returns
+    (bounded by the probe's own timeout). No ``time.sleep``; timing comes
+    from ``threading.Event.wait`` and the existing ``TerminalUI.task`` Live
+    region with pulse/synchronized_output.
+    """
+    if probe_fn is not None:
+        done = threading.Event()
+        result: list[tuple[bool | None, int | None]] = []
+
+        def _probe_worker() -> None:
+            try:
+                result.append(probe_fn())
+            except Exception:
+                # A probe that raises is a failed probe, never a hang.
+                result.append((False, None))
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_probe_worker, daemon=True)
+        t.start()
+    else:
+        done = threading.Event()
+        done.set()
+        result = [(state.gateway_ok, state.gateway_models)]
+
+    # Sweep: reveal wordmark lines, sharing a single budget with the
+    # checking state.  Each line waits up to line_delay for the probe;
+    # when the probe is already done the wait returns immediately.
+    line_delay = max_sweep_s / max(len(WORDMARK) + 2, 1)
+    for line in WORDMARK:
+        target.print(Text(line.rstrip(), style=TOKENS["PRIMARY"]))
+        if hasattr(target, "file"):
+            target.file.flush()
+        # Always print every line; only the pacing stops once the probe is
+        # done (the wait returns at once), so the sweep never delays for effect.
+        if not done.is_set():
+            done.wait(timeout=line_delay)
+
+    # Show tagline
+    target.print(Text("AUTONOMOUS CONTROL PLANE", style=TOKENS["TEXT"]))
+    target.print(Text("plan · select · recover · verify · prove", style=TOKENS["SECONDARY"]))
+    target.print()
+
+    # Wait for probe if still running: use TerminalUI.task for a pulsing
+    # "Checking gateway reachability" Live region (with synchronized_output
+    # and border_highlight from verdict/motion.py), instead of raw ANSI.
+    if probe_fn is not None and not done.is_set():
+        ui = TerminalUI(target)
+        with ui.task("Checking gateway reachability"):
+            # Block until the probe finishes. The probe's own timeout
+            # bounds this; we do not impose our own deadline.
+            done.wait()
+
+    # Resolve probe result
+    if result:
+        state.gateway_ok, state.gateway_models = result[0]
+    gw_label = (
+        "REACHABLE"
+        if state.gateway_ok
+        else "UNREACHABLE"
+        if state.gateway_ok is False
+        else "NOT CHECKED"
+    )
+    gw_style = TOKENS[
+        "SUCCESS" if state.gateway_ok else "ERROR" if state.gateway_ok is False else "MUTED"
+    ]
+    gw_line = Text("gateway  ", style=TOKENS["SECONDARY"])
+    gw_line.append(gw_label, style=gw_style)
+    gw_line.append(f"  {clean(state.gateway)}", style=TOKENS["MUTED"])
+    if state.gateway_models:
+        gw_line.append(f"  ({state.gateway_models} models)", style=TOKENS["ACCENT"])
+    target.print(gw_line)
+
+    # Show recent runs
+    if state.runs:
+        for row in state.runs:
+            outcome = str(row["outcome"])
+            tone = (
+                "SUCCESS"
+                if outcome == "COMPLETE"
+                else "MUTED"
+                if outcome in {"RUNNING", "NO RECEIPT"}
+                else "ERROR"
+            )
+            run_line = Text(f"  {clean(row['run'])[:24]}  ", style=TOKENS["TEXT"])
+            run_line.append(f"{outcome}  {_age(row['age_s'])} ago", style=TOKENS[tone])
+            target.print(run_line)
+    target.print()
+
+
+# ---------------------------------------------------------------------------
+# Interactive command prompt (prompt_toolkit-based with fallback)
+# ---------------------------------------------------------------------------
+
+
+def _command_prompt(
+    target: Console, state: HomeState, *, line_reader: Callable[[], str | None] | None = None
+) -> int:
+    """Command prompt loop. Returns exit code.
+
+    ``line_reader`` is injected in tests. Returns the typed line (without
+    newline) or None on EOF. In production, prompt_toolkit handles the input.
+    """
+    tui = TerminalUI(target)
+
+    if line_reader is not None:
+        # Test mode: use injected reader
+        _iter_count = 0
+        _max_iters = 10000
+        while _iter_count < _max_iters:
+            _iter_count += 1
+            try:
+                line = line_reader()
+            except (EOFError, KeyboardInterrupt):
+                return 0
+            if line is None:
+                return 0
+            result = _run_command(line, tui=tui, state=state, line_reader=line_reader)
+            if result == "quit":
+                return 0
+            if result == "clear":
+                target.clear()
+        return 0
+
+    # Production: use prompt_toolkit when it can start; fall back to plain
+    # input() only when it cannot (no real terminal, missing library). Errors
+    # raised later, while a command runs, are not a reason to switch loops.
+    try:
+        _prompt_toolkit_ready()
+    except Exception:
+        return _fallback_input_loop(target, tui, state)
+    return _prompt_toolkit_loop(target, tui, state)
+
+
+def _prompt_toolkit_ready() -> None:
+    """Raise if prompt_toolkit cannot drive this terminal."""
+    from prompt_toolkit.output import create_output
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise RuntimeError("prompt_toolkit needs a real terminal")
+    create_output()
+
+
+def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> int:
+    """Interactive loop using prompt_toolkit with completions and history."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.history import InMemoryHistory
+
+    class VerdictCompleter(Completer):
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            text = document.text_before_cursor.lstrip()
+            # Slash-prefix completions
+            if text.startswith("/") or not text:
+                prefix = text.lstrip("/")
+                for _section, cmd, desc, _action in PALETTE:
+                    if cmd.startswith(prefix):
+                        yield Completion(
+                            f"/{cmd}",
+                            start_position=-len(text),
+                            display=f"/{cmd}",
+                            display_meta=desc[:50],
+                        )
+                for builtin_cmd, builtin_desc in [
+                    ("quit", "exit"),
+                    ("help", "show commands"),
+                    ("clear", "clear screen"),
+                ]:
+                    if builtin_cmd.startswith(prefix):
+                        yield Completion(
+                            f"/{builtin_cmd}",
+                            start_position=-len(text),
+                            display=f"/{builtin_cmd}",
+                            display_meta=builtin_desc,
+                        )
+                return
+
+            # Complete run IDs for commands that take a run arg
+            parts = text.split(None, 1)
+            if len(parts) >= 1:
+                cmd_part = parts[0].lstrip("/")
+                # Commands that accept run IDs
+                run_cmds = {"trace", "routing", "context", "watch", "run-receipt", "receipt"}
+                if cmd_part in run_cmds and state.runs:
+                    partial = parts[1] if len(parts) > 1 else ""
+                    for row in state.runs:
+                        run_id = row["run"]
+                        if run_id.startswith(partial):
+                            yield Completion(
+                                run_id,
+                                start_position=-len(partial),
+                                display=run_id[:30],
+                                display_meta=f"{row['outcome']} {_age(row['age_s'])} ago",
+                            )
+
+    # History: capped at HISTORY_MAX_LINES and owner-only (0700 dir, 0600 file).
+    # Loaded once into memory; new entries are written back through the capped
+    # _save_history helper, so the file never grows past the cap.
+    history: Any = InMemoryHistory()
+    for entry in _load_history(HISTORY_FILE):
+        history.append_string(entry)
+
+    # Suppress CPR (cursor position request) warning in terminals that
+    # do not support it. Verdict does not need cursor position info.
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
+
+    session: PromptSession[str] = PromptSession(
+        message="verdict › ",  # noqa: RUF001
+        completer=VerdictCompleter(),
+        history=history,
+        complete_while_typing=False,
+    )
+
+    while True:
+        try:
+            line = session.prompt()
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            return 0
+        if line.strip():
+            _save_history(HISTORY_FILE, [line.strip()])
+        result = _run_command(line, tui=tui, state=state)
+        if result == "quit":
+            return 0
+        if result == "clear":
+            target.clear()
+
+
+def _fallback_input_loop(target: Console, tui: TerminalUI, state: HomeState) -> int:
+    """Plain input() loop when prompt_toolkit fails."""
+    while True:
+        try:
+            line = input("verdict › ")  # noqa: RUF001
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            return 0
+        if line.strip():
+            _save_history(HISTORY_FILE, [line.strip()])
+        result = _run_command(line, tui=tui, state=state)
+        if result == "quit":
+            return 0
+        if result == "clear":
+            target.clear()
+
+
+# ---------------------------------------------------------------------------
+# Param prompting helpers (legacy, kept for backward compatibility in tests)
 # ---------------------------------------------------------------------------
 
 
@@ -521,21 +1138,13 @@ def _prompt_params(
             val = "".join(buf).strip()
         else:
             try:
-                val = input()
+                val = input().strip()
             except (EOFError, KeyboardInterrupt):
                 return None
         if not val:
             if required:
-                console.print(
-                    Text("  (cancelled — required param not provided)", style=TOKENS["MUTED"])
-                )
                 return None
-            if default is not _REQUIRED:
-                # Use default; coerce list-type defaults
-                if param_name == "models" and isinstance(default, str):
-                    params[param_name] = [default]
-                else:
-                    params[param_name] = default
+            params[param_name] = default
         else:
             # Coerce known list params
             if param_name == "models":
@@ -548,199 +1157,37 @@ def _prompt_params(
 def _interactive_palette(
     target: Console, state: HomeState, *, key_reader: Callable[[], str] | None = None
 ) -> int:
-    """Keyboard selector: arrow/number selection + enter runs the action.
+    """Command prompt interface.
 
     TTY only. Non-TTY, NO_COLOR, CI environments skip this entirely.
 
-    ``key_reader`` replaces raw stdin reads in tests (inject a function that
-    returns one character at a time).
+    ``key_reader`` replaces the prompt session in tests. When provided, it
+    returns one line at a time (the full typed input). Raising EOFError means
+    quit. This replaces the old arrow-key selector.
     """
-    tui = TerminalUI(target)
-    action_entries = palette_actions()
-    launch_entries = palette_launches()
+    # Wrap key_reader (char-at-a-time) into a line reader if needed
+    if key_reader is not None:
 
-    # Build flat entry list: (section, cmd, desc, kind, ref)
-    # kind = "action" | "launch"
-    entries: list[tuple[str, str, str, str, str]] = []
-    for section, cmd, desc, action_name in action_entries:
-        entries.append((section, cmd, desc, "action", action_name))
-    for section, cmd, desc, launch_key in launch_entries:
-        entries.append((section, cmd, desc, "launch", launch_key))
-
-    if not entries:
-        return 0
-
-    selected = 0
-    width = target.width or 100
-
-    # termios/tty only needed for real TTY mode (not test injection)
-    fd: int | None = None
-    old_settings: list[Any] | None = None
-    if key_reader is None:
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-
-    def _render_selector() -> None:
-        nonlocal width
-        width = target.width
-        target.print()
-        target.print(Text("ACTION PALETTE", style=TOKENS["SECONDARY"]))
-        target.print(
-            Text("↑/↓ or number to select, Enter to run, q to quit", style=TOKENS["MUTED"])
-        )
-        target.print()
-        for i, (section, cmd, desc, kind, _ref) in enumerate(entries):
-            marker = "▸ " if i == selected else "  "
-            style = TOKENS["PRIMARY"] if i == selected else ""
-            tag = " [launch]" if kind == "launch" else ""
-            line_width = max(40, (width or 80) - 4)
-            label = f"{marker}{i + 1:2d}. [{section}] {cmd}{tag}"
-            # Truncate desc to fit in narrow terminals
-            remaining = line_width - len(label) - 4
-            shown_desc = desc[: max(0, remaining)] if remaining < len(desc) else desc
-            line = f"{label} — {shown_desc}"
-            target.print(Text(line[:line_width], style=style))
-        target.print()
-
-    def _read_key() -> str:
-        if key_reader is not None:
-            return key_reader()
-        return sys.stdin.read(1)
-
-    try:
-        if key_reader is None:
-            import tty
-
-            assert fd is not None  # set above in the same key_reader is None branch
-            tty.setcbreak(fd)
-
-        running = True
-        _iter_count = 0
-        _max_iters = 10000  # safety cap — prevents runaway loops in tests
-        while running and _iter_count < _max_iters:
-            _iter_count += 1
-            _render_selector()
-
+        def line_reader() -> str | None:
+            buf: list[str] = []
             try:
-                ch = _read_key()
-            except (EOFError, KeyboardInterrupt):
-                return 0
-            if ch in ("", "q", "Q"):
-                target.print(Text("quit", style=TOKENS["MUTED"]))
-                return 0
-            elif ch in ("\r", "\n"):
-                section, cmd, desc, kind, ref = entries[selected]
-                target.print(Text(f"\nRunning: verdict {cmd}", style=TOKENS["SUCCESS"]))
-                target.print()
+                while len(buf) < 512:
+                    ch = key_reader()
+                    if ch in ("\r", "\n"):
+                        return "".join(buf)
+                    if ch in ("\x03",):  # Ctrl-C
+                        raise KeyboardInterrupt
+                    if ch in ("\x04",):  # Ctrl-D
+                        return None
+                    buf.append(ch)
+            except EOFError:
+                if buf:
+                    return "".join(buf)
+                return None
+            return "".join(buf)
 
-                # Prompt for params
-                if key_reader is not None:
-                    params = _prompt_params(
-                        ref if kind == "action" else cmd, target, key_reader=key_reader
-                    )
-                else:
-                    params = _prompt_params(ref if kind == "action" else cmd, target)
-
-                if params is None:
-                    target.print(Text("(cancelled)", style=TOKENS["MUTED"]))
-                    target.print()
-                    target.print(
-                        Text("Press any key to continue, q to quit", style=TOKENS["MUTED"])
-                    )
-                    try:
-                        ch2 = _read_key()
-                    except (EOFError, KeyboardInterrupt):
-                        return 0
-                    if ch2 in ("q", "Q"):
-                        return 0
-                    continue
-
-                # Restore terminal to cooked mode for action execution
-                if key_reader is None and fd is not None and old_settings is not None:
-                    import contextlib
-                    import termios
-
-                    with contextlib.suppress(Exception):
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-                try:
-                    if kind == "action":
-                        ok, data = run_palette_action(ref, params if params else None)
-                    else:
-                        # LAUNCH: call entry in-process via importlib
-                        from verdict.actions.registry import LAUNCH
-
-                        launch_val = LAUNCH.get(cmd)
-                        if launch_val is None:
-                            ok, data = False, {"error": f"no LAUNCH entry for {cmd!r}"}
-                        elif hasattr(launch_val, "entry"):
-                            # LaunchSpec shape (lane E)
-                            ok, data = _call_launch_entry(launch_val.entry, params or {})
-                        else:
-                            # Pre-lane-E: LAUNCH value is a plain string (reason)
-                            ok, data = (
-                                False,
-                                {
-                                    "error": f"{cmd!r} is a long-running launch ({launch_val}); run it directly in your terminal"
-                                },
-                            )
-                except KeyboardInterrupt:
-                    ok, data = False, {"error": "cancelled"}
-                finally:
-                    # Re-enter cbreak mode
-                    if key_reader is None and fd is not None:
-                        import tty
-
-                        with contextlib.suppress(Exception):
-                            tty.setcbreak(fd)
-
-                _render_action_result(tui, ok, data, width=width)
-                target.print()
-                target.print(Text("Press any key to continue, q to quit", style=TOKENS["MUTED"]))
-                try:
-                    ch2 = _read_key()
-                except (EOFError, KeyboardInterrupt):
-                    return 0
-                if ch2 in ("q", "Q"):
-                    return 0
-
-            elif ch == "\x1b":
-                # Escape sequence (arrow keys)
-                try:
-                    seq1 = _read_key()
-                    seq2 = _read_key()
-                except (EOFError, KeyboardInterrupt):
-                    return 0
-                seq = seq1 + seq2
-                if seq == "[A":  # Up
-                    selected = max(0, selected - 1)
-                elif seq == "[B":  # Down
-                    selected = min(len(entries) - 1, selected + 1)
-            elif ch.isdigit():
-                num = int(ch)
-                if 1 <= num <= len(entries):
-                    selected = num - 1
-            elif ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
-                return 0
-
-    except (KeyboardInterrupt, EOFError):
-        return 0
-    finally:
-        if _iter_count >= _max_iters:
-            target.print(
-                Text("Safety iteration cap reached; exiting palette.", style=TOKENS["WARNING"])
-            )
-        if key_reader is None and fd is not None and old_settings is not None:
-            import contextlib
-            import termios
-
-            with contextlib.suppress(Exception):
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    return 0
+        return _command_prompt(target, state, line_reader=line_reader)
+    return _command_prompt(target, state)
 
 
 def run_home(
@@ -763,15 +1210,9 @@ def run_home(
     ui = TerminalUI(target)
     # An explicit True never overrides accessibility or terminal policy.
     ui.animate = ui.animate and animate is not False
-    if probe:
-        if plain:
-            state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
-        else:
-            with ui.task("Checking gateway reachability"):
-                state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
-    width = target.width or 100
-    target.print(render_home(state, plain=plain, width=width))
-    # F4: interactive palette — TTY only; non-TTY/NO_COLOR/CI unchanged.
+    mode = presentation_mode(target.file if hasattr(target, "file") else None)
+
+    # F4: interactive prompt — TTY only; non-TTY/NO_COLOR/CI unchanged.
     want_interactive = (
         interactive
         if interactive is not None
@@ -782,6 +1223,30 @@ def run_home(
             and "NO_COLOR" not in os.environ
         )
     )
+
+    if want_interactive and mode.animate and animate is not False:
+        # Animated startup: sweep wordmark while probing gateway
+        probe_fn = (lambda: probe_gateway(state.gateway)) if probe else None
+        _startup_with_motion(target, state, probe_fn=probe_fn)
+        # Show the hint line
+        target.print(
+            Text(
+                "Type a goal, or / for commands · /demo to see it work · Ctrl-D to quit",
+                style=TOKENS["MUTED"],
+            )
+        )
+        target.print()
+    else:
+        # No animation: probe synchronously, render full home
+        if probe:
+            if plain:
+                state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+            else:
+                with ui.task("Checking gateway reachability"):
+                    state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+        width = target.width or 100
+        target.print(render_home(state, plain=plain, width=width, interactive=want_interactive))
+
     if want_interactive:
         return _interactive_palette(target, state, key_reader=_key_reader)
     return 0

@@ -27,6 +27,7 @@ dependencies = [
     "PyYAML>=6.0.3",
     "rich>=15.0.0",
     "defusedxml>=0.7.1",
+    "prompt-toolkit>=3.0.53",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
