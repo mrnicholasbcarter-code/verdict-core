@@ -223,3 +223,9 @@ def test_every_release_version_location_matches_pyproject():
 
     uv_lock = Path("uv.lock").read_text(encoding="utf-8")
     assert f'name = "verdict-core"\nversion = "{version}"' in uv_lock
+
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert (
+        f"[![version {version}](https://img.shields.io/badge/version-{version}-blue.svg)]" in readme
+    )
+    assert f"- **Version {version}, active development.**" in readme
