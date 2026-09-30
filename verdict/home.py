@@ -369,8 +369,7 @@ def _styled_home(state: HomeState, *, width: int, interactive: bool = False) -> 
                 controls.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), "")
             controls.add_row(Text(f"verdict {command}", style=TOKENS["TEXT"]), Text(purpose))
             last = group
-        footer = Text("↑/↓ select  ·  Enter run  ·  q quit", style=TOKENS["ACCENT"])
-        footer.append("\nverdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
+        footer = Text("verdict --help  ·  VERDICT_NO_ANIMATION=1", style=TOKENS["MUTED"])
         controls_panel = panel(Group(controls, footer), title="03 / COMMANDS", mode=mode)
         parts.append(controls_panel)
 
@@ -820,9 +819,11 @@ def _startup_with_motion(
 ) -> None:
     """Show wordmark line-by-line while probing gateway in a background thread.
 
-    The sweep ends when probe finishes OR max_sweep_s is reached, whichever
-    comes first. No ``time.sleep`` — uses threading.Event with timeout.
-    The wordmark reveal spreads across ``max_sweep_s`` so the user sees motion.
+    Single deadline: the sweep and the checking state share ``max_sweep_s``.
+    After the budget the "checking…" line stays until the probe returns
+    (bounded by the probe's own timeout). No ``time.sleep``; timing comes
+    from ``threading.Event.wait`` and the existing ``TerminalUI.task`` Live
+    region with pulse/synchronized_output.
     """
     if probe_fn is not None:
         done = threading.Event()
@@ -839,14 +840,16 @@ def _startup_with_motion(
         done.set()
         result = [(state.gateway_ok, state.gateway_models)]
 
-    # Sweep: reveal wordmark lines while waiting for probe.
-    # Each line waits up to line_delay for the probe; if the probe is still
-    # running the delay produces the visual sweep effect.
+    # Sweep: reveal wordmark lines, sharing a single budget with the
+    # checking state.  Each line waits up to line_delay for the probe;
+    # when the probe is already done the wait returns immediately.
     line_delay = max_sweep_s / max(len(WORDMARK) + 2, 1)
     for line in WORDMARK:
         target.print(Text(line.rstrip(), style=TOKENS["PRIMARY"]))
         if hasattr(target, "file"):
             target.file.flush()
+        if done.is_set():
+            break
         done.wait(timeout=line_delay)
 
     # Show tagline
@@ -854,20 +857,15 @@ def _startup_with_motion(
     target.print(Text("plan · select · recover · verify · prove", style=TOKENS["SECONDARY"]))
     target.print()
 
-    # Show "checking…" while probe may still be running
+    # Wait for probe if still running: use TerminalUI.task for a pulsing
+    # "Checking gateway reachability" Live region (with synchronized_output
+    # and border_highlight from verdict/motion.py), instead of raw ANSI.
     if probe_fn is not None and not done.is_set():
-        checking = Text("gateway  ", style=TOKENS["SECONDARY"])
-        checking.append("checking…", style=TOKENS["MUTED"])
-        checking.append(f"  {clean(state.gateway)}", style=TOKENS["MUTED"])
-        target.print(checking)
-        if hasattr(target, "file"):
-            target.file.flush()
-        # Wait for probe to finish (remaining time)
-        done.wait(timeout=max(0, max_sweep_s))
-        # Move cursor up to overwrite the "checking" line
-        if hasattr(target, "file"):
-            target.file.write("\033[1A\033[2K")
-            target.file.flush()
+        ui = TerminalUI(target)
+        with ui.task("Checking gateway reachability"):
+            # Block until the probe finishes. The probe's own timeout
+            # bounds this; we do not impose our own deadline.
+            done.wait()
 
     # Resolve probe result
     if result:
