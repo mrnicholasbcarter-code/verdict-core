@@ -192,3 +192,34 @@ def test_release_candidate_versions_are_unique_and_synchronized():
     assert contracts["version"] == "0.4.1"
     assert client["version"] == "0.4.1"
     assert client["peerDependencies"] == {"@bodanglin/verdict-contracts": "^0.4.1"}
+
+
+def test_every_release_version_location_matches_pyproject():
+    """One release version everywhere it is written, including both lock files."""
+    import verdict
+
+    python_project = Path("pyproject.toml").read_text(encoding="utf-8")
+    project_version = re.search(r'^version = "([^"]+)"', python_project, re.MULTILINE)
+    assert project_version is not None
+    version = project_version.group(1)
+    caret = f"^{version}"
+
+    assert verdict.__version__ == version
+    assert _package_manifest("package.json")["version"] == version
+    assert _package_manifest("contracts/package.json")["version"] == version
+    client = _package_manifest("verdict/client-sdk/package.json")
+    assert client["version"] == version
+    assert client["peerDependencies"] == {"@bodanglin/verdict-contracts": caret}
+    assert client["devDependencies"]["@bodanglin/verdict-contracts"] == caret  # type: ignore[index]
+
+    lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+    packages = lock["packages"]
+    assert lock["version"] == version
+    assert packages[""]["version"] == version
+    assert packages["contracts"]["version"] == version
+    assert packages["verdict/client-sdk"]["version"] == version
+    for field in ("peerDependencies", "devDependencies"):
+        assert packages["verdict/client-sdk"][field]["@bodanglin/verdict-contracts"] == caret
+
+    uv_lock = Path("uv.lock").read_text(encoding="utf-8")
+    assert f'name = "verdict-core"\nversion = "{version}"' in uv_lock
