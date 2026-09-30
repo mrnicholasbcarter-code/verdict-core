@@ -166,7 +166,7 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int |
         return None, None
     try:
         request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
             # Read full response (catalogs can exceed 3 MB).
             data = json.loads(resp.read())
         models = data.get("data", [])
