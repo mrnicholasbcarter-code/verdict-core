@@ -2,8 +2,9 @@ name: Fresh install transcript
 
 # Evidence job (BOD-216 / BOD-250), run on demand and on PRs that change install.sh: run each published
 # one-line install path inside a clean container and keep the full
-# transcript as an artifact. No secrets, no model calls: every path ends in
-# the offline `verdict demo`.
+# transcript as an artifact (ANSI colour codes stripped in the job itself).
+# No secrets are passed; every path ends in the offline `verdict demo`, which
+# makes no model calls.
 on:
   pull_request:
     paths:
@@ -33,6 +34,9 @@ jobs:
     env:
       NO_COLOR: "1"
       TERM: dumb
+      INPUT_VERSION: ${{ inputs.version }}
+      MATRIX_PATH: ${{ matrix.path }}
+      MATRIX_IMAGE: ${{ matrix.image }}
     steps:
       - name: Base tools (curl, git) in the clean image
         run: |
@@ -45,16 +49,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p transcript
-          out="transcript/${{ matrix.path }}-$(echo '${{ matrix.image }}' | tr ':/' '--').txt"
-          ver="${{ inputs.version }}"
+          out="transcript/${MATRIX_PATH}-$(printf '%s' "$MATRIX_IMAGE" | tr ':/' '--').txt"
+          ver="$INPUT_VERSION"
+          case "$ver" in ""|[0-9]*.[0-9]*.[0-9]*) ;; *) echo "invalid version input" >&2; exit 2 ;; esac
           {
-            echo "# image: ${{ matrix.image }}"
-            echo "# path:  ${{ matrix.path }}"
+            echo "# image: ${MATRIX_IMAGE}"
+            echo "# path:  ${MATRIX_PATH}"
             echo "# date:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "# commit: ${GITHUB_SHA}"
+            echo "# os: $(. /etc/os-release && echo "$PRETTY_NAME")  python: $(python3 --version 2>&1)"
             echo "# user: $(id -un) home: ${HOME}"
             echo "# verdict on PATH before: $(command -v verdict || echo none)"
-            case "${{ matrix.path }}" in
+            echo "# verdict config dirs before: $(ls -d "$HOME/.config/verdict" "$HOME/.verdict" 2>/dev/null || echo none)"
+            echo "# credential env vars before (names only): $(env | cut -d= -f1 | grep -E '^(OMNIROUTE_|LLMGATE_|VERDICT_|OPENAI|ANTHROPIC|GEMINI|GOOGLE_API|OPENROUTER)' | sort | tr '\n' ' ' || true)none-listed-above"
+            case "$MATRIX_PATH" in
               install.sh)
                 python3 -m pip install -q --root-user-action=ignore pipx
                 export PATH="$HOME/.local/bin:$PATH"
@@ -81,9 +89,12 @@ jobs:
                 ;;
             esac
             echo "\$ verdict --version"
-            if [ "${{ matrix.path }}" = "uvx" ]; then uvx --from "verdict-core${ver:+==$ver}" verdict --version; else verdict --version; fi
-          } 2>&1 | tee "$out"
-          grep -q "outcome=COMPLETE" "$out"
+            if [ "$MATRIX_PATH" = "uvx" ]; then uvx --from "verdict-core${ver:+==$ver}" verdict --version; else verdict --version; fi
+          } 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' | tee "$out"
+          # A completed demo needs the run_finished event AND a verified receipt.
+          grep -Eq '^[0-9]+ +run_finished +outcome=COMPLETE$' "$out"
+          grep -Fq '+ VERIFIED  Receipt integrity verified  (receipt:verify)' "$out"
+          sha256sum "$out"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
