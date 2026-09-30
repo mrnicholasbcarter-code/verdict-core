@@ -417,7 +417,8 @@ def test_unknown_command_gives_suggestion() -> None:
     _interactive_palette(console, MagicMock(), key_reader=reader)
 
     output = console.file.getvalue()
-    assert "did you mean" in output.lower() or "unknown" in output.lower()
+    assert "unknown command" in output.lower()
+    assert "did you mean /demo" in output.lower(), output
 
 
 # ---------------------------------------------------------------------------
@@ -753,3 +754,129 @@ def test_no_color_has_no_ansi(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None
     run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False)
     output = console.file.getvalue()
     assert "\x1b[" not in output
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 (cx/gpt-6-sol at 4c8d5ac)
+# ---------------------------------------------------------------------------
+
+
+def test_startup_probe_that_raises_does_not_hang() -> None:
+    """A probe exception is a failed probe; startup still completes promptly."""
+    import time
+
+    from verdict.home import HomeState, _startup_with_motion
+
+    console = _console(terminal=True)
+    state = HomeState(gateway="http://test")
+
+    def broken_probe() -> tuple[bool, int]:
+        raise RuntimeError("boom")
+
+    start = time.monotonic()
+    _startup_with_motion(console, state, probe_fn=broken_probe, max_sweep_s=0.3)
+    assert time.monotonic() - start < 2.0
+    assert state.gateway_ok is False
+    assert "UNREACHABLE" in console.file.getvalue()
+
+
+def test_probe_gateway_read_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An oversized /v1/models response is a failed probe, not an unbounded read."""
+    import verdict.home as home
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+            self.asked: list[int] = []
+
+        def read(self, n: int = -1) -> bytes:
+            self.asked.append(n)
+            return self.body if n < 0 else self.body[:n]
+
+        def __enter__(self) -> _Resp:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(home, "_PROBE_MAX_BYTES", 64)
+    big = _Resp(b'{"data": [' + b'{"id": "m"},' * 50 + b'{"id": "m"}]}')
+    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: big)
+    assert home.probe_gateway("http://example.test") == (False, None)
+    assert big.asked and all(n > 0 for n in big.asked), "read must be bounded"
+    small = _Resp(b'{"data": [{"id": "a"}, {"id": "b"}]}')
+    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: small)
+    assert home.probe_gateway("http://example.test") == (True, 2)
+
+
+def test_history_is_capped_and_owner_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import stat
+
+    import verdict.home as home
+
+    path = tmp_path / "hist" / "prompt_history"
+    monkeypatch.setattr(home, "HISTORY_MAX_LINES", 5)
+    for i in range(12):
+        home._save_history(path, [f"cmd{i}"])
+    lines = path.read_text().splitlines()
+    assert lines == [f"cmd{i}" for i in range(7, 12)]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_failing_command_reports_error_and_returns_to_prompt() -> None:
+    """An action that raises is shown as an error; the loop keeps running."""
+    console = _console(width=110)
+    with patch("verdict.home.run_palette_action", side_effect=ValueError("bad input")):
+        reader = _make_key_reader(
+            *_type_line(*list("/config")), *_type_line(*list("/config")), "\x04"
+        )
+        rc = _interactive_palette(console, MagicMock(), key_reader=reader)
+    assert rc == 0
+    out = console.file.getvalue()
+    assert out.count("ValueError: bad input") == 2, out
+
+
+def test_fallback_only_when_prompt_toolkit_cannot_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Errors inside the prompt_toolkit loop are not swallowed into the fallback."""
+    import verdict.home as home
+
+    calls: list[str] = []
+    monkeypatch.setattr(home, "_prompt_toolkit_ready", lambda: None)
+
+    def boom(*a: object) -> int:
+        calls.append("ptk")
+        raise RuntimeError("render bug")
+
+    monkeypatch.setattr(home, "_prompt_toolkit_loop", boom)
+    monkeypatch.setattr(home, "_fallback_input_loop", lambda *a: calls.append("fallback") or 0)
+    with pytest.raises(RuntimeError):
+        home._command_prompt(_console(terminal=True), home.HomeState())
+    assert calls == ["ptk"]
+
+    def not_ready() -> None:
+        raise RuntimeError("no tty")
+
+    calls.clear()
+    monkeypatch.setattr(home, "_prompt_toolkit_ready", not_ready)
+    assert home._command_prompt(_console(terminal=True), home.HomeState()) == 0
+    assert calls == ["fallback"]
+
+
+def test_history_reads_legacy_prompt_toolkit_format(tmp_path: Path) -> None:
+    import verdict.home as home
+
+    path = tmp_path / "prompt_history"
+    path.write_text("\n# 2026-09-30 00:30:05\n+/demo\n\n# 2026-09-30 00:30:07\n+/runs\n/config\n")
+    assert home._load_history(path) == ["/demo", "/runs", "/config"]
+
+
+def test_startup_prints_the_whole_wordmark_when_the_probe_is_fast() -> None:
+    """A probe that finishes first stops the pacing, not the wordmark."""
+    from verdict.home import WORDMARK, HomeState, _startup_with_motion
+
+    console = _console(terminal=True)
+    _startup_with_motion(console, HomeState(gateway="http://t"), probe_fn=lambda: (True, 3))
+    out = console.file.getvalue()
+    for line in WORDMARK:
+        assert line.rstrip() in out

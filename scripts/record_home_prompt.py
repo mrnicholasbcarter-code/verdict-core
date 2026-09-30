@@ -125,7 +125,7 @@ CHILD_SCRIPT = (ROOT / "scripts" / "_record_home_child.py").as_posix()
 
 def main() -> int:
     output = ROOT / "docs" / "assets" / "home-prompt.cast"
-    python = "/home/nick/dev/verdict-core/.venv/bin/python"
+    python = sys.executable
 
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -156,6 +156,9 @@ def main() -> int:
         print("No output captured", file=sys.stderr)
         return 1
 
+    # Never commit host paths: show the home directory as "~".
+    home = os.path.expanduser("~").encode()
+    chunks = [(t, data.replace(home, b"~")) for t, data in chunks]
     body = to_asciicast(
         chunks, width=WIDTH, height=HEIGHT, title="Verdict: interactive command prompt"
     )

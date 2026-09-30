@@ -107,6 +107,7 @@ _ACTION_PARAMS: dict[str, list[tuple[str, object]]] = {
 # Built lazily from PALETTE on first use.
 _COMMAND_INDEX: dict[str, tuple[str, str, str]] | None = None
 
+_PROBE_MAX_BYTES = 32 * 1024 * 1024
 HISTORY_DIR = Path.home() / ".verdict"
 HISTORY_FILE = HISTORY_DIR / "prompt_history"
 HISTORY_MAX_LINES = 500
@@ -167,8 +168,12 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int |
     try:
         request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
-            # Read full response (catalogs can exceed 3 MB).
-            data = json.loads(resp.read())
+            # Bounded read: large catalogs are several MB; anything past the
+            # cap is treated as a failed probe rather than read into memory.
+            raw = resp.read(_PROBE_MAX_BYTES + 1)
+            if len(raw) > _PROBE_MAX_BYTES:
+                return False, None
+            data = json.loads(raw)
         models = data.get("data", [])
         return True, len(models) if isinstance(models, list) else None
     except Exception:
@@ -703,6 +708,9 @@ def _run_command(
                     )
         except KeyboardInterrupt:
             ok, data = False, {"error": "cancelled"}
+        except Exception as exc:
+            # A failing command reports its error and returns to the prompt.
+            ok, data = False, {"error": f"{type(exc).__name__}: {clean(str(exc))[:200]}"}
 
         _render_action_result(tui, ok, data, width=width)
         return None
@@ -785,22 +793,37 @@ def _show_help(console: Console) -> None:
 
 
 def _load_history(path: Path) -> list[str]:
-    """Load history from file; returns empty list on failure."""
+    """Load history (one command per line); returns empty list on failure.
+
+    Lines in prompt_toolkit's FileHistory format (``# <timestamp>`` headers and
+    ``+``-prefixed entries, written by an earlier build) are converted, so an
+    old file never shows its markers as commands.
+    """
     try:
-        if path.exists():
-            return path.read_text().splitlines()[-HISTORY_MAX_LINES:]
+        if not path.exists():
+            return []
+        entries: list[str] = []
+        for line in path.read_text().splitlines():
+            if not line.strip() or line.startswith("# "):
+                continue
+            entry = line[1:] if line.startswith("+") else line
+            if entry.strip():
+                entries.append(entry.strip())
+        return entries[-HISTORY_MAX_LINES:]
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _save_history(path: Path, entries: list[str]) -> None:
-    """Append and cap the history file."""
+    """Append and cap the history file; owner-only permissions."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         existing = _load_history(path) if path.exists() else []
         combined = (existing + entries)[-HISTORY_MAX_LINES:]
-        path.write_text("\n".join(combined) + "\n")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(combined) + "\n")
+        os.chmod(path, 0o600)
     except Exception:
         pass
 
@@ -830,8 +853,13 @@ def _startup_with_motion(
         result: list[tuple[bool | None, int | None]] = []
 
         def _probe_worker() -> None:
-            result.append(probe_fn())
-            done.set()
+            try:
+                result.append(probe_fn())
+            except Exception:
+                # A probe that raises is a failed probe, never a hang.
+                result.append((False, None))
+            finally:
+                done.set()
 
         t = threading.Thread(target=_probe_worker, daemon=True)
         t.start()
@@ -848,9 +876,10 @@ def _startup_with_motion(
         target.print(Text(line.rstrip(), style=TOKENS["PRIMARY"]))
         if hasattr(target, "file"):
             target.file.flush()
-        if done.is_set():
-            break
-        done.wait(timeout=line_delay)
+        # Always print every line; only the pacing stops once the probe is
+        # done (the wait returns at once), so the sweep never delays for effect.
+        if not done.is_set():
+            done.wait(timeout=line_delay)
 
     # Show tagline
     target.print(Text("AUTONOMOUS CONTROL PLANE", style=TOKENS["TEXT"]))
@@ -938,18 +967,30 @@ def _command_prompt(
                 target.clear()
         return 0
 
-    # Production: try prompt_toolkit, fall back to plain input()
+    # Production: use prompt_toolkit when it can start; fall back to plain
+    # input() only when it cannot (no real terminal, missing library). Errors
+    # raised later, while a command runs, are not a reason to switch loops.
     try:
-        return _prompt_toolkit_loop(target, tui, state)
+        _prompt_toolkit_ready()
     except Exception:
         return _fallback_input_loop(target, tui, state)
+    return _prompt_toolkit_loop(target, tui, state)
+
+
+def _prompt_toolkit_ready() -> None:
+    """Raise if prompt_toolkit cannot drive this terminal."""
+    from prompt_toolkit.output import create_output
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise RuntimeError("prompt_toolkit needs a real terminal")
+    create_output()
 
 
 def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> int:
     """Interactive loop using prompt_toolkit with completions and history."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import Completer, Completion
-    from prompt_toolkit.history import FileHistory, InMemoryHistory
+    from prompt_toolkit.history import InMemoryHistory
 
     class VerdictCompleter(Completer):
         def get_completions(self, document: Any, complete_event: Any) -> Any:
@@ -997,12 +1038,12 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
                                 display_meta=f"{row['outcome']} {_age(row['age_s'])} ago",
                             )
 
-    # History
-    try:
-        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        history: Any = FileHistory(str(HISTORY_FILE))
-    except Exception:
-        history = InMemoryHistory()
+    # History: capped at HISTORY_MAX_LINES and owner-only (0700 dir, 0600 file).
+    # Loaded once into memory; new entries are written back through the capped
+    # _save_history helper, so the file never grows past the cap.
+    history: Any = InMemoryHistory()
+    for entry in _load_history(HISTORY_FILE):
+        history.append_string(entry)
 
     # Suppress CPR (cursor position request) warning in terminals that
     # do not support it. Verdict does not need cursor position info.
@@ -1022,6 +1063,8 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
             continue
         except EOFError:
             return 0
+        if line.strip():
+            _save_history(HISTORY_FILE, [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         if result == "quit":
             return 0
@@ -1038,6 +1081,8 @@ def _fallback_input_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
             continue
         except EOFError:
             return 0
+        if line.strip():
+            _save_history(HISTORY_FILE, [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         if result == "quit":
             return 0
