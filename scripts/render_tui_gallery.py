@@ -433,7 +433,8 @@ def render_gallery(
             else:
                 console.print(Text(clean(scenario_label), style=TOKENS["WARNING"]))
                 if name == "home":
-                    console.print(render_home(home, plain=False, width=width))
+                    console.print(render_home(home, plain=False, width=width, interactive=True))
+                    console.print(Text("verdict \u203a", style=TOKENS["TEXT"]))
                 elif name in runs:
                     view = runs[name]
                     console.print(

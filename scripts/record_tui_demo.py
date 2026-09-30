@@ -324,7 +324,7 @@ def validate_scenario_height(events: list[dict[str, object]], *, include_home: b
         file=io.StringIO(), width=WIDTH, force_terminal=True, color_system="truecolor"
     )
     if include_home:
-        home_rows = len(console.render_lines(render_home(HomeState(), plain=False, width=WIDTH)))
+        home_rows = len(console.render_lines(render_home(HomeState(), plain=False, width=WIDTH, interactive=True)))
         if home_rows + 2 > SCENARIO_HEIGHT:
             raise CaptureError(f"home frame would be clipped: {home_rows} rows")
     view = RunView()
@@ -358,7 +358,7 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="verdict-record-scenario-") as temporary:
         root = Path(temporary)
         if not short:
-            console.print(render_home(HomeState(), plain=False, width=console.width))
+            console.print(render_home(HomeState(), plain=False, width=console.width, interactive=True))
             console.print(SCENARIO_LABEL, markup=False)
             # A real, recorded reading pause; no cast timestamps are synthesized.
             time.sleep(2)
