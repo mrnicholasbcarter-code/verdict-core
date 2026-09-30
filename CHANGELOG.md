@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Bare `verdict` on a terminal opens a command prompt (`verdict ›`) instead of the numbered selector. It has history, Tab completion and `/` commands, and it shows results inline. Free text is treated as a goal. It launches `verdict orchestrate` only after an explicit `y` (#761).
-- Startup motion: the wordmark reveals while the gateway check runs. A live "Checking gateway reachability" panel shows while it waits, and then REACHABLE or UNREACHABLE appears. It never waits only for effect, and it is off for CI, `NO_COLOR`, `TERM=dumb` and `VERDICT_NO_ANIMATION` (#761).
+- Startup motion: the wordmark reveals, a "Checking gateway reachability" task is shown, and then REACHABLE or UNREACHABLE appears. Motion is off for CI, `NO_COLOR`, `TERM=dumb` and `VERDICT_NO_ANIMATION` (#761).
 - README: the first run is `pip install verdict-core` then `verdict demo`. OmniRoute and `provider/model` are defined at first use. The capacity-order section matches the role-aware ladder (#759, #760).
-- The README walkthrough (`docs/assets/demo-tui.*`) is re-recorded on the new home, and its caption matches the recording (#762, #763).
+- The README walkthrough recording (`docs/assets/demo-tui.*`) is re-recorded. It opens on the new home screen ("Type a goal, or / for commands") (#762, #763).
 - The gallery home image uses the same offline-scenario label as the rest of the gallery (#764).
 
 ### Fixed
