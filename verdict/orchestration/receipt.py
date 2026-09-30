@@ -284,6 +284,9 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                     row["duration_seconds"] = float(data["duration_seconds"])
                 if isinstance(data.get("usage"), dict):
                     row["usage"] = data["usage"]
+                # Preserve executor provenance so receipt shows which harness ran.
+                if data.get("executor_kind"):
+                    row["executor_kind"] = str(data["executor_kind"])
                 # track route identity (intended vs executed)
                 reported = str(data.get("reported_model") or "")
                 error = str(data.get("error") or "")

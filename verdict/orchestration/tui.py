@@ -124,6 +124,7 @@ class NodeView:
     attempt: int = 0
     reassigned: bool = False
     history: list[tuple[str, str]] = field(default_factory=list)
+    executor_kind: str = ""  # harness that last ran this node
     started_at: float | None = None
     elapsed_seconds: float | None = None
     context_files: int = 0
@@ -372,6 +373,9 @@ class RunView:
         node = self.node(node_id)
         route = _t(data.get("route_id", ""), 64) or node.route_id
         node.history.append((route, "ok" if data.get("ok") else "failed"))
+        kind = _t(data.get("executor_kind", ""), 24)
+        if kind:
+            node.executor_kind = kind
         duration = _f(data.get("duration_seconds"))
         if duration is None and node.started_at is not None and self.now is not None:
             duration = max(0.0, self.now - node.started_at)
@@ -670,7 +674,7 @@ def _workers(view: RunView, plain: bool) -> Table:
         show_edge=False,
         header_style="" if plain else TOKENS["MUTED"],
     )
-    for name in ("node", "state", "route", "provider", "att", "elapsed", "history"):
+    for name in ("node", "state", "route", "provider", "att", "elapsed", "harness", "history"):
         table.add_column(name, overflow="fold")
     for node in view.nodes.values():
         glyph, token = _glyph(node.glyph_key(), plain)
@@ -681,10 +685,11 @@ def _workers(view: RunView, plain: bool) -> Table:
             Text(node.provider or "-"),
             Text(str(node.attempt)),
             Text(node.elapsed(view.now)),
+            Text(node.executor_kind or "-"),
             Text(_history(node, plain)),
         )
     if not view.nodes:
-        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-", "-")))
+        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-", "-", "-")))
     return table
 
 

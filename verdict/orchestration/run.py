@@ -514,8 +514,9 @@ async def run_golden_path(
     _executor_identity = getattr(executor, "__class__", type(executor)).__name__
     _executor_labels: dict[str, str] = {
         "DirectGatewayExecutor": "direct-gateway",
-        "PrimeHeadlessExecutor": "prime-headless",
         "FaultInjectingExecutor": "fault-injecting",
+        "MixedExecutor": "mixed",
+        "PrimeHeadlessExecutor": "prime-headless",
         "ScriptedExecutor": "scripted",
     }
     events.emit(

@@ -374,16 +374,16 @@ def capture_plain_screens(width: int, condition: str) -> str:
 @pytest.mark.parametrize("condition", ["plain", "no_color", "non_tty"])
 @pytest.mark.parametrize("width", [60, 100, 200])
 def test_existing_screens_plain_bytes_branch_snapshot(width: int, condition: str) -> None:
-    """Regression: expected snapshot for this branch (feat/cockpit-roles).
+    """Regression: expected snapshot for this branch (feat/mixed-executor).
 
-    These hashes differ from origin/main because feat/cockpit-roles intentionally
-    changed controller detail output (planner selected/observed identity lines,
-    BOD-276). To update: run capture_plain_screens and replace the expected dict.
+    These hashes differ from origin/main because feat/mixed-executor adds a
+    'harness' column to the WORKERS table (BOD-284). To update: run
+    capture_plain_screens and replace the expected dict.
     """
     expected = {
-        60: "f9e2db941622be624f12b28046b11efff86cc560f96b1023cd8aa7c1f33dc3bb",
-        100: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
-        200: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
+        60: "f9b9bc5887dc4b4fc3b92518f967492605d84abe1696e9d50f019859b14a3db8",
+        100: "02919c78846f86fa8085dbeea7b973146fe216d8a2c80c52d23941dc68363676",
+        200: "02919c78846f86fa8085dbeea7b973146fe216d8a2c80c52d23941dc68363676",
     }
     output = capture_plain_screens(width, condition)
     assert "\x1b" not in output

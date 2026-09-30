@@ -25,7 +25,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -42,6 +42,7 @@ from verdict.orchestration.prime_settings import (
 __all__ = [
     "DirectGatewayExecutor",
     "FaultInjectingExecutor",
+    "MixedExecutor",
     "PrimeHeadlessExecutor",
     "ScriptedExecutor",
 ]
@@ -1176,3 +1177,77 @@ class DirectGatewayExecutor:
             session_ref=f"direct-gateway:{body.get('id', '')}",
             usage=usage,
         )
+
+
+# ----------------------------------------------------------------- mixed
+
+
+class MixedExecutor:
+    """Route each node to a named executor from an explicit map.
+
+    The map key is a node id (e.g. ``setup-db``).  Calls that do not match any
+    key — planning, plan-repair, or unmapped worker nodes — fall back to
+    ``default``.
+
+    Node id is extracted from ``cwd``: attempt worktrees are named
+    ``<node_id>-a<N>`` by the runtime; non-attempt ``cwd`` values (planning
+    calls whose ``cwd`` is the bare repo root) map to the default.
+
+    The ``executor_kind`` on each returned :class:`WorkerTerminal` is stamped
+    with the *logical backend name* for that slot (e.g. ``"prime-headless"`` or
+    ``"direct-gateway"``), overriding the delegate's own kind.  This ensures
+    cockpit and receipt always show which named harness ran each node.
+
+    Usage (via ``--executor-map``)::
+
+        verdict orchestrate "goal" \
+            --executor-map "node-1=prime,node-2=direct-gateway"
+    """
+
+    _BACKEND_KINDS: ClassVar[dict[str, str]] = {
+        "prime": "prime-headless",
+        "direct-gateway": "direct-gateway",
+    }
+
+    def __init__(
+        self,
+        node_map: dict[str, WorkerExecutor],
+        default: WorkerExecutor,
+        *,
+        node_kind_map: dict[str, str] | None = None,
+        default_kind: str = "",
+    ) -> None:
+        self._map = dict(node_map)
+        self._default = default
+        # kind_map maps node_id -> executor_kind label to stamp on terminals.
+        self._kind_map: dict[str, str] = dict(node_kind_map or {})
+        self._default_kind = default_kind
+
+    @staticmethod
+    def _node_id_from_cwd(cwd: Path) -> str | None:
+        """Return the node id when *cwd* is an attempt worktree, else None."""
+        name = cwd.name
+        if "-a" in name:
+            # Attempt worktrees are named ``<node_id>-aN``; strip suffix.
+            parts = name.rsplit("-a", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return parts[0]
+        return None
+
+    def _pick(self, cwd: Path) -> tuple[WorkerExecutor, str]:
+        """Return ``(executor, kind_label)`` for this call."""
+        node_id = self._node_id_from_cwd(cwd)
+        if node_id is not None and node_id in self._map:
+            return self._map[node_id], self._kind_map.get(node_id, "")
+        return self._default, self._default_kind
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        executor, kind = self._pick(cwd)
+        terminal = await executor.run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if kind:
+            terminal = replace(terminal, executor_kind=kind)
+        return terminal

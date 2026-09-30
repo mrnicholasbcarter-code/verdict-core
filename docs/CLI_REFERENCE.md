@@ -57,6 +57,33 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--state-file STATE_FILE` | Health/cooldown state file (default `~/.verdict/orchestration-health.json`) |
 | `--plain` | ASCII narrative instead of live view |
 | `--json` | Print final receipt JSON |
+| `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
+| `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
+
+### Mixed-harness runs
+
+A single `verdict orchestrate` call can route different nodes through different
+executor backends by combining `--executor` (the default fallback) with
+`--executor-map`:
+
+```bash
+verdict orchestrate "goal"     --executor prime     --executor-map "node-1=direct-gateway,node-2=direct-gateway"
+```
+
+`--executor-map` takes comma-separated `node_id=backend` pairs. Valid backend
+names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
+default. An unknown backend name exits with a clear error before the run starts.
+
+The `run_started` event records `executor: "mixed"`. Each `terminal` event
+carries an `executor_kind` field with the backend that ran that specific
+attempt (`prime-headless` or `direct-gateway`). The cockpit WORKERS table
+shows the harness in the **harness** column. The receipt preserves
+`executor_kind` per attempt so `verdict run-receipt` verifies with
+integrity OK.
+
+> **Note:** The live proof of a mixed-harness run reaching COMPLETE is
+> pending. The offline CI test (node-1 on one scripted harness, node-2 on
+> another) covers the event/receipt/cockpit assertions.
 
 ### `verdict supervise` — Supervise and resume a run
 

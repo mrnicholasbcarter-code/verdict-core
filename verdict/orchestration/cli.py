@@ -76,6 +76,19 @@ def add_parsers(subparsers: Any) -> None:
         default="prime",
         help="Worker executor backend (default: prime)",
     )
+    orch.add_argument(
+        "--executor-map",
+        metavar="NODE=BACKEND[,NODE=BACKEND,...]",
+        default="",
+        help=(
+            "Route specific nodes to a named executor backend; unmapped nodes use "
+            "--executor as the default.  Format: comma-separated node_id=backend pairs "
+            "where backend is one of 'prime' or 'direct-gateway'. "
+            "Example: --executor-map node-1=prime,node-2=direct-gateway. "
+            "When any mapping is provided the run automatically uses MixedExecutor; "
+            "--executor sets the fallback for unmapped nodes."
+        ),
+    )
 
     watch = subparsers.add_parser("watch", help="Live view of a Verdict orchestration run")
     watch.add_argument("run", help="Run id or run directory")
@@ -298,20 +311,73 @@ def _prime_visibility(args: argparse.Namespace) -> int:
     return 0 if report["in_sync"] else 1
 
 
+def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerExecutor:
+    """Build one named executor backend (prime or direct-gateway)."""
+    from verdict.orchestration.executors import DirectGatewayExecutor, PrimeHeadlessExecutor
+
+    if name == "direct-gateway":
+        return DirectGatewayExecutor(base_url=gateway, api_key=api_key)
+    return PrimeHeadlessExecutor()
+
+
+def _parse_executor_map(raw: str) -> dict[str, str]:
+    """Parse ``node-1=prime,node-2=direct-gateway`` into a dict.
+
+    Raises :class:`SystemExit` with a clear message for unknown backend names.
+    """
+    known = {"prime", "direct-gateway"}
+    result: dict[str, str] = {}
+    if not raw.strip():
+        return result
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            sys.exit(f"error: --executor-map entry {pair!r} must be in node_id=backend format")
+        node_id, _, backend = pair.partition("=")
+        node_id = node_id.strip()
+        backend = backend.strip()
+        if backend not in known:
+            sys.exit(
+                f"error: --executor-map: unknown backend {backend!r} for node {node_id!r}; "
+                f"choose from {sorted(known)}"
+            )
+        if not node_id:
+            sys.exit("error: --executor-map: node_id must not be empty")
+        result[node_id] = backend
+    return result
+
+
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
-    from verdict.orchestration.executors import (
-        DirectGatewayExecutor,
-        FaultInjectingExecutor,
-        PrimeHeadlessExecutor,
-    )
+    from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    raw_map = getattr(args, "executor_map", "") or ""
+    node_backend_map = _parse_executor_map(raw_map)
 
     executor: WorkerExecutor
-    if getattr(args, "executor", "prime") == "direct-gateway":
-        executor = DirectGatewayExecutor(
-            base_url=args.gateway, api_key=os.environ.get("OPENAI_API_KEY", "")
+    default_name = getattr(args, "executor", "prime") or "prime"
+    default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
+
+    if node_backend_map:
+        named: dict[str, WorkerExecutor] = {
+            node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
+            for node_id, backend in node_backend_map.items()
+        }
+        node_kind_map = {
+            node_id: MixedExecutor._BACKEND_KINDS.get(backend, backend)
+            for node_id, backend in node_backend_map.items()
+        }
+        default_kind = MixedExecutor._BACKEND_KINDS.get(default_name, default_name)
+        executor = MixedExecutor(
+            node_map=named,
+            default=default_executor,
+            node_kind_map=node_kind_map,
+            default_kind=default_kind,
         )
     else:
-        executor = PrimeHeadlessExecutor()
+        executor = default_executor
     faults: dict[str, list[str]] = {}
     injected = list(args.inject)
     # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
