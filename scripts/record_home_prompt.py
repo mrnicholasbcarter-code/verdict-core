@@ -123,6 +123,8 @@ def to_asciicast(chunks: list[tuple[float, bytes]], *, width: int, height: int, 
 CHILD_SCRIPT = (ROOT / "scripts" / "_record_home_child.py").as_posix()
 
 
+PROBE_DELAY_S = "1.0"
+
 REQUIRED_MARKERS = (
     "verdict ›",  # noqa: RUF001
     "REACHABLE",
@@ -188,6 +190,9 @@ def main() -> int:
         "PYTHONUNBUFFERED": "1",
         "PROMPT_TOOLKIT_NO_CPR": "1",
         "VERDICT_GATEWAY": "http://127.0.0.1:20128",
+        # Recording only: simulated gateway latency so the startup motion is
+        # visible; the probe result is still real. Named in the cast title.
+        "VERDICT_RECORD_PROBE_DELAY": PROBE_DELAY_S,
     }
 
     inputs = [
@@ -213,7 +218,10 @@ def main() -> int:
 
     chunks = sanitize_chunks(chunks, cwd=os.getcwd())
     body = to_asciicast(
-        chunks, width=WIDTH, height=HEIGHT, title="Verdict: interactive command prompt"
+        chunks,
+        width=WIDTH,
+        height=HEIGHT,
+        title=f"Verdict: interactive command prompt (gateway latency simulated: {PROBE_DELAY_S} s)",
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(body, encoding="utf-8")
