@@ -1,10 +1,14 @@
 name: Fresh install transcript
 
-# Operator-triggered evidence job (BOD-216 / BOD-250): run each published
+# Evidence job (BOD-216 / BOD-250), run on demand and on PRs that change install.sh: run each published
 # one-line install path inside a clean container and keep the full
 # transcript as an artifact. No secrets, no model calls: every path ends in
 # the offline `verdict demo`.
 on:
+  pull_request:
+    paths:
+      - install.sh
+      - .github/workflows/fresh-install.yml
   workflow_dispatch:
     inputs:
       version:
