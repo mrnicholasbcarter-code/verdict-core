@@ -1,0 +1,87 @@
+name: Fresh install transcript
+
+# Operator-triggered evidence job (BOD-216 / BOD-250): run each published
+# one-line install path inside a clean container and keep the full
+# transcript as an artifact. No secrets, no model calls: every path ends in
+# the offline `verdict demo`.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: verdict-core version to install (install.sh pins its own default)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.path }} on ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["python:3.12-slim", "python:3.13-slim"]
+        path: ["install.sh", "pipx", "uvx"]
+    env:
+      NO_COLOR: "1"
+      TERM: dumb
+    steps:
+      - name: Base tools (curl, git) in the clean image
+        run: |
+          set -eu
+          apt-get update -qq >/dev/null
+          apt-get install -y -qq --no-install-recommends curl ca-certificates git >/dev/null
+      - uses: actions/checkout@v7
+      - name: Run the ${{ matrix.path }} path and record the transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transcript
+          out="transcript/${{ matrix.path }}-$(echo '${{ matrix.image }}' | tr ':/' '--').txt"
+          ver="${{ inputs.version }}"
+          {
+            echo "# image: ${{ matrix.image }}"
+            echo "# path:  ${{ matrix.path }}"
+            echo "# date:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "# commit: ${GITHUB_SHA}"
+            echo "# user: $(id -un) home: ${HOME}"
+            echo "# verdict on PATH before: $(command -v verdict || echo none)"
+            case "${{ matrix.path }}" in
+              install.sh)
+                python3 -m pip install -q --root-user-action=ignore pipx
+                export PATH="$HOME/.local/bin:$PATH"
+                echo '$ bash install.sh'
+                if [ -n "$ver" ]; then VERDICT_VERSION="$ver" bash install.sh; else bash install.sh; fi
+                echo "install.sh exit status: $?"
+                ;;
+              pipx)
+                python3 -m pip install -q --root-user-action=ignore pipx
+                export PATH="$HOME/.local/bin:$PATH"
+                spec="verdict-core${ver:+==$ver}"
+                echo "\$ pipx install $spec"
+                pipx install "$spec"
+                echo "\$ verdict demo --speed 0"
+                verdict demo --speed 0
+                echo "verdict demo exit status: $?"
+                ;;
+              uvx)
+                python3 -m pip install -q --root-user-action=ignore uv
+                spec="verdict-core${ver:+==$ver}"
+                echo "\$ uvx --from $spec verdict demo --speed 0"
+                uvx --from "$spec" verdict demo --speed 0
+                echo "uvx exit status: $?"
+                ;;
+            esac
+            echo "\$ verdict --version"
+            if [ "${{ matrix.path }}" = "uvx" ]; then uvx --from "verdict-core${ver:+==$ver}" verdict --version; else verdict --version; fi
+          } 2>&1 | tee "$out"
+          grep -q "outcome=COMPLETE" "$out"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fresh-install-${{ matrix.path }}-${{ strategy.job-index }}
+          path: transcript/
