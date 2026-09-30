@@ -1,14 +1,18 @@
 """Supervisor controller route-scope: --scope / VERDICT_CONTROLLER_ROUTE_PREFIXES.
 
 AC1: scoped admission restricts to matching prefixes (CONTROLLER_SCOPE stage, named reason).
-AC2: out-of-scope routes appear in the receipt with named reason, never silently.
+AC2: out-of-scope routes appear in the receipt with named reason, receipt written even when empty.
 AC3: empty scope is parity with unconstrained admission.
-AC4: scope that matches nothing fails closed with controller_scope_empty; receipt is still written.
+AC4: scope that matches nothing fails closed with controller_scope_empty; receipt written first.
 AC5: --scope wins over VERDICT_CONTROLLER_ROUTE_PREFIXES; env var alone works.
+AC5b: --scope "" (explicit empty) never reads env var; tokenless scope exits 2.
+AC5c: injected admission loader is also wrapped with the scope boundary.
+AC6: canonicalisation — "cc" == "cc/", "omniroute/cc/" matches cc/ routes; no re-admission.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +21,7 @@ from typing import Any
 import pytest
 
 import verdict.admission as adm
-from tests.test_prime_supervisor import module
+from tests.test_prime_supervisor import _git_init, module
 from tests.test_supervisor_admission import _yaml_only_home  # re-use helper
 
 NOW = datetime.now(timezone.utc)
@@ -38,7 +42,55 @@ def _make_admitted() -> adm.AdmittedSet:
     return adm.admit(CATALOG, CONNECTIONS, None, now=NOW, require_runtime=False)
 
 
-# ── AC1 + AC2: scoped admission restricts and records drops ────────────────
+def _fake_factory_for_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, m: Any, *, extra_argv: list[str] | None = None
+) -> dict[str, Any]:
+    """Set up a minimal main()-runnable supervisor with a capturing fake factory.
+
+    Returns a dict that will be populated with the factory kwargs once main() runs.
+    """
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    captured: dict[str, Any] = {}
+
+    def fake_factory(**kwargs: Any) -> Any:
+        import types
+
+        captured.update(kwargs)
+        return types.SimpleNamespace(
+            hooks=None, artifacts=types.SimpleNamespace(last_compiled=None)
+        )
+
+    def fake_resolve(**kwargs: Any) -> Any:
+        raise m.ControllerLaunchError("no_eligible_route", "test factory done")
+
+    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", None)
+    monkeypatch.setattr(m, "CONTROLLER_SELECTION_HOOKS", None)
+    monkeypatch.setattr(m, "CONTROLLER_SELECTION_FACTORY", fake_factory)
+    monkeypatch.setattr(m, "resolve_controller_decision", fake_resolve)
+    monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+
+    argv = [
+        "prime_supervisor.py",
+        "--repo",
+        str(repo),
+        "--state-dir",
+        str(state),
+        "--skip-identity-verify",
+        "--max-restarts",
+        "0",
+    ] + (extra_argv or [])
+    monkeypatch.setattr(sys, "argv", argv)
+    captured["_repo"] = repo
+    captured["_state"] = state
+    return captured
+
+
+# ── AC1 + AC2: scoped admission via _wrap_admission_with_scope ────────────
 
 
 def test_scoped_loader_restricts_to_matching_prefix(
@@ -77,13 +129,10 @@ def test_scoped_loader_restricts_to_matching_prefix(
     ), f"expected cc/ record with CONTROLLER_SCOPE in dropped: {dropped}"
 
     # AC2: the receipt file on disk also records the drop
-    import json
-
     receipt_path = state / "controller-admission-latest.json"
     assert receipt_path.exists(), "receipt must be written even when routes are scoped out"
     receipt = json.loads(receipt_path.read_text())
-    disk_candidates = receipt["candidates"]
-    disk_dropped = [r for r in disk_candidates if not r["admitted"]]
+    disk_dropped = [r for r in receipt["candidates"] if not r["admitted"]]
     assert any(
         r["route_id"] == "cc/claude-opus"
         and r["first_failed_stage"] == "CONTROLLER_SCOPE"
@@ -149,93 +198,177 @@ def test_scope_with_no_matching_route_fails_closed(
     assert err.reason == "controller_scope_empty"
     assert "nonexistent/" in err.detail
 
-    # Receipt is written before the raise so the operator can diagnose
-    import json
-
+    # Receipt is written before the raise
     receipt_path = state / "controller-admission-latest.json"
     assert receipt_path.exists(), "receipt must be written even when scope matches nothing"
     receipt = json.loads(receipt_path.read_text())
-    candidates = receipt["candidates"]
-    # Every route should be dropped at CONTROLLER_SCOPE
-    for cand in candidates:
+    for cand in receipt["candidates"]:
         if not cand["admitted"]:
             assert cand["first_failed_stage"] == "CONTROLLER_SCOPE", cand
             assert cand["reason"] == "outside_controller_route_prefix", cand
-    dropped_ids = {r["route_id"] for r in candidates if not r["admitted"]}
+    dropped_ids = {r["route_id"] for r in receipt["candidates"] if not r["admitted"]}
     assert "cc/claude-opus" in dropped_ids
     assert "kr/claude-opus" in dropped_ids
 
 
-# ── AC5: flag precedence and env-var-only path ────────────────────────────
+# ── AC5: flag precedence drives real wiring (main()) ──────────────────────
 
 
-def test_scope_flag_wins_over_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """--scope (args.scope) takes precedence over VERDICT_CONTROLLER_ROUTE_PREFIXES."""
-    from tests.test_prime_supervisor import _git_init
-
+def test_scope_flag_wins_over_env_var_via_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--scope kr/ is passed to the factory even when VERDICT_CONTROLLER_ROUTE_PREFIXES=cc/."""
     m = module()
-    repo = tmp_path / "repo"
-    _git_init(repo)
-    state = tmp_path / "state"
-    state.mkdir()
-
-    # Set env var to cc/ but pass --scope kr/ — kr/ must win
+    captured = _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=["--scope", "kr/"])
     monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", "cc/")
 
-    captured: dict[str, Any] = {}
+    # main() returns non-zero (2) when ControllerLaunchError is raised inside attempt()
+    result = m.main()
+    assert result != 0, f"main should fail closed; got {result}"
 
-    def fake_factory(**kwargs: Any) -> Any:
-        captured.update(kwargs)
-        import types
+    assert captured.get("controller_scope_prefixes") == ("kr/",), (
+        f"--scope must win over env var; got {captured.get('controller_scope_prefixes')}"
+    )
 
+
+def test_explicit_empty_scope_flag_ignores_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--scope '' means no scope; VERDICT_CONTROLLER_ROUTE_PREFIXES must NOT be read."""
+    m = module()
+    captured = _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=["--scope", ""])
+    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", "cc/")
+
+    result = m.main()
+    assert result != 0
+
+    assert captured.get("controller_scope_prefixes") == (), (
+        f"explicit empty --scope must produce empty prefixes; "
+        f"got {captured.get('controller_scope_prefixes')}"
+    )
+
+
+def test_env_var_alone_via_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """VERDICT_CONTROLLER_ROUTE_PREFIXES alone restricts controller scope via main()."""
+    m = module()
+    captured = _fake_factory_for_main(tmp_path, monkeypatch, m)
+    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", "kr/")
+
+    result = m.main()
+    assert result != 0
+
+    assert captured.get("controller_scope_prefixes") == ("kr/",), (
+        f"env var must set prefixes; got {captured.get('controller_scope_prefixes')}"
+    )
+
+
+def test_tokenless_scope_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--scope ' , ' tokenizes to nothing → argparse error (exit 2)."""
+    m = module()
+    _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=["--scope", " , "])
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 2, f"expected exit 2 for tokenless scope, got {exc.value.code}"
+
+
+# ── AC5c: injected admission loader is also wrapped ──────────────────────
+
+
+def test_injected_admission_loader_is_wrapped_with_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a caller injects an admission= kwarg, the scope still applies."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
+
+    full = _make_admitted()
+    state = tmp_path / "state"
+    state.mkdir()
+    calls: list[int] = []
+
+    def injected_loader(when: Any) -> adm.AdmittedSet:
+        calls.append(1)
+        return full
+
+    import types
+
+    def fake_cs_bundle(**kwargs: Any) -> Any:
         return types.SimpleNamespace(
             hooks=None, artifacts=types.SimpleNamespace(last_compiled=None)
         )
 
-    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", None)
-    monkeypatch.setattr(m, "CONTROLLER_SELECTION_HOOKS", None)
-    monkeypatch.setattr(m, "CONTROLLER_SELECTION_FACTORY", fake_factory)
-    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    monkeypatch.setattr(m.CS, "build_production_controller_selection_bundle", fake_cs_bundle)
+    service = types.SimpleNamespace(require_execution_path_authority=True)
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "prime_supervisor.py",
-            "--repo",
-            str(repo),
-            "--state-dir",
-            str(state),
-            "--scope",
-            "kr/",
-            "--skip-identity-verify",
-        ],
+    # Call build_production_controller_selection_bundle with an injected
+    # admission and a non-empty scope; the result must be scoped.
+    captured_admission: list[Any] = []
+
+    def capturing_bundle(**kwargs: Any) -> Any:
+        captured_admission.append(kwargs.get("admission"))
+        return types.SimpleNamespace(
+            hooks=None, artifacts=types.SimpleNamespace(last_compiled=None)
+        )
+
+    monkeypatch.setattr(m.CS, "build_production_controller_selection_bundle", capturing_bundle)
+
+    m.build_production_controller_selection_bundle(
+        repo=tmp_path,
+        state_dir=state,
+        intelligence_service=service,
+        bind_prime_target=lambda route: None,
+        controller_scope_prefixes=("kr/",),
+        admission=injected_loader,
     )
-    # Parse only; do not run the main loop
-    import argparse
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scope", default=None)
-    parser.add_argument("--repo")
-    parser.add_argument("--state-dir")
-    parser.add_argument("--skip-identity-verify", action="store_true")
-    args = parser.parse_args(sys.argv[1:])
-
-    # Replicate the resolution logic from the supervisor
-    import os
-
-    _raw = (args.scope or "").strip() or (
-        os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or ""
-    ).strip()
-    resolved = tuple(p.strip() for p in _raw.split(",") if p.strip())
-    assert resolved == ("kr/",), f"--scope must win over env var; got {resolved}"
+    assert captured_admission, "admission kwarg must be forwarded to inner bundle"
+    wrapped = captured_admission[0]
+    assert callable(wrapped)
+    # Calling the wrapped loader must return only kr/ routes
+    admitted = wrapped(NOW)
+    assert "kr/claude-opus" in admitted
+    assert "cc/claude-opus" not in admitted
+    assert calls, "injected loader must have been called"
 
 
-def test_scope_env_var_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """VERDICT_CONTROLLER_ROUTE_PREFIXES alone restricts controller scope."""
+# ── AC6: canonicalisation ──────────────────────────────────────────────────
+
+
+def test_canonicalisation_bare_family_matches_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """restrict_controller_scope("cc") and ("cc/") both match cc/... routes."""
     _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
     m = module()
+    full = _make_admitted()
+    state1 = tmp_path / "state1"
+    state2 = tmp_path / "state2"
+    state1.mkdir()
+    state2.mkdir()
 
+    def fake_load(*a: Any, **k: Any) -> adm.AdmittedSet:
+        return full
+
+    monkeypatch.setattr(adm, "load_live_admission", fake_load)
+
+    # "cc" (no slash) should match cc/claude-opus
+    admitted_bare = m._default_live_admission_loader(state1, scope_prefixes=["cc"])
+    result_bare = admitted_bare(NOW)
+    assert "cc/claude-opus" in result_bare
+    assert "kr/claude-opus" not in result_bare
+
+    # "cc/" (with slash) is the canonical form — should behave identically
+    admitted_slash = m._default_live_admission_loader(state2, scope_prefixes=["cc/"])
+    result_slash = admitted_slash(NOW)
+    assert result_bare.ids == result_slash.ids
+
+
+def test_canonicalisation_omniroute_prefix_stripped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scope prefix "omniroute/cc/" must match a route whose canonical id is "cc/..."."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
     full = _make_admitted()
     state = tmp_path / "state"
     state.mkdir()
@@ -244,17 +377,43 @@ def test_scope_env_var_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         return full
 
     monkeypatch.setattr(adm, "load_live_admission", fake_load)
-    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", "kr/")
 
-    # Simulate resolution: no --scope flag → fall back to env var
-    import os
+    # canonical_route_id strips "omniroute/" so "omniroute/cc/" → "cc/"
+    admitted = m._default_live_admission_loader(state, scope_prefixes=["omniroute/cc/"])
+    result = admitted(NOW)
+    assert "cc/claude-opus" in result, (
+        "omniroute/ prefix should be stripped by canonicalisation, matching cc/ routes"
+    )
+    assert "kr/claude-opus" not in result
 
-    raw = ("").strip() or (os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or "").strip()
-    prefixes = [p.strip() for p in raw.split(",") if p.strip()]
-    assert prefixes == ["kr/"]
 
-    loader = m._default_live_admission_loader(state, scope_prefixes=prefixes)
-    admitted = loader(NOW)
+def test_narrowing_never_readmits_previously_excluded_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """restrict_controller_scope on an already-restricted AdmittedSet never re-admits."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
 
-    assert "kr/claude-opus" in admitted
-    assert "cc/claude-opus" not in admitted
+    # Start with a set that already excluded cc/
+    full = _make_admitted()
+    already_restricted = full.restrict_controller_scope(["kr/"])
+    assert "cc/claude-opus" not in already_restricted
+    assert "kr/claude-opus" in already_restricted
+
+    state = tmp_path / "state"
+    state.mkdir()
+
+    def fake_load(*a: Any, **k: Any) -> adm.AdmittedSet:
+        return already_restricted
+
+    monkeypatch.setattr(adm, "load_live_admission", fake_load)
+
+    # Scoping again to cc/ must NOT re-admit cc/ — widen would bypass the prior exclusion
+    loader = m._default_live_admission_loader(state, scope_prefixes=["cc/"])
+    with pytest.raises(adm.AdmissionUnavailableError) as exc:
+        loader(NOW)
+    # cc/ was excluded earlier; scope ["cc/"] narrows to empty → fail closed
+    assert exc.value.reason == "controller_scope_empty"
+    # kr/ is still dropped because the new scope is cc/, not kr/
+    receipt_path = state / "controller-admission-latest.json"
+    assert receipt_path.exists()

@@ -1348,40 +1348,62 @@ def _live_admission_gateway() -> str:
     return bootstrap.gateway_url.strip()
 
 
+def _wrap_admission_with_scope(
+    loader: Callable[[datetime], Any], state_dir: Path, prefixes: Sequence[str]
+) -> Callable[[datetime], Any]:
+    """Wrap *any* admission callable so its result is narrowed by *prefixes*.
+
+    This is the single enforcement point for the controller route-scope boundary.
+    It applies to both the default loader and any caller-injected admission loader,
+    so the scope constraint is honoured on every controller-selection path.
+
+    * Calls the inner ``loader`` first.
+    * Narrows with ``restrict_controller_scope``.
+    * Always writes the (possibly-empty) receipt.
+    * Raises ``AdmissionUnavailableError("controller_scope_empty", …)`` when no
+      admitted route survives, so the supervisor fails closed.
+    """
+    canon_prefixes: tuple[str, ...] = tuple(prefixes)
+    if not canon_prefixes:
+        return loader  # nothing to enforce
+
+    def wrapped(when: datetime) -> Any:
+        from verdict.admission import AdmissionUnavailableError
+
+        admitted = loader(when)
+        admitted = admitted.restrict_controller_scope(list(canon_prefixes))
+        admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        if not admitted:
+            scope_str = ",".join(canon_prefixes)
+            raise AdmissionUnavailableError(
+                "controller_scope_empty", f"no admitted route matches scope {scope_str}"
+            )
+        return admitted
+
+    return wrapped
+
+
 def _default_live_admission_loader(
     state_dir: Path, *, scope_prefixes: Sequence[str] = ()
 ) -> Callable[[datetime], Any]:
     """Canonical live admission for controller seeds (read-only OmniRoute GETs).
 
-    When *scope_prefixes* is non-empty the returned admission is narrowed to
-    routes whose id starts with one of those prefixes (``CONTROLLER_SCOPE``
-    stage).  If no admitted route survives the narrowing, the loader raises
-    ``AdmissionUnavailableError`` with reason ``controller_scope_empty`` so the
-    supervisor fails closed rather than falling back to an unscoped route.
+    Scope enforcement is delegated to ``_wrap_admission_with_scope`` so the
+    same narrowing / fail-closed logic is shared with injected admission loaders.
     """
-    prefixes: tuple[str, ...] = tuple(scope_prefixes)
 
     def load(when: datetime) -> Any:
-        from verdict.admission import AdmissionUnavailableError, load_live_admission
+        from verdict.admission import load_live_admission
 
         gateway = _live_admission_gateway()
         key = (
             os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
         ).strip() or None
         admitted = load_live_admission(gateway, now=when, api_key=key)
-        if prefixes:
-            admitted = admitted.restrict_controller_scope(list(prefixes))
-        # Always write the receipt (including the narrowed, possibly-empty one)
-        # so operators can inspect per-route drop reasons even when no route survived.
         admitted.write_receipt(state_dir / "controller-admission-latest.json")
-        if prefixes and not admitted:
-            scope_str = ",".join(prefixes)
-            raise AdmissionUnavailableError(
-                "controller_scope_empty", f"no admitted route matches scope {scope_str}"
-            )
         return admitted
 
-    return load
+    return _wrap_admission_with_scope(load, state_dir, scope_prefixes)
 
 
 def build_production_controller_selection_bundle(
@@ -1461,9 +1483,30 @@ def build_production_controller_selection_bundle(
 
         # Authoritative config-built service: canonical live admission is the
         # sole seed authority before ranking (read-only GETs; fails closed).
-        if service is not None and kwargs.get("admission") is None:
-            kwargs["admission"] = _default_live_admission_loader(
-                state_dir, scope_prefixes=controller_scope_prefixes
+        # Scope is enforced on ALL paths via _wrap_admission_with_scope:
+        #   1. No injected admission + service available → build the default loader.
+        #   2. Injected admission → wrap it with the scope boundary.
+        #   3. No injected admission + no service → no loader is set; scope is
+        #      enforced below after the selection factory runs (admission-less path).
+        # This ensures the hard boundary is never bypassed regardless of how the
+        # caller wires up the selection bundle.
+        if kwargs.get("admission") is None:
+            if service is not None:
+                kwargs["admission"] = _default_live_admission_loader(
+                    state_dir, scope_prefixes=controller_scope_prefixes
+                )
+            # service is None: loader will be built by the selection factory
+            # itself; we cannot wrap it here.  If scope is set and we end up
+            # with no admission loader, raise clearly rather than widen.
+            elif controller_scope_prefixes:
+                raise ValueError(
+                    "controller_scope_prefixes requires an admission loader, "
+                    "but no IntelligenceService is available to build one"
+                )
+        else:
+            # Caller injected their own loader: wrap it to enforce the scope.
+            kwargs["admission"] = _wrap_admission_with_scope(
+                kwargs["admission"], state_dir, controller_scope_prefixes
             )
 
         selection = _cs()
@@ -1977,12 +2020,23 @@ def main() -> int:
     count = 0
     # Resolve controller route-prefix scope: --scope wins over the env var.
     # Empty means all admitted routes are eligible (parity with no flag).
-    _raw_scope = (args.scope or "").strip() or (
-        os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or ""
-    ).strip()
+    # Resolve scope: --scope flag wins over env var.
+    # An explicit empty flag ("--scope ''") means no scope — do NOT fall back
+    # to the env var.  args.scope is None only when the flag was never passed.
+    if args.scope is not None:
+        _raw_scope = args.scope.strip()
+    else:
+        _raw_scope = (os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or "").strip()
     controller_scope_prefixes: tuple[str, ...] = tuple(
         p.strip() for p in _raw_scope.split(",") if p.strip()
     )
+    # A non-empty source that tokenizes to nothing (e.g. ",", " , ") is a
+    # configuration error, never a silent widening to unscoped selection.
+    if _raw_scope and not controller_scope_prefixes:
+        parser.error(
+            f"invalid --scope / VERDICT_CONTROLLER_ROUTE_PREFIXES: "
+            f"no route prefixes found in {_raw_scope!r}"
+        )
 
     def interrupted(_signum: int, _frame: Any) -> None:
         raise KeyboardInterrupt("supervisor interrupted")
