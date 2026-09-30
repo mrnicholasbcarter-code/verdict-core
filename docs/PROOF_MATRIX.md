@@ -100,3 +100,6 @@
 | | | | `tests/test_assignment_failover_e2e.py` | test_provider_quota_failover_to_independent_review | test | | |
 | | | | `tests/test_assignment_failover_e2e.py` | test_context_length_400_is_request_scoped | test | | |
 | | | | `tests/test_failover_matrix_e2e.py` | test_pool_exhaustion_fails_closed_without_using_the_controller | test | | |
+| PM-021 | harness independence | One live Verdict run supervised two worker harnesses (Prime Agent headless and the direct gateway) in the same cockpit, with the harness recorded per attempt. | `verdict/orchestration/executors.py` | MixedExecutor (per-node harness routing; preserves each delegate's harness) | implementation | `verdict run-receipt --runs-dir docs/proof/mixed-harness-live-2026-09-30 run` | verified |
+| | | | `tests/test_mixed_executor.py` | offline mixed-executor scenario (18 tests) | test | | |
+| | | | `docs/proof/mixed-harness-live-2026-09-30/README.md` | live run 20260930T222758Z: node-1 prime-headless, node-2 direct-gateway, review PASS on cx/gpt-5.5, receipt COMPLETE integrity OK | evidence | | |

@@ -1,0 +1,32 @@
+{
+ "goal": "mixed-harness live proof: two small files, one per harness",
+ "max_parallel": 2,
+ "nodes": [
+  {
+   "node_id": "node-1",
+   "objective": "Create the file alpha.txt containing exactly the line: alpha",
+   "owned_files": [
+    "alpha.txt"
+   ],
+   "verification_command": [
+    "sh",
+    "-c",
+    "grep -qx alpha alpha.txt"
+   ],
+   "risk": "low"
+  },
+  {
+   "node_id": "node-2",
+   "objective": "Create the file beta.txt containing exactly the line: beta",
+   "owned_files": [
+    "beta.txt"
+   ],
+   "verification_command": [
+    "sh",
+    "-c",
+    "grep -qx beta beta.txt"
+   ],
+   "risk": "low"
+  }
+ ]
+}
