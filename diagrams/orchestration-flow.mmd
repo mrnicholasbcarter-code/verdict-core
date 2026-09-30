@@ -92,7 +92,7 @@ flowchart TD
 %% evidence: verdict/orchestration/contracts.py:41,57 class NodeState, TRANSITIONS mapping (legal state transitions)
 %% evidence: verdict/orchestration/runtime.py:267,298 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
 %% evidence: verdict/orchestration/runtime.py:540,596,608 async def run(self), def _ready(self), def _propagate_blocks(self)
-%% evidence: verdict/orchestration/runtime.py:128,637-646 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
+%% evidence: verdict/orchestration/runtime.py:128,637-648 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
 %% evidence: verdict/orchestration/runtime.py:627,652-653 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
 %% evidence: verdict/orchestration/runtime.py:134,690-706 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
 %% evidence: verdict/orchestration/runtime.py:969 async def _attempt(self, run, failures)
