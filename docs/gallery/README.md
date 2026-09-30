@@ -7,7 +7,7 @@ Before/after comparison of the Verdict TUI screens across the visual-system rede
 
 ## Before / After
 
-| Screen | Before (`bf42aed`) | After (`main`) | What changed |
+| Screen | Before (`bf42aed`) | After (current renderers, `scripts/render_tui_gallery.py`) | What changed |
 |---|---|---|---|
 | Home | [demo.svg](before/demo.svg) | [home-110.svg](after/home-110.svg) | VERDICT pixel-art logo added; charcoal Rich theme; `verdict ›` command prompt (type a goal or a `/` command) |
 | Setup | — | [setup-110.svg](after/setup-110.svg) | PRESENTATION FIXTURE label; SETUP / OBSERVED STAGES pipeline (DISCOVER/CERTIFY/PLAN) |
