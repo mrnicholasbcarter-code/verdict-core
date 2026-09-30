@@ -3,8 +3,8 @@ name: Fresh install transcript
 # Evidence job (BOD-216 / BOD-250), run on demand and on PRs that change install.sh: run each published
 # one-line install path inside a clean container and keep the full
 # transcript as an artifact (ANSI colour codes stripped in the job itself).
-# No secrets are passed; every path ends in the offline `verdict demo`, which
-# makes no model calls.
+# No provider secrets are supplied (checkout uses the runner's GITHUB_TOKEN);
+# every path ends in the offline `verdict demo`, which makes no model calls.
 on:
   pull_request:
     paths:
@@ -51,7 +51,7 @@ jobs:
           mkdir -p transcript
           out="transcript/${MATRIX_PATH}-$(printf '%s' "$MATRIX_IMAGE" | tr ':/' '--').txt"
           ver="$INPUT_VERSION"
-          case "$ver" in ""|[0-9]*.[0-9]*.[0-9]*) ;; *) echo "invalid version input" >&2; exit 2 ;; esac
+          if [ -n "$ver" ] && ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "invalid version input: must be N.N.N" >&2; exit 2; fi
           {
             echo "# image: ${MATRIX_IMAGE}"
             echo "# path:  ${MATRIX_PATH}"
@@ -93,7 +93,7 @@ jobs:
           } 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' | tee "$out"
           # A completed demo needs the run_finished event AND a verified receipt.
           grep -Eq '^[0-9]+ +run_finished +outcome=COMPLETE$' "$out"
-          grep -Fq '+ VERIFIED  Receipt integrity verified  (receipt:verify)' "$out"
+          grep -Fxq '  + VERIFIED  Receipt integrity verified  (receipt:verify)' "$out"
           sha256sum "$out"
       - uses: actions/upload-artifact@v7
         if: always()
