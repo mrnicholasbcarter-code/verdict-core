@@ -31,7 +31,7 @@ pip install verdict-core
 verdict demo
 ```
 
-`verdict demo` ships in `verdict-core` 0.4.0 on PyPI. From a source checkout, `pip install -e .`
+`verdict demo` ships in `verdict-core` on PyPI (since 0.4.0). From a source checkout, `pip install -e .`
 gives the same command.
 
 `verdict demo` is an **offline scenario** with scripted workers and injected faults. It runs
