@@ -415,3 +415,20 @@ def test_cmd_autodev_packet_canary_reaches_run_action(tmp_path: Path) -> None:
             cli.cmd_autodev_packet_canary(str(episodes), str(admitted), output_json=True)
         called = [c.args[0] for c in spy.call_args_list]
         assert "autodev.packet.canary" in called
+
+
+def test_demo_live_is_labelled_as_not_the_offline_scenario(tmp_path, monkeypatch, capsys):
+    """BOD-279: `verdict demo --live` never runs or labels the offline scenario as live."""
+    import json as _json
+
+    from verdict.actions.registry import run_action
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = run_action("demo.run", {"live": True, "json": False, "width": 100})
+    assert not result.ok
+    assert result.exit_code == 1
+    message = result.data["error"]
+    assert "No credentials configured" in message
+    assert "verdict orchestrate" in message
+    assert "OFFLINE SCENARIO" not in _json.dumps(result.data)

@@ -133,7 +133,7 @@ verdict demo [--live] [--json] [--speed X] [--worker-seconds N]
 
 | Flag | Description |
 |---|---|
-| `--live` | Use production routing path (requires configured credentials) |
+| `--live` | Does not run the offline scenario. With credentials configured, it prints how to start a live run (`verdict orchestrate "<goal>" --repo .`); without them it exits 1. |
 | `--json` | Output machine-readable JSON (trace + claims + receipt) |
 | `--speed X` | TUI replay speed multiplier (default: 1.0) |
 | `--worker-seconds N` | Seconds each scripted offline worker runs (default: 1.5; 0 is instant) |

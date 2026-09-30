@@ -1177,8 +1177,8 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
                 data={
                     "error": (
                         "No credentials configured. "
-                        "verdict demo --live uses the PRODUCTION routing path. "
-                        "Run: verdict credentials set"
+                        "A live run (verdict orchestrate) uses the production routing path "
+                        "and needs credentials. Run: verdict credentials set"
                     )
                 },
                 ok=False,
@@ -1433,7 +1433,7 @@ def _register_builtins() -> None:
                 "demo.run",
                 "traces",
                 "read",
-                "Credential-free deterministic demo or live orchestration",
+                "Credential-free offline demo scenario (--live points to verdict orchestrate)",
                 "Traces",
             ),
             _action_demo_run,
