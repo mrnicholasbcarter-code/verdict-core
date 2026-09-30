@@ -797,8 +797,8 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/assets/demo.svg`](docs/assets/demo.svg) | ~450 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
 | [`docs/assets/demo-poster.svg`](docs/assets/demo-poster.svg) | ~15 KB | last frame of `demo.cast` | same command as `demo.svg` |
 | [`docs/assets/demo-tui.cast`](docs/assets/demo-tui.cast) | ~1 MB | offline scenario (scripted workers, injected fault), replayed at 1x; gaps over 1.5 s capped | `python scripts/record_tui_demo.py --scenario --speed 1` |
-| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~200 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
-| [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~22 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
+| [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~290 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
+| [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~23 KB | last frame of `demo-tui.cast` | same command as `demo-tui.svg` |
 | `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
