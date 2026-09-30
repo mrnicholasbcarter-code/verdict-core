@@ -267,6 +267,8 @@ def test_utf8_character_split_across_reads_stays_one_character() -> None:
 
 
 def test_trailing_partial_bytes_are_flushed() -> None:
+    """A capture that ends mid-character still emits those bytes (as one
+    replacement character), at the last read's timestamp."""
     cast = rec.to_asciicast([(0.1, b"ok \xe2\x94")], width=20, height=5, title="t")
     events = [json.loads(line) for line in cast.splitlines()[1:]]
-    assert "".join(e[2] for e in events).startswith("ok ")
+    assert events == [[0.1, "o", "ok "], [0.1, "o", "\ufffd"]]
