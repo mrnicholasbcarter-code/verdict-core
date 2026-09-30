@@ -1,0 +1,20 @@
+{
+ "node_id": "node-1",
+ "attempt": 1,
+ "route_id": "cc/claude-haiku-4-5-20251001",
+ "ok": true,
+ "reported_model": "cc/claude-haiku-4-5-20251001",
+ "stop_reason": "stop",
+ "status_code": null,
+ "error": "",
+ "output_tail": "I have successfully completed the objective:\n\n1. **Created alpha.txt** with exactly the line: `alpha`\n2. **Verified the file content** - confirmed it contains exactly \"alpha\"\n3. **Ran the verification command** - `sh -c grep -qx alpha alpha.txt` passed with exit code 0\n\nRESULT: DONE",
+ "duration_seconds": 15.192461993981851,
+ "session_ref": "",
+ "usage": {
+  "input_tokens": 133,
+  "output_tokens": 619,
+  "cost_usd": 0.0,
+  "tokens_source": "prime_stdout",
+  "turns": 3
+ }
+}

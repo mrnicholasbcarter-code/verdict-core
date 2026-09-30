@@ -702,6 +702,32 @@
       "verification": "pytest -q tests/test_assignment_failover_e2e.py",
       "public_wording": "Dynamic assignment reroutes on provider quota or context-length failures and fails closed on pool exhaustion.",
       "gap": "Reroute tests use mocked providers; live multi-provider failover chains are not yet exercised."
+    },
+    {
+      "id": "PM-021",
+      "area": "harness independence",
+      "requirement": "One live orchestrate run supervises two different worker harnesses (Prime Agent headless and the direct gateway) in the same controller session, and records the harness per attempt in events, receipt and cockpit.",
+      "status": "verified",
+      "evidence": [
+        {
+          "path": "verdict/orchestration/executors.py",
+          "locator": "MixedExecutor (per-node harness routing; preserves each delegate's harness)",
+          "kind": "implementation"
+        },
+        {
+          "path": "tests/test_mixed_executor.py",
+          "locator": "offline mixed-executor scenario (18 tests)",
+          "kind": "test"
+        },
+        {
+          "path": "docs/proof/mixed-harness-live-2026-09-30/README.md",
+          "locator": "live run 20260930T222758Z: node-1 prime-headless, node-2 direct-gateway, review PASS on cx/gpt-5.5, receipt COMPLETE integrity OK",
+          "kind": "evidence"
+        }
+      ],
+      "verification": "verdict run-receipt --runs-dir docs/proof/mixed-harness-live-2026-09-30 run",
+      "public_wording": "One live Verdict run supervised two worker harnesses (Prime Agent headless and the direct gateway) in the same cockpit, with the harness recorded per attempt.",
+      "gap": "Both nodes succeeded first try on the same selected route, so cross-harness failover is not exercised; node-2's direct-gateway attempt reported a model without the provider prefix, so its provider-qualified identity is unverified (recorded as a route-identity mismatch)."
     }
   ]
 }

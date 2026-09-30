@@ -1,0 +1,57 @@
+{
+  "status": "skipped",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "cx/gpt-5.5"
+  },
+  "message": "Review skipped: no items were selected.",
+  "summary": {
+    "files_reviewed": 0,
+    "comments": 0,
+    "total_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "elapsed": "0s"
+  },
+  "tool_calls": {
+    "total": 0,
+    "by_tool": {},
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "session_id": "76669fcc-3702-485f-a351-12c0eccc5e9d",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "76669fcc-3702-485f-a351-12c0eccc5e9d",
+    "operation": "review",
+    "terminal_state": "skipped",
+    "repository": {},
+    "input": {
+      "mode": "range",
+      "requested_from": "dee3bf8e98b4c4646b20cbcd94b9ac836e860338",
+      "requested_head": "d76fc8db0784ed78184f112c2e5ad1a76ad44ece",
+      "resolved_base": "dee3bf8e98b4c4646b20cbcd94b9ac836e860338",
+      "resolved_head": "d76fc8db0784ed78184f112c2e5ad1a76ad44ece",
+      "exact_range": "dee3bf8e98b4c4646b20cbcd94b9ac836e860338..d76fc8db0784ed78184f112c2e5ad1a76ad44ece",
+      "source_artifact_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "cx/gpt-5.5",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "f611622b58514c36e4ea02536cab18e15419df06544a048c99b5e3c8e1a21b04"
+    },
+    "coverage": {
+      "selected": [],
+      "completed": [],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 21
+  }
+}
