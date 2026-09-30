@@ -1209,14 +1209,18 @@ class MixedExecutor:
     key — planning, plan-repair, or unmapped worker nodes — fall back to
     ``default``.
 
-    Node id is extracted from ``cwd``: attempt worktrees are named
-    ``<node_id>-a<N>`` by the runtime; non-attempt ``cwd`` values (planning
-    calls whose ``cwd`` is the bare repo root) map to the default.
+    Node id is extracted from ``cwd``: the runtime places attempt worktrees at
+    ``<run_dir>/worktrees/<node_id>-a<N>``.  ``MixedExecutor`` identifies an
+    attempt worktree by requiring both a ``worktrees`` parent *and* a basename
+    ending in ``-a<digits>``.  Any other ``cwd`` — the bare repo root for
+    planning calls, or a special worktree like ``_integration`` — maps to
+    ``default``.
 
-    The ``executor_kind`` on each returned :class:`WorkerTerminal` is stamped
-    with the *logical backend name* for that slot (e.g. ``"prime-headless"`` or
-    ``"direct-gateway"``), overriding the delegate's own kind.  This ensures
-    cockpit and receipt always show which named harness ran each node.
+    The delegate's ``harness`` field is preserved exactly as-is.  Every real
+    executor (``PrimeHeadlessExecutor``, ``DirectGatewayExecutor``) self-stamps
+    ``harness`` before returning.  Scripted stand-ins should set their own
+    ``harness`` label to something distinct from live names so test receipts
+    never claim a live harness that did not actually run.
 
     Usage (via ``--executor-map``)::
 
@@ -1229,51 +1233,43 @@ class MixedExecutor:
         "direct-gateway": "direct-gateway",
     }
 
-    def __init__(
-        self,
-        node_map: dict[str, WorkerExecutor],
-        default: WorkerExecutor,
-        *,
-        node_kind_map: dict[str, str] | None = None,
-        default_kind: str = "",
-    ) -> None:
+    def __init__(self, node_map: dict[str, WorkerExecutor], default: WorkerExecutor) -> None:
         self._map = dict(node_map)
         self._default = default
-        # kind_map maps node_id -> executor_kind label to stamp on terminals.
-        self._kind_map: dict[str, str] = dict(node_kind_map or {})
-        self._default_kind = default_kind
 
     @staticmethod
     def _node_id_from_cwd(cwd: Path) -> str | None:
-        """Return the node id when *cwd* is an attempt worktree, else None."""
+        """Return the node id when *cwd* is an attempt worktree, else None.
+
+        An attempt worktree lives at ``<run_dir>/worktrees/<node_id>-a<N>``.
+        We require both the ``worktrees`` parent directory name *and* the
+        ``-a<digits>`` suffix so that a repository root named ``node-1-a1``
+        is never mistaken for an attempt worktree.
+        """
+        if cwd.parent.name != "worktrees":
+            return None
         name = cwd.name
         if "-a" in name:
-            # Attempt worktrees are named ``<node_id>-aN``; strip suffix.
             parts = name.rsplit("-a", 1)
             if len(parts) == 2 and parts[1].isdigit():
                 return parts[0]
         return None
 
-    def _pick(self, cwd: Path) -> tuple[WorkerExecutor, str]:
-        """Return ``(executor, kind_label)`` for this call."""
+    def _pick(self, cwd: Path) -> WorkerExecutor:
+        """Return the executor for this call."""
         node_id = self._node_id_from_cwd(cwd)
         if node_id is not None and node_id in self._map:
-            return self._map[node_id], self._kind_map.get(node_id, "")
-        return self._default, self._default_kind
+            return self._map[node_id]
+        return self._default
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
-        executor, kind = self._pick(cwd)
-        terminal = await executor.run(
+        # Delegate entirely.  executor_kind and harness are set by the delegate
+        # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
+        # ScriptedExecutor stamps executor_kind='scripted').  MixedExecutor
+        # must NOT overwrite either field so fault-injected and scripted
+        # provenance remain intact.
+        return await self._pick(cwd).run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
-        # Stamp the logical harness name from the map (overrides the delegate's own
-        # stamp so a scripted stand-in gets the right live-harness label).
-        # executor_kind is intentionally NOT touched here: it must remain the
-        # adapter-attested kind ('live', 'scripted', 'fault-injected') so that
-        # fault_injected detection in runtime.py and replay provenance in tui.py
-        # work correctly.
-        if kind:
-            terminal = replace(terminal, harness=kind)
-        return terminal

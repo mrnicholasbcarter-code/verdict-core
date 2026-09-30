@@ -365,17 +365,7 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
             node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
             for node_id, backend in node_backend_map.items()
         }
-        node_kind_map = {
-            node_id: MixedExecutor._BACKEND_KINDS.get(backend, backend)
-            for node_id, backend in node_backend_map.items()
-        }
-        default_kind = MixedExecutor._BACKEND_KINDS.get(default_name, default_name)
-        executor = MixedExecutor(
-            node_map=named,
-            default=default_executor,
-            node_kind_map=node_kind_map,
-            default_kind=default_kind,
-        )
+        executor = MixedExecutor(node_map=named, default=default_executor)
     else:
         executor = default_executor
     faults: dict[str, list[str]] = {}
@@ -443,6 +433,31 @@ def _orchestrate(args: argparse.Namespace) -> int:
     if not goal:
         print("BLOCKED: a goal (or --graph/--resume) is required", file=sys.stderr)
         return 2
+    # Validate --executor-map node ids against the graph when one is available.
+    # When no graph exists yet (frontier planning), the graph is built later;
+    # emit a stderr warning so the operator can catch typos before waiting.
+    raw_map = getattr(args, "executor_map", "") or ""
+    if raw_map:
+        node_backend_map = _parse_executor_map(raw_map)
+        if node_backend_map:
+            if graph is not None:
+                known_ids = {n.node_id for n in graph.nodes}
+                unknown = sorted(n for n in node_backend_map if n not in known_ids)
+                if unknown:
+                    print(
+                        f"error: --executor-map: unknown node id(s) {unknown!r}; "
+                        f"known ids: {sorted(known_ids)!r}",
+                        file=sys.stderr,
+                    )
+                    return 2
+            else:
+                # No graph yet (frontier planning will build it); warn and continue.
+                print(
+                    "warning: --executor-map: graph not yet known (frontier planning); "
+                    "node id(s) in map cannot be validated at start time: "
+                    + ", ".join(sorted(node_backend_map)),
+                    file=sys.stderr,
+                )
     inflight: dict[str, str] = {}  # node_id -> route_id, maintained by DagRuntime
     selector = build_selector(
         args.gateway,

@@ -75,15 +75,26 @@ names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
 default. An unknown backend name exits with a clear error before the run starts.
 
 The `run_started` event records `executor: "mixed"`. Each `terminal` event
-carries an `executor_kind` field with the backend that ran that specific
-attempt (`prime-headless` or `direct-gateway`). The cockpit WORKERS table
-shows the harness in the **harness** column. The receipt preserves
-`executor_kind` per attempt so `verdict run-receipt` verifies with
-integrity OK.
+carries two provenance fields:
+
+- **`executor_kind`**: execution-environment provenance (`live`, `scripted`,
+  or `fault-injected`). Set by the adapter; never overwritten by
+  `MixedExecutor`.
+- **`harness`**: the named backend that ran this attempt (`prime-headless` or
+  `direct-gateway`). Set by `PrimeHeadlessExecutor` and `DirectGatewayExecutor`
+  on every real attempt. Empty on fault-injected or scripted terminals.
+
+The cockpit WORKERS table shows the harness in the **harness** column (only
+visible when at least one node has harness data). The receipt preserves `harness`
+per attempt so `verdict run-receipt` verifies with integrity OK.
 
 > **Note:** The live proof of a mixed-harness run reaching COMPLETE is
 > pending. The offline CI test (node-1 on one scripted harness, node-2 on
 > another) covers the event/receipt/cockpit assertions.
+
+When `--graph` is provided, unknown node ids in `--executor-map` are rejected
+with a clear error before the run starts. When no graph is available (frontier
+planning), a warning is printed to stderr listing the unverified map keys.
 
 ### `verdict supervise` — Supervise and resume a run
 
