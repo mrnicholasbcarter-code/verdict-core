@@ -167,7 +167,8 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int |
     try:
         request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as resp:
-            data = json.loads(resp.read(65536))
+            # Read full response (catalogs can exceed 3 MB).
+            data = json.loads(resp.read())
         models = data.get("data", [])
         return True, len(models) if isinstance(models, list) else None
     except Exception:
@@ -474,6 +475,9 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
 
     if isinstance(data, list) and data and isinstance(data[0], dict):
         _render_table(console, data, plain=tui.plain, width=effective_width)
+    elif isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
+        # Text-bearing result (e.g. demo output): print text directly
+        console.print(clean(data["text"]))
     elif isinstance(data, dict):
         _render_kv_panel(console, data, plain=tui.plain, width=effective_width)
     elif isinstance(data, list):
@@ -517,7 +521,18 @@ def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, wid
     kv.add_column(style="" if plain else TOKENS["MUTED"])
     kv.add_column()
     for k, v in data.items():
-        kv.add_row(Text(clean(str(k))), Text(clean(str(v))[:200]))
+        if isinstance(v, dict):
+            # Nested dict: render as indented lines
+            kv.add_row(Text(clean(str(k))), Text(""))
+            for sk, sv in v.items():
+                if isinstance(sv, dict):
+                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(""))
+                    for ssk, ssv in sv.items():
+                        kv.add_row(Text(f"    {clean(str(ssk))}"), Text(clean(str(ssv))[:200]))
+                else:
+                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(clean(str(sv))[:200]))
+        else:
+            kv.add_row(Text(clean(str(k))), Text(clean(str(v))[:200]))
     if plain:
         console.print(kv)
     else:
@@ -749,19 +764,24 @@ def _run_command(
 
 
 def _show_help(console: Console) -> None:
-    """Print a compact command list."""
+    """Print a compact command list, each group shown once."""
+    from collections import OrderedDict
+
+    groups: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
+    for group, cmd, purpose, _action in PALETTE:
+        groups.setdefault(group, []).append((cmd, purpose))
+
     table = Table.grid(padding=(0, 2))
     table.add_column(style=TOKENS["ACCENT"], no_wrap=True)
     table.add_column(style=TOKENS["SECONDARY"])
-    last = ""
-    for group, cmd, purpose, _action in PALETTE:
-        if group != last:
-            table.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), Text(""))
-        table.add_row(Text(f"/{cmd}"), Text(purpose))
-        last = group
-    table.add_row(Text(""), Text(""))
-    table.add_row(Text("/clear", style=TOKENS["ACCENT"]), Text("clear screen"))
-    table.add_row(Text("/quit", style=TOKENS["ACCENT"]), Text("exit (or Ctrl-D)"))
+    for group, entries in groups.items():
+        table.add_row(Text(group.upper(), style=TOKENS["PRIMARY"]), Text(""))
+        for cmd, purpose in entries:
+            table.add_row(Text(f"/{cmd}"), Text(purpose))
+    table.add_row(Text("SESSION", style=TOKENS["PRIMARY"]), Text(""))
+    table.add_row(Text("/clear"), Text("clear screen"))
+    table.add_row(Text("/help"), Text("show this list"))
+    table.add_row(Text("/quit"), Text("exit (or Ctrl-D)"))
     console.print(table)
 
 
@@ -802,6 +822,7 @@ def _startup_with_motion(
 
     The sweep ends when probe finishes OR max_sweep_s is reached, whichever
     comes first. No ``time.sleep`` — uses threading.Event with timeout.
+    The wordmark reveal spreads across ``max_sweep_s`` so the user sees motion.
     """
     if probe_fn is not None:
         done = threading.Event()
@@ -818,26 +839,37 @@ def _startup_with_motion(
         done.set()
         result = [(state.gateway_ok, state.gateway_models)]
 
-    # Sweep: reveal wordmark lines while waiting for probe
+    # Sweep: reveal wordmark lines while waiting for probe.
+    # Each line waits up to line_delay for the probe; if the probe is still
+    # running the delay produces the visual sweep effect.
     line_delay = max_sweep_s / max(len(WORDMARK) + 2, 1)
-    for i, line in enumerate(WORDMARK):
-        if done.is_set():
-            # Probe finished, show remaining lines instantly
-            for remaining_line in WORDMARK[i:]:
-                target.print(Text(remaining_line.rstrip(), style=TOKENS["PRIMARY"]))
-            break
+    for line in WORDMARK:
         target.print(Text(line.rstrip(), style=TOKENS["PRIMARY"]))
+        if hasattr(target, "file"):
+            target.file.flush()
         done.wait(timeout=line_delay)
-    else:
-        # All lines shown, wait for probe if still running
-        done.wait(timeout=max(0, max_sweep_s - len(WORDMARK) * line_delay))
 
     # Show tagline
     target.print(Text("AUTONOMOUS CONTROL PLANE", style=TOKENS["TEXT"]))
     target.print(Text("plan · select · recover · verify · prove", style=TOKENS["SECONDARY"]))
     target.print()
 
-    # Show connection state
+    # Show "checking…" while probe may still be running
+    if probe_fn is not None and not done.is_set():
+        checking = Text("gateway  ", style=TOKENS["SECONDARY"])
+        checking.append("checking…", style=TOKENS["MUTED"])
+        checking.append(f"  {clean(state.gateway)}", style=TOKENS["MUTED"])
+        target.print(checking)
+        if hasattr(target, "file"):
+            target.file.flush()
+        # Wait for probe to finish (remaining time)
+        done.wait(timeout=max(0, max_sweep_s))
+        # Move cursor up to overwrite the "checking" line
+        if hasattr(target, "file"):
+            target.file.write("\033[1A\033[2K")
+            target.file.flush()
+
+    # Resolve probe result
     if result:
         state.gateway_ok, state.gateway_models = result[0]
     gw_label = (
@@ -973,6 +1005,10 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         history: Any = FileHistory(str(HISTORY_FILE))
     except Exception:
         history = InMemoryHistory()
+
+    # Suppress CPR (cursor position request) warning in terminals that
+    # do not support it. Verdict does not need cursor position info.
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
 
     session: PromptSession[str] = PromptSession(
         message="verdict › ",  # noqa: RUF001
