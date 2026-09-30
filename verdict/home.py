@@ -163,7 +163,11 @@ def _plain(console: Console) -> bool:
 
 def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int | None]:
     """Bounded, unauthenticated reachability ping; never raises."""
-    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme
+    except Exception:
+        return None, None
+    if scheme not in {"http", "https"}:
         return None, None
     try:
         request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
@@ -818,12 +822,18 @@ def _save_history(path: Path, entries: list[str]) -> None:
     """Append and cap the history file; owner-only permissions."""
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdir's mode does not apply to an existing directory: tighten it.
+        os.chmod(path.parent, 0o700)
         existing = _load_history(path) if path.exists() else []
         combined = (existing + entries)[-HISTORY_MAX_LINES:]
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # Write a new owner-only file and atomically replace the old one, so
+        # the history is never readable by others, even for a moment.
+        tmp = path.with_name(path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(combined) + "\n")
-        os.chmod(path, 0o600)
+        os.replace(tmp, path)
     except Exception:
         pass
 

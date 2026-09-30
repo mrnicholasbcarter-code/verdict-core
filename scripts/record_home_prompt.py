@@ -155,6 +155,13 @@ def main() -> int:
     if not chunks:
         print("No output captured", file=sys.stderr)
         return 1
+    # Refuse to write a cast that does not show the session it claims to.
+    text = b"".join(data for _, data in chunks).decode("utf-8", "replace")
+    required = ("verdict ›", "REACHABLE", "CLAIMS VERIFIED", "Run orchestrate on this goal?")  # noqa: RUF001
+    missing = [marker for marker in required if marker not in text]
+    if missing or "Traceback" in text:
+        print(f"Recording incomplete; missing {missing}", file=sys.stderr)
+        return 1
 
     # Never commit host paths: show the home directory as "~".
     home = os.path.expanduser("~").encode()

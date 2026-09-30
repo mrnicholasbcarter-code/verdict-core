@@ -880,3 +880,128 @@ def test_startup_prints_the_whole_wordmark_when_the_probe_is_fast() -> None:
     out = console.file.getvalue()
     for line in WORDMARK:
         assert line.rstrip() in out
+
+
+# ---------------------------------------------------------------------------
+# Real terminal: the production prompt_toolkit path in a pseudo-terminal
+# ---------------------------------------------------------------------------
+
+_PTY_CHILD = """
+import os, sys
+os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
+import verdict.home as home
+
+calls = {"n": 0}
+
+def failing_action(name, params=None):
+    calls["n"] += 1
+    raise ValueError("pty boom %d" % calls["n"])
+
+home.run_palette_action = failing_action
+sys.exit(home.run_home(probe=False))
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty only")
+def test_real_prompt_session_survives_a_failing_command(tmp_path: Path) -> None:
+    """Drive the real prompt_toolkit session in a pty: a raising command shows
+    its error, the prompt comes back, a second command runs, Ctrl-D exits 0."""
+    import os
+    import pty
+    import select
+    import time
+
+    root = Path(__file__).resolve().parents[1]
+    script = tmp_path / "child.py"
+    script.write_text(_PTY_CHILD)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(root),
+        "TERM": "xterm-256color",
+        "COLUMNS": "100",
+        "LINES": "40",
+    }
+    pid, fd = pty.fork()
+    if pid == 0:  # pragma: no cover - child process
+        os.chdir(tmp_path)
+        os.execve(sys.executable, [sys.executable, str(script)], env)
+
+    buf = b""
+
+    def pump(seconds: float, until: bytes | None = None) -> None:
+        nonlocal buf
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            ready, _, _ = select.select([fd], [], [], 0.05)
+            if ready:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                buf += chunk
+                if until is not None and buf.count(until) >= 1:
+                    return
+
+    try:
+        pump(20.0, until="verdict ›".encode())  # noqa: RUF001
+        assert "verdict ›".encode() in buf, buf[-2000:]  # noqa: RUF001
+        os.write(fd, b"/config\r")
+        pump(10.0, until=b"pty boom 1")
+        os.write(fd, b"/config\r")
+        pump(10.0, until=b"pty boom 2")
+        # Wait until the prompt is drawn again before sending Ctrl-D.
+        mark = len(buf)
+        end = time.monotonic() + 10.0
+        while time.monotonic() < end and "verdict ›".encode() not in buf[mark:]:  # noqa: RUF001
+            pump(0.2)
+        pump(0.3)
+        os.write(fd, b"\x04")
+        status = None
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            pump(0.2)
+            done_pid, st = os.waitpid(pid, os.WNOHANG)
+            if done_pid == pid:
+                status = st
+                break
+        assert status is not None, (
+            "prompt did not exit on Ctrl-D: " + buf.decode("utf-8", "replace")[-1500:]
+        )
+    finally:
+        import contextlib
+
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 9)
+        os.close(fd)
+    text = buf.decode("utf-8", "replace")
+    assert "ValueError: pty boom 1" in text, text[-3000:]
+    assert "ValueError: pty boom 2" in text, text[-3000:]
+    assert "Traceback" not in text
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
+def test_history_tightens_existing_permissions(tmp_path: Path) -> None:
+    import stat
+
+    import verdict.home as home
+
+    d = tmp_path / "shared"
+    d.mkdir(mode=0o755)
+    d.chmod(0o755)
+    path = d / "prompt_history"
+    path.write_text("/old\n")
+    path.chmod(0o644)
+    home._save_history(path, ["/new"])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+    assert path.read_text().splitlines() == ["/old", "/new"]
+
+
+def test_probe_gateway_malformed_url_never_raises() -> None:
+    from verdict.home import probe_gateway
+
+    assert probe_gateway("http://[::1") == (None, None)
+    assert probe_gateway("ftp://example.test") == (None, None)
