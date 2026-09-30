@@ -672,7 +672,7 @@ Each claim links to the code that does it and a test that checks it, at this com
 provider connections and runtime evidence. A missing input fails closed, and there is no catalog-only
 fallback ([`verdict/admission.py:945`](verdict/admission.py#L945)). The set cannot be built any other way
 ([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
-([`verdict/orchestration/cli.py:128-141`](verdict/orchestration/cli.py#L128-L141)). The ladder raises
+([`verdict/orchestration/eligibility_report.py:139-140`](verdict/orchestration/eligibility_report.py#L139-L140), through [`AdmittedSet.restrict_prefixes`/`restrict_families`/`exclude_controller`](verdict/admission.py)). The ladder raises
 `AdmissionBypassError` if it ever picks a route outside the set
 ([`verdict/orchestration/eligibility.py:841`](verdict/orchestration/eligibility.py#L841), through
 [`AdmittedSet.require_launchable`](verdict/admission.py)).
