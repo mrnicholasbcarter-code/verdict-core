@@ -1057,3 +1057,20 @@ def test_recorder_redacts_cwd_and_home(tmp_path: Path, monkeypatch: pytest.Monke
     text = rec.sanitize_chunks(chunks, cwd=cwd)[0][1].decode()
     assert cwd not in text and str(home) not in text
     assert "repo: ." in text and "~/.config/verdict/verdict.yaml" in text
+
+
+def test_recorder_redacts_a_path_split_across_pty_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _load_recorder()
+    home = "/home/someone"
+    monkeypatch.setenv("HOME", home)
+    cwd = "/srv/build/work-dir"
+    stream = f"repo: {cwd}\nconfig {home}/.config/verdict/verdict.yaml\n".encode()
+    for cut in range(1, len(stream)):
+        chunks = [(0.1, stream[:cut]), (0.2, stream[cut:])]
+        out = rec.sanitize_chunks(chunks, cwd=cwd)
+        assert [t for t, _ in out] == [0.1, 0.2]
+        text = b"".join(data for _, data in out).decode()
+        assert cwd not in text and home not in text, (cut, text)
+        assert text == "repo: .\nconfig ~/.config/verdict/verdict.yaml\n"

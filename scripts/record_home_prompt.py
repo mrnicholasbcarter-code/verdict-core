@@ -132,16 +132,36 @@ REQUIRED_MARKERS = (
 
 
 def sanitize_chunks(chunks: list[tuple[float, bytes]], *, cwd: str) -> list[tuple[float, bytes]]:
-    """Never commit host paths: the recording cwd becomes "." and HOME "~"."""
+    """Never commit host paths: the recording cwd becomes "." and HOME "~".
+
+    A pty read can split a path across two chunks, so replacements run on the
+    joined stream. Each chunk then keeps its own timestamp and the matching
+    slice of the redacted stream; a replacement that crosses a boundary lands
+    in the chunk where the path started.
+    """
     home = os.path.expanduser("~")
-    swaps = sorted({(cwd, "."), (home, "~")}, key=lambda kv: len(kv[0]), reverse=True)
-    out = []
-    for t, data in chunks:
+    swaps = [
+        (old.encode(), new.encode())
+        for old, new in sorted({(cwd, "."), (home, "~")}, key=lambda kv: len(kv[0]), reverse=True)
+        if old and old != "/"
+    ]
+    joined = b"".join(data for _, data in chunks)
+    # Map every byte of the joined stream to the chunk it came from.
+    owner: list[int] = []
+    for index, (_, data) in enumerate(chunks):
+        owner.extend([index] * len(data))
+    out_parts: list[bytearray] = [bytearray() for _ in chunks]
+    pos = 0
+    while pos < len(joined):
         for old, new in swaps:
-            if old and old != "/":
-                data = data.replace(old.encode(), new.encode())
-        out.append((t, data))
-    return out
+            if joined.startswith(old, pos):
+                out_parts[owner[pos]].extend(new)
+                pos += len(old)
+                break
+        else:
+            out_parts[owner[pos]].append(joined[pos])
+            pos += 1
+    return [(t, bytes(part)) for (t, _), part in zip(chunks, out_parts, strict=True)]
 
 
 def recording_problems(chunks: list[tuple[float, bytes]]) -> list[str]:
