@@ -82,7 +82,9 @@ carries two provenance fields:
   `MixedExecutor`.
 - **`harness`**: the named backend that ran this attempt (`prime-headless` or
   `direct-gateway`). Set by `PrimeHeadlessExecutor` and `DirectGatewayExecutor`
-  on every real attempt. Empty on fault-injected or scripted terminals.
+  on every real attempt. Empty on fault-injected terminals and on scripted
+  terminals unless the scripted adapter explicitly supplies a distinct label
+  (e.g. `scripted:prime-headless` in offline tests).
 
 The cockpit WORKERS table shows the harness in the **harness** column (only
 visible when at least one node has harness data). The receipt preserves `harness`

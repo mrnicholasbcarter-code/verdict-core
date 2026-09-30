@@ -525,6 +525,7 @@ EVENT_TYPES = frozenset(
         "rehydrate",  # BOD-272: same-route retry with failing verification evidence
         "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
         "control",  # BOD-276: external run/node control requests + acknowledgements
+        "executor_map_unmatched",  # BOD-284: --executor-map keys not in the final plan
         "run_finished",
     }
 )

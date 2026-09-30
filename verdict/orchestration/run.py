@@ -735,6 +735,25 @@ async def run_golden_path(
         rationale=list(graph.rationale),
     )
 
+    # After the graph is known, check whether any --executor-map keys are missing
+    # from the plan.  This surfaces typos regardless of whether --graph was given.
+    # MixedExecutor exposes its node map via _map; unknown keys silently fall back
+    # to the default executor which is hard to diagnose after the run.
+    from verdict.orchestration.executors import MixedExecutor as _MixedExecutor
+
+    if isinstance(executor, _MixedExecutor):
+        planned_ids = {n.node_id for n in graph.nodes}
+        unmatched = sorted(k for k in executor._map if k not in planned_ids)
+        if unmatched:
+            import sys as _sys
+
+            _sys.stderr.write(
+                f"warning: --executor-map: node id(s) {unmatched!r} "
+                f"not found in the final plan; they will never route; "
+                f"known ids: {sorted(planned_ids)!r}\n"
+            )
+            events.emit("executor_map_unmatched", unmatched_keys=unmatched)
+
     def prompt_for(node: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
         return hydrate_node_prompt(
             node, repo=cwd, goal=goal, max_context_bytes=context_budget_bytes

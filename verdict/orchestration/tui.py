@@ -373,9 +373,9 @@ class RunView:
         node = self.node(node_id)
         route = _t(data.get("route_id", ""), 64) or node.route_id
         node.history.append((route, "ok" if data.get("ok") else "failed"))
-        harness = _t(data.get("harness", ""), 24)
-        if harness:
-            node.harness = harness
+        # Always overwrite: an empty harness on a later attempt clears a
+        # stale live label from an earlier attempt so the display stays accurate.
+        node.harness = _t(data.get("harness", ""), 24)
         duration = _f(data.get("duration_seconds"))
         if duration is None and node.started_at is not None and self.now is not None:
             duration = max(0.0, self.now - node.started_at)

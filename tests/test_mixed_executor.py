@@ -267,6 +267,81 @@ def test_fault_inject_inside_mixed_keeps_fault_injected_kind(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# Fix 3: stale harness cleared on subsequent empty-harness terminal
+# ---------------------------------------------------------------------------
+
+
+def test_tui_harness_cleared_by_later_empty_harness_terminal() -> None:
+    """A live attempt followed by a fault-injected attempt must show no harness.
+
+    The fault-injected terminal carries harness='' (no real harness ran).
+    After applying it, node.harness must be '' — not the stale live label.
+    """
+    from verdict.orchestration.tui import RunView
+
+    events = [
+        {
+            "seq": 1,
+            "at": "2026-01-01T00:00:01+00:00",
+            "type": "run_started",
+            "data": {"goal": "test"},
+        },
+        {
+            "seq": 2,
+            "at": "2026-01-01T00:00:02+00:00",
+            "type": "dispatch",
+            "node_id": "node-1",
+            "data": {"attempt": 1, "route_id": "cc/model"},
+        },
+        {
+            "seq": 3,
+            "at": "2026-01-01T00:00:03+00:00",
+            "type": "terminal",
+            "node_id": "node-1",
+            "data": {
+                "ok": False,
+                "route_id": "cc/model",
+                "reported_model": "cc/model",
+                "executor_kind": "live",
+                "harness": "prime-headless",  # live attempt: harness set
+                "error": "rate_limit",
+                "attempt": 1,
+                "duration_seconds": 1.0,
+            },
+        },
+        {
+            "seq": 4,
+            "at": "2026-01-01T00:00:04+00:00",
+            "type": "dispatch",
+            "node_id": "node-1",
+            "data": {"attempt": 2, "route_id": "cc/model"},
+        },
+        {
+            "seq": 5,
+            "at": "2026-01-01T00:00:05+00:00",
+            "type": "terminal",
+            "node_id": "node-1",
+            "data": {
+                "ok": False,
+                "route_id": "cc/model",
+                "reported_model": "cc/model",
+                "executor_kind": "fault-injected",
+                "harness": "",  # fault-injected: no live harness
+                "error": "timeout",
+                "attempt": 2,
+                "duration_seconds": 0.0,
+            },
+        },
+    ]
+    view = RunView.from_events(events)
+    node = view.node("node-1")
+    assert node.harness == "", (
+        f"after fault-injected attempt, harness must be '' (not stale 'prime-headless'), "
+        f"got {node.harness!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI error for unknown backend
 # ---------------------------------------------------------------------------
 
@@ -286,12 +361,15 @@ def test_mixed_executor_unknown_backend_cli_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_executor_map_unknown_node_id_rejected_when_graph_known(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_executor_map_unknown_node_id_exits_2_via_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """When --graph is provided, unknown node ids in --executor-map exit with error."""
+    """When --graph is provided, unknown node ids in --executor-map cause exit 2
+    via the real _orchestrate() path with the error text on stderr."""
+    import argparse
     import json
 
+    from verdict.orchestration.cli import _orchestrate
     from verdict.orchestration.contracts import NodeKind, WorkGraph, WorkNode
 
     graph = WorkGraph(
@@ -310,40 +388,108 @@ def test_executor_map_unknown_node_id_rejected_when_graph_known(
     graph_file = tmp_path / "graph.json"
     graph_file.write_text(json.dumps(graph.to_dict()))
 
-    # We call _orchestrate indirectly by exercising the validation path directly.
-    # The check lives in _orchestrate after graph is loaded; test it via a
-    # minimal argparse namespace that mirrors the real args.
-    from verdict.orchestration.cli import _parse_executor_map
+    # Patch the API key check so _orchestrate does not bail at the key guard.
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-for-validation")
 
-    node_backend_map = _parse_executor_map("typo-node=prime")
-    known_ids = {n.node_id for n in graph.nodes}
-    unknown = sorted(n for n in node_backend_map if n not in known_ids)
-    assert "typo-node" in unknown
-    assert "real-node" not in unknown
-
-
-def test_executor_map_valid_node_id_passes_validation() -> None:
-    """A correctly spelled node id passes the validation check."""
-    from verdict.orchestration.cli import _parse_executor_map
-    from verdict.orchestration.contracts import NodeKind, WorkGraph, WorkNode
-
-    graph = WorkGraph(
+    args = argparse.Namespace(
+        repo=str(tmp_path),
+        runs_dir=str(tmp_path / "runs"),
         goal="test",
-        nodes=(
-            WorkNode(
-                node_id="setup",
-                objective="x",
-                kind=NodeKind.IMPLEMENT,
-                depends_on=(),
-                owned_files=("x.txt",),
-                verification_command=("true",),
-            ),
-        ),
+        graph=str(graph_file),
+        resume=None,
+        executor="prime",
+        executor_map="typo-node=prime",
+        gateway="http://127.0.0.1:20128",
+        scope="",
+        prefer="",
+        state_file=None,
+        inject=[],
+        max_parallel=1,
+        attempt_timeout=900.0,
+        run_deadline=3600.0,
+        no_review=True,
+        plain=True,
+        json=False,
+        node=None,
+        panel=None,
     )
-    node_backend_map = _parse_executor_map("setup=prime")
-    known_ids = {n.node_id for n in graph.nodes}
-    unknown = sorted(n for n in node_backend_map if n not in known_ids)
-    assert unknown == [], f"unexpected unknown ids: {unknown}"
+
+    code = _orchestrate(args)
+    assert code == 2, f"expected exit 2, got {code}"
+    captured = capsys.readouterr()
+    assert "typo-node" in captured.err, f"error text not in stderr: {captured.err!r}"
+    assert "real-node" in captured.err, f"known ids not in stderr: {captured.err!r}"
+
+
+def test_executor_map_frontier_warning_via_run_golden_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When no --graph is given (frontier planning), unmatched map keys surface as:
+    1. an 'executor_map_unmatched' event in events.jsonl; 2. a stderr warning line.
+    Tested through run_golden_path with a scripted planner-like graph."""
+    runs_root = tmp_path / "runs"
+    workspace = tmp_path / "ws"
+    runs_root.mkdir()
+    workspace.mkdir()
+    repo = _init_repo(workspace)
+
+    ladder = EligibilityLadder(
+        INVENTORY,
+        CONNECTIONS,
+        _HealthyProbe(),
+        workspace / "health.json",
+        allow_unknown_capacity=True,
+    )
+    # MixedExecutor with a key that does NOT appear in MIXED_GRAPH
+    typo_inner = _scripted(_KIND_A)
+    executor = MixedExecutor(
+        node_map={"does-not-exist": typo_inner, "node-1": _scripted(_KIND_A)},
+        default=_scripted(_KIND_A),
+    )
+    reviewer = OpenCodeReviewer(
+        ladder,
+        api_key_env=_OFFLINE_OCR_ENV,
+        out_dir=workspace / "review",
+        runner=_PassingOcrRunner(),
+    )
+    old_key = os.environ.get(_OFFLINE_OCR_ENV)
+    os.environ[_OFFLINE_OCR_ENV] = "offline-scripted-no-network"
+    try:
+        result = asyncio.run(
+            run_golden_path(
+                "mixed-executor offline test",
+                repo=repo,
+                runs_root=runs_root,
+                selector=ladder,
+                executor=executor,
+                classifier=FailureIntelligence(),
+                reviewer=reviewer,
+                graph=MIXED_GRAPH,  # graph IS provided, so plan_ready fires immediately
+                run_id="mixed-frontier-warn",
+                policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                mode="offline-scenario",
+            )
+        )
+    finally:
+        if old_key is None:
+            os.environ.pop(_OFFLINE_OCR_ENV, None)
+        else:
+            os.environ[_OFFLINE_OCR_ENV] = old_key
+
+    # The run still completes (unmatched key falls back to default)
+    assert result.outcome == RunOutcome.COMPLETE.value, result.reason
+
+    # 1. executor_map_unmatched event must be in events.jsonl
+    events = _load_events(result.run_dir)
+    unmatched_events = [e for e in events if e["type"] == "executor_map_unmatched"]
+    assert unmatched_events, "no executor_map_unmatched event found in events.jsonl"
+    keys = unmatched_events[0]["data"].get("unmatched_keys", [])
+    assert "does-not-exist" in keys, f"expected 'does-not-exist' in keys, got {keys}"
+    assert "node-1" not in keys, f"'node-1' should not be unmatched, got {keys}"
+
+    # 2. stderr warning must mention the typo key
+    captured = capsys.readouterr()
+    assert "does-not-exist" in captured.err, f"warning not found in stderr: {captured.err!r}"
 
 
 # ---------------------------------------------------------------------------
