@@ -65,6 +65,19 @@ def test_metadata_transport_revalidates_redirect_target() -> None:
     assert requests == [MODELS_DEV_API_URL]
 
 
+def test_metadata_user_agent_carries_the_installed_version() -> None:
+    from verdict import __version__
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["user-agent"])
+        return httpx.Response(200, json={})
+
+    HttpxJsonTransport(transport=httpx.MockTransport(handler)).get_json(MODELS_DEV_API_URL)
+    assert seen == [f"verdict-core/{__version__} (BOD-108 metadata)"]
+
+
 def _load(name: str) -> object:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
