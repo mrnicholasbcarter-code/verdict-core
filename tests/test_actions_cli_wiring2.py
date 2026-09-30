@@ -417,8 +417,10 @@ def test_cmd_autodev_packet_canary_reaches_run_action(tmp_path: Path) -> None:
         assert "autodev.packet.canary" in called
 
 
-def test_demo_live_is_labelled_as_not_the_offline_scenario(tmp_path, monkeypatch, capsys):
-    """BOD-279: `verdict demo --live` never runs or labels the offline scenario as live."""
+def test_demo_live_without_credentials_exits_1_and_points_to_orchestrate(
+    tmp_path, monkeypatch, capsys
+):
+    """BOD-279: without credentials, `verdict demo --live` exits 1 and names the live path."""
     import json as _json
 
     from verdict.actions.registry import run_action
@@ -432,3 +434,22 @@ def test_demo_live_is_labelled_as_not_the_offline_scenario(tmp_path, monkeypatch
     assert "No credentials configured" in message
     assert "verdict orchestrate" in message
     assert "OFFLINE SCENARIO" not in _json.dumps(result.data)
+
+
+def test_demo_live_with_credentials_points_to_orchestrate_and_runs_nothing(monkeypatch):
+    """BOD-279: with credentials, `verdict demo --live` starts no run; it names verdict orchestrate."""
+    import json as _json
+
+    from verdict.actions.registry import run_action
+    from verdict.credentials_store import CredentialsStore
+
+    monkeypatch.setattr(CredentialsStore, "list_credentials", lambda self: ["OMNIROUTE_API_KEY"])
+    result = run_action("demo.run", {"live": True, "json": False, "width": 100})
+    assert result.ok
+    assert result.data["mode"] == "live"
+    text = result.data["text"]
+    assert "does not start a run" in text
+    assert 'verdict orchestrate "<goal>" --repo .' in text
+    blob = _json.dumps(result.data)
+    assert "OFFLINE SCENARIO" not in blob
+    assert "run_dir" not in blob and "receipt" not in blob

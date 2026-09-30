@@ -222,8 +222,8 @@ def register(subparsers: Any) -> None:
         "--live",
         action="store_true",
         help=(
-            "Do not run the offline scenario; print how to start a live run with "
-            "verdict orchestrate (requires credentials)"
+            "Do not run the offline scenario. With credentials configured, print how "
+            "to start a live run with verdict orchestrate; without them, exit 1"
         ),
     )
     demo_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
