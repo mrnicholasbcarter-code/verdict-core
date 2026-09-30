@@ -674,17 +674,25 @@ fallback ([`verdict/admission.py:940`](verdict/admission.py#L940)). The set cann
 ([`:389`](verdict/admission.py#L389)). Scope, provider family and the active controller can only narrow it
 ([`verdict/orchestration/cli.py:219-227`](verdict/orchestration/cli.py#L219-L227)). The ladder raises
 `AdmissionBypassError` if it ever picks a route outside the set
-([`verdict/orchestration/eligibility.py:207`](verdict/orchestration/eligibility.py#L207)).
+([`verdict/orchestration/eligibility.py:841`](verdict/orchestration/eligibility.py#L841), through
+[`AdmittedSet.require_launchable`](verdict/admission.py)).
 Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orchestration_admission.py`](tests/test_orchestration_admission.py).
 
 **Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
 `DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED` and records the failed stage and
-the reason for each candidate. The ladder ranks by capacity class first: subscription, then free, then
-metered, then unknown ([`verdict/orchestration/eligibility.py:30-35`](verdict/orchestration/eligibility.py#L30-L35)).
-Within a class it ranks by provider preference, then by current load, then by task fit
-([`:478`](verdict/orchestration/eligibility.py#L478)). Capacity class comes from account evidence,
+the reason for each candidate. The ladder ranks by capacity class first
+([`verdict/orchestration/eligibility.py:46-58`](verdict/orchestration/eligibility.py#L46-L58)).
+Planning, controller and review tasks use subscription, then free, then metered, then unknown.
+Implementation workers use free, then subscription, then metered, then unknown, but a free route
+qualifies as a worker only with a fresh agentic probe PASS in the health cache, and unknown
+capacity needs an explicit opt-in ([`:596-625`](verdict/orchestration/eligibility.py#L596-L625);
+[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` builds its ladder without a
+health cache ([`eligibility_report.py:158`](verdict/orchestration/eligibility_report.py#L158)), so
+`verdict orchestrate` admits no free route as a worker yet. Within a class the ladder ranks by
+headroom, price, provider preference, load and task fit
+([`:706`](verdict/orchestration/eligibility.py#L706)). Capacity class comes from account evidence,
 never from a model name. Probes go round-robin across providers within a class, so one failing provider
-cannot use up the probe budget ([`:539-621`](verdict/orchestration/eligibility.py#L539-L621)).
+cannot use up the probe budget ([`:917`](verdict/orchestration/eligibility.py#L917)).
 Test: [`tests/test_orch_eligibility.py`](tests/test_orch_eligibility.py).
 
 **Cheaper-first on the single-route path is a runtime assertion.** `RouteSelection` raises in its own
