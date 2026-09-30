@@ -1,0 +1,122 @@
+# image: python:3.12-slim
+# path:  install.sh
+# date:  2026-09-30T21:34:03Z
+# commit: 52a3ca21b9674a6ab4c8ca6eaf5bbec0e2a748e6
+# user: root home: /github/home
+# verdict on PATH before: none
+WARNING: The directory '/github/home/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: pip install --upgrade pip
+$ bash install.sh
+[INFO] Downloading verdict-core==0.4.1 wheel for verification...
+WARNING: The directory '/github/home/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+Collecting verdict-core==0.4.1
+  Downloading verdict_core-0.4.1-py3-none-any.whl.metadata (80 kB)
+Downloading verdict_core-0.4.1-py3-none-any.whl (1.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/1.5 MB 67.1 MB/s eta 0:00:00
+Saved /tmp/tmp.fCJRe51jwp/verdict_core-0.4.1-py3-none-any.whl
+Successfully downloaded verdict-core
+
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: pip install --upgrade pip
+[OK] SHA-256 verified for verdict_core-0.4.1-py3-none-any.whl
+[INFO] Installing verified artifact via pipx...
+creating virtual environment...
+creating shared libraries...
+upgrading shared libraries...
+WARNING: Skipping setuptools as it is not installed.
+determining package name from '/tmp/tmp.fCJRe51jwp/verdict_core-0.4.1-py3-none-any.whl'...
+creating virtual environment...
+installing verdict-core from spec '/tmp/tmp.fCJRe51jwp/verdict_core-0.4.1-py3-none-any.whl'...
+done! ✨ 🌟 ✨
+  installed package verdict-core 0.4.1, installed using Python 3.12.14
+  These apps are now available
+    - verdict
+[WARN] No local gateway found on ports 20128 or 20129.
+[INFO] Running interactive setup: verdict setup
+
+VERDICT  /  Setup
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  - Discovering providers and gateway models  RUNNING
+
+  Discovered providers
+
+  Configure routing
+  - Discovering gateways  RUNNING
+
+  Fallback Models Configuration
+Setup free fallback endpoints (Gemini Free, OpenRouter Free) for local offloads?
+(n): 
+  No active providers or routers
+To run OmniRoute (centralized router recommended for Verdict):
+  npm install -g omniroute
+  omniroute serve
+Would you like to manually configure Verdict right now anyway? (y):   - Setup input  INTERRUPTED
+[INFO] Running: verdict demo --speed 0 (offline, no model calls)
+trace  run=offline-flagship-failover
+goal: flagship failover test
+steps: 34  schema: trace-view-v1
+
+seq   kind            node      detail
+--------------------------------------
+1     request                   goal=flagship failover test
+2     classification            
+3     plan                      
+4     plan                      
+5     routing         node-1    
+6     selection       node-1    route=alpha/claude-a
+8     routing         node-2    
+9     selection       node-2    route=alpha/claude-a
+12    dispatch        node-1    
+14    context         node-1    
+15    terminal        node-1    model=alpha/claude-a  failed
+17    failure         node-1    category=rate_limited
+18    cooldown        node-1    key=alpha  until=2026-09-30T21:34:47+00:00
+20    dispatch        node-2    
+22    context         node-2    
+24    routing         node-1    
+25    selection       node-1    route=beta/gpt-b
+26    reassign        node-1    alpha/claude-a -> beta/gpt-b
+29    dispatch        node-1    
+31    context         node-1    
+32    terminal        node-2    model=alpha/claude-a  ok
+34    barrier         node-2    
+35    verify          node-2    passed=True
+36    terminal        node-1    model=beta/gpt-b  ok
+38    barrier         node-1    
+40    verify          node-1    passed=True
+45    terminal        integrate model=(mechanical merge)  ok
+47    verify          integrate passed=True
+48    barrier         integrate 
+50    integrate                 
+51    barrier                   
+53    review                    attempt 1  reviewer=gamma/gemini-c  PASS
+54    review                    verdict  blocking=0  reviewer=gamma/gemini-c  PASS
+55    run_finished              outcome=COMPLETE
+
+OFFLINE SCENARIO: scripted workers (1.5 s each), injected faults
+
+CLAIMS VERIFIED
+------------------------------------------------------------
+  + VERIFIED  Task-aware model selection  (event:6, event:9, event:25)
+  + VERIFIED  Capability filtering reduced candidate pool  (event:5, event:8, event:24)
+  + VERIFIED  Provider/model health considered in routing  (event:5, event:24)
+  + VERIFIED  Explicit concrete worker assignment  (event:12, event:20, event:29)
+  + VERIFIED  Worker failure isolated from controller  (event:17, event:20, event:55)
+  + VERIFIED  Automatic bounded failover  (event:26)
+  + VERIFIED  Cooldown recorded  (event:18)
+  + VERIFIED  Context assembled within budget  (event:14, event:22, event:31)
+  + VERIFIED  Replacement completed successfully on alternate route  (event:36)
+  + VERIFIED  Validation passed  (event:35, event:40, event:47)
+  + VERIFIED  Independent review passed  (event:54)
+  + VERIFIED  Receipt integrity verified  (receipt:verify)
+[OK] verdict demo completed.
+[WARN] No configuration file yet (/github/home/.config/verdict/verdict.yaml).
+Create one with: verdict setup   (then run: verdict check)
+
+[OK] Verdict is ready. Try: verdict demo
+install.sh exit status: 0
+$ verdict --version
+verdict-core verdict 0.4.1
