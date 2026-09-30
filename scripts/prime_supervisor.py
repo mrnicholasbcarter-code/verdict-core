@@ -18,10 +18,10 @@ import tempfile
 import time
 import types
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import TYPE_CHECKING, Any, cast
 
 
 def _load_py_module(name: str, path: Path) -> types.ModuleType:
@@ -1374,8 +1374,7 @@ def _default_live_admission_loader(
             if not admitted:
                 scope_str = ",".join(prefixes)
                 raise AdmissionUnavailableError(
-                    "controller_scope_empty",
-                    f"no admitted route matches scope {scope_str}",
+                    "controller_scope_empty", f"no admitted route matches scope {scope_str}"
                 )
         admitted.write_receipt(state_dir / "controller-admission-latest.json")
         return admitted

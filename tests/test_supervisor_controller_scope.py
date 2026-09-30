@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -34,16 +33,11 @@ CONNECTIONS = [
 
 def _make_admitted() -> adm.AdmittedSet:
     """Build a real AdmittedSet with both cc/ and kr/ routes admitted."""
-    return adm.admit(
-        CATALOG,
-        CONNECTIONS,
-        None,
-        now=NOW,
-        require_runtime=False,
-    )
+    return adm.admit(CATALOG, CONNECTIONS, None, now=NOW, require_runtime=False)
 
 
 # ── AC1 + AC2: scoped admission ────────────────────────────────────────────
+
 
 def test_scoped_loader_restricts_to_matching_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -81,9 +75,8 @@ def test_scoped_loader_restricts_to_matching_prefix(
 
 # ── AC3: empty scope is parity ─────────────────────────────────────────────
 
-def test_empty_scope_parity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_empty_scope_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Empty scope_prefixes leaves all admitted routes intact (parity with unscoped)."""
     _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
     m = module()
@@ -108,6 +101,7 @@ def test_empty_scope_parity(
 
 # ── AC4: fail-closed when scope matches nothing ────────────────────────────
 
+
 def test_scope_with_no_matching_route_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -124,9 +118,7 @@ def test_scope_with_no_matching_route_fails_closed(
 
     monkeypatch.setattr(adm, "load_live_admission", fake_load)
 
-    loader = m._default_live_admission_loader(
-        tmp_path / "state", scope_prefixes=["nonexistent/"]
-    )
+    loader = m._default_live_admission_loader(tmp_path / "state", scope_prefixes=["nonexistent/"])
     with pytest.raises(adm.AdmissionUnavailableError) as exc_info:
         loader(NOW)
 

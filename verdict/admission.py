@@ -569,7 +569,7 @@ class AdmittedSet:
             source="worker_scope",
         )
 
-    def restrict_controller_scope(self, prefixes: Sequence[str]) -> "AdmittedSet":
+    def restrict_controller_scope(self, prefixes: Sequence[str]) -> AdmittedSet:
         """Controller route-prefix scope. An extra narrowing, never a replacement.
 
         Uses the same canonicalisation as ``restrict_prefixes`` but records the
