@@ -246,6 +246,16 @@ class PrimeHeadlessExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
+        terminal = await self._run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if not terminal.harness:
+            terminal = replace(terminal, harness="prime-headless")
+        return terminal
+
+    async def _run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
         started = time.monotonic()
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
         # Prime's retry policy is semantic: each Verdict launch must make at
@@ -981,6 +991,16 @@ class DirectGatewayExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
+        terminal = await self._run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if not terminal.harness:
+            terminal = replace(terminal, harness="direct-gateway")
+        return terminal
+
+    async def _run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
         started = time.monotonic()
         owned_files = self._parse_owned_files(prompt)
         is_implement = bool(owned_files)
@@ -1248,6 +1268,12 @@ class MixedExecutor:
         terminal = await executor.run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
+        # Stamp the logical harness name from the map (overrides the delegate's own
+        # stamp so a scripted stand-in gets the right live-harness label).
+        # executor_kind is intentionally NOT touched here: it must remain the
+        # adapter-attested kind ('live', 'scripted', 'fault-injected') so that
+        # fault_injected detection in runtime.py and replay provenance in tui.py
+        # work correctly.
         if kind:
-            terminal = replace(terminal, executor_kind=kind)
+            terminal = replace(terminal, harness=kind)
         return terminal

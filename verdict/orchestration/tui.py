@@ -124,7 +124,7 @@ class NodeView:
     attempt: int = 0
     reassigned: bool = False
     history: list[tuple[str, str]] = field(default_factory=list)
-    executor_kind: str = ""  # harness that last ran this node
+    harness: str = ""  # executor backend that last ran this node
     started_at: float | None = None
     elapsed_seconds: float | None = None
     context_files: int = 0
@@ -373,9 +373,9 @@ class RunView:
         node = self.node(node_id)
         route = _t(data.get("route_id", ""), 64) or node.route_id
         node.history.append((route, "ok" if data.get("ok") else "failed"))
-        kind = _t(data.get("executor_kind", ""), 24)
-        if kind:
-            node.executor_kind = kind
+        harness = _t(data.get("harness", ""), 24)
+        if harness:
+            node.harness = harness
         duration = _f(data.get("duration_seconds"))
         if duration is None and node.started_at is not None and self.now is not None:
             duration = max(0.0, self.now - node.started_at)
@@ -685,7 +685,7 @@ def _workers(view: RunView, plain: bool) -> Table:
             Text(node.provider or "-"),
             Text(str(node.attempt)),
             Text(node.elapsed(view.now)),
-            Text(node.executor_kind or "-"),
+            Text(node.harness or "-"),
             Text(_history(node, plain)),
         )
     if not view.nodes:

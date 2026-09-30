@@ -472,6 +472,9 @@ class WorkerTerminal:
     session_ref: str = ""  # harness session/journal pointer for provenance
     usage: AttemptUsage | None = None  # per-attempt token/cost evidence (BOD-203)
     executor_kind: str = ""  # adapter-attested provenance; empty means unknown
+    harness: str = (
+        ""  # executor backend that ran this attempt ('prime-headless' | 'direct-gateway')
+    )
 
 
 @dataclass(frozen=True)
