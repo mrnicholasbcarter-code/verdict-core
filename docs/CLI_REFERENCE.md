@@ -74,7 +74,7 @@ verdict orchestrate "goal"     --executor prime     --executor-map "node-1=direc
 names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
 default. An unknown backend name exits with a clear error before the run starts.
 
-The `run_started` event records `executor: "mixed"`. Each `terminal` event
+The `run_started` event records `executor: "mixed"` (without `--inject`; with `--inject` the outer label is `"fault-injecting"`). Each `terminal` event
 carries two provenance fields:
 
 - **`executor_kind`**: execution-environment provenance (`live`, `scripted`,

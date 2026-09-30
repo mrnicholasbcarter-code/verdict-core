@@ -421,12 +421,11 @@ def test_executor_map_unknown_node_id_exits_2_via_cli(
     assert "real-node" in captured.err, f"known ids not in stderr: {captured.err!r}"
 
 
-def test_executor_map_frontier_warning_via_run_golden_path(
+def test_executor_map_unmatched_warning_via_supplied_graph(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """When no --graph is given (frontier planning), unmatched map keys surface as:
-    1. an 'executor_map_unmatched' event in events.jsonl; 2. a stderr warning line.
-    Tested through run_golden_path with a scripted planner-like graph."""
+    """Unmatched map keys surface as event + stderr when graph= is supplied directly.
+    This tests the supplied-graph code path where plan_ready fires immediately."""
     runs_root = tmp_path / "runs"
     workspace = tmp_path / "ws"
     runs_root.mkdir()
@@ -440,10 +439,8 @@ def test_executor_map_frontier_warning_via_run_golden_path(
         workspace / "health.json",
         allow_unknown_capacity=True,
     )
-    # MixedExecutor with a key that does NOT appear in MIXED_GRAPH
-    typo_inner = _scripted(_KIND_A)
     executor = MixedExecutor(
-        node_map={"does-not-exist": typo_inner, "node-1": _scripted(_KIND_A)},
+        node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
         default=_scripted(_KIND_A),
     )
     reviewer = OpenCodeReviewer(
@@ -464,8 +461,8 @@ def test_executor_map_frontier_warning_via_run_golden_path(
                 executor=executor,
                 classifier=FailureIntelligence(),
                 reviewer=reviewer,
-                graph=MIXED_GRAPH,  # graph IS provided, so plan_ready fires immediately
-                run_id="mixed-frontier-warn",
+                graph=MIXED_GRAPH,  # graph IS provided -- supplied-graph path
+                run_id="mixed-supplied-graph-warn",
                 policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
                 mode="offline-scenario",
             )
@@ -476,16 +473,91 @@ def test_executor_map_frontier_warning_via_run_golden_path(
         else:
             os.environ[_OFFLINE_OCR_ENV] = old_key
 
-    # The run still completes (unmatched key falls back to default)
+    assert result.outcome == RunOutcome.COMPLETE.value, result.reason
+    events = _load_events(result.run_dir)
+    unmatched_events = [e for e in events if e["type"] == "executor_map_unmatched"]
+    assert unmatched_events, "no executor_map_unmatched event found in events.jsonl"
+    keys = unmatched_events[0]["data"].get("unmatched_keys", [])
+    assert "does-not-exist" in keys, keys
+    assert "node-1" not in keys, keys
+    captured = capsys.readouterr()
+    assert "does-not-exist" in captured.err, captured.err
+
+
+def test_executor_map_unmatched_warning_via_frontier_planning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unmatched map keys surface as event + stderr when graph= is OMITTED (frontier path).
+
+    Frontier planning calls plan_with_failover() which needs a real model.  We
+    monkeypatch verdict.orchestration.run.plan_with_failover to return MIXED_GRAPH
+    directly so the test is offline and fast, but the real code path
+    (graph is None  ->  plan_with_failover  ->  plan_ready  ->  unmatched check)
+    is exercised end-to-end.
+    """
+    import verdict.orchestration.run as _run_mod
+
+    async def _scripted_planner(*_args: object, **_kwargs: object) -> WorkGraph:
+        return MIXED_GRAPH
+
+    monkeypatch.setattr(_run_mod, "plan_with_failover", _scripted_planner)
+
+    runs_root = tmp_path / "runs"
+    workspace = tmp_path / "ws"
+    runs_root.mkdir()
+    workspace.mkdir()
+    repo = _init_repo(workspace)
+
+    ladder = EligibilityLadder(
+        INVENTORY,
+        CONNECTIONS,
+        _HealthyProbe(),
+        workspace / "health.json",
+        allow_unknown_capacity=True,
+    )
+    executor = MixedExecutor(
+        node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
+        default=_scripted(_KIND_A),
+    )
+    reviewer = OpenCodeReviewer(
+        ladder,
+        api_key_env=_OFFLINE_OCR_ENV,
+        out_dir=workspace / "review",
+        runner=_PassingOcrRunner(),
+    )
+    old_key = os.environ.get(_OFFLINE_OCR_ENV)
+    os.environ[_OFFLINE_OCR_ENV] = "offline-scripted-no-network"
+    try:
+        result = asyncio.run(
+            run_golden_path(
+                "mixed-executor offline test",
+                repo=repo,
+                runs_root=runs_root,
+                selector=ladder,
+                executor=executor,
+                classifier=FailureIntelligence(),
+                reviewer=reviewer,
+                graph=None,  # omitted -- exercises the frontier planning path
+                run_id="mixed-frontier-planning-warn",
+                policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                mode="offline-scenario",
+            )
+        )
+    finally:
+        if old_key is None:
+            os.environ.pop(_OFFLINE_OCR_ENV, None)
+        else:
+            os.environ[_OFFLINE_OCR_ENV] = old_key
+
     assert result.outcome == RunOutcome.COMPLETE.value, result.reason
 
     # 1. executor_map_unmatched event must be in events.jsonl
     events = _load_events(result.run_dir)
     unmatched_events = [e for e in events if e["type"] == "executor_map_unmatched"]
-    assert unmatched_events, "no executor_map_unmatched event found in events.jsonl"
+    assert unmatched_events, "no executor_map_unmatched event emitted on frontier planning path"
     keys = unmatched_events[0]["data"].get("unmatched_keys", [])
-    assert "does-not-exist" in keys, f"expected 'does-not-exist' in keys, got {keys}"
-    assert "node-1" not in keys, f"'node-1' should not be unmatched, got {keys}"
+    assert "does-not-exist" in keys, keys
+    assert "node-1" not in keys, keys
 
     # 2. stderr warning must mention the typo key
     captured = capsys.readouterr()
