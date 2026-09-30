@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -127,7 +128,7 @@ PROBE_DELAY_S = "1.0"
 
 REQUIRED_MARKERS = (
     "verdict ›",  # noqa: RUF001
-    "REACHABLE",
+    "Checking gateway reachability",
     "CLAIMS VERIFIED",
     "Run orchestrate on this goal?",
 )
@@ -170,6 +171,11 @@ def recording_problems(chunks: list[tuple[float, bytes]]) -> list[str]:
     """Why a capture must not be written as a cast (empty list when it is fine)."""
     text = b"".join(data for _, data in chunks).decode("utf-8", "replace")
     problems = [f"missing {marker!r}" for marker in REQUIRED_MARKERS if marker not in text]
+    # The gateway line must say REACHABLE as a word; "UNREACHABLE" contains it.
+    # Strip colour/cursor escapes first: they sit between the words.
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    if not re.search(r"gateway\s+REACHABLE\b", plain):
+        problems.append("gateway not REACHABLE")
     if "Traceback" in text:
         problems.append("traceback in output")
     return problems

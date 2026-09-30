@@ -1034,10 +1034,22 @@ def test_recorder_rejects_a_capture_missing_a_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rec = _load_recorder()
-    good = [(0.1, "verdict › REACHABLE CLAIMS VERIFIED Run orchestrate on this goal?".encode())]  # noqa: RUF001
+    good_text = (
+        "Checking gateway reachability\ngateway  REACHABLE  http://x (5 models)\n"
+        "verdict › CLAIMS VERIFIED Run orchestrate on this goal?"  # noqa: RUF001
+    )
+    good = [(0.1, good_text.encode())]
     assert rec.recording_problems(good) == []
-    missing = [(0.1, "verdict › REACHABLE Run orchestrate on this goal?".encode())]  # noqa: RUF001
+    missing = [(0.1, good_text.replace("CLAIMS VERIFIED", "").encode())]
     assert rec.recording_problems(missing) == ["missing 'CLAIMS VERIFIED'"]
+    unreachable = [(0.1, good_text.replace("gateway  REACHABLE", "gateway  UNREACHABLE").encode())]
+    assert rec.recording_problems(unreachable) == ["gateway not REACHABLE"]
+    styled = good_text.replace(
+        "gateway  REACHABLE", "\x1b[38;2;161;161;170mgateway  \x1b[0m\x1b[38;2;74;222;128mREACHABLE"
+    )
+    assert rec.recording_problems([(0.1, styled.encode())]) == []
+    no_checking = [(0.1, good_text.replace("Checking gateway reachability", "").encode())]
+    assert rec.recording_problems(no_checking) == ["missing 'Checking gateway reachability'"]
     crashed = [(0.1, good[0][1] + b" Traceback (most recent call last)")]
     assert "traceback in output" in rec.recording_problems(crashed)
 
