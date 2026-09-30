@@ -57,6 +57,46 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--state-file STATE_FILE` | Health/cooldown state file (default `~/.verdict/orchestration-health.json`) |
 | `--plain` | ASCII narrative instead of live view |
 | `--json` | Print final receipt JSON |
+| `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
+| `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
+
+### Mixed-harness runs
+
+A single `verdict orchestrate` call can route different nodes through different
+executor backends by combining `--executor` (the default fallback) with
+`--executor-map`:
+
+```bash
+verdict orchestrate "goal"     --executor prime     --executor-map "node-1=direct-gateway,node-2=direct-gateway"
+```
+
+`--executor-map` takes comma-separated `node_id=backend` pairs. Valid backend
+names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
+default. An unknown backend name exits with a clear error before the run starts.
+
+The `run_started` event records `executor: "mixed"` (without `--inject`; with `--inject` the outer label is `"fault-injecting"`). Each `terminal` event
+carries two provenance fields:
+
+- **`executor_kind`**: execution-environment provenance (`live`, `scripted`,
+  or `fault-injected`). Set by the adapter; never overwritten by
+  `MixedExecutor`.
+- **`harness`**: the named backend that ran this attempt (`prime-headless` or
+  `direct-gateway`). Set by `PrimeHeadlessExecutor` and `DirectGatewayExecutor`
+  on every real attempt. Empty on fault-injected terminals and on scripted
+  terminals unless the scripted adapter explicitly supplies a distinct label
+  (e.g. `scripted:prime-headless` in offline tests).
+
+The cockpit WORKERS table shows the harness in the **harness** column (only
+visible when at least one node has harness data). The receipt preserves `harness`
+per attempt so `verdict run-receipt` verifies with integrity OK.
+
+> **Note:** The live proof of a mixed-harness run reaching COMPLETE is
+> pending. The offline CI test (node-1 on one scripted harness, node-2 on
+> another) covers the event/receipt/cockpit assertions.
+
+When `--graph` is provided, unknown node ids in `--executor-map` are rejected
+with a clear error before the run starts. When no graph is available (frontier
+planning), a warning is printed to stderr listing the unverified map keys.
 
 ### `verdict supervise` — Supervise and resume a run
 

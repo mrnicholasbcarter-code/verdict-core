@@ -25,7 +25,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -42,6 +42,7 @@ from verdict.orchestration.prime_settings import (
 __all__ = [
     "DirectGatewayExecutor",
     "FaultInjectingExecutor",
+    "MixedExecutor",
     "PrimeHeadlessExecutor",
     "ScriptedExecutor",
 ]
@@ -243,6 +244,16 @@ class PrimeHeadlessExecutor:
         return cmd
 
     async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        terminal = await self._run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if not terminal.harness:
+            terminal = replace(terminal, harness="prime-headless")
+        return terminal
+
+    async def _run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
@@ -980,6 +991,16 @@ class DirectGatewayExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
+        terminal = await self._run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if not terminal.harness:
+            terminal = replace(terminal, harness="direct-gateway")
+        return terminal
+
+    async def _run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
         started = time.monotonic()
         owned_files = self._parse_owned_files(prompt)
         is_implement = bool(owned_files)
@@ -1175,4 +1196,85 @@ class DirectGatewayExecutor:
             duration_seconds=duration,
             session_ref=f"direct-gateway:{body.get('id', '')}",
             usage=usage,
+        )
+
+
+# ----------------------------------------------------------------- mixed
+
+
+class MixedExecutor:
+    """Route each node to a named executor from an explicit map.
+
+    The map key is a node id (e.g. ``setup-db``).  Calls that do not match any
+    key — planning, plan-repair, or unmapped worker nodes — fall back to
+    ``default``.
+
+    Node id is extracted from ``cwd``: the runtime places attempt worktrees at
+    ``<run_dir>/worktrees/<node_id>-a<N>``.  ``MixedExecutor`` identifies an
+    attempt worktree by requiring both a ``worktrees`` parent *and* a basename
+    ending in ``-a<digits>``.  Any other ``cwd`` — the bare repo root for
+    planning calls, or a special worktree like ``_integration`` — maps to
+    ``default``.
+
+    The delegate's ``harness`` field is preserved exactly as-is.  Every real
+    executor (``PrimeHeadlessExecutor``, ``DirectGatewayExecutor``) self-stamps
+    ``harness`` before returning.  Scripted stand-ins should set their own
+    ``harness`` label to something distinct from live names so test receipts
+    never claim a live harness that did not actually run.
+
+    Usage (via ``--executor-map``)::
+
+        verdict orchestrate "goal" \
+            --executor-map "node-1=prime,node-2=direct-gateway"
+    """
+
+    _BACKEND_KINDS: ClassVar[dict[str, str]] = {
+        "prime": "prime-headless",
+        "direct-gateway": "direct-gateway",
+    }
+
+    def __init__(self, node_map: dict[str, WorkerExecutor], default: WorkerExecutor) -> None:
+        self._map = dict(node_map)
+        self._default = default
+
+    @property
+    def mapped_node_ids(self) -> frozenset[str]:
+        """Node ids explicitly assigned to a non-default executor."""
+        return frozenset(self._map)
+
+    @staticmethod
+    def _node_id_from_cwd(cwd: Path) -> str | None:
+        """Return the node id when *cwd* is an attempt worktree, else None.
+
+        An attempt worktree lives at ``<run_dir>/worktrees/<node_id>-a<N>``.
+        We require both the ``worktrees`` parent directory name *and* the
+        ``-a<digits>`` suffix so that a repository root named ``node-1-a1``
+        is never mistaken for an attempt worktree.
+        """
+        if cwd.parent.name != "worktrees":
+            return None
+        name = cwd.name
+        if "-a" in name:
+            parts = name.rsplit("-a", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return parts[0]
+        return None
+
+    def _pick(self, cwd: Path) -> WorkerExecutor:
+        """Return the executor for this call."""
+        node_id = self._node_id_from_cwd(cwd)
+        if node_id is not None and node_id in self._map:
+            return self._map[node_id]
+        return self._default
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        # Delegate entirely.  executor_kind and harness are set by the delegate
+        # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
+        # ScriptedExecutor stamps executor_kind='scripted').  MixedExecutor
+        # must NOT overwrite either field so fault-injected and scripted
+        # provenance remain intact.
+        return await self._pick(cwd).run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )

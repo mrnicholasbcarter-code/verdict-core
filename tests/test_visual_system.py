@@ -374,11 +374,13 @@ def capture_plain_screens(width: int, condition: str) -> str:
 @pytest.mark.parametrize("condition", ["plain", "no_color", "non_tty"])
 @pytest.mark.parametrize("width", [60, 100, 200])
 def test_existing_screens_plain_bytes_branch_snapshot(width: int, condition: str) -> None:
-    """Regression: expected snapshot for this branch (feat/cockpit-roles).
+    """Regression: expected snapshot for this branch (feat/mixed-executor).
 
     These hashes differ from origin/main because feat/cockpit-roles intentionally
     changed controller detail output (planner selected/observed identity lines,
-    BOD-276). To update: run capture_plain_screens and replace the expected dict.
+    BOD-276). The harness column (BOD-284) is suppressed when no node has harness
+    data, so the snapshot events (which have no terminals) produce the same hashes
+    as before BOD-284. To update: run capture_plain_screens and replace the dict.
     """
     expected = {
         60: "f9e2db941622be624f12b28046b11efff86cc560f96b1023cd8aa7c1f33dc3bb",

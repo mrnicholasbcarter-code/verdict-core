@@ -472,6 +472,9 @@ class WorkerTerminal:
     session_ref: str = ""  # harness session/journal pointer for provenance
     usage: AttemptUsage | None = None  # per-attempt token/cost evidence (BOD-203)
     executor_kind: str = ""  # adapter-attested provenance; empty means unknown
+    harness: str = (
+        ""  # executor backend that ran this attempt ('prime-headless' | 'direct-gateway')
+    )
 
 
 @dataclass(frozen=True)
@@ -522,6 +525,7 @@ EVENT_TYPES = frozenset(
         "rehydrate",  # BOD-272: same-route retry with failing verification evidence
         "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
         "control",  # BOD-276: external run/node control requests + acknowledgements
+        "executor_map_unmatched",  # BOD-284: --executor-map keys not in the final plan
         "run_finished",
     }
 )

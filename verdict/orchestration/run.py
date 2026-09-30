@@ -514,8 +514,9 @@ async def run_golden_path(
     _executor_identity = getattr(executor, "__class__", type(executor)).__name__
     _executor_labels: dict[str, str] = {
         "DirectGatewayExecutor": "direct-gateway",
-        "PrimeHeadlessExecutor": "prime-headless",
         "FaultInjectingExecutor": "fault-injecting",
+        "MixedExecutor": "mixed",
+        "PrimeHeadlessExecutor": "prime-headless",
         "ScriptedExecutor": "scripted",
     }
     events.emit(
@@ -733,6 +734,41 @@ async def run_golden_path(
         topology=graph.topology.value,
         rationale=list(graph.rationale),
     )
+
+    # After the graph is known, check whether any --executor-map keys are missing
+    # from the plan.  This surfaces typos regardless of whether --graph was given.
+    # Unwrap known single-layer wrappers (FaultInjectingExecutor.inner, etc.) so
+    # the check works when --inject is combined with --executor-map.
+    from verdict.orchestration.executors import MixedExecutor as _MixedExecutor
+
+    def _find_mixed(ex: object) -> _MixedExecutor | None:
+        """Walk single-inner wrappers until we find a MixedExecutor or give up."""
+        seen: set[int] = set()
+        while ex is not None:
+            if id(ex) in seen:
+                break
+            seen.add(id(ex))
+            if isinstance(ex, _MixedExecutor):
+                return ex
+            inner = getattr(ex, "inner", None)
+            if inner is None:
+                break
+            ex = inner
+        return None
+
+    _mixed = _find_mixed(executor)
+    if _mixed is not None:
+        planned_ids = {n.node_id for n in graph.nodes}
+        unmatched = sorted(k for k in _mixed.mapped_node_ids if k not in planned_ids)
+        if unmatched:
+            import sys as _sys
+
+            _sys.stderr.write(
+                f"warning: --executor-map: node id(s) {unmatched!r} "
+                f"not found in the final plan; they will never route; "
+                f"known ids: {sorted(planned_ids)!r}\n"
+            )
+            events.emit("executor_map_unmatched", unmatched_keys=unmatched)
 
     def prompt_for(node: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
         return hydrate_node_prompt(

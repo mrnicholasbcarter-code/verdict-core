@@ -124,6 +124,7 @@ class NodeView:
     attempt: int = 0
     reassigned: bool = False
     history: list[tuple[str, str]] = field(default_factory=list)
+    harness: str = ""  # executor backend that last ran this node
     started_at: float | None = None
     elapsed_seconds: float | None = None
     context_files: int = 0
@@ -372,6 +373,9 @@ class RunView:
         node = self.node(node_id)
         route = _t(data.get("route_id", ""), 64) or node.route_id
         node.history.append((route, "ok" if data.get("ok") else "failed"))
+        # Always overwrite: an empty harness on a later attempt clears a
+        # stale live label from an earlier attempt so the display stays accurate.
+        node.harness = _t(data.get("harness", ""), 24)
         duration = _f(data.get("duration_seconds"))
         if duration is None and node.started_at is not None and self.now is not None:
             duration = max(0.0, self.now - node.started_at)
@@ -664,27 +668,36 @@ def _lines(items: Sequence[str], empty: str) -> Text:
 
 
 def _workers(view: RunView, plain: bool) -> Table:
+    # Show the harness column only when at least one node has harness data.
+    # Existing replays and single-executor runs carry no harness field, so
+    # the column is suppressed and the table is byte-for-byte identical to
+    # the pre-BOD-284 layout at every width.
+    show_harness = any(n.harness for n in view.nodes.values())
     table = Table(
         box=None if plain else box.SIMPLE,
         pad_edge=False,
         show_edge=False,
         header_style="" if plain else TOKENS["MUTED"],
     )
-    for name in ("node", "state", "route", "provider", "att", "elapsed", "history"):
+    base_cols = ("node", "state", "route", "provider", "att", "elapsed")
+    for name in (*base_cols, *(("harness",) if show_harness else ()), "history"):
         table.add_column(name, overflow="fold")
     for node in view.nodes.values():
         glyph, token = _glyph(node.glyph_key(), plain)
-        table.add_row(
+        base_cells = (
             Text(node.node_id),
             Text(f"{glyph} {node.state.value}", style=_style(token, plain)),
             Text(short_route(node.route_id) if node.route_id else "-"),
             Text(node.provider or "-"),
             Text(str(node.attempt)),
             Text(node.elapsed(view.now)),
-            Text(_history(node, plain)),
         )
+        harness_cell = (Text(node.harness),) if show_harness else ()
+        table.add_row(*base_cells, *harness_cell, Text(_history(node, plain)))
     if not view.nodes:
-        table.add_row(*(Text(x) for x in ("-", "no workers yet", "-", "-", "-", "-", "-")))
+        empty = ("-", "no workers yet", "-", "-", "-", "-")
+        harness_empty = ("-",) if show_harness else ()
+        table.add_row(*(Text(x) for x in (*empty, *harness_empty, "-")))
     return table
 
 

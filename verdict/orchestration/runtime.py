@@ -1032,6 +1032,7 @@ class DagRuntime:
                 reported_model=terminal.model,
                 # Empty is explicitly unknown for custom adapters; never legacy inference.
                 executor_kind=terminal.executor_kind,
+                harness=terminal.harness,
                 duration_seconds=round(terminal.duration_seconds, 2),
                 session_ref=terminal.session_ref,
                 stop_reason=terminal.stop_reason,
@@ -1061,6 +1062,7 @@ class DagRuntime:
                     error="worker_blocked: " + terminal.output.strip()[:200],
                     session_ref=terminal.session_ref,
                     executor_kind=terminal.executor_kind,
+                    harness=terminal.harness,
                 )
             if not terminal.ok or not terminal.output.strip():
                 return await self._fail(run, terminal, failures, worktree)
