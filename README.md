@@ -9,7 +9,7 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
 [![coverage gate 70%](https://img.shields.io/badge/coverage%20gate-70%25-blue.svg)](.github/workflows/ci.yml)
-[![version 0.4.1](https://img.shields.io/badge/version-0.4.1-blue.svg)](pyproject.toml)
+[![version 0.4.2](https://img.shields.io/badge/version-0.4.2-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -1036,7 +1036,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
   step catches output problems; the receipt proves the run was not altered after the fact.
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict[tracing]`).** See
   [How Verdict differs](#how-verdict-differs).
-- **Version 0.4.1, active development.** Contracts, schemas, and receipt formats are
+- **Version 0.4.2, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR.
 
 ## License

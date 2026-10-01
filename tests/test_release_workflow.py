@@ -190,10 +190,10 @@ def test_release_candidate_versions_are_unique_and_synchronized():
     contracts = _package_manifest("contracts/package.json")
     client = _package_manifest("verdict/client-sdk/package.json")
 
-    assert 'version = "0.4.1"' in python_project
-    assert contracts["version"] == "0.4.1"
-    assert client["version"] == "0.4.1"
-    assert client["peerDependencies"] == {"@bodanglin/verdict-contracts": "^0.4.1"}
+    assert 'version = "0.4.2"' in python_project
+    assert contracts["version"] == "0.4.2"
+    assert client["version"] == "0.4.2"
+    assert client["peerDependencies"] == {"@bodanglin/verdict-contracts": "^0.4.2"}
 
 
 def test_every_release_version_location_matches_pyproject():
