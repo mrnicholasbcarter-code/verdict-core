@@ -85,15 +85,8 @@ jobs:
           fi
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/verdict-core"
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          # Fail closed: only a confirmed "manifest unknown" / "not found" counts as absent.
-          if inspect_out=$(docker manifest inspect "$image:$version" 2>&1); then
-            echo "container image $image:$version already exists" >&2
-            exit 1
-          fi
-          if ! printf '%s' "$inspect_out" | grep -Eiq 'manifest unknown|not found|no such manifest'; then
-            echo "could not confirm that $image:$version is absent: $inspect_out" >&2
-            exit 1
-          fi
+          # Fail closed: only an exact, unmixed "missing manifest" answer counts as absent.
+          scripts/image_tag_absent.sh "$image:$version"
 
       - name: Run Python tests
         run: uv run pytest tests/ --ignore=tests/test_vcr_fallback.py -x -q
@@ -206,15 +199,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          # Re-check right before the write; fail closed on anything but a confirmed absence.
-          if inspect_out=$(docker manifest inspect "$IMAGE_REF:$IMAGE_VERSION" 2>&1); then
-            echo "Image $IMAGE_REF:$IMAGE_VERSION already exists; refusing to overwrite it." >&2
-            exit 1
-          fi
-          if ! printf '%s' "$inspect_out" | grep -Eiq 'manifest unknown|not found|no such manifest'; then
-            echo "could not confirm that $IMAGE_REF:$IMAGE_VERSION is absent: $inspect_out" >&2
-            exit 1
-          fi
+          # Re-check right before the write; refuse to overwrite, and fail closed on anything
+          # but an exact, unmixed "missing manifest" answer.
+          scripts/image_tag_absent.sh "$IMAGE_REF:$IMAGE_VERSION"
           # Push only the immutable version tag. The digest comes from this push's own output.
           push_out=$(docker push "$IMAGE_REF:$IMAGE_VERSION" 2>&1)
           printf '%s\n' "$push_out"

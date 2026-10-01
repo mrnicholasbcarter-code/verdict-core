@@ -273,8 +273,14 @@ case "$1" in
   login) cat >/dev/null; exit 0;;
   manifest) case "$FAKE_INSPECT" in
       exists) echo '{"schemaVersion":2}'; exit 0;;
-      missing) echo 'manifest unknown: manifest unknown' >&2; exit 1;;
+      missing) echo 'manifest unknown' >&2; exit 1;;
+      nosuch) echo "no such manifest: $3" >&2; exit 1;;
+      nosuch_other) echo 'no such manifest: ghcr.io/other/image:1.0' >&2; exit 1;;
       autherr) echo 'unauthorized: authentication required' >&2; exit 1;;
+      denied) echo "Get \"https://ghcr.io/v2/owner/verdict-core/manifests/0.9.9\": denied" >&2; exit 1;;
+      mixed) printf 'manifest unknown\\nunauthorized: authentication required\\n' >&2; exit 1;;
+      notfound_other) echo 'Error response from daemon: not found' >&2; exit 1;;
+      empty) exit 1;;
     esac;;
   push) case "$FAKE_PUSH" in
       ok) echo "0.9.9: digest: sha256:$(printf 'a%.0s' $(seq 1 64)) size: 1234"; exit 0;;
@@ -284,6 +290,21 @@ case "$1" in
 esac
 exit 0
 """
+
+# Real Docker CLI 29 output, observed against ghcr.io and docker.io: a missing tag prints exactly
+# "manifest unknown" (ghcr.io, logged in) or "no such manifest: <ref>" (docker.io); an
+# unauthenticated ghcr.io lookup prints 'Get "https://ghcr.io/v2/.../manifests/<tag>": denied'.
+_ABSENCE_CASES = [
+    ("missing", True),
+    ("nosuch", True),
+    ("exists", False),
+    ("autherr", False),
+    ("denied", False),
+    ("mixed", False),
+    ("notfound_other", False),
+    ("nosuch_other", False),
+    ("empty", False),
+]
 
 
 def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) -> tuple[int, str]:
@@ -318,6 +339,15 @@ def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) 
     return proc.returncode, output.read_text()
 
 
+@pytest.mark.parametrize(("inspect", "expect_ok"), _ABSENCE_CASES)
+def test_image_tag_absent_script_accepts_only_an_exact_unmixed_absence(
+    tmp_path, inspect, expect_ok
+):
+    script = 'scripts/image_tag_absent.sh "$IMAGE_REF:$IMAGE_VERSION"'
+    code, _ = _run_with_fake_docker(tmp_path, script, inspect, "ok")
+    assert (code == 0) is expect_ok, (inspect, code)
+
+
 @pytest.mark.parametrize(
     ("inspect", "push", "expect_ok"),
     [
@@ -326,6 +356,8 @@ def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) 
         ("missing", "fail", False),
         ("exists", "ok", False),
         ("autherr", "ok", False),
+        ("mixed", "ok", False),
+        ("notfound_other", "ok", False),
     ],
 )
 def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
@@ -338,9 +370,7 @@ def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
         assert "digest=" not in output
 
 
-@pytest.mark.parametrize(
-    ("inspect", "expect_ok"), [("missing", True), ("exists", False), ("autherr", False)]
-)
+@pytest.mark.parametrize(("inspect", "expect_ok"), _ABSENCE_CASES)
 def test_image_preflight_requires_a_confirmed_absence(tmp_path, inspect, expect_ok):
     full = _release_step_script("Preflight immutable publication targets")
     image_part = full[full.index('image="ghcr.io') :]
