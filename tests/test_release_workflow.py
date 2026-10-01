@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _workflow(name: str) -> str:
     return Path(f".github/workflows/{name}").read_text(encoding="utf-8")
@@ -229,3 +231,187 @@ def test_every_release_version_location_matches_pyproject():
         f"[![version {version}](https://img.shields.io/badge/version-{version}-blue.svg)]" in readme
     )
     assert f"- **Version {version}, active development.**" in readme
+
+
+def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
+    """BOD-250: build and smoke-test before any registry write; push, attest, then move :latest."""
+    import yaml
+
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    preflight = workflow.index("- name: Preflight immutable publication targets")
+    build = workflow.index("- name: Build and smoke-test the container image")
+    npm = workflow.index("- name: Publish to npm")
+    pypi = workflow.index("- name: Publish Python package to PyPI")
+    gh_release = workflow.index("- name: Create GitHub Release")
+    push = workflow.index("- name: Publish the container image version tag to GHCR")
+    attest = workflow.index("- name: Attest the container image")
+    latest = workflow.index("- name: Move the latest tag to the attested image")
+    # The image is proven before ANY registry write, and :latest moves only after attestation.
+    assert preflight < build < min(npm, pypi, gh_release)
+    assert max(npm, pypi, gh_release) < push < attest < latest
+    smoke = workflow[build:npm]
+    assert "--network none" in smoke
+    assert "run_finished +outcome=COMPLETE" in smoke
+    assert "Receipt integrity verified" in smoke
+    push_step = workflow[push:attest]
+    assert ":latest" not in push_step, "only the version tag is pushed before attestation"
+    assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:latest]
+    assert "push-to-registry: true" in workflow[attest:latest]
+    assert 'docker push "$IMAGE_REF:latest"' in workflow[latest:]
+    # The check-then-push race is closed by process: one non-cancellable release at a time,
+    # and the limit is written down rather than claimed away.
+    data = yaml.safe_load(workflow)
+    assert data["concurrency"] == {"group": "release", "cancel-in-progress": False}
+    assert "NOT atomic" in push_step
+    recovery = Path("docs/release-recovery.md").read_text(encoding="utf-8")
+    assert "not atomic" in recovery
+    # A digest mismatch after the race must stop recovery, never lead to attesting the tag.
+    assert "A mismatch stops recovery." in recovery
+    assert "Do not attest the tag's current digest" in recovery
+
+
+def _release_step_script(name: str) -> str:
+    import yaml
+
+    data = yaml.safe_load(Path(".github/workflows/release.yml").read_text(encoding="utf-8"))
+    for step in data["jobs"]["release"]["steps"]:
+        if step.get("name") == name:
+            return str(step["run"])
+    raise AssertionError(f"step not found: {name}")
+
+
+_FAKE_DOCKER = """#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  login) cat >/dev/null; exit 0;;
+  manifest) case "$FAKE_INSPECT" in
+      exists) echo '{"schemaVersion":2}'; exit 0;;
+      missing) echo 'manifest unknown' >&2; exit 1;;
+      missing_long) echo 'manifest unknown: manifest unknown' >&2; exit 1;;
+      nosuch) echo "no such manifest: $3" >&2; exit 1;;
+      nosuch_other) echo 'no such manifest: ghcr.io/other/image:1.0' >&2; exit 1;;
+      autherr) echo 'unauthorized: authentication required' >&2; exit 1;;
+      denied) echo "Get \"https://ghcr.io/v2/owner/verdict-core/manifests/0.9.9\": denied" >&2; exit 1;;
+      mixed) printf 'manifest unknown\\nunauthorized: authentication required\\n' >&2; exit 1;;
+      notfound_other) echo 'Error response from daemon: not found' >&2; exit 1;;
+      empty) exit 1;;
+      blank_after) printf 'manifest unknown\\n\\nunauthorized: authentication required\\n' >&2; exit 1;;
+      blank_between) printf '\\nmanifest unknown\\n' >&2; exit 1;;
+      blank_trailing) printf 'manifest unknown\\n\\n' >&2; exit 1;;
+      no_newline) printf 'manifest unknown' >&2; exit 1;;
+      embedded_nul) printf 'manifest un\\0known\\n' >&2; exit 1;;
+      trailing_nul) printf 'manifest unknown\\0' >&2; exit 1;;
+    esac;;
+  push) case "$FAKE_PUSH" in
+      ok) echo "0.9.9: digest: sha256:$(printf 'a%.0s' $(seq 1 64)) size: 1234"; exit 0;;
+      nodigest) echo "0.9.9: pushed"; exit 0;;
+      fail) echo "denied: requested access to the resource is denied" >&2; exit 1;;
+    esac;;
+esac
+exit 0
+"""
+
+# Real Docker CLI 29 output, observed against ghcr.io and docker.io: a missing tag prints exactly
+# "manifest unknown" (ghcr.io, logged in) or "no such manifest: <ref>" (docker.io); an
+# unauthenticated ghcr.io lookup prints 'Get "https://ghcr.io/v2/.../manifests/<tag>": denied'.
+_ABSENCE_CASES = [
+    ("missing", True),
+    ("missing_long", True),
+    ("nosuch", True),
+    ("exists", False),
+    ("autherr", False),
+    ("denied", False),
+    ("mixed", False),
+    ("notfound_other", False),
+    ("nosuch_other", False),
+    ("empty", False),
+    ("blank_after", False),
+    ("blank_between", False),
+    ("blank_trailing", False),
+    ("no_newline", True),
+    ("embedded_nul", False),
+    ("trailing_nul", False),
+]
+
+
+def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) -> tuple[int, str]:
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text(_FAKE_DOCKER)
+    docker.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.write_text("")
+    docker_log = tmp_path / "docker_calls.log"
+    docker_log.write_text("")
+    env = {
+        "FAKE_DOCKER_LOG": str(docker_log),
+        **os.environ,
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY_OWNER": "Owner",
+        "IMAGE_REF": "ghcr.io/owner/verdict-core",
+        "IMAGE_VERSION": "0.9.9",
+        "GH_TOKEN": "x",
+        "FAKE_INSPECT": inspect,
+        "FAKE_PUSH": push,
+    }
+    body = script.replace("${{ github.actor }}", "ci")
+    proc = subprocess.run(
+        ["bash", "-e", "-c", body], env=env, capture_output=True, text=True, timeout=60, check=False
+    )
+    _run_with_fake_docker.calls = docker_log.read_text().splitlines()  # type: ignore[attr-defined]
+    return proc.returncode, output.read_text()
+
+
+@pytest.mark.parametrize(("inspect", "expect_ok"), _ABSENCE_CASES)
+def test_image_tag_absent_script_accepts_only_an_exact_unmixed_absence(
+    tmp_path, inspect, expect_ok
+):
+    script = 'scripts/image_tag_absent.sh "$IMAGE_REF:$IMAGE_VERSION"'
+    code, _ = _run_with_fake_docker(tmp_path, script, inspect, "ok")
+    assert (code == 0) is expect_ok, (inspect, code)
+
+
+@pytest.mark.parametrize(
+    ("inspect", "push", "expect_ok"),
+    # Every absence case with a good push, plus a bad push and a push with no digest.
+    [(inspect, "ok", ok) for inspect, ok in _ABSENCE_CASES]
+    + [("missing", "nodigest", False), ("missing", "fail", False)],
+)
+def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
+    script = _release_step_script("Publish the container image version tag to GHCR")
+    code, output = _run_with_fake_docker(tmp_path, script, inspect, push)
+    calls = _run_with_fake_docker.calls  # type: ignore[attr-defined]
+    pushes = [c for c in calls if c.startswith("push ")]
+    assert (code == 0) is expect_ok, (inspect, push, code)
+    absent = dict(_ABSENCE_CASES)[inspect]
+    if absent:
+        # Exactly one push, of the immutable version tag only; never :latest here.
+        assert pushes == ["push ghcr.io/owner/verdict-core:0.9.9"], calls
+    else:
+        # A tag that exists, or an unconfirmed absence, must never reach docker push.
+        assert pushes == [], calls
+    if expect_ok:
+        assert output.strip() == "digest=sha256:" + "a" * 64
+    else:
+        assert "digest=" not in output
+
+
+@pytest.mark.parametrize(("inspect", "expect_ok"), _ABSENCE_CASES)
+def test_image_preflight_requires_a_confirmed_absence(tmp_path, inspect, expect_ok):
+    full = _release_step_script("Preflight immutable publication targets")
+    image_part = full[full.index('image="ghcr.io') :]
+    code, _ = _run_with_fake_docker(
+        tmp_path, "set -euo pipefail\nversion=0.9.9\n" + image_part, inspect, "ok"
+    )
+    assert (code == 0) is expect_ok, (inspect, code)
+    calls = _run_with_fake_docker.calls  # type: ignore[attr-defined]
+    assert not [c for c in calls if c.startswith("push ")], calls
+    assert "manifest inspect ghcr.io/owner/verdict-core:0.9.9" in calls

@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
 
+# One release at a time, never cancelled midway: two tag pushes cannot race to publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   acceptance:
     permissions:
@@ -83,6 +88,10 @@ jobs:
             echo "GitHub release $GITHUB_REF_NAME already exists" >&2
             exit 1
           fi
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/verdict-core"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Fail closed: only an exact, unmixed "missing manifest" answer counts as absent.
+          scripts/image_tag_absent.sh "$image:$version"
 
       - name: Run Python tests
         run: uv run pytest tests/ --ignore=tests/test_vcr_fallback.py -x -q
@@ -142,6 +151,22 @@ jobs:
 
       - name: Run consumer smoke test
         run: cd contracts && npm run consumer:smoke
+      - name: Build and smoke-test the container image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/verdict-core
+        run: |
+          set -euo pipefail
+          image="${IMAGE,,}"
+          version="${GITHUB_REF_NAME#v}"
+          docker build -t "$image:$version" -t "$image:latest" .
+          # The image must run the offline demo to completion with no network before it is pushed.
+          docker run --rm --network none "$image:$version" > /tmp/image-demo.txt 2>&1
+          grep -Eq '^[0-9]+ +run_finished +outcome=COMPLETE$' /tmp/image-demo.txt
+          grep -Fxq '  + VERIFIED  Receipt integrity verified  (receipt:verify)' /tmp/image-demo.txt
+          test "$(docker run --rm "$image:$version" --version)" = "verdict-core verdict $version"
+          echo "IMAGE_REF=$image" >> "$GITHUB_ENV"
+          echo "IMAGE_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Build npm release assets
         run: |
           npm pack --workspace @bodanglin/verdict-contracts --pack-destination release-assets
@@ -170,6 +195,48 @@ jobs:
             --verify-tag \
             --generate-notes \
             --title "$GITHUB_REF_NAME"
+
+      - name: Publish the container image version tag to GHCR
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        id: push-image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Re-check right before the write, failing closed on anything but an exact, unmixed
+          # "missing manifest" answer. This check and the push are NOT atomic: GHCR has no
+          # create-only push, so this only refuses a tag already known to exist. Concurrent
+          # release runs are serialized by the workflow's concurrency group, and this workflow
+          # is the only publisher; see docs/release-recovery.md for the remaining race.
+          scripts/image_tag_absent.sh "$IMAGE_REF:$IMAGE_VERSION"
+          # Push only the immutable version tag. The digest comes from this push's own output.
+          push_out=$(docker push "$IMAGE_REF:$IMAGE_VERSION" 2>&1)
+          printf '%s\n' "$push_out"
+          digest=$(printf '%s\n' "$push_out" | grep -Eo 'digest: sha256:[0-9a-f]{64}' | tail -1 | cut -d' ' -f2)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "could not read a sha256 digest from the push of $IMAGE_REF:$IMAGE_VERSION" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the container image
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE_REF }}
+          subject-digest: ${{ steps.push-image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Move the latest tag to the attested image
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Only after the version tag is pushed AND attested does :latest move.
+          docker push "$IMAGE_REF:latest"
 
       - name: Record partial-publication recovery guidance
         if: ${{ always() }}
