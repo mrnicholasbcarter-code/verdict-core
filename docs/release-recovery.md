@@ -40,6 +40,16 @@ move. If the run fails after the version tag was pushed:
 
 `:latest` must never point at an unattested digest.
 
+The "tag is new" check and the push are not atomic. GHCR has no create-only
+push, so the check refuses only a tag that is already known to exist. Within
+this repository the race is closed by process, not by the registry: release
+runs share one concurrency group (`release`, never cancelled midway), and this
+workflow is the only publisher of `ghcr.io/<owner>/verdict-core`. If someone
+pushed the same version tag by hand during a run, the digest recorded in the
+run and attested may differ from what the tag now points at. Compare
+`docker buildx imagetools inspect` with the attested digest and follow the
+fail-safe procedure above.
+
 The workflow checks target-version availability and GitHub OIDC prerequisites
 before its first publication. Those checks reduce risk but cannot prove the
 external npm or PyPI trusted-publisher account linkage. Account configuration

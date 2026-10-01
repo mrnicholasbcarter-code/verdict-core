@@ -235,6 +235,8 @@ def test_every_release_version_location_matches_pyproject():
 
 def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     """BOD-250: build and smoke-test before any registry write; push, attest, then move :latest."""
+    import yaml
+
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
     preflight = workflow.index("- name: Preflight immutable publication targets")
     build = workflow.index("- name: Build and smoke-test the container image")
@@ -256,6 +258,12 @@ def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:latest]
     assert "push-to-registry: true" in workflow[attest:latest]
     assert 'docker push "$IMAGE_REF:latest"' in workflow[latest:]
+    # The check-then-push race is closed by process: one non-cancellable release at a time,
+    # and the limit is written down rather than claimed away.
+    data = yaml.safe_load(workflow)
+    assert data["concurrency"] == {"group": "release", "cancel-in-progress": False}
+    assert "NOT atomic" in push_step
+    assert "not atomic" in Path("docs/release-recovery.md").read_text(encoding="utf-8")
 
 
 def _release_step_script(name: str) -> str:

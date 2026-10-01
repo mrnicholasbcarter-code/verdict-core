@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
 
+# One release at a time, never cancelled midway: two tag pushes cannot race to publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   acceptance:
     permissions:
@@ -199,8 +204,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          # Re-check right before the write; refuse to overwrite, and fail closed on anything
-          # but an exact, unmixed "missing manifest" answer.
+          # Re-check right before the write, failing closed on anything but an exact, unmixed
+          # "missing manifest" answer. This check and the push are NOT atomic: GHCR has no
+          # create-only push, so this only refuses a tag already known to exist. Concurrent
+          # release runs are serialized by the workflow's concurrency group, and this workflow
+          # is the only publisher; see docs/release-recovery.md for the remaining race.
           scripts/image_tag_absent.sh "$IMAGE_REF:$IMAGE_VERSION"
           # Push only the immutable version tag. The digest comes from this push's own output.
           push_out=$(docker push "$IMAGE_REF:$IMAGE_VERSION" 2>&1)
