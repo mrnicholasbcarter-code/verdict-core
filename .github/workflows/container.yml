@@ -8,6 +8,7 @@ on:
       - Dockerfile
       - .dockerignore
       - pyproject.toml
+      - verdict/**
       - .github/workflows/container.yml
   workflow_dispatch:
 
@@ -47,6 +48,30 @@ jobs:
           fi
           echo "$out" | tail -3
           echo "$out" | grep -Fq "production server requires LLMGATE_AUTH_TOKEN"
+      - name: serve with a token needs VERDICT_RECEIPTS_DB, and starts with a fresh /data volume
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Without VERDICT_RECEIPTS_DB, authenticated serve refuses to start.
+          if out=$(timeout 60 docker run --rm -e LLMGATE_AUTH_TOKEN=ci-token verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
+            echo "authenticated serve started without VERDICT_RECEIPTS_DB; expected a refusal" >&2
+            exit 1
+          fi
+          echo "$out" | grep -Fq "VERDICT_RECEIPTS_DB must be configured"
+          # With a token and a fresh named volume, the non-root server starts and answers /health.
+          docker volume create verdict-ci-data >/dev/null
+          docker run -d --name verdict-serve -p 18000:8000 \
+            -e LLMGATE_AUTH_TOKEN=ci-token -e VERDICT_RECEIPTS_DB=/data/receipts.db \
+            -v verdict-ci-data:/data verdict-core:ci serve --host 0.0.0.0 --port 8000 >/dev/null
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18000/health | tee -a transcript/container-demo.txt; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs verdict-serve 2>&1 | tail -5
+          test -n "$ok"
+          docker exec verdict-serve test -f /data/receipts.db
+          docker rm -f verdict-serve >/dev/null
       - uses: actions/upload-artifact@v7
         if: always()
         with:
