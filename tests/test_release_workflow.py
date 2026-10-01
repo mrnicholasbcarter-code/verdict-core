@@ -269,6 +269,7 @@ def _release_step_script(name: str) -> str:
 
 
 _FAKE_DOCKER = """#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
   login) cat >/dev/null; exit 0;;
   manifest) case "$FAKE_INSPECT" in
@@ -282,6 +283,8 @@ case "$1" in
       mixed) printf 'manifest unknown\\nunauthorized: authentication required\\n' >&2; exit 1;;
       notfound_other) echo 'Error response from daemon: not found' >&2; exit 1;;
       empty) exit 1;;
+      blank_after) printf 'manifest unknown\\n\\nunauthorized: authentication required\\n' >&2; exit 1;;
+      blank_between) printf '\\nmanifest unknown\\n' >&2; exit 1;;
     esac;;
   push) case "$FAKE_PUSH" in
       ok) echo "0.9.9: digest: sha256:$(printf 'a%.0s' $(seq 1 64)) size: 1234"; exit 0;;
@@ -306,6 +309,8 @@ _ABSENCE_CASES = [
     ("notfound_other", False),
     ("nosuch_other", False),
     ("empty", False),
+    ("blank_after", False),
+    ("blank_between", False),
 ]
 
 
@@ -323,7 +328,10 @@ def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) 
     docker.chmod(0o755)
     output = tmp_path / "github_output"
     output.write_text("")
+    docker_log = tmp_path / "docker_calls.log"
+    docker_log.write_text("")
     env = {
+        "FAKE_DOCKER_LOG": str(docker_log),
         **os.environ,
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(output),
@@ -338,6 +346,7 @@ def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) 
     proc = subprocess.run(
         ["bash", "-e", "-c", body], env=env, capture_output=True, text=True, timeout=60, check=False
     )
+    _run_with_fake_docker.calls = docker_log.read_text().splitlines()  # type: ignore[attr-defined]
     return proc.returncode, output.read_text()
 
 
@@ -359,7 +368,16 @@ def test_image_tag_absent_script_accepts_only_an_exact_unmixed_absence(
 def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
     script = _release_step_script("Publish the container image version tag to GHCR")
     code, output = _run_with_fake_docker(tmp_path, script, inspect, push)
+    calls = _run_with_fake_docker.calls  # type: ignore[attr-defined]
+    pushes = [c for c in calls if c.startswith("push ")]
     assert (code == 0) is expect_ok, (inspect, push, code)
+    absent = dict(_ABSENCE_CASES)[inspect]
+    if absent:
+        # Exactly one push, of the immutable version tag only; never :latest here.
+        assert pushes == ["push ghcr.io/owner/verdict-core:0.9.9"], calls
+    else:
+        # A tag that exists, or an unconfirmed absence, must never reach docker push.
+        assert pushes == [], calls
     if expect_ok:
         assert output.strip() == "digest=sha256:" + "a" * 64
     else:
@@ -374,3 +392,6 @@ def test_image_preflight_requires_a_confirmed_absence(tmp_path, inspect, expect_
         tmp_path, "set -euo pipefail\nversion=0.9.9\n" + image_part, inspect, "ok"
     )
     assert (code == 0) is expect_ok, (inspect, code)
+    calls = _run_with_fake_docker.calls  # type: ignore[attr-defined]
+    assert not [c for c in calls if c.startswith("push ")], calls
+    assert "manifest inspect ghcr.io/owner/verdict-core:0.9.9" in calls
