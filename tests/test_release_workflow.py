@@ -285,6 +285,8 @@ case "$1" in
       empty) exit 1;;
       blank_after) printf 'manifest unknown\\n\\nunauthorized: authentication required\\n' >&2; exit 1;;
       blank_between) printf '\\nmanifest unknown\\n' >&2; exit 1;;
+      blank_trailing) printf 'manifest unknown\\n\\n' >&2; exit 1;;
+      no_newline) printf 'manifest unknown' >&2; exit 1;;
     esac;;
   push) case "$FAKE_PUSH" in
       ok) echo "0.9.9: digest: sha256:$(printf 'a%.0s' $(seq 1 64)) size: 1234"; exit 0;;
@@ -311,6 +313,8 @@ _ABSENCE_CASES = [
     ("empty", False),
     ("blank_after", False),
     ("blank_between", False),
+    ("blank_trailing", False),
+    ("no_newline", True),
 ]
 
 
