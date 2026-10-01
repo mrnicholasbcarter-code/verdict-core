@@ -23,6 +23,23 @@ runner or registry failure can leave a partial release.
    independently verified. Attach the wheel, sdist, both npm tarballs, digest
    manifest, provenance, and a note describing any recovery.
 
+## Container image
+
+The image is built and smoke-tested before any registry write. It is published
+last: the version tag is pushed, then attested, and only then does `:latest`
+move. If the run fails after the version tag was pushed:
+
+- **Attestation failed:** the version tag exists without provenance. Do not
+  delete or re-push it. Record its digest
+  (`docker buildx imagetools inspect ghcr.io/<owner>/verdict-core:<version>`),
+  and have the release owner attest that exact digest
+  (`gh attestation` / `actions/attest-build-provenance` in a manual run bound
+  to the same tag commit) before `:latest` is moved by hand.
+- **Only the `:latest` move failed:** the version tag is pushed and attested.
+  Move `:latest` by hand to that same digest.
+
+`:latest` must never point at an unattested digest.
+
 The workflow checks target-version availability and GitHub OIDC prerequisites
 before its first publication. Those checks reduce risk but cannot prove the
 external npm or PyPI trusted-publisher account linkage. Account configuration

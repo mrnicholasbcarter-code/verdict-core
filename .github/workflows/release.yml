@@ -85,8 +85,13 @@ jobs:
           fi
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/verdict-core"
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          if docker manifest inspect "$image:$version" >/dev/null 2>&1; then
+          # Fail closed: only a confirmed "manifest unknown" / "not found" counts as absent.
+          if inspect_out=$(docker manifest inspect "$image:$version" 2>&1); then
             echo "container image $image:$version already exists" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$inspect_out" | grep -Eiq 'manifest unknown|not found|no such manifest'; then
+            echo "could not confirm that $image:$version is absent: $inspect_out" >&2
             exit 1
           fi
 
@@ -193,23 +198,31 @@ jobs:
             --generate-notes \
             --title "$GITHUB_REF_NAME"
 
-      - name: Publish the container image to GHCR
+      - name: Publish the container image version tag to GHCR
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         id: push-image
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          # Preflight already proved this tag is new; re-check right before the write.
-          if docker manifest inspect "$IMAGE_REF:$IMAGE_VERSION" >/dev/null 2>&1; then
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Re-check right before the write; fail closed on anything but a confirmed absence.
+          if inspect_out=$(docker manifest inspect "$IMAGE_REF:$IMAGE_VERSION" 2>&1); then
             echo "Image $IMAGE_REF:$IMAGE_VERSION already exists; refusing to overwrite it." >&2
             exit 1
           fi
-          docker push "$IMAGE_REF:$IMAGE_VERSION"
-          docker push "$IMAGE_REF:latest"
-          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_REF:$IMAGE_VERSION" | cut -d@ -f2)
-          test -n "$digest"
+          if ! printf '%s' "$inspect_out" | grep -Eiq 'manifest unknown|not found|no such manifest'; then
+            echo "could not confirm that $IMAGE_REF:$IMAGE_VERSION is absent: $inspect_out" >&2
+            exit 1
+          fi
+          # Push only the immutable version tag. The digest comes from this push's own output.
+          push_out=$(docker push "$IMAGE_REF:$IMAGE_VERSION" 2>&1)
+          printf '%s\n' "$push_out"
+          digest=$(printf '%s\n' "$push_out" | grep -Eo 'digest: sha256:[0-9a-f]{64}' | tail -1 | cut -d' ' -f2)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "could not read a sha256 digest from the push of $IMAGE_REF:$IMAGE_VERSION" >&2
+            exit 1
+          fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Attest the container image
@@ -219,6 +232,16 @@ jobs:
           subject-name: ${{ env.IMAGE_REF }}
           subject-digest: ${{ steps.push-image.outputs.digest }}
           push-to-registry: true
+
+      - name: Move the latest tag to the attested image
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Only after the version tag is pushed AND attested does :latest move.
+          docker push "$IMAGE_REF:latest"
 
       - name: Record partial-publication recovery guidance
         if: ${{ always() }}

@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _workflow(name: str) -> str:
     return Path(f".github/workflows/{name}").read_text(encoding="utf-8")
@@ -232,21 +234,117 @@ def test_every_release_version_location_matches_pyproject():
 
 
 def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
-    """BOD-250: release.yml builds the image, proves the offline demo in it, then pushes and attests it."""
+    """BOD-250: build and smoke-test before any registry write; push, attest, then move :latest."""
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-    build = workflow.index("- name: Build and smoke-test the container image")
-    first_publish = workflow.index("- name: Publish to npm")
-    push = workflow.index("- name: Publish the container image to GHCR")
-    attest = workflow.index("- name: Attest the container image")
     preflight = workflow.index("- name: Preflight immutable publication targets")
-    # Built and smoke-tested before any registry write; pushed and attested after the release.
-    assert preflight < build < first_publish < push < attest
-    smoke = workflow[build:first_publish]
+    build = workflow.index("- name: Build and smoke-test the container image")
+    npm = workflow.index("- name: Publish to npm")
+    pypi = workflow.index("- name: Publish Python package to PyPI")
+    gh_release = workflow.index("- name: Create GitHub Release")
+    push = workflow.index("- name: Publish the container image version tag to GHCR")
+    attest = workflow.index("- name: Attest the container image")
+    latest = workflow.index("- name: Move the latest tag to the attested image")
+    # The image is proven before ANY registry write, and :latest moves only after attestation.
+    assert preflight < build < min(npm, pypi, gh_release)
+    assert max(npm, pypi, gh_release) < push < attest < latest
+    smoke = workflow[build:npm]
     assert "--network none" in smoke
     assert "run_finished +outcome=COMPLETE" in smoke
     assert "Receipt integrity verified" in smoke
-    # The image tag is immutable: preflight and the push step both refuse an existing tag.
-    assert workflow[preflight:build].count("docker manifest inspect") == 1
-    assert "refusing to overwrite it" in workflow[push:attest]
-    assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:]
-    assert "push-to-registry: true" in workflow[attest:]
+    push_step = workflow[push:attest]
+    assert ":latest" not in push_step, "only the version tag is pushed before attestation"
+    assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:latest]
+    assert "push-to-registry: true" in workflow[attest:latest]
+    assert 'docker push "$IMAGE_REF:latest"' in workflow[latest:]
+
+
+def _release_step_script(name: str) -> str:
+    import yaml
+
+    data = yaml.safe_load(Path(".github/workflows/release.yml").read_text(encoding="utf-8"))
+    for step in data["jobs"]["release"]["steps"]:
+        if step.get("name") == name:
+            return str(step["run"])
+    raise AssertionError(f"step not found: {name}")
+
+
+_FAKE_DOCKER = """#!/usr/bin/env bash
+case "$1" in
+  login) cat >/dev/null; exit 0;;
+  manifest) case "$FAKE_INSPECT" in
+      exists) echo '{"schemaVersion":2}'; exit 0;;
+      missing) echo 'manifest unknown: manifest unknown' >&2; exit 1;;
+      autherr) echo 'unauthorized: authentication required' >&2; exit 1;;
+    esac;;
+  push) case "$FAKE_PUSH" in
+      ok) echo "0.9.9: digest: sha256:$(printf 'a%.0s' $(seq 1 64)) size: 1234"; exit 0;;
+      nodigest) echo "0.9.9: pushed"; exit 0;;
+      fail) echo "denied: requested access to the resource is denied" >&2; exit 1;;
+    esac;;
+esac
+exit 0
+"""
+
+
+def _run_with_fake_docker(tmp_path: Path, script: str, inspect: str, push: str) -> tuple[int, str]:
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    docker = bindir / "docker"
+    docker.write_text(_FAKE_DOCKER)
+    docker.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY_OWNER": "Owner",
+        "IMAGE_REF": "ghcr.io/owner/verdict-core",
+        "IMAGE_VERSION": "0.9.9",
+        "GH_TOKEN": "x",
+        "FAKE_INSPECT": inspect,
+        "FAKE_PUSH": push,
+    }
+    body = script.replace("${{ github.actor }}", "ci")
+    proc = subprocess.run(
+        ["bash", "-e", "-c", body], env=env, capture_output=True, text=True, timeout=60, check=False
+    )
+    return proc.returncode, output.read_text()
+
+
+@pytest.mark.parametrize(
+    ("inspect", "push", "expect_ok"),
+    [
+        ("missing", "ok", True),
+        ("missing", "nodigest", False),
+        ("missing", "fail", False),
+        ("exists", "ok", False),
+        ("autherr", "ok", False),
+    ],
+)
+def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
+    script = _release_step_script("Publish the container image version tag to GHCR")
+    code, output = _run_with_fake_docker(tmp_path, script, inspect, push)
+    assert (code == 0) is expect_ok, (inspect, push, code)
+    if expect_ok:
+        assert output.strip() == "digest=sha256:" + "a" * 64
+    else:
+        assert "digest=" not in output
+
+
+@pytest.mark.parametrize(
+    ("inspect", "expect_ok"), [("missing", True), ("exists", False), ("autherr", False)]
+)
+def test_image_preflight_requires_a_confirmed_absence(tmp_path, inspect, expect_ok):
+    full = _release_step_script("Preflight immutable publication targets")
+    image_part = full[full.index('image="ghcr.io') :]
+    code, _ = _run_with_fake_docker(
+        tmp_path, "set -euo pipefail\nversion=0.9.9\n" + image_part, inspect, "ok"
+    )
+    assert (code == 0) is expect_ok, (inspect, code)
