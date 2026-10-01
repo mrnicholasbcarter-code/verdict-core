@@ -274,6 +274,7 @@ case "$1" in
   manifest) case "$FAKE_INSPECT" in
       exists) echo '{"schemaVersion":2}'; exit 0;;
       missing) echo 'manifest unknown' >&2; exit 1;;
+      missing_long) echo 'manifest unknown: manifest unknown' >&2; exit 1;;
       nosuch) echo "no such manifest: $3" >&2; exit 1;;
       nosuch_other) echo 'no such manifest: ghcr.io/other/image:1.0' >&2; exit 1;;
       autherr) echo 'unauthorized: authentication required' >&2; exit 1;;
@@ -296,6 +297,7 @@ exit 0
 # unauthenticated ghcr.io lookup prints 'Get "https://ghcr.io/v2/.../manifests/<tag>": denied'.
 _ABSENCE_CASES = [
     ("missing", True),
+    ("missing_long", True),
     ("nosuch", True),
     ("exists", False),
     ("autherr", False),
@@ -350,15 +352,9 @@ def test_image_tag_absent_script_accepts_only_an_exact_unmixed_absence(
 
 @pytest.mark.parametrize(
     ("inspect", "push", "expect_ok"),
-    [
-        ("missing", "ok", True),
-        ("missing", "nodigest", False),
-        ("missing", "fail", False),
-        ("exists", "ok", False),
-        ("autherr", "ok", False),
-        ("mixed", "ok", False),
-        ("notfound_other", "ok", False),
-    ],
+    # Every absence case with a good push, plus a bad push and a push with no digest.
+    [(inspect, "ok", ok) for inspect, ok in _ABSENCE_CASES]
+    + [("missing", "nodigest", False), ("missing", "fail", False)],
 )
 def test_image_push_step_fails_closed(tmp_path, inspect, push, expect_ok):
     script = _release_step_script("Publish the container image version tag to GHCR")
