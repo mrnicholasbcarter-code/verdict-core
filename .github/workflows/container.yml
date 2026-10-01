@@ -39,7 +39,7 @@ jobs:
       - name: serve refuses an anonymous public bind
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           # The step shell defaults to `bash -e`; capture the expected non-zero exit explicitly.
           if out=$(timeout 60 docker run --rm verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
             echo "serve started without a token; expected a refusal" >&2
@@ -51,7 +51,7 @@ jobs:
       - name: serve with a token needs VERDICT_RECEIPTS_DB, and starts with a fresh /data volume
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           # Without VERDICT_RECEIPTS_DB, authenticated serve refuses to start.
           if out=$(timeout 60 docker run --rm -e LLMGATE_AUTH_TOKEN=ci-token verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
             echo "authenticated serve started without VERDICT_RECEIPTS_DB; expected a refusal" >&2
