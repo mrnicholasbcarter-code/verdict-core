@@ -271,6 +271,40 @@ def test_tokenless_scope_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert exc.value.code == 2, f"expected exit 2 for tokenless scope, got {exc.value.code}"
 
 
+@pytest.mark.parametrize("value", ["   ", "\t", " , ", ","])
+def test_whitespace_or_separator_only_scope_flag_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A non-empty --scope with no usable prefix is an error (exit 2), never unscoped."""
+    m = module()
+    _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=["--scope", value])
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("value", ["   ", "\t"])
+def test_whitespace_only_env_scope_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A whitespace-only VERDICT_CONTROLLER_ROUTE_PREFIXES is an error (exit 2)."""
+    m = module()
+    _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=[])
+    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", value)
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 2
+
+
+def test_empty_env_scope_is_unscoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty VERDICT_CONTROLLER_ROUTE_PREFIXES ("") keeps today's unscoped behaviour."""
+    m = module()
+    captured = _fake_factory_for_main(tmp_path, monkeypatch, m, extra_argv=[])
+    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", "")
+    m.main()
+    assert captured.get("controller_scope_prefixes") == ()
+
+
 # ── AC5c: injected admission loader is also wrapped ──────────────────────
 
 

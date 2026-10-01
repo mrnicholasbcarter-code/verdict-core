@@ -2039,15 +2039,16 @@ def main() -> int:
     # An explicit empty flag ("--scope ''") means no scope — do NOT fall back
     # to the env var.  args.scope is None only when the flag was never passed.
     if args.scope is not None:
-        _raw_scope = args.scope.strip()
+        _raw_scope = args.scope
     else:
-        _raw_scope = (os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or "").strip()
+        _raw_scope = os.environ.get("VERDICT_CONTROLLER_ROUTE_PREFIXES") or ""
     controller_scope_prefixes: tuple[str, ...] = tuple(
         p.strip() for p in _raw_scope.split(",") if p.strip()
     )
-    # A non-empty source that tokenizes to nothing (e.g. ",", " , ") is a
-    # configuration error, never a silent widening to unscoped selection.
-    if _raw_scope and not controller_scope_prefixes:
+    # Only an exactly empty value ("--scope ''" or an unset/empty env var) means
+    # no scope. Any non-empty value that yields no prefixes (e.g. "  ", ",",
+    # " , ") is a configuration error, never a silent widening to unscoped.
+    if _raw_scope != "" and not controller_scope_prefixes:
         parser.error(
             f"invalid --scope / VERDICT_CONTROLLER_ROUTE_PREFIXES: "
             f"no route prefixes found in {_raw_scope!r}"
