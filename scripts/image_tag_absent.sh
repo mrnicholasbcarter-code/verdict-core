@@ -4,26 +4,23 @@
 # Usage: scripts/image_tag_absent.sh <image-ref:tag>
 set -euo pipefail
 ref="${1:?usage: image_tag_absent.sh <image-ref:tag>}"
-# A sentinel after the output keeps every trailing newline: plain $(...) would strip them.
-raw=$(
-  set +e
-  docker manifest inspect "$ref" 2>&1
-  printf '\n#rc=%d' "$?"
-)
-rc=${raw##*#rc=}
-out=${raw%$'\n'#rc=*}
-if [ "$rc" = "0" ]; then
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+# Capture to a file, not a shell variable: command substitution would drop trailing
+# newlines and NUL bytes, so a look-alike answer could compare equal.
+if docker manifest inspect "$ref" >"$tmp/out" 2>&1; then
   echo "image $ref already exists" >&2
   exit 1
 fi
-# The whole answer must be exactly one of the forms the Docker CLI prints for a missing
-# manifest, with at most its single terminating newline. Nothing is stripped: any other
-# line, blank or not, before or after, means absence is not confirmed.
-nl=$'\n'
+# The whole answer must equal, byte for byte, one of the forms the Docker CLI prints for a
+# missing manifest, with or without its single terminating newline. Anything else (other
+# lines, blank lines, other bytes) means absence is not confirmed.
 for form in "manifest unknown" "manifest unknown: manifest unknown" "no such manifest: $ref"; do
-  if [ "$out" = "$form" ] || [ "$out" = "$form$nl" ]; then
+  printf '%s' "$form" >"$tmp/bare"
+  printf '%s\n' "$form" >"$tmp/terminated"
+  if cmp -s "$tmp/out" "$tmp/bare" || cmp -s "$tmp/out" "$tmp/terminated"; then
     exit 0
   fi
 done
-echo "could not confirm that $ref is absent: $out" >&2
+echo "could not confirm that $ref is absent: $(head -c 500 "$tmp/out" | tr -d '\000')" >&2
 exit 1
