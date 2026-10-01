@@ -31,8 +31,10 @@ move. If the run fails after the version tag was pushed:
 
 - **Attestation failed:** the version tag exists without provenance. Do not
   delete or re-push it. Record its digest
-  (`docker buildx imagetools inspect ghcr.io/<owner>/verdict-core:<version>`),
-  and have the release owner attest that exact digest
+  (`docker buildx imagetools inspect ghcr.io/<owner>/verdict-core:<version>`)
+  and confirm it equals the digest in this run's `push-image` step log (if it
+  does not, stop: see the race note below). Then have the release owner attest
+  that exact digest
   (`gh attestation` / `actions/attest-build-provenance` in a manual run bound
   to the same tag commit) before `:latest` is moved by hand.
 - **Only the `:latest` move failed:** the version tag is pushed and attested.
@@ -45,10 +47,16 @@ push, so the check refuses only a tag that is already known to exist. Within
 this repository the race is closed by process, not by the registry: release
 runs share one concurrency group (`release`, never cancelled midway), and this
 workflow is the only publisher of `ghcr.io/<owner>/verdict-core`. If someone
-pushed the same version tag by hand during a run, the digest recorded in the
-run and attested may differ from what the tag now points at. Compare
-`docker buildx imagetools inspect` with the attested digest and follow the
-fail-safe procedure above.
+pushed the same version tag by hand during a run, the tag may point at a digest
+that this run never built or smoke-tested.
+
+Before any attestation or `:latest` move, compare the tag's current digest
+(`docker buildx imagetools inspect ghcr.io/<owner>/verdict-core:<version>`)
+with the digest from this run's own push output (the `push-image` step log).
+**A mismatch stops recovery.** Do not attest the tag's current digest and do
+not move `:latest` until a release owner has independently verified the
+intended image's identity and provenance. Treat the version as partial (step 5
+of the fail-safe procedure above).
 
 The workflow checks target-version availability and GitHub OIDC prerequisites
 before its first publication. Those checks reduce risk but cannot prove the

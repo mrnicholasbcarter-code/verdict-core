@@ -263,7 +263,11 @@ def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     data = yaml.safe_load(workflow)
     assert data["concurrency"] == {"group": "release", "cancel-in-progress": False}
     assert "NOT atomic" in push_step
-    assert "not atomic" in Path("docs/release-recovery.md").read_text(encoding="utf-8")
+    recovery = Path("docs/release-recovery.md").read_text(encoding="utf-8")
+    assert "not atomic" in recovery
+    # A digest mismatch after the race must stop recovery, never lead to attesting the tag.
+    assert "A mismatch stops recovery." in recovery
+    assert "Do not attest the tag's current digest" in recovery
 
 
 def _release_step_script(name: str) -> str:
