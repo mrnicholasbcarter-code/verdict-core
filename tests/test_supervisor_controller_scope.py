@@ -417,3 +417,108 @@ def test_narrowing_never_readmits_previously_excluded_route(
     # kr/ is still dropped because the new scope is cc/, not kr/
     receipt_path = state / "controller-admission-latest.json"
     assert receipt_path.exists()
+
+
+# ── Fix-1 extra tests: whitespace-only prefixes in wrapper ────────────────
+
+
+def test_wrap_with_whitespace_only_prefix_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_wrap_admission_with_scope((' ',)) and (('', ' ')) raise ValueError immediately —
+    a non-empty but all-whitespace input must not silently become unscoped."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
+    state = tmp_path / "state"
+    state.mkdir()
+
+    def dummy_loader(when: Any) -> Any:  # pragma: no cover
+        raise AssertionError("should never be called")
+
+    with pytest.raises(ValueError, match="no usable prefixes"):
+        m._wrap_admission_with_scope(dummy_loader, state, (" ",))
+
+    with pytest.raises(ValueError, match="no usable prefixes"):
+        m._wrap_admission_with_scope(dummy_loader, state, ("", " "))
+
+
+# ── Fix-2: env-var tokenless exits 2 via main() ───────────────────────────
+
+
+def test_env_var_tokenless_scope_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No --scope flag, VERDICT_CONTROLLER_ROUTE_PREFIXES=' , ' → exit 2."""
+    m = module()
+    _fake_factory_for_main(tmp_path, monkeypatch, m)  # no extra_argv → no --scope
+    monkeypatch.setenv("VERDICT_CONTROLLER_ROUTE_PREFIXES", " , ")
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 2, f"tokenless env-var scope must exit 2; got {exc.value.code}"
+
+
+# ── Fix-3a: injected loader fail-closed + receipt ─────────────────────────
+
+
+def test_injected_loader_fail_closed_and_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wrapped injected loader: all routes out of scope → controller_scope_empty,
+    receipt written with CONTROLLER_SCOPE drops before the raise."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
+
+    full = _make_admitted()
+    state = tmp_path / "state"
+    state.mkdir()
+
+    def injected_loader(when: Any) -> adm.AdmittedSet:
+        return full
+
+    wrapped = m._wrap_admission_with_scope(injected_loader, state, ["nonexistent/"])
+
+    with pytest.raises(adm.AdmissionUnavailableError) as exc_info:
+        wrapped(NOW)
+
+    err = exc_info.value
+    assert err.reason == "controller_scope_empty"
+    assert "nonexistent/" in err.detail
+
+    receipt_path = state / "controller-admission-latest.json"
+    assert receipt_path.exists(), "receipt must be written before raise"
+    receipt = json.loads(receipt_path.read_text())
+    dropped = [r for r in receipt["candidates"] if not r["admitted"]]
+    assert all(r["first_failed_stage"] == "CONTROLLER_SCOPE" for r in dropped), dropped
+    assert all(r["reason"] == "outside_controller_route_prefix" for r in dropped), dropped
+
+
+# ── Fix-3b: scoped no-service/no-loader branch raises ValueError ──────────
+
+
+def test_scoped_no_service_no_loader_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_production_controller_selection_bundle with controller_scope_prefixes set
+    but no service and no injected admission raises ValueError immediately.
+
+    Pass prepare_execution_request to suppress service auto-build (the function
+    skips _build_intelligence_service_from_config when that kwarg is present).
+    """
+    m = module()
+
+    def fake_cs_bundle(**kwargs: Any) -> Any:  # pragma: no cover
+        raise AssertionError("inner bundle should not be called")
+
+    monkeypatch.setattr(m.CS, "build_production_controller_selection_bundle", fake_cs_bundle)
+
+    # The ValueError is caught internally and re-wrapped as ControllerLaunchError.
+    with pytest.raises(m.ControllerLaunchError) as exc_info:
+        m.build_production_controller_selection_bundle(
+            repo=tmp_path,
+            state_dir=tmp_path / "state",
+            # intelligence_service omitted → None; prepare_execution_request
+            # present so the auto-build is skipped, keeping service=None
+            prepare_execution_request=lambda *a, **k: None,
+            bind_prime_target=lambda route: None,
+            controller_scope_prefixes=("kr/",),
+            # no admission= kwarg
+        )
+    assert "no IntelligenceService" in str(exc_info.value)

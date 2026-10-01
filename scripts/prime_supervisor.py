@@ -1357,15 +1357,24 @@ def _wrap_admission_with_scope(
     It applies to both the default loader and any caller-injected admission loader,
     so the scope constraint is honoured on every controller-selection path.
 
+    * Cleans *prefixes* (strips whitespace, drops empties).  A non-empty input
+      that produces no usable prefix is a programming error and raises immediately.
+    * Returns the unwrapped *loader* when no usable prefixes remain after cleaning
+      (i.e. the original input was entirely empty / whitespace-only).
     * Calls the inner ``loader`` first.
     * Narrows with ``restrict_controller_scope``.
     * Always writes the (possibly-empty) receipt.
     * Raises ``AdmissionUnavailableError("controller_scope_empty", …)`` when no
       admitted route survives, so the supervisor fails closed.
     """
-    canon_prefixes: tuple[str, ...] = tuple(prefixes)
+    raw_seq: tuple[str, ...] = tuple(prefixes)
+    canon_prefixes: tuple[str, ...] = tuple(p.strip() for p in raw_seq if p and p.strip())
+    if not raw_seq:
+        return loader  # caller passed nothing — no scope to enforce
     if not canon_prefixes:
-        return loader  # nothing to enforce
+        # Caller passed non-empty input (e.g. (" ",)) that yields nothing usable.
+        # Silently becoming unscoped would widen the boundary — raise instead.
+        raise ValueError(f"controller scope has no usable prefixes (got {list(raw_seq)!r})")
 
     def wrapped(when: datetime) -> Any:
         from verdict.admission import AdmissionUnavailableError
@@ -1484,10 +1493,11 @@ def build_production_controller_selection_bundle(
         # Authoritative config-built service: canonical live admission is the
         # sole seed authority before ranking (read-only GETs; fails closed).
         # Scope is enforced on ALL paths via _wrap_admission_with_scope:
-        #   1. No injected admission + service available → build the default loader.
+        #   1. No injected admission + service available → build the default loader,
+        #      which is already wrapped with the scope boundary.
         #   2. Injected admission → wrap it with the scope boundary.
-        #   3. No injected admission + no service → no loader is set; scope is
-        #      enforced below after the selection factory runs (admission-less path).
+        #   3. No injected admission + no service → raise immediately with a clear
+        #      message; the scope boundary cannot be enforced without a loader.
         # This ensures the hard boundary is never bypassed regardless of how the
         # caller wires up the selection bundle.
         if kwargs.get("admission") is None:
