@@ -245,10 +245,11 @@ def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     gh_release = workflow.index("- name: Create GitHub Release")
     push = workflow.index("- name: Publish the container image version tag to GHCR")
     attest = workflow.index("- name: Attest the container image")
+    notes = workflow.index("- name: Record attested image digest in release notes")
     latest = workflow.index("- name: Move the latest tag to the attested image")
     # The image is proven before ANY registry write, and :latest moves only after attestation.
     assert preflight < build < min(npm, pypi, gh_release)
-    assert max(npm, pypi, gh_release) < push < attest < latest
+    assert max(npm, pypi, gh_release) < push < attest < notes < latest
     smoke = workflow[build:npm]
     assert "--network none" in smoke
     assert "run_finished +outcome=COMPLETE" in smoke
@@ -256,7 +257,10 @@ def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     push_step = workflow[push:attest]
     assert ":latest" not in push_step, "only the version tag is pushed before attestation"
     assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:latest]
-    assert "push-to-registry: true" in workflow[attest:latest]
+    assert "push-to-registry: true" in workflow[attest:notes]
+    notes_step = workflow[notes:latest]
+    assert 'gh release edit "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md' in notes_step
+    assert '"$IMAGE_REF" "$IMAGE_DIGEST"' in notes_step
     assert 'docker push "$IMAGE_REF:latest"' in workflow[latest:]
     # The check-then-push race is closed by process: one non-cancellable release at a time,
     # and the limit is written down rather than claimed away.
@@ -268,6 +272,8 @@ def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
     # A digest mismatch after the race must stop recovery, never lead to attesting the tag.
     assert "A mismatch stops recovery." in recovery
     assert "Do not attest the tag's current digest" in recovery
+    assert "that version" in recovery
+    assert "`0.2.0`" not in recovery
 
 
 def _release_step_script(name: str) -> str:
