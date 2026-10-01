@@ -1,6 +1,7 @@
 # Verdict Core container image.
 #
-# Default: the credential-free offline demo (no keys, no gateway, no model calls):
+# Default: the credential-free offline demo (scripted workers, an injected fault, a scripted
+# reviewer; CI runs it with --network none):
 #   docker run --rm verdict-core
 # Any other verdict command:
 #   docker run --rm verdict-core --version
