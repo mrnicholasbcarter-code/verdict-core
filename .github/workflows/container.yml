@@ -1,0 +1,49 @@
+name: Container image
+
+# Builds the Dockerfile and runs it, so the committed image is known to work.
+# Nothing is pushed or published.
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: docker build -t verdict-core:ci .
+      - name: Run the default command (offline demo) and record the transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transcript
+          docker run --rm verdict-core:ci 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' | tee transcript/container-demo.txt
+          grep -Eq '^[0-9]+ +run_finished +outcome=COMPLETE$' transcript/container-demo.txt
+          grep -Fxq '  + VERIFIED  Receipt integrity verified  (receipt:verify)' transcript/container-demo.txt
+      - name: verdict --version and non-root user
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm verdict-core:ci --version | tee -a transcript/container-demo.txt
+          test "$(docker run --rm --entrypoint id verdict-core:ci -u)" = "10001"
+      - name: serve refuses an anonymous public bind
+        shell: bash
+        run: |
+          set -uo pipefail
+          out=$(docker run --rm verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); code=$?
+          echo "$out" | tail -3
+          test "$code" -ne 0
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-demo-transcript
+          path: transcript/

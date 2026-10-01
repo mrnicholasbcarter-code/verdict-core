@@ -1,10 +1,30 @@
-FROM python:3.11-slim
+# Verdict Core container image.
+#
+# Default: the credential-free offline demo (no keys, no gateway, no model calls):
+#   docker run --rm verdict-core
+# Any other verdict command:
+#   docker run --rm verdict-core --version
+#   docker run --rm -p 8000:8000 -e LLMGATE_AUTH_TOKEN=... -e VERDICT_RECEIPTS_DB=/data/receipts.db \
+#     -v verdict-data:/data verdict-core serve --host 0.0.0.0 --port 8000
+#   docker run --rm -p 8501:8501 -e STREAMLIT_SERVER_ADDRESS=0.0.0.0 verdict-core ui
+# `verdict serve` on a non-loopback host requires LLMGATE_AUTH_TOKEN (and a durable
+# VERDICT_RECEIPTS_DB); it refuses to start an anonymous public server.
+FROM python:3.12-slim
+
+# git is required by `verdict demo` and `verdict orchestrate` (worktrees, integration).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir '.[server,dashboard]'
 
-EXPOSE 8000
-EXPOSE 8501
+RUN useradd --create-home --uid 10001 verdict
+USER verdict
+WORKDIR /home/verdict
 
-CMD ["sh", "-c", "verdict serve --host 0.0.0.0 --port 8000 & verdict dashboard --port 8501 --host 0.0.0.0"]
+EXPOSE 8000 8501
+
+ENTRYPOINT ["verdict"]
+CMD ["demo", "--speed", "0"]
