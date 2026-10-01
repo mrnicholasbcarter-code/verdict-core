@@ -1,10 +1,10 @@
-"""Keep the Codespaces quickstart remotely verifiable."""
+"""Check the declared Codespaces development-container configuration."""
 
 import json
 from pathlib import Path
 
 
-def test_codespaces_has_ssh_and_offline_demo() -> None:
+def test_devcontainer_declares_ssh_feature_and_demo_command() -> None:
     config = json.loads(
         (Path(__file__).resolve().parents[1] / ".devcontainer" / "devcontainer.json").read_text()
     )
