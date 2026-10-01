@@ -229,3 +229,24 @@ def test_every_release_version_location_matches_pyproject():
         f"[![version {version}](https://img.shields.io/badge/version-{version}-blue.svg)]" in readme
     )
     assert f"- **Version {version}, active development.**" in readme
+
+
+def test_release_workflow_publishes_a_smoke_tested_attested_container_image():
+    """BOD-250: release.yml builds the image, proves the offline demo in it, then pushes and attests it."""
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    build = workflow.index("- name: Build and smoke-test the container image")
+    first_publish = workflow.index("- name: Publish to npm")
+    push = workflow.index("- name: Publish the container image to GHCR")
+    attest = workflow.index("- name: Attest the container image")
+    preflight = workflow.index("- name: Preflight immutable publication targets")
+    # Built and smoke-tested before any registry write; pushed and attested after the release.
+    assert preflight < build < first_publish < push < attest
+    smoke = workflow[build:first_publish]
+    assert "--network none" in smoke
+    assert "run_finished +outcome=COMPLETE" in smoke
+    assert "Receipt integrity verified" in smoke
+    # The image tag is immutable: preflight and the push step both refuse an existing tag.
+    assert workflow[preflight:build].count("docker manifest inspect") == 1
+    assert "refusing to overwrite it" in workflow[push:attest]
+    assert "subject-digest: ${{ steps.push-image.outputs.digest }}" in workflow[attest:]
+    assert "push-to-registry: true" in workflow[attest:]

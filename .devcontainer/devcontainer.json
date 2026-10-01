@@ -1,0 +1,13 @@
+{
+  "name": "verdict-core",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "pip install --user -e '.[dev,server,dashboard]'",
+  "postAttachCommand": "verdict demo --speed 0",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}
