@@ -228,6 +228,22 @@ jobs:
           subject-digest: ${{ steps.push-image.outputs.digest }}
           push-to-registry: true
 
+      - name: Record attested image digest in release notes
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.push-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh release view "$GITHUB_REF_NAME" --json body --jq .body > /tmp/release-notes.md
+          {
+            printf '\n## Container image\n\n'
+            printf 'Versioned image: `%s:%s`\n\n' "$IMAGE_REF" "$IMAGE_VERSION"
+            printf 'Attested image digest: `%s@%s`\n' "$IMAGE_REF" "$IMAGE_DIGEST"
+          } >> /tmp/release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md
+
       - name: Move the latest tag to the attested image
         if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
         env:
@@ -235,7 +251,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          # Only after the version tag is pushed AND attested does :latest move.
+          # Only after the version tag is pushed, attested, and recorded in release notes does :latest move.
           docker push "$IMAGE_REF:latest"
 
       - name: Record partial-publication recovery guidance

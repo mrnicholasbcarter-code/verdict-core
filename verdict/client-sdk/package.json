@@ -1,6 +1,6 @@
 {
   "name": "@bodanglin/verdict-client",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "TypeScript HTTP client for Verdict Core REST API",
   "license": "MIT",
   "type": "module",
@@ -26,11 +26,11 @@
     "verify:package": "npm run build && node scripts/verify-package.mjs"
   },
   "peerDependencies": {
-    "@bodanglin/verdict-contracts": "^0.4.1"
+    "@bodanglin/verdict-contracts": "^0.4.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@bodanglin/verdict-contracts": "^0.4.1",
+    "@bodanglin/verdict-contracts": "^0.4.2",
     "typescript": "~5.6.0",
     "vitest": "^4.1.11"
   },

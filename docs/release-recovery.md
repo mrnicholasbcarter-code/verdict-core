@@ -1,8 +1,9 @@
 # Immutable Release Recovery
 
-The synchronized Core release publishes three immutable registry versions and
-then creates one GitHub release. No cross-registry transaction exists, so a
-runner or registry failure can leave a partial release.
+The synchronized Core release publishes three immutable registry versions, creates
+a GitHub release, then publishes and attests a container image. It records the
+attested image digest in the release notes before moving `:latest`. No cross-registry
+transaction exists, so a runner or registry failure can leave a partial release.
 
 ## Fail-safe procedure
 
@@ -11,8 +12,9 @@ runner or registry failure can leave a partial release.
 2. Preserve the failed Actions run, exact tag commit, downloaded candidate
    artifacts, provenance bundle, and job logs.
 3. Query PyPI, npm contracts, npm client, and GitHub Releases independently.
-   Record which exact `0.2.0` artifacts exist and compare their digests and
-   provenance to the candidate artifacts from the failed run.
+   Read the version from the failed tag (`${GITHUB_REF_NAME#v}` in the Actions run).
+   Record which exact artifacts of **that version** exist, and compare their
+   digests and provenance to the candidate artifacts from the failed run.
 4. If no immutable registry write occurred, correct the preflight/account
    configuration and start a newly approved run from the unchanged tag.
 5. If any package exists, never overwrite or delete it. An authorized release
@@ -20,8 +22,11 @@ runner or registry failure can leave a partial release.
    from the exact same source-bound artifacts or declare the train partial and
    choose a new synchronized version in a separate change.
 6. Create the GitHub release only after all three registry versions are
-   independently verified. Attach the wheel, sdist, both npm tarballs, digest
-   manifest, provenance, and a note describing any recovery.
+   independently verified. Attach the wheel, sdist, both npm tarballs, and
+   available Python provenance bundle. The normal workflow records the attested
+   container image digest in the release notes after the image attestation step.
+   During recovery, record any missing image attestation or notes update explicitly;
+   do not claim image provenance until verified.
 
 ## Container image
 

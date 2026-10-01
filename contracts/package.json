@@ -1,6 +1,6 @@
 {
   "name": "@bodanglin/verdict-contracts",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Canonical Zod schemas and TypeScript types for Verdict v1 contracts",
   "license": "MIT",
   "type": "module",

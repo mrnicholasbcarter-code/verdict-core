@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-01
+
+### Added
+- Release workflow is set to build and smoke-test the container image without network access before publication, push the version tag to GHCR, attest its push digest, and only then update `:latest` (#774). This describes the workflow; publication still requires the approved tag run.
+- A devcontainer runs the credential-free demo on attach. The SSH feature makes Codespaces verifiable with `gh codespace ssh` (#774, #775).
+- Clean-container CI captures fresh install transcripts for `pipx`, `uvx`, and the integrity-verified install script (#770).
+
+### Fixed
+- Container default command and writable data directory; CI checks default demo, server startup, and refusal paths (#773).
+- Scoped controller route selection and receipt handling (#772).
+- Live-demo wording, README evidence links, and mixed-harness live proof (#768, #769, #771).
+
 ## [0.4.1] - 2026-09-30
 
 ### Changed
