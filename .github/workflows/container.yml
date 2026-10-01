@@ -1,0 +1,80 @@
+name: Container image
+
+# Builds the Dockerfile and runs it, so the committed image is known to work.
+# Nothing is pushed or published.
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - verdict/**
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: docker build -t verdict-core:ci .
+      - name: Run the default command (offline demo, no network) and record the transcript
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transcript
+          # --network none: the default demo must complete with no network access at all.
+          docker run --rm --network none verdict-core:ci 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' | tee transcript/container-demo.txt
+          grep -Eq '^[0-9]+ +run_finished +outcome=COMPLETE$' transcript/container-demo.txt
+          grep -Fxq '  + VERIFIED  Receipt integrity verified  (receipt:verify)' transcript/container-demo.txt
+      - name: verdict --version and non-root user
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm verdict-core:ci --version | tee -a transcript/container-demo.txt
+          test "$(docker run --rm --entrypoint id verdict-core:ci -u)" = "10001"
+      - name: serve refuses an anonymous public bind
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The step shell defaults to `bash -e`; capture the expected non-zero exit explicitly.
+          if out=$(timeout 60 docker run --rm verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
+            echo "serve started without a token; expected a refusal" >&2
+            echo "$out" | tail -5
+            exit 1
+          fi
+          echo "$out" | tail -3
+          echo "$out" | grep -Fq "production server requires LLMGATE_AUTH_TOKEN"
+      - name: serve with a token needs VERDICT_RECEIPTS_DB, and starts with a fresh /data volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Without VERDICT_RECEIPTS_DB, authenticated serve refuses to start.
+          if out=$(timeout 60 docker run --rm -e LLMGATE_AUTH_TOKEN=ci-token verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
+            echo "authenticated serve started without VERDICT_RECEIPTS_DB; expected a refusal" >&2
+            exit 1
+          fi
+          echo "$out" | grep -Fq "VERDICT_RECEIPTS_DB must be configured"
+          # With a token and a fresh named volume, the non-root server starts and answers /health.
+          docker volume create verdict-ci-data >/dev/null
+          docker run -d --name verdict-serve -p 18000:8000 \
+            -e LLMGATE_AUTH_TOKEN=ci-token -e VERDICT_RECEIPTS_DB=/data/receipts.db \
+            -v verdict-ci-data:/data verdict-core:ci serve --host 0.0.0.0 --port 8000 >/dev/null
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18000/health | tee -a transcript/container-demo.txt; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs verdict-serve 2>&1 | tail -5
+          test -n "$ok"
+          docker exec verdict-serve test -f /data/receipts.db
+          docker rm -f verdict-serve >/dev/null
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-demo-transcript
+          path: transcript/
