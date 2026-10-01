@@ -83,6 +83,7 @@ class AdmissionStage(str, Enum):
     CAPABILITY = "CAPABILITY"  # required capabilities and context fit
     POLICY = "POLICY"  # deny policy
     WORKER_SCOPE = "WORKER_SCOPE"  # worker-only route-prefix / family scope
+    CONTROLLER_SCOPE = "CONTROLLER_SCOPE"  # controller-only route-prefix scope
     CONTROLLER_EXCLUDED = "CONTROLLER_EXCLUDED"  # active controller identity
     DOWNSTREAM = "DOWNSTREAM"  # any later narrowing (ranking input filters)
 
@@ -566,6 +567,27 @@ class AdmittedSet:
             "outside_worker_route_prefix",
             lambda rid: rid.startswith(canon),
             source="worker_scope",
+        )
+
+    def restrict_controller_scope(self, prefixes: Sequence[str]) -> AdmittedSet:
+        """Controller route-prefix scope. An extra narrowing, never a replacement.
+
+        Uses the same canonicalisation as ``restrict_prefixes`` but records the
+        stage as ``CONTROLLER_SCOPE`` so receipts distinguish controller narrowing
+        from worker narrowing.  Empty ``prefixes`` returns self unchanged (parity
+        with the unconstrained case).
+        """
+        cleaned = tuple(p.strip() for p in prefixes if p and p.strip())
+        if not cleaned:
+            return self
+        canon = tuple(
+            c if "/" in c else c + "/" for c in (canonical_route_id(p) for p in cleaned) if c
+        )
+        return self.narrow(
+            AdmissionStage.CONTROLLER_SCOPE,
+            "outside_controller_route_prefix",
+            lambda rid: rid.startswith(canon),
+            source="controller_scope",
         )
 
     def restrict_families(self, families: Sequence[str]) -> AdmittedSet:
