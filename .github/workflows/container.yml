@@ -39,9 +39,14 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          out=$(docker run --rm verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); code=$?
+          # The step shell defaults to `bash -e`; capture the expected non-zero exit explicitly.
+          if out=$(timeout 60 docker run --rm verdict-core:ci serve --host 0.0.0.0 --port 8000 2>&1); then
+            echo "serve started without a token; expected a refusal" >&2
+            echo "$out" | tail -5
+            exit 1
+          fi
           echo "$out" | tail -3
-          test "$code" -ne 0
+          echo "$out" | grep -Fq "production server requires LLMGATE_AUTH_TOKEN"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
