@@ -486,8 +486,37 @@ def test_injected_loader_fail_closed_and_receipt(
     assert receipt_path.exists(), "receipt must be written before raise"
     receipt = json.loads(receipt_path.read_text())
     dropped = [r for r in receipt["candidates"] if not r["admitted"]]
+    full_ids = sorted(full.ids)
+    assert full_ids, "fixture must admit at least one route"
+    assert sorted(r["route_id"] for r in dropped) == full_ids, dropped
     assert all(r["first_failed_stage"] == "CONTROLLER_SCOPE" for r in dropped), dropped
     assert all(r["reason"] == "outside_controller_route_prefix" for r in dropped), dropped
+
+
+def test_scoped_default_loader_writes_only_the_scoped_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a scope set, the default loader must not write an unscoped receipt first."""
+    _yaml_only_home(tmp_path, monkeypatch, "http://127.0.0.1:29999")
+    m = module()
+    full = _make_admitted()
+    state = tmp_path / "state"
+    state.mkdir()
+    writes: list[frozenset[str]] = []
+    real_write = adm.AdmittedSet.write_receipt
+
+    def spy_write(self: adm.AdmittedSet, path: Path) -> None:
+        writes.append(frozenset(self.ids))
+        real_write(self, path)
+
+    monkeypatch.setattr(adm.AdmittedSet, "write_receipt", spy_write)
+    monkeypatch.setattr(adm, "load_live_admission", lambda *a, **k: full)
+    scoped_prefix = sorted(full.ids)[0].split("/", 1)[0] + "/"
+    loader = m._default_live_admission_loader(state, scope_prefixes=[scoped_prefix])
+    result = loader(NOW)
+    assert len(writes) == 1, writes
+    assert writes[0] == frozenset(result.ids)
+    assert all(rid.startswith(scoped_prefix) for rid in writes[0])
 
 
 # ── Fix-3b: scoped no-service/no-loader branch raises ValueError ──────────

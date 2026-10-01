@@ -1359,8 +1359,8 @@ def _wrap_admission_with_scope(
 
     * Cleans *prefixes* (strips whitespace, drops empties).  A non-empty input
       that produces no usable prefix is a programming error and raises immediately.
-    * Returns the unwrapped *loader* when no usable prefixes remain after cleaning
-      (i.e. the original input was entirely empty / whitespace-only).
+    * Returns the unwrapped *loader* only when *prefixes* is empty (no scope).
+      A non-empty input that is whitespace-only raises ``ValueError`` instead.
     * Calls the inner ``loader`` first.
     * Narrows with ``restrict_controller_scope``.
     * Always writes the (possibly-empty) receipt.
@@ -1409,9 +1409,14 @@ def _default_live_admission_loader(
             os.environ.get("VERDICT_OMNIROUTE_API_KEY") or os.environ.get("OMNIROUTE_API_KEY") or ""
         ).strip() or None
         admitted = load_live_admission(gateway, now=when, api_key=key)
-        admitted.write_receipt(state_dir / "controller-admission-latest.json")
+        if not scoped:
+            # Unscoped: this is the final admission, so record it here. When a
+            # scope is set, only the wrapper writes the receipt (after narrowing),
+            # so no reader ever sees an unscoped receipt for a scoped run.
+            admitted.write_receipt(state_dir / "controller-admission-latest.json")
         return admitted
 
+    scoped = any(p and p.strip() for p in scope_prefixes)
     return _wrap_admission_with_scope(load, state_dir, scope_prefixes)
 
 
