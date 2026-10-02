@@ -1,16 +1,55 @@
 name: Release Certification Evidence (INCOMPLETE)
 
-# Evidence collection only. No clean/chaos live rehearsals are supplied here, so
-# this workflow must never report that the source SHA is CERTIFIED.
+# Evidence collection only: manual runs produce an INCOMPLETE bundle, never a
+# CERTIFIED gate. Main pushes retain only a cheap source receipt (no tests,
+# certification manifest, or rehearsal); this does NOT satisfy full CI
+# certification-bundle retention. The full generator runs two complete suites,
+# already covered by ci.yml, so it is deliberately manual-only.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  collect-source-receipt:
+    if: github.event_name == 'push'
+    name: Retain source receipt (not certification evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
+    steps:
+      - name: Check out the pushed SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record source SHA only
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          mkdir -p artifacts/ci-source-receipts
+          printf 'source_sha=%s\nevent=push\nrun_id=%s\nkind=source-receipt-only; no certification checks or rehearsals\n' \
+            "$EXPECTED_SHA" "$RUN_ID" > artifacts/ci-source-receipts/receipt.txt
+          echo '### Release certification: INCOMPLETE (source receipt only)' >> "$GITHUB_STEP_SUMMARY"
+          echo "Source SHA: \`$EXPECTED_SHA\`. No certification checks or clean/chaos rehearsals ran on this push. This is not a certification bundle or gate." >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain source receipt (not a certification bundle)
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-source-receipt-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/ci-source-receipts/receipt.txt
+          if-no-files-found: error
+          retention-days: 90
+
   collect-certification-evidence:
-    name: Collect evidence (not a certification gate)
+    if: github.event_name == 'workflow_dispatch'
+    name: Collect INCOMPLETE evidence (not a certification gate)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     defaults:
@@ -43,18 +82,13 @@ jobs:
           rm -rf artifacts/certification
           timeout --signal=TERM --kill-after=10s 70m \
             .venv/bin/python scripts/certify_release.py
-      - name: Upload SHA-bound evidence even after generator failure
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: certification-evidence-${{ github.sha }}-${{ github.run_id }}
-          path: artifacts/certification/${{ github.sha }}/
-          if-no-files-found: error
-          retention-days: 90
-      - name: Check manifest and fail closed on incomplete certification
+      - name: Verify INCOMPLETE evidence (not a certification gate)
+        # An invalid generator result must not be retained as a valid evidence artifact.
+        id: verify
         if: ${{ always() }}
         env:
           EXPECTED_SHA: ${{ github.sha }}
+          GENERATOR_OUTCOME: ${{ steps.generate.outcome }}
         run: |
           python - <<'PY'
           import json
@@ -77,18 +111,51 @@ jobs:
               sys.exit(f'Missing or invalid certification manifest: {exc}')
           if not isinstance(manifest, dict) or manifest.get('git_sha') != expected:
               sys.exit('Certification manifest SHA mismatch')
+          if manifest.get('schema_version') != '1':
+              sys.exit('Unsupported certification manifest schema')
           if manifest.get('git_dirty') is not False:
               sys.exit('Certification evidence was produced on a dirty tree')
+          if os.environ.get('GENERATOR_OUTCOME') != 'failure':
+              sys.exit('Unexpected generator outcome: INCOMPLETE generator must exit nonzero')
           steps = manifest.get('steps')
+          required = {'test_clean', 'test_dirty', 'ruff_check', 'ruff_format', 'mypy',
+                      'build', 'package_smoke', 'security', 'docs_check', 'git_clean',
+                      'rehearsals'}
           if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
               sys.exit('Certification manifest has invalid steps')
-          if any(s.get('status') == 'FAIL' for s in steps):
+          ids = [s.get('step_id') for s in steps]
+          if len(ids) != len(required) or set(ids) != required:
+              sys.exit('Certification manifest has missing, duplicate or unknown steps')
+          if any(s.get('status') not in {'PASS', 'FAIL', 'SKIPPED', 'INCOMPLETE'} for s in steps):
+              sys.exit('Certification manifest has invalid step status')
+          if any(s['status'] == 'FAIL' for s in steps):
               sys.exit('Certification evidence contains failed steps')
-          rehearsal = [s for s in steps if s.get('step_id') == 'rehearsals']
-          if len(rehearsal) != 1 or rehearsal[0].get('status') != 'SKIPPED':
+          if any(s['status'] != 'PASS' for s in steps
+                 if s['step_id'] not in {'security', 'docs_check', 'rehearsals'}):
+              sys.exit('Required certification evidence steps did not pass')
+          if next(s for s in steps if s['step_id'] == 'security')['status'] not in {'PASS', 'INCOMPLETE'}:
+              sys.exit('Invalid security evidence status')
+          if next(s for s in steps if s['step_id'] == 'docs_check')['status'] not in {'PASS', 'SKIPPED'}:
+              sys.exit('Invalid docs evidence status')
+          if next(s for s in steps if s['step_id'] == 'rehearsals')['status'] != 'SKIPPED':
               sys.exit('Unexpected rehearsal evidence: inspect manually; cannot certify')
           if manifest.get('verdict') != 'INCOMPLETE':
               sys.exit(f"Unexpected verdict {manifest.get('verdict')!r}; cannot certify without clean and chaos rehearsals")
+          for file in ('environment.json', 'CERTIFICATION.md', 'git-clean.txt'):
+              if not (path.parent / file).is_file():
+                  sys.exit(f'Missing certification bundle file: {file}')
+          try:
+              environment = json.loads((path.parent / 'environment.json').read_text())
+              cert_md = (path.parent / 'CERTIFICATION.md').read_text()
+              git_clean = (path.parent / 'git-clean.txt').read_text()
+          except (OSError, ValueError) as exc:
+              sys.exit(f'Invalid certification bundle file: {exc}')
+          if not isinstance(environment, dict) or not isinstance(environment.get('env_var_names'), list):
+              sys.exit('Invalid certification environment snapshot')
+          if f'**Git SHA**: {expected}' not in cert_md or '**Verdict**: INCOMPLETE' not in cert_md:
+              sys.exit('Certification summary disagrees with manifest')
+          if git_clean.strip():
+              sys.exit('Certification bundle contains dirty git status')
           summary = os.environ.get('GITHUB_STEP_SUMMARY')
           if summary:
               with open(summary, 'a', encoding='utf-8') as output:
@@ -96,5 +163,13 @@ jobs:
                                'No live clean/chaos rehearsals were collected. '
                                'This artifact is evidence only, not a certification.\n')
           print(f'INCOMPLETE: valid SHA-bound evidence for {expected}; no clean/chaos rehearsals')
-          sys.exit('Certification gate failed closed: INCOMPLETE is not CERTIFIED')
+          # A green evidence-collection job is not a certification gate.
           PY
+      - name: Upload verified SHA-bound INCOMPLETE evidence
+        if: ${{ steps.verify.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-evidence-incomplete-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/certification/${{ github.sha }}/
+          if-no-files-found: error
+          retention-days: 90
