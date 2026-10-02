@@ -9,15 +9,15 @@
 #   bash install.sh
 #
 # Override the version:
-#   VERDICT_VERSION=0.4.1 bash install.sh
+#   VERDICT_VERSION=0.4.2 bash install.sh
 
 set -euo pipefail
 
 # ── Pinned version & expected hashes ────────────────────────────────
-VERDICT_VERSION="${VERDICT_VERSION:-0.4.1}"
-# SHA-256 digests from PyPI JSON API for verdict-core 0.4.1
-VERDICT_WHL_SHA256="aa2ec8bfc6d84569a81104e4cc3c0cec89865ec667386661355db8a06cf99363"
-VERDICT_SDIST_SHA256="084b6217cb3ea0f75ec1f2031e427adf700d9a3f117bce5c7556cbadfdc1d35c"
+VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"
+# SHA-256 digests from PyPI JSON API for verdict-core 0.4.2
+VERDICT_WHL_SHA256="202496d4235d9b810d5f62e4b31e364809df9cc2333ce039d6637ab6cd2bb15d"
+VERDICT_SDIST_SHA256="b59e3858b4f29ca65f7261fcdbf3ec456bc2116885542af81407b9284484745c"
 
 # ── Colours ─────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -56,7 +56,7 @@ sys.exit(1)
 # For an overridden version fetch the hash from PyPI first.
 resolve_expected_hash() {
   local ver="$1"
-  if [[ "$ver" == "0.4.1" ]]; then
+  if [[ "$ver" == "0.4.2" ]]; then
     EXPECTED_WHL_SHA256="$VERDICT_WHL_SHA256"
     EXPECTED_SDIST_SHA256="$VERDICT_SDIST_SHA256"
   else
