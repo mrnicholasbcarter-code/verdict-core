@@ -360,44 +360,30 @@ def test_rehearsal_verification_skipped_when_none_provided():
         assert "credentials" in result.reason.lower()
 
 
-def test_rehearsal_verification_copies_and_verifies():
-    """Test that rehearsal verification copies files and checks digests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Create fake rehearsal run directory
-        run_dir = Path(tmpdir) / "clean_run"
-        run_dir.mkdir()
-
-        # Create events.jsonl
-        events_content = """{"event": "test"}
-{"event": "test2"}"""
-        events_path = run_dir / "events.jsonl"
-        events_path.write_text(events_content)
-
-        # Calculate digest
+@pytest.mark.parametrize("receipt_kind", ["minimal", "malformed", "failed", "bad_events"])
+def test_rehearsal_verification_rejects_untrusted_receipts(tmp_path, receipt_kind):
+    """Digest matching by itself cannot prove a valid or successful rehearsal."""
+    run_dir = tmp_path / "clean"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text('{"event":"fake"}\n')
+    (run_dir / "graph.json").write_text("{}")
+    if receipt_kind == "malformed":
+        (run_dir / "receipt.json").write_text("{")
+    else:
         import hashlib
 
-        events_sha = hashlib.sha256(events_content.encode()).hexdigest()
-
-        # Create receipt.json with matching digest
-        receipt_data = {"events_digest": f"sha256:{events_sha}", "claimed_outcome": "COMPLETE"}
-        receipt_path = run_dir / "receipt.json"
-        receipt_path.write_text(json.dumps(receipt_data))
-
-        # Run verification
-        output_dir = Path(tmpdir) / "output"
-        output_dir.mkdir()
-
-        result = certify_release.step_rehearsals(Path.cwd(), {"clean": run_dir}, output_dir)
-
-        # Should pass
-        assert result.status == "PASS"
-        assert "1 rehearsal" in result.reason
-
-        # Check that files were copied
-        copied_events = output_dir / "rehearsals" / "clean" / "events.jsonl"
-        copied_receipt = output_dir / "rehearsals" / "clean" / "receipt.json"
-        assert copied_events.exists()
-        assert copied_receipt.exists()
+        digest = hashlib.sha256((run_dir / "events.jsonl").read_bytes()).hexdigest()
+        data = {"events_digest": f"sha256:{digest}", "claimed_outcome": "COMPLETE"}
+        if receipt_kind == "failed":
+            data["outcome"] = "BLOCKED"
+        (run_dir / "receipt.json").write_text(json.dumps(data))
+        if receipt_kind == "bad_events":
+            (run_dir / "events.jsonl").write_text("not json\n")
+    result = certify_release.step_rehearsals(
+        tmp_path, {"clean": run_dir, "chaos": run_dir}, tmp_path / "bundle"
+    )
+    assert result.status == "FAIL"
+    assert "Invalid rehearsal" in result.reason
 
 
 def test_rehearsal_verification_fails_on_digest_mismatch():
@@ -419,11 +405,13 @@ def test_rehearsal_verification_fails_on_digest_mismatch():
         output_dir = Path(tmpdir) / "output"
         output_dir.mkdir()
 
-        result = certify_release.step_rehearsals(Path.cwd(), {"clean": run_dir}, output_dir)
+        result = certify_release.step_rehearsals(
+            Path.cwd(), {"clean": run_dir, "chaos": run_dir}, output_dir
+        )
 
         # Should fail
         assert result.status == "FAIL"
-        assert "mismatch" in result.reason.lower()
+        assert "missing" in result.reason.lower()
 
 
 def test_refusal_on_dirty_tree_without_flag():
@@ -875,10 +863,16 @@ def test_compute_verdict_all_pass_clean_certified():
                 },
             ),
             certify_release.StepResult("git_clean", "Git", "PASS"),
-            certify_release.StepResult("rehearsals", "Rehearsals", "PASS"),
+            certify_release.StepResult(
+                "rehearsals",
+                "Rehearsals",
+                "PASS",
+                evidence={"independent_producer_attestation": True},
+            ),
         ]
     )
-    assert certify_release.compute_verdict(steps, git_dirty=False) == "CERTIFIED"
+    # Even fabricated PASS statuses do not independently attest rehearsal producers.
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
     assert certify_release.compute_verdict(steps[:-1], git_dirty=False) == "INCOMPLETE"
     steps[0].evidence = {}
     assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
@@ -1038,3 +1032,203 @@ def test_scanner_error_does_not_serialize_stderr_secret(tmp_path):
         step = certify_release.step_security(tmp_path, tmp_path)
     assert step.status == "FAIL"
     assert "do-not-persist" not in json.dumps(step.evidence) + step.reason
+
+
+def test_rehearsal_requires_both_proofs(tmp_path):
+    clean = Path(__file__).parent.parent / "docs/proof/live-controller-run"
+    result = certify_release.step_rehearsals(tmp_path, {"clean": clean}, tmp_path / "bundle")
+    assert result.status == "INCOMPLETE"
+    assert "chaos" in result.reason
+
+
+def test_real_rehearsal_receipt_is_verified_but_not_attested(tmp_path):
+    import shutil
+
+    demo = Path(__file__).parent.parent / "docs" / "proof" / "demo-run"
+    clean = tmp_path / "clean"
+    chaos = tmp_path / "chaos"
+    for target in (clean, chaos):
+        target.mkdir()
+        for name in ("events.jsonl", "receipt.json", "graph.json"):
+            shutil.copy2(demo / name, target / name)
+    # A valid recorded fault is controlled-failure proof; self-reported producer
+    # identity is still insufficient for an independently certified release.
+    result = certify_release.step_rehearsals(
+        tmp_path, {"clean": clean, "chaos": chaos}, tmp_path / "bundle"
+    )
+    assert result.status == "FAIL"  # clean is in fact a chaos run
+    assert "injected faults" in result.reason
+    result = certify_release.step_rehearsals(
+        tmp_path, {"chaos": chaos, "clean": clean}, tmp_path / "other"
+    )
+    assert result.status == "FAIL"
+    assert result.evidence["runs"]["chaos"]["injected_failures"] > 0
+    assert result.evidence["runs"]["chaos"]["attempt_producers"]
+
+    # A clean local receipt plus valid chaos receipt still cannot attest the
+    # gateway producer independently.
+    clean_source = Path(__file__).parent.parent / "docs/proof/live-controller-run"
+    for name in ("events.jsonl", "receipt.json", "graph.json"):
+        shutil.copy2(clean_source / name, clean / name)
+    if (clean_source / "review.json").is_file():
+        shutil.copy2(clean_source / "review.json", clean / "review.json")
+    result = certify_release.step_rehearsals(
+        tmp_path, {"clean": clean, "chaos": chaos}, tmp_path / "verified"
+    )
+    assert result.status == "INCOMPLETE"
+    assert result.evidence["runs"]["clean"]["outcome"] == "COMPLETE"
+    assert result.evidence["runs"]["chaos"]["injected_failures"] > 0
+    assert result.evidence["independent_producer_attestation"] is False
+
+
+def test_junit_parity_and_independent_rehearsal_attestation_required():
+    """Even all PASS statuses do not bypass parity or evidence requirements."""
+    # Reuse complete evidence constructor from the test above via its own fixture layout.
+    command = {"command": ["tool"], "exit_code": 0}
+    steps = [
+        certify_release.StepResult(k, k, "PASS", evidence=dict(command))
+        for k in ("ruff_check", "ruff_format", "mypy", "docs_check")
+    ]
+    for k, count in (("test_clean", 2), ("test_dirty", 3)):
+        steps.append(
+            certify_release.StepResult(
+                k,
+                k,
+                "PASS",
+                evidence={
+                    **command,
+                    "junit": {
+                        "tests": count,
+                        "passed": count,
+                        "failures": 0,
+                        "errors": 0,
+                        "skipped": 0,
+                        "sha256": "abc",
+                    },
+                },
+            )
+        )
+    steps += [
+        certify_release.StepResult(
+            "build",
+            "Build",
+            "PASS",
+            evidence={**command, "artifacts": [{"name": "verdict.whl", "sha256": "abc"}]},
+        ),
+        certify_release.StepResult(
+            "package_smoke",
+            "Smoke",
+            "PASS",
+            evidence={
+                "commands": [{"command": ["uv"], "exit_code": 0}] * 3,
+                "help_has_usage": True,
+            },
+        ),
+        certify_release.StepResult(
+            "security",
+            "Security",
+            "PASS",
+            evidence={"bandit": {"report_sha256": "abc"}, "pip_audit": {"report_sha256": "def"}},
+        ),
+        certify_release.StepResult("git_clean", "Git", "PASS"),
+        certify_release.StepResult(
+            "rehearsals", "Rehearsals", "PASS", evidence={"independent_producer_attestation": True}
+        ),
+    ]
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
+    steps[5].evidence["junit"]["tests"] = 2
+    steps[5].evidence["junit"]["passed"] = 2
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
+    steps[-1].evidence.clear()
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
+
+
+def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    stale = custom / "dont-delete"
+    stale.write_text("keep")
+    with pytest.raises(ValueError, match="empty"):
+        certify_release.prepare_bundle_dir(custom, repo)
+    assert stale.read_text() == "keep"
+    # Main must pass --output-dir to the runner, and the writer must receive
+    # the checkout root rather than guessing from the custom path.
+    manifest = certify_release.CertificationManifest(verdict="INCOMPLETE")
+    env = certify_release.EnvironmentSnapshot("3.10", "linux", "uv")
+    with (
+        patch(
+            "certify_release.run_certification",
+            return_value=(manifest, {"environment": env.to_dict()}),
+        ) as runner,
+        patch("certify_release.write_bundle") as writer,
+        patch.object(sys, "argv", ["certify_release.py", "--output-dir", str(custom)]),
+        pytest.raises(SystemExit),
+    ):
+        monkeypatch.chdir(repo)
+        certify_release.main()
+    assert runner.call_args.kwargs["output_dir"] == custom
+    assert writer.call_args.kwargs["repo_path"] == repo
+
+    manifest = certify_release.CertificationManifest(
+        steps=[certify_release.StepResult("git_clean", "Git", "PASS")], verdict="INCOMPLETE"
+    )
+    custom2 = tmp_path / "empty"
+    with patch(
+        "certify_release.run_command", return_value=MagicMock(stdout=" M README.md\n", returncode=0)
+    ) as run:
+        certify_release.write_bundle(custom2, manifest, env, repo_path=repo)
+    assert run.call_args.kwargs["cwd"] == repo
+    assert manifest.steps[0].status == "FAIL"
+    assert manifest.verdict == "FAILED"
+    assert json.loads((custom2 / "manifest.json").read_text())["verdict"] == "FAILED"
+
+
+def test_final_git_check_catches_a_late_tracked_change(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    output = tmp_path / "bundle"
+    manifest = certify_release.CertificationManifest(
+        steps=[certify_release.StepResult("git_clean", "Git", "PASS")], verdict="CERTIFIED"
+    )
+    env = certify_release.EnvironmentSnapshot("3.10", "linux", "uv")
+    responses = [
+        MagicMock(stdout="", returncode=0),
+        MagicMock(stdout=" M tracked.txt\n", returncode=0),
+    ]
+    with patch("certify_release.run_command", side_effect=responses) as runner:
+        certify_release.write_bundle(output, manifest, env, repo_path=repo)
+    assert runner.call_count == 2
+    assert manifest.verdict == "FAILED"
+    assert "tracked.txt" in (output / "git-clean.txt").read_text()
+    assert json.loads((output / "manifest.json").read_text())["verdict"] == "FAILED"
+
+
+def test_sha_bundle_cleanup_removes_stale_but_refuses_tracked(temp_git_repo):
+    repo = temp_git_repo
+    sha = certify_release.get_git_sha(repo)
+    target = repo / "artifacts" / "certification" / sha
+    target.mkdir(parents=True)
+    (target / "stale").write_text("leftover")
+    (repo / ".gitignore").write_text("artifacts/\n")
+    certify_release.prepare_bundle_dir(target, repo)
+    assert not (target / "stale").exists()
+    (target / "tracked").write_text("must stay")
+    import subprocess
+
+    subprocess.run(["git", "add", "-f", str(target / "tracked")], cwd=repo, check=True)
+    with pytest.raises(ValueError, match="tracked"):
+        certify_release.prepare_bundle_dir(target, repo)
+    assert (target / "tracked").exists()
+
+
+def test_clone_command_evidence_is_relative(tmp_path):
+    with patch(
+        "certify_release.run_command",
+        return_value=MagicMock(returncode=0, stdout="Success: no issues found in 1 source file"),
+    ):
+        lint = certify_release.step_ruff_check(tmp_path, tmp_path / ".venv" / "bin")
+        types = certify_release.step_mypy(tmp_path, tmp_path / ".venv" / "bin")
+    assert lint.evidence["command"][0] == "<checkout>/.venv/bin/ruff"
+    assert types.evidence["command"][0] == "<checkout>/.venv/bin/mypy"

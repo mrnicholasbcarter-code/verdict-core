@@ -149,14 +149,22 @@ For each provided rehearsal (e.g., `clean`, `chaos`):
 rehearsals/<name>/
   events.jsonl      # Copied from run directory
   receipt.json      # Copied from run directory
+  graph.json        # Graph needed to rebuild the receipt
+  review.json       # Copied if present
 ```
 
-Verification:
-1. Events SHA256 is recomputed
-2. Digest is compared against `receipt.json:events_digest`
-3. Intended vs executed provider/model per node is extracted from events.jsonl
+Both `clean` and `chaos` runs are required. The verifier rebuilds the receipt
+from graph, events and review; checks the claimed and recomputed outcome is
+`COMPLETE`; rejects injected faults in `clean`; and requires a recorded injected
+failure in `chaos`. It records the claimed executed-model identities and reviewer
+when available. Invalid JSON, missing files, failed runs and forged digest-only
+receipts are `FAIL`. Missing either proof is `INCOMPLETE`.
 
-If rehearsals are not provided, the step is marked `SKIPPED` and verdict is `INCOMPLETE`.
+The current verifier **does not independently attest to the run producer**.
+The runtime's own files can be self-consistent without proving a real gateway
+execution. Thus even valid local rehearsals are `INCOMPLETE`, never `CERTIFIED`.
+An independently verifiable producer attestation must be added before that verdict
+can be issued. No rehearsals also means `SKIPPED` and `INCOMPLETE`.
 
 ### `CERTIFICATION.md`
 
@@ -175,7 +183,7 @@ If rehearsals are not provided, the step is marked `SKIPPED` and verdict is `INC
 All conditions met:
 - Git working tree is clean (`git_dirty: false`)
 - All eleven required steps are `PASS` and required step evidence exists
-- Rehearsals were provided and verified
+- Clean and controlled-failure rehearsals were independently attested (not yet supported)
 - No step returned `FAIL`
 
 ### `INCOMPLETE`
@@ -203,19 +211,13 @@ Evidence includes normalized temporary command paths (JUnit, build, security, an
 
 ## CI Integration
 
-See `ci-job.yml` for the recommended GitHub Actions workflow.
+The current CI push lane creates a cheap source receipt; it **does not run the
+full certification** or upload a full certification bundle on each push. The
+manual evidence generator may produce an `INCOMPLETE` bundle; this is not a
+`CERTIFIED` release gate. A complete certification workflow is not installed.
 
-Key points:
-- Runs on every push to `main`
-- Certification runs **without rehearsals** (requires credentials)
-- Verdict is `INCOMPLETE` but still provides valuable evidence
-- Bundle is uploaded as a workflow artifact
-- Retention: 90 days
-
-To add to an existing workflow:
-1. Copy the job definition from `ci-job.yml`
-2. Add to `.github/workflows/proof.yml` or create a new workflow file
-3. Adjust `timeout-minutes` if needed (current: 30 minutes)
+`ci-job.yml` is a reference example, not the active push workflow. Do not
+interpret a source receipt or a manual `INCOMPLETE` artifact as certification.
 
 ## Pointing to Latest Certification
 
@@ -263,7 +265,7 @@ To include rehearsals in certification:
    jq -r '.verdict' artifacts/certification/<sha>/manifest.json
    ```
 
-Expected: `CERTIFIED` (if all steps pass and tree is clean).
+Expected today: `INCOMPLETE` even if all steps pass, because local receipts do not independently attest to their producer.
 
 ## Schema Evolution
 
@@ -329,7 +331,7 @@ print(f"Platform: {env['platform']}")
 
 **Symptom**: Different pass/fail counts between clean and dirty runs.
 
-**Impact**: Certification `FAILED`. This indicates environment-dependent test behavior.
+**Impact**: Certification `INCOMPLETE` (or `FAILED` if a test itself fails). This indicates environment-dependent test behavior.
 
 **Solution**: Fix tests to be hermetic and not rely on ambient environment variables.
 

@@ -198,7 +198,12 @@ def _run_pytest(repo_path: Path, venv_bin: Path, *, dirty: bool) -> StepResult:
     with tempfile.TemporaryDirectory(prefix="cert-junit-") as tmpdir:
         xml_path = Path(tmpdir) / "junit.xml"
         command = [str(venv_bin / "python"), "-m", "pytest", f"--junitxml={xml_path}"]
-        display_command = [*command[:-1], "--junitxml=<temporary-report>"]
+        display_command = [
+            "<checkout>/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--junitxml=<temporary-report>",
+        ]
         result = run_command(command, cwd=repo_path, env=env, timeout=1800)
         evidence: dict[str, Any] = {
             "command": display_command,
@@ -259,7 +264,10 @@ def step_ruff_check(repo_path: Path, venv_bin: Path) -> StepResult:
     start = datetime.now(timezone.utc)
     result = run_command([str(venv_bin / "ruff"), "check", "."], cwd=repo_path)
     duration = (datetime.now(timezone.utc) - start).total_seconds()
-    evidence = {"command": [str(venv_bin / "ruff"), "check", "."], "exit_code": result.returncode}
+    evidence = {
+        "command": ["<checkout>/.venv/bin/ruff", "check", "."],
+        "exit_code": result.returncode,
+    }
 
     if result.returncode == 0:
         return StepResult(
@@ -286,7 +294,7 @@ def step_ruff_format(repo_path: Path, venv_bin: Path) -> StepResult:
     result = run_command([str(venv_bin / "ruff"), "format", "--check", "."], cwd=repo_path)
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     evidence = {
-        "command": [str(venv_bin / "ruff"), "format", "--check", "."],
+        "command": ["<checkout>/.venv/bin/ruff", "format", "--check", "."],
         "exit_code": result.returncode,
     }
 
@@ -315,7 +323,7 @@ def step_mypy(repo_path: Path, venv_bin: Path) -> StepResult:
     result = run_command([str(venv_bin / "mypy"), "--strict", "verdict"], cwd=repo_path)
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     evidence = {
-        "command": [str(venv_bin / "mypy"), "--strict", "verdict"],
+        "command": ["<checkout>/.venv/bin/mypy", "--strict", "verdict"],
         "exit_code": result.returncode,
     }
 
@@ -695,6 +703,8 @@ def step_git_clean(repo_path: Path) -> StepResult:
     """Verify git status is clean after all steps."""
     result = run_command(["git", "status", "--porcelain"], cwd=repo_path)
 
+    if result.returncode != 0:
+        return StepResult("git_clean", "Git clean check", "FAIL", "git status failed")
     if not result.stdout.strip():
         return StepResult(
             step_id="git_clean",
@@ -714,66 +724,98 @@ def step_git_clean(repo_path: Path) -> StepResult:
 def step_rehearsals(
     repo_path: Path, rehearsal_dirs: dict[str, Path], output_dir: Path
 ) -> StepResult:
-    """Copy and verify rehearsal run data."""
+    """Verify complete local run receipts; do not treat self-reported proof as attestation."""
+    del repo_path  # Rehearsals are verified against their copied source files.
     if not rehearsal_dirs:
         return StepResult(
-            step_id="rehearsals",
-            name="Rehearsal verification",
-            status="SKIPPED",
-            reason="Live rehearsal requires gateway credentials (none provided)",
+            "rehearsals",
+            "Rehearsal verification",
+            "SKIPPED",
+            "Live rehearsal requires gateway credentials (none provided)",
         )
+    # Import through the checked-out package.  Receipt verification recomputes the
+    # outcome, graph, review and events, not merely the (self-reported) digest.
+    from verdict.orchestration.receipt import verify_run_receipt
 
     rehearsal_output = output_dir / "rehearsals"
-    rehearsal_output.mkdir(exist_ok=True)
-
-    verified_count = 0
+    rehearsal_output.mkdir(parents=True, exist_ok=True)
+    proof: dict[str, Any] = {}
     for name, run_dir in rehearsal_dirs.items():
-        if not run_dir.exists():
+        if not name or name in {".", ".."} or Path(name).name != name or name.startswith("."):
             return StepResult(
-                step_id="rehearsals",
-                name="Rehearsal verification",
-                status="FAIL",
-                reason=f"Rehearsal directory not found: {run_dir}",
+                "rehearsals", "Rehearsal verification", "FAIL", "Invalid rehearsal name"
+            )
+        if not run_dir.is_dir():
+            return StepResult(
+                "rehearsals", "Rehearsal verification", "FAIL", f"Missing rehearsal {name}"
+            )
+        source_files = ("events.jsonl", "receipt.json", "graph.json")
+        if any(not (run_dir / file).is_file() for file in source_files):
+            return StepResult(
+                "rehearsals",
+                "Rehearsal verification",
+                "FAIL",
+                f"Missing events.jsonl, receipt.json or graph.json in {name}",
+            )
+        target = rehearsal_output / name
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir()
+        for file in (*source_files, "review.json"):
+            if (run_dir / file).is_file():
+                shutil.copy2(run_dir / file, target / file)
+        try:
+            receipt = json.loads((target / "receipt.json").read_text(encoding="utf-8"))
+            if not isinstance(receipt, dict):
+                raise ValueError("receipt must be an object")
+            problems = verify_run_receipt(target)
+            if problems:
+                raise ValueError("receipt verification failed: " + "; ".join(problems[:3]))
+            if receipt.get("outcome") != "COMPLETE" or receipt.get("claimed_outcome") != "COMPLETE":
+                raise ValueError("run did not complete")
+            attempts = [a for node in receipt.get("nodes", []) for a in node.get("attempts", [])]
+            injected_failures = sum(
+                a.get("fault_injected") is True and a.get("outcome") == "failure" for a in attempts
+            )
+            if name == "chaos" and injected_failures == 0:
+                raise ValueError("no controlled injected failure recorded")
+            if name == "clean" and any(a.get("fault_injected") is True for a in attempts):
+                raise ValueError("clean rehearsal includes injected faults")
+            proof[name] = {
+                "run_id": receipt.get("run_id"),
+                "outcome": receipt["outcome"],
+                "injected_failures": injected_failures,
+                "route_identity_summary": receipt.get("route_identity_summary"),
+                "reviewer": receipt.get("review", {}).get("reviewer"),
+                "attempt_producers": sorted(
+                    {str(a.get("executed_model")) for a in attempts if a.get("executed_model")}
+                ),
+            }
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            return StepResult(
+                "rehearsals",
+                "Rehearsal verification",
+                "FAIL",
+                f"Invalid rehearsal {name}: {exc}",
+                evidence={"runs": proof},
             )
 
-        # Copy events.jsonl and receipt.json
-        target_dir = rehearsal_output / name
-        target_dir.mkdir(exist_ok=True)
-
-        events_src = run_dir / "events.jsonl"
-        receipt_src = run_dir / "receipt.json"
-
-        if not events_src.exists() or not receipt_src.exists():
-            return StepResult(
-                step_id="rehearsals",
-                name="Rehearsal verification",
-                status="FAIL",
-                reason=f"Missing events.jsonl or receipt.json in {name}",
-            )
-
-        shutil.copy2(events_src, target_dir / "events.jsonl")
-        shutil.copy2(receipt_src, target_dir / "receipt.json")
-
-        # Verify events digest
-        events_sha = sha256_file(events_src)
-        receipt_data = json.loads(receipt_src.read_text())
-        expected_digest = receipt_data.get("events_digest", "")
-
-        if f"sha256:{events_sha}" != expected_digest:
-            return StepResult(
-                step_id="rehearsals",
-                name="Rehearsal verification",
-                status="FAIL",
-                reason=f"Events digest mismatch in {name}",
-            )
-
-        verified_count += 1
-
+    if not {"clean", "chaos"}.issubset(proof):
+        return StepResult(
+            "rehearsals",
+            "Rehearsal verification",
+            "INCOMPLETE",
+            "Both clean and chaos (controlled-failure) rehearsals are required",
+            evidence={"runs": proof},
+        )
+    # These artifacts are produced by the very runtime under test. Rebuilding
+    # its receipt does not independently attest to the producer or execution.
     return StepResult(
-        step_id="rehearsals",
-        name="Rehearsal verification",
-        status="PASS",
-        reason=f"Verified {verified_count} rehearsal(s)",
+        "rehearsals",
+        "Rehearsal verification",
+        "INCOMPLETE",
+        "Receipt semantics verified, but independent producer attestation is unavailable",
+        evidence={"runs": proof, "independent_producer_attestation": False},
     )
 
 
@@ -818,6 +860,20 @@ def compute_verdict(
         for step in steps
         if step.step_id in {"test_clean", "test_dirty"}
     )
+    junit_steps = {
+        s.step_id: s.evidence.get("junit")
+        for s in steps
+        if s.step_id in {"test_clean", "test_dirty"}
+    }
+    junit_keys = ("tests", "passed", "failures", "errors", "skipped")
+    if len(junit_steps) == 2 and all(isinstance(value, dict) for value in junit_steps.values()):
+        clean, dirty = junit_steps["test_clean"], junit_steps["test_dirty"]
+        assert isinstance(clean, dict) and isinstance(dirty, dict)
+        missing_evidence |= any(clean.get(key) != dirty.get(key) for key in junit_keys)
+
+    # No independent producer verifier exists yet. A self-asserted flag in
+    # StepResult.evidence must not convert local run files into attestation.
+    missing_evidence |= "rehearsals" in present
     missing_evidence |= any(
         not step.evidence.get("artifacts") for step in steps if step.step_id == "build"
     )
@@ -840,7 +896,11 @@ def compute_verdict(
 
 
 def run_certification(
-    repo_path: Path, *, allow_dirty: bool = False, rehearsal_dirs: dict[str, Path] | None = None
+    repo_path: Path,
+    *,
+    allow_dirty: bool = False,
+    rehearsal_dirs: dict[str, Path] | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[CertificationManifest, dict[str, Any]]:
     """Run full certification and return manifest and detailed results."""
     manifest = CertificationManifest()
@@ -931,16 +991,20 @@ def run_certification(
     print("  [9/11] Documentation link check...")
     steps.append(step_docs_check(repo_path, venv_bin))
 
-    # Git clean
-    print("  [10/11] Git clean check...")
-    steps.append(step_git_clean(repo_path))
-
     # Rehearsals
-    print("  [11/11] Rehearsal verification...")
-    output_dir = repo_path / "artifacts" / "certification" / manifest.git_sha
-    output_dir.mkdir(parents=True, exist_ok=True)
-    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, output_dir))
+    print("  [10/11] Rehearsal verification...")
+    destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
+    if any(
+        source.resolve() == destination.resolve()
+        or destination.resolve() in source.resolve().parents
+        for source in (rehearsal_dirs or {}).values()
+    ):
+        raise ValueError("Rehearsal source must not be inside the output directory")
+    prepare_bundle_dir(destination, repo_path)
+    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, destination))
 
+    print("  [11/11] Git clean check...")
+    steps.append(step_git_clean(repo_path))
     manifest.steps = steps
     manifest.finished_at = utc_timestamp()
 
@@ -1015,12 +1079,38 @@ def generate_certification_md(
     return "\n".join(lines)
 
 
+def prepare_bundle_dir(output_dir: Path, repo_path: Path) -> None:
+    """Remove stale contents only in the default, SHA-scoped, ignored bundle location."""
+    output_dir = output_dir.absolute()
+    managed_root = (repo_path / "artifacts" / "certification").resolve()
+    sha = get_git_sha(repo_path)
+    if output_dir == repo_path.resolve() or output_dir == managed_root:
+        raise ValueError("Refusing to write bundle into checkout root or certification root")
+    if output_dir.is_symlink():
+        raise ValueError("Refusing symlinked output directory")
+    if output_dir.resolve() == managed_root / sha:
+        ignored = run_command(["git", "check-ignore", "-q", str(output_dir)], cwd=repo_path)
+        tracked = run_command(
+            ["git", "ls-files", "--", str(output_dir.relative_to(repo_path.resolve()))],
+            cwd=repo_path,
+        )
+        if ignored.returncode != 0 or tracked.returncode != 0 or tracked.stdout.strip():
+            raise ValueError("Refusing to remove non-ignored or tracked bundle contents")
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+    elif output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("Custom output directory must be empty (will not delete user files)")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
 def write_bundle(
     output_dir: Path,
     manifest: CertificationManifest,
     env_snapshot: EnvironmentSnapshot | dict[str, Any],
+    *,
+    repo_path: Path | None = None,
 ) -> None:
-    """Write all bundle files to output directory."""
+    """Write evidence and recompute the final tracked git state before publishing verdict."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # The reports are projections of the same step results serialized in the manifest.
@@ -1057,11 +1147,29 @@ def write_bundle(
     cert_md = generate_certification_md(manifest, env_snapshot)
     (output_dir / "CERTIFICATION.md").write_text(cert_md)
 
-    # git-clean.txt (final git status)
-    repo_path = output_dir.parent.parent.parent  # Go up to repo root
+    # Check *after* writing the evidence. The earlier step runs before this
+    # final write and cannot detect a tracked bundle edited by the writer.
+    if repo_path is None:
+        repo_path = output_dir.parent.parent.parent
     git_status = run_command(["git", "status", "--porcelain"], cwd=repo_path)
     (output_dir / "git-clean.txt").write_text(git_status.stdout)
-
+    # A tracked git-clean.txt can be changed by the snapshot itself. Check once
+    # more after that write rather than trusting the earlier status.
+    final_status = run_command(["git", "status", "--porcelain"], cwd=repo_path)
+    if final_status.returncode != 0 or final_status.stdout != git_status.stdout:
+        git_status = final_status
+        (output_dir / "git-clean.txt").write_text(git_status.stdout)
+    git_step = next((step for step in manifest.steps if step.step_id == "git_clean"), None)
+    if git_step is not None and (git_status.returncode != 0 or git_status.stdout.strip()):
+        git_step.status = "FAIL"
+        git_step.reason = "Git status failed or tree dirty after bundle write"
+        manifest.verdict = compute_verdict(manifest.steps, git_dirty=manifest.git_dirty)
+        (output_dir / "manifest.json").write_text(
+            json.dumps(manifest.to_dict(), indent=2, sort_keys=True)
+        )
+        (output_dir / "CERTIFICATION.md").write_text(
+            generate_certification_md(manifest, env_snapshot)
+        )
     print(f"\nCertification bundle written to: {output_dir}")
 
 
@@ -1105,13 +1213,16 @@ def main() -> None:
 
     # Run certification
     manifest, detailed = run_certification(
-        repo_path, allow_dirty=args.allow_dirty, rehearsal_dirs=rehearsal_dirs
+        repo_path,
+        allow_dirty=args.allow_dirty,
+        rehearsal_dirs=rehearsal_dirs,
+        output_dir=args.output_dir,
     )
 
     # Write bundle
     output_dir = args.output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
 
-    write_bundle(output_dir, manifest, detailed["environment"])
+    write_bundle(output_dir, manifest, detailed["environment"], repo_path=repo_path)
 
     # Print summary
     print(f"\nVerdict: {manifest.verdict}")
