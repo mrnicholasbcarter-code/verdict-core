@@ -24,12 +24,23 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 ## Try it with no keys
 
 Install, then run the offline demo and inspect the trace. The demo needs no API key, no
-gateway and no network (only the install downloads from PyPI):
+gateway and no network (only the install downloads from PyPI). Choose one install path:
 
 ```bash
-pip install verdict-core
+pipx install verdict-core
 verdict demo
 ```
+
+Or run the credential-free quickstart without a persistent install:
+
+```bash
+uvx --from verdict-core verdict quickstart --non-interactive --dry-run
+```
+
+`pip install verdict-core` followed by `verdict demo` is also supported. The governed
+[v0.4.2 fresh-install run](https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/36956585091)
+checks `pipx`, `uvx` and the integrity-verified `install.sh` on clean Linux Python 3.12
+and 3.13 containers. These are offline scripted demonstrations, not live provider runs.
 
 `verdict demo` ships in `verdict-core` on PyPI (since 0.4.0). From a source checkout, `pip install -e .`
 gives the same command.
