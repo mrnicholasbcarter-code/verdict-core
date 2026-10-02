@@ -823,17 +823,65 @@ def test_compute_verdict_fail_beats_incomplete():
 
 
 def test_compute_verdict_all_pass_clean_certified():
-    """Test compute_verdict: all PASS with clean tree -> CERTIFIED."""
-    test_pass = certify_release.StepResult(step_id="test", name="Tests", status="PASS")
-    security_pass = certify_release.StepResult(step_id="security", name="Security", status="PASS")
-    rehearsals_pass = certify_release.StepResult(
-        step_id="rehearsals", name="Rehearsals", status="PASS"
+    """Only a complete set of steps with usable evidence can certify."""
+    command = {"command": ["tool"], "exit_code": 0}
+    steps = [
+        certify_release.StepResult(step_id, step_id, "PASS", evidence=dict(command))
+        for step_id in ("ruff_check", "ruff_format", "mypy", "docs_check")
+    ]
+    steps.extend(
+        certify_release.StepResult(
+            step_id,
+            step_id,
+            "PASS",
+            evidence={
+                **command,
+                "junit": {
+                    "tests": 1,
+                    "passed": 1,
+                    "failures": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "sha256": "abc",
+                },
+            },
+        )
+        for step_id in ("test_clean", "test_dirty")
     )
-
-    verdict = certify_release.compute_verdict(
-        [test_pass, security_pass, rehearsals_pass], git_dirty=False
+    steps.extend(
+        [
+            certify_release.StepResult(
+                "build",
+                "Build",
+                "PASS",
+                evidence={**command, "artifacts": [{"name": "verdict.whl", "sha256": "abc"}]},
+            ),
+            certify_release.StepResult(
+                "package_smoke",
+                "Smoke",
+                "PASS",
+                evidence={
+                    "commands": [{"command": ["uv"], "exit_code": 0}] * 3,
+                    "help_has_usage": True,
+                },
+            ),
+            certify_release.StepResult(
+                "security",
+                "Security",
+                "PASS",
+                evidence={
+                    "bandit": {"report_sha256": "abc"},
+                    "pip_audit": {"report_sha256": "def"},
+                },
+            ),
+            certify_release.StepResult("git_clean", "Git", "PASS"),
+            certify_release.StepResult("rehearsals", "Rehearsals", "PASS"),
+        ]
     )
-    assert verdict == "CERTIFIED"
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "CERTIFIED"
+    assert certify_release.compute_verdict(steps[:-1], git_dirty=False) == "INCOMPLETE"
+    steps[0].evidence = {}
+    assert certify_release.compute_verdict(steps, git_dirty=False) == "INCOMPLETE"
 
 
 def test_compute_verdict_skipped_rehearsals_incomplete():
@@ -853,3 +901,140 @@ def test_compute_verdict_dirty_tree_incomplete():
 
     verdict = certify_release.compute_verdict([test_pass], git_dirty=True)
     assert verdict == "INCOMPLETE"
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_pytest_evidence_requires_valid_junit(tmp_path, dirty):
+    """A zero exit without a valid report cannot certify the suite."""
+    runner = (
+        certify_release.step_test_dirty_shell if dirty else certify_release.step_test_clean_shell
+    )
+    with patch("certify_release.run_command", return_value=MagicMock(returncode=0)):
+        step = runner(tmp_path, tmp_path)
+    assert step.status == "INCOMPLETE"
+    assert step.evidence["exit_code"] == 0
+    assert step.evidence["junit"] is None
+    assert "--junitxml=" in step.evidence["command"][-1]
+    assert certify_release.compute_verdict([step], git_dirty=False) == "INCOMPLETE"
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_pytest_evidence_parses_junit_and_failure(tmp_path, dirty):
+    runner = (
+        certify_release.step_test_dirty_shell if dirty else certify_release.step_test_clean_shell
+    )
+
+    def fake_run(cmd, **kwargs):
+        report = Path(cmd[-1].removeprefix("--junitxml="))
+        report.write_text(
+            '<testsuites><testsuite tests="4" failures="1" errors="0" skipped="1"/></testsuites>'
+        )
+        return MagicMock(returncode=1)
+
+    with patch("certify_release.run_command", side_effect=fake_run):
+        step = runner(tmp_path, tmp_path)
+    assert step.status == "FAIL"
+    assert step.evidence["junit"]["passed"] == 2
+    assert step.evidence["junit"]["sha256"]
+
+
+def test_build_no_new_artifact_is_incomplete_even_with_stale_dist(tmp_path):
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "stale.whl").write_text("old")
+    with patch("certify_release.run_command", return_value=MagicMock(returncode=0)):
+        step = certify_release.step_build(tmp_path)
+    assert step.status == "INCOMPLETE"
+    assert step.evidence["artifacts"] == []
+    assert certify_release.step_package_smoke(tmp_path).status == "INCOMPLETE"
+
+
+def test_build_artifact_digest_and_smoke_command_chain(tmp_path):
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["uv", "build"]:
+            Path(cmd[-1], "verdict-1.whl").write_bytes(b"wheel")
+        return MagicMock(returncode=0, stdout="usage: verdict")
+
+    with patch("certify_release.run_command", side_effect=fake_run):
+        built = certify_release.step_build(tmp_path)
+        smoke = certify_release.step_package_smoke(tmp_path, "verdict-1.whl")
+    assert built.status == smoke.status == "PASS"
+    assert len(built.evidence["artifacts"][0]["sha256"]) == 64
+    assert smoke.evidence["wheel_sha256"] == built.evidence["artifacts"][0]["sha256"]
+    assert [x["exit_code"] for x in smoke.evidence["commands"]] == [0, 0, 0]
+    assert smoke.evidence["help_has_usage"] is True
+
+
+def test_security_success_exit_without_report_is_incomplete(tmp_path):
+    (tmp_path / "bandit").touch()
+    (tmp_path / "pip-audit").touch()
+    with patch("certify_release.run_command", return_value=MagicMock(returncode=0, stderr="")):
+        step = certify_release.step_security(tmp_path, tmp_path)
+    assert step.status == "INCOMPLETE"
+    assert step.evidence["bandit"]["report_sha256"] is None
+    assert step.evidence["pip_audit"]["report_sha256"] is None
+
+
+def test_report_files_match_manifest_evidence(tmp_path):
+    step = certify_release.StepResult(
+        "test_clean",
+        "Test",
+        "INCOMPLETE",
+        "no JUnit",
+        evidence={"command": ["pytest"], "exit_code": 0, "junit": None},
+    )
+    manifest = certify_release.CertificationManifest(steps=[step], verdict="INCOMPLETE")
+    env = certify_release.EnvironmentSnapshot("3.10", "linux", "uv")
+    with patch("certify_release.run_command", return_value=MagicMock(stdout="", returncode=0)):
+        certify_release.write_bundle(
+            tmp_path / "artifacts" / "certification" / "abc", manifest, env
+        )
+    bundle = tmp_path / "artifacts" / "certification" / "abc"
+    summary = json.loads((bundle / "test-summary.json").read_text())
+    serialized = json.loads((bundle / "manifest.json").read_text())
+    assert summary["test_clean"]["junit"] is None
+    assert summary["test_clean"]["exit_code"] == serialized["steps"][0]["evidence"]["exit_code"]
+    assert all(
+        (bundle / name).exists()
+        for name in (
+            "lint-type-build.json",
+            "package-smoke.json",
+            "security-summary.json",
+            "docs-check.json",
+        )
+    )
+
+
+def test_skipped_docs_cannot_certify():
+    step = certify_release.StepResult("docs_check", "Docs", "SKIPPED")
+    assert certify_release.compute_verdict([step], git_dirty=False) == "INCOMPLETE"
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_pytest_evidence_valid_report_passes(tmp_path, dirty):
+    runner = (
+        certify_release.step_test_dirty_shell if dirty else certify_release.step_test_clean_shell
+    )
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1].removeprefix("--junitxml=")).write_text(
+            '<testsuite tests="3" failures="0" errors="0" skipped="1" />'
+        )
+        return MagicMock(returncode=0)
+
+    with patch("certify_release.run_command", side_effect=fake_run):
+        step = runner(tmp_path, tmp_path)
+    assert step.status == "PASS"
+    assert step.evidence["junit"]["passed"] == 2
+    assert step.evidence["command"][-1] == "--junitxml=<temporary-report>"
+
+
+def test_scanner_error_does_not_serialize_stderr_secret(tmp_path):
+    (tmp_path / "bandit").touch()
+    (tmp_path / "pip-audit").touch()
+    with patch(
+        "certify_release.run_command",
+        return_value=MagicMock(returncode=1, stderr="PRIVATE_KEY=do-not-persist"),
+    ):
+        step = certify_release.step_security(tmp_path, tmp_path)
+    assert step.status == "FAIL"
+    assert "do-not-persist" not in json.dumps(step.evidence) + step.reason
