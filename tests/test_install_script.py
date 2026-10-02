@@ -17,13 +17,13 @@ import pytest
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "install.sh"
 
-# Real hashes baked into install.sh for 0.4.1
-GOOD_WHL_SHA256 = "aa2ec8bfc6d84569a81104e4cc3c0cec89865ec667386661355db8a06cf99363"
-GOOD_SDIST_SHA256 = "084b6217cb3ea0f75ec1f2031e427adf700d9a3f117bce5c7556cbadfdc1d35c"
+# Real hashes baked into install.sh for 0.4.2
+GOOD_WHL_SHA256 = "202496d4235d9b810d5f62e4b31e364809df9cc2333ce039d6637ab6cd2bb15d"
+GOOD_SDIST_SHA256 = "b59e3858b4f29ca65f7261fcdbf3ec456bc2116885542af81407b9284484745c"
 
 
 def _fake_pypi_json(
-    version: str = "0.4.1", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
+    version: str = "0.4.2", whl_sha256: str = GOOD_WHL_SHA256, sdist_sha256: str = GOOD_SDIST_SHA256
 ) -> str:
     """Build a minimal PyPI JSON API response."""
     return json.dumps(
@@ -61,7 +61,7 @@ def _run_install_script(
     """Run install.sh with stubbed commands so it never hits the network."""
     env = os.environ.copy()
     env["VERDICT_VERSION"] = (
-        env_overrides.pop("VERDICT_VERSION", "0.4.1") if env_overrides else "0.4.1"
+        env_overrides.pop("VERDICT_VERSION", "0.4.2") if env_overrides else "0.4.2"
     )
 
     if env_overrides:
@@ -102,7 +102,7 @@ class TestInstallScriptContent:
         self.script = INSTALL_SH.read_text()
 
     def test_pinned_version_present(self) -> None:
-        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.4.1}"' in self.script
+        assert 'VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"' in self.script
 
     def test_version_overridable_via_env(self) -> None:
         assert "VERDICT_VERSION:-" in self.script
