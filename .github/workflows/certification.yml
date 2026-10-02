@@ -1,0 +1,100 @@
+name: Release Certification Evidence (INCOMPLETE)
+
+# Evidence collection only. No clean/chaos live rehearsals are supplied here, so
+# this workflow must never report that the source SHA is CERTIFIED.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect-certification-evidence:
+    name: Collect evidence (not a certification gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
+    steps:
+      - name: Check out the exact event SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out SHA
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Sync locked dependencies
+        run: uv sync --frozen --extra dev --extra server
+      - name: Generate incomplete certification evidence
+        # The generator returns nonzero for INCOMPLETE. Preserve its bundle for
+        # upload, then independently check its SHA and verdict below.
+        id: generate
+        continue-on-error: true
+        run: |
+          rm -rf artifacts/certification
+          timeout --signal=TERM --kill-after=10s 70m \
+            .venv/bin/python scripts/certify_release.py
+      - name: Upload SHA-bound evidence even after generator failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: certification-evidence-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/certification/${{ github.sha }}/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Check manifest and fail closed on incomplete certification
+        if: ${{ always() }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          expected = os.environ['EXPECTED_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', expected):
+              sys.exit('Invalid event SHA')
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if actual != expected:
+              sys.exit(f'Checkout SHA mismatch: {actual} != {expected}')
+          path = Path('artifacts/certification') / expected / 'manifest.json'
+          try:
+              manifest = json.loads(path.read_text())
+          except (OSError, ValueError) as exc:
+              sys.exit(f'Missing or invalid certification manifest: {exc}')
+          if not isinstance(manifest, dict) or manifest.get('git_sha') != expected:
+              sys.exit('Certification manifest SHA mismatch')
+          if manifest.get('git_dirty') is not False:
+              sys.exit('Certification evidence was produced on a dirty tree')
+          steps = manifest.get('steps')
+          if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
+              sys.exit('Certification manifest has invalid steps')
+          if any(s.get('status') == 'FAIL' for s in steps):
+              sys.exit('Certification evidence contains failed steps')
+          rehearsal = [s for s in steps if s.get('step_id') == 'rehearsals']
+          if len(rehearsal) != 1 or rehearsal[0].get('status') != 'SKIPPED':
+              sys.exit('Unexpected rehearsal evidence: inspect manually; cannot certify')
+          if manifest.get('verdict') != 'INCOMPLETE':
+              sys.exit(f"Unexpected verdict {manifest.get('verdict')!r}; cannot certify without clean and chaos rehearsals")
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary, 'a', encoding='utf-8') as output:
+                  output.write(f'### Release certification: INCOMPLETE\n\nSource SHA: `{expected}`. '
+                               'No live clean/chaos rehearsals were collected. '
+                               'This artifact is evidence only, not a certification.\n')
+          print(f'INCOMPLETE: valid SHA-bound evidence for {expected}; no clean/chaos rehearsals')
+          sys.exit('Certification gate failed closed: INCOMPLETE is not CERTIFIED')
+          PY
