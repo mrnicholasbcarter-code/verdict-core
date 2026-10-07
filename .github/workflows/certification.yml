@@ -1,23 +1,8 @@
 name: Release Certification Evidence (INCOMPLETE)
 
-# Evidence collection only: manual runs produce an INCOMPLETE bundle, never a
-# CERTIFIED gate. Main pushes retain only a cheap source receipt (no tests,
-# certification manifest, or rehearsal); this does NOT satisfy full CI
-# certification-bundle retention. The full generator runs two complete suites,
-# already covered by ci.yml, so it is deliberately manual-only.
-#
-# KNOWN GAP (intentionally not papered over): the verifier step below requires
-# scripts/certify_release.py to write test-summary.json, lint-type-build.json,
-# package-smoke.json, security-summary.json and docs-check.json (the BOD-195
-# deliverable's promised per-step machine-readable reports), and fails the run
-# if any are missing, unparsable, or disagree with manifest.json. As of this
-# workflow revision, generator SHA cbc2538's certify_release.py does not write
-# those files, so a manual dispatch against that generator will correctly FAIL
-# this new check rather than silently accept a bundle missing the promised
-# evidence. This is deliberate fail-closed behavior, not a new defect: wire
-# this workflow to a generator revision that writes the report files (see
-# scripts/certify_release.py write_bundle() on fix/certification-machine-evidence)
-# before relying on a green manual run as real machine-readable-report evidence.
+# Main pushes retain a source receipt only: no certification checks or rehearsals.
+# Manual dispatch runs the real certifier and retains verified INCOMPLETE evidence.
+# Neither path produces a CERTIFIED bundle or makes this workflow a release gate.
 on:
   push:
     branches: [main]
@@ -216,6 +201,8 @@ jobs:
                   evidence = step.get('evidence')
                   if not isinstance(evidence, dict):
                       sys.exit(f'Invalid manifest evidence for step {step_id}')
+                  if {'status', 'reason'} & evidence.keys():
+                      sys.exit(f'Reserved manifest evidence key for step {step_id}')
                   if step['status'] != 'SKIPPED' and not evidence:
                       sys.exit(f'Machine-readable report {filename} has no evidence beyond status for step {step_id}')
                   expected_entry = {'status': step['status'], 'reason': step.get('reason', ''), **evidence}

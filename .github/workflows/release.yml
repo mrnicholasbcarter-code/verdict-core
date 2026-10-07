@@ -16,8 +16,116 @@ jobs:
       contents: read
     uses: ./.github/workflows/acceptance-gates.yml
 
+  certification-gate:
+    # Only a successful manual certification run can supply a retained bundle.
+    # This job is read-only and runs before any publishing or registry preflight.
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Locate exact-SHA certified artifact or warn
+        id: locate
+        env:
+          REQUIRE_CERTIFIED_BUNDLE: ${{ vars.VERDICT_REQUIRE_CERTIFIED_BUNDLE }}
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          required = os.environ.get('REQUIRE_CERTIFIED_BUNDLE') == 'true'
+          if not required:
+              warning = ('Release is NOT certification-gated: '
+                         'VERDICT_REQUIRE_CERTIFIED_BUNDLE is not true.')
+              print(f'::warning::{warning}')
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write(f'### Certification gate\n\n{warning}\n')
+              sys.exit(0)
+          sha = os.environ['EXPECTED_SHA']
+          repository = os.environ['GITHUB_REPOSITORY']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
+              sys.exit('Invalid release SHA or repository')
+
+          def api(endpoint):
+              output = subprocess.check_output(['gh', 'api', '--paginate', '--slurp', endpoint], text=True)
+              return json.loads(output)
+
+          try:
+              runs = api(f'repos/{repository}/actions/workflows/certification.yml/runs?head_sha={sha}&status=success&per_page=100')
+              for page in runs:
+                  for run in page['workflow_runs']:
+                      if (run.get('head_sha') != sha or run.get('event') != 'workflow_dispatch'
+                              or run.get('conclusion') != 'success' or run.get('status') != 'completed'):
+                          continue
+                      run_id = run['id']
+                      attempt = run['run_attempt']
+                      name = f'certification-evidence-certified-{sha}-{run_id}-{attempt}'
+                      artifacts = api(f'repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100')
+                      for artifact_page in artifacts:
+                          for artifact in artifact_page['artifacts']:
+                              if artifact.get('name') == name and artifact.get('expired') is False:
+                                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                                      output.write(f'artifact_id={artifact["id"]}\nrun_id={run_id}\nfound=true\n')
+                                  sys.exit(0)
+          except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
+              sys.exit(f'Cannot verify retained certification artifact: {exc}')
+          sys.exit(f'No retained certified certification-workflow artifact for release SHA {sha}')
+          PY
+      - name: Download certified bundle from selected run
+        if: steps.locate.outputs.found == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.locate.outputs.artifact_id }}
+          run-id: ${{ steps.locate.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: certification-bundle
+      - name: Verify downloaded certified manifest
+        if: steps.locate.outputs.found == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          sha = os.environ['EXPECTED_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              sys.exit('Invalid release SHA')
+          path = Path('certification-bundle')
+          try:
+              manifest = json.loads((path / 'manifest.json').read_text())
+              git_clean = (path / 'git-clean.txt').read_text()
+          except (OSError, ValueError) as exc:
+              sys.exit(f'Missing or invalid certified bundle: {exc}')
+          if not isinstance(manifest, dict) or manifest.get('git_sha') != sha:
+              sys.exit('Certified bundle SHA does not match release SHA')
+          if manifest.get('schema_version') != '1' or manifest.get('verdict') != 'CERTIFIED':
+              sys.exit('Bundle does not have a CERTIFIED manifest verdict')
+          if manifest.get('git_dirty') is not False or git_clean.strip():
+              sys.exit('Certified bundle was not produced on a clean tree')
+          steps = manifest.get('steps')
+          if not isinstance(steps, list) or len(steps) != 11 or any(
+              not isinstance(step, dict) or step.get('status') != 'PASS' for step in steps
+          ):
+              sys.exit('Certified bundle does not have eleven passing steps')
+          ids = {step.get('step_id') for step in steps}
+          if ids != {'test_clean', 'test_dirty', 'ruff_check', 'ruff_format', 'mypy',
+                     'build', 'package_smoke', 'security', 'docs_check', 'git_clean', 'rehearsals'}:
+              sys.exit('Certified bundle has missing or duplicate steps')
+          print(f'CERTIFIED bundle for exact release SHA {sha}')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'### Certification gate\n\nVerified retained CERTIFIED bundle for `{sha}`.\n')
+          PY
+
   release:
-    needs: acceptance
+    needs: [acceptance, certification-gate]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

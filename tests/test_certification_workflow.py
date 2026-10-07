@@ -556,3 +556,255 @@ def test_rejects_null_manifest_evidence_even_with_matching_report(sample_checkou
     result = _run_manifest_check(repo, sha)
     assert result.returncode != 0
     assert "Invalid manifest evidence for step test_clean" in result.stderr
+
+
+def test_real_certifier_bundle_passes_workflow_verifier(sample_checkout):
+    """Exercise the real generator serializer and publisher, not a hand-written manifest."""
+    from scripts import certify_release as certifier
+
+    repo, _ = sample_checkout
+    # The managed output must be ignored to keep a real git-clean status.
+    (repo / ".git/info/exclude").write_text("artifacts/\n")
+    sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    steps = [
+        certifier.StepResult(
+            step_id=name,
+            name=name,
+            status="SKIPPED" if name == "rehearsals" else "PASS",
+            reason="Live rehearsals not provided" if name == "rehearsals" else "",
+            evidence={}
+            if name == "rehearsals"
+            else {"command": ["offline-fixture", name], "exit_code": 0},
+        )
+        for name in STEP_IDS
+    ]
+    assert all({"status", "reason"}.isdisjoint(step.evidence) for step in steps)
+    manifest = certifier.CertificationManifest(
+        git_sha=sha, steps=steps, verdict=certifier.compute_verdict(steps, git_dirty=False)
+    )
+    assert manifest.verdict == "INCOMPLETE"
+    root = repo / "artifacts/certification"
+    stage = root / ".cert-stage-offline"
+    output = root / sha
+    env_snapshot = certifier.EnvironmentSnapshot(
+        python_version=sys.version.split()[0], platform=sys.platform, uv_version="fixture"
+    )
+    certifier.write_bundle(stage, manifest, env_snapshot, repo_path=repo)
+    certifier.publish_bundle(stage, output, repo, sha)
+    generated = json.loads((output / "manifest.json").read_text())
+    assert all({"status", "reason"}.isdisjoint(step["evidence"]) for step in generated["steps"])
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode == 0, result.stderr
+    assert "INCOMPLETE:" in result.stdout
+
+    report = output / "test-summary.json"
+    report.unlink()
+    assert "Missing promised machine-readable report" in _run_manifest_check(repo, sha).stderr
+    certifier.write_bundle(output, manifest, env_snapshot, repo_path=repo)
+    data = json.loads(report.read_text())
+    data["test_clean"]["exit_code"] = 55
+    report.write_text(json.dumps(data))
+    assert "disagrees with manifest" in _run_manifest_check(repo, sha).stderr
+
+
+def test_certifier_never_constructs_reserved_evidence_keys():
+    """Check generator evidence constructors, not just the synthetic fixture."""
+    import ast
+
+    source = Path(__file__).resolve().parents[1] / "scripts/certify_release.py"
+    tree = ast.parse(source.read_text())
+    evidence_maps = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            evidence_maps.extend(
+                keyword.value for keyword in node.keywords if keyword.arg == "evidence"
+            )
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(target, ast.Attribute) and target.attr == "evidence"
+                for target in targets
+            ):
+                evidence_maps.append(node.value)
+    assert evidence_maps, "generator evidence assignments were not inspected"
+    for evidence in evidence_maps:
+        for item in ast.walk(evidence):
+            if isinstance(item, ast.Dict):
+                keys = {key.value for key in item.keys if isinstance(key, ast.Constant)}
+                assert keys.isdisjoint({"status", "reason"}), (evidence.lineno, keys)
+
+
+def test_verifier_rejects_reserved_evidence_keys(sample_checkout):
+    repo, sha = sample_checkout
+    directory, manifest = _write_bundle(repo, sha)
+    next(step for step in manifest["steps"] if step["step_id"] == "test_clean")["evidence"][
+        "status"
+    ] = "PASS"
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    assert "Reserved manifest evidence key" in _run_manifest_check(repo, sha).stderr
+
+
+RELEASE_WORKFLOW = WORKFLOW.with_name("release.yml")
+
+
+def _release_gate():
+    release = yaml.load(RELEASE_WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    gate = release["jobs"]["certification-gate"]
+    assert gate["permissions"] == {"actions": "read"}
+    assert set(release["jobs"]["release"]["needs"]) == {"acceptance", "certification-gate"}
+    steps = gate["steps"]
+    assert steps[1]["if"] == "steps.locate.outputs.found == 'true'"
+    assert steps[1]["with"]["artifact-ids"] == "${{ steps.locate.outputs.artifact_id }}"
+    assert steps[1]["with"]["run-id"] == "${{ steps.locate.outputs.run_id }}"
+    assert steps[1]["with"]["github-token"] == "${{ github.token }}"
+    assert steps[2]["if"] == "steps.locate.outputs.found == 'true'"
+    return steps
+
+
+def _embedded_python(command):
+    assert command.startswith("python - <<'PY'\n") and command.endswith("\nPY\n")
+    return command[len("python - <<'PY'\n") : -len("\nPY\n")]
+
+
+def _run_gate_step(code, repo, sha, *, required, responses=None):
+    import stat
+
+    summary = repo / "release-summary.md"
+    output = repo / "gate-outputs.txt"
+    env = os.environ.copy()
+    env.update(
+        REQUIRE_CERTIFIED_BUNDLE="true" if required else "false",
+        EXPECTED_SHA=sha,
+        GITHUB_REPOSITORY="owner/project",
+        GITHUB_STEP_SUMMARY=str(summary),
+        GITHUB_OUTPUT=str(output),
+    )
+    if responses is not None:
+        bindir = repo / "bin"
+        bindir.mkdir(exist_ok=True)
+        mock = bindir / "gh"
+        mock.write_text(
+            "#!" + sys.executable + "\n"
+            "import json, os, sys\n"
+            "endpoint = sys.argv[-1]\n"
+            'data = json.loads(os.environ["GH_FIXTURES"])\n'
+            "if endpoint not in data: sys.exit(1)\n"
+            "print(json.dumps(data[endpoint]))\n"
+        )
+        mock.chmod(mock.stat().st_mode | stat.S_IXUSR)
+        env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+        env["GH_FIXTURES"] = json.dumps(responses)
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=repo, env=env, text=True, capture_output=True
+    )
+    return result, summary, output
+
+
+def _artifact_responses(sha, *, artifact_name=None, expired=False):
+    run_id = 321
+    name = artifact_name or f"certification-evidence-certified-{sha}-{run_id}-2"
+    return {
+        f"repos/owner/project/actions/workflows/certification.yml/runs?head_sha={sha}&status=success&per_page=100": [
+            {
+                "workflow_runs": [
+                    {
+                        "id": run_id,
+                        "run_attempt": 2,
+                        "head_sha": sha,
+                        "event": "workflow_dispatch",
+                        "conclusion": "success",
+                        "status": "completed",
+                    }
+                ]
+            }
+        ],
+        f"repos/owner/project/actions/runs/{run_id}/artifacts?per_page=100": [
+            {"artifacts": [{"id": 123, "name": name, "expired": expired}]}
+        ],
+    }
+
+
+def test_release_gate_disabled_warns_without_claiming_certification(sample_checkout):
+    repo, sha = sample_checkout
+    steps = _release_gate()
+    assert (
+        steps[0]["env"]["REQUIRE_CERTIFIED_BUNDLE"]
+        == "${{ vars.VERDICT_REQUIRE_CERTIFIED_BUNDLE }}"
+    )
+    result, summary, output = _run_gate_step(
+        _embedded_python(steps[0]["run"]), repo, sha, required=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert "::warning::" in result.stdout
+    assert "NOT certification-gated" in result.stdout
+    assert "NOT certification-gated" in summary.read_text()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("kind", ["missing", "expired", "incomplete-name"])
+def test_release_gate_enabled_requires_retained_exact_sha_artifact(sample_checkout, kind):
+    repo, sha = sample_checkout
+    steps = _release_gate()
+    responses = _artifact_responses(
+        sha,
+        expired=(kind == "expired"),
+        artifact_name=f"certification-evidence-incomplete-{sha}-321-2"
+        if kind == "incomplete-name"
+        else None,
+    )
+    if kind == "missing":
+        responses[next(key for key in responses if key.endswith("/artifacts?per_page=100"))] = [
+            {"artifacts": []}
+        ]
+    result, summary, output = _run_gate_step(
+        _embedded_python(steps[0]["run"]), repo, sha, required=True, responses=responses
+    )
+    assert result.returncode != 0
+    assert "No retained certified" in result.stderr
+    assert not summary.exists()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "verdict,matching_sha,success",
+    [("CERTIFIED", True, True), ("INCOMPLETE", True, False), ("CERTIFIED", False, False)],
+)
+def test_release_gate_enabled_downloaded_manifest_verification(
+    sample_checkout, verdict, matching_sha, success
+):
+    repo, sha = sample_checkout
+    steps = _release_gate()
+    locate, _, output = _run_gate_step(
+        _embedded_python(steps[0]["run"]),
+        repo,
+        sha,
+        required=True,
+        responses=_artifact_responses(sha),
+    )
+    assert locate.returncode == 0, locate.stderr
+    assert "artifact_id=123" in output.read_text()
+    assert "run_id=321" in output.read_text()
+    directory = repo / "certification-bundle"
+    directory.mkdir()
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "git_sha": sha if matching_sha else "0" * 40,
+                "git_dirty": False,
+                "verdict": verdict,
+                "steps": [{"step_id": name, "status": "PASS"} for name in STEP_IDS],
+            }
+        )
+    )
+    (directory / "git-clean.txt").write_text("")
+    verified, summary, _ = _run_gate_step(
+        _embedded_python(steps[2]["run"]), repo, sha, required=True
+    )
+    assert (verified.returncode == 0) is success
+    if success:
+        assert "CERTIFIED bundle for exact release SHA" in verified.stdout
+        assert sha in summary.read_text()
+    else:
+        assert "does not match" in verified.stderr or "does not have a CERTIFIED" in verified.stderr
+        assert not summary.exists()
