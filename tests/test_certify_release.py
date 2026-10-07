@@ -269,7 +269,7 @@ def test_certification_md_generation():
     # Check that all manifest values appear in MD
     assert "abc123def456" in md_content
     assert "CERTIFIED" in md_content
-    assert "2024-01-01T00:00:00Z" in md_content
+    assert certify_release.markdown_cell("2024-01-01T00:00:00Z") in md_content
     assert "Test Suite" in md_content
     assert "PASS" in md_content
     assert "100 passed" in md_content
@@ -1175,6 +1175,7 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
         ) as runner,
         patch("certify_release.write_bundle") as writer,
         patch("certify_release.publish_bundle") as publisher,
+        patch("certify_release.assert_git_sha"),
         patch.object(sys, "argv", ["certify_release.py", "--output-dir", str(custom)]),
         pytest.raises(SystemExit),
     ):
@@ -1183,6 +1184,7 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
     assert runner.call_args.kwargs["output_dir"] == custom
     assert writer.call_args.kwargs["repo_path"] == repo
     assert publisher.call_args.args[1] == custom
+    assert publisher.call_args.args[3] == manifest.git_sha
 
     manifest = certify_release.CertificationManifest(
         steps=[certify_release.StepResult("git_clean", "Git", "PASS")], verdict="INCOMPLETE"
@@ -1302,7 +1304,7 @@ def test_staged_publication_never_exposes_partial_bundle(temp_git_repo, tmp_path
         (staging / "manifest.json").write_text("complete")
         certify_release.prepare_bundle_dir(bundle, repo, create=False)
         assert not bundle.exists()
-        certify_release.publish_bundle(staging, bundle, repo)
+        certify_release.publish_bundle(staging, bundle, repo, certify_release.get_git_sha(repo))
         assert (bundle / "manifest.json").read_text() == "complete"
         assert not (bundle / "stale").exists()
 
@@ -1348,3 +1350,160 @@ def test_main_staging_failure_does_not_publish_partial_bundle(temp_git_repo, mon
         certify_release.main()
     assert not bundle.exists()
     assert not list(bundle.parent.glob(".cert-stage-*"))
+
+
+def test_clean_head_checkout_during_step_aborts_without_old_sha_bundle(temp_git_repo, monkeypatch):
+    """A clean checkout switch during a long step must not certify the old SHA."""
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "ignore outputs"], cwd=repo, check=True, capture_output=True
+    )
+    original_sha = certify_release.get_git_sha(repo)
+    (repo / "README.md").write_text("# Different clean commit")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "new source"], cwd=repo, check=True, capture_output=True)
+    next_sha = certify_release.get_git_sha(repo)
+    subprocess.run(
+        ["git", "checkout", "--detach", original_sha], cwd=repo, check=True, capture_output=True
+    )
+    assert not certify_release.is_git_dirty(repo)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    original_run = certify_release.run_command
+
+    def fake_sanity(cmd, **kwargs):
+        if "-c" in cmd and "import verdict" in cmd[-1]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, **kwargs)
+
+    def switch_head(_repo, _venv):
+        subprocess.run(
+            ["git", "checkout", "--detach", next_sha], cwd=repo, check=True, capture_output=True
+        )
+        assert not certify_release.is_git_dirty(repo)
+        return certify_release.StepResult("test_clean", "Tests", "PASS")
+
+    monkeypatch.setattr(certify_release, "run_command", fake_sanity)
+    monkeypatch.setattr(certify_release, "step_test_clean_shell", switch_head)
+    old_bundle = repo / "artifacts" / "certification" / original_sha
+    with pytest.raises(RuntimeError, match="HEAD changed"):
+        certify_release.run_certification(repo)
+    assert not old_bundle.exists()
+
+
+def test_publish_checks_sha_again_after_cleanup(temp_git_repo, monkeypatch, tmp_path):
+    """Do not rename old-SHA staging if HEAD changes at publish time."""
+    import subprocess
+
+    repo = temp_git_repo
+    old_sha = certify_release.get_git_sha(repo)
+    (repo / "README.md").write_text("# another commit")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "new source"], cwd=repo, check=True, capture_output=True)
+    new_sha = certify_release.get_git_sha(repo)
+    subprocess.run(
+        ["git", "checkout", "--detach", old_sha], cwd=repo, check=True, capture_output=True
+    )
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    (staging / "manifest.json").write_text("old evidence")
+    output = tmp_path / "output"
+    real_prepare = certify_release.prepare_bundle_dir
+
+    def switch_during_cleanup(destination, checkout, *, create=True):
+        real_prepare(destination, checkout, create=create)
+        subprocess.run(
+            ["git", "checkout", "--detach", new_sha], cwd=repo, check=True, capture_output=True
+        )
+
+    monkeypatch.setattr(certify_release, "prepare_bundle_dir", switch_during_cleanup)
+    with pytest.raises(RuntimeError, match="HEAD changed"):
+        certify_release.publish_bundle(staging, output, repo, old_sha)
+    assert (staging / "manifest.json").exists()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "value", ["<script>alert(1)</script>|#x\n# injected", "**bold**`code`[link](x)\r<div>"]
+)
+def test_markdown_escapes_every_dynamic_scalar(value):
+    manifest = certify_release.CertificationManifest(
+        git_sha=value,
+        git_dirty=value,
+        started_at=value,
+        finished_at=value,
+        verdict=value,
+        steps=[certify_release.StepResult("x", value, value, value)],
+    )
+    environment = {
+        key: value
+        for key in ("python_version", "platform", "uv_version", "node_version", "lockfile_sha256")
+    }
+    environment["env_var_names"] = []
+    md = certify_release.generate_certification_md(manifest, environment)
+    escaped = certify_release.markdown_cell(value)
+    assert escaped in md
+    assert value not in md
+    assert "<script>" not in md and "<div>" not in md
+    for label in (
+        "Verdict",
+        "Started",
+        "Finished",
+        "Git SHA",
+        "Git Dirty",
+        "Python",
+        "Platform",
+        "uv",
+        "Node",
+    ):
+        assert f"**{label}**: {escaped}" in md
+    assert f"**Lockfile SHA256**: {certify_release.markdown_cell(value[:16])}..." in md
+    assert len([line for line in md.splitlines() if line.startswith("| ")]) == 2
+
+
+def test_main_rejects_head_switch_during_bundle_write(temp_git_repo, monkeypatch):
+    """A clean checkout switch after staging cannot publish under the old SHA."""
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "ignore outputs"], cwd=repo, check=True, capture_output=True
+    )
+    old_sha = certify_release.get_git_sha(repo)
+    (repo / "README.md").write_text("# next commit")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "next"], cwd=repo, check=True, capture_output=True)
+    new_sha = certify_release.get_git_sha(repo)
+    subprocess.run(
+        ["git", "checkout", "--detach", old_sha], cwd=repo, check=True, capture_output=True
+    )
+    monkeypatch.chdir(repo)
+    manifest = certify_release.CertificationManifest(git_sha=old_sha, verdict="INCOMPLETE")
+    env = certify_release.EnvironmentSnapshot("3.13", "linux", "uv")
+
+    def switching_write(staging, *_args, **_kwargs):
+        (staging / "manifest.json").write_text("old staged evidence")
+        subprocess.run(
+            ["git", "checkout", "--detach", new_sha], cwd=repo, check=True, capture_output=True
+        )
+        assert not certify_release.is_git_dirty(repo)
+
+    with (
+        patch(
+            "certify_release.run_certification",
+            return_value=(manifest, {"environment": env.to_dict()}),
+        ),
+        patch("certify_release.write_bundle", side_effect=switching_write),
+        patch("certify_release.publish_bundle") as publisher,
+        patch.object(sys, "argv", ["certify_release.py"]),
+        pytest.raises(RuntimeError, match="HEAD changed"),
+    ):
+        certify_release.main()
+    publisher.assert_not_called()
+    assert not (repo / "artifacts" / "certification" / old_sha).exists()
+    assert not list((repo / "artifacts" / "certification").glob(".cert-stage-*"))

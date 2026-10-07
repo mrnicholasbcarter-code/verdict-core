@@ -36,7 +36,7 @@ Certification bundles are written to:
 artifacts/certification/<sha>/
 ```
 
-Where `<sha>` is the current git HEAD SHA. The default SHA directory is checked and removed before early preflight failures (including a dirty checkout or missing venv), so an old bundle cannot masquerade as the latest result. A complete bundle is built in a same-filesystem staging directory, then renamed into place. Failed staging is removed; the destination is never a partially written bundle. Custom `--output-dir` locations must be empty and their existing files are never deleted. The default directory must be ignored and contain no tracked files before deletion. An independent producer verifier is still missing; this change does not produce a `CERTIFIED` verdict.
+Where `<sha>` is the current git HEAD SHA. The default SHA directory is checked and removed before early preflight failures (including a dirty checkout or missing venv), so an old bundle cannot masquerade as the latest result. A complete bundle is built in a same-filesystem staging directory, then renamed into place. The runner checks HEAD before and after each step and again just before publish; if HEAD changes (even to another clean commit), it aborts instead of publishing evidence under the original SHA. Failed staging is removed; the destination is never a partially written bundle. Custom `--output-dir` locations must be empty and their existing files are never deleted. The default directory must be ignored and contain no tracked files before deletion. An independent producer verifier is still missing; this change does not produce a `CERTIFIED` verdict.
 
 ## Bundle Structure
 

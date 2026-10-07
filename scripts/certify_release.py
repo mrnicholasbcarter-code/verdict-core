@@ -14,11 +14,13 @@ import html
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -130,6 +132,13 @@ def get_git_sha(repo_path: Path) -> str:
     """Get current git SHA."""
     result = run_command(["git", "rev-parse", "HEAD"], cwd=repo_path)
     return result.stdout.strip()
+
+
+def assert_git_sha(repo_path: Path, expected_sha: str) -> None:
+    """Refuse to attribute evidence to a HEAD that changed during this run."""
+    result = run_command(["git", "rev-parse", "HEAD"], cwd=repo_path)
+    if result.returncode != 0 or not expected_sha or result.stdout.strip() != expected_sha:
+        raise RuntimeError("Git HEAD changed or cannot be read during certification")
 
 
 def is_git_dirty(repo_path: Path) -> bool:
@@ -940,6 +949,16 @@ def compute_verdict(
     return "CERTIFIED"
 
 
+def run_checked_step(
+    repo_path: Path, expected_sha: str, runner: Callable[[], StepResult]
+) -> StepResult:
+    """Check the source identity around every potentially long-running step."""
+    assert_git_sha(repo_path, expected_sha)
+    result = runner()
+    assert_git_sha(repo_path, expected_sha)
+    return result
+
+
 def run_certification(
     repo_path: Path,
     *,
@@ -955,6 +974,7 @@ def run_certification(
     # Clear a stale default SHA bundle before any early exit (dirty tree, missing
     # venv, sanity failure). Custom destinations are never deleted.
     manifest.git_sha = get_git_sha(repo_path)
+    assert_git_sha(repo_path, manifest.git_sha)
     destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
     if any(
         source.resolve() == destination.resolve()
@@ -1000,6 +1020,9 @@ def run_certification(
         print(f"ERROR: venv sanity check failed:\n{sanity.stderr}", file=sys.stderr)
         sys.exit(1)
 
+    # A clean checkout can switch HEAD during environment capture or sanity checks.
+    assert_git_sha(repo_path, manifest.git_sha)
+
     # Run all steps
     steps = []
 
@@ -1007,24 +1030,38 @@ def run_certification(
 
     # Test steps
     print("  [1/11] Test suite (clean shell)...")
-    steps.append(step_test_clean_shell(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(
+            repo_path, manifest.git_sha, lambda: step_test_clean_shell(repo_path, venv_bin)
+        )
+    )
 
     print("  [2/11] Test suite (dirty shell)...")
-    steps.append(step_test_dirty_shell(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(
+            repo_path, manifest.git_sha, lambda: step_test_dirty_shell(repo_path, venv_bin)
+        )
+    )
 
     # Lint/type steps
     print("  [3/11] Ruff lint...")
-    steps.append(step_ruff_check(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(repo_path, manifest.git_sha, lambda: step_ruff_check(repo_path, venv_bin))
+    )
 
     print("  [4/11] Ruff format check...")
-    steps.append(step_ruff_format(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(repo_path, manifest.git_sha, lambda: step_ruff_format(repo_path, venv_bin))
+    )
 
     print("  [5/11] Mypy strict...")
-    steps.append(step_mypy(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(repo_path, manifest.git_sha, lambda: step_mypy(repo_path, venv_bin))
+    )
 
     # Build step
     print("  [6/11] Package build...")
-    steps.append(step_build(repo_path))
+    steps.append(run_checked_step(repo_path, manifest.git_sha, lambda: step_build(repo_path)))
 
     # Package smoke test
     print("  [7/11] Package smoke test...")
@@ -1033,27 +1070,42 @@ def run_certification(
         a["name"] for a in build_step.evidence.get("artifacts", []) if a["name"].endswith(".whl")
     ]
     steps.append(
-        step_package_smoke(
-            repo_path, wheels[0] if build_step.status == "PASS" and len(wheels) == 1 else None
+        run_checked_step(
+            repo_path,
+            manifest.git_sha,
+            lambda: step_package_smoke(
+                repo_path, wheels[0] if build_step.status == "PASS" and len(wheels) == 1 else None
+            ),
         )
     )
 
     # Security
     print("  [8/11] Security checks...")
-    steps.append(step_security(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(repo_path, manifest.git_sha, lambda: step_security(repo_path, venv_bin))
+    )
 
     # Docs
     print("  [9/11] Documentation link check...")
-    steps.append(step_docs_check(repo_path, venv_bin))
+    steps.append(
+        run_checked_step(repo_path, manifest.git_sha, lambda: step_docs_check(repo_path, venv_bin))
+    )
 
     # Rehearsals
     print("  [10/11] Rehearsal verification...")
-    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, staging_dir or destination))
+    steps.append(
+        run_checked_step(
+            repo_path,
+            manifest.git_sha,
+            lambda: step_rehearsals(repo_path, rehearsal_dirs or {}, staging_dir or destination),
+        )
+    )
 
     print("  [11/11] Git clean check...")
-    steps.append(step_git_clean(repo_path))
+    steps.append(run_checked_step(repo_path, manifest.git_sha, lambda: step_git_clean(repo_path)))
     manifest.steps = steps
     manifest.finished_at = utc_timestamp()
+    assert_git_sha(repo_path, manifest.git_sha)
 
     # Determine verdict
     manifest.verdict = compute_verdict(steps, git_dirty=manifest.git_dirty)
@@ -1065,9 +1117,13 @@ def run_certification(
 
 
 def markdown_cell(value: Any) -> str:
-    """Escape untrusted command/rehearsal text inside Markdown table cells."""
+    """Escape untrusted text in Markdown headings, prose, lists, and table cells."""
     text = html.escape(str(value), quote=True)
-    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
+    # Normalize line separators so fields cannot open a new Markdown block.
+    text = re.sub(r"[\r\n\u0085\u2028\u2029]+", "\n", text)
+    return "<br>".join(
+        re.sub(r"([\\`*_{}\[\]()#+!|>~-])", r"\\\1", line) for line in text.split("\n")
+    )
 
 
 def generate_certification_md(
@@ -1080,25 +1136,25 @@ def generate_certification_md(
     lines = [
         f"# Release Certification: {markdown_cell(manifest.git_sha)}",
         "",
-        f"**Verdict**: {manifest.verdict}",
-        f"**Started**: {manifest.started_at}",
-        f"**Finished**: {manifest.finished_at}",
+        f"**Verdict**: {markdown_cell(manifest.verdict)}",
+        f"**Started**: {markdown_cell(manifest.started_at)}",
+        f"**Finished**: {markdown_cell(manifest.finished_at)}",
         f"**Git SHA**: {markdown_cell(manifest.git_sha)}",
-        f"**Git Dirty**: {manifest.git_dirty}",
+        f"**Git Dirty**: {markdown_cell(manifest.git_dirty)}",
         "",
         "## Environment",
         "",
-        f"- **Python**: {env_dict['python_version']}",
+        f"- **Python**: {markdown_cell(env_dict['python_version'])}",
         f"- **Platform**: {markdown_cell(env_dict['platform'])}",
-        f"- **uv**: {env_dict['uv_version']}",
+        f"- **uv**: {markdown_cell(env_dict['uv_version'])}",
     ]
 
     if env_dict.get("node_version"):
-        lines.append(f"- **Node**: {env_dict['node_version']}")
+        lines.append(f"- **Node**: {markdown_cell(env_dict['node_version'])}")
 
     lines.extend(
         [
-            f"- **Lockfile SHA256**: {env_dict['lockfile_sha256'][:16]}...",
+            f"- **Lockfile SHA256**: {markdown_cell(env_dict['lockfile_sha256'][:16])}...",
             f"- **Environment variables**: {len(env_dict['env_var_names'])} (names only, normalized)",
             "",
             "## Certification Steps",
@@ -1113,7 +1169,7 @@ def generate_certification_md(
         reason_str = step.reason or "-"
         lines.append(
             f"| {markdown_cell(step.name)} | {markdown_cell(step.status)} | "
-            f"{duration_str} | {markdown_cell(reason_str)} |"
+            f"{markdown_cell(duration_str)} | {markdown_cell(reason_str)} |"
         )
 
     lines.extend(
@@ -1230,13 +1286,17 @@ def write_bundle(
         )
 
 
-def publish_bundle(staging_dir: Path, output_dir: Path, repo_path: Path) -> None:
+def publish_bundle(staging_dir: Path, output_dir: Path, repo_path: Path, expected_sha: str) -> None:
     """Publish one complete staged bundle using a same-filesystem rename."""
+    assert_git_sha(repo_path, expected_sha)
     prepare_bundle_dir(output_dir, repo_path, create=False)
     if output_dir.exists():
         # Custom destinations can only be empty; the default was already
         # validated and removed by prepare_bundle_dir.
         output_dir.rmdir()
+    # This is the last checkpoint before the atomic rename. A HEAD change
+    # during cleanup must not publish evidence attributed to the old commit.
+    assert_git_sha(repo_path, expected_sha)
     os.replace(staging_dir, output_dir)
     print(f"\nCertification bundle written to: {output_dir}")
 
@@ -1282,9 +1342,9 @@ def main() -> None:
     # Stage on the destination filesystem so a failed run never publishes a
     # partial bundle. run_certification clears an old default SHA bundle before
     # its early checks; a custom destination is never removed if nonempty.
-    output_dir = args.output_dir or (
-        repo_path / "artifacts" / "certification" / get_git_sha(repo_path)
-    )
+    initial_sha = get_git_sha(repo_path)
+    assert_git_sha(repo_path, initial_sha)
+    output_dir = args.output_dir or (repo_path / "artifacts" / "certification" / initial_sha)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".cert-stage-", dir=output_dir.parent) as tmpdir:
         staging_dir = Path(tmpdir)
@@ -1295,8 +1355,12 @@ def main() -> None:
             output_dir=output_dir,
             staging_dir=staging_dir,
         )
+        if manifest.git_sha != initial_sha:
+            raise RuntimeError("Git HEAD changed during certification")
+        assert_git_sha(repo_path, initial_sha)
         write_bundle(staging_dir, manifest, detailed["environment"], repo_path=repo_path)
-        publish_bundle(staging_dir, output_dir, repo_path)
+        assert_git_sha(repo_path, manifest.git_sha)
+        publish_bundle(staging_dir, output_dir, repo_path, manifest.git_sha)
 
     # Print summary
     print(f"\nVerdict: {manifest.verdict}")
