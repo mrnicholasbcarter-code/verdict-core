@@ -921,7 +921,11 @@ def test_pytest_evidence_parses_junit_and_failure(tmp_path, dirty):
     def fake_run(cmd, **kwargs):
         report = Path(cmd[-1].removeprefix("--junitxml="))
         report.write_text(
-            '<testsuites><testsuite tests="4" failures="1" errors="0" skipped="1"/></testsuites>'
+            '<testsuites><testsuite tests="4" failures="1" errors="0" skipped="1">'
+            '<testcase classname="c" name="a"/><testcase classname="c" name="b"/>'
+            '<testcase classname="c" name="c"><failure/></testcase>'
+            '<testcase classname="c" name="d"><skipped/></testcase>'
+            "</testsuite></testsuites>"
         )
         return MagicMock(returncode=1)
 
@@ -1011,7 +1015,9 @@ def test_pytest_evidence_valid_report_passes(tmp_path, dirty):
 
     def fake_run(cmd, **kwargs):
         Path(cmd[-1].removeprefix("--junitxml=")).write_text(
-            '<testsuite tests="3" failures="0" errors="0" skipped="1" />'
+            '<testsuite tests="3" failures="0" errors="0" skipped="1">'
+            '<testcase classname="c" name="a"/><testcase classname="c" name="b"/>'
+            '<testcase classname="c" name="c"><skipped/></testcase></testsuite>'
         )
         return MagicMock(returncode=0)
 
@@ -1019,6 +1025,11 @@ def test_pytest_evidence_valid_report_passes(tmp_path, dirty):
         step = runner(tmp_path, tmp_path)
     assert step.status == "PASS"
     assert step.evidence["junit"]["passed"] == 2
+    assert step.evidence["junit"]["testcases"] == {
+        "c::a": "passed",
+        "c::b": "passed",
+        "c::c": "skipped",
+    }
     assert step.evidence["command"][-1] == "--junitxml=<temporary-report>"
 
 
@@ -1163,6 +1174,7 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
             return_value=(manifest, {"environment": env.to_dict()}),
         ) as runner,
         patch("certify_release.write_bundle") as writer,
+        patch("certify_release.publish_bundle") as publisher,
         patch.object(sys, "argv", ["certify_release.py", "--output-dir", str(custom)]),
         pytest.raises(SystemExit),
     ):
@@ -1170,6 +1182,7 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
         certify_release.main()
     assert runner.call_args.kwargs["output_dir"] == custom
     assert writer.call_args.kwargs["repo_path"] == repo
+    assert publisher.call_args.args[1] == custom
 
     manifest = certify_release.CertificationManifest(
         steps=[certify_release.StepResult("git_clean", "Git", "PASS")], verdict="INCOMPLETE"
@@ -1232,3 +1245,106 @@ def test_clone_command_evidence_is_relative(tmp_path):
         types = certify_release.step_mypy(tmp_path, tmp_path / ".venv" / "bin")
     assert lint.evidence["command"][0] == "<checkout>/.venv/bin/ruff"
     assert types.evidence["command"][0] == "<checkout>/.venv/bin/mypy"
+
+
+def test_junit_same_totals_different_case_outcomes_fail_closed(tmp_path):
+    """Equal aggregate counts cannot hide a different skipped testcase."""
+    suites = (
+        '<testcase classname="test" name="a"/><testcase classname="test" name="b">'
+        "<skipped/></testcase>",
+        '<testcase classname="test" name="a"><skipped/></testcase>'
+        '<testcase classname="test" name="b"/>',
+    )
+    results = []
+    for dirty, cases in zip((False, True), suites, strict=True):
+
+        def fake_run(cmd, *, case_xml=cases, is_dirty=dirty, **kwargs):
+            Path(cmd[-1].removeprefix("--junitxml=")).write_text(
+                '<testsuite tests="2" failures="0" errors="0" skipped="1">'
+                + case_xml
+                + "</testsuite>"
+            )
+            assert ("LLMGATE_AUTH_TOKEN" in kwargs["env"]) == is_dirty
+            assert "HOSTILE_AMBIENT" not in kwargs["env"]
+            return MagicMock(returncode=0)
+
+        with (
+            patch.dict("certify_release.os.environ", {"HOSTILE_AMBIENT": "do-not-pass"}),
+            patch("certify_release.run_command", side_effect=fake_run),
+        ):
+            results.append(certify_release._run_pytest(tmp_path, tmp_path, dirty=dirty))
+    assert all(step.status == "PASS" for step in results)
+    assert all(step.evidence["junit"]["passed"] == 1 for step in results)
+    assert results[0].evidence["junit"]["testcases"] != results[1].evidence["junit"]["testcases"]
+    assert certify_release.junit_parity(results) is False
+
+
+def test_default_stale_bundle_removed_even_when_dirty_check_exits(temp_git_repo):
+    repo = temp_git_repo
+    sha = certify_release.get_git_sha(repo)
+    bundle = repo / "artifacts" / "certification" / sha
+    bundle.mkdir(parents=True)
+    (bundle / "stale").write_text("must not survive")
+    (repo / ".gitignore").write_text("artifacts/\n")
+    with pytest.raises(SystemExit):
+        certify_release.run_certification(repo)
+    assert not bundle.exists()
+
+
+def test_staged_publication_never_exposes_partial_bundle(temp_git_repo, tmp_path):
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n")
+    bundle = repo / "artifacts" / "certification" / certify_release.get_git_sha(repo)
+    bundle.mkdir(parents=True)
+    (bundle / "stale").write_text("old")
+    with tempfile.TemporaryDirectory(prefix=".cert-stage-", dir=bundle.parent) as stage:
+        staging = Path(stage)
+        (staging / "manifest.json").write_text("complete")
+        certify_release.prepare_bundle_dir(bundle, repo, create=False)
+        assert not bundle.exists()
+        certify_release.publish_bundle(staging, bundle, repo)
+        assert (bundle / "manifest.json").read_text() == "complete"
+        assert not (bundle / "stale").exists()
+
+
+def test_markdown_table_escapes_untrusted_reason():
+    manifest = certify_release.CertificationManifest(
+        steps=[certify_release.StepResult("x", "unsafe|<b>", "FAIL", "a|b\n<script>x</script>")]
+    )
+    text = certify_release.generate_certification_md(
+        manifest, certify_release.EnvironmentSnapshot("3.11", "linux", "uv")
+    )
+    assert "unsafe\\|&lt;b&gt;" in text
+    assert "a\\|b<br>&lt;script&gt;x&lt;/script&gt;" in text
+    assert "All other fields should be identical" not in text
+
+
+def test_main_staging_failure_does_not_publish_partial_bundle(temp_git_repo, monkeypatch):
+    repo = temp_git_repo
+    monkeypatch.chdir(repo)
+    (repo / ".gitignore").write_text("artifacts/\n")
+    sha = certify_release.get_git_sha(repo)
+    bundle = repo / "artifacts" / "certification" / sha
+    bundle.mkdir(parents=True)
+    (bundle / "stale").write_text("old")
+    manifest = certify_release.CertificationManifest(git_sha=sha, verdict="INCOMPLETE")
+    env = certify_release.EnvironmentSnapshot("3.11", "linux", "uv")
+
+    def fake_certify(repo_path, *, output_dir, staging_dir, **kwargs):
+        certify_release.prepare_bundle_dir(output_dir, repo_path, create=False)
+        assert not bundle.exists()
+        return manifest, {"environment": env.to_dict()}
+
+    def failing_write(staging_dir, *args, **kwargs):
+        (staging_dir / "manifest.json").write_text("partial")
+        raise OSError("simulated interrupted write")
+
+    with (
+        patch("certify_release.run_certification", side_effect=fake_certify),
+        patch("certify_release.write_bundle", side_effect=failing_write),
+        patch.object(sys, "argv", ["certify_release.py"]),
+        pytest.raises(OSError, match="interrupted"),
+    ):
+        certify_release.main()
+    assert not bundle.exists()
+    assert not list(bundle.parent.glob(".cert-stage-*"))

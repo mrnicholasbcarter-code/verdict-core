@@ -36,7 +36,7 @@ Certification bundles are written to:
 artifacts/certification/<sha>/
 ```
 
-Where `<sha>` is the current git HEAD SHA.
+Where `<sha>` is the current git HEAD SHA. The default SHA directory is checked and removed before early preflight failures (including a dirty checkout or missing venv), so an old bundle cannot masquerade as the latest result. A complete bundle is built in a same-filesystem staging directory, then renamed into place. Failed staging is removed; the destination is never a partially written bundle. Custom `--output-dir` locations must be empty and their existing files are never deleted. The default directory must be ignored and contain no tracked files before deletion. An independent producer verifier is still missing; this change does not produce a `CERTIFIED` verdict.
 
 ## Bundle Structure
 
@@ -84,7 +84,7 @@ Pytest results from both clean and dirty shells:
 - Clean shell: `env -i HOME LANG PATH pytest ...`
 - Dirty shell: `LLMGATE_AUTH_TOKEN=bogus-cert-dirty pytest ...`
 
-Each shell result records the command, exit code, and JUnit totals (including the report SHA256). Missing, malformed, or empty JUnit evidence makes an otherwise successful pytest run `INCOMPLETE`. Temporary JUnit files are not copied into the bundle.
+Both shells use the same controlled `HOME`, `LANG`, and `PATH` environment; the dirty shell adds only the bogus `LLMGATE_AUTH_TOKEN`. Ambient variables are not passed through. Each result records the command, exit code, JUnit totals, a map of testcase IDs to outcomes, and the raw report SHA256. Certification compares testcase IDs and outcomes as well as totals. Missing, malformed, duplicate, or internally inconsistent JUnit evidence makes an otherwise successful pytest run `INCOMPLETE`. Temporary JUnit files are not copied into the bundle.
 
 ### `lint-type-build.json`
 
@@ -207,7 +207,7 @@ The following fields vary between runs on identical inputs and are explicitly no
 - **Temporary paths**: Any temp directories created during testing
 - **Environment variable list**: OS-dependent; may differ between platforms
 
-Evidence includes normalized temporary command paths (JUnit, build, security, and smoke). Report SHA256 hashes, status, and counts reflect actual run results.
+Evidence includes normalized temporary command paths (JUnit, build, security, and smoke). Raw report SHA256 hashes, package digests, host metadata, scanner data, and external rehearsal inputs can vary even for the same source SHA. Do not assume byte-identical bundles or deterministic verdicts from the SHA alone. Testcase ID/outcome parity is checked only between the two controlled shells of one run.
 
 ## CI Integration
 

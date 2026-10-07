@@ -10,6 +10,7 @@ repeatable product feature bound to one exact source SHA.
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import platform
@@ -182,15 +183,13 @@ def capture_environment(repo_path: Path) -> EnvironmentSnapshot:
 def _run_pytest(repo_path: Path, venv_bin: Path, *, dirty: bool) -> StepResult:
     """Record the command, exit code and parsed JUnit counts for one shell."""
     start = datetime.now(timezone.utc)
-    env = (
-        os.environ.copy()
-        if dirty
-        else {
-            "HOME": os.environ.get("HOME", ""),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "PATH": str(venv_bin) + ":" + os.environ.get("PATH", ""),
-        }
-    )
+    # Keep both shells controlled: only the intentional bogus credential
+    # differs. Arbitrary CI/user variables must not alter test selection.
+    env = {
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": str(venv_bin) + os.pathsep + os.environ.get("PATH", ""),
+    }
     if dirty:
         env["LLMGATE_AUTH_TOKEN"] = "bogus-cert-dirty"
     name = "Test suite (dirty shell)" if dirty else "Test suite (clean shell)"
@@ -225,8 +224,36 @@ def _run_pytest(repo_path: Path, venv_bin: Path, *, dirty: bool) -> StepResult:
                 )
                 if totals["tests"] <= 0 or totals["passed"] < 0:
                     raise ValueError("invalid JUnit test counts")
-                evidence["junit"] = {**totals, "sha256": sha256_file(xml_path)}
-            except (ET.ParseError, ValueError, KeyError) as exc:
+                cases: dict[str, str] = {}
+                for suite in suites:
+                    for case in suite.iter("testcase"):
+                        case_id = f"{case.attrib['classname']}::{case.attrib['name']}"
+                        if case_id in cases:
+                            raise ValueError("duplicate JUnit testcase ID")
+                        outcomes = [
+                            name
+                            for name in ("failure", "error", "skipped")
+                            if case.find(name) is not None
+                        ]
+                        if len(outcomes) > 1:
+                            raise ValueError("conflicting JUnit testcase outcomes")
+                        cases[case_id] = outcomes[0] if outcomes else "passed"
+                if len(cases) != totals["tests"] or any(
+                    sum(outcome == name for outcome in cases.values()) != totals[count]
+                    for name, count in (
+                        ("failure", "failures"),
+                        ("error", "errors"),
+                        ("skipped", "skipped"),
+                        ("passed", "passed"),
+                    )
+                ):
+                    raise ValueError("JUnit testcase outcomes disagree with totals")
+                evidence["junit"] = {
+                    **totals,
+                    "sha256": sha256_file(xml_path),
+                    "testcases": dict(sorted(cases.items())),
+                }
+            except (ET.ParseError, ValueError, KeyError, TypeError) as exc:
                 evidence["junit_error"] = str(exc)
         else:
             evidence["junit_error"] = "JUnit XML not produced"
@@ -822,6 +849,27 @@ def step_rehearsals(
 # === Main Certification Flow ===
 
 
+def junit_parity(steps: list[StepResult]) -> bool:
+    """Require identical testcase IDs/outcomes, not merely matching totals."""
+    reports = {
+        s.step_id: s.evidence.get("junit")
+        for s in steps
+        if s.step_id in {"test_clean", "test_dirty"}
+    }
+    if set(reports) != {"test_clean", "test_dirty"}:
+        return False
+    clean, dirty = reports["test_clean"], reports["test_dirty"]
+    if not isinstance(clean, dict) or not isinstance(dirty, dict):
+        return False
+    keys = ("tests", "passed", "failures", "errors", "skipped")
+    return (
+        all(clean.get(key) == dirty.get(key) for key in keys)
+        and isinstance(clean.get("testcases"), dict)
+        and bool(clean["testcases"])
+        and clean["testcases"] == dirty.get("testcases")
+    )
+
+
 def compute_verdict(
     steps: list[StepResult], *, git_dirty: bool
 ) -> Literal["CERTIFIED", "INCOMPLETE", "FAILED"]:
@@ -865,11 +913,8 @@ def compute_verdict(
         for s in steps
         if s.step_id in {"test_clean", "test_dirty"}
     }
-    junit_keys = ("tests", "passed", "failures", "errors", "skipped")
-    if len(junit_steps) == 2 and all(isinstance(value, dict) for value in junit_steps.values()):
-        clean, dirty = junit_steps["test_clean"], junit_steps["test_dirty"]
-        assert isinstance(clean, dict) and isinstance(dirty, dict)
-        missing_evidence |= any(clean.get(key) != dirty.get(key) for key in junit_keys)
+    if len(junit_steps) == 2:
+        missing_evidence |= not junit_parity(steps)
 
     # No independent producer verifier exists yet. A self-asserted flag in
     # StepResult.evidence must not convert local run files into attestation.
@@ -901,13 +946,23 @@ def run_certification(
     allow_dirty: bool = False,
     rehearsal_dirs: dict[str, Path] | None = None,
     output_dir: Path | None = None,
+    staging_dir: Path | None = None,
 ) -> tuple[CertificationManifest, dict[str, Any]]:
     """Run full certification and return manifest and detailed results."""
     manifest = CertificationManifest()
     manifest.started_at = utc_timestamp()
 
-    # Check git state
+    # Clear a stale default SHA bundle before any early exit (dirty tree, missing
+    # venv, sanity failure). Custom destinations are never deleted.
     manifest.git_sha = get_git_sha(repo_path)
+    destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
+    if any(
+        source.resolve() == destination.resolve()
+        or destination.resolve() in source.resolve().parents
+        for source in (rehearsal_dirs or {}).values()
+    ):
+        raise ValueError("Rehearsal source must not be inside the output directory")
+    prepare_bundle_dir(destination, repo_path, create=False)
     manifest.git_dirty = is_git_dirty(repo_path)
 
     if manifest.git_dirty and not allow_dirty:
@@ -993,15 +1048,7 @@ def run_certification(
 
     # Rehearsals
     print("  [10/11] Rehearsal verification...")
-    destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
-    if any(
-        source.resolve() == destination.resolve()
-        or destination.resolve() in source.resolve().parents
-        for source in (rehearsal_dirs or {}).values()
-    ):
-        raise ValueError("Rehearsal source must not be inside the output directory")
-    prepare_bundle_dir(destination, repo_path)
-    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, destination))
+    steps.append(step_rehearsals(repo_path, rehearsal_dirs or {}, staging_dir or destination))
 
     print("  [11/11] Git clean check...")
     steps.append(step_git_clean(repo_path))
@@ -1017,6 +1064,12 @@ def run_certification(
     return manifest, detailed
 
 
+def markdown_cell(value: Any) -> str:
+    """Escape untrusted command/rehearsal text inside Markdown table cells."""
+    text = html.escape(str(value), quote=True)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
+
+
 def generate_certification_md(
     manifest: CertificationManifest, env: EnvironmentSnapshot | dict[str, Any]
 ) -> str:
@@ -1025,18 +1078,18 @@ def generate_certification_md(
     env_dict = env if isinstance(env, dict) else env.to_dict()
 
     lines = [
-        f"# Release Certification: {manifest.git_sha}",
+        f"# Release Certification: {markdown_cell(manifest.git_sha)}",
         "",
         f"**Verdict**: {manifest.verdict}",
         f"**Started**: {manifest.started_at}",
         f"**Finished**: {manifest.finished_at}",
-        f"**Git SHA**: {manifest.git_sha}",
+        f"**Git SHA**: {markdown_cell(manifest.git_sha)}",
         f"**Git Dirty**: {manifest.git_dirty}",
         "",
         "## Environment",
         "",
         f"- **Python**: {env_dict['python_version']}",
-        f"- **Platform**: {env_dict['platform']}",
+        f"- **Platform**: {markdown_cell(env_dict['platform'])}",
         f"- **uv**: {env_dict['uv_version']}",
     ]
 
@@ -1058,29 +1111,33 @@ def generate_certification_md(
     for step in manifest.steps:
         duration_str = f"{step.duration_seconds:.1f}s" if step.duration_seconds > 0 else "-"
         reason_str = step.reason or "-"
-        lines.append(f"| {step.name} | {step.status} | {duration_str} | {reason_str} |")
+        lines.append(
+            f"| {markdown_cell(step.name)} | {markdown_cell(step.status)} | "
+            f"{duration_str} | {markdown_cell(reason_str)} |"
+        )
 
     lines.extend(
         [
             "",
             "## Normalization Notes",
             "",
-            "The following fields are normalized and may differ between deterministic runs:",
+            "The following fields are normalized or may differ between runs:",
             "",
             "- Timestamps (started_at, finished_at)",
             "- Duration measurements",
             "- Temporary file paths",
             "- Environment variable list (OS-dependent)",
             "",
-            "All other fields should be identical for the same source SHA and inputs.",
+            "Evidence includes live report hashes and host-dependent metadata. "
+            "The same source SHA does not guarantee byte-identical bundles.",
         ]
     )
 
     return "\n".join(lines)
 
 
-def prepare_bundle_dir(output_dir: Path, repo_path: Path) -> None:
-    """Remove stale contents only in the default, SHA-scoped, ignored bundle location."""
+def prepare_bundle_dir(output_dir: Path, repo_path: Path, *, create: bool = True) -> None:
+    """Remove stale default contents; never delete user files in custom destinations."""
     output_dir = output_dir.absolute()
     managed_root = (repo_path / "artifacts" / "certification").resolve()
     sha = get_git_sha(repo_path)
@@ -1100,7 +1157,8 @@ def prepare_bundle_dir(output_dir: Path, repo_path: Path) -> None:
             shutil.rmtree(output_dir)
     elif output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("Custom output directory must be empty (will not delete user files)")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def write_bundle(
@@ -1170,6 +1228,16 @@ def write_bundle(
         (output_dir / "CERTIFICATION.md").write_text(
             generate_certification_md(manifest, env_snapshot)
         )
+
+
+def publish_bundle(staging_dir: Path, output_dir: Path, repo_path: Path) -> None:
+    """Publish one complete staged bundle using a same-filesystem rename."""
+    prepare_bundle_dir(output_dir, repo_path, create=False)
+    if output_dir.exists():
+        # Custom destinations can only be empty; the default was already
+        # validated and removed by prepare_bundle_dir.
+        output_dir.rmdir()
+    os.replace(staging_dir, output_dir)
     print(f"\nCertification bundle written to: {output_dir}")
 
 
@@ -1211,18 +1279,24 @@ def main() -> None:
     # Determine repo path (current directory)
     repo_path = Path.cwd()
 
-    # Run certification
-    manifest, detailed = run_certification(
-        repo_path,
-        allow_dirty=args.allow_dirty,
-        rehearsal_dirs=rehearsal_dirs,
-        output_dir=args.output_dir,
+    # Stage on the destination filesystem so a failed run never publishes a
+    # partial bundle. run_certification clears an old default SHA bundle before
+    # its early checks; a custom destination is never removed if nonempty.
+    output_dir = args.output_dir or (
+        repo_path / "artifacts" / "certification" / get_git_sha(repo_path)
     )
-
-    # Write bundle
-    output_dir = args.output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
-
-    write_bundle(output_dir, manifest, detailed["environment"], repo_path=repo_path)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".cert-stage-", dir=output_dir.parent) as tmpdir:
+        staging_dir = Path(tmpdir)
+        manifest, detailed = run_certification(
+            repo_path,
+            allow_dirty=args.allow_dirty,
+            rehearsal_dirs=rehearsal_dirs,
+            output_dir=output_dir,
+            staging_dir=staging_dir,
+        )
+        write_bundle(staging_dir, manifest, detailed["environment"], repo_path=repo_path)
+        publish_bundle(staging_dir, output_dir, repo_path)
 
     # Print summary
     print(f"\nVerdict: {manifest.verdict}")
