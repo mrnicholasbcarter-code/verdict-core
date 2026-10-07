@@ -23,6 +23,15 @@ STEP_IDS = (
     "git_clean",
     "rehearsals",
 )
+# Promised machine-readable reports (BOD-195 deliverable), each a projection of
+# one or more manifest step results. filename -> step_ids it must cover.
+REPORT_GROUPS = {
+    "test-summary.json": ("test_clean", "test_dirty"),
+    "lint-type-build.json": ("ruff_check", "ruff_format", "mypy", "build"),
+    "package-smoke.json": ("package_smoke",),
+    "security-summary.json": ("security",),
+    "docs-check.json": ("docs_check",),
+}
 
 
 def _workflow():
@@ -52,6 +61,7 @@ def test_workflow_separates_cheap_push_receipt_from_manual_evidence():
     assert "artifacts/certification/" not in str(push)
     upload_receipt = receipt_steps["Retain source receipt (not a certification bundle)"]["with"]
     assert upload_receipt["name"].startswith("ci-source-receipt-")
+    assert "${{ github.run_attempt }}" in upload_receipt["name"]
     assert upload_receipt["path"] == "artifacts/ci-source-receipts/receipt.txt"
     assert upload_receipt["if-no-files-found"] == "error"
     assert int(upload_receipt["retention-days"]) >= 90
@@ -67,17 +77,24 @@ def test_workflow_separates_cheap_push_receipt_from_manual_evidence():
     assert generate["continue-on-error"] == "true"
     assert "timeout --signal=TERM --kill-after=10s 70m" in generate["run"]
     assert "--rehearsal" not in generate["run"]
+    # The precise numeric exit code must be captured, not just outcome success/failure,
+    # so the verifier can tell a legitimate INCOMPLETE (exit 1) apart from a
+    # timeout/kill (124/137/143) or an unrelated crash.
+    assert "exit_code=$code" in generate["run"]
+    assert "$GITHUB_OUTPUT" in generate["run"]
     check = steps["Verify INCOMPLETE evidence (not a certification gate)"]
     assert check["if"] == "${{ always() }}"
     assert check["id"] == "verify"
+    assert check["env"]["EXPECTED_SHA"] == "${{ github.sha }}"
+    assert check["env"]["GENERATOR_OUTCOME"] == "${{ steps.generate.outcome }}"
+    assert check["env"]["GENERATOR_EXIT_CODE"] == "${{ steps.generate.outputs.exit_code }}"
     upload = steps["Upload verified SHA-bound INCOMPLETE evidence"]
     assert upload["if"] == "${{ steps.verify.outcome == 'success' }}"
     assert upload["with"]["name"].startswith("certification-evidence-incomplete-")
+    assert "${{ github.run_attempt }}" in upload["with"]["name"]
     assert upload["with"]["if-no-files-found"] == "error"
     assert int(upload["with"]["retention-days"]) >= 90
     assert "${{ github.sha }}" in upload["with"]["path"]
-    assert check["env"]["EXPECTED_SHA"] == "${{ github.sha }}"
-    assert check["env"]["GENERATOR_OUTCOME"] == "${{ steps.generate.outcome }}"
     assert not any("certified" in step["name"].lower() for step in manual["steps"])
 
 
@@ -107,6 +124,47 @@ def test_push_receipt_records_source_only(sample_checkout):
     assert "INCOMPLETE (source receipt only)" in summary.read_text()
 
 
+@pytest.mark.parametrize("underlying_exit", [0, 1, 2, 124, 137, 143])
+def test_generate_step_captures_exact_numeric_exit_code(tmp_path, underlying_exit):
+    """The shell wrapper must forward the real exit code via $GITHUB_OUTPUT.
+
+    Simulate the three classes a reviewer must be able to tell apart:
+    - 0  : generator claims CERTIFIED (never expected on this manual path, but
+           the wrapper must still report the real code, not swallow it)
+    - 1  : generator's own INCOMPLETE/FAILED nonzero exit
+    - 124/137/143: `timeout`'s own codes for TERM/KILL-after-timeout, which the
+      generator never produces on its own
+    - 2  : an unrelated crash (e.g. argparse usage error), distinct from 1
+    """
+    steps = _workflow()["jobs"]["collect-certification-evidence"]["steps"]
+    command = next(
+        step["run"]
+        for step in steps
+        if step["name"] == "Generate incomplete certification evidence"
+    )
+    assert "exit_code=$code" in command
+    # Replace the real generator invocation with a stub that exits with the
+    # parametrized code, keeping the rest of the step's shell logic intact.
+    stub = command.replace(
+        "timeout --signal=TERM --kill-after=10s 70m \\\n  .venv/bin/python scripts/certify_release.py",
+        f"bash -c 'exit {underlying_exit}'",
+    )
+    assert stub != command, "stub substitution did not match the real command"
+    github_output = tmp_path / "output.txt"
+    env = os.environ.copy()
+    env["GITHUB_OUTPUT"] = str(github_output)
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", stub],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == underlying_exit
+    output_text = github_output.read_text() if github_output.exists() else ""
+    assert f"exit_code={underlying_exit}" in output_text
+
+
 @pytest.fixture
 def sample_checkout(tmp_path):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
@@ -133,7 +191,9 @@ def sample_checkout(tmp_path):
     return tmp_path, sha
 
 
-def _run_manifest_check(repo, event_sha, *, generator_outcome="failure", summary=None):
+def _run_manifest_check(
+    repo, event_sha, *, generator_outcome="failure", exit_code="1", summary=None
+):
     steps = _workflow()["jobs"]["collect-certification-evidence"]["steps"]
     command = next(step["run"] for step in steps if step["name"].startswith("Verify INCOMPLETE"))
     # Run exactly the workflow's embedded Python verifier, without a network/action runner.
@@ -142,6 +202,10 @@ def _run_manifest_check(repo, event_sha, *, generator_outcome="failure", summary
     env = os.environ.copy()
     env["EXPECTED_SHA"] = event_sha
     env["GENERATOR_OUTCOME"] = generator_outcome
+    if exit_code is None:
+        env.pop("GENERATOR_EXIT_CODE", None)
+    else:
+        env["GENERATOR_EXIT_CODE"] = exit_code
     if summary is None:
         env.pop("GITHUB_STEP_SUMMARY", None)
     else:
@@ -171,6 +235,17 @@ def _write_bundle(repo, sha, **overrides):
         f"# Release Certification: {sha}\n**Verdict**: INCOMPLETE\n**Git SHA**: {sha}\n"
     )
     (directory / "git-clean.txt").write_text("")
+    step_status = {s["step_id"]: s["status"] for s in (manifest["steps"] or [])}
+    for filename, step_ids in REPORT_GROUPS.items():
+        report = {
+            step_id: {
+                "status": step_status.get(step_id, "PASS"),
+                "command": ["tool"],
+                "exit_code": 0,
+            }
+            for step_id in step_ids
+        }
+        (directory / filename).write_text(json.dumps(report))
     return directory, manifest
 
 
@@ -268,6 +343,48 @@ def test_rejects_unexpected_generator_outcome(sample_checkout, generator_outcome
     assert "Unexpected generator outcome" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "exit_code,expected",
+    [
+        ("0", "expected exactly 1"),
+        ("2", "expected exactly 1"),
+        ("124", "killed or timed out"),
+        ("137", "killed or timed out"),
+        ("143", "killed or timed out"),
+        ("-1", "expected exactly 1"),
+        ("", "Missing or non-numeric"),
+        ("not-a-number", "Missing or non-numeric"),
+    ],
+)
+def test_rejects_wrong_or_missing_generator_exit_code(sample_checkout, exit_code, expected):
+    """P2 fix: distinguish the generator's own exit 1 (legitimate INCOMPLETE)
+    from a `timeout`-imposed kill (124/137/143) or any other crash/exit code.
+    Each of these would previously pass because only steps.generate.outcome
+    ('success' vs 'failure') was checked, and anything nonzero counts as
+    'failure' to GitHub Actions.
+    """
+    repo, sha = sample_checkout
+    _write_bundle(repo, sha)
+    result = _run_manifest_check(repo, sha, exit_code=exit_code if exit_code else "")
+    assert result.returncode != 0
+    assert expected in result.stderr
+
+
+def test_rejects_missing_generator_exit_code_env_var(sample_checkout):
+    repo, sha = sample_checkout
+    _write_bundle(repo, sha)
+    result = _run_manifest_check(repo, sha, exit_code=None)
+    assert result.returncode != 0
+    assert "Missing or non-numeric generator exit code" in result.stderr
+
+
+def test_accepts_exact_exit_code_one_only(sample_checkout):
+    repo, sha = sample_checkout
+    _write_bundle(repo, sha)
+    result = _run_manifest_check(repo, sha, exit_code="1")
+    assert result.returncode == 0, result.stderr
+
+
 def test_rejects_missing_or_invalid_bundle_and_checkout_mismatch(sample_checkout):
     repo, sha = sample_checkout
     assert "Missing or invalid certification manifest" in _run_manifest_check(repo, sha).stderr
@@ -294,3 +411,103 @@ def test_rejects_bundle_files_that_disagree_with_manifest(sample_checkout, file,
     directory, _ = _write_bundle(repo, sha)
     (directory / file).write_text(contents)
     assert error in _run_manifest_check(repo, sha).stderr
+
+
+@pytest.mark.parametrize("filename", sorted(REPORT_GROUPS))
+def test_rejects_missing_promised_machine_readable_report(sample_checkout, filename):
+    """P2 fix: the verifier must require every report the bundle promises
+    (test-summary.json, lint-type-build.json, package-smoke.json,
+    security-summary.json, docs-check.json), not just manifest.json/
+    environment.json/CERTIFICATION.md/git-clean.txt.
+    """
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    (directory / filename).unlink()
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert f"Missing promised machine-readable report: {filename}" in result.stderr
+
+
+@pytest.mark.parametrize("filename", sorted(REPORT_GROUPS))
+def test_rejects_unparseable_machine_readable_report(sample_checkout, filename):
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    (directory / filename).write_text("not json")
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert f"Invalid machine-readable report {filename}" in result.stderr
+
+
+@pytest.mark.parametrize("filename", sorted(REPORT_GROUPS))
+def test_rejects_machine_readable_report_that_is_not_an_object(sample_checkout, filename):
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    (directory / filename).write_text("[]")
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert f"Machine-readable report {filename} is not a JSON object" in result.stderr
+
+
+def test_rejects_machine_readable_report_missing_step_entry(sample_checkout):
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    report = json.loads((directory / "test-summary.json").read_text())
+    del report["test_dirty"]
+    (directory / "test-summary.json").write_text(json.dumps(report))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert "missing entry for step test_dirty" in result.stderr
+
+
+def test_rejects_machine_readable_report_that_disagrees_with_manifest_status(sample_checkout):
+    """A report claiming a different status than the manifest for the same
+    step_id must be rejected: this is exactly the drift a forged or stale
+    report file would show, and the manifest alone cannot catch it.
+    """
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    report = json.loads((directory / "security-summary.json").read_text())
+    report["security"]["status"] = "FAIL"
+    (directory / "security-summary.json").write_text(json.dumps(report))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert "disagrees with manifest for step security" in result.stderr
+
+
+def test_rejects_machine_readable_report_with_no_evidence_beyond_status(sample_checkout):
+    """A report entry that is just `{"status": "PASS"}` with no command,
+    exit_code, junit data, or other tool evidence is not machine-readable
+    evidence; it is a restatement of the manifest and must be rejected.
+    """
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    report = json.loads((directory / "docs-check.json").read_text())
+    report["docs_check"] = {"status": "PASS"}
+    (directory / "docs-check.json").write_text(json.dumps(report))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert "no evidence beyond status for step docs_check" in result.stderr
+
+
+def test_accepts_skipped_report_entry_without_extra_evidence(sample_checkout):
+    """A SKIPPED step (e.g. docs_check when check_doc_links.py is absent) has
+    nothing to execute, so a bare {"status": "SKIPPED", "reason": ...} entry
+    is legitimate and must not be rejected as 'no evidence'.
+    """
+    repo, sha = sample_checkout
+    directory, _manifest = _write_bundle(
+        repo,
+        sha,
+        steps=[
+            {
+                "step_id": name,
+                "status": "SKIPPED" if name in {"docs_check", "rehearsals"} else "PASS",
+            }
+            for name in STEP_IDS
+        ],
+    )
+    report = json.loads((directory / "docs-check.json").read_text())
+    report["docs_check"] = {"status": "SKIPPED", "reason": "check_doc_links.py not found"}
+    (directory / "docs-check.json").write_text(json.dumps(report))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode == 0, result.stderr

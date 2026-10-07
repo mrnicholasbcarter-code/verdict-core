@@ -5,6 +5,19 @@ name: Release Certification Evidence (INCOMPLETE)
 # certification manifest, or rehearsal); this does NOT satisfy full CI
 # certification-bundle retention. The full generator runs two complete suites,
 # already covered by ci.yml, so it is deliberately manual-only.
+#
+# KNOWN GAP (intentionally not papered over): the verifier step below requires
+# scripts/certify_release.py to write test-summary.json, lint-type-build.json,
+# package-smoke.json, security-summary.json and docs-check.json (the BOD-195
+# deliverable's promised per-step machine-readable reports), and fails the run
+# if any are missing, unparsable, or disagree with manifest.json. As of this
+# workflow revision, generator SHA cbc2538's certify_release.py does not write
+# those files, so a manual dispatch against that generator will correctly FAIL
+# this new check rather than silently accept a bundle missing the promised
+# evidence. This is deliberate fail-closed behavior, not a new defect: wire
+# this workflow to a generator revision that writes the report files (see
+# scripts/certify_release.py write_bundle() on fix/certification-machine-evidence)
+# before relying on a green manual run as real machine-readable-report evidence.
 on:
   push:
     branches: [main]
@@ -42,7 +55,7 @@ jobs:
       - name: Retain source receipt (not a certification bundle)
         uses: actions/upload-artifact@v7
         with:
-          name: ci-source-receipt-${{ github.sha }}-${{ github.run_id }}
+          name: ci-source-receipt-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/ci-source-receipts/receipt.txt
           if-no-files-found: error
           retention-days: 90
@@ -74,14 +87,21 @@ jobs:
       - name: Sync locked dependencies
         run: uv sync --frozen --extra dev --extra server
       - name: Generate incomplete certification evidence
-        # The generator returns nonzero for INCOMPLETE. Preserve its bundle for
-        # upload, then independently check its SHA and verdict below.
+        # The generator must exit exactly 1 for a legitimate INCOMPLETE verdict.
+        # Capture the precise numeric exit code (not just success/failure) so the
+        # verifier below can reject a killed/timed-out or crashed run, which also
+        # returns nonzero but is not evidence of anything.
         id: generate
         continue-on-error: true
         run: |
           rm -rf artifacts/certification
+          set +e
           timeout --signal=TERM --kill-after=10s 70m \
             .venv/bin/python scripts/certify_release.py
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
       - name: Verify INCOMPLETE evidence (not a certification gate)
         # An invalid generator result must not be retained as a valid evidence artifact.
         id: verify
@@ -89,6 +109,7 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.sha }}
           GENERATOR_OUTCOME: ${{ steps.generate.outcome }}
+          GENERATOR_EXIT_CODE: ${{ steps.generate.outputs.exit_code }}
         run: |
           python - <<'PY'
           import json
@@ -117,6 +138,14 @@ jobs:
               sys.exit('Certification evidence was produced on a dirty tree')
           if os.environ.get('GENERATOR_OUTCOME') != 'failure':
               sys.exit('Unexpected generator outcome: INCOMPLETE generator must exit nonzero')
+          exit_code_raw = os.environ.get('GENERATOR_EXIT_CODE', '')
+          if not re.fullmatch(r'-?\d+', exit_code_raw):
+              sys.exit(f'Missing or non-numeric generator exit code: {exit_code_raw!r}')
+          exit_code = int(exit_code_raw)
+          if exit_code in (124, 137, 143):
+              sys.exit(f'Generator was killed or timed out (exit {exit_code}); not a valid INCOMPLETE result')
+          if exit_code != 1:
+              sys.exit(f'Generator exited {exit_code}, expected exactly 1 for INCOMPLETE (crash or unexpected exit code)')
           steps = manifest.get('steps')
           required = {'test_clean', 'test_dirty', 'ruff_check', 'ruff_format', 'mypy',
                       'build', 'package_smoke', 'security', 'docs_check', 'git_clean',
@@ -156,6 +185,38 @@ jobs:
               sys.exit('Certification summary disagrees with manifest')
           if git_clean.strip():
               sys.exit('Certification bundle contains dirty git status')
+          # The bundle promises per-step machine-readable reports (BOD-195 deliverable).
+          # Require each promised file, parse it, and cross-check it against the
+          # manifest so a generator that skips writing real evidence (or writes a
+          # report that disagrees with the manifest) is rejected, not silently
+          # retained as "verified" evidence.
+          step_status = {s['step_id']: s['status'] for s in steps}
+          report_groups = {
+              'test-summary.json': ('test_clean', 'test_dirty'),
+              'lint-type-build.json': ('ruff_check', 'ruff_format', 'mypy', 'build'),
+              'package-smoke.json': ('package_smoke',),
+              'security-summary.json': ('security',),
+              'docs-check.json': ('docs_check',),
+          }
+          for filename, step_ids in report_groups.items():
+              report_path = path.parent / filename
+              if not report_path.is_file():
+                  sys.exit(f'Missing promised machine-readable report: {filename}')
+              try:
+                  report = json.loads(report_path.read_text())
+              except (OSError, ValueError) as exc:
+                  sys.exit(f'Invalid machine-readable report {filename}: {exc}')
+              if not isinstance(report, dict):
+                  sys.exit(f'Machine-readable report {filename} is not a JSON object')
+              for step_id in step_ids:
+                  entry = report.get(step_id)
+                  if not isinstance(entry, dict):
+                      sys.exit(f'Machine-readable report {filename} missing entry for step {step_id}')
+                  if entry.get('status') != step_status.get(step_id):
+                      sys.exit(f'Machine-readable report {filename} disagrees with manifest for step {step_id}')
+                  evidence_keys = set(entry) - {'status', 'reason'}
+                  if step_status.get(step_id) != 'SKIPPED' and not evidence_keys:
+                      sys.exit(f'Machine-readable report {filename} has no evidence beyond status for step {step_id}')
           summary = os.environ.get('GITHUB_STEP_SUMMARY')
           if summary:
               with open(summary, 'a', encoding='utf-8') as output:
@@ -169,7 +230,7 @@ jobs:
         if: ${{ steps.verify.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: certification-evidence-incomplete-${{ github.sha }}-${{ github.run_id }}
+          name: certification-evidence-incomplete-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/certification/${{ github.sha }}/
           if-no-files-found: error
           retention-days: 90
