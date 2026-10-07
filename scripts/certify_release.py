@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -105,13 +106,37 @@ def run_command(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
-    timeout: float | None = None,
+    timeout: float = 300,
     capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command and return the result."""
-    return subprocess.run(
-        cmd, cwd=cwd, env=env, capture_output=capture_output, text=True, timeout=timeout
-    )
+    """Bound external work; represent failures as nonzero results with safe evidence."""
+    try:
+        return subprocess.run(
+            cmd, cwd=cwd, env=env, capture_output=capture_output, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        result = subprocess.CompletedProcess(cmd, -1, "", "")
+        result.command_error = {"timed_out": True, "timeout_seconds": timeout}  # type: ignore[attr-defined]
+        return result
+    except OSError as exc:
+        result = subprocess.CompletedProcess(cmd, -1, "", "")
+        result.command_error = {"error_class": type(exc).__name__}  # type: ignore[attr-defined]
+        return result
+
+
+def command_failure(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """Expose bounded-command failures without leaking command paths or stderr."""
+    failure = getattr(result, "command_error", None)
+    return failure if isinstance(failure, dict) else {}
+
+
+def command_failure_reason(result: subprocess.CompletedProcess[str]) -> str:
+    failure = command_failure(result)
+    if failure.get("timed_out"):
+        return f"Timed out after {failure['timeout_seconds']} seconds"
+    if failure.get("error_class"):
+        return f"Command could not start: {failure['error_class']}"
+    return f"Exit code {result.returncode}"
 
 
 def sha256_file(path: Path) -> str:
@@ -131,6 +156,8 @@ def utc_timestamp() -> str:
 def get_git_sha(repo_path: Path) -> str:
     """Get current git SHA."""
     result = run_command(["git", "rev-parse", "HEAD"], cwd=repo_path)
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", result.stdout.strip()):
+        raise RuntimeError(f"Cannot read Git HEAD: {command_failure_reason(result)}")
     return result.stdout.strip()
 
 
@@ -138,12 +165,17 @@ def assert_git_sha(repo_path: Path, expected_sha: str) -> None:
     """Refuse to attribute evidence to a HEAD that changed during this run."""
     result = run_command(["git", "rev-parse", "HEAD"], cwd=repo_path)
     if result.returncode != 0 or not expected_sha or result.stdout.strip() != expected_sha:
-        raise RuntimeError("Git HEAD changed or cannot be read during certification")
+        raise RuntimeError(
+            "Git HEAD changed or cannot be read during certification: "
+            + command_failure_reason(result)
+        )
 
 
 def is_git_dirty(repo_path: Path) -> bool:
     """Check if git working tree is dirty."""
     result = run_command(["git", "status", "--porcelain"], cwd=repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"Cannot read Git status: {command_failure_reason(result)}")
     return bool(result.stdout.strip())
 
 
@@ -217,6 +249,7 @@ def _run_pytest(repo_path: Path, venv_bin: Path, *, dirty: bool) -> StepResult:
             "command": display_command,
             "exit_code": result.returncode,
             "junit": None,
+            **command_failure(result),
         }
         if xml_path.exists():
             try:
@@ -303,6 +336,7 @@ def step_ruff_check(repo_path: Path, venv_bin: Path) -> StepResult:
     evidence = {
         "command": ["<checkout>/.venv/bin/ruff", "check", "."],
         "exit_code": result.returncode,
+        **command_failure(result),
     }
 
     if result.returncode == 0:
@@ -318,7 +352,7 @@ def step_ruff_check(repo_path: Path, venv_bin: Path) -> StepResult:
             step_id="ruff_check",
             name="Ruff lint",
             status="FAIL",
-            reason=f"Exit code {result.returncode}",
+            reason=command_failure_reason(result),
             duration_seconds=duration,
             evidence=evidence,
         )
@@ -332,6 +366,7 @@ def step_ruff_format(repo_path: Path, venv_bin: Path) -> StepResult:
     evidence = {
         "command": ["<checkout>/.venv/bin/ruff", "format", "--check", "."],
         "exit_code": result.returncode,
+        **command_failure(result),
     }
 
     if result.returncode == 0:
@@ -347,7 +382,7 @@ def step_ruff_format(repo_path: Path, venv_bin: Path) -> StepResult:
             step_id="ruff_format",
             name="Ruff format check",
             status="FAIL",
-            reason=f"Exit code {result.returncode}",
+            reason=command_failure_reason(result),
             duration_seconds=duration,
             evidence=evidence,
         )
@@ -361,6 +396,7 @@ def step_mypy(repo_path: Path, venv_bin: Path) -> StepResult:
     evidence = {
         "command": ["<checkout>/.venv/bin/mypy", "--strict", "verdict"],
         "exit_code": result.returncode,
+        **command_failure(result),
     }
 
     # Count files checked from output (parse "Success: no issues found in N source files")
@@ -384,7 +420,7 @@ def step_mypy(repo_path: Path, venv_bin: Path) -> StepResult:
             step_id="mypy",
             name="Mypy strict type check",
             status="FAIL",
-            reason=f"Exit code {result.returncode}",
+            reason=command_failure_reason(result),
             duration_seconds=duration,
             evidence=evidence,
         )
@@ -395,7 +431,7 @@ def step_build(repo_path: Path) -> StepResult:
     start = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory(prefix="cert-build-") as tmpdir:
         command = ["uv", "build", "--out-dir", tmpdir]
-        result = run_command(command, cwd=repo_path)
+        result = run_command(command, cwd=repo_path, timeout=600)
         artifacts = []
         if result.returncode == 0:
             for artifact in sorted(Path(tmpdir).iterdir()):
@@ -407,11 +443,12 @@ def step_build(repo_path: Path) -> StepResult:
         evidence = {
             "command": ["uv", "build", "--out-dir", "<fresh-temporary-dir>"],
             "exit_code": result.returncode,
+            **command_failure(result),
             "artifacts": artifacts,
         }
     if result.returncode != 0:
         status: Literal["PASS", "FAIL", "SKIPPED", "INCOMPLETE"] = "FAIL"
-        reason = f"Exit code {result.returncode}"
+        reason = command_failure_reason(result)
     elif not artifacts or not any(a["name"].endswith(".whl") for a in artifacts):
         status, reason = "INCOMPLETE", "Build returned success without a wheel artifact"
     else:
@@ -462,13 +499,15 @@ def step_package_smoke(repo_path: Path, wheel_name: str | None = None) -> StepRe
         ]
         for command, display in actions:
             result = run_command(command, cwd=repo_path)
-            commands.append({"command": display, "exit_code": result.returncode})
+            commands.append(
+                {"command": display, "exit_code": result.returncode, **command_failure(result)}
+            )
             if result.returncode != 0:
                 return StepResult(
                     "package_smoke",
                     "Package smoke test",
                     "FAIL",
-                    f"{display[0]} exit code {result.returncode}",
+                    f"{display[0]} {command_failure_reason(result)}",
                     (datetime.now(timezone.utc) - start).total_seconds(),
                     evidence,
                 )
@@ -538,7 +577,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
             name="Security checks",
             status="FAIL",
             reason="bandit declared dev dependency missing; run uv sync --extra dev",
-            evidence=evidence,
+            evidence={**evidence, "error_class": "FileNotFoundError"},
         )
 
     # Run bandit with -q and -o <tmpfile> to avoid progress bar in stdout
@@ -562,6 +601,16 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
         )
 
         evidence["bandit"]["exit_code"] = bandit_result.returncode
+        evidence["bandit"].update(command_failure(bandit_result))
+        if command_failure(bandit_result):
+            return StepResult(
+                "security",
+                "Security checks",
+                "FAIL",
+                f"bandit: {command_failure_reason(bandit_result)}",
+                (datetime.now(timezone.utc) - start).total_seconds(),
+                evidence,
+            )
         # Parse bandit results from file
         bandit_status = "PASS"
         bandit_reason = ""
@@ -599,7 +648,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
                 name="Security checks",
                 status="FAIL",
                 reason="pip-audit declared dev dependency missing; run uv sync --extra dev",
-                evidence=evidence,
+                evidence={**evidence, "error_class": "FileNotFoundError"},
             )
 
         pip_audit_output_file = Path(tmpdir) / "pip-audit-output.json"
@@ -617,6 +666,16 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
         )
 
         evidence["pip_audit"]["exit_code"] = pip_audit_result.returncode
+        evidence["pip_audit"].update(command_failure(pip_audit_result))
+        if command_failure(pip_audit_result):
+            return StepResult(
+                "security",
+                "Security checks",
+                "FAIL",
+                f"pip_audit: {command_failure_reason(pip_audit_result)}",
+                (datetime.now(timezone.utc) - start).total_seconds(),
+                evidence,
+            )
         # Parse pip-audit results from file
         pip_audit_status = "PASS"
         pip_audit_reason = ""
@@ -712,8 +771,9 @@ def step_docs_check(repo_path: Path, venv_bin: Path) -> StepResult:
     result = run_command([str(venv_bin / "python"), str(doc_script)], cwd=repo_path)
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     evidence = {
-        "command": [str(venv_bin / "python"), str(doc_script)],
+        "command": ["<checkout>/.venv/bin/python", "scripts/check_doc_links.py"],
         "exit_code": result.returncode,
+        **command_failure(result),
     }
 
     if result.returncode == 0:
@@ -729,7 +789,7 @@ def step_docs_check(repo_path: Path, venv_bin: Path) -> StepResult:
             step_id="docs_check",
             name="Documentation link check",
             status="FAIL",
-            reason=f"Exit code {result.returncode}",
+            reason=command_failure_reason(result),
             duration_seconds=duration,
             evidence=evidence,
         )
@@ -740,7 +800,17 @@ def step_git_clean(repo_path: Path) -> StepResult:
     result = run_command(["git", "status", "--porcelain"], cwd=repo_path)
 
     if result.returncode != 0:
-        return StepResult("git_clean", "Git clean check", "FAIL", "git status failed")
+        return StepResult(
+            "git_clean",
+            "Git clean check",
+            "FAIL",
+            command_failure_reason(result),
+            evidence={
+                "command": ["git", "status", "--porcelain"],
+                "exit_code": result.returncode,
+                **command_failure(result),
+            },
+        )
     if not result.stdout.strip():
         return StepResult(
             step_id="git_clean",
@@ -826,6 +896,28 @@ def step_rehearsals(
                 "attempt_producers": sorted(
                     {str(a.get("executed_model")) for a in attempts if a.get("executed_model")}
                 ),
+                "attempt_identity_source": "receipt-reported; not independently attested",
+                "attempts": [
+                    {
+                        "node_id": node.get("node_id"),
+                        **{
+                            key: attempt.get(key)
+                            for key in (
+                                "attempt",
+                                "intended_route",
+                                "executed_model",
+                                "provider",
+                                "route_id",
+                                "route_identity",
+                                "outcome",
+                                "fault_injected",
+                                "failure_category",
+                            )
+                        },
+                    }
+                    for node in receipt.get("nodes", [])
+                    for attempt in node.get("attempts", [])
+                ],
             }
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             return StepResult(
@@ -959,20 +1051,20 @@ def run_checked_step(
     return result
 
 
-def run_certification(
+def _run_certification(
     repo_path: Path,
     *,
     allow_dirty: bool = False,
     rehearsal_dirs: dict[str, Path] | None = None,
     output_dir: Path | None = None,
     staging_dir: Path | None = None,
+    attempt_id: str | None = None,
 ) -> tuple[CertificationManifest, dict[str, Any]]:
     """Run full certification and return manifest and detailed results."""
     manifest = CertificationManifest()
     manifest.started_at = utc_timestamp()
 
-    # Clear a stale default SHA bundle before any early exit (dirty tree, missing
-    # venv, sanity failure). Custom destinations are never deleted.
+    # Validate the destination, but never remove a prior same-SHA bundle here.
     manifest.git_sha = get_git_sha(repo_path)
     assert_git_sha(repo_path, manifest.git_sha)
     destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
@@ -1196,21 +1288,29 @@ def prepare_bundle_dir(output_dir: Path, repo_path: Path, *, create: bool = True
     """Remove stale default contents; never delete user files in custom destinations."""
     output_dir = output_dir.absolute()
     managed_root = (repo_path / "artifacts" / "certification").resolve()
-    sha = get_git_sha(repo_path)
     if output_dir == repo_path.resolve() or output_dir == managed_root:
         raise ValueError("Refusing to write bundle into checkout root or certification root")
-    if output_dir.is_symlink():
+    if output_dir.parent.resolve() == managed_root and output_dir.name in {".attempts", ".history"}:
+        raise ValueError("Refusing reserved certification metadata directory")
+    if (
+        output_dir.is_symlink()
+        or output_dir.parent.is_symlink()
+        or (repo_path / "artifacts").is_symlink()
+    ):
         raise ValueError("Refusing symlinked output directory")
-    if output_dir.resolve() == managed_root / sha:
+    if output_dir.parent.resolve() == managed_root and re.fullmatch(
+        r"[0-9a-f]{40}", output_dir.name
+    ):
+        if output_dir.name != get_git_sha(repo_path):
+            raise ValueError("Refusing bundle path for a different Git HEAD")
         ignored = run_command(["git", "check-ignore", "-q", str(output_dir)], cwd=repo_path)
         tracked = run_command(
             ["git", "ls-files", "--", str(output_dir.relative_to(repo_path.resolve()))],
             cwd=repo_path,
         )
         if ignored.returncode != 0 or tracked.returncode != 0 or tracked.stdout.strip():
-            raise ValueError("Refusing to remove non-ignored or tracked bundle contents")
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
+            raise ValueError("Refusing non-ignored or tracked bundle contents")
+        # Existing evidence is immutable until a successful staged replacement.
     elif output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("Custom output directory must be empty (will not delete user files)")
     if create:
@@ -1266,17 +1366,30 @@ def write_bundle(
     if repo_path is None:
         repo_path = output_dir.parent.parent.parent
     git_status = run_command(["git", "status", "--porcelain"], cwd=repo_path)
-    (output_dir / "git-clean.txt").write_text(git_status.stdout)
+    first_git_failure = git_status if git_status.returncode != 0 else None
+    (output_dir / "git-clean.txt").write_text(
+        git_status.stdout if git_status.returncode == 0 else ""
+    )
     # A tracked git-clean.txt can be changed by the snapshot itself. Check once
     # more after that write rather than trusting the earlier status.
     final_status = run_command(["git", "status", "--porcelain"], cwd=repo_path)
     if final_status.returncode != 0 or final_status.stdout != git_status.stdout:
         git_status = final_status
-        (output_dir / "git-clean.txt").write_text(git_status.stdout)
+        (output_dir / "git-clean.txt").write_text(
+            git_status.stdout if git_status.returncode == 0 else ""
+        )
     git_step = next((step for step in manifest.steps if step.step_id == "git_clean"), None)
-    if git_step is not None and (git_status.returncode != 0 or git_status.stdout.strip()):
+    if git_step is not None and (
+        first_git_failure is not None or git_status.returncode != 0 or git_status.stdout.strip()
+    ):
+        failure_result = first_git_failure or git_status
         git_step.status = "FAIL"
         git_step.reason = "Git status failed or tree dirty after bundle write"
+        git_step.evidence = {
+            "command": ["git", "status", "--porcelain"],
+            "exit_code": failure_result.returncode,
+            **command_failure(failure_result),
+        }
         manifest.verdict = compute_verdict(manifest.steps, git_dirty=manifest.git_dirty)
         (output_dir / "manifest.json").write_text(
             json.dumps(manifest.to_dict(), indent=2, sort_keys=True)
@@ -1286,16 +1399,110 @@ def write_bundle(
         )
 
 
+def new_attempt_id() -> str:
+    """Unique, UTC-sortable ID for an attempt or retained prior bundle."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ-") + uuid.uuid4().hex
+
+
+def write_attempt_record(
+    repo_path: Path,
+    sha: str,
+    attempt_id: str,
+    status: str,
+    reason: str,
+    started_at: str,
+    *,
+    finished: bool = True,
+    bundle_path: str | None = None,
+) -> None:
+    """Write an atomic, separate result marker; never modify published evidence."""
+    root = repo_path / "artifacts" / "certification" / ".attempts"
+    location = root / sha
+    if root.is_symlink() or location.is_symlink() or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("Unsafe attempt record directory")
+    location.mkdir(parents=True, exist_ok=True)
+    record = {
+        "git_sha": sha,
+        "attempt_id": attempt_id,
+        "status": status,
+        "reason": reason,
+        "started_at": started_at,
+        "finished_at": utc_timestamp() if finished else None,
+        "bundle_path": bundle_path,
+    }
+    temporary = location / f".{attempt_id}.tmp"
+    temporary.write_text(json.dumps(record, indent=2, sort_keys=True))
+    os.replace(temporary, location / f"{attempt_id}.json")
+
+
+def run_certification(
+    repo_path: Path,
+    *,
+    allow_dirty: bool = False,
+    rehearsal_dirs: dict[str, Path] | None = None,
+    output_dir: Path | None = None,
+    staging_dir: Path | None = None,
+    attempt_id: str | None = None,
+) -> tuple[CertificationManifest, dict[str, Any]]:
+    """Record direct attempts, including early preflight aborts, outside the bundle."""
+    sha = get_git_sha(repo_path)
+    attempt_id = attempt_id or new_attempt_id()
+    started_at = utc_timestamp()
+    write_attempt_record(
+        repo_path, sha, attempt_id, "ABORTED", "Attempt in progress", started_at, finished=False
+    )
+    try:
+        manifest, detailed = _run_certification(
+            repo_path,
+            allow_dirty=allow_dirty,
+            rehearsal_dirs=rehearsal_dirs,
+            output_dir=output_dir,
+            staging_dir=staging_dir,
+            attempt_id=attempt_id,
+        )
+    except BaseException as exc:
+        write_attempt_record(
+            repo_path,
+            sha,
+            attempt_id,
+            "ABORTED",
+            f"{type(exc).__name__}: {str(exc).replace(str(repo_path), '<checkout>')[:200]}",
+            started_at,
+        )
+        raise
+    if output_dir is None and staging_dir is None:
+        # A library-only attempt did not publish, even if its checks ran.
+        write_attempt_record(
+            repo_path,
+            sha,
+            attempt_id,
+            "INCOMPLETE",
+            "Checks completed but no bundle published",
+            started_at,
+        )
+    return manifest, detailed
+
+
 def publish_bundle(staging_dir: Path, output_dir: Path, repo_path: Path, expected_sha: str) -> None:
-    """Publish one complete staged bundle using a same-filesystem rename."""
+    """Retain an old SHA bundle before publishing a complete staged replacement."""
     assert_git_sha(repo_path, expected_sha)
     prepare_bundle_dir(output_dir, repo_path, create=False)
+    managed = (
+        output_dir.absolute()
+        == (repo_path / "artifacts" / "certification" / expected_sha).absolute()
+    )
     if output_dir.exists():
-        # Custom destinations can only be empty; the default was already
-        # validated and removed by prepare_bundle_dir.
-        output_dir.rmdir()
-    # This is the last checkpoint before the atomic rename. A HEAD change
-    # during cleanup must not publish evidence attributed to the old commit.
+        if managed:
+            history_root = repo_path / "artifacts" / "certification" / ".history"
+            history_sha = history_root / expected_sha
+            if history_root.is_symlink() or history_sha.is_symlink():
+                raise ValueError("Refusing symlinked history directory")
+            history_sha.mkdir(parents=True, exist_ok=True)
+            os.replace(output_dir, history_sha / new_attempt_id())
+        else:
+            # Only a custom empty directory can be removed.
+            output_dir.rmdir()
+    # A crash after moving the old bundle leaves it intact under .history.
     assert_git_sha(repo_path, expected_sha)
     os.replace(staging_dir, output_dir)
     print(f"\nCertification bundle written to: {output_dir}")
@@ -1339,28 +1546,74 @@ def main() -> None:
     # Determine repo path (current directory)
     repo_path = Path.cwd()
 
-    # Stage on the destination filesystem so a failed run never publishes a
-    # partial bundle. run_certification clears an old default SHA bundle before
-    # its early checks; a custom destination is never removed if nonempty.
+    # Stage on the destination filesystem. Keep old evidence and an attempt marker
+    # until a fully written replacement has been published.
     initial_sha = get_git_sha(repo_path)
     assert_git_sha(repo_path, initial_sha)
     output_dir = args.output_dir or (repo_path / "artifacts" / "certification" / initial_sha)
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".cert-stage-", dir=output_dir.parent) as tmpdir:
-        staging_dir = Path(tmpdir)
-        manifest, detailed = run_certification(
+    attempt_id = new_attempt_id()
+    started_at = utc_timestamp()
+    try:
+        # Validate output safety before creating any staging directories.
+        prepare_bundle_dir(output_dir, repo_path, create=False)
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".cert-stage-", dir=output_dir.parent) as tmpdir:
+            staging_dir = Path(tmpdir)
+            manifest, detailed = run_certification(
+                repo_path,
+                allow_dirty=args.allow_dirty,
+                rehearsal_dirs=rehearsal_dirs,
+                output_dir=output_dir,
+                staging_dir=staging_dir,
+                attempt_id=attempt_id,
+            )
+            if manifest.git_sha != initial_sha:
+                raise RuntimeError("Git HEAD changed during certification")
+            assert_git_sha(repo_path, initial_sha)
+            write_bundle(staging_dir, manifest, detailed["environment"], repo_path=repo_path)
+            assert_git_sha(repo_path, manifest.git_sha)
+            # A failed/incomplete rerun cannot replace a previous retained result.
+            # Keep its full evidence next to (not inside) the separate attempt record.
+            retained_attempt = None
+            if (
+                manifest.verdict != "CERTIFIED"
+                and output_dir.exists()
+                and (
+                    output_dir.absolute()
+                    == (repo_path / "artifacts" / "certification" / initial_sha).absolute()
+                )
+            ):
+                attempt_root = repo_path / "artifacts" / "certification" / ".attempts"
+                attempt_sha = attempt_root / initial_sha
+                if attempt_root.is_symlink() or attempt_sha.is_symlink():
+                    raise ValueError("Refusing symlinked attempt directory")
+                attempt_sha.mkdir(parents=True, exist_ok=True)
+                retained_attempt = attempt_sha / f"{attempt_id}.bundle"
+                assert_git_sha(repo_path, manifest.git_sha)
+                os.replace(staging_dir, retained_attempt)
+            else:
+                publish_bundle(staging_dir, output_dir, repo_path, manifest.git_sha)
+    except BaseException as exc:
+        write_attempt_record(
             repo_path,
-            allow_dirty=args.allow_dirty,
-            rehearsal_dirs=rehearsal_dirs,
-            output_dir=output_dir,
-            staging_dir=staging_dir,
+            initial_sha,
+            attempt_id,
+            "ABORTED",
+            f"{type(exc).__name__}: {str(exc).replace(str(repo_path), '<checkout>')[:200]}",
+            started_at,
         )
-        if manifest.git_sha != initial_sha:
-            raise RuntimeError("Git HEAD changed during certification")
-        assert_git_sha(repo_path, initial_sha)
-        write_bundle(staging_dir, manifest, detailed["environment"], repo_path=repo_path)
-        assert_git_sha(repo_path, manifest.git_sha)
-        publish_bundle(staging_dir, output_dir, repo_path, manifest.git_sha)
+        raise
+    write_attempt_record(
+        repo_path,
+        initial_sha,
+        attempt_id,
+        manifest.verdict,
+        "Attempt evidence retained without replacing prior bundle"
+        if retained_attempt
+        else "Bundle published",
+        started_at,
+        bundle_path=str(retained_attempt.relative_to(repo_path)) if retained_attempt else None,
+    )
 
     # Print summary
     print(f"\nVerdict: {manifest.verdict}")

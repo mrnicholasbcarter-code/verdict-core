@@ -36,7 +36,7 @@ Certification bundles are written to:
 artifacts/certification/<sha>/
 ```
 
-Where `<sha>` is the current git HEAD SHA. The default SHA directory is checked and removed before early preflight failures (including a dirty checkout or missing venv), so an old bundle cannot masquerade as the latest result. A complete bundle is built in a same-filesystem staging directory, then renamed into place. The runner checks HEAD before and after each step and again just before publish; if HEAD changes (even to another clean commit), it aborts instead of publishing evidence under the original SHA. Failed staging is removed; the destination is never a partially written bundle. Custom `--output-dir` locations must be empty and their existing files are never deleted. The default directory must be ignored and contain no tracked files before deletion. An independent producer verifier is still missing; this change does not produce a `CERTIFIED` verdict.
+Where `<sha>` is the current git HEAD SHA. A previously published bundle is **not** removed when a new same-SHA attempt starts, fails preflight, times out, or crashes. Each attempt has a separate machine-readable status at `artifacts/certification/.attempts/<sha>/<utc-attempt-id>.json` with a status, reason, and start/finish times. An interrupted attempt has `ABORTED` and a null finish time until the process finishes; read attempt records to distinguish the most recent attempt from the retained bundle. A failed/incomplete same-SHA rerun with an existing bundle stores its full generated evidence at the attempt record's `bundle_path` (`.attempts/<sha>/<attempt-id>.bundle/`) and does not overwrite the old bundle. A complete bundle is built in a same-filesystem staging directory. A successful replacement moves the previous bundle to `artifacts/certification/.history/<sha>/<attempt-id>/` before renaming the new bundle into the unchanged published layout. There is a brief interval in which the public path is absent, but the previous bundle already exists in history. The runner checks HEAD before and after each step and again just before publish; if HEAD changes, it aborts. Custom `--output-dir` locations must be empty and their existing files are never deleted. The default directory must be ignored and contain no tracked files; symlinked output targets are refused. An independent producer verifier is still missing; this change does not produce a `CERTIFIED` verdict.
 
 ## Bundle Structure
 
@@ -157,7 +157,10 @@ Both `clean` and `chaos` runs are required. The verifier rebuilds the receipt
 from graph, events and review; checks the claimed and recomputed outcome is
 `COMPLETE`; rejects injected faults in `clean`; and requires a recorded injected
 failure in `chaos`. It records the claimed executed-model identities and reviewer
-when available. Invalid JSON, missing files, failed runs and forged digest-only
+when available, including per-attempt `node_id`, `attempt`, `intended_route`,
+`executed_model`, `provider`, `route_id`, `route_identity`, `outcome`, `fault_injected`, and
+`failure_category`. Those fields are explicitly labeled **receipt-reported, not
+independently attested**. Invalid JSON, missing files, failed runs and forged digest-only
 receipts are `FAIL`. Missing either proof is `INCOMPLETE`.
 
 The current verifier **does not independently attest to the run producer**.
@@ -207,7 +210,7 @@ The following fields vary between runs on identical inputs and are explicitly no
 - **Temporary paths**: Any temp directories created during testing
 - **Environment variable list**: OS-dependent; may differ between platforms
 
-Evidence includes normalized temporary command paths (JUnit, build, security, and smoke). Raw report SHA256 hashes, package digests, host metadata, scanner data, and external rehearsal inputs can vary even for the same source SHA. Do not assume byte-identical bundles or deterministic verdicts from the SHA alone. Testcase ID/outcome parity is checked only between the two controlled shells of one run.
+Evidence includes normalized checkout and temporary command paths (JUnit, lint, type, build, security, smoke, and docs). Subprocesses have finite per-command timeouts; timeout/error class metadata accompanies a failed step without copying secrets or checkout paths into the report. Raw report SHA256 hashes, package digests, host metadata, scanner data, and external rehearsal inputs can vary even for the same source SHA. Do not assume byte-identical bundles or deterministic verdicts from the SHA alone. Testcase ID/outcome parity is checked only between the two controlled shells of one run.
 
 ## CI Integration
 

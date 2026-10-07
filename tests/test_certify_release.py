@@ -1157,6 +1157,24 @@ def test_junit_parity_and_independent_rehearsal_attestation_required():
 def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ],
+        cwd=repo,
+        check=True,
+    )
     custom = tmp_path / "custom"
     custom.mkdir()
     stale = custom / "dont-delete"
@@ -1166,7 +1184,9 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
     assert stale.read_text() == "keep"
     # Main must pass --output-dir to the runner, and the writer must receive
     # the checkout root rather than guessing from the custom path.
-    manifest = certify_release.CertificationManifest(verdict="INCOMPLETE")
+    manifest = certify_release.CertificationManifest(
+        git_sha=certify_release.get_git_sha(repo), verdict="INCOMPLETE"
+    )
     env = certify_release.EnvironmentSnapshot("3.10", "linux", "uv")
     with (
         patch(
@@ -1176,14 +1196,16 @@ def test_custom_output_and_rehearsal_location_and_final_dirty(tmp_path, monkeypa
         patch("certify_release.write_bundle") as writer,
         patch("certify_release.publish_bundle") as publisher,
         patch("certify_release.assert_git_sha"),
-        patch.object(sys, "argv", ["certify_release.py", "--output-dir", str(custom)]),
+        patch.object(
+            sys, "argv", ["certify_release.py", "--output-dir", str(tmp_path / "empty-main")]
+        ),
         pytest.raises(SystemExit),
     ):
         monkeypatch.chdir(repo)
         certify_release.main()
-    assert runner.call_args.kwargs["output_dir"] == custom
+    assert runner.call_args.kwargs["output_dir"] == tmp_path / "empty-main"
     assert writer.call_args.kwargs["repo_path"] == repo
-    assert publisher.call_args.args[1] == custom
+    assert publisher.call_args.args[1] == tmp_path / "empty-main"
     assert publisher.call_args.args[3] == manifest.git_sha
 
     manifest = certify_release.CertificationManifest(
@@ -1228,7 +1250,7 @@ def test_sha_bundle_cleanup_removes_stale_but_refuses_tracked(temp_git_repo):
     (target / "stale").write_text("leftover")
     (repo / ".gitignore").write_text("artifacts/\n")
     certify_release.prepare_bundle_dir(target, repo)
-    assert not (target / "stale").exists()
+    assert (target / "stale").read_text() == "leftover"
     (target / "tracked").write_text("must stay")
     import subprocess
 
@@ -1290,7 +1312,10 @@ def test_default_stale_bundle_removed_even_when_dirty_check_exits(temp_git_repo)
     (repo / ".gitignore").write_text("artifacts/\n")
     with pytest.raises(SystemExit):
         certify_release.run_certification(repo)
-    assert not bundle.exists()
+    assert (bundle / "stale").read_text() == "must not survive"
+    records = list((bundle.parent / ".attempts" / sha).glob("*.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text())["status"] == "ABORTED"
 
 
 def test_staged_publication_never_exposes_partial_bundle(temp_git_repo, tmp_path):
@@ -1303,10 +1328,12 @@ def test_staged_publication_never_exposes_partial_bundle(temp_git_repo, tmp_path
         staging = Path(stage)
         (staging / "manifest.json").write_text("complete")
         certify_release.prepare_bundle_dir(bundle, repo, create=False)
-        assert not bundle.exists()
+        assert (bundle / "stale").read_text() == "old"
         certify_release.publish_bundle(staging, bundle, repo, certify_release.get_git_sha(repo))
         assert (bundle / "manifest.json").read_text() == "complete"
-        assert not (bundle / "stale").exists()
+        history = list((bundle.parent / ".history" / bundle.name).iterdir())
+        assert len(history) == 1
+        assert (history[0] / "stale").read_text() == "old"
 
 
 def test_markdown_table_escapes_untrusted_reason():
@@ -1334,7 +1361,7 @@ def test_main_staging_failure_does_not_publish_partial_bundle(temp_git_repo, mon
 
     def fake_certify(repo_path, *, output_dir, staging_dir, **kwargs):
         certify_release.prepare_bundle_dir(output_dir, repo_path, create=False)
-        assert not bundle.exists()
+        assert (bundle / "stale").read_text() == "old"
         return manifest, {"environment": env.to_dict()}
 
     def failing_write(staging_dir, *args, **kwargs):
@@ -1348,7 +1375,7 @@ def test_main_staging_failure_does_not_publish_partial_bundle(temp_git_repo, mon
         pytest.raises(OSError, match="interrupted"),
     ):
         certify_release.main()
-    assert not bundle.exists()
+    assert (bundle / "stale").read_text() == "old"
     assert not list(bundle.parent.glob(".cert-stage-*"))
 
 
@@ -1507,3 +1534,269 @@ def test_main_rejects_head_switch_during_bundle_write(temp_git_repo, monkeypatch
     publisher.assert_not_called()
     assert not (repo / "artifacts" / "certification" / old_sha).exists()
     assert not list((repo / "artifacts" / "certification").glob(".cert-stage-*"))
+
+
+@pytest.mark.parametrize("failure", ["missing_venv", "dirty"])
+def test_retained_complete_bundle_survives_early_failure(temp_git_repo, failure):
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n.venv/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ignore evidence"], cwd=repo, check=True)
+    sha = certify_release.get_git_sha(repo)
+    bundle = repo / "artifacts" / "certification" / sha
+    bundle.mkdir(parents=True)
+    old = {
+        "manifest.json": '{"verdict":"CERTIFIED","complete":true}',
+        "CERTIFICATION.md": "# prior complete evidence",
+        "security-summary.json": "{}",
+    }
+    for name, content in old.items():
+        (bundle / name).write_text(content)
+    if failure == "dirty":
+        (repo / "README.md").write_text("changed")
+    with pytest.raises(SystemExit):
+        certify_release.run_certification(repo)
+    assert {name: (bundle / name).read_text() for name in old} == old
+    records = list((bundle.parent / ".attempts" / sha).glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record["status"] == "ABORTED"
+    assert record["started_at"] and record["finished_at"] and record["reason"]
+
+
+@pytest.mark.parametrize("tool", ["ruff", "mypy", "build", "docs", "bandit", "pip-audit"])
+@pytest.mark.parametrize(
+    "failure", ["timeout", "missing"], ids=["TimeoutExpired", "FileNotFoundError"]
+)
+def test_external_command_failure_publishes_failed_bundle(
+    temp_git_repo, monkeypatch, tool, failure
+):
+    """A failed subprocess cannot crash certification or hide the failed step."""
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n.venv/\ndist/\n")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "check_doc_links.py").write_text("# test checker")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "test inputs"], cwd=repo, check=True)
+    venv_bin = repo / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    for binary in ("bandit", "pip-audit"):
+        (venv_bin / binary).touch()
+    selected = {
+        "ruff": "ruff_check",
+        "mypy": "mypy",
+        "build": "build",
+        "docs": "docs_check",
+        "bandit": "security",
+        "pip-audit": "security",
+    }
+    step_id = selected[tool]
+    for name, ident in (
+        ("step_test_clean_shell", "test_clean"),
+        ("step_test_dirty_shell", "test_dirty"),
+        ("step_ruff_check", "ruff_check"),
+        ("step_ruff_format", "ruff_format"),
+        ("step_mypy", "mypy"),
+        ("step_build", "build"),
+        ("step_package_smoke", "package_smoke"),
+        ("step_security", "security"),
+        ("step_docs_check", "docs_check"),
+        ("step_rehearsals", "rehearsals"),
+    ):
+        if ident == step_id:
+            continue
+        monkeypatch.setattr(
+            certify_release,
+            name,
+            lambda *args, _ident=ident, **kwargs: certify_release.StepResult(
+                _ident, _ident, "INCOMPLETE"
+            ),
+        )
+    real_run = subprocess.run
+
+    def controlled_run(cmd, **kwargs):
+        assert kwargs.get("timeout", 0) > 0
+        if "-c" in cmd and "import verdict" in cmd[-1]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        executable = Path(cmd[0]).name
+        target_binary = "uv" if tool == "build" else "python" if tool == "docs" else tool
+        matching = (
+            executable == target_binary
+            and (tool != "build" or "build" in cmd)
+            and (tool != "docs" or "check_doc_links.py" in cmd[-1])
+        )
+        if matching:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            raise FileNotFoundError("binary missing")
+        if executable == "pip-audit":
+            Path(cmd[cmd.index("-o") + 1]).write_text('{"dependencies":[]}')
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if executable == "bandit":
+            Path(cmd[cmd.index("-o") + 1]).write_text('{"results":[]}')
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if executable in ("uv", "node"):
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", controlled_run)
+    monkeypatch.chdir(repo)
+    with patch.object(sys, "argv", ["certify_release.py"]), pytest.raises(SystemExit) as exc:
+        certify_release.main()
+    assert exc.value.code == 1
+    bundle = repo / "artifacts" / "certification" / certify_release.get_git_sha(repo)
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert manifest["verdict"] == "FAILED"
+    step = next(item for item in manifest["steps"] if item["step_id"] == step_id)
+    assert step["status"] == "FAIL"
+    evidence = step["evidence"]
+    if tool in ("bandit", "pip-audit"):
+        evidence = evidence["bandit" if tool == "bandit" else "pip_audit"]
+    if failure == "timeout":
+        assert evidence["timed_out"] is True
+        assert evidence["timeout_seconds"] > 0
+    else:
+        assert evidence["error_class"] == "FileNotFoundError"
+
+
+def test_docs_check_command_is_checkout_independent(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "check_doc_links.py").touch()
+    with patch("certify_release.run_command", return_value=MagicMock(returncode=0)):
+        step = certify_release.step_docs_check(tmp_path, tmp_path / ".venv" / "bin")
+    assert step.evidence["command"] == ["<checkout>/.venv/bin/python", "scripts/check_doc_links.py"]
+    assert str(tmp_path) not in json.dumps(step.evidence)
+
+
+def test_rehearsal_attempt_identity_is_receipt_reported(tmp_path):
+    import shutil
+
+    clean_source = Path(__file__).parent.parent / "docs/proof/live-controller-run"
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    for name in ("events.jsonl", "receipt.json", "graph.json", "review.json"):
+        if (clean_source / name).exists():
+            shutil.copy2(clean_source / name, clean / name)
+    result = certify_release.step_rehearsals(tmp_path, {"clean": clean}, tmp_path / "bundle")
+    assert result.status == "INCOMPLETE"
+    attempts = result.evidence["runs"]["clean"]["attempts"]
+    assert attempts
+    assert "receipt-reported" in result.evidence["runs"]["clean"]["attempt_identity_source"]
+    keys = {
+        "node_id",
+        "attempt",
+        "intended_route",
+        "executed_model",
+        "route_identity",
+        "outcome",
+        "fault_injected",
+        "failure_category",
+    }
+    assert all(keys <= set(attempt) for attempt in attempts)
+    receipt = json.loads((clean / "receipt.json").read_text())
+    original = [
+        (node["node_id"], attempt) for node in receipt["nodes"] for attempt in node["attempts"]
+    ]
+    assert len(original) == len(attempts)
+    for projected, (node_id, attempt) in zip(attempts, original, strict=True):
+        assert projected["node_id"] == node_id
+        for key in keys - {"node_id"}:
+            assert projected[key] == attempt.get(key)
+
+
+def test_interrupted_publish_keeps_previous_complete_bundle_in_history(temp_git_repo, monkeypatch):
+    import os
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ignore bundles"], cwd=repo, check=True)
+    sha = certify_release.get_git_sha(repo)
+    target = repo / "artifacts" / "certification" / sha
+    target.mkdir(parents=True)
+    (target / "manifest.json").write_text('{"verdict":"CERTIFIED"}')
+    stage = target.parent / ".cert-stage-interrupted"
+    stage.mkdir()
+    (stage / "manifest.json").write_text('{"verdict":"INCOMPLETE"}')
+    original_replace = os.replace
+
+    def fail_new_bundle(source, destination):
+        if Path(source) == stage:
+            raise OSError("publish interrupted")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(certify_release.os, "replace", fail_new_bundle)
+    with pytest.raises(OSError, match="publish interrupted"):
+        certify_release.publish_bundle(stage, target, repo, sha)
+    previous = list((target.parent / ".history" / sha).glob("*/manifest.json"))
+    assert len(previous) == 1
+    assert previous[0].read_text() == '{"verdict":"CERTIFIED"}'
+    assert (stage / "manifest.json").exists()
+
+
+def test_git_command_timeout_fails_closed(temp_git_repo):
+    import subprocess
+
+    repo = temp_git_repo
+    original = certify_release.run_command
+
+    def failed_status(cmd, **kwargs):
+        if cmd[:2] == ["git", "status"]:
+            with patch(
+                "certify_release.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd, 300)
+            ):
+                return original(cmd, **kwargs)
+        return original(cmd, **kwargs)
+
+    with patch("certify_release.run_command", side_effect=failed_status):
+        step = certify_release.step_git_clean(repo)
+    assert step.status == "FAIL"
+    assert step.evidence["timed_out"] is True
+    assert step.evidence["timeout_seconds"] == 300
+
+
+def test_failed_rerun_keeps_prior_bundle_and_stores_attempt_evidence(temp_git_repo, monkeypatch):
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ignore"], cwd=repo, check=True)
+    sha = certify_release.get_git_sha(repo)
+    bundle = repo / "artifacts" / "certification" / sha
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.json").write_text('{"verdict":"CERTIFIED"}')
+    manifest = certify_release.CertificationManifest(
+        git_sha=sha,
+        verdict="FAILED",
+        steps=[
+            certify_release.StepResult(
+                "ruff_check", "ruff", "FAIL", evidence={"timed_out": True, "timeout_seconds": 300}
+            )
+        ],
+    )
+    env = certify_release.EnvironmentSnapshot("3.13", "linux", "uv")
+    monkeypatch.chdir(repo)
+    with (
+        patch(
+            "certify_release.run_certification",
+            return_value=(manifest, {"environment": env.to_dict()}),
+        ),
+        patch.object(sys, "argv", ["certify_release.py"]),
+        pytest.raises(SystemExit),
+    ):
+        certify_release.main()
+    assert (bundle / "manifest.json").read_text() == '{"verdict":"CERTIFIED"}'
+    records = list((bundle.parent / ".attempts" / sha).glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record["status"] == "FAILED"
+    assert record["bundle_path"]
+    attempt_bundle = repo / record["bundle_path"]
+    assert json.loads((attempt_bundle / "manifest.json").read_text())["verdict"] == "FAILED"
+    assert not list((bundle.parent / ".history").glob(f"{sha}/*"))
