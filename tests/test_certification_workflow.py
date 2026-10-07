@@ -224,7 +224,12 @@ def _write_bundle(repo, sha, **overrides):
         "git_dirty": False,
         "verdict": "INCOMPLETE",
         "steps": [
-            {"step_id": name, "status": "SKIPPED" if name == "rehearsals" else "PASS"}
+            {
+                "step_id": name,
+                "status": "SKIPPED" if name == "rehearsals" else "PASS",
+                "reason": "",
+                "evidence": {} if name == "rehearsals" else {"command": ["tool"], "exit_code": 0},
+            }
             for name in STEP_IDS
         ],
     }
@@ -235,16 +240,17 @@ def _write_bundle(repo, sha, **overrides):
         f"# Release Certification: {sha}\n**Verdict**: INCOMPLETE\n**Git SHA**: {sha}\n"
     )
     (directory / "git-clean.txt").write_text("")
-    step_status = {s["step_id"]: s["status"] for s in (manifest["steps"] or [])}
+    manifest_steps = {s["step_id"]: s for s in (manifest["steps"] or [])}
     for filename, step_ids in REPORT_GROUPS.items():
-        report = {
-            step_id: {
-                "status": step_status.get(step_id, "PASS"),
-                "command": ["tool"],
-                "exit_code": 0,
+        report = {}
+        for step_id in step_ids:
+            step = manifest_steps.get(step_id, {})
+            entry = {
+                "status": step.get("status", "PASS"),
+                "reason": step.get("reason", ""),
+                **step.get("evidence", {}),
             }
-            for step_id in step_ids
-        }
+            report[step_id] = entry
         (directory / filename).write_text(json.dumps(report))
     return directory, manifest
 
@@ -486,7 +492,7 @@ def test_rejects_machine_readable_report_with_no_evidence_beyond_status(sample_c
     (directory / "docs-check.json").write_text(json.dumps(report))
     result = _run_manifest_check(repo, sha)
     assert result.returncode != 0
-    assert "no evidence beyond status for step docs_check" in result.stderr
+    assert "disagrees with manifest for step docs_check" in result.stderr
 
 
 def test_accepts_skipped_report_entry_without_extra_evidence(sample_checkout):
@@ -502,12 +508,51 @@ def test_accepts_skipped_report_entry_without_extra_evidence(sample_checkout):
             {
                 "step_id": name,
                 "status": "SKIPPED" if name in {"docs_check", "rehearsals"} else "PASS",
+                "reason": "",
+                "evidence": {}
+                if name in {"docs_check", "rehearsals"}
+                else {"command": ["tool"], "exit_code": 0},
             }
             for name in STEP_IDS
         ],
     )
     report = json.loads((directory / "docs-check.json").read_text())
     report["docs_check"] = {"status": "SKIPPED", "reason": "check_doc_links.py not found"}
+    manifest = json.loads((directory / "manifest.json").read_text())
+    next(step for step in manifest["steps"] if step["step_id"] == "docs_check")["reason"] = (
+        "check_doc_links.py not found"
+    )
+    (directory / "manifest.json").write_text(json.dumps(manifest))
     (directory / "docs-check.json").write_text(json.dumps(report))
     result = _run_manifest_check(repo, sha)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"status": "PASS", "reason": "", "command": ["FORGED"], "exit_code": 255},
+        {"status": "PASS", "reason": "", "evidence": None},
+        {"status": "PASS", "reason": "", "command": ["tool"], "exit_code": 0, "extra": "forged"},
+    ],
+)
+def test_rejects_report_evidence_not_identical_to_manifest(sample_checkout, replacement):
+    repo, sha = sample_checkout
+    directory, _ = _write_bundle(repo, sha)
+    path = directory / "test-summary.json"
+    report = json.loads(path.read_text())
+    report["test_clean"] = replacement
+    path.write_text(json.dumps(report))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert "disagrees with manifest for step test_clean" in result.stderr
+
+
+def test_rejects_null_manifest_evidence_even_with_matching_report(sample_checkout):
+    repo, sha = sample_checkout
+    directory, manifest = _write_bundle(repo, sha)
+    next(step for step in manifest["steps"] if step["step_id"] == "test_clean")["evidence"] = None
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    result = _run_manifest_check(repo, sha)
+    assert result.returncode != 0
+    assert "Invalid manifest evidence for step test_clean" in result.stderr

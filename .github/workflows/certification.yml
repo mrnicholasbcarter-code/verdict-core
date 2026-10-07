@@ -190,7 +190,7 @@ jobs:
           # manifest so a generator that skips writing real evidence (or writes a
           # report that disagrees with the manifest) is rejected, not silently
           # retained as "verified" evidence.
-          step_status = {s['step_id']: s['status'] for s in steps}
+          manifest_steps = {s['step_id']: s for s in steps}
           report_groups = {
               'test-summary.json': ('test_clean', 'test_dirty'),
               'lint-type-build.json': ('ruff_check', 'ruff_format', 'mypy', 'build'),
@@ -212,11 +212,15 @@ jobs:
                   entry = report.get(step_id)
                   if not isinstance(entry, dict):
                       sys.exit(f'Machine-readable report {filename} missing entry for step {step_id}')
-                  if entry.get('status') != step_status.get(step_id):
-                      sys.exit(f'Machine-readable report {filename} disagrees with manifest for step {step_id}')
-                  evidence_keys = set(entry) - {'status', 'reason'}
-                  if step_status.get(step_id) != 'SKIPPED' and not evidence_keys:
+                  step = manifest_steps[step_id]
+                  evidence = step.get('evidence')
+                  if not isinstance(evidence, dict):
+                      sys.exit(f'Invalid manifest evidence for step {step_id}')
+                  if step['status'] != 'SKIPPED' and not evidence:
                       sys.exit(f'Machine-readable report {filename} has no evidence beyond status for step {step_id}')
+                  expected_entry = {'status': step['status'], 'reason': step.get('reason', ''), **evidence}
+                  if entry != expected_entry:
+                      sys.exit(f'Machine-readable report {filename} disagrees with manifest for step {step_id}')
           summary = os.environ.get('GITHUB_STEP_SUMMARY')
           if summary:
               with open(summary, 'a', encoding='utf-8') as output:
