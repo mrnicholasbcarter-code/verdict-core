@@ -82,6 +82,7 @@ jobs:
           artifact-ids: ${{ steps.locate.outputs.artifact_id }}
           run-id: ${{ steps.locate.outputs.run_id }}
           github-token: ${{ github.token }}
+          merge-multiple: true
           path: certification-bundle
       - name: Verify downloaded certified manifest
         if: steps.locate.outputs.found == 'true'
@@ -99,8 +100,11 @@ jobs:
           if not re.fullmatch(r'[0-9a-f]{40}', sha):
               sys.exit('Invalid release SHA')
           path = Path('certification-bundle')
+          manifest_path = path / 'manifest.json'
+          if not manifest_path.is_file():
+              sys.exit(f'Missing certified manifest at expected path: {manifest_path}')
           try:
-              manifest = json.loads((path / 'manifest.json').read_text())
+              manifest = json.loads(manifest_path.read_text())
               git_clean = (path / 'git-clean.txt').read_text()
           except (OSError, ValueError) as exc:
               sys.exit(f'Missing or invalid certified bundle: {exc}')

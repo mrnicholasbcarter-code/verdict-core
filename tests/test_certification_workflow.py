@@ -657,6 +657,7 @@ def _release_gate():
     assert steps[1]["with"]["artifact-ids"] == "${{ steps.locate.outputs.artifact_id }}"
     assert steps[1]["with"]["run-id"] == "${{ steps.locate.outputs.run_id }}"
     assert steps[1]["with"]["github-token"] == "${{ github.token }}"
+    assert steps[1]["with"]["merge-multiple"] == "true"
     assert steps[2]["if"] == "steps.locate.outputs.found == 'true'"
     return steps
 
@@ -763,6 +764,43 @@ def test_release_gate_enabled_requires_retained_exact_sha_artifact(sample_checko
     assert "No retained certified" in result.stderr
     assert not summary.exists()
     assert not output.exists()
+
+
+@pytest.mark.parametrize("merge_multiple", [False, True], ids=["nested", "flattened"])
+def test_release_gate_requires_manifest_at_exact_download_path(sample_checkout, merge_multiple):
+    """Artifact IDs alone nest the v4 download under the artifact name."""
+    repo, sha = sample_checkout
+    steps = _release_gate()
+    directory = repo / "certification-bundle"
+    if not merge_multiple:
+        directory /= f"certification-evidence-certified-{sha}-321-2"
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "git_sha": sha,
+                "git_dirty": False,
+                "verdict": "CERTIFIED",
+                "steps": [{"step_id": name, "status": "PASS"} for name in STEP_IDS],
+            }
+        )
+    )
+    (directory / "git-clean.txt").write_text("")
+    verified, summary, _ = _run_gate_step(
+        _embedded_python(steps[2]["run"]), repo, sha, required=True
+    )
+    if merge_multiple:
+        assert verified.returncode == 0, verified.stderr
+        assert f"CERTIFIED bundle for exact release SHA {sha}" in verified.stdout
+        assert sha in summary.read_text()
+    else:
+        assert verified.returncode != 0
+        assert (
+            "Missing certified manifest at expected path: certification-bundle/manifest.json"
+            in verified.stderr
+        )
+        assert not summary.exists()
 
 
 @pytest.mark.parametrize(
