@@ -1287,9 +1287,7 @@ async def test_integrate_verify_event_records_shlex_join_command_and_executed_co
     assert v["executed_command"] == shlex.join(list(verify_cmd))
 
 
-async def test_integrate_verify_quoting_differs_from_space_join(
-    repo: Path,
-) -> None:
+async def test_integrate_verify_quoting_differs_from_space_join(repo: Path) -> None:
     """Integration verify command field uses shlex quoting, not bare space-join."""
     verify_cmd = ("sh", "-c", "exit 0")  # "exit 0" has a space; shlex quotes it
     integrate = WorkNode(
@@ -1305,8 +1303,8 @@ async def test_integrate_verify_quoting_differs_from_space_join(
     assert result.outcome is RunOutcome.COMPLETE, result.reason
 
     [v] = ev.of("verify", "i")
-    assert v["command"] == shlex.join(verify_cmd)   # "sh -c 'exit 0'"
-    assert v["command"] != " ".join(verify_cmd)     # "sh -c exit 0" — would lose arg boundary
+    assert v["command"] == shlex.join(verify_cmd)  # "sh -c 'exit 0'"
+    assert v["command"] != " ".join(verify_cmd)  # "sh -c exit 0" — would lose arg boundary
 
 
 async def test_integrate_verify_records_resolved_argv_when_substituted(
@@ -1364,7 +1362,9 @@ async def test_integrate_verify_records_resolved_argv_when_substituted(
 
     [v] = events.of("verify", "i")
     assert v["command"] == shlex.join(original_cmd), "command must be shlex.join of original argv"
-    assert v["executed_command"] == shlex.join(expected_resolved), "executed_command must be shlex.join of resolved argv"
+    assert v["executed_command"] == shlex.join(expected_resolved), (
+        "executed_command must be shlex.join of resolved argv"
+    )
     assert v.get("resolved_argv0") == fake_interp, "resolved_argv0 retained from resolver"
 
 
@@ -1435,11 +1435,7 @@ async def test_integrate_verify_failed_event_records_both_command_fields(
 
 def test_legacy_receipt_without_executed_command_still_verifies(tmp_path: Path) -> None:
     """Historical receipts without executed_command in verify events still verify correctly."""
-    from verdict.orchestration.receipt import (
-        EventLog,
-        verify_run_receipt,
-        write_run_receipt,
-    )
+    from verdict.orchestration.receipt import EventLog, verify_run_receipt, write_run_receipt
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1458,7 +1454,10 @@ def test_legacy_receipt_without_executed_command_still_verifies(tmp_path: Path) 
         ),
     )
     (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
-    clock = lambda: datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+    def clock() -> datetime:
+        return datetime(2025, 6, 1, tzinfo=timezone.utc)
+
     log = EventLog(run_dir / "events.jsonl", clock=clock)
     log.emit("run_started", run_id="legacy-1", goal="add feature")
     log.emit("dispatch", node_id="a", attempt=1, route_id="cc/s", capacity_class="subscription")
@@ -1480,11 +1479,7 @@ def test_legacy_receipt_without_executed_command_still_verifies(tmp_path: Path) 
 
 def test_legacy_receipt_with_old_space_join_command_still_verifies(tmp_path: Path) -> None:
     """Historical receipts with old space-join command string (not shlex) still verify correctly."""
-    from verdict.orchestration.receipt import (
-        EventLog,
-        verify_run_receipt,
-        write_run_receipt,
-    )
+    from verdict.orchestration.receipt import EventLog, verify_run_receipt, write_run_receipt
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1503,7 +1498,10 @@ def test_legacy_receipt_with_old_space_join_command_still_verifies(tmp_path: Pat
         ),
     )
     (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
-    clock = lambda: datetime(2025, 6, 1, tzinfo=timezone.utc)
+
+    def clock() -> datetime:
+        return datetime(2025, 6, 1, tzinfo=timezone.utc)
+
     log = EventLog(run_dir / "events.jsonl", clock=clock)
     log.emit("run_started", run_id="legacy-2", goal="add feature")
     log.emit("dispatch", node_id="a", attempt=1, route_id="cc/s", capacity_class="subscription")

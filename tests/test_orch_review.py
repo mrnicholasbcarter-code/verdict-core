@@ -686,9 +686,7 @@ def test_empty_object_fails_closed_with_coverage_missing(
     assert result.detail == "review coverage missing"
 
 
-def test_findings_only_object_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_findings_only_object_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC 1: {"findings": []} returns ERROR with 'review coverage missing'."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     runner = FakeRunner(OcrRun(exit_code=0), review_payload='{"findings": []}')
@@ -703,10 +701,7 @@ def test_selected_only_signal_is_sufficient_for_pass(
 ) -> None:
     """AC 2: non-empty selected list alone can produce PASS."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    payload = {
-        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
-        "findings": [],
-    }
+    payload = {"manifest": {"coverage": {"selected": [{"path": "x.py"}]}}, "findings": []}
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
@@ -719,10 +714,7 @@ def test_completed_only_signal_is_sufficient_for_pass(
 ) -> None:
     """AC 2: non-empty completed list alone can produce PASS."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    payload = {
-        "manifest": {"coverage": {"completed": [{"path": "y.py"}]}},
-        "findings": [],
-    }
+    payload = {"manifest": {"coverage": {"completed": [{"path": "y.py"}]}}, "findings": []}
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
@@ -766,9 +758,7 @@ def test_empty_selected_list_defeats_completed_evidence(
     """AC 3: selected=[] takes precedence over completed evidence."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     payload = {
-        "manifest": {
-            "coverage": {"selected": [], "completed": [{"path": "x.py"}]}
-        },
+        "manifest": {"coverage": {"selected": [], "completed": [{"path": "x.py"}]}},
         "summary": {"files_reviewed": 1},
     }
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
@@ -838,17 +828,17 @@ def test_retained_dogfood_bod_273_payload_still_passes(
         / "docs/proof/dogfood-bod-273-2026-09-28/review/ocr-raw.json"
     )
     payload = json.loads(proof_path.read_text())
-    
+
     # This payload has:
     # - selected: 1 item
-    # - completed: 1 item  
+    # - completed: 1 item
     # - files_reviewed: 1
     # - comments: []
     assert len(payload["manifest"]["coverage"]["selected"]) == 1
     assert len(payload["manifest"]["coverage"]["completed"]) == 1
     assert payload["summary"]["files_reviewed"] == 1
     assert payload["comments"] == []
-    
+
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     # Use the recorded model to avoid identity mismatch
     recorded_model = payload["manifest"]["execution"]["model"]
@@ -964,13 +954,13 @@ def test_interview_clean_complete_payload_still_passes(
     """AC 5: retained two-item Interview Clean payload still passes (hermetic copy)."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     payload = json.loads(_INTERVIEW_CLEAN_COMPLETE)
-    
+
     # Verify the hermetic copy has the expected structure
     assert len(payload["manifest"]["coverage"]["selected"]) == 2
     assert len(payload["manifest"]["coverage"]["completed"]) == 2
     assert payload["summary"]["files_reviewed"] == 2
     assert payload["comments"] == []
-    
+
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     # Use the recorded model
     recorded_model = payload["manifest"]["execution"]["model"]
@@ -987,14 +977,7 @@ def test_missing_coverage_with_blocking_finding_still_errors_on_coverage(
     """Coverage check runs before findings; missing coverage errors first."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     payload = {
-        "findings": [
-            {
-                "path": "x.py",
-                "severity": "critical",
-                "category": "bug",
-                "content": "bad",
-            }
-        ]
+        "findings": [{"path": "x.py", "severity": "critical", "category": "bug", "content": "bad"}]
     }
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
