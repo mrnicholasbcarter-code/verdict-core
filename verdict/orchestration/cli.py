@@ -32,6 +32,9 @@ def add_parsers(subparsers: Any) -> None:
     orch.add_argument("--repo", default=".", help="Git repository to change (default: .)")
     orch.add_argument("--graph", help="Use a pre-built WorkGraph JSON instead of frontier planning")
     orch.add_argument("--resume", metavar="RUN_ID", help="Resume a run from its durable state")
+    orch.add_argument(
+        "--openspec-change", metavar="ID", help="OpenSpec change id under repo/openspec/changes"
+    )
     orch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     orch.add_argument(
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
@@ -415,6 +418,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.orchestration.tui import follow
 
     repo = Path(args.repo).resolve()
+    change_id = getattr(args, "openspec_change", None)
+    if change_id and (Path(change_id).name != change_id or change_id in (".", "..")):
+        print("BLOCKED: --openspec-change must be a change id, not a path", file=sys.stderr)
+        return 2
+    openspec_change_dir = repo / "openspec" / "changes" / change_id if change_id else None
     runs_root = Path(args.runs_dir)
     if not runs_root.is_absolute():
         runs_root = repo / runs_root
@@ -511,6 +519,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             policy=policy,
             summary=getattr(selector, "summary", None),
             inflight=inflight,
+            openspec_change_dir=openspec_change_dir,
         )
     )
     stop.set()

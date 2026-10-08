@@ -203,7 +203,8 @@ async def test_resume_unchanged_keeps_block(tmp_path: Path) -> None:
 
     # Block still there
     graph_after_1 = json.loads((run_dir / "graph.json").read_text())
-    assert graph_after_1["openspec"] == original_block
+    assert all(graph_after_1["openspec"][key] == original_block[key] for key in original_block)
+    assert graph_after_1["openspec"]["proof_state"] == "BLOCKED"
 
     # Resume 2
     await run_golden_path(
@@ -219,7 +220,8 @@ async def test_resume_unchanged_keeps_block(tmp_path: Path) -> None:
 
     # Block still there
     graph_after_2 = json.loads((run_dir / "graph.json").read_text())
-    assert graph_after_2["openspec"] == original_block
+    assert all(graph_after_2["openspec"][key] == original_block[key] for key in original_block)
+    assert graph_after_2["openspec"]["proof_state"] == "BLOCKED"
 
     # Edit one byte
     (change_dir / "proposal.md").write_text("# Test\n## Why\nModified\n")

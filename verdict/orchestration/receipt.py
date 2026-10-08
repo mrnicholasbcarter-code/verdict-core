@@ -558,9 +558,20 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         receipt["route_identity_warning"] = (
             "One or more successful attempts reported a model different from the intended route"
         )
-    # Include optional openspec block (backward compatible)
+    # Keep historical blocks intact.  New conformance evidence is projected
+    # from the event log, never trusted from mutable graph.json alone.
     if "openspec" in graph_raw:
-        receipt["openspec"] = graph_raw["openspec"]
+        receipt["openspec"] = (
+            dict(graph_raw["openspec"])
+            if isinstance(graph_raw["openspec"], dict)
+            else graph_raw["openspec"]
+        )
+        checks = [e for e in events if e.type == "openspec_conformance"]
+        if isinstance(receipt["openspec"], dict):
+            if checks:
+                receipt["openspec"]["conformance_result"] = checks[-1].data.get("result")
+            else:
+                receipt["openspec"]["conformance_result"] = None
     outcome, reason = completion_verdict(receipt)
     receipt["outcome"] = outcome
     receipt["reason"] = reason
@@ -634,6 +645,30 @@ def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
         return RunOutcome.CANCELLED.value, "run cancelled by operator"
     if receipt.get("schema") != RECEIPT_SCHEMA:
         return blocked, f"unknown receipt schema {receipt.get('schema')!r}"
+    if "openspec" in receipt:
+        block = receipt["openspec"]
+        if not isinstance(block, Mapping):
+            return blocked, "OpenSpec block malformed"
+        check = block.get("conformance_result")
+        if not isinstance(check, Mapping) or check.get("status") != "PASS":
+            reason = (
+                check.get("reason", "missing conformance result")
+                if isinstance(check, Mapping)
+                else "missing conformance result"
+            )
+            return blocked, f"OpenSpec conformance required: {reason}"
+        if (
+            not block.get("spec_revision_digest")
+            or check.get("spec_revision_digest") != block["spec_revision_digest"]
+        ):
+            return blocked, "OpenSpec spec_changed: conformance revision differs"
+        if (
+            not check.get("output_sha256")
+            or check.get("valid") is not True
+            or check.get("issues")
+            or check.get("exit_code") != 0
+        ):
+            return blocked, "OpenSpec conformance evidence invalid"
     gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
     work = [n for n in receipt.get("nodes") or [] if n.get("kind") in gated]
     if not work:

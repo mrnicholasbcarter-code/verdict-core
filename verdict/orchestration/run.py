@@ -207,6 +207,7 @@ class _Progress:
         self.log, self.path, self.run_id = log, path, run_id
         self.pid = os.getpid()
         self._trace_span: Any = None
+        self.on_event: Callable[[], None] | None = None
 
     def set_trace_span(self, span: Any) -> None:
         """Attach the root OTel span so ``emit`` can record child spans."""
@@ -228,6 +229,8 @@ class _Progress:
             )
         )
         tmp.replace(self.path)
+        if self.on_event is not None:
+            self.on_event()
         # BOD-90: optional OTel child span per event
         if self._trace_span is not None:
             from verdict.tracing import record_event
@@ -476,6 +479,78 @@ def prior_attempts(run_dir: Path) -> dict[str, int]:
     return highest
 
 
+def _git_branch(repo: Path) -> str | None:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _update_openspec_progress(
+    graph_path: Path, block: dict[str, Any], graph: WorkGraph, log: EventLog
+) -> None:
+    """Project node events into durable task/proof state after every event."""
+    import re
+
+    task_ids: dict[str, str] = {}
+    change_dir = Path(str(block.get("change_dir", "")))
+    tasks_file = change_dir / "tasks.md"
+    if tasks_file.is_file():
+        try:
+            items = re.findall(r"^\s*- \[.\]\s+([\w.-]+)\s+(.+)$", tasks_file.read_text(), re.M)
+            for node in graph.nodes:
+                matches = [
+                    key
+                    for key, description in items
+                    if node.node_id == key or node.objective.strip() == description.strip()
+                ]
+                if len(matches) == 1:
+                    task_ids[node.node_id] = matches[0]
+        except OSError:
+            pass
+    block["mapping_source"] = "tasks.md_exact_or_node_id" if task_ids else "node_id"
+    block["task_mapping"] = {
+        node.node_id: task_ids.get(node.node_id, node.node_id) for node in graph.nodes
+    }
+    states: dict[str, str] = {}
+    for event in log.read():
+        if event.type == "node_state":
+            states[event.node_id] = str(event.data.get("state", ""))
+        elif event.type == "dispatch":
+            block["worktree"] = event.data.get("worktree") or str(graph_path.parent)
+        elif event.type == "run_finished":
+            block["proof_state"] = str(event.data.get("outcome", "BLOCKED"))
+    block["completed_tasks"] = [
+        block["task_mapping"][node.node_id]
+        for node in graph.nodes
+        if states.get(node.node_id) == NodeState.VALIDATED.value
+    ]
+    active = next(
+        (
+            node.node_id
+            for node in graph.nodes
+            if states.get(node.node_id) not in (NodeState.VALIDATED.value, NodeState.BLOCKED.value)
+        ),
+        None,
+    )
+    block["current_task"] = block["task_mapping"][active] if active is not None else None
+    raw = json.loads(graph_path.read_text())
+    raw["openspec"] = block
+    temp = graph_path.with_suffix(".tmp")
+    temp.write_text(json.dumps(raw, indent=2))
+    temp.replace(graph_path)
+
+
 async def run_golden_path(
     goal: str,
     *,
@@ -510,6 +585,18 @@ async def run_golden_path(
     _otel_root = start_run_span(run_dir.name, goal, str(repo))
     events.set_trace_span(_otel_root)
     resumed = prior_validated(run_dir)
+    graph_path = run_dir / GRAPH_FILE
+    if graph_path.exists():
+        try:
+            existing = json.loads(graph_path.read_text())
+            if isinstance(existing.get("openspec"), dict) and isinstance(
+                existing["openspec"].get("conformance_result"), dict
+            ):
+                # Revalidation is required on resume; old check cannot authorize a new run.
+                existing["openspec"]["conformance_result"] = None
+                graph_path.write_text(json.dumps(existing, indent=2))
+        except (OSError, ValueError):
+            pass  # Existing graph validation below fails closed as before.
     # BOD-188: record executor identity for harness-independence proof
     _executor_identity = getattr(executor, "__class__", type(executor)).__name__
     _executor_labels: dict[str, str] = {
@@ -551,7 +638,7 @@ async def run_golden_path(
     events.emit("understand", **_task_profile(goal, repo, graph))
     _run_signals_data: dict[str, Any] | None = None  # BOD-203: one provider call per run
     try:
-        # Initialize openspec block from input if provided (OpenSpec spec_changed marker)
+        # Create durable change state before admitting any work.
         openspec_block: dict[str, Any] | None = None
         if openspec_change_dir is not None:
             from verdict.openspec_lifecycle import (
@@ -560,23 +647,27 @@ async def run_golden_path(
                 spec_revision_digest,
             )
 
-            # Extract change_id from the directory name
-            change_id = openspec_change_dir.name
             change = OpenSpecChange(
-                change_id=change_id,
-                linear_issue=change_id_to_linear_issue(change_id),
+                change_id=openspec_change_dir.name,
+                linear_issue=change_id_to_linear_issue(openspec_change_dir.name),
                 schema="verdict-change-v1",
                 change_dir=openspec_change_dir,
                 artifacts={},
             )
             openspec_block = {
                 "linear_issue": change.linear_issue,
-                "openspec_change": change_id,
+                "openspec_change": change.change_id,
                 "openspec_schema": change.schema,
-                "change_dir": str(openspec_change_dir),
+                "change_dir": str(change.change_dir),
                 "spec_revision_digest": spec_revision_digest(change),
                 "current_task": None,
                 "completed_tasks": [],
+                "mapping_source": "node_id",
+                "repo": str(repo.resolve()),
+                "worktree": str(repo.resolve()),
+                "branch": _git_branch(repo),
+                "pr": None,
+                "proof_state": "PENDING",
                 "conformance_result": None,
             }
 
@@ -682,6 +773,47 @@ async def run_golden_path(
             # Load graph from file only if not provided
             if graph is None:
                 graph = WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+        if openspec_block is not None:
+            from verdict.openspec_lifecycle import OpenSpecChange, admit_significant_change
+
+            change_dir = Path(str(openspec_block.get("change_dir", "")))
+            change = OpenSpecChange(
+                change_id=str(openspec_block.get("openspec_change", "")),
+                linear_issue=openspec_block.get("linear_issue"),
+                schema=str(openspec_block.get("openspec_schema", "")),
+                change_dir=change_dir,
+                artifacts={},
+            )
+            try:
+                admission = admit_significant_change(change if change_dir.is_dir() else None, repo)
+                admission_reason = admission.reason
+                admitted = admission.admitted
+            except Exception as exc:
+                admission_reason = f"OpenSpec admission unavailable: {type(exc).__name__}: {exc}"
+                admitted = False
+            events.emit("openspec_admission", admitted=admitted, reason=admission_reason)
+            if not admitted:
+                openspec_block["proof_state"] = "BLOCKED"
+                graph_path.write_text(
+                    json.dumps(
+                        {
+                            **(
+                                graph.to_dict()
+                                if graph is not None
+                                else {"goal": goal, "nodes": []}
+                            ),
+                            "run_id": run_dir.name,
+                            "openspec": openspec_block,
+                        },
+                        indent=2,
+                    )
+                )
+                events.emit(
+                    "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
+                )
+                return GoldenRunResult(
+                    run_dir, RunOutcome.BLOCKED.value, admission_reason, run_dir / "receipt.json"
+                )
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
@@ -727,6 +859,14 @@ async def run_golden_path(
     if openspec_block:
         graph_data["openspec"] = openspec_block
     graph_path.write_text(json.dumps(graph_data, indent=2))
+    if openspec_block is not None:
+        openspec_block.setdefault("repo", str(repo.resolve()))
+        openspec_block.setdefault("worktree", str(repo.resolve()))
+        openspec_block.setdefault("branch", _git_branch(repo))
+        openspec_block.setdefault("pr", None)
+        openspec_block.setdefault("proof_state", "PENDING")
+        events.on_event = lambda: _update_openspec_progress(graph_path, openspec_block, graph, log)
+        events.on_event()
     events.emit(
         "plan_ready",
         nodes=[n.to_dict() for n in graph.nodes],
@@ -851,6 +991,22 @@ async def run_golden_path(
         pass
 
     result = await runtime.run()
+    if openspec_block is not None:
+        from verdict.openspec_lifecycle import OpenSpecChange, check_conformance
+
+        change = OpenSpecChange(
+            change_id=str(openspec_block.get("openspec_change", "")),
+            linear_issue=openspec_block.get("linear_issue"),
+            schema=str(openspec_block.get("openspec_schema", "")),
+            change_dir=Path(str(openspec_block.get("change_dir", ""))),
+            artifacts={},
+        )
+        conformance = check_conformance(repo, change)
+        if conformance["spec_revision_digest"] != openspec_block.get("spec_revision_digest"):
+            conformance["status"] = "BLOCKED"
+            conformance["reason"] = SPEC_CHANGED
+        openspec_block["conformance_result"] = conformance
+        events.emit("openspec_conformance", result=conformance)
     try:
         receipt_path = write_run_receipt(run_dir)
         receipt = json.loads(receipt_path.read_text())

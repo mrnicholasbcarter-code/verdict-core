@@ -526,6 +526,8 @@ EVENT_TYPES = frozenset(
         "decision_signals_context_budget",  # BOD-203 AC3: advisory context budget
         "control",  # BOD-276: external run/node control requests + acknowledgements
         "executor_map_unmatched",  # BOD-284: --executor-map keys not in the final plan
+        "openspec_admission",  # BOD-205: change contract admission
+        "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
         "run_finished",
     }
 )
