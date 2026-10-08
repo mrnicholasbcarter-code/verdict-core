@@ -22,9 +22,10 @@ production-ready.
 3. **Policy and failover behavior** — inspect hard capability predicates,
    freshness, quota/cooldown handling, fallback legality, and whether advisory
    ranking can reintroduce an excluded candidate.
-4. **Evidence and privacy** — verify that decisions, execution outcomes, and
-   qualification reports are scoped, redacted, integrity-linked, and useful to
-   an operator without retaining prompts or response bodies.
+4. **Evidence and privacy** — inspect decision, execution, and qualification
+   reports for scope, default typed redaction, integrity links, and operator utility.
+   Explicit raw-field allowlists and free-text metadata require separate review;
+   exclude raw prompts, response bodies, and credentials from public reports.
 5. **Remediation plan** — return prioritized gaps, an owner-ready backlog,
    requalification triggers, and a release-evidence checklist.
 

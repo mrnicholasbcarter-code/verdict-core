@@ -19,12 +19,12 @@ uv sync --frozen --extra dev --extra server
 # Run certification (without rehearsals)
 python scripts/certify_release.py
 
-# Run with rehearsals
+# Run with actual child run directories (each contains graph/events/receipt)
 python scripts/certify_release.py \
-  --rehearsal clean=/path/to/clean-run \
-  --rehearsal chaos=/path/to/chaos-run
+  --rehearsal clean=/path/to/clean-runs/<clean-run-id> \
+  --rehearsal chaos=/path/to/chaos-runs/<chaos-run-id>
 
-# Allow dirty tree (forces INCOMPLETE verdict)
+# Allow a dirty preflight (the final dirty check still produces FAILED)
 python scripts/certify_release.py --allow-dirty
 ```
 
@@ -115,7 +115,7 @@ Security scan results from two tools (both are declared dev dependencies):
 2. **pip-audit** (CVE scan): Dependency vulnerability scanning
    - Command: `pip-audit --local --skip-editable -f json`
    - Checks installed packages against known CVE database
-   - Network/DB errors: `INCOMPLETE` (not `FAIL`)
+   - Recognized network/DB errors from a completed process with no report: `INCOMPLETE`; process timeouts, OS errors, or unmatched scanner errors can be `FAIL`
    - Missing binary: `FAIL` (declared dependency, must be present)
 
 The security report includes both commands, exit codes, report SHA256 digests, medium+ Bandit findings, and pip-audit vulnerability count when available. Reports stay temporary; no full scanner output or environment values are stored. A nonzero scanner exit with no parsed findings cannot be considered a pass.
@@ -191,12 +191,11 @@ All conditions met:
 
 ### `INCOMPLETE`
 
-At least one of:
-- Git working tree is dirty (`git_dirty: true`)
-- Rehearsals were skipped (no `--rehearsal` provided)
-- Any step is `SKIPPED` or `INCOMPLETE` (including missing documentation checker or evidence)
-
-A `FAIL` takes precedence over `INCOMPLETE`.
+If no step fails, at least one missing or partial condition causes `INCOMPLETE`, such as
+skipped rehearsals or an `INCOMPLETE`/`SKIPPED` step. The verdict computation also
+considers `git_dirty`, but the final git-clean step marks remaining dirt `FAIL`.
+`--allow-dirty` only bypasses the initial dirty-tree rejection; it cannot certify
+and does **not** guarantee `INCOMPLETE`. Any `FAIL` takes precedence.
 
 ### `FAILED`
 
@@ -204,11 +203,14 @@ At least one step returned `FAIL`.
 
 ## Normalized Fields
 
-The following fields vary between runs on identical inputs and are explicitly normalized:
+The following fields can vary between runs on identical inputs:
 
-- **Timestamps**: `started_at`, `finished_at`, and all `duration_seconds` values
-- **Temporary paths**: Any temp directories created during testing
-- **Environment variable list**: OS-dependent; may differ between platforms
+- **Timestamps and durations**: `started_at`, `finished_at`, and `duration_seconds`
+  remain in the bundle; exclude them when comparing attempts.
+- **Temporary command paths**: Checkout and temporary command paths in step
+  evidence (JUnit, lint, type, build, security, smoke, and docs) are normalized.
+- **Environment variable names**: The sorted `env_var_names` list is retained,
+  but its contents can vary across hosts; exclude it from cross-host comparisons.
 
 Evidence includes normalized checkout and temporary command paths (JUnit, lint, type, build, security, smoke, and docs). Subprocesses have finite per-command timeouts; timeout/error class metadata accompanies a failed step without copying secrets or checkout paths into the report. Raw report SHA256 hashes, package digests, host metadata, scanner data, and external rehearsal inputs can vary even for the same source SHA. Do not assume byte-identical bundles or deterministic verdicts from the SHA alone. Testcase ID/outcome parity is checked only between the two controlled shells of one run.
 
@@ -244,31 +246,55 @@ Latest certification: <sha> (see artifacts/certification/<sha>/)
 
 ## Rehearsal Workflow
 
-To include rehearsals in certification:
+These commands are a **live** recipe, not a claim that this checkout contains
+successful rehearsals. Use separate disposable git repositories for worker edits,
+keep run/state files outside the certification checkout, and confirm the checkout
+is clean before certification. Supply gateway credentials, available admitted
+routes, and OCR as required for the selected live setup. Run each command from
+the verdict-core root; replace paths and goals with real values.
 
-1. **Run clean rehearsal**:
+1. **Run the clean rehearsal and record its printed `run:` path**:
    ```bash
-   verdict orchestrate "..." --repo . --runs-dir clean-run/
+   verdict orchestrate "<clean goal>" --repo /path/to/disposable-clean-repo \
+     --runs-dir /path/to/isolated-runs/clean
    ```
 
-2. **Run chaos rehearsal**:
+2. **Run worker-scoped chaos with an explicit isolated health state file;
+   record its printed `run:` path**:
    ```bash
-   verdict orchestrate "..." --repo . --inject "*=quota" --runs-dir chaos-run/
+   verdict orchestrate "<chaos goal>" --repo /path/to/disposable-chaos-repo \
+     --runs-dir /path/to/isolated-runs/chaos \
+     --state-file /path/to/isolated-runs/chaos-health.json \
+     --inject "worker#1=route_quota"
    ```
+   Without a prebuilt `--graph`, `*=quota` can be consumed by planning rather
+   than a worker. Verify that the clean and chaos runs both report `COMPLETE`,
+   and that the chaos receipt records an **injected worker-attempt failure**.
+   A recoverable fault is not a guarantee of completion: stop if either run is
+   blocked. Use unique state files for separate chaos rehearsals.
 
-3. **Certify with rehearsals**:
+3. **Pass the actual child run directories**, not their `--runs-dir` parents.
+   The CLI prints `run: <runs-root>/<run-id>`; set the variables to those
+   exact printed paths and check each receipt before certifying:
    ```bash
+   CLEAN_RUN="/path/to/isolated-runs/clean/<printed-clean-run-id>"
+   CHAOS_RUN="/path/to/isolated-runs/chaos/<printed-chaos-run-id>"
+   verdict run-receipt "$CLEAN_RUN"
+   verdict run-receipt "$CHAOS_RUN"
    python scripts/certify_release.py \
-     --rehearsal clean=clean-run \
-     --rehearsal chaos=chaos-run
+     --rehearsal "clean=$CLEAN_RUN" \
+     --rehearsal "chaos=$CHAOS_RUN"
    ```
+   Each directory must contain `graph.json`, `events.jsonl`, and `receipt.json`
+   directly. A valid local receipt is not independent producer attestation.
 
-4. **Verify verdict**:
-   ```bash
-   jq -r '.verdict' artifacts/certification/<sha>/manifest.json
-   ```
-
-Expected today: `INCOMPLETE` even if all steps pass, because local receipts do not independently attest to their producer.
+4. **Inspect the generated attempt and published bundle paths printed by the
+   command**. For an existing same-SHA bundle, an incomplete rerun may be
+   retained only at the attempt record's `bundle_path`, not at the published
+   path. Read that bundle's `manifest.json` verdict. Expected today:
+   `INCOMPLETE` **only if no step fails**; local receipts cannot independently
+   attest to their producer. A dirty checkout or other failed step yields
+   `FAILED`.
 
 ## Schema Evolution
 
@@ -279,11 +305,14 @@ When the bundle schema changes:
 
 ## Security: No Secret Leakage
 
-**Critical invariant**: Environment variable **values** are never written to certification bundles.
-
-Only variable **names** are captured in `environment.json:env_var_names`.
-
-This is validated by test: `test_environment_no_secret_values`.
+The generated environment snapshot `environment.json:env_var_names` captures
+only environment variable **names**, not values. This narrow behavior is
+checked by `test_environment_no_secret_values`. It does **not** establish that
+all certification bundle content is secret-free: supplied rehearsal
+`graph.json`, `events.jsonl`, `receipt.json`, and optional `review.json` are
+copied verbatim. Sanitize those inputs before bundling; do not put secret values
+in free-text fields. A full-bundle leak scan is needed before promising no
+values anywhere.
 
 ## Example: Reading a Bundle
 
@@ -314,7 +343,7 @@ print(f"Platform: {env['platform']}")
 
 ### Certification fails with "Git working tree is dirty"
 
-**Solution**: Commit or stash changes, or use `--allow-dirty` (forces `INCOMPLETE`).
+**Solution**: Commit or stash changes. `--allow-dirty` bypasses the initial preflight only; final dirt makes the git-clean step `FAIL` and the verdict `FAILED`.
 
 ### Missing rehearsals
 
@@ -324,7 +353,7 @@ print(f"Platform: {env['platform']}")
 
 ### Step fails: "bandit not available"
 
-**Solution**: Add `bandit` to `[project.optional-dependencies.dev]` in `pyproject.toml` or accept `SKIPPED` status.
+**Solution**: Run `uv sync --frozen --extra dev --extra server`; Bandit is already a declared dev dependency, and a missing binary is blocking `FAIL`.
 
 ### mypy --strict fails
 

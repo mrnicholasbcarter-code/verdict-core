@@ -2,7 +2,7 @@
   "schema_version": 1,
   "title": "Verdict Core public claims ledger",
   "repository": "mrnicholasbcarter-code/verdict-core",
-  "commit": "7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e",
+  "commit": "8b1f9d8e82fd7853cdffe19aa1b49baac32229ed",
   "claim_freeze_date": "2026-09-06",
   "review_after": "2026-11-07",
   "statuses": [
@@ -13,7 +13,7 @@
     "unsupported",
     "verified"
   ],
-  "public_evidence_rule": "A public claim may use verified or observed wording only when its evidence is listed and its limitations are preserved.",
+  "public_evidence_rule": "A public claim may use verified or observed wording only when its listed evidence supports that wording, its limitations are preserved, and its per-entry review deadline has not expired; all entry reviews had expired by 2026-10-08 and must be refreshed after review.",
   "entries": [
     {
       "id": "CL-001",
@@ -27,7 +27,7 @@
         "tests/test_adaptive_ranker.py"
       ],
       "evidence_locators": [
-        "EligibilityGate.filter",
+        "EligibilityGate.evaluate",
         "test_ranker_cannot_reintroduce_excluded_candidate",
         "test_excluded_cannot_be_reintroduced"
       ],
@@ -42,14 +42,15 @@
       "falsification_test": "Attempt to reintroduce an excluded candidate through the ranker and assert the selected set remains gate-bounded.",
       "missing_evidence": "None for the local invariant; live gateway behavior is outside scope.",
       "downgrade_wording": "The local tests cover the eligibility/ranking invariant.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-002",
       "matrix_row": "PM-002",
-      "claim": "Missing or stale runtime truth cannot silently authorize protected work.",
-      "status": "verified",
-      "allowed_wording": "Missing or stale runtime truth is represented explicitly and cannot silently authorize protected work.",
+      "claim": "Local availability parsing treats malformed and contradictory runtime observations explicitly; protected admission has a stale-cache exception.",
+      "status": "observed",
+      "allowed_wording": "Malformed and contradictory observations have explicit local handling. Cached reports may be served stale during the configured grace window, and protected admission does not independently recheck age.",
       "evidence": [
         "verdict/availability.py",
         "verdict/availability_cache.py",
@@ -60,20 +61,21 @@
         "normalize_observation and select_capable_candidates",
         "AvailabilityCache",
         "test_contradictory_and_malformed_observations_are_unknown_or_malformed",
-        "test_refresh_failure_returns_explicit_unknown_not_stale"
+        "test_stale_window_serves_stale_then_triggers_single_refresh"
       ],
       "observed_date_range": "2026-09-06",
-      "metric_definition": "The behavior is a fail-closed contract over fixture observations and cache states, not a field availability percentage.",
+      "metric_definition": "Source and fixture behavior, not a guarantee that stale cached READY reports cannot authorize protected work.",
       "authorship": "repository implementation and tests",
       "public": true,
       "visibility": "public",
       "redacted_substitute": "No redaction required; references are public source and test paths.",
-      "confidence": "high",
+      "confidence": "medium",
       "likely_objection": "Could a catalog row be treated as health?",
-      "falsification_test": "Feed stale, contradictory, malformed, or missing observations and assert the result is unknown or rejected.",
-      "missing_evidence": "Current provider health evidence is intentionally not claimed.",
-      "downgrade_wording": "The local availability adapter fails closed for the tested malformed and stale cases.",
-      "review_after": "2026-10-06"
+      "falsification_test": "Serve a stale eligible/READY report within the cache grace window and check whether EligibilityGate.evaluate rejects it before protected work.",
+      "missing_evidence": "A protected-admission age check and regression are needed before restoring the universal fail-closed guarantee.",
+      "downgrade_wording": "The local adapter covers malformed and contradictory observations; cache freshness is a separate boundary.",
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-003",
@@ -102,7 +104,8 @@
       "falsification_test": "Provide only declared, inferred, claimed, expired, or unsupported evidence and assert admission remains false.",
       "missing_evidence": "Protocol-specific handshakes and probes are separate adapters.",
       "downgrade_wording": "The passport contract prevents the tested non-direct evidence from authorizing admission.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-004",
@@ -129,7 +132,8 @@
       "falsification_test": "Compare reports with reordered mappings and with secret-bearing identity values; assert stable ordering and safe output.",
       "missing_evidence": "No live runtime discovery or protocol execution is included in this claim.",
       "downgrade_wording": "The matrix is a deterministic report over already-issued evidence.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-005",
@@ -158,14 +162,15 @@
       "falsification_test": "Run the demo in an empty temporary directory with provider variables set and compare output.",
       "missing_evidence": "Live provider execution, adoption, and production readiness are not demonstrated.",
       "downgrade_wording": "The fixture demonstrates the local contract without network access or credentials.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-006",
       "matrix_row": "PM-009",
-      "claim": "Local benchmark fixtures are reproducible.",
+      "claim": "Local benchmark fixture structure and digests are repeatable; evidence bundles match when collected artifact bytes match.",
       "status": "verified",
-      "allowed_wording": "Local benchmark fixtures and evidence bundles are reproducible and digest-verifiable.",
+      "allowed_wording": "Local fixture structure and digests can be checked; benchmark timings and threshold verdicts are observed. Bundles are byte-identical for identical collected artifact bytes.",
       "evidence": [
         "verdict/benchmarking.py",
         "benchmarks/fixtures/reproducible.json",
@@ -181,7 +186,7 @@
         "test_identical_inputs_produce_identical_manifest_and_bundle"
       ],
       "observed_date_range": "2026-09-06",
-      "metric_definition": "The benchmark structure, fixture digest, manifest, and archive bytes are stable for identical local inputs.",
+      "metric_definition": "Stable fixture structure and digests are separate from measured timestamps/timings; archive bytes are stable only when collected artifact bytes are identical.",
       "authorship": "repository implementation and tests",
       "public": true,
       "visibility": "public",
@@ -189,9 +194,10 @@
       "confidence": "high",
       "likely_objection": "Does a fixture benchmark prove provider quality?",
       "falsification_test": "Run the reproducibility tests twice and inspect that live-provider mode requires explicit opt-in.",
-      "missing_evidence": "No live-provider quality or latency result is authorized.",
+      "missing_evidence": "No live-provider quality or latency result is authorized; elapsed timings are not byte-deterministic.",
       "downgrade_wording": "The checked-in fixture harness is reproducible; it is not a live benchmark.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-007",
@@ -218,7 +224,8 @@
       "falsification_test": "Require fresh direct observations for a sample and verify that catalog membership alone cannot satisfy protected eligibility.",
       "missing_evidence": "Current liveness, authorization, quota, and route-level execution evidence.",
       "downgrade_wording": "The repository records a bounded historical catalog observation; it does not claim all rows are runnable.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-008",
@@ -249,7 +256,8 @@
       "falsification_test": "Require a committed benchmark fixture with hardware, dataset, warmup, repetitions, baseline, raw results, and analysis before promotion.",
       "missing_evidence": "Controlled latency and memory benchmark artifacts.",
       "downgrade_wording": "Local-first memory components exist; performance claims remain unverified.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-009",
@@ -274,7 +282,8 @@
       "falsification_test": "Require the external repository, benchmark fixture, environment, raw results, and risk-event ledger with sensitive data redacted.",
       "missing_evidence": "Independent reproducible artifacts and provenance for every metric.",
       "downgrade_wording": "The figures are self-reported in the case study and are not release-gated evidence here.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-010",
@@ -303,14 +312,15 @@
       "falsification_test": "Run the complete release checklist against a tagged artifact and reject any missing or stale gate evidence.",
       "missing_evidence": "Complete tagged release, evidence bundle, gate report, and exact CI records.",
       "downgrade_wording": "The current checkout is a hardening candidate, not proof that every release gate has passed.",
-      "review_after": "2026-10-06"
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
       "id": "CL-011",
       "matrix_row": "PM-015",
-      "claim": "Verdict-core enforces a security and privacy launch gate before release.",
+      "claim": "The repository defines blocking security/privacy checks for PR/main, but tag-release linkage is not mandatory.",
       "status": "observed",
-      "allowed_wording": "The repository defines and enforces a non-advisory security and privacy launch gate in CI (SAST, dependency audit, secret hygiene, OIDC-based provenance), backed by dedicated tests.",
+      "allowed_wording": "Blocking security/privacy jobs are configured for PR/main. This ledger does not verify that every tagged release requires or has passed those jobs.",
       "evidence": [
         ".github/workflows/security.yml",
         ".github/workflows/release.yml",
@@ -325,17 +335,18 @@
         "security and privacy test suites"
       ],
       "observed_date_range": "2026-09-04",
-      "metric_definition": "A launch gate is enforced if the security workflow fails the job (no continue-on-error/advisory bypass) on audit findings, and required gates cannot be silently skipped.",
+      "metric_definition": "Defined blocking PR/main security jobs are distinct from mandatory exact-tag release dependencies or completed job evidence.",
       "authorship": "spec 277-security-privacy-gate implementation and proof matrix",
       "public": true,
       "visibility": "public",
       "redacted_substitute": "No redaction required; references are public workflow and test paths.",
-      "confidence": "high",
-      "likely_objection": "Has this gate actually blocked a real release, and was the dynamic scan run?",
-      "falsification_test": "Introduce a known vulnerable dependency or secret-shaped value and confirm the security workflow fails the job.",
-      "missing_evidence": "A completed CI run against a tagged release showing the gate actually blocking, and a verified dynamic (DAST) scan result.",
-      "downgrade_wording": "The gate is wired and unit/integration tested locally; it has not yet been exercised end-to-end against a real release.",
-      "review_after": "2026-10-06"
+      "confidence": "medium",
+      "likely_objection": "Does release.yml require exact successful security, dependency, CodeQL and privacy checks?",
+      "falsification_test": "Inspect tag-release job dependencies and check that an exact release SHA cannot publish if a required security/privacy job fails.",
+      "missing_evidence": "Mandatory tag-release job linkage, exact successful release checks, and verified dynamic (DAST) scan results.",
+      "downgrade_wording": "Security and privacy checks are configured for PR/main, not proven mandatory for every tagged release.",
+      "review_after": "2026-10-06",
+      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     }
   ],
   "lifecycle": {
@@ -370,7 +381,7 @@
       ],
       "superseded": []
     },
-    "selection_rule": "Select fresh active or verified claims only; order by verified-at, observed-at, confidence, then claim-id. Superseded history remains queryable.",
+    "selection_rule": "Select fresh active or verified claims by default (observed only with include_observed opt-in). Group by subject; choose verified before active, then verified_at or observed_at fallback, observed_at, confidence, and claim-id. Superseded history remains queryable.",
     "dispute_rule": "Disputed claims are surfaced in hydration omissions and cannot satisfy a required fact.",
     "freshness_policy": {
       "policy_required_per_source_type": true,
@@ -379,6 +390,9 @@
       "missing_policy_rule": "A missing source-type policy is not fresh and cannot satisfy a required fact."
     },
     "privacy_rule": "Persist claim-id, text-hash, status, timestamps, confidence, and verified source/evidence references; never persist claim text.",
-    "audit_rule": "Every status transition is an append-only claim_status_transition receipt linked to the claim receipt."
-  }
+    "audit_rule": "When ClaimsLedger is configured with ReceiptStore, each status transition appends linked claim_status_transition evidence. Without ReceiptStore, no durable transition receipt is written."
+  },
+  "audit_date": "2026-10-08",
+  "source_scope": "Claims reviewed against the audited source revision; historical execution evidence remains tied to its original run and is not proof of execution at this source revision.",
+  "review_status": "All 11 entry review_after dates (2026-10-06) had expired by the 2026-10-08 audit. Preserve the original dates; entries need fresh exact-source review before their verified or observed wording is reused. The structural validator currently compares entry dates only with the historical freeze date."
 }

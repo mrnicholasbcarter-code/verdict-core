@@ -12,8 +12,10 @@ Chain recorded in `events.jsonl` and projected in `receipt.json`:
    real capacity was never cooled)
 3. reassign the same node -> `kr/claude-sonnet-4`, attempt 2 completes in 17s
 4. node verification `grep -qx ok smoke.txt` passes -> VALIDATED, integrated
-5. independent review by open-code-review on `kr/gpt-5.6-terra`
-   (different family from the implementer), observed model == selected, PASS
+5. open-code-review on `kr/gpt-5.6-terra` (different family from the
+   implementer) recorded observed model == selected and PASS. Its retained raw
+   output says `skipped`, with no items selected/completed and zero reviewed
+   files or tokens; no semantic review was demonstrated. (This run predates the reviewer check that now rejects skipped or zero-coverage OCR output as `ERROR`.)
 6. run COMPLETE
 
 Verify locally:
