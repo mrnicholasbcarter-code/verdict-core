@@ -78,7 +78,8 @@ def _as_ocr_writes(payload: str, argv: Sequence[str]) -> str:
         data = json.loads(payload)
     except ValueError:
         return payload
-    execution = data.get("manifest", {}).get("execution") if isinstance(data, dict) else None
+    manifest = data.get("manifest") if isinstance(data, dict) else None
+    execution = manifest.get("execution") if isinstance(manifest, dict) else None
     if isinstance(execution, dict) and "--model" in argv:
         execution["model"] = list(argv)[list(argv).index("--model") + 1]
         return json.dumps(data)
@@ -850,7 +851,7 @@ def test_retained_dogfood_bod_273_payload_still_passes(
 
 
 # Complete Interview Clean payload (portable hermetic copy per Design § 4)
-_INTERVIEW_CLEAN_COMPLETE = """
+_INTERVIEW_CLEAN_COMPLETE = r"""
 {
   "status": "complete",
   "llm": {
@@ -861,17 +862,17 @@ _INTERVIEW_CLEAN_COMPLETE = """
   "summary": {
     "files_reviewed": 2,
     "comments": 0,
-    "total_tokens": 38245,
-    "input_tokens": 37891,
-    "output_tokens": 354,
-    "cache_read_tokens": 0,
-    "elapsed": "18s"
+    "total_tokens": 15098,
+    "input_tokens": 14484,
+    "output_tokens": 614,
+    "cache_read_tokens": 9728,
+    "elapsed": "12s"
   },
   "tool_calls": {
-    "total": 7,
+    "total": 2,
     "by_tool": {
-      "code_search": 3,
-      "file_read": 4
+      "code_search": 1,
+      "file_find": 1
     },
     "failure": 0,
     "failure_by_tool": {},
@@ -880,72 +881,107 @@ _INTERVIEW_CLEAN_COMPLETE = """
   "comments": [],
   "groups": [
     {
-      "label": "verdict/orchestration/review.py",
-      "files": ["verdict/orchestration/review.py"]
-    },
-    {
-      "label": "tests/test_orch_review.py",
-      "files": ["tests/test_orch_review.py"]
+      "label": "small change set",
+      "files": [
+        "textkit/slug.py",
+        "textkit/words.py"
+      ]
     }
   ],
-  "session_id": "test-session-id",
+  "session_id": "79e5191e-c7c4-4f4f-b3d8-b0898240dd5a",
   "manifest": {
     "schema_version": "ocr.run-manifest/v1",
-    "run_id": "test-run-id",
+    "run_id": "79e5191e-c7c4-4f4f-b3d8-b0898240dd5a",
     "operation": "review",
     "terminal_state": "complete",
-    "repository": {
-      "identity_sha256": "test-repo-hash"
-    },
+    "repository": {},
     "input": {
       "mode": "range",
-      "requested_from": "base-ref",
-      "requested_head": "head-ref",
-      "resolved_base": "base-ref",
-      "resolved_head": "head-ref",
-      "exact_range": "base-ref..head-ref",
-      "source_artifact_sha256": "test-source-hash"
+      "requested_from": "b2491de635f66e873b73ce45f8212ff493a5ceb6",
+      "requested_head": "fc0110d1f2ea15473f6edda54efb05cbf384f3d5",
+      "resolved_base": "b2491de635f66e873b73ce45f8212ff493a5ceb6",
+      "resolved_head": "fc0110d1f2ea15473f6edda54efb05cbf384f3d5",
+      "exact_range": "b2491de635f66e873b73ce45f8212ff493a5ceb6..fc0110d1f2ea15473f6edda54efb05cbf384f3d5",
+      "source_artifact_sha256": "bdf15b3b6c76fda5df5acc33ed8aab44932aa3f7eb95ef2aae5544aac40392f1"
     },
     "execution": {
       "ocr_version": "v1.12.9",
       "provider": "verdict-omniroute",
       "model": "cx/gpt-5.5",
       "configured_concurrency": 8,
-      "rule_config_sha256": "test-rule-hash",
-      "runtime_config_sha256": "test-runtime-hash"
+      "rule_config_sha256": "9f33647a25a002db1b7770ce092ffab8b77ef98379e262871a243afd75f798d9",
+      "runtime_config_sha256": "f611622b58514c36e4ea02536cab18e15419df06544a048c99b5e3c8e1a21b04"
     },
     "coverage": {
       "selected": [
         {
-          "item_id": "item-1",
-          "path": "verdict/orchestration/review.py",
-          "fingerprint": "fp-1"
+          "item_id": "1ad1b52fe85fc835f64ed51411d7229297739bcef857208928f70b4e3d58a0f6",
+          "path": "textkit/slug.py",
+          "fingerprint": "ef572669ea1a3bf8935d0ea18f87b79fcc9b5ea01fc774e34bc5088e08006d65"
         },
         {
-          "item_id": "item-2",
-          "path": "tests/test_orch_review.py",
-          "fingerprint": "fp-2"
+          "item_id": "66740eec9663dd9db28078b449e04b21780a7efa05b8785270605e647877d304",
+          "path": "textkit/words.py",
+          "fingerprint": "61cee5577af9bdacf980475843b53678404690b0858b6c24446bd5ea9587574a"
         }
       ],
       "completed": [
         {
-          "item_id": "item-1",
-          "path": "verdict/orchestration/review.py",
-          "fingerprint": "fp-1"
+          "item_id": "1ad1b52fe85fc835f64ed51411d7229297739bcef857208928f70b4e3d58a0f6",
+          "path": "textkit/slug.py",
+          "fingerprint": "ef572669ea1a3bf8935d0ea18f87b79fcc9b5ea01fc774e34bc5088e08006d65"
         },
         {
-          "item_id": "item-2",
-          "path": "tests/test_orch_review.py",
-          "fingerprint": "fp-2"
+          "item_id": "66740eec9663dd9db28078b449e04b21780a7efa05b8785270605e647877d304",
+          "path": "textkit/words.py",
+          "fingerprint": "61cee5577af9bdacf980475843b53678404690b0858b6c24446bd5ea9587574a"
         }
       ],
       "reused": [],
       "failed": [],
       "waived": []
-    }
+    },
+    "elapsed_ms": 12185
   }
 }
 """
+
+
+def test_interview_clean_inline_payload_has_retained_key_structure() -> None:
+    """The frozen payload includes the complete OCR envelope and nested manifest."""
+    payload = json.loads(_INTERVIEW_CLEAN_COMPLETE)
+    assert set(payload) == {
+        "status",
+        "llm",
+        "message",
+        "summary",
+        "tool_calls",
+        "comments",
+        "groups",
+        "session_id",
+        "manifest",
+    }
+    assert set(payload["manifest"]) == {
+        "schema_version",
+        "run_id",
+        "operation",
+        "terminal_state",
+        "repository",
+        "input",
+        "execution",
+        "coverage",
+        "elapsed_ms",
+    }
+    assert set(payload["manifest"]["coverage"]) == {
+        "selected",
+        "completed",
+        "reused",
+        "failed",
+        "waived",
+    }
+    assert len(payload["groups"]) == 1
+    assert payload["groups"][0]["label"] == "small change set"
+    assert payload["tool_calls"]["by_tool"].get("file_find") is not None
 
 
 def test_interview_clean_complete_payload_still_passes(
@@ -1027,6 +1063,18 @@ def test_non_list_coverage_fields_do_not_satisfy_list_predicate(
         result = _run(reviewer)
         assert result.status == "ERROR", f"wrong_value={wrong_value}"
         assert result.detail == "review coverage missing", f"wrong_value={wrong_value}"
+
+
+@pytest.mark.parametrize("payload", [{"manifest": []}, {"manifest": {"coverage": []}}])
+def test_malformed_coverage_containers_fail_closed(
+    payload: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review coverage missing"
 
 
 def test_summary_alone_can_pass_without_manifest(

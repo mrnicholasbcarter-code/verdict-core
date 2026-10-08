@@ -1327,10 +1327,14 @@ async def test_integrate_verify_records_resolved_argv_when_substituted(
         return resolved, resolved_argv0
 
     monkeypatch.setattr(_rt_mod, "_resolve_verify_argv", fake_resolve)
+    recorded_integration_calls: list[list[str]] = []
 
     async def fake_runner(argv: list[str], cwd: Path, timeout: float) -> tuple[int, str]:
         if argv and argv[0] == "git":
             return await subprocess_runner(argv, cwd, timeout)
+        if argv and argv[0] in {"python", fake_interp}:
+            recorded_integration_calls.append(list(argv))
+            return 0, "ok"
         return 0, "ok"
 
     integrate = WorkNode(
@@ -1361,10 +1365,12 @@ async def test_integrate_verify_records_resolved_argv_when_substituted(
     assert result.outcome is RunOutcome.COMPLETE, result.reason
 
     [v] = events.of("verify", "i")
+    assert recorded_integration_calls == [expected_resolved]
     assert v["command"] == shlex.join(original_cmd), "command must be shlex.join of original argv"
     assert v["executed_command"] == shlex.join(expected_resolved), (
         "executed_command must be shlex.join of resolved argv"
     )
+    assert v["executed_command"] == shlex.join(recorded_integration_calls[0])
     assert v.get("resolved_argv0") == fake_interp, "resolved_argv0 retained from resolver"
 
 
@@ -1377,6 +1383,7 @@ async def test_integrate_verify_failed_event_records_both_command_fields(
 
     original_cmd = ("python", "-m", "pytest")
     fake_interp = "/fake/python3.99"
+    expected_resolved = [fake_interp, "-m", "pytest"]
 
     def fake_resolve(argv: tuple[str, ...]) -> tuple[list[str], str]:
         resolved = list(argv)
@@ -1387,6 +1394,7 @@ async def test_integrate_verify_failed_event_records_both_command_fields(
         return resolved, resolved_argv0
 
     monkeypatch.setattr(_rt_mod, "_resolve_verify_argv", fake_resolve)
+    recorded_integration_calls: list[list[str]] = []
 
     async def fake_runner(argv: list[str], cwd: Path, timeout: float) -> tuple[int, str]:
         if argv and argv[0] == "git":
@@ -1394,8 +1402,10 @@ async def test_integrate_verify_failed_event_records_both_command_fields(
         if argv and argv[0] == "sh":
             # Worker "a" verify command uses "sh"; pass it so "a" validates
             return await subprocess_runner(argv, cwd, timeout)
-        # Integration node verify command uses "python" (→ fake_interp); fail it
-        return 1, "test suite failed"
+        if argv and argv[0] in {"python", fake_interp}:
+            recorded_integration_calls.append(list(argv))
+            return 1, "test suite failed"
+        raise AssertionError(f"unexpected runner argv: {argv}")
 
     integrate = WorkNode(
         "i",
@@ -1425,9 +1435,11 @@ async def test_integrate_verify_failed_event_records_both_command_fields(
     assert result.outcome is RunOutcome.BLOCKED
 
     [v] = events.of("verify", "i")
+    assert recorded_integration_calls == [expected_resolved]
     assert v["ok"] is False
     assert v["command"] == shlex.join(original_cmd)
-    assert v["executed_command"] == shlex.join([fake_interp, "-m", "pytest"])
+    assert v["executed_command"] == shlex.join(expected_resolved)
+    assert v["executed_command"] == shlex.join(recorded_integration_calls[0])
 
 
 # ---- Receipt compatibility: legacy events still verify ----
@@ -1493,7 +1505,13 @@ def test_legacy_receipt_with_old_space_join_command_still_verifies(tmp_path: Pat
                 verification_command=("pytest", "-q"),
                 barrier="int",
             ),
-            WorkNode("merge", "integrate", kind="integrate", depends_on=("a",)),
+            WorkNode(
+                "merge",
+                "integrate",
+                kind="integrate",
+                depends_on=("a",),
+                verification_command=("pytest", "tests/check with spaces.py"),
+            ),
             WorkNode("rev", "review", kind="review", depends_on=("merge",)),
         ),
     )
@@ -1511,11 +1529,72 @@ def test_legacy_receipt_with_old_space_join_command_still_verifies(tmp_path: Pat
     log.emit("barrier", node_id="merge", name="int", ok=True)
     log.emit("integrate", node_id="merge", commit="abc123")
     log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
-    log.emit("verify", node_id="merge", ok=True, command="pytest", exit_code=0)
+    legacy_argv = graph.nodes[1].verification_command
+    legacy_command = " ".join(legacy_argv)
+    assert legacy_command == "pytest tests/check with spaces.py"
+    assert legacy_command != shlex.join(legacy_argv)
+    log.emit("verify", node_id="merge", ok=True, command=legacy_command, exit_code=0)
+    raw_ref = "review/ocr-raw.json"
+    raw_path = run_dir / raw_ref
+    raw_path.parent.mkdir()
+    raw_path.write_text("{}")
     (run_dir / "review.json").write_text(
-        json.dumps({"status": "PASS", "reviewer": "ocr v1", "route_id": "gm/g", "findings": []})
+        json.dumps(
+            {
+                "status": "PASS",
+                "reviewer": "ocr v1",
+                "route_id": "gm/g",
+                "findings": [],
+                "raw_ref": raw_ref,
+            }
+        )
     )
     log.emit("run_finished", outcome="COMPLETE", reason="done")
 
     write_run_receipt(run_dir)
+    assert json.loads(raw_path.read_text()) == {}
+    assert json.loads((run_dir / "review.json").read_text())["raw_ref"] == raw_ref
+    assert json.loads((run_dir / "review.json").read_text())["status"] == "PASS"
     assert verify_run_receipt(run_dir) == []
+    [recorded_verify] = [
+        event for event in log.read() if event.type == "verify" and event.node_id == "merge"
+    ]
+    assert recorded_verify.data["command"] == legacy_command
+    assert "executed_command" not in recorded_verify.data
+    assert verify_run_receipt(run_dir) == []
+
+
+def test_new_executed_command_is_bound_by_receipt_events_digest(tmp_path: Path) -> None:
+    """Changing only executed_command after receipt creation invalidates event evidence."""
+    from verdict.orchestration.receipt import EventLog, verify_run_receipt, write_run_receipt
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    graph = WorkGraph(
+        goal="verify integration", nodes=(WorkNode("merge", "integrate", kind="integrate"),)
+    )
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
+    log = EventLog(run_dir / "events.jsonl")
+    log.emit("run_started", run_id="new-command", goal=graph.goal)
+    log.emit(
+        "verify",
+        node_id="merge",
+        ok=True,
+        command="python -m pytest",
+        executed_command="/resolved/python -m pytest",
+        exit_code=0,
+    )
+    log.emit("barrier", node_id="merge", name="integration", ok=True)
+    log.emit("integrate", node_id="merge", commit="abc123")
+    log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+    write_run_receipt(run_dir)
+    assert verify_run_receipt(run_dir) == []
+
+    events_path = run_dir / "events.jsonl"
+    rows = [json.loads(line) for line in events_path.read_text().splitlines()]
+    [verify_event] = [row for row in rows if row["type"] == "verify"]
+    assert verify_event["data"]["executed_command"] == "/resolved/python -m pytest"
+    verify_event["data"]["executed_command"] = "/different/python -m pytest"
+    events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    assert any("events_digest" in problem for problem in verify_run_receipt(run_dir))
