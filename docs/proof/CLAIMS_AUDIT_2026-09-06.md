@@ -5,9 +5,18 @@
 **Auditor:** Verdict maintainer  
 **Purpose:** E1-S1 / Project #6 — establish the public claim inventory and the v0.3.0 release boundary.
 
+> **Historical snapshot, not a current approval.** All results and counts below belong
+> to the 2026-09-06 audit at the SHA above. The 2026-10-08 wording audit at
+> `8b1f9d8e82fd7853cdffe19aa1b49baac32229ed` is summarized in
+> [EVIDENCE_INDEX.md](EVIDENCE_INDEX.md). The proof matrix now has 21 rows
+> (15 verified, 1 observed, 4 partial, 1 blocked), while the ledger still
+> has 11 entries (5 verified, 2 observed, 1 self-reported, 2 unsupported,
+> 1 aspiration). All eleven entry review deadlines expired 2026-10-06;
+> no `review_after` date was renewed by this wording audit.
+
 ## Result
 
-The repository already has a functioning claims ledger and proof matrix. This audit refreshed
+At the revision above, the repository had a claims ledger and proof matrix. This audit refreshed
 their source revision and review date, verified every referenced evidence path exists at the
 audited revision, and classified the public surfaces below. No routing behavior was changed.
 
@@ -34,7 +43,7 @@ A checked task or issue is not treated as implementation proof. Historical claim
 ledger when useful, but their allowed public wording is bounded by their status and missing
 evidence.
 
-## Current claim inventory
+## Claim inventory at this historical audit
 
 | IDs | Status | Public treatment |
 |---|---|---|
@@ -44,7 +53,7 @@ evidence.
 | CL-010 | `aspiration` | Do not claim production readiness or that every release gate has passed. |
 | CL-011 | `observed` | May describe the security/privacy gate as wired and tested, while disclosing that a complete tagged-release/DAST proof is still missing. |
 
-## Public surfaces reviewed
+## Public surfaces reviewed at this historical audit
 
 - `README.md`: installation, offline fixture, live-probe boundary, routing invariants, cost demo,
   context-lift receipt, test/gate summary, architecture links, and project status.
@@ -84,6 +93,7 @@ python scripts/verify_proof_matrix.py
 pytest -q tests/test_proof_matrix.py
 ```
 
+These commands document the historical process, not a new exact-SHA re-review.
 The full repository CI matrix remains the release authority. This audit does not claim live
 provider quality, production readiness, adoption, performance leadership, or successful execution
 of every catalog entry.

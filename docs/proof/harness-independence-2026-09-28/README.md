@@ -11,9 +11,10 @@ The Verdict orchestration pipeline can complete an end-to-end run using either:
    unified diff; the executor validates paths against `owned_files`, runs
    `git apply --check` then `git apply`, and fails closed on any violation.
 
-Both runs used the same orchestration controller, the same eligibility ladder,
-the same recovery classifier, the same integration barrier, and the same
-independent code reviewer. The executor is the only substituted component.
+Both runs used the same orchestration components: controller, eligibility
+ladder, recovery classifier, integration barrier and reviewer integration.
+Their executors, generated plans and throwaway repositories differed. This is
+not a controlled comparison where only one component changed.
 
 ## What this does NOT prove
 
@@ -26,10 +27,14 @@ independent code reviewer. The executor is the only substituted component.
 
 ## Runs
 
-| Run | Executor | Outcome | Integrity | Worker model | Reviewer |
-|-----|----------|---------|-----------|-------------|----------|
+| Run | Executor | Outcome | Integrity | Selected worker route | Reviewer |
+|-----|----------|---------|-----------|-----------------------|----------|
 | `prime-run/` | `prime-headless` | COMPLETE | OK | kr/claude-sonnet-4 | kr/gpt-5.6-terra |
 | `direct-gateway-run/` | `direct-gateway` | COMPLETE | OK | kr/claude-sonnet-4 | kr/gpt-5.6-terra |
+
+For `direct-gateway-run/`, the model reported by the worker was
+`claude-sonnet-4` without `kr/`. Its receipt records `route_identity: mismatch`
+and a warning: the selected route does not verify the serving provider.
 
 ## Verification
 
@@ -42,10 +47,13 @@ Both should report `integrity: OK (events digest verified)`.
 
 ## Path scrubbing
 
-Absolute paths (`/home/.../venv/bin/python`) in verification command output
-were replaced with `<VENV>/python`. The receipt digest was recomputed by
-`write_run_receipt` from the scrubbed events so `verdict run-receipt` still
-returns integrity OK.
+The capture author reports replacing absolute paths
+(`/home/.../venv/bin/python`) in verification command output with
+`<VENV>/python`, then calling `write_run_receipt` on the scrubbed events.
+The retained public log contains the placeholders and its receipt digest
+verifies with `verdict run-receipt`. The original logs and rewrite history
+are not retained: this proves consistency of the public log against the
+retained receipt, not the authenticity of the original log or scrub sequence.
 
 ## Executor identity
 

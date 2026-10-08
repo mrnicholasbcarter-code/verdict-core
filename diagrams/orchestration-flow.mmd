@@ -1,5 +1,5 @@
 %% orchestration-flow.mmd -- verdict orchestrate GOAL: goal to receipt
-%% Source (verified against code at this commit):
+%% Source symbols verified against source at 1be7217; see evidence-by-symbol annotations:
 %%   verdict/orchestration/run.py (plan_with_failover, load_or_create_run)
 %%   verdict/orchestration/planner.py (FrontierPlanner.plan, choose_topology, parse_plan, hydrate_node_prompt)
 %%   verdict/orchestration/contracts.py (WorkGraph, NodeState)
@@ -28,7 +28,7 @@ flowchart TD
     PRUN --> TOPO["choose_topology(nodes, max_parallel) -- deterministic rules (SOLO / WORKER_CRITIC / PARALLEL_WORK_UNITS), never a model choice"]
     TOPO --> GRAPH["WorkGraph(goal, nodes, topology, rationale, max_parallel) -- validates DAG, cycles, ownership on construction"]
     LOADG --> GRAPH
-    PSEL -. "selector.select returns None: no eligible controller model" .-> PBLOCK["raise OrchestrationError('planning failed on every eligible frontier model; last: ...')"]
+    PSEL -. "selector.select returns None: no eligible controller model" .-> PBLOCK["planner exhaustion blocks before receipt creation (events/graph may remain)"]
 
     GRAPH --> READY["DagRuntime.run() -- loop while nodes remain PLANNED/RUNNING; dispatch _ready() nodes whose deps are VALIDATED"]
     READY --> DRIVE["_drive(node_id) per node, tasks bounded by asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))"]
@@ -52,17 +52,21 @@ flowchart TD
     CLASS --> COOL["failure.scope in {route, provider} -> selector.record_failure(run.route_id, failure, now); emit('cooldown', ...)"]
     COOL --> ACTION{"failures[-1].action"}
     ACTION -- "RETRY_INFRA" --> SAMEROUTE["asyncio.sleep(min(cooldown_seconds, 60)); same route retried next loop -- gateway-local transient, route not cooled"]
-    ACTION -- other --> REASSIGN["tried.add(run.route_id); emit('reassign', from_route, to_route) on the NEXT successful selection; node -> PLANNED (reassign=True)"]
+    ACTION -- "context_length_exceeded; prompt can shrink" --> REPACK["_repack; one bounded same-route retry, otherwise add to tried"]
+    ACTION -- "verification_failed; first on route" --> REHYDRATE["failure_feedback; one bounded same-route repair"]
+    ACTION -- "other recoverable" --> REASSIGN["tried.add(run.route_id); emit('reassign', from_route, to_route) on NEXT selection; node -> PLANNED"]
     ACTION -- "BLOCK" --> NONREC["node -> BLOCKED, reason='non-recoverable: CATEGORY'"]
     SAMEROUTE --> DRIVE
+    REPACK --> DRIVE
+    REHYDRATE --> DRIVE
     REASSIGN --> DRIVE
 
     OKN --> BARRIER["_integrate_node for INTEGRATE/REVIEW kind nodes: merge validated dependency commits, emit('barrier', name='integration', ok=...)"]
     BARRIER --> REVIEW{"policy.require_review?"}
     REVIEW -- "yes, reviewer is None" --> NOREV["_finish(BLOCKED, 'review required but no reviewer configured')"]
-    REVIEW -- "yes, reviewer configured" --> INDEP["implementers = frozenset(route_id per node); families = route_family(implementers); try level='family' (exclude families) then level='route' (route-only exclusion) if family attempt errors with 'no independent reviewer'"]
+    REVIEW -- "yes, reviewer configured" --> INDEP["implementers = frozenset(final/resumed contributing route_id per node); families = route_family(implementers); try level='family' (exclude families) then level='route' (route-only exclusion) if family attempt errors with 'no independent reviewer'"]
     INDEP --> OCR["reviewer.review(repo, base_ref, head_ref, background=goal, exclude_routes=implementers, exclude_families) -- OpenCodeReviewer wraps the 'ocr' CLI"]
-    OCR --> RRES["ReviewResult(status PASS|FAIL|ERROR, reviewer, route_id, findings); .passed is True only when status==PASS and no finding.blocking()"]
+    OCR --> RRES["ReviewResult(status PASS|FAIL|ERROR, reviewer, route_id, findings); recorded PASS checks blocking findings but current parser can accept skipped/empty OCR output"]
     RRES --> RPASS["passed -> integration + review recorded; run proceeds to receipt build"]
     RRES --> RFAIL["not passed -> _finish(BLOCKED, ...) with the review status/detail"]
 
@@ -73,48 +77,16 @@ flowchart TD
     NONREC --> RECEIPT
     NOREV --> RECEIPT
     RECEIPT --> DIGEST["receipt fields: schema, run_id, goal, graph_digest=graph.digest(), nodes, route_identity_summary, integration.ok/barriers/missing, reassignments, cooldowns, review, events_digest=sha256(events.jsonl), event_count"]
-    DIGEST --> VERDICT["completion_verdict(receipt): COMPLETE only if every implement/integrate node final_state==VALIDATED, integration.ok, review.status==PASS, no blocking finding; else BLOCKED with a specific reason"]
+    DIGEST --> VERDICT["completion_verdict(receipt): COMPLETE requires validated nodes, integration.ok, recorded review PASS and any bound OpenSpec conformance PASS; recorded PASS alone does not prove semantic OCR coverage"]
     VERDICT --> OVERRIDE["outcome != runtime.outcome.value -> events.emit('controller', state='VERDICT_OVERRIDE') -- the receipt is authoritative over the in-memory run result"]
-    OVERRIDE --> RESULT["GoldenRunResult(run_dir, outcome, reason, receipt_path); verify_run_receipt(run_dir) re-derives every field and flags 'events_digest mismatch' if events.jsonl changed since the receipt was written"]
-%% evidence: verdict/orchestration/run.py:440 def load_or_create_run(root, run_id)
-%% evidence: verdict/orchestration/run.py:447 def prior_validated(run_dir)
-%% evidence: verdict/orchestration/run.py:249 async def plan_with_failover(..., max_attempts=6, ...)
-%% evidence: verdict/orchestration/run.py:315-316 TaskRequirements(frontier_worthy=True, min_context_tokens=100_000, exclude_routes=frozenset(tried))
-%% evidence: verdict/orchestration/run.py:348-352 classifier.classify(source, now=now()); state="QUOTA" if category in {quota_exhausted, rate_limited} else "PLANNER_FAILED"
-%% evidence: verdict/orchestration/run.py:363-367 selector.record_failure(...) + events.emit("cooldown", ...)
-%% evidence: verdict/orchestration/run.py:377-379 events.emit("controller", state="REPLACING", ...)
-%% evidence: verdict/orchestration/run.py:425 raise OrchestrationError("planning failed on every eligible frontier model; last: ...")
-%% evidence: verdict/orchestration/planner.py:59 def choose_topology(nodes, max_parallel, risk_hint) -- deterministic rules, docstring states "Never asks a model"
-%% evidence: verdict/orchestration/planner.py:312 def parse_plan(text, goal, max_parallel) -> WorkGraph
-%% evidence: verdict/orchestration/planner.py:401,404 class FrontierPlanner, async def plan(...) -- one repair round (planner.py:430-467)
-%% evidence: verdict/orchestration/planner.py:473-474 def hydrate_node_prompt(node, repo, goal, max_context_bytes=60_000)
-%% evidence: verdict/orchestration/contracts.py:192 class WorkGraph -- __post_init__ validates cycles (layers()) and ownership (_check_ownership())
-%% evidence: verdict/orchestration/contracts.py:41,57 class NodeState, TRANSITIONS mapping (legal state transitions)
-%% evidence: verdict/orchestration/runtime.py:267,298 class DagRuntime, self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
-%% evidence: verdict/orchestration/runtime.py:540,596,608 async def run(self), def _ready(self), def _propagate_blocks(self)
-%% evidence: verdict/orchestration/runtime.py:128,637-648 max_attempts_per_node=4; run.attempt >= policy.max_attempts_per_node -> pool_exhausted / FAIL_CLOSED
-%% evidence: verdict/orchestration/runtime.py:627,652-653 async def _drive(node_id); TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried)); self.selector.select(requirements, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:134,690-706 max_cooldown_wait_seconds=120.0; cooldown-wait retry-once loop; second None -> "no eligible model: " + _explain_exhaustion(considered)
-%% evidence: verdict/orchestration/runtime.py:969 async def _attempt(self, run, failures)
-%% evidence: verdict/orchestration/runtime.py:1224,1239,1279 async def _validate(...); "ownership_violation: ..."; "verification_failed: exit <code>: ..."
-%% evidence: verdict/orchestration/runtime.py:1152,1169 self.classifier.classify(terminal, now=self.now()); self.selector.record_failure(run.route_id, failure, now=self.now())
-%% evidence: verdict/orchestration/runtime.py:819,861 "RETRY_INFRA" -> asyncio.sleep(min(cooldown, 60)) same-route retry (no tried.add); then NodeState.PLANNED with reassign=True
-%% evidence: verdict/orchestration/runtime.py:863 async def _integrate_node(run) -- merge validated dependency commits, "barrier" event name="integration"
-%% evidence: verdict/orchestration/runtime.py:1309-1313 self.policy.require_review; reviewer is None -> BLOCKED "review required but no reviewer configured"
-%% evidence: verdict/orchestration/runtime.py:1319-1344 implementers = frozenset(route_id per node); families = route_family(implementers); family-then-route independence loop calling self.reviewer.review(...); rejected review -> _finish(BLOCKED) at :1368-1374
-%% evidence: verdict/orchestration/review.py:198,231 class OpenCodeReviewer, async def review(...)
-%% evidence: verdict/orchestration/review.py:324 detail="no independent reviewer eligible" (fail-closed ERROR, never a false PASS)
-%% evidence: verdict/orchestration/contracts.py:683,697 class ReviewResult; def passed (status == PASS and not any(f.blocking() for f in findings))
-%% evidence: verdict/orchestration/recovery.py:148,156 class FailureIntelligence, def classify(terminal, now)
-%% evidence: verdict/orchestration/runtime.py:60 imports RecoveryBudget; :306 creates self._recovery_budget; :467 _handle_retry_node; :512 self._recovery_budget.decide(...); per-attempt path is classifier.classify at :1152
-%% evidence: verdict/orchestration/receipt.py:463 def build_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:526,547 "graph_digest": graph.digest(); "events_digest": _sha256_file(events_path)
-%% evidence: verdict/orchestration/receipt.py:178 def _sha256_file(path)
-%% evidence: verdict/orchestration/receipt.py:570,599 def write_run_receipt(run_dir); def verify_run_receipt(run_dir)
-%% evidence: verdict/orchestration/receipt.py:615-616 events_digest mismatch check: "events_digest mismatch: events.jsonl changed after receipt was written"
-%% evidence: verdict/orchestration/receipt.py:629 def completion_verdict(receipt) -> (outcome, reason)
-%% evidence: verdict/orchestration/run.py:869,873 outcome != result.outcome.value -> events.emit("controller", state="VERDICT_OVERRIDE", ...)
-%% evidence: verdict/orchestration/contracts.py:568 def canonical_digest(value) -- sha256 over sorted-key JSON, used by WorkGraph.digest()
+    OVERRIDE --> RESULT["GoldenRunResult(run_dir, outcome, reason, receipt_path); verify_run_receipt(run_dir) checks log digest against the retained receipt (not against an external signature)"]
+%% evidence by symbol: verdict/orchestration/run.py plan_with_failover(), load_or_create_run(), prior_validated(), run_golden_path(); a planner-admission failure may leave no receipt.
+%% evidence by symbol: verdict/orchestration/planner.py FrontierPlanner.plan(), choose_topology(), hydrate_node_prompt().
+%% evidence by symbol: verdict/orchestration/contracts.py WorkGraph, NodeState, ReviewResult, canonical_digest().
+%% evidence by symbol: verdict/orchestration/runtime.py DagRuntime._drive(), _attempt(), _validate(), _integrate_node(), _run_review(); context overflow can repack/retry one route and verification failure can pass feedback for one same-route retry, both bounded by max_attempts_per_node.
+%% evidence by symbol: verdict/orchestration/recovery.py FailureIntelligence.classify(); RecoveryBudget applies to operator retries, not inline attempt recovery.
+%% evidence by symbol: verdict/orchestration/review.py OpenCodeReviewer.review(); skipped/empty raw review may currently be parsed as PASS, so recorded PASS is not itself proof of semantic review.
+%% evidence by symbol: verdict/orchestration/receipt.py build_run_receipt(), write_run_receipt(), verify_run_receipt(), completion_verdict(); event digest is checked against retained receipt, without external authenticity anchor.
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
 classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px

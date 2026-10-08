@@ -1,16 +1,21 @@
 # Public evidence index
 
-This index is the one-page entry point for the #134 proof matrix. It describes
-what the current `verdict-core` checkout proves, what it only observes, and
-what it deliberately refuses to claim.
+This index is the entry point for the #134 proof matrix. This audit revises
+claim wording against source commit `8b1f9d8e82fd7853cdffe19aa1b49baac32229ed`
+on 2026-10-08, not against every later checkout. Historical run artifacts retain
+their own execution revisions; they are not re-executions at the audited SHA.
+A structural validator pass checks JSON shape and referenced paths, not the
+semantic truth, source symbols, run provenance, or expired entry reviews.
 
 ## Snapshot
 
 | Field | Value |
 | --- | --- |
 | Repository | `mrnicholasbcarter-code/verdict-core` |
-| Audited source commit | `7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e` |
-| Freeze date | 2026-09-06 |
+| Source revision for this wording audit | `8b1f9d8e82fd7853cdffe19aa1b49baac32229ed` |
+| Wording audit date | 2026-10-08 |
+| Historical claim freeze date | 2026-09-06 |
+| Per-entry review deadlines | 11 of 11 expired 2026-10-06; no dates renewed without exact-source re-review |
 | Matrix | [`proof_matrix.v1.json`](proof_matrix.v1.json) |
 | Claims ledger | [`claims_ledger.v1.json`](claims_ledger.v1.json) |
 | Redaction policy | [`REDACTION_POLICY.md`](REDACTION_POLICY.md) |
@@ -21,9 +26,9 @@ what it deliberately refuses to claim.
 
 - [Portfolio proof matrix](../portfolio/PORTFOLIO_PROOF_MATRIX.md) maps each
   audience to an evidence-backed project story and preserves limitations.
-- [Claims audit](CLAIMS_AUDIT_2026-09-06.md) records the current claim statuses,
-  evidence-path audit, and public-surface review for the application-ready
-  release boundary.
+- [2026-09-06 claims audit](CLAIMS_AUDIT_2026-09-06.md) records **historical**
+  claim statuses and the v0.3.0 candidate release boundary at its own SHA.
+  It is not a current approval or replacement for expired per-entry reviews.
 - [v0.3.0 release boundary](RELEASE_BOUNDARY_0.3.0.md) defines what may be
   claimed and what remains explicitly outside the candidate release.
 - [AI Gateway Assurance Audit](../portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md)
@@ -34,15 +39,21 @@ what it deliberately refuses to claim.
 
 - Hard eligibility is applied before advisory ranking; excluded candidates
   cannot be reintroduced.
-- Stale, missing, malformed, and contradictory runtime evidence fails closed.
+- Malformed and contradictory runtime observations have explicit local handling.
+  The cache can serve a stale report inside its TTL plus 30-second grace window,
+  including after refresh failure. The eligibility gate does not recheck age
+  before admitting a cached eligible/READY report. Do not claim a universal
+  stale-protected-work fail-closed guarantee.
 - Capability and runtime passports preserve exact identity, authority,
   freshness, and limitations.
 - Runtime compatibility reports are deterministic, fail-closed, and
   secret-safe when built from existing passport evidence.
-- Policy transitions, durable receipts, evaluation promotion, and the
-  credential-free demo have focused tests and versioned contracts.
-- Reproducible benchmark fixtures and content-addressed evidence bundles have
-  local verification paths.
+- Policy transitions, configured durable receipts, standalone evaluation
+  decisions, and the credential-free demo have focused local contracts.
+  The adaptive ranker canary is **not** wired to evaluation approval.
+- Benchmark fixture structure and digests can be checked locally; measured
+  timings and threshold verdicts vary. Evidence bundle bytes are stable only
+  when collected artifact bytes are identical.
 
 ## Observed or partial evidence
 
@@ -50,10 +61,19 @@ what it deliberately refuses to claim.
   observations. Their own limitations say catalog membership is not liveness,
   authorization, quota, or eligibility.
 - CI workflow definitions cover test, lint, type, security, install, build, and
-  CodeQL paths. A workflow definition is not a successful run; exact PR checks
-  must be attached to a release change.
-- Release gates are defined, but the current matrix does not mark the complete
-  tagged-release gate set as passed.
+  CodeQL paths. PR/main security jobs are blocking, but tag release does not
+  require all exact successful SAST/dependency/CodeQL jobs. A workflow
+  definition is not a successful exact-SHA run.
+- The matrix has 21 rows (15 verified, 1 observed, 4 partial, 1 blocked).
+  The ledger has 11 entries (5 verified, 2 observed, 1 self-reported,
+  2 unsupported, 1 aspiration). **Every entry review deadline expired on
+  2026-10-06**; status labels are historical until exact-source re-review.
+- The supervisor detects **controller-progress** stalls; a two-node injected
+  stall proof and a separate three-node resume run are retained. Context
+  overflow is request-scoped, not provider cooldown; live multi-provider
+  failover exists for other recorded faults, not a live context-overflow chain.
+- Multi-story governor behavior applies only when `VERDICT_MULTI_STORY=on`.
+  Node outcome sidecar JSONL is not digest-bound by the run receipt.
 
 ## Explicitly not approved
 

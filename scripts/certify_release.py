@@ -1584,7 +1584,7 @@ def main() -> None:
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
-        help="Allow certification on dirty git tree (forces INCOMPLETE verdict)",
+        help="Bypass dirty-tree preflight; final dirt fails the git-clean step (FAILED verdict)",
     )
     parser.add_argument(
         "--rehearsal",

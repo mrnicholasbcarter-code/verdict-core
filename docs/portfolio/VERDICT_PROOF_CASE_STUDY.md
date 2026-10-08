@@ -12,9 +12,10 @@ or that a recommendation is proof of what happened. It separates:
 4. privacy-safe receipts; and
 5. claims that point back to independently inspectable evidence.
 
-The repository's public proof path runs without provider credentials or network
-access. It is a deterministic fixture, not a production deployment or a live
-provider benchmark.
+The credential-free quickstart proof path runs without provider calls or network
+access after installation. It is a deterministic fixture, not a production deployment or
+a live provider benchmark. Separately labeled historical live bundles show bounded
+observations with their stated review and provenance limits.
 
 ## The engineering problem
 
@@ -45,9 +46,12 @@ secret-safe when rendered from existing passport evidence.
 
 ### Eligibility before ranking
 
-Hard policy, freshness, capability, security, privacy, quota, and cost gates run
-before advisory ranking. A candidate removed by the gate cannot return through a
-score or recommendation.
+The cited eligibility path checks its configured protected-task and development
+policy, capability, and eligibility-report conditions before advisory ranking.
+Freshness and quota depend on the supplied report/cache semantics, which can serve
+a stale report inside its grace window. The cited `EligibilityGate` does not itself
+enforce a general security or privacy predicate. A candidate removed by the gate
+cannot return through a score or recommendation.
 
 - Implementation: `verdict/eligibility.py`
 - Tests: `tests/test_eligibility_gate.py`, `tests/test_adaptive_ranker.py`
@@ -56,9 +60,10 @@ score or recommendation.
 
 ### Receipts and privacy
 
-Receipt and evidence contracts record decision facts, selected routes, drop
-reasons, timestamps, and integrity information without storing the full prompt
-or credentials. Retention and access-control decisions remain deployment
+Default typed receipt and evidence contracts record decision facts, selected routes,
+drop reasons, timestamps, and integrity information while omitting or redacting raw
+prompt and credential fields. Explicit raw-field allowlists and free-text metadata
+require operator review. Retention and access-control decisions remain deployment
 responsibilities rather than implied product guarantees.
 
 - Implementation: `verdict/receipt_store.py`, `verdict/evidence_receipts.py`

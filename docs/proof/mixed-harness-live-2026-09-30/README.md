@@ -1,10 +1,10 @@
 # Mixed-harness live proof: one run, two worker harnesses (2026-09-30)
 
-**What this proves (BOD-284, the last AC of BOD-177).** A single live `verdict orchestrate` run on main `7c2d545` supervised two different worker harnesses in the same controller session and the same cockpit:
+**What this proves (BOD-284, the last AC of BOD-177).** A single live `verdict orchestrate` run supervised two different worker harnesses in the same controller session and the same cockpit. The capture author reports that the run used main `7c2d545`; the historical events/receipt do not attest the producing engine SHA:
 - **node-1** ran through **Prime Agent headless** (`harness: prime-headless`);
 - **node-2** ran through the **direct OmniRoute gateway** (`harness: direct-gateway`).
 
-Both nodes were live model calls (`executor_kind: live`), both validated, the integration barrier merged both commits, the independent review passed, and the receipt is COMPLETE with integrity OK.
+Both nodes were live model calls (`executor_kind: live`), both validated, and the integration barrier merged both commits. The reviewer recorded PASS and the receipt is COMPLETE with integrity OK, but the retained OCR output says `skipped` with zero selected/completed items and zero reviewed files or tokens. No semantic review was demonstrated.
 
 Command (the controller's session; the key and gateway come from the environment):
 
@@ -20,7 +20,7 @@ verdict orchestrate --repo <RUN_ROOT>/repo --graph graph.json --runs-dir <RUN_RO
 | `run_started` records `executor: "mixed"` | `run/events.jsonl` seq 1 |
 | node-2 terminal: `harness: direct-gateway`, `executor_kind: live`, `ok: true`, route `cc/claude-haiku-4-5-20251001` | `run/events.jsonl` seq 20 |
 | node-1 terminal: `harness: prime-headless`, `executor_kind: live`, `ok: true`, same route | `run/events.jsonl` seq 25 |
-| Review PASS by open-code-review v1.12.9 on `cx/gpt-5.5`, a different family from both workers | `run/events.jsonl` seq 34; `run/review/` |
+| Recorded review PASS by open-code-review v1.12.9 on `cx/gpt-5.5`, a different family from both workers; raw OCR says `skipped`, so this does not demonstrate semantic review | `run/events.jsonl` seq 34; `run/review/` |
 | Each receipt attempt records its `harness` | `run/receipt.json` → `nodes[].attempts[].harness` |
 | The cockpit shows the harness per node (`verdict watch run --runs-dir docs/proof/mixed-harness-live-2026-09-30 --replay`) | WORKERS table: `node-1 … prime-headless`, `node-2 … direct-gateway` |
 
@@ -30,7 +30,7 @@ Verify:
 verdict run-receipt --runs-dir docs/proof/mixed-harness-live-2026-09-30 run
 ```
 
-It reports `COMPLETE … review PASS` and `integrity: OK (events digest verified)`.
+It reports `COMPLETE … review PASS` and `integrity: OK (events digest verified)`. The recorded PASS is not evidence of actual review coverage.
 
 **What this does NOT prove.**
 - Failover across harnesses. Both nodes succeeded on their first attempt, so there were no failures or reassignments.

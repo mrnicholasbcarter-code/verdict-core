@@ -2,7 +2,7 @@
   "schema_version": 1,
   "title": "Verdict Core public proof matrix",
   "repository": "mrnicholasbcarter-code/verdict-core",
-  "commit": "7dc87a36aaca702a8d7e3eb7bb9de27d9f84be7e",
+  "commit": "8b1f9d8e82fd7853cdffe19aa1b49baac32229ed",
   "claim_freeze_date": "2026-09-06",
   "review_after": "2026-11-07",
   "status_vocabulary": [
@@ -21,7 +21,7 @@
       "evidence": [
         {
           "path": "verdict/eligibility.py",
-          "locator": "EligibilityGate.filter",
+          "locator": "EligibilityGate.evaluate",
           "kind": "implementation"
         },
         {
@@ -42,8 +42,8 @@
     {
       "id": "PM-002",
       "area": "availability",
-      "requirement": "Stale, unknown, malformed, and contradictory runtime signals fail closed instead of becoming ready.",
-      "status": "verified",
+      "requirement": "Malformed, contradictory, or missing runtime observations are represented explicitly; the cache may serve stale reports within its configured stale window.",
+      "status": "partial",
       "evidence": [
         {
           "path": "verdict/availability.py",
@@ -62,13 +62,13 @@
         },
         {
           "path": "tests/test_availability_cache.py",
-          "locator": "test_refresh_failure_returns_explicit_unknown_not_stale",
+          "locator": "test_stale_window_serves_stale_then_triggers_single_refresh",
           "kind": "test"
         }
       ],
       "verification": "pytest -q tests/test_availability.py tests/test_availability_adapter.py tests/test_availability_cache.py",
-      "public_wording": "Missing or stale runtime truth is represented explicitly and cannot silently authorize protected work.",
-      "gap": "Freshness depends on the supplied observation source; catalog membership alone remains insufficient."
+      "public_wording": "The local adapter handles malformed and contradictory observations explicitly; cached reports can remain stale during the grace window and must not be described as universally fail-closed for protected work.",
+      "gap": "AvailabilityCache serves stale reports within TTL plus 30 seconds and may retain a stale report after refresh failure. EligibilityGate.evaluate does not independently reject old eligible/READY reports. A protected-work freshness check and regression are needed for a universal fail-closed claim."
     },
     {
       "id": "PM-003",
@@ -232,8 +232,8 @@
     {
       "id": "PM-007",
       "area": "evaluation",
-      "requirement": "Adaptive recommendations remain shadow-only until evidence, held-out evaluation, freshness, and rollback requirements pass.",
-      "status": "verified",
+      "requirement": "The standalone evaluation/promotion controller gates its recorded promotion decisions on evidence and supports rollback.",
+      "status": "partial",
       "evidence": [
         {
           "path": "verdict/evaluation.py",
@@ -249,11 +249,16 @@
           "path": "tests/test_evaluation.py",
           "locator": "test_promotion_lifecycle_kill_switch_and_rollback_are_fail_closed",
           "kind": "test"
+        },
+        {
+          "path": "verdict/adaptive_ranker.py",
+          "locator": "AdaptiveRanker canary_active condition",
+          "kind": "implementation"
         }
       ],
       "verification": "pytest -q tests/test_evaluation.py",
-      "public_wording": "Adaptive ranking is evidence-gated and has explicit rollback and kill-switch semantics.",
-      "gap": "No claim of measured model-quality improvement is authorized by this matrix."
+      "public_wording": "The standalone evaluation controller checks evidence for its promotion decisions and supports rollback; adaptive ranker canary activation is not bound to that approval.",
+      "gap": "AdaptiveRanker canary_active uses VERSIONED plus rollback_enabled, without enforcement linkage to EvaluationController promotion approval. Wire and test the two before claiming all adaptive recommendations remain shadow-only pending evaluation."
     },
     {
       "id": "PM-008",
@@ -289,7 +294,7 @@
     {
       "id": "PM-009",
       "area": "reproducibility",
-      "requirement": "Benchmarks and evidence bundles have deterministic local verification paths and content digests.",
+      "requirement": "Benchmark fixture structure and digests are stable; timing results are observed, while bundles are byte-identical for identical collected artifact bytes.",
       "status": "verified",
       "evidence": [
         {
@@ -319,8 +324,8 @@
         }
       ],
       "verification": "pytest -q tests/test_benchmarking.py tests/test_evidence_bundle.py",
-      "public_wording": "Local benchmark fixtures and evidence bundles are reproducible and digest-verifiable.",
-      "gap": "Fixture results must not be presented as live provider quality, adoption, or performance."
+      "public_wording": "Fixture structure and digests can be checked locally; measured benchmark timings and threshold verdicts are not byte-deterministic. Evidence bundles are reproducible when collected artifact bytes are identical.",
+      "gap": "Generated timestamps and nanosecond timings vary between benchmark runs; the byte-identical bundle test assumes identical collected evidence bytes. Neither proves live provider quality."
     },
     {
       "id": "PM-010",
@@ -350,8 +355,8 @@
         }
       ],
       "verification": "Inspect workflow definitions and require all branch-protection checks to pass on the release PR.",
-      "public_wording": "Release changes are subject to repository CI and security workflows.",
-      "gap": "A workflow definition is not itself a successful run; release claims require the exact PR check record."
+      "public_wording": "Repository CI and security workflow definitions include checks for lint, types, tests, dependencies, static security, and CodeQL.",
+      "gap": "Workflow definitions do not show a successful exact-SHA run or mandatory tag-release dependency on all security/privacy checks; exact PR/release check records must be verified separately."
     },
     {
       "id": "PM-011",
@@ -375,7 +380,7 @@
           "kind": "documentation"
         }
       ],
-      "verification": "Validate the checked-in JSON artifacts and compare their recorded hashes and limitations.",
+      "verification": "Validate the checked-in JSON artifacts and inspect their recorded hashes, aggregate consistency, and limitations; raw-payload digest replay is not available.",
       "public_wording": "The recorded catalog snapshots are bounded observations, not proof that every listed route is runnable.",
       "gap": "The snapshots are historical and partial; they do not certify current provider availability."
     },
@@ -470,7 +475,7 @@
     {
       "id": "PM-015",
       "area": "security and privacy launch gate",
-      "requirement": "Releases are gated on non-advisory security and privacy audits (SAST, dependency audit, secret hygiene, supply-chain provenance) before shipping.",
+      "requirement": "Blocking security and privacy jobs are defined for PR/main; mandatory tag-release linkage to exact successful checks is not established.",
       "status": "partial",
       "evidence": [
         {
@@ -505,23 +510,23 @@
         }
       ],
       "verification": "pytest -q tests/test_launch_gates.py tests/security/ tests/privacy/",
-      "public_wording": "The repository defines and enforces a non-advisory security and privacy launch gate in CI, backed by tests.",
-      "gap": "The dynamic (DAST) scan step and full tagged-release run of the gate have not been executed and verified outside CI; only the static/unit evidence above has been locally confirmed."
+      "public_wording": "Blocking static security and privacy checks are defined for PR/main. Mandatory security/privacy dependency for every tagged release and exact successful release checks remain unverified.",
+      "gap": "security.yml runs PR/push/schedule and release.yml needs acceptance and an optional certification gate, not mandatory SAST/dependency/CodeQL jobs. No exact tagged-release security check packet or dynamic scan is retained."
     },
     {
       "id": "PM-016",
       "area": "bounded failover",
-      "requirement": "Supervisor detects stalled workers, kills the generation, resumes validated nodes, and re-executes only abandoned nodes.",
+      "requirement": "Supervisor detects controller-progress stalls, restarts the controller generation, resumes validated nodes and retries unfinished or abandoned work.",
       "status": "verified",
       "evidence": [
         {
           "path": "verdict/orchestration/recovery.py",
-          "locator": "reroute_on_failure and cooldown logic",
+          "locator": "FailureIntelligence.classify and cooldown logic",
           "kind": "implementation"
         },
         {
           "path": "verdict/orchestration/supervisor.py",
-          "locator": "Supervisor stall detection and restart",
+          "locator": "Supervisor controller-progress stall detection and restart",
           "kind": "implementation"
         },
         {
@@ -561,8 +566,8 @@
         }
       ],
       "verification": "pytest -q tests/test_assignment_failover_e2e.py tests/test_orch_recovery.py",
-      "public_wording": "Supervisor-driven bounded failover resumes validated work and re-executes only stalled nodes.",
-      "gap": "Live evidence is from a single two-node graph; larger topologies are not yet exercised."
+      "public_wording": "Supervisor-driven recovery detects controller-progress stalls, preserves validated nodes and retries unfinished work.",
+      "gap": "Stall-injection proof uses a two-node graph; the BOD-225 three-node live run separately records resume and reuse of one then three validated nodes. Recorded reviewer PASS does not by itself prove semantic review coverage."
     },
     {
       "id": "PM-017",
@@ -603,9 +608,14 @@
     {
       "id": "PM-018",
       "area": "multi-story admission",
-      "requirement": "Governor flag serializes overlapping-footprint stories, defers beyond cap, and excludes manual-label nodes.",
+      "requirement": "When VERDICT_MULTI_STORY=on, the governor serializes overlapping-footprint stories, defers beyond cap, and excludes manual-label nodes.",
       "status": "verified",
       "evidence": [
+        {
+          "path": "scripts/prime_supervisor.py",
+          "locator": "VERDICT_MULTI_STORY=on governor wiring",
+          "kind": "implementation"
+        },
         {
           "path": "tests/test_supervisor_governor_flag.py",
           "locator": "TestDisjointFootprintsAdmit",
@@ -633,18 +643,18 @@
         }
       ],
       "verification": "pytest -q tests/test_supervisor_governor_flag.py tests/test_worker_admission_authority.py",
-      "public_wording": "Multi-story admission serializes file-overlapping work and respects concurrency caps.",
-      "gap": "Governor tests use synthetic footprints; real file-overlap detection depends on planner accuracy."
+      "public_wording": "When VERDICT_MULTI_STORY=on, multi-story admission serializes file-overlapping work and respects concurrency caps.",
+      "gap": "The feature is off by default; tests use synthetic footprints and real overlap detection depends on planner accuracy."
     },
     {
       "id": "PM-019",
       "area": "outcome records",
-      "requirement": "Execution outcomes record cost, tokens, status, and digest; spend aggregation refuses duplicate request IDs.",
+      "requirement": "Node-level outcome records derive aggregate usage from run evidence; separate attempt logs reject ambiguous request IDs.",
       "status": "verified",
       "evidence": [
         {
           "path": "verdict/outcome_records.py",
-          "locator": "OutcomeRecord and cost fields",
+          "locator": "OutcomeRecord and node-level aggregate usage",
           "kind": "implementation"
         },
         {
@@ -654,7 +664,7 @@
         },
         {
           "path": "tests/test_outcome_records.py",
-          "locator": "TestReceiptDigestIntegrity",
+          "locator": "receipt verifies event digest but not outcome JSONL sidecar",
           "kind": "test"
         },
         {
@@ -669,18 +679,18 @@
         }
       ],
       "verification": "pytest -q tests/test_outcome_records.py tests/test_outcome_log.py",
-      "public_wording": "Outcome records capture per-attempt cost and tokens with digest integrity; spend aggregation is idempotent.",
-      "gap": "Cost values depend on gateway-reported headers; no independent billing cross-check exists."
+      "public_wording": "Node-level records include aggregate tokens, status, and reported/unknown costs; a separate per-attempt spend log rejects ambiguous request IDs.",
+      "gap": "The outcome JSONL sidecar has no digest and is not covered by the run receipt event digest. Unknown costs remain explicit; no independent billing cross-check exists."
     },
     {
       "id": "PM-020",
       "area": "dynamic assignment",
-      "requirement": "Provider quota or context-length failures trigger same-node reroute with cooldown; pool exhaustion fails closed.",
+      "requirement": "Provider quota and context-length failures support bounded same-node recovery; provider failures can have cooldowns while context overflow is request-scoped.",
       "status": "verified",
       "evidence": [
         {
           "path": "verdict/orchestration/recovery.py",
-          "locator": "reroute_on_failure and pool-exhaustion FAIL_CLOSED",
+          "locator": "FailureIntelligence.classify, request-scoped context overflow, and provider cooldown classification",
           "kind": "implementation"
         },
         {
@@ -697,11 +707,16 @@
           "path": "tests/test_failover_matrix_e2e.py",
           "locator": "test_pool_exhaustion_fails_closed_without_using_the_controller",
           "kind": "test"
+        },
+        {
+          "path": "docs/proof/dogfood-bod-225-live-2026-09-29/events.jsonl",
+          "locator": "recorded live reassignments after injected quota and real timeout/no-final-answer",
+          "kind": "evidence"
         }
       ],
-      "verification": "pytest -q tests/test_assignment_failover_e2e.py",
-      "public_wording": "Dynamic assignment reroutes on provider quota or context-length failures and fails closed on pool exhaustion.",
-      "gap": "Reroute tests use mocked providers; live multi-provider failover chains are not yet exercised."
+      "verification": "pytest -q tests/test_assignment_failover_e2e.py tests/test_failover_matrix_e2e.py",
+      "public_wording": "Dynamic assignment handles quota and context-length failures and fails closed on pool exhaustion. Context overflow itself does not impose provider cooldown.",
+      "gap": "The BOD-225 retained events show live multi-provider/route failover after injected rate limit, timeout, and no-final-answer. A live context-overflow chain has not been retained."
     },
     {
       "id": "PM-021",
@@ -729,5 +744,7 @@
       "public_wording": "One live Verdict run supervised two worker harnesses (Prime Agent headless and the direct gateway) in the same cockpit, with the harness recorded per attempt.",
       "gap": "Both nodes succeeded first try on the same selected route, so cross-harness failover is not exercised; node-2's direct-gateway attempt reported a model without the provider prefix, so its provider-qualified identity is unverified (recorded as a route-identity mismatch)."
     }
-  ]
+  ],
+  "audit_date": "2026-10-08",
+  "source_scope": "Claims reviewed against the audited source revision; historical execution evidence remains tied to its original run and is not proof of execution at this source revision."
 }
