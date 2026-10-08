@@ -827,11 +827,48 @@ def step_git_clean(repo_path: Path) -> StepResult:
         )
 
 
+def _producer_git_sha_from_receipt(receipt: dict[str, Any]) -> str | None:
+    """Return only a recorded string SHA; missing, null or blank stays unknown."""
+    producer = receipt.get("producer")
+    if not isinstance(producer, dict):
+        return None
+    raw = producer.get("git_sha")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
+def verdict_tree_changed_between(repo_path: Path, left_sha: str, right_sha: str) -> bool | None:
+    """Return the verdict/ diff result, or None when Git cannot verify it."""
+    # Event data is untrusted; only commit identities, never Git options or
+    # revision expressions, may enter this command.
+    if not all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) for sha in (left_sha, right_sha)):
+        return None
+    if left_sha == right_sha:
+        return False
+    result = run_command(
+        ["git", "diff", "--quiet", left_sha, right_sha, "--", "verdict/"], cwd=repo_path, timeout=5
+    )
+    if result.returncode == 0:
+        return False
+    if result.returncode == 1:
+        return True
+    return None
+
+
 def step_rehearsals(
-    repo_path: Path, rehearsal_dirs: dict[str, Path], output_dir: Path
+    repo_path: Path,
+    rehearsal_dirs: dict[str, Path],
+    output_dir: Path,
+    certified_git_sha: str | None = None,
 ) -> StepResult:
-    """Verify complete local run receipts; do not treat self-reported proof as attestation."""
-    del repo_path  # Rehearsals are verified against their copied source files.
+    """Verify receipts and producer freshness, never independent attestation.
+
+    Missing or stale producer SHAs remain INCOMPLETE. Existing receipt and fault
+    checks still take precedence (FAIL), and even fresh local evidence cannot
+    PASS without an independent producer verifier. Three-argument callers use
+    the checkout HEAD as the certified SHA.
+    """
     if not rehearsal_dirs:
         return StepResult(
             "rehearsals",
@@ -846,6 +883,13 @@ def step_rehearsals(
     rehearsal_output = output_dir / "rehearsals"
     rehearsal_output.mkdir(parents=True, exist_ok=True)
     proof: dict[str, Any] = {}
+    if certified_git_sha is None:
+        try:
+            certified_git_sha = get_git_sha(repo_path)
+        except RuntimeError:
+            certified_git_sha = None
+    producer_reports: list[str] = []
+    stale_notes: list[str] = []
     for name, run_dir in rehearsal_dirs.items():
         if not name or name in {".", ".."} or Path(name).name != name or name.startswith("."):
             return StepResult(
@@ -887,7 +931,29 @@ def step_rehearsals(
                 raise ValueError("no controlled injected failure recorded")
             if name == "clean" and any(a.get("fault_injected") is True for a in attempts):
                 raise ValueError("clean rehearsal includes injected faults")
+            producer_sha = _producer_git_sha_from_receipt(receipt)
+            producer_reports.append(f"{name}={producer_sha or 'null'}")
+            changed: bool | None = None
+            if producer_sha is None:
+                stale_notes.append(f"{name} producer git_sha is null (cannot verify freshness)")
+            elif not certified_git_sha:
+                stale_notes.append(f"{name} certified git_sha is null (cannot verify freshness)")
+            else:
+                changed = verdict_tree_changed_between(repo_path, producer_sha, certified_git_sha)
+                if changed is True:
+                    stale_notes.append(
+                        f"{name} producer {producer_sha} differs from certified"
+                        f" {certified_git_sha} with verdict/ changes"
+                    )
+                elif changed is None:
+                    stale_notes.append(
+                        f"{name} producer {producer_sha} differs from certified"
+                        f" {certified_git_sha} (could not verify verdict/ diff)"
+                    )
             proof[name] = {
+                "producer_git_sha": producer_sha,
+                "certified_git_sha": certified_git_sha,
+                "verdict_tree_changed": changed,
                 "run_id": receipt.get("run_id"),
                 "outcome": receipt["outcome"],
                 "injected_failures": injected_failures,
@@ -928,21 +994,18 @@ def step_rehearsals(
                 evidence={"runs": proof},
             )
 
+    notes = [f"Receipt semantics verified; producers: {', '.join(producer_reports)}"]
+    notes.extend(stale_notes)
     if not {"clean", "chaos"}.issubset(proof):
-        return StepResult(
-            "rehearsals",
-            "Rehearsal verification",
-            "INCOMPLETE",
-            "Both clean and chaos (controlled-failure) rehearsals are required",
-            evidence={"runs": proof},
-        )
+        notes.append("Both clean and chaos (controlled-failure) rehearsals are required")
     # These artifacts are produced by the very runtime under test. Rebuilding
     # its receipt does not independently attest to the producer or execution.
+    notes.append("Independent producer attestation is unavailable")
     return StepResult(
         "rehearsals",
         "Rehearsal verification",
         "INCOMPLETE",
-        "Receipt semantics verified, but independent producer attestation is unavailable",
+        "; ".join(notes),
         evidence={"runs": proof, "independent_producer_attestation": False},
     )
 
@@ -1189,7 +1252,12 @@ def _run_certification(
         run_checked_step(
             repo_path,
             manifest.git_sha,
-            lambda: step_rehearsals(repo_path, rehearsal_dirs or {}, staging_dir or destination),
+            lambda: step_rehearsals(
+                repo_path,
+                rehearsal_dirs or {},
+                staging_dir or destination,
+                certified_git_sha=manifest.git_sha,
+            ),
         )
     )
 

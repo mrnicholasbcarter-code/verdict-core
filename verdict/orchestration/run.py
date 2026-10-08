@@ -50,7 +50,9 @@ if TYPE_CHECKING:
 from verdict.orchestration.receipt import (
     GRAPH_FILE,
     EventLog,
+    capture_producer,
     completion_verdict,
+    producer_from_started,
     write_run_receipt,
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
@@ -606,6 +608,11 @@ async def run_golden_path(
         "PrimeHeadlessExecutor": "prime-headless",
         "ScriptedExecutor": "scripted",
     }
+    # BOD-225: capture once; resumed starts keep the original producer. Legacy
+    # runs without producer remain legacy, even after an upgrade of Verdict.
+    prior_started = next((e for e in log.read() if e.type == "run_started"), None)
+    producer = capture_producer() if prior_started is None else producer_from_started(prior_started)
+    producer_kwargs: dict[str, Any] = {"producer": producer} if producer is not None else {}
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -625,6 +632,7 @@ async def run_golden_path(
         # Authoritative mode marker for replay classification.  Passed explicitly
         # by the caller (e.g. demo_scenario.py); absent ("") for live runs.
         mode=mode,
+        **producer_kwargs,
     )
     if resumed:
         events.emit(

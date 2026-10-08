@@ -8,7 +8,9 @@ a run is COMPLETE only with validation, integration and review evidence.
 
 Event ``data`` conventions read by the receipt (extra keys are ignored):
 
-* ``run_started``: ``run_id``, ``goal``          * ``run_finished``: ``outcome``, ``reason``
+* ``run_started``: ``run_id``, ``goal``, optional ``producer``
+  ``{verdict_version, git_sha, dirty}`` (captured once; nulls explicit)
+* ``run_finished``: ``outcome``, ``reason``
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
@@ -28,6 +30,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import tempfile
 import threading
 from collections.abc import Callable, Mapping
@@ -460,6 +463,81 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     }
 
 
+def capture_producer() -> dict[str, Any]:
+    """Snapshot the imported Verdict package, not the repository being worked on.
+
+    A wheel can live inside an unrelated checkout (for example in its .venv).
+    Require the imported source file to be tracked before attributing its Git
+    identity to that checkout. Unavailable lookups remain explicit nulls.
+    """
+    import verdict
+
+    producer: dict[str, Any] = {
+        "verdict_version": _producer_verdict_version(),
+        "git_sha": None,
+        "dirty": None,
+    }
+    try:
+        source = Path(verdict.__file__).resolve()
+        package_dir = source.parent
+        root_result = _producer_git(["rev-parse", "--show-toplevel"], package_dir)
+        if root_result is None or root_result.returncode != 0:
+            return producer
+        root = Path(root_result.stdout.strip()).resolve()
+        relative_source = source.relative_to(root)
+        tracked = _producer_git(["ls-files", "--error-unmatch", "--", str(relative_source)], root)
+        if tracked is None or tracked.returncode != 0:
+            return producer
+        head = _producer_git(["rev-parse", "HEAD"], package_dir)
+        if head is not None and head.returncode == 0:
+            sha = head.stdout.strip()
+            if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+                producer["git_sha"] = sha
+        status = _producer_git(["status", "--porcelain"], root)
+        if status is not None and status.returncode == 0:
+            producer["dirty"] = bool(status.stdout.strip())
+    except (OSError, TypeError, ValueError):
+        # Missing package paths or an unresolvable checkout cannot stop a run.
+        pass
+    return producer
+
+
+def _producer_verdict_version() -> str | None:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("verdict-core")
+    except PackageNotFoundError:
+        return None
+
+
+def _producer_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def producer_from_started(started: RunEvent | None) -> dict[str, Any] | None:
+    """Project optional producer provenance from the first run_started only.
+
+    Legacy runs stay without a producer. Present mappings retain explicit
+    nulls and always project the three supported keys, without fresh lookups.
+    """
+    if started is None:
+        return None
+    raw = started.data.get("producer")
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        "verdict_version": raw.get("verdict_version"),
+        "git_sha": raw.get("git_sha"),
+        "dirty": raw.get("dirty"),
+    }
+
+
 def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     run_dir = Path(run_dir)
     events_path = run_dir / EVENTS_FILE
@@ -550,6 +628,10 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     }
     if started and isinstance(started.data.get("retry_budget"), Mapping):
         receipt["retry_budget"] = dict(started.data["retry_budget"])
+    # BOD-225: never capture fresh producer values during receipt replay.
+    producer = producer_from_started(started)
+    if producer is not None:
+        receipt["producer"] = producer
     # Derived, omitted when empty so committed proof receipts still verify.
     if no_change_nodes:
         receipt["no_change_nodes"] = no_change_nodes
