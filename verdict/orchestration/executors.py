@@ -90,85 +90,98 @@ def _iter_json_values(stdout: str) -> tuple[list[Any], bool]:
 _STREAMING_TYPES = frozenset({"message_start", "message_update"})
 
 
+def _message_turn_key(message: Mapping[str, Any]) -> str | None:
+    """Identify a completed turn, never by a provider response id alone."""
+    timestamp = message.get("timestamp")
+    role = message.get("role")
+    if timestamp is not None and role is not None:
+        return json.dumps([timestamp, role], sort_keys=True)
+    if message.get("responseId") is not None:
+        # Older output lacks timestamps. Only identical final copies can match;
+        # a reused responseId with different content/stopReason is a new turn.
+        return json.dumps(
+            {key: value for key, value in message.items() if key != "usage"}, sort_keys=True
+        )
+    return None
+
+
+def _merge_message_usage(final: dict[str, Any], earlier: Mapping[str, Any]) -> dict[str, Any]:
+    """Latest final fields win, but missing usage can come from an earlier copy."""
+    result = dict(final)
+    if result.get("usage") is None and earlier.get("usage") is not None:
+        result["usage"] = earlier["usage"]
+    return result
+
+
 def _collect_messages(values: list[Any]) -> list[dict[str, Any]]:
-    """Collect message dicts from parsed Prime JSON-lines output.
+    """Collect final turns in transcript order, without trusting responseId uniqueness.
 
-    Only collects from **final** events:
+    The last ``agent_end.messages`` list is the authoritative ordered transcript.
+    Its entries are never deduplicated. Earlier final events only supply missing
+    usage for matching turns. Streaming starts/updates never supply final fields.
 
-    * ``agent_end`` → ``"messages"`` (plural list)
-    * ``message_end`` / ``turn_end`` → ``"message"`` (singular dict)
-    * Top-level dicts with ``"role"`` (no ``type`` field) and bare lists
-
-    ``message_start`` and ``message_update`` are **ignored** — they carry
-    streaming partials that must not compete with final copies.
-
-    Deduplication identity:
-
-    * ``responseId`` when present on the message dict
-    * ``(timestamp, role)`` when both are present but ``responseId`` is not
-    * Otherwise no dedup — the message is treated as distinct
-
-    Merge rule: fields from the latest final copy win, but if that copy
-    lacks ``usage`` and an earlier copy has it the earlier usage is kept.
-    First-appearance order by identity is preserved.
+    Without that transcript, timestamp/role identify final copies. For older
+    output without timestamps, only a matching ``turn_end`` (or transcript copy)
+    can merge with a prior final event; separate ``message_end`` events remain
+    separate turns even with identical response ids and text.
     """
+    completed: list[dict[str, Any]] = []
+    by_turn: dict[str, list[int]] = {}
+    transcript: list[dict[str, Any]] | None = None
 
-    raw: list[dict[str, Any]] = []
+    def add(message: dict[str, Any], *, copy_event: bool) -> None:
+        key = _message_turn_key(message)
+        indices = by_turn.get(key, []) if key is not None else []
+        if indices and (copy_event or message.get("timestamp") is not None):
+            index = indices[-1]
+            completed[index] = _merge_message_usage(message, completed[index])
+            return
+        if key is not None:
+            by_turn.setdefault(key, []).append(len(completed))
+        completed.append(dict(message))
+
     for value in values:
         if isinstance(value, dict):
-            evt_type = value.get("type")
-            if evt_type in _STREAMING_TYPES:
-                continue  # skip partials
+            event_type = value.get("type")
+            if event_type in _STREAMING_TYPES:
+                continue
             inner = value.get("messages")
             if isinstance(inner, list):
-                raw.extend(m for m in inner if isinstance(m, dict))
+                messages = [m for m in inner if isinstance(m, dict) and "role" in m]
+                if event_type == "agent_end":
+                    transcript = messages
+                else:
+                    for message in messages:
+                        add(message, copy_event=True)
             else:
-                msg = value.get("message")
-                if isinstance(msg, dict) and "role" in msg:
-                    raw.append(msg)
-                elif "role" in value and evt_type is None:
-                    # bare message dict (no Prime event wrapper)
-                    raw.append(value)
+                wrapped_message = value.get("message")
+                if isinstance(wrapped_message, dict) and "role" in wrapped_message:
+                    add(wrapped_message, copy_event=event_type == "turn_end")
+                elif "role" in value and event_type is None:
+                    add(value, copy_event=False)
         elif isinstance(value, list):
-            raw.extend(m for m in value if isinstance(m, dict) and "role" in m)
+            for message in value:
+                if isinstance(message, dict) and "role" in message:
+                    add(message, copy_event=False)
 
-    # --- identity-based merge ------------------------------------------------
-    # Order: dict keyed by identity → list of copies in appearance order.
-    # Messages with no usable identity get a unique sentinel so they are never
-    # merged with anything else.
-    _no_id_counter = 0
-    order: dict[Any, list[dict[str, Any]]] = {}
-    appearance: list[Any] = []  # first-seen identity order
-    for msg in raw:
-        rid = msg.get("responseId")
-        if rid is not None:
-            key: Any = ("rid", rid)
+    if transcript is None:
+        return completed
+
+    # Match occurrences in order, not by responseId. Even repeated identical
+    # entries in the authoritative transcript remain separate turns.
+    occurrences: dict[str, int] = {}
+    result: list[dict[str, Any]] = []
+    for message in transcript:
+        key = _message_turn_key(message)
+        index = occurrences.get(key, 0) if key is not None else 0
+        donors = by_turn.get(key, []) if key is not None else []
+        if index < len(donors):
+            result.append(_merge_message_usage(message, completed[donors[index]]))
         else:
-            ts = msg.get("timestamp")
-            role = msg.get("role")
-            if ts is not None and role is not None:
-                key = ("ts", ts, role)
-            else:
-                key = ("_no_id", _no_id_counter)
-                _no_id_counter += 1
-        if key not in order:
-            order[key] = []
-            appearance.append(key)
-        order[key].append(msg)
-
-    # Merge each group: last copy wins fields; preserve earlier usage if the
-    # last copy lacks it.
-    merged: list[dict[str, Any]] = []
-    for key in appearance:
-        copies = order[key]
-        final = dict(copies[-1])  # shallow copy of latest
-        if "usage" not in final or final.get("usage") is None:
-            for earlier in reversed(copies[:-1]):
-                if "usage" in earlier and earlier["usage"] is not None:
-                    final["usage"] = earlier["usage"]
-                    break
-        merged.append(final)
-    return merged
+            result.append(dict(message))
+        if key is not None:
+            occurrences[key] = index + 1
+    return result
 
 
 def _text_of(message: Mapping[str, Any]) -> str:

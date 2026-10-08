@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from verdict.orchestration.contracts import AttemptUsage, WorkerTerminal
 from verdict.orchestration.executors import PrimeHeadlessExecutor, _collect_messages
 
@@ -508,3 +510,155 @@ class TestFixtureParity:
         assert len(assistants) == 2, f"Expected 2 assistants, got {len(assistants)}"
         ids = [m.get("responseId") for m in assistants]
         assert ids == ["chatcmpl-1790576680714", "chatcmpl-1790576681884"]
+
+
+@pytest.mark.parametrize(
+    "response_ids",
+    [
+        ("chatcmpl-keepalive", "chatcmpl-distinct", "chatcmpl-keepalive"),
+        ("chatcmpl-distinct", "chatcmpl-keepalive", "chatcmpl-distinct"),
+        ("chatcmpl-keepalive",) * 3,
+    ],
+)
+@pytest.mark.parametrize("agent_end", [False, True])
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_reused_response_ids_preserve_final_turn_and_sum_usage(
+    response_ids: tuple[str, ...], agent_end: bool, timestamps: bool
+) -> None:
+    """Real keepalive ids identify neither a turn nor its chronological position."""
+    transcript: list[dict[str, Any]] = [{"role": "user", "content": "implement"}]
+    events: list[dict[str, Any]] = []
+    for index, rid in enumerate(response_ids, 1):
+        stop = "stop" if index == 3 else "toolUse"
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "responseId": rid,
+            "provider": "omniroute",
+            "model": "cc/claude-sonnet-5",
+            "stopReason": stop,
+            "content": [{"type": "text", "text": "done\nRESULT: DONE"}]
+            if stop == "stop"
+            else [{"type": "toolCall", "id": f"t{index}", "name": "bash", "arguments": {}}],
+            "usage": {"input": index * 100, "output": index, "cost": {"total": index / 100}},
+        }
+        if timestamps:
+            message["timestamp"] = index * 2
+        events.extend(
+            [
+                {"type": "message_start", "message": message},
+                {"type": "message_update", "message": message},
+                {"type": "message_end", "message": message},
+                {"type": "turn_end", "message": {k: v for k, v in message.items() if k != "usage"}},
+            ]
+        )
+        # The authoritative copy omits usage; it must inherit the right turn's
+        # usage without counting the streamed copies a second time.
+        transcript.append({k: v for k, v in message.items() if k != "usage"})
+        if index < 3:
+            tool_result = {"role": "toolResult", "content": f"tool {index}"}
+            events.append({"type": "message_end", "message": tool_result})
+            transcript.append(tool_result)
+    if agent_end:
+        events.append({"type": "agent_end", "messages": transcript})
+    terminal = PrimeHeadlessExecutor()._interpret(
+        stdout="\n".join(json.dumps(e) for e in events),
+        stderr="",
+        returncode=0,
+        route_id="cc/claude-sonnet-5",
+        duration=1.0,
+    )
+    assert terminal.ok, terminal.error
+    assert terminal.stop_reason == "stop"
+    assert terminal.output.endswith("RESULT: DONE")
+    assert terminal.usage is not None
+    assert terminal.usage.turns == 3
+    assert terminal.usage.input_tokens == 600
+    assert terminal.usage.output_tokens == 6
+    assert terminal.usage.cost_usd == pytest.approx(0.06)
+
+
+def test_agent_end_transcript_is_authoritative_even_with_later_stale_events() -> None:
+    final = {
+        "role": "assistant",
+        "responseId": "keepalive",
+        "content": "final",
+        "stopReason": "stop",
+    }
+    stale = {
+        "role": "assistant",
+        "responseId": "distinct",
+        "content": "stale",
+        "stopReason": "toolUse",
+    }
+    assert _collect_messages(
+        [
+            {"type": "message_end", "message": stale},
+            {"type": "agent_end", "messages": [final]},
+            {"type": "turn_end", "message": stale},
+        ]
+    ) == [final]
+    assert (
+        _collect_messages(
+            [{"type": "message_end", "message": final}, {"type": "agent_end", "messages": []}]
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_identical_transcript_turns_are_not_merged(timestamps: bool) -> None:
+    turns = [
+        {
+            "role": "assistant",
+            "responseId": "keepalive",
+            "content": "same",
+            "usage": {"input": 100},
+        },
+        {
+            "role": "assistant",
+            "responseId": "keepalive",
+            "content": "same",
+            "usage": {"input": 200},
+        },
+    ]
+    if timestamps:
+        for index, turn in enumerate(turns):
+            turn["timestamp"] = index
+    result = _collect_messages(
+        [
+            *({"type": "message_end", "message": m} for m in turns),
+            {"type": "agent_end", "messages": turns},
+        ]
+    )
+    assert len(result) == 2
+    usage = PrimeHeadlessExecutor._extract_usage(result)
+    assert usage is not None
+    assert usage.turns == 2
+    assert usage.input_tokens == 300
+
+
+def test_identical_timestamp_less_turns_count_once_per_message_end() -> None:
+    events: list[dict[str, Any]] = []
+    transcript: list[dict[str, Any]] = []
+    for count in (100, 200):
+        message = {
+            "role": "assistant",
+            "responseId": "keepalive",
+            "content": "same",
+            "usage": {"input": count},
+        }
+        without_usage = {k: v for k, v in message.items() if k != "usage"}
+        events.extend(
+            [
+                {"type": "message_end", "message": message},
+                {"type": "turn_end", "message": without_usage},
+            ]
+        )
+        transcript.append(without_usage)
+    for values in (events, [*events, {"type": "agent_end", "messages": transcript}]):
+        messages = _collect_messages(values)
+        usage = PrimeHeadlessExecutor._extract_usage(messages)
+        assert len(messages) == 2
+        assert usage is not None
+        assert usage.turns == 2
+        assert usage.input_tokens == 300

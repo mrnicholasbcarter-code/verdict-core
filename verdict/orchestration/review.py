@@ -445,6 +445,12 @@ class OpenCodeReviewer:
         if not isinstance(payload, dict):
             return self._error(route_id, raw_ref, "ocr output was not an object")
 
+        empty_reason = self._empty_review_reason(payload)
+        if empty_reason is not None:
+            # A skipped/empty review is an input/coverage failure, not a provider
+            # outage. Changing reviewer cannot repair an empty selected range.
+            return self._error(route_id, raw_ref, empty_reason)
+
         if self._every_item_failed(payload):
             return self._error(route_id, raw_ref, "every reviewed item failed")
 
@@ -501,6 +507,27 @@ class OpenCodeReviewer:
             raw_ref=raw_ref,
             detail=detail,
         )
+
+    @staticmethod
+    def _empty_review_reason(payload: Mapping[str, object]) -> str | None:
+        manifest = payload.get("manifest")
+        terminal = manifest.get("terminal_state") if isinstance(manifest, Mapping) else None
+        if any(
+            str(value).strip().lower() == "skipped" for value in (payload.get("status"), terminal)
+        ):
+            return "review skipped: no items reviewed"
+        coverage = manifest.get("coverage") if isinstance(manifest, Mapping) else None
+        if isinstance(coverage, Mapping) and coverage.get("selected") == []:
+            return "review skipped: no items selected"
+        summary = payload.get("summary")
+        if isinstance(summary, Mapping) and "files_reviewed" in summary:
+            try:
+                count = int(summary["files_reviewed"])
+            except (ValueError, TypeError, OverflowError):
+                return "review coverage invalid: files_reviewed is not a count"
+            if count <= 0:
+                return "review skipped: zero files reviewed"
+        return None
 
     @staticmethod
     def _every_item_failed(payload: Mapping[str, object]) -> bool:
