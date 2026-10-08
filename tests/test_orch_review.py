@@ -666,3 +666,394 @@ def test_skipped_or_empty_review_fails_closed_without_provider_reselection(
     assert len(result.attempts) == 1
     assert len([c for c in runner.calls if "--output" in c["argv"]]) == 1
     assert "pool exhausted" not in result.detail
+
+
+# --------------------------------------------------------------------------- #
+# BOD-288: Review coverage fail-closed
+# --------------------------------------------------------------------------- #
+
+
+def test_empty_object_fails_closed_with_coverage_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1: {} returns ERROR with exact detail 'review coverage missing'."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload="{}")
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert not result.passed
+    assert result.detail == "review coverage missing"
+
+
+def test_findings_only_object_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1: {"findings": []} returns ERROR with 'review coverage missing'."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload='{"findings": []}')
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review coverage missing"
+
+
+def test_selected_only_signal_is_sufficient_for_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 2: non-empty selected list alone can produce PASS."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "findings": [],
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
+
+
+def test_completed_only_signal_is_sufficient_for_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 2: non-empty completed list alone can produce PASS."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {"coverage": {"completed": [{"path": "y.py"}]}},
+        "findings": [],
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
+
+
+def test_summary_only_signal_is_sufficient_for_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 2: valid positive files_reviewed alone can produce PASS."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {"summary": {"files_reviewed": 1}, "findings": []}
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
+
+
+def test_skipped_status_defeats_positive_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 3: skipped status takes precedence over positive signals."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "status": "skipped",
+        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "summary": {"files_reviewed": 1},
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review skipped: no items reviewed"
+
+
+def test_empty_selected_list_defeats_completed_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 3: selected=[] takes precedence over completed evidence."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {
+            "coverage": {"selected": [], "completed": [{"path": "x.py"}]}
+        },
+        "summary": {"files_reviewed": 1},
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review skipped: no items selected"
+
+
+def test_zero_file_count_defeats_list_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 3: files_reviewed=0 takes precedence over list evidence."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "summary": {"files_reviewed": 0},
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review skipped: zero files reviewed"
+
+
+def test_invalid_file_count_defeats_list_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 3: invalid files_reviewed takes precedence over list evidence."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "summary": {"files_reviewed": "not-a-number"},
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review coverage invalid: files_reviewed is not a count"
+
+
+def test_coverage_error_does_not_reselect_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 4: missing coverage is not a provider failure, no reselection."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    selector = PoolSelector(["cc/first", "cx/second"])
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload="{}")
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "ERROR"
+    assert result.detail == "review coverage missing"
+    assert len(result.attempts) == 1
+    assert result.attempts[0]["route_id"] == "cc/first"
+    # Verify no second attempt was made
+    assert len([c for c in runner.calls if "--model" in c["argv"]]) == 1
+    # Verify no cooldown was recorded
+    assert selector.failed == []
+
+
+def test_retained_dogfood_bod_273_payload_still_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 5: retained one-item complete review from repository proof still passes."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    proof_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/proof/dogfood-bod-273-2026-09-28/review/ocr-raw.json"
+    )
+    payload = json.loads(proof_path.read_text())
+    
+    # This payload has:
+    # - selected: 1 item
+    # - completed: 1 item  
+    # - files_reviewed: 1
+    # - comments: []
+    assert len(payload["manifest"]["coverage"]["selected"]) == 1
+    assert len(payload["manifest"]["coverage"]["completed"]) == 1
+    assert payload["summary"]["files_reviewed"] == 1
+    assert payload["comments"] == []
+    
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    # Use the recorded model to avoid identity mismatch
+    recorded_model = payload["manifest"]["execution"]["model"]
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict(recorded_model)), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
+    assert result.findings == ()
+
+
+# Complete Interview Clean payload (portable hermetic copy per Design § 4)
+_INTERVIEW_CLEAN_COMPLETE = """
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "cx/gpt-5.5"
+  },
+  "message": "Review complete: 0 finding(s) across 2 selected item(s).",
+  "summary": {
+    "files_reviewed": 2,
+    "comments": 0,
+    "total_tokens": 38245,
+    "input_tokens": 37891,
+    "output_tokens": 354,
+    "cache_read_tokens": 0,
+    "elapsed": "18s"
+  },
+  "tool_calls": {
+    "total": 7,
+    "by_tool": {
+      "code_search": 3,
+      "file_read": 4
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "verdict/orchestration/review.py",
+      "files": ["verdict/orchestration/review.py"]
+    },
+    {
+      "label": "tests/test_orch_review.py",
+      "files": ["tests/test_orch_review.py"]
+    }
+  ],
+  "session_id": "test-session-id",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "test-run-id",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "test-repo-hash"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "base-ref",
+      "requested_head": "head-ref",
+      "resolved_base": "base-ref",
+      "resolved_head": "head-ref",
+      "exact_range": "base-ref..head-ref",
+      "source_artifact_sha256": "test-source-hash"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "cx/gpt-5.5",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "test-rule-hash",
+      "runtime_config_sha256": "test-runtime-hash"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "item-1",
+          "path": "verdict/orchestration/review.py",
+          "fingerprint": "fp-1"
+        },
+        {
+          "item_id": "item-2",
+          "path": "tests/test_orch_review.py",
+          "fingerprint": "fp-2"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "item-1",
+          "path": "verdict/orchestration/review.py",
+          "fingerprint": "fp-1"
+        },
+        {
+          "item_id": "item-2",
+          "path": "tests/test_orch_review.py",
+          "fingerprint": "fp-2"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    }
+  }
+}
+"""
+
+
+def test_interview_clean_complete_payload_still_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 5: retained two-item Interview Clean payload still passes (hermetic copy)."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = json.loads(_INTERVIEW_CLEAN_COMPLETE)
+    
+    # Verify the hermetic copy has the expected structure
+    assert len(payload["manifest"]["coverage"]["selected"]) == 2
+    assert len(payload["manifest"]["coverage"]["completed"]) == 2
+    assert payload["summary"]["files_reviewed"] == 2
+    assert payload["comments"] == []
+    
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    # Use the recorded model
+    recorded_model = payload["manifest"]["execution"]["model"]
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict(recorded_model)), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
+    assert result.findings == ()
+
+
+def test_missing_coverage_with_blocking_finding_still_errors_on_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coverage check runs before findings; missing coverage errors first."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "findings": [
+            {
+                "path": "x.py",
+                "severity": "critical",
+                "category": "bug",
+                "content": "bad",
+            }
+        ]
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert result.detail == "review coverage missing"
+
+
+def test_positive_coverage_with_blocking_finding_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 5: blocking findings still reject covered output."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {
+        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "summary": {"files_reviewed": 1},
+        "comments": [
+            {
+                "path": "x.py",
+                "severity": "critical",
+                "category": "bug",
+                "content": "serious issue",
+                "start_line": 10,
+            }
+        ],
+    }
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "FAIL"
+    assert not result.passed
+    assert any(f.severity == "critical" for f in result.findings)
+
+
+def test_non_list_coverage_fields_do_not_satisfy_list_predicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 2: strings, mappings, numbers at selected/completed are not lists."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    for wrong_value in ["string", 123, {"key": "value"}, True, None]:
+        payload = {
+            "manifest": {"coverage": {"selected": wrong_value, "completed": wrong_value}},
+            "findings": [],
+        }
+        runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+        reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+        result = _run(reviewer)
+        assert result.status == "ERROR", f"wrong_value={wrong_value}"
+        assert result.detail == "review coverage missing", f"wrong_value={wrong_value}"
+
+
+def test_summary_alone_can_pass_without_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 2: summary-only positive signal works without manifest."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    payload = {"summary": {"files_reviewed": 3}, "findings": []}
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "PASS"
+    assert result.passed
