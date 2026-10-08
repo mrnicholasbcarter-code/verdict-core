@@ -88,7 +88,9 @@ verdict run-receipt docs/proof/dogfood-bod-225-live-2026-09-29
 
 Expected: COMPLETE with integrity OK. Worker code lives on branch
 `dogfood/bod-225b-live` (SHAs above; branch tip at audit:
-`0c21c6d859355fc8f8482baf9f0779ba63fed2c0`).
+`0c21c6d859355fc8f8482baf9f0779ba63fed2c0`). That worker code was
+later ported and merged to main via PR #784; the historical run remains tied
+to this worker branch, not the later main merge.
 
 Capture-host home-directory and `/tmp` run paths appear inside `events.jsonl`
 (for example resolved interpreter argv0 and worktree paths). They are part of
