@@ -483,3 +483,26 @@ def test_planner_boolean_barrier_and_odd_risk_are_normalized() -> None:
     graph = parse_plan(text, "g")
     assert graph.node("a").barrier == "" and graph.node("a").risk == "low"
     assert graph.node("i").barrier == "integration" and graph.node("i").risk == "medium"
+
+
+def test_planner_assigns_shared_package_markers_to_one_dependency_owner() -> None:
+    prompt = build_planning_prompt("add a package", "", "")
+    assert "exactly one node must own each file" in prompt
+    assert "must depend_on that owner" in prompt
+    assert "Python namespace packages import without __init__.py" in prompt
+
+
+def test_worker_prompt_blocks_host_changes_and_out_of_scope_files(tmp_path: Path) -> None:
+    node = WorkNode(
+        "a", "implement", owned_files=("pkg/a.py",), verification_command=("pytest", "-q")
+    )
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="g")
+    assert "Do not modify anything outside the worktree" in prompt
+    assert "no files under $HOME" in prompt
+    assert "no symlinks" in prompt
+    assert "no PATH or shell-profile edits" in prompt
+    assert "no package installs" in prompt
+    assert "If a file outside OWNED_FILES is required, do not create or modify it" in prompt
+    assert "naming that file" in prompt
+    assert "If VERIFICATION_COMMAND cannot run as given, stop" in prompt
+    assert "Do not change the host to make it run" in prompt

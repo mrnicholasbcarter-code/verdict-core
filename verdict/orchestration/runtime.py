@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import shlex
 import shutil
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -58,6 +59,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.recovery import RecoveryBudget
+from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
@@ -69,29 +71,6 @@ class EventSink(Protocol):
 
 
 Runner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, str]]]
-
-
-def _resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
-    """Resolve interpreter for verification commands; return (resolved_argv, resolved_argv0).
-
-    When ``argv[0]`` is ``"python"`` or ``"python3"`` and that name is not
-    found on ``PATH``, substitute ``sys.executable`` (the interpreter running
-    Verdict itself).  Any other ``argv[0]`` is returned unchanged.
-
-    Returns ``(resolved_argv, resolved_argv0)`` where *resolved_argv0* is the
-    original value when no substitution was made, or the resolved path when it
-    was.  The caller should record *resolved_argv0* in the verify event so the
-    substitution is visible in the run log.
-    """
-    import shutil
-    import sys
-
-    resolved: list[str] = list(argv)
-    resolved_argv0 = ""
-    if argv and argv[0] in {"python", "python3"} and shutil.which(argv[0]) is None:
-        resolved[0] = sys.executable
-        resolved_argv0 = sys.executable
-    return resolved, resolved_argv0
 
 
 async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
@@ -155,8 +134,8 @@ class NodeRun:
     context_budget: int = 0
     # Routes already retried once with a smaller pack after an overflow.
     repacked_routes: set[str] = field(default_factory=set)
-    # BOD-272: verification evidence from the last failed attempt, appended to
-    # the next prompt so the same route can fix it before escalating.
+    # Bounded verification/ownership evidence from the last failed attempt,
+    # appended to every retry, including a retry on another route.
     failure_feedback: str = ""
     rehydrated_routes: set[str] = field(default_factory=set)
 
@@ -816,6 +795,18 @@ class DagRuntime:
                 continue
             if ok:
                 return
+            run.failure_feedback = ""
+            if failures:
+                last = failures[-1]
+                if last.category == "ownership_violation":
+                    run.failure_feedback = (
+                        last.evidence[:1700]
+                        + "\nThe out-of-scope files above must not be created or modified. "
+                        "Only OWNED_FILES may change. If one is required, finish with "
+                        "RESULT: BLOCKED naming the file."
+                    )
+                elif last.category == "verification_failed":
+                    run.failure_feedback = last.evidence[-2000:]
             if failures and failures[-1].action == "RETRY_INFRA":
                 # Gateway-local transient: same route is still healthy; wait and retry.
                 await asyncio.sleep(min(failures[-1].cooldown_seconds, 60.0))
@@ -835,19 +826,16 @@ class DagRuntime:
                     tried.add(run.route_id)
             elif (
                 failures
-                and failures[-1].category == "verification_failed"
+                and failures[-1].category in {"verification_failed", "ownership_violation"}
                 and run.route_id not in run.rehydrated_routes
             ):
-                # BOD-272: failure-directed rehydration. The route produced a
-                # candidate that failed verification; give the SAME route one
-                # retry with the exact failing evidence before escalating to
-                # another (usually more expensive) route.
+                # Failure-directed rehydration: give the same route one retry
+                # with the failing barrier evidence before escalating.
                 run.rehydrated_routes.add(run.route_id)
-                run.failure_feedback = failures[-1].evidence[-2000:]
                 self.events.emit(
                     "rehydrate",
                     node_id,
-                    reason="verification_failed",
+                    reason=failures[-1].category,
                     route_id=run.route_id,
                     evidence_chars=len(run.failure_feedback),
                     attempt=run.attempt,
@@ -1005,8 +993,14 @@ class DagRuntime:
                 budget = run.context_budget or self.policy.context_budget_bytes
                 prompt = self._prompt(node, worktree, budget)
                 if run.failure_feedback:
+                    ownership = run.failures[-1].category == "ownership_violation"
+                    header = (
+                        "PREVIOUS_ATTEMPT_FAILED_OWNERSHIP"
+                        if ownership
+                        else "PREVIOUS_ATTEMPT_FAILED_VERIFICATION"
+                    )
                     prompt += (
-                        "\n\nPREVIOUS_ATTEMPT_FAILED_VERIFICATION:\n"
+                        f"\n\n{header}:\n"
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
@@ -1271,7 +1265,8 @@ class DagRuntime:
                 node.node_id,
                 ok=code == 0,
                 exit_code=code,
-                command=" ".join(node.verification_command),
+                command=shlex.join(node.verification_command),
+                executed_command=shlex.join(resolved),
                 tail=out[-600:],
                 **verify_extra,
             )

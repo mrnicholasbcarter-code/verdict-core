@@ -264,3 +264,60 @@ async def test_runtime_verify_python_resolved_when_missing(
     # It will fail (no tests) but the point is it didn't raise FileNotFoundError
     # exit code 5 = no tests collected, which is fine
     assert code != 127  # not "command not found"
+
+
+@pytest.mark.parametrize("binary", ["python", "python3"])
+@pytest.mark.parametrize("on_path", [False, True])
+async def test_hydrated_command_matches_runtime_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, binary: str, on_path: bool
+) -> None:
+    import shlex
+
+    from verdict.orchestration import verification
+    from verdict.orchestration.contracts import WorkNode
+    from verdict.orchestration.planner import hydrate_node_prompt
+    from verdict.orchestration.runtime import DagRuntime, NodeRun, RuntimePolicy
+
+    monkeypatch.setattr(
+        verification.shutil, "which", lambda name: "/known/python" if on_path else None
+    )
+    node = WorkNode(
+        "a",
+        "check",
+        owned_files=("a.py",),
+        verification_command=(binary, "-c", "print('hello world')"),
+    )
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="g")
+    shown = next(
+        line.removeprefix("VERIFICATION_COMMAND: ")
+        for line in prompt.splitlines()
+        if line.startswith("VERIFICATION_COMMAND:")
+    )
+    calls: list[list[str]] = []
+
+    async def runner(argv: Any, cwd: Path, timeout: float) -> tuple[int, str]:
+        calls.append(list(argv))
+        return 0, "ok"
+
+    class Git:
+        async def changed_files(self, worktree: Path, base: str) -> list[str]:
+            return ["a.py"]
+
+    class Events:
+        def __init__(self) -> None:
+            self.rows: list[dict[str, Any]] = []
+
+        def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+            self.rows.append({"type": type, **data})
+
+    runtime = object.__new__(DagRuntime)
+    runtime.git = Git()  # type: ignore[assignment]
+    runtime.runner = runner
+    runtime.events = events = Events()
+    runtime.policy = RuntimePolicy()
+    assert await runtime._validate(NodeRun(node), tmp_path, "base") is None
+    assert calls == [shlex.split(shown)]
+    assert calls[0][0] == (binary if on_path else sys.executable)
+    verify = next(e for e in events.rows if e["type"] == "verify")
+    assert verify["executed_command"] == shown
+    assert verify.get("resolved_argv0", "") == ("" if on_path else sys.executable)

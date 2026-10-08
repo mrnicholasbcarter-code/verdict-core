@@ -630,3 +630,39 @@ def test_idle_reviewer_is_replaced_by_another_independent_reviewer(
     assert selector.failed == ["cc/stuck"]
     assert result.attempts[0]["category"] == "timeout"
     assert "no progress for 5" in str(result.attempts[0]["detail"])
+
+
+@pytest.mark.parametrize(
+    "cause", ["retained", "status", "terminal_state", "selected", "files_reviewed"]
+)
+def test_skipped_or_empty_review_fails_closed_without_provider_reselection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cause: str
+) -> None:
+    """Use the retained skipped OCR shape, and reject each empty signal on its own."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    if cause == "retained":
+        proof = (
+            Path(__file__).resolve().parents[1]
+            / "docs/proof/live-controller-run/review/ocr-raw.json"
+        )
+        payload = json.loads(proof.read_text())
+    else:
+        payload = json.loads(_load_fixture("sample-clean.json"))
+        if cause == "status":
+            payload["status"] = "skipped"
+        elif cause == "terminal_state":
+            payload["manifest"]["terminal_state"] = "skipped"
+        elif cause == "selected":
+            payload["manifest"]["coverage"]["selected"] = []
+        else:
+            payload["summary"]["files_reviewed"] = 0
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
+    result = _run(reviewer)
+    assert result.status == "ERROR"
+    assert not result.passed
+    assert "review skipped" in result.detail
+    assert not reviewer._provider_failure(result)
+    assert len(result.attempts) == 1
+    assert len([c for c in runner.calls if "--output" in c["argv"]]) == 1
+    assert "pool exhausted" not in result.detail

@@ -1179,3 +1179,79 @@ async def test_second_verification_failure_escalates(repo: Path) -> None:
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert [c[1] for c in ex.calls] == ["cc/s", "cc/s", "cx/g"]
+
+
+@pytest.mark.parametrize("correct_on", [2, 3])
+async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
+    repo: Path, correct_on: int
+) -> None:
+    """Fresh worktrees plus concrete feedback let package-marker mistakes converge."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    prompts: list[str] = []
+
+    class OutsideMarkers(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            prompts.append(prompt)
+            self.calls.append(("a", route_id))
+            # The failed worktree was discarded, including its out-of-scope files.
+            assert not (cwd / "pkg/__init__.py").exists()
+            (cwd / "a.txt").write_text("ok\n")
+            if len(prompts) < correct_on:
+                for path in ("pkg/__init__.py", "tests/__init__.py"):
+                    marker = cwd / path
+                    marker.parent.mkdir(exist_ok=True)
+                    marker.write_text("# marker\n")
+            return WorkerTerminal(ok=True, model=route_id, output="RESULT: DONE")
+
+    ex, events = OutsideMarkers({}), Events()
+    runtime = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=Selector(["cc/s", "cx/g"]),
+        executor=ex,
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert [call[1] for call in ex.calls] == ["cc/s", "cc/s", "cx/g"][:correct_on]
+    assert "PREVIOUS_ATTEMPT_FAILED_OWNERSHIP" not in prompts[0]
+    for prompt in prompts[1:]:
+        assert "PREVIOUS_ATTEMPT_FAILED_OWNERSHIP" in prompt
+        assert "pkg/__init__.py" in prompt
+        assert "tests/__init__.py" in prompt
+        assert "must not be created or modified" in prompt
+        assert "Only OWNED_FILES may change" in prompt
+        assert "RESULT: BLOCKED naming the file" in prompt
+    assert len(result.nodes["a"].failure_feedback) <= 2000
+    assert events.of("rehydrate", "a")[0]["reason"] == "ownership_violation"
+    barriers = [b for b in events.of("barrier", "a") if b["name"] == "ownership"]
+    assert [b["ok"] for b in barriers] == [False] * (correct_on - 1) + [True]
+
+
+async def test_real_skipped_ocr_result_blocks_runtime_completion(repo: Path) -> None:
+    from verdict.orchestration.review import OcrRun, OpenCodeReviewer
+
+    raw = Path(__file__).resolve().parents[1] / "docs/proof/live-controller-run/review/ocr-raw.json"
+    interpreter = object.__new__(OpenCodeReviewer)
+    skipped = interpreter._interpret(OcrRun(exit_code=0), raw, "kr/gpt-5.6-terra")
+
+    class SkippedReviewer(Reviewer):
+        async def review(self, **kwargs: Any) -> ReviewResult:
+            return skipped
+
+    runtime, events, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Executor({}), ["cc/s"], reviewer=SkippedReviewer()
+    )
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert "review skipped: no items reviewed" in result.reason
+    assert events.of("review")[0]["status"] == "ERROR"

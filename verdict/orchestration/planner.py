@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import textwrap
 from collections.abc import Mapping, Sequence
@@ -26,6 +27,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
 )
+from verdict.orchestration.verification import resolve_verify_argv
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -168,6 +170,10 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
            ALL implement nodes, whose verification_command runs the combined
            test suite.
         7. Use short, stable, snake_case or kebab-case node_id values.
+        8. If new shared package-marker files (for example __init__.py) are needed,
+           exactly one node must own each file. Every node that needs the file
+           must depend_on that owner. Otherwise implement nodes must not require
+           those files: Python namespace packages import without __init__.py.
 
         Return ONLY the JSON object described above.
         """).strip()
@@ -485,7 +491,8 @@ def hydrate_node_prompt(
         lines.extend(f"  - {item}" for item in node.acceptance)
     lines.append(f"OWNED_FILES: {', '.join(node.owned_files) or '(none)'}")
     if node.verification_command:
-        lines.append(f"VERIFICATION_COMMAND: {' '.join(node.verification_command)}")
+        resolved, _ = resolve_verify_argv(node.verification_command)
+        lines.append(f"VERIFICATION_COMMAND: {shlex.join(resolved)}")
     lines.append("")
 
     budget = max_context_bytes
@@ -535,8 +542,20 @@ def hydrate_node_prompt(
     else:
         lines.append("  - You have NO owned files. Do NOT create, edit, or write any files.")
         lines.append("  - Put all findings, summaries, and notes in your final answer text.")
+    lines.extend(
+        [
+            "  - Do not modify anything outside the worktree: no files under $HOME, "
+            "no symlinks, no PATH or shell-profile edits, and no package installs.",
+            "  - If a file outside OWNED_FILES is required, do not create or modify it. "
+            "Finish with 'RESULT: BLOCKED <reason>' naming that file.",
+        ]
+    )
     if node.verification_command:
         lines.append("  - Run VERIFICATION_COMMAND yourself and ensure it passes before finishing.")
+        lines.append(
+            "  - If VERIFICATION_COMMAND cannot run as given, stop and finish with "
+            "'RESULT: BLOCKED <reason>'. Do not change the host to make it run."
+        )
     lines.append(
         "  - Finish your final message with exactly 'RESULT: DONE' on success, "
         "or 'RESULT: BLOCKED <reason>' if you cannot complete the objective."
