@@ -477,6 +477,78 @@ def spec_revision_digest(change: OpenSpecChange) -> str:
     return hasher.hexdigest()
 
 
+def check_conformance(repo: Path, change: OpenSpecChange) -> dict[str, Any]:
+    """Run the pinned CLI's strict structured validation, failing closed.
+
+    OpenSpec 1.13.2 has no ``verify`` command.  A nonzero validation or
+    reported issue is a FAIL; missing, timed-out, or malformed CLI evidence
+    is BLOCKED.  The revision is sampled on both sides of the command.
+    """
+    from datetime import datetime, timezone
+
+    command = ["validate", change.change_id, "--strict", "--json"]
+    result: dict[str, Any] = {
+        "status": "BLOCKED",
+        "reason": "OpenSpec conformance not checked",
+        "cli_version": None,
+        "command": "npx -y @fission-ai/openspec@1.13.2 " + " ".join(command),
+        "exit_code": None,
+        "valid": None,
+        "issues": [],
+        "output_sha256": None,
+        "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "spec_revision_digest": None,
+    }
+    try:
+        before = spec_revision_digest(change)
+        result["spec_revision_digest"] = before
+        version = _run_openspec_command(["--version"], cwd=repo, timeout=15)
+        if version is None or version.returncode != 0 or not version.stdout.strip():
+            result["reason"] = "OpenSpec CLI unavailable or timed out (--version)"
+            return result
+        result["cli_version"] = version.stdout.strip()
+        checked = _run_openspec_command(command, cwd=repo, timeout=30)
+        if checked is None:
+            result["reason"] = "OpenSpec CLI unavailable or timed out (validate)"
+            return result
+        result["exit_code"] = checked.returncode
+        result["output_sha256"] = hashlib.sha256(checked.stdout.encode("utf-8")).hexdigest()
+        if spec_revision_digest(change) != before:
+            result["reason"] = "spec_changed during OpenSpec conformance"
+            return result
+        try:
+            output = json.loads(checked.stdout)
+        except (ValueError, TypeError):
+            result["reason"] = "OpenSpec validate returned invalid JSON"
+            return result
+        if not isinstance(output, dict):
+            result["reason"] = "OpenSpec validate returned invalid JSON schema"
+            return result
+        # v1.13.2 emits an items[] envelope, including for a single change.
+        items = output.get("items")
+        if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict):
+            item = items[0]
+            if item.get("id") != change.change_id:
+                result["reason"] = "OpenSpec validate returned a different change"
+                return result
+        else:
+            item = output
+        if not isinstance(item.get("valid"), bool) or not isinstance(item.get("issues"), list):
+            result["reason"] = "OpenSpec validate returned invalid JSON schema"
+            return result
+        result["valid"] = item["valid"]
+        result["issues"] = item["issues"]
+        if checked.returncode == 0 and item["valid"] and not item["issues"]:
+            result["status"] = "PASS"
+            result["reason"] = "OpenSpec strict validation passed"
+        else:
+            result["status"] = "FAIL"
+            result["reason"] = f"OpenSpec strict validation failed ({len(item['issues'])} issues)"
+    except Exception as exc:
+        result["reason"] = f"OpenSpec conformance unavailable: {type(exc).__name__}: {exc}"[:300]
+    return result
+
+
 def can_archive_openspec_change(
     change_id: str, has_merged_main_verification: bool
 ) -> tuple[bool, str]:

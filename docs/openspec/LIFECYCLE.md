@@ -27,7 +27,7 @@ For significant changes, the runner:
 | **Git/GitHub** | Source/branch/PR/CI/merge truth |
 | **Receipts** | What actually happened (certification evidence) |
 
-**Critical:** `openspec verify` is spec-conformance evidence ONLY. It never marks a story Done and never replaces Verdict proof or exact-head/merged-main verification.
+**Critical:** `openspec validate <change-id> --strict --json` is spec-conformance evidence ONLY. It never marks a story Done and never replaces Verdict proof or exact-head/merged-main verification.
 
 ## Lifecycle Diagram
 
@@ -46,11 +46,11 @@ Story-owned worktree/branch
   ↓
 Task execution
   ↓
-OpenSpec verify (conformance evidence)
-  ↓
 Verdict VERIFY (proof + exact-head CI)
   ↓
 Independent review
+  ↓
+OpenSpec strict validation (conformance evidence; before final receipt verdict)
   ↓
 PR exact-head CI → merge
   ↓
@@ -110,10 +110,10 @@ Falls back to reading files directly ONLY for fields with no structured output.
 | Condition | Behavior |
 |-----------|----------|
 | OpenSpec unavailable/malformed for significant story | **BLOCK** with explicit reason; do not silently execute from stale chat/prose |
-| Spec revision changed mid-run | Pause/replan affected tasks and proof; set `spec_changed` flag |
+| Spec revision changed mid-run | **BLOCK** with `spec_changed`; a new/replanned run is required |
 | Required section is PLACEHOLDER-only (TBD, N/A, TODO, -, ..., none) | **BLOCK** admission |
 | OpenSpec verification fails | Story remains incomplete |
-| Verdict proof/CI/review fails after OpenSpec verify | Story remains incomplete |
+| Verdict proof/CI/review fails after OpenSpec strict validation | Story remains incomplete |
 | Worker/provider failure | Isolated from root and unrelated stories |
 
 ## Durable Run State
@@ -151,9 +151,10 @@ The receipt (receipt.json) records the `openspec` block, preserving:
 - Linear issue and OpenSpec change IDs
 - Schema version
 - Spec revision digest at run start
-- Conformance result (from `openspec verify`)
+- Conformance result (from `openspec validate <change-id> --strict --json`)
 
-This creates an immutable audit trail linking Linear intent → OpenSpec contract → execution → verification evidence.
+Receipt verification recomputes the conformance result from `events.jsonl`.
+This creates an auditable trail linking Linear intent → OpenSpec contract → execution → verification evidence.
 
 ## Archive Preconditions
 
@@ -189,3 +190,15 @@ All `openspec` subprocess calls **MUST** set `OPENSPEC_TELEMETRY=0` in the envir
 - OpenSpec 1.13.2 (pinned, global or npx)
 - verdict-ecosystem@fec5556 (reference schema and validator)
 - Python 3.10+
+
+## Orchestration conformance gate
+
+`verdict orchestrate --repo PATH --openspec-change <id> "goal"` binds a run
+to `PATH/openspec/changes/<id>`. The runner admits the change before work.
+After execution, and before its final receipt verdict, it invokes pinned OpenSpec
+`validate <id> --strict --json`. The receipt records the CLI version, command,
+exit code, JSON-output SHA-256, validity, issues, check time, and spec digest.
+A missing/timed-out CLI, invalid JSON, failed validation, or changed revision
+blocks completion. This is conformance evidence; Verdict's own integration,
+review, and proof gates still apply. Older runs without an OpenSpec block retain
+their existing receipt behavior.
