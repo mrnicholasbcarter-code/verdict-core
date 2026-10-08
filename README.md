@@ -794,11 +794,24 @@ under `phase:alpha-gate`.
 | Evidence | Location |
 |---|---|
 | Demo run (fixture, verified by `run-receipt`) | [`docs/proof/demo-run/`](docs/proof/demo-run) |
-| Latest certification | [`docs/certification/README.md`](docs/certification/README.md) (see CI artifacts for SHA-bound bundles) |
+| Certification status | [Certification workflow](.github/workflows/certification.yml): no CERTIFIED bundle exists yet. Latest retained certification evidence is INCOMPLETE (see workflow artifacts); main pushes retain only a source receipt, with no full suite or rehearsals. The certified SHA will be recorded here once certification is achievable. |
 | Scenario matrix A–J (live, faults injected) | [`docs/proof/GOLDEN_PATH_CERTIFICATION.md`](docs/proof/GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) |
 | v0.3.0 boundary | [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
+
+Release certification is optional until a real CERTIFIED producer exists. In
+[the release workflow](.github/workflows/release.yml), set repository variable
+`VERDICT_REQUIRE_CERTIFIED_BUNDLE` to exactly `true` to fail closed before any
+publication. The gate queries successful manual certification workflow runs
+for the exact release tag commit (`github.sha`) via the GitHub Actions API. It
+requires an unexpired artifact named
+`certification-evidence-certified-<sha>-<run_id>-<run_attempt>`, downloads it by
+artifact ID and run ID, and checks the manifest's exact SHA, `CERTIFIED` verdict,
+clean tree, and passing steps. Current manual runs only publish artifacts named
+`certification-evidence-incomplete-...`, so enabling the variable now blocks
+releases. With the variable unset, releases continue with an explicit warning
+that they are **NOT certification-gated**; no CERTIFIED status is implied.
 
 ## Regenerating the demo assets
 
