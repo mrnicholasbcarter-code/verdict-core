@@ -510,23 +510,74 @@ class OpenCodeReviewer:
 
     @staticmethod
     def _empty_review_reason(payload: Mapping[str, object]) -> str | None:
+        """Check for explicit coverage vetoes, then require positive evidence.
+        
+        Returns an ERROR detail when the review was explicitly skipped or lacks
+        positive coverage, otherwise None to proceed to findings analysis.
+        
+        Precedence (Design § 1):
+        1. Explicit vetoes: skipped status/terminal, empty selected list, 
+           invalid/nonpositive file count
+        2. Require at least one positive signal: non-empty selected list OR
+           non-empty completed list OR positive files_reviewed count
+        3. If no positive signal exists, return "review coverage missing"
+        """
         manifest = payload.get("manifest")
         terminal = manifest.get("terminal_state") if isinstance(manifest, Mapping) else None
+        
+        # Veto 1: Explicit skipped status or terminal state
         if any(
             str(value).strip().lower() == "skipped" for value in (payload.get("status"), terminal)
         ):
             return "review skipped: no items reviewed"
+        
         coverage = manifest.get("coverage") if isinstance(manifest, Mapping) else None
+        
+        # Veto 2: Explicitly empty selected list (Design § 1, precedence example)
         if isinstance(coverage, Mapping) and coverage.get("selected") == []:
             return "review skipped: no items selected"
+        
         summary = payload.get("summary")
+        
+        # Veto 3: Invalid file count
         if isinstance(summary, Mapping) and "files_reviewed" in summary:
             try:
                 count = int(summary["files_reviewed"])
             except (ValueError, TypeError, OverflowError):
                 return "review coverage invalid: files_reviewed is not a count"
+            # Veto 4: Zero or negative file count
             if count <= 0:
                 return "review skipped: zero files reviewed"
+        
+        # After vetoes, check for positive evidence (Design § 1)
+        # Positive signal 1: non-empty selected list
+        has_selected = (
+            isinstance(coverage, Mapping)
+            and isinstance(coverage.get("selected"), list)
+            and len(coverage.get("selected", [])) > 0  # type: ignore[arg-type]
+        )
+        
+        # Positive signal 2: non-empty completed list
+        has_completed = (
+            isinstance(coverage, Mapping)
+            and isinstance(coverage.get("completed"), list)
+            and len(coverage.get("completed", [])) > 0  # type: ignore[arg-type]
+        )
+        
+        # Positive signal 3: valid positive files_reviewed count
+        # (already validated above; if we reach here it's either absent or valid)
+        has_positive_count = False
+        if isinstance(summary, Mapping) and "files_reviewed" in summary:
+            try:
+                count = int(summary["files_reviewed"])
+                has_positive_count = count > 0
+            except (ValueError, TypeError, OverflowError):
+                pass  # Already caught as veto above
+        
+        # Require at least one positive signal (Design § 1, AC 2)
+        if not (has_selected or has_completed or has_positive_count):
+            return "review coverage missing"
+        
         return None
 
     @staticmethod
