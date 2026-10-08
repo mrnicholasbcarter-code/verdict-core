@@ -147,12 +147,22 @@ def test_this_repository_runs_the_verifier_non_advisorily():
 
 
 def test_release_requires_reusable_acceptance_workflow_before_publish():
-    release = REPO_ROOT.joinpath(".github/workflows/release.yml").read_text(encoding="utf-8")
+    import yaml
 
-    assert "uses: ./.github/workflows/acceptance-gates.yml" in release
-    assert "needs: acceptance" in release
-    assert release.index("needs: acceptance") < release.index("npm publish")
-    assert release.index("needs: acceptance") < release.index("gh-action-pypi-publish")
+    text = REPO_ROOT.joinpath(".github/workflows/release.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    jobs = workflow["jobs"]
+
+    assert jobs["acceptance"]["uses"] == "./.github/workflows/acceptance-gates.yml"
+    needs = jobs["release"]["needs"]
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    # The publishing job must wait for the acceptance gates (and may wait for more).
+    assert "acceptance" in needs
+    publish_steps = "\n".join(
+        str(step.get("run", "")) + str(step.get("uses", "")) for step in jobs["release"]["steps"]
+    )
+    assert "npm publish" in publish_steps
+    assert "gh-action-pypi-publish" in publish_steps
 
 
 def test_acceptance_evidence_producers_are_non_advisory_and_use_pipefail():
