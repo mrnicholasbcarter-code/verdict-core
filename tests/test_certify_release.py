@@ -1800,3 +1800,260 @@ def test_failed_rerun_keeps_prior_bundle_and_stores_attempt_evidence(temp_git_re
     attempt_bundle = repo / record["bundle_path"]
     assert json.loads((attempt_bundle / "manifest.json").read_text())["verdict"] == "FAILED"
     assert not list((bundle.parent / ".history").glob(f"{sha}/*"))
+
+
+# BOD-225: worker-authored provenance tests adapted to fail-closed certification.
+
+
+def _minimal_rehearsal_run(run_dir: Path, *, producer: dict | None, chaos: bool = False) -> Path:
+    """Build complete rehearsal evidence with production EventLog and receipt builder."""
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    graph = WorkGraph(
+        goal="rehearsal provenance",
+        nodes=(
+            WorkNode("a", "build a", owned_files=("pkg/a.py",), verification_command=("true",)),
+        ),
+    )
+    (run_dir / "graph.json").write_text(json.dumps({**graph.to_dict(), "run_id": run_dir.name}))
+    log = EventLog(run_dir / "events.jsonl")
+    started: dict = {"run_id": run_dir.name, "goal": "rehearsal provenance"}
+    if producer is not None:
+        started["producer"] = producer
+    log.emit("run_started", **started)
+    if chaos:
+        log.emit("dispatch", node_id="a", attempt=1, route_id="kr/worker", fault_injected=True)
+        log.emit("terminal", node_id="a", attempt=1, ok=False, fault_injected=True)
+        log.emit("failure", node_id="a", attempt=1, category="rate_limited")
+    attempt = 2 if chaos else 1
+    log.emit("dispatch", node_id="a", attempt=attempt, route_id="kr/worker")
+    log.emit("terminal", node_id="a", attempt=attempt, ok=True, route_id="kr/worker")
+    log.emit("verify", node_id="a", ok=True, exit_code=0, command=["true"])
+    log.emit("node_state", node_id="a", state="VALIDATED")
+    log.emit("barrier", name="integration", ok=True)
+    log.emit("review", status="PASS", reviewer="independent reviewer", route_id="cc/reviewer")
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+    write_run_receipt(run_dir)
+    return run_dir
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True, timeout=5
+    )
+    return result.stdout.strip()
+
+
+def _provenance_rehearsals(root: Path, producer: dict | None) -> dict[str, Path]:
+    return {
+        "clean": _minimal_rehearsal_run(root / "clean", producer=producer),
+        "chaos": _minimal_rehearsal_run(root / "chaos", producer=producer, chaos=True),
+    }
+
+
+def _assert_no_reserved_evidence_keys(value):
+    if isinstance(value, dict):
+        assert not {"status", "reason"}.intersection(value)
+        for nested in value.values():
+            _assert_no_reserved_evidence_keys(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _assert_no_reserved_evidence_keys(nested)
+
+
+def test_rehearsal_reports_producer_sha_explicit_null(temp_git_repo, tmp_path):
+    """Even the three-argument compatibility call cannot PASS missing provenance."""
+    sha = _git(temp_git_repo, "rev-parse", "HEAD")
+    rehearsals = {
+        "with_sha": _minimal_rehearsal_run(
+            tmp_path / "with_sha",
+            producer={"verdict_version": "0.4.2", "git_sha": sha, "dirty": False},
+        ),
+        "legacy": _minimal_rehearsal_run(tmp_path / "legacy", producer=None),
+        "null_sha": _minimal_rehearsal_run(
+            tmp_path / "null_sha",
+            producer={"verdict_version": "0.4.2", "git_sha": None, "dirty": None},
+        ),
+    }
+    result = certify_release.step_rehearsals(temp_git_repo, rehearsals, tmp_path / "output")
+    assert result.status == "INCOMPLETE"
+    assert f"with_sha={sha}" in result.reason
+    assert "legacy=null" in result.reason
+    assert "null_sha=null" in result.reason
+    assert "legacy producer git_sha is null" in result.reason
+    assert "null_sha producer git_sha is null" in result.reason
+    assert "legacy=None" not in result.reason
+    assert result.evidence["runs"]["legacy"]["producer_git_sha"] is None
+    _assert_no_reserved_evidence_keys(result.evidence)
+
+
+@pytest.mark.parametrize("change", ["equal", "docs", "verdict", "unknown"])
+def test_rehearsal_producer_freshness_is_fail_closed(temp_git_repo, tmp_path, change):
+    """Freshness uses real Git verdict/ diffs, never upgrades self-proof to PASS."""
+    repo = temp_git_repo
+    producer_sha = _git(repo, "rev-parse", "HEAD")
+    if change in {"docs", "verdict"}:
+        path = repo / ("NOTES.md" if change == "docs" else "verdict/marker.py")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# change\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "new source")
+    if change == "unknown":
+        producer_sha = "f" * 40
+    certified = _git(repo, "rev-parse", "HEAD")
+    rehearsals = _provenance_rehearsals(
+        tmp_path, {"verdict_version": "0.4.2", "git_sha": producer_sha, "dirty": False}
+    )
+    result = certify_release.step_rehearsals(
+        repo, rehearsals, tmp_path / "output", certified_git_sha=certified
+    )
+    assert result.status == "INCOMPLETE"
+    assert result.evidence["independent_producer_attestation"] is False
+    assert f"clean={producer_sha}" in result.reason
+    assert f"chaos={producer_sha}" in result.reason
+    assert "Independent producer attestation is unavailable" in result.reason
+    for name in rehearsals:
+        proof = result.evidence["runs"][name]
+        assert proof["producer_git_sha"] == producer_sha
+        assert proof["certified_git_sha"] == certified
+        expected = None if change == "unknown" else change == "verdict"
+        assert proof["verdict_tree_changed"] is expected
+    if change == "verdict":
+        assert "with verdict/ changes" in result.reason
+        assert certified in result.reason
+    elif change == "unknown":
+        assert "could not verify verdict/ diff" in result.reason
+    else:
+        assert "with verdict/ changes" not in result.reason
+        assert "could not verify verdict/ diff" not in result.reason
+        assert "is null" not in result.reason
+    _assert_no_reserved_evidence_keys(result.evidence)
+
+
+@pytest.mark.parametrize(
+    "producer", [None, {"verdict_version": "0.4.2", "git_sha": None, "dirty": None}]
+)
+def test_rehearsal_missing_producer_sha_is_incomplete(temp_git_repo, tmp_path, producer):
+    sha = _git(temp_git_repo, "rev-parse", "HEAD")
+    result = certify_release.step_rehearsals(
+        temp_git_repo,
+        _provenance_rehearsals(tmp_path, producer),
+        tmp_path / "output",
+        certified_git_sha=sha,
+    )
+    assert result.status == "INCOMPLETE"
+    for name in ("clean", "chaos"):
+        assert f"{name}=null" in result.reason
+        assert f"{name} producer git_sha is null" in result.reason
+    _assert_no_reserved_evidence_keys(result.evidence)
+
+
+def test_rehearsal_digest_mismatch_fails_before_provenance(temp_git_repo, tmp_path):
+    """Existing tamper FAIL must take precedence over stale-provenance INCOMPLETE."""
+    sha = _git(temp_git_repo, "rev-parse", "HEAD")
+    rehearsals = _provenance_rehearsals(
+        tmp_path, {"verdict_version": "0.4.2", "git_sha": "f" * 40, "dirty": False}
+    )
+    events = rehearsals["chaos"] / "events.jsonl"
+    events.write_text(events.read_text() + '{"type":"heartbeat"}\n')
+    result = certify_release.step_rehearsals(
+        temp_git_repo, rehearsals, tmp_path / "output", certified_git_sha=sha
+    )
+    assert result.status == "FAIL"
+    assert "mismatch" in result.reason.lower()
+    _assert_no_reserved_evidence_keys(result.evidence)
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout"])
+def test_rehearsal_git_diff_unavailable_is_incomplete(
+    temp_git_repo, tmp_path, monkeypatch, failure
+):
+    import subprocess
+
+    sha = _git(temp_git_repo, "rev-parse", "HEAD")
+    rehearsals = _provenance_rehearsals(
+        tmp_path, {"verdict_version": "0.4.2", "git_sha": "f" * 40, "dirty": False}
+    )
+
+    def unavailable(command, **kwargs):
+        assert command == ["git", "diff", "--quiet", "f" * 40, sha, "--", "verdict/"]
+        assert kwargs["timeout"] == 5
+        if failure == "missing":
+            raise FileNotFoundError("git")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(certify_release.subprocess, "run", unavailable)
+    result = certify_release.step_rehearsals(
+        temp_git_repo, rehearsals, tmp_path / "output", certified_git_sha=sha
+    )
+    assert result.status == "INCOMPLETE"
+    assert "could not verify verdict/ diff" in result.reason
+    assert result.evidence["runs"]["clean"]["verdict_tree_changed"] is None
+    _assert_no_reserved_evidence_keys(result.evidence)
+
+
+def test_rehearsal_git_diff_rejects_untrusted_revision_options(temp_git_repo):
+    sha = _git(temp_git_repo, "rev-parse", "HEAD")
+    with patch.object(certify_release, "run_command") as command:
+        assert (
+            certify_release.verdict_tree_changed_between(temp_git_repo, "--no-index", sha) is None
+        )
+    command.assert_not_called()
+
+
+def test_run_certification_supplies_certified_git_sha(temp_git_repo, monkeypatch):
+    """Exercise the real certifier flow, stubbing only unrelated release steps."""
+    import subprocess
+
+    repo = temp_git_repo
+    (repo / ".gitignore").write_text("artifacts/\n.venv/\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore release outputs")
+    sha = _git(repo, "rev-parse", "HEAD")
+    captured = {}
+
+    def fake_rehearsals(repo_path, rehearsal_dirs, output_dir, certified_git_sha=None):
+        captured["certified_git_sha"] = certified_git_sha
+        return certify_release.StepResult("rehearsals", "Rehearsals", "INCOMPLETE")
+
+    steps = (
+        "test_clean_shell",
+        "test_dirty_shell",
+        "ruff_check",
+        "ruff_format",
+        "mypy",
+        "build",
+        "package_smoke",
+        "security",
+        "docs_check",
+        "git_clean",
+    )
+    for name in steps:
+        monkeypatch.setattr(
+            certify_release,
+            f"step_{name}",
+            lambda *a, **kw: certify_release.StepResult("stub", "Stub", "INCOMPLETE"),
+        )
+    monkeypatch.setattr(certify_release, "step_rehearsals", fake_rehearsals)
+    monkeypatch.setattr(
+        certify_release,
+        "capture_environment",
+        lambda *a: certify_release.EnvironmentSnapshot("3", "test", "0"),
+    )
+    original_run = certify_release.run_command
+
+    def fake_sanity(command, **kwargs):
+        if "-c" in command and "import verdict" in command[-1]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(certify_release, "run_command", fake_sanity)
+    (repo / ".venv/bin").mkdir(parents=True)
+    manifest, _ = certify_release.run_certification(repo, rehearsal_dirs={})
+    assert captured["certified_git_sha"] == sha
+    assert manifest.git_sha == sha
+    assert manifest.verdict == "INCOMPLETE"
