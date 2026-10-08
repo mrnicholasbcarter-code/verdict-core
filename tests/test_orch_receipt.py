@@ -651,9 +651,12 @@ def test_capture_producer_version_unavailable_is_explicit_null(
 ) -> None:
     import importlib.metadata
 
+    import verdict
+
     def unavailable(name: str) -> str:
         raise importlib.metadata.PackageNotFoundError(name)
 
+    monkeypatch.delattr(verdict, "__version__")
     monkeypatch.setattr(importlib.metadata, "version", unavailable)
     assert capture_producer()["verdict_version"] is None
 
@@ -717,3 +720,35 @@ def test_legacy_first_start_does_not_gain_later_producer(tmp_path: Path) -> None
     write_run_receipt(run_dir)
     assert "producer" not in build_run_receipt(run_dir)
     assert verify_run_receipt(run_dir) == []
+
+
+def test_capture_producer_version_matches_imported_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Metadata from another editable install cannot identify the imported source."""
+    import importlib.metadata
+
+    import verdict
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "unrelated-install")
+    producer = capture_producer()
+    assert producer["verdict_version"] == verdict.__version__
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    EventLog(run_dir / "events.jsonl").emit("run_started", producer=producer)
+    assert build_run_receipt(run_dir)["producer"]["verdict_version"] == verdict.__version__
+    write_run_receipt(run_dir)
+    assert verify_run_receipt(run_dir) == []
+
+
+def test_capture_producer_version_metadata_fallback_only_without_source_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.metadata
+
+    import verdict
+
+    monkeypatch.delattr(verdict, "__version__")
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "wheel-metadata")
+    assert capture_producer()["verdict_version"] == "wheel-metadata"

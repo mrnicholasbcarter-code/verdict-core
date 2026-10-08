@@ -503,6 +503,13 @@ def capture_producer() -> dict[str, Any]:
 
 
 def _producer_verdict_version() -> str | None:
+    # Distribution metadata can belong to a different editable install when
+    # PYTHONPATH selects this checkout. Use the same imported source as Git.
+    import verdict
+
+    if hasattr(verdict, "__version__"):
+        source_version = verdict.__version__
+        return source_version if isinstance(source_version, str) and source_version else None
     from importlib.metadata import PackageNotFoundError, version
 
     try:
