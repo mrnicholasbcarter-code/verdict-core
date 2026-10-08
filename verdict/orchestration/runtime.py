@@ -900,7 +900,8 @@ class DagRuntime:
                     node.node_id,
                     ok=ok,
                     exit_code=code,
-                    command=" ".join(node.verification_command),
+                    command=shlex.join(node.verification_command),
+                    executed_command=shlex.join(resolved),
                     tail=out[-600:],
                     **verify_extra,
                 )
