@@ -576,7 +576,7 @@ flowchart TD
     REVIEW -- "yes, reviewer is None" --> NOREV["_finish(BLOCKED, 'review required but no reviewer configured')"]
     REVIEW -- "yes, reviewer configured" --> INDEP["implementers = frozenset(final/resumed contributing route_id per node); families = route_family(implementers); try level='family' (exclude families) then level='route' (route-only exclusion) if family attempt errors with 'no independent reviewer'"]
     INDEP --> OCR["reviewer.review(repo, base_ref, head_ref, background=goal, exclude_routes=implementers, exclude_families) -- OpenCodeReviewer wraps the 'ocr' CLI"]
-    OCR --> RRES["ReviewResult(status PASS|FAIL|ERROR, reviewer, route_id, findings); recorded PASS checks blocking findings but current parser can accept skipped/empty OCR output"]
+    OCR --> RRES["ReviewResult(status PASS|FAIL|ERROR, reviewer, route_id, findings); recorded PASS checks blocking findings; skipped or zero-coverage OCR output is rejected as ERROR"]
     RRES --> RPASS["passed -> integration + review recorded; run proceeds to receipt build"]
     RRES --> RFAIL["not passed -> _finish(BLOCKED, ...) with the review status/detail"]
 
@@ -595,7 +595,7 @@ flowchart TD
 %% evidence by symbol: verdict/orchestration/contracts.py WorkGraph, NodeState, ReviewResult, canonical_digest().
 %% evidence by symbol: verdict/orchestration/runtime.py DagRuntime._drive(), _attempt(), _validate(), _integrate_node(), _run_review(); context overflow can repack/retry one route and verification failure can pass feedback for one same-route retry, both bounded by max_attempts_per_node.
 %% evidence by symbol: verdict/orchestration/recovery.py FailureIntelligence.classify(); RecoveryBudget applies to operator retries, not inline attempt recovery.
-%% evidence by symbol: verdict/orchestration/review.py OpenCodeReviewer.review(); skipped/empty raw review may currently be parsed as PASS, so recorded PASS is not itself proof of semantic review.
+%% evidence by symbol: verdict/orchestration/review.py OpenCodeReviewer.review(); skipped or zero-coverage raw review is rejected as ERROR, never PASS; a recorded PASS is still not itself proof of full semantic coverage.
 %% evidence by symbol: verdict/orchestration/receipt.py build_run_receipt(), write_run_receipt(), verify_run_receipt(), completion_verdict(); event digest is checked against retained receipt, without external authenticity anchor.
 
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
@@ -713,7 +713,7 @@ independence is used and recorded ([`verdict/orchestration/runtime.py:1316-1346`
 non-zero exit, a timeout or output that does not parse all become `ERROR`, never `PASS`
 ([`verdict/orchestration/review.py:1-19`](verdict/orchestration/review.py#L1-L19)).
 Retained raw OCR output must show non-skipped coverage to count as semantic review evidence;
-current parsing can record PASS even for skipped output, so a recorded PASS alone is insufficient.
+skipped or zero-coverage OCR output is rejected as `ERROR`, not recorded as `PASS`. Older proof bundles recorded before that check show `PASS` over skipped output; inspect retained raw OCR output before treating a `PASS` as semantic review.
 Tests: [`tests/test_orch_review.py`](tests/test_orch_review.py), [`tests/test_orch_resume.py`](tests/test_orch_resume.py).
 
 **Tamper-evident receipts.** The receipt stores the SHA-256 of `events.jsonl`

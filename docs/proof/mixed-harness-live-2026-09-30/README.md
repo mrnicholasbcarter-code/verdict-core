@@ -4,7 +4,7 @@
 - **node-1** ran through **Prime Agent headless** (`harness: prime-headless`);
 - **node-2** ran through the **direct OmniRoute gateway** (`harness: direct-gateway`).
 
-Both nodes were live model calls (`executor_kind: live`), both validated, and the integration barrier merged both commits. The reviewer recorded PASS and the receipt is COMPLETE with integrity OK, but the retained OCR output says `skipped` with zero selected/completed items and zero reviewed files or tokens. No semantic review was demonstrated.
+Both nodes were live model calls (`executor_kind: live`), both validated, and the integration barrier merged both commits. The reviewer recorded PASS and the receipt is COMPLETE with integrity OK, but the retained OCR output says `skipped` with zero selected/completed items and zero reviewed files or tokens. No semantic review was demonstrated. This run predates the reviewer check that now rejects skipped or zero-coverage OCR output as `ERROR`.
 
 Command (the controller's session; the key and gateway come from the environment):
 

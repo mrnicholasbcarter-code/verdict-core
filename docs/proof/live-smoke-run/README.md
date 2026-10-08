@@ -15,7 +15,7 @@ Chain recorded in `events.jsonl` and projected in `receipt.json`:
 5. open-code-review on `kr/gpt-5.6-terra` (different family from the
    implementer) recorded observed model == selected and PASS. Its retained raw
    output says `skipped`, with no items selected/completed and zero reviewed
-   files or tokens; no semantic review was demonstrated
+   files or tokens; no semantic review was demonstrated. (This run predates the reviewer check that now rejects skipped or zero-coverage OCR output as `ERROR`.)
 6. run COMPLETE
 
 Verify locally:

@@ -23,7 +23,7 @@ What `controller-g0.log`, `controller-g1.log` and `events.jsonl` show:
 4. `beta` passes verification; both commits integrate
 5. open-code-review on `kr/gpt-5.6-terra` recorded PASS, but its retained raw
    output says `skipped` with zero selected/completed items and no reviewed
-   files or tokens; no semantic review was demonstrated
+   files or tokens; no semantic review was demonstrated. (This run predates the reviewer check that now rejects skipped or zero-coverage OCR output as `ERROR`.)
 6. supervisor: `COMPLETE`, 1 restart, exit 0
 
 A per-run state file was configured. No cooldown events or reassignments
