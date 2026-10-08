@@ -536,8 +536,10 @@ def _action_receipt_show(**kwargs: Any) -> ActionResult:
 
 def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
+    import os
     from datetime import datetime, timezone
 
+    from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.orchestration.contracts import TaskRequirements
     from verdict.orchestration.eligibility_report import (
         build_selector,
@@ -545,9 +547,11 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         parse_provider_families,
     )
 
-    gateway: str = kwargs.get("gateway", "http://localhost:20128/v1")
-    scope: str = kwargs.get("scope", "all")
-    prefer: str = kwargs.get("prefer", "")
+    gateway = normalize_omniroute_origin(
+        kwargs.get("gateway", os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"))
+    )
+    scope: str = kwargs.get("scope", "")
+    prefer: str = kwargs.get("prefer", "claude")
     provider_family: list[str] = kwargs.get("provider_family", [])
     reasoning: bool = kwargs.get("reasoning", False)
     frontier: bool = kwargs.get("frontier", False)

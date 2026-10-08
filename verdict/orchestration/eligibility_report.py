@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from verdict.free_tier_admit import normalize_omniroute_origin
+from verdict.orchestration.contracts import OrchestrationError
 
 
 def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -95,6 +99,14 @@ def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
     return HarnessVisibility(visible, source="models.json")
 
 
+def _gateway_fetch_error(endpoint: str, exc: OSError) -> OrchestrationError:
+    """Give actionable endpoint context without exposing request headers or credentials."""
+    failure = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else "connection error"
+    return OrchestrationError(
+        f"gateway {endpoint} failed ({failure}); check --gateway and that the gateway is running"
+    )
+
+
 def build_selector(
     gateway: str,
     *,
@@ -118,9 +130,16 @@ def build_selector(
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import LaunchCandidate, openai_health_probe
 
+    gateway = normalize_omniroute_origin(gateway)
     key = resolve_api_key()
-    rows = fetch_inventory(gateway, api_key=key)
-    connections = fetch_connections(gateway, api_key=key)
+    try:
+        rows = fetch_inventory(gateway, api_key=key)
+    except (urllib.error.URLError, OSError) as exc:
+        raise _gateway_fetch_error("/v1/models", exc) from None
+    try:
+        connections = fetch_connections(gateway, api_key=key)
+    except (urllib.error.URLError, OSError) as exc:
+        raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (_state_dir() / "orchestration-health.json")
     now = datetime.now(timezone.utc)
     # Canonical admission over the full live inventory first. Scope, provider
