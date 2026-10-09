@@ -105,6 +105,22 @@ def _is_verdict_path(relative_path: str) -> bool:
     return PurePosixPath(relative_path).parts[:1] == ("verdict",)
 
 
+def _module_dotted(relative_path: str) -> str:
+    """The fully-qualified dotted module path for a tracked ``*.py`` file.
+
+    ``verdict/release/normalize.py`` -> ``verdict.release.normalize``;
+    ``verdict/release/__init__.py`` -> ``verdict.release``. Using the full
+    path (not just ``Path(relative_path).stem``) avoids collapsing distinct
+    modules that share a filename (e.g. ``verdict/normalize.py`` and
+    ``verdict/release/normalize.py`` would otherwise both become
+    ``verdict.normalize``).
+    """
+    parts = list(PurePosixPath(relative_path).with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
 def _parse(root: Path, relative_path: str) -> ast.Module | None:
     try:
         source = (root / relative_path).read_text(encoding="utf-8")
@@ -164,7 +180,7 @@ def _stub_default_findings(tree: ast.Module, relative_path: str) -> list[Finding
         ):
             findings.append(
                 Finding(
-                    qualified_name=f"verdict.{Path(relative_path).stem}.{node.name}",
+                    qualified_name=f"{_module_dotted(relative_path)}.{node.name}",
                     kind="stub_default",
                     file=relative_path,
                     line=node.lineno,
@@ -269,7 +285,7 @@ def check(
         findings.extend(_stub_default_findings(tree, relative_path))
         for definition in _public_definitions(tree, relative_path):
             checked += 1
-            qualified_name = f"verdict.{PurePosixPath(relative_path).stem}.{definition.name}"
+            qualified_name = f"{_module_dotted(relative_path)}.{definition.name}"
             usage = referenced_in.get(definition.name)
             if usage is None or not (usage["prod"] or usage["test"]):
                 vulture_hit = vulture_findings.get((relative_path, definition.line))

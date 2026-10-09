@@ -193,3 +193,35 @@ def test_vulture_cross_check_annotates_uncalled_findings(tmp_path: Path) -> None
     ]
     assert len(matches) == 1
     assert "vulture" in matches[0].detail
+
+
+def test_qualified_name_uses_the_full_module_path(tmp_path: Path) -> None:
+    """verdict/release/normalize.py's symbols must be verdict.release.normalize.*,
+
+    not verdict.normalize.* (Path(...).stem drops the package directory).
+    """
+    root = _repository(tmp_path, {"verdict/release/normalize.py": _BASELINED_UNCALLED})
+
+    result = checker.check(root, use_vulture=False)
+
+    flagged = {f.qualified_name for f in result.findings}
+    assert "verdict.release.normalize.baselined_uncalled" in flagged
+    assert "verdict.normalize.baselined_uncalled" not in flagged
+
+
+def test_two_modules_sharing_a_filename_stem_do_not_collide(tmp_path: Path) -> None:
+    """Two same-stem modules each defining the same symbol name must produce
+
+    two distinct qualified names, so one baseline entry cannot silently
+    exempt both.
+    """
+    orphan = "def orphan_api() -> int:\n    return 1\n"
+    root = _repository(
+        tmp_path, {"verdict/one/fixture.py": orphan, "verdict/two/fixture.py": orphan}
+    )
+
+    result = checker.check(root, use_vulture=False)
+
+    flagged = {f.qualified_name for f in result.findings}
+    assert "verdict.one.fixture.orphan_api" in flagged
+    assert "verdict.two.fixture.orphan_api" in flagged
