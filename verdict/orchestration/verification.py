@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 
 def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
@@ -20,3 +21,27 @@ def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
         resolved[0] = sys.executable
         resolved_argv0 = sys.executable
     return resolved, resolved_argv0
+
+
+def resolve_gate_argv(argv: Sequence[str], worktree: Path) -> list[str]:
+    """Resolve bare ruff/mypy in the worktree, Verdict environment, then PATH.
+
+    Other executable names (including npm) stay unchanged. A declared Python
+    gate with no executable raises FileNotFoundError; callers must fail closed.
+    """
+    resolved = list(argv)
+    if not argv or argv[0] not in {"ruff", "mypy"}:
+        return resolved
+    executable = argv[0]
+    for candidate in (
+        worktree / ".venv" / "bin" / executable,
+        Path(sys.executable).parent / executable,
+    ):
+        if candidate.is_file():
+            resolved[0] = str(candidate)
+            return resolved
+    on_path = shutil.which(executable)
+    if on_path is None:
+        raise FileNotFoundError(f"gate executable not found: {executable}")
+    resolved[0] = on_path
+    return resolved

@@ -59,6 +59,8 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.recovery import RecoveryBudget
+from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
@@ -116,6 +118,8 @@ class RuntimePolicy:
     # below the floor) instead of a blind replay of the oversized request.
     context_budget_bytes: int = 60_000
     min_context_budget_bytes: int = 4_000
+    # Repo quality gates belong to the integration runtime, not the planner.
+    run_repo_gates: bool = True
 
 
 @dataclass
@@ -848,8 +852,56 @@ class DagRuntime:
                 return
             self._set(run, NodeState.PLANNED, reassign=True)
 
+    async def _run_repo_gates(self, run: NodeRun, worktree: Path) -> str | None:
+        """Run every declared gate, retaining the first failure with bounded evidence."""
+        node_id = run.node.node_id
+        if not self.policy.run_repo_gates:
+            self.events.emit(
+                "repo_gates", node_id, disabled=True, note="disabled by runtime policy"
+            )
+            return None
+        try:
+            gates = discover_repo_gates(worktree)
+        except ValueError as exc:
+            config_reason = f"repo_gates_config_error: {exc}"[:300]
+            self.events.emit(
+                "repo_gates",
+                node_id,
+                declared=None,
+                gates=[],
+                note="discovery failed",
+                error=config_reason,
+            )
+            return config_reason
+        self.events.emit("repo_gates", node_id, **describe_gates(gates))
+        reason: str | None = None
+        for gate in gates:
+            resolved = list(gate.argv)
+            try:
+                resolved = _resolve_gate_argv(gate.argv, worktree)
+            except FileNotFoundError as exc:
+                code, out = 127, str(exc)
+            else:
+                code, out = await self.runner(
+                    resolved, worktree, self.policy.verify_timeout_seconds
+                )
+            self.events.emit(
+                "repo_gate",
+                node_id,
+                name=gate.name,
+                ok=code == 0,
+                exit_code=code,
+                command=shlex.join(gate.argv),
+                executed_command=shlex.join(resolved),
+                source=gate.source,
+                tail=out[-600:],
+            )
+            if code != 0 and reason is None:
+                reason = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+        return reason
+
     async def _integrate_node(self, run: NodeRun) -> None:
-        """Mechanical integration barrier: merge validated dependencies, run the combined check."""
+        """Mechanical integration barrier: merge, run combined tests and repo quality gates."""
         node = run.node
         run.attempt += 1
         run.route_id = ""
@@ -886,6 +938,7 @@ class DagRuntime:
         )
         try:
             ok = True
+            reason = ""
             if node.verification_command:
                 resolved, resolved_argv0 = _resolve_verify_argv(node.verification_command)
                 code, out = await self.runner(
@@ -905,18 +958,38 @@ class DagRuntime:
                     tail=out[-600:],
                     **verify_extra,
                 )
+                if not ok:
+                    reason = f"integration verification failed: exit {code}: {out[-600:]}"
+            if ok:
+                reason = await self._run_repo_gates(run, worktree) or ""
+                ok = not reason
             self.events.emit(
                 "barrier",
                 node.node_id,
                 name=node.barrier or "integration",
                 ok=ok,
-                detail="combined verification " + ("passed" if ok else "failed"),
+                detail=reason[:300] if reason else "combined verification and repo gates passed",
             )
         finally:
             await self.git.remove_worktree(worktree)
         if not ok:
-            run.reason = "integration verification failed"
-            self._set(run, NodeState.REJECTED, reason=run.reason)
+            run.reason = reason
+            self._record_failure(
+                run,
+                WorkerTerminal(ok=False, error="verification_failed: " + reason),
+                run.failures,
+                validated=True,
+                # Gate diagnostics describe verification, never worker transport faults.
+                failure=FailureClassification(
+                    "verification_failed",
+                    "CORRECT_IMPLEMENTATION",
+                    0,
+                    "none",
+                    "verification_failed: " + reason,
+                ),
+            )
+            run.failure_feedback = reason[-2000:]
+            run.history[-1]["evidence"] = run.failure_feedback
             self._set(run, NodeState.BLOCKED, reason=run.reason)
             return
         run.commit = base
@@ -1135,16 +1208,17 @@ class DagRuntime:
                 ok=False, model=route_id, error=f"transport: {type(exc).__name__}: {exc}"
             )
 
-    async def _fail(
+    def _record_failure(
         self,
         run: NodeRun,
         terminal: WorkerTerminal,
         failures: list[FailureClassification],
-        worktree: Path,
         *,
         validated: bool = False,
-    ) -> bool:
-        failure = self.classifier.classify(terminal, now=self.now())
+        failure: FailureClassification | None = None,
+    ) -> None:
+        if failure is None:
+            failure = self.classifier.classify(terminal, now=self.now())
         failures.append(failure)
         if validated:
             self._set(run, NodeState.REJECTED, reason=failure.category)
@@ -1182,6 +1256,17 @@ class DagRuntime:
                 "fault_injected": terminal.executor_kind == "fault-injected",
             }
         )
+
+    async def _fail(
+        self,
+        run: NodeRun,
+        terminal: WorkerTerminal,
+        failures: list[FailureClassification],
+        worktree: Path,
+        *,
+        validated: bool = False,
+    ) -> bool:
+        self._record_failure(run, terminal, failures, validated=validated)
         await self.git.remove_worktree(worktree)
         return False
 
