@@ -160,7 +160,7 @@ def test_home_explicit_animation_obeys_policy(
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("verdict.home.probe_gateway", lambda url: (True, 42))
+    monkeypatch.setattr("verdict.home.probe_gateway", lambda url: (True, 42, None))
 
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("disabled motion started Live")
@@ -193,9 +193,9 @@ def test_home_motion_only_during_observed_probe(
     monkeypatch.setattr(TerminalUI, "start", lambda self, label: events.append("start"))
     monkeypatch.setattr(TerminalUI, "stop", lambda self: events.append("stop"))
 
-    def probe(url: str) -> tuple[bool, int]:
+    def probe(url: str) -> tuple[bool, int, None]:
         events.append("probe")
-        return True, 42
+        return True, 42, None
 
     monkeypatch.setattr("verdict.home.probe_gateway", probe)
     console = Console(file=io.StringIO(), force_terminal=True)
