@@ -171,3 +171,50 @@ the test suite or by installing the package.
 ```bash
 uv run pytest tests/test_health_cache.py tests/test_prove_at_rest.py tests/test_free_first_order.py -q
 ```
+
+
+## BOD-297: offline legacy bucket migration
+
+Before starting the pool-aware census, stop all old cache writers. Back up the
+cache, then copy it to an explicit scratch path. Do not run a census, gateway
+call, or probe during migration. Inspect the scratch result before deployment.
+
+The new `HealthCache` reader folds only exact, recognized `provider/pool`
+bucket keys onto the named pool. For example, `agy/google-antigravity` and
+`antigravity/google-antigravity` become `google-antigravity`. Recognition uses
+`credential_pools.pool_of` and `provider_catalog.backend_pool`, including the
+known `openrouter-free` pool. There is no migration alias table. Unknown
+`provider/userpool`, model IDs, mismatched pools, and multi-segment keys stay
+unchanged. Scoped cooldown keys, routes, and the cycle cursor are not renamed.
+
+Loading changes only memory. Use `save()` or `merge_and_save()` on the scratch
+file to persist the result under the existing lock and atomic-replace policy:
+
+```python
+from pathlib import Path
+from verdict.orchestration.health_cache import HealthCache
+
+scratch = Path("/tmp/verdict-health-cache-migration.json")
+assert scratch.is_file()  # explicitly copied backup, never the default path
+cache = HealthCache(scratch)
+cache.save()
+```
+
+A merged bucket keeps the minimum capacity, maximum window, latest
+`zeroed_until`, and maximum ledger high-water mark. Usage is the union of owned
+token IDs minus release/zero tombstones, using the existing bucket merge.
+Timestamp-only legacy records gain deterministic IDs scoped to their original
+key and occurrence number. Equal timestamps in separate old buckets therefore
+remain separate spends. Existing token IDs and reservation tombstones remain
+unchanged. Repeated load/save, locked mutation, and stale in-memory key replay
+use the same canonicalization and merge, not independent alias capacities.
+
+Fail-closed cases raise `HealthCacheError` without rewriting the file: missing
+or invalid explicit capacity/window in a migrating group, partial/duplicate
+owned identity, or ID-less legacy usage with tombstones whose ownership cannot
+be reconstructed. Do not replace these records with a fresh 10/window bucket.
+Resolve ambiguous records from verified reservation history or keep the census
+stopped. Previously persisted owned IDs are authoritative; the migration cannot
+infer whether two identical owned IDs were incorrectly issued by an old writer.
+Do not allow old binaries to keep writing after rollout: they do not understand
+the new pool key. This migration is not a live multi-version compatibility mode.

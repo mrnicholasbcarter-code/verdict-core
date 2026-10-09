@@ -15,7 +15,7 @@ OLD = ("agy/google-antigravity", "antigravity/google-antigravity")
 
 
 def stamp(seconds: int = 0) -> str:
-    return (NOW + timedelta(seconds=seconds)).isoformat()
+    return (NOW + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
 
 
 def bucket(*, count: int = 1, capacity: int = 10, window: int = 60,
