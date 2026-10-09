@@ -863,14 +863,13 @@ class Prober:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self._save_for_cycle(started)
-        # BOD-297: the cycle ended (cap, completion, or lock) without the
-        # auth-outage streak either breaking or crossing the threshold.
-        # Whatever is still buffered is a genuine run of negatives below the
-        # threshold, not an outage; write it now so it is never silently lost.
-        self._flush_auth_fail_buffer(stats)
-        # Run agentic probes for FREE routes after the main cycle.
-        if stats.requests < self.max_requests:
+        # Keep the outage window across both phases; a broken gateway key
+        # must not poison routes through agentic probes after chat probing stops.
+        if not stats.auth_outage and stats.requests < self.max_requests:
             self.run_agentic_probes(stats, started=started)
+        if not stats.auth_outage:
+            self._flush_auth_fail_buffer(stats)
+            self._save_for_cycle(started)
         return stats
 
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
@@ -881,6 +880,26 @@ class Prober:
             stats.negative += 1
         self._auth_fail_buffer = []
         self._auth_fail_pools = []
+
+    def _buffer_auth_failure(
+        self, route: AdmittedRoute, result: ProbeResult, now: datetime, stats: CycleStats
+    ) -> bool:
+        """Buffer auth failures in either phase, discarding a systemic outage."""
+        if result.http_status not in (401, 403):
+            if self._auth_fail_buffer:
+                self._flush_auth_fail_buffer(stats)
+            return False
+        self._auth_fail_buffer.append((route.route_id, result, now))
+        self._auth_fail_pools.append(route.pool or route.provider)
+        if (
+            len(self._auth_fail_pools) >= self.auth_outage_consecutive
+            and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
+        ):
+            self._auth_fail_buffer = []
+            self._auth_fail_pools = []
+            stats.auth_outage = True
+            stats.stopped_reason = "auth_outage"
+        return True
 
     def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
         self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
@@ -1026,31 +1045,8 @@ class Prober:
             capacity_evidence=route.capacity_evidence,
             identity=_identity,
         )
-        # BOD-297 systemic-auth-outage breaker: a 401/403 is buffered, not
-        # written, until the consecutive streak either breaks (a non-auth
-        # result flushes every buffered negative as genuine) or crosses the
-        # outage thresholds (the whole buffer is discarded unwritten and the
-        # cycle stops). This is the only way to guarantee zero poisoned
-        # negatives for the routes caught inside a real outage burst, since
-        # the breaker cannot know it is in one until the Nth failure arrives.
-        if category in {CATEGORY_AUTH, CATEGORY_PERMISSION} and status in (401, 403):
-            pool_key = route.pool or route.provider
-            self._auth_fail_buffer.append((route.route_id, result, now))
-            self._auth_fail_pools.append(pool_key)
-            if (
-                len(self._auth_fail_pools) >= self.auth_outage_consecutive
-                and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
-            ):
-                self._auth_fail_buffer = []
-                self._auth_fail_pools = []
-                stats.auth_outage = True
-                stats.stopped_reason = "auth_outage"
-                return False
-            return True
-        if self._auth_fail_buffer:
-            # The streak broke on a real result: every buffered 401/403 was a
-            # genuine route/pool negative, not an outage signal. Write them.
-            self._flush_auth_fail_buffer(stats)
+        if self._buffer_auth_failure(route, result, now, stats):
+            return not stats.auth_outage
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
         # tool_ok, so record it as a successful liveness entry directly.
@@ -1112,7 +1108,7 @@ class Prober:
         Enforces the cycle's wall-time budget and the stop signal before
         each probe and each turn.
         """
-        if self.agentic_transport is None:
+        if self.agentic_transport is None or stats.auth_outage:
             return
         wall_start = started if started is not None else self.monotonic()
         now = self.clock()
@@ -1190,8 +1186,12 @@ class Prober:
             ):
                 passed = False
                 category = CATEGORY_MODEL_MISMATCH
+            status = exchanges[-1].http_status if exchanges else None
+            if status in (401, 403):
+                category = category_for(exchanges[-1])
             result = ProbeResult(
                 category=category,
+                http_status=status,
                 chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
                 tool_ok=passed,
                 probe_class="agentic",
@@ -1199,6 +1199,11 @@ class Prober:
                 pool=route.pool,
                 capacity_evidence=route.capacity_evidence,
             )
+            if self._buffer_auth_failure(route, result, now, stats):
+                if stats.auth_outage:
+                    return
+                self._save_for_cycle(wall_start)
+                continue
             self.cache.record(route.route_id, result, now)
             try:
                 self._save_for_cycle(wall_start)
@@ -1215,6 +1220,9 @@ class Prober:
                 stats.fresh += 1
             else:
                 stats.negative += 1
+        if self._auth_fail_buffer:
+            self._flush_auth_fail_buffer(stats)
+            self._save_for_cycle(wall_start)
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""

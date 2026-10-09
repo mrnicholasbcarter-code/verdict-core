@@ -422,3 +422,86 @@ def test_default_epsilon_keeps_alias_and_non_chat_filters(tmp_path: Path) -> Non
     assert [route.route_id for route, _kind in order_cycle(routes, cache, NOW)] == [
         "antigravity/model"
     ]
+
+
+def test_main_auth_outage_skips_agentic_without_poisoning_cache(tmp_path: Path) -> None:
+    """Reviewer repro: five main-phase 401s must prevent every agentic HTTP call."""
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route(f"p{i}/model", "free", pool=f"p{i}") for i in range(5)]
+    calls: list[str] = []
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return ProbeExchange(http_status=403, ok=False, error_category="permission")
+
+    stats = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=_auth_401,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    ).run_once()
+    assert stats.auth_outage
+    assert calls == []
+    assert stats.probed == stats.negative == 0
+    assert cache.routes() == {}
+    assert HealthCache(cache.path).routes() == {}
+
+
+@pytest.mark.parametrize("count", [4, 5])
+def test_agentic_auth_failures_use_the_same_outage_buffer(tmp_path: Path, count: int) -> None:
+    from verdict.prove_at_rest import CycleStats
+
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route(f"p{i}/model", "free", pool=f"p{i}") for i in range(count)]
+    calls: list[str] = []
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return ProbeExchange(http_status=403, ok=False, error_category="permission")
+
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=_auth_401,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    )
+    stats = CycleStats()
+    prober.run_agentic_probes(stats)
+    assert stats.auth_outage == (count == 5)
+    assert len(calls) == count
+    if count == 5:
+        assert stats.stopped_reason == "auth_outage"
+        assert stats.probed == stats.negative == 0
+        assert cache.routes() == {}
+    else:
+        assert stats.probed == stats.negative == count
+        for route in routes:
+            entry = HealthCache(cache.path).entry(route.route_id)
+            assert entry is not None and entry.category == "permission"
+            assert entry.agentic_checked_at == NOW
+
+
+def test_auth_outage_streak_spans_main_and_agentic_phases(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route(f"p{i}/model", "free", pool=f"p{i}") for i in range(4)]
+    calls: list[str] = []
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return ProbeExchange(http_status=403, ok=False, error_category="permission")
+
+    stats = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=_auth_401,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    ).run_once()
+    assert stats.auth_outage
+    assert calls == [routes[0].route_id]
+    assert cache.routes() == {}
