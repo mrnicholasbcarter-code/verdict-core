@@ -280,3 +280,49 @@ def test_mypy_build_packages_skip_files_and_missing_dirs(tmp_path: Path) -> None
         'packages=["missing", "not_dir"]\n',
     )
     assert discover_repo_gates(tmp_path)[0].argv == ("mypy", "pkg")
+
+
+def test_lazy_toml_import_allows_runtime_only_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Simulate a Python <3.11 runtime-only install with neither ``tomllib`` nor ``tomli``.
+
+    (a) importing the module never needs a TOML reader (``verdict --help`` must work);
+    (b) a repo with a ``pyproject.toml`` raises the documented ``ValueError``;
+    (c) a repo without a ``pyproject.toml`` (only ``package.json``) still works.
+    """
+    import builtins
+    import importlib
+    import sys
+
+    import verdict.orchestration.repo_gates as repo_gates_module
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name: str, *args: object, **kwargs: object) -> object:
+        if name in ("tomllib", "tomli"):
+            raise ImportError(f"No module named '{name}'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.delitem(sys.modules, "tomllib", raising=False)
+    monkeypatch.delitem(sys.modules, "tomli", raising=False)
+
+    try:
+        # (a) (re)importing the module succeeds with no TOML reader available.
+        importlib.reload(repo_gates_module)
+
+        # (b) a repo with a pyproject.toml raises the documented config error.
+        pyproject_repo = tmp_path / "pyproject_repo"
+        _write(pyproject_repo / "pyproject.toml", "[tool.ruff]\nline-length = 100\n")
+        with pytest.raises(ValueError, match=r"cannot read pyproject\.toml gates"):
+            repo_gates_module.discover_repo_gates(pyproject_repo)
+
+        # (c) a repo without a pyproject.toml (only package.json) still works.
+        node_repo = tmp_path / "node_repo"
+        _write(node_repo / "package.json", json.dumps({"scripts": {"lint": "eslint ."}}))
+        gates = repo_gates_module.discover_repo_gates(node_repo)
+        assert _names(gates) == ["lint"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(repo_gates_module)

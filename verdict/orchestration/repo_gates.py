@@ -13,13 +13,33 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-
-try:  # Python 3.11+ ships tomllib in the stdlib.
-    import tomllib  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - exercised only on Python <3.11
-    import tomli as tomllib
+from types import ModuleType
+from typing import cast
 
 _NODE_SCRIPT_ORDER: tuple[str, ...] = ("typecheck", "lint", "format:check")
+
+
+def _tomllib() -> ModuleType:
+    """Import a TOML reader lazily, so importing this module never requires one.
+
+    Prefers the stdlib ``tomllib`` (Python 3.11+); falls back to the ``tomli``
+    package on Python <3.11. Raising here (rather than at import time) keeps
+    ``verdict --help`` working on a runtime-only install where neither is
+    present, since this module is reached only when gates are discovered.
+    """
+    try:  # Python 3.11+ ships tomllib in the stdlib.
+        import tomllib  # type: ignore[import-not-found]
+
+        return cast(ModuleType, tomllib)
+    except ImportError:  # pragma: no cover - exercised only on Python <3.11
+        try:
+            import tomli as tomllib
+
+            return cast(ModuleType, tomllib)
+        except ImportError as exc:
+            raise ValueError(
+                "cannot read pyproject.toml gates on Python < 3.11 without the 'tomli' package"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -40,6 +60,7 @@ def _load_pyproject(repo: Path) -> dict[str, object]:
     path = repo / "pyproject.toml"
     if not path.is_file():
         return {}
+    tomllib = _tomllib()
     try:
         loaded = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
