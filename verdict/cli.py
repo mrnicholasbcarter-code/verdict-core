@@ -4245,19 +4245,38 @@ def cmd_prove_at_rest(
         present.header("Prove at rest  /  census")
         present.note(f"non_chat_skipped: {data.get('non_chat_skipped', 0)}")
         present.table(
-            ["Pool", "Routes", "Probed", "Usable", "Agentic OK", "Unprobed", "Inherited"],
+            [
+                "Pool",
+                "Routes",
+                "Probed",
+                "Usable",
+                "Unusable",
+                "Agentic OK",
+                "Unprobed",
+                "Inherited",
+            ],
             [
                 (
                     pool,
                     counts.get("routes", 0),
                     counts.get("canonical_probed", 0),
                     counts.get("usable", 0),
+                    sum(counts.get("unusable", {}).values()),
                     counts.get("agentic_ok", 0),
                     counts.get("unknown_unprobed", 0),
                     counts.get("inherited_from_alias", 0),
                 )
                 for pool, counts in data.get("pools", {}).items()
             ],
+        )
+        reasons: dict[str, int] = {}
+        for counts in data.get("pools", {}).values():
+            for reason, count in counts.get("unusable", {}).items():
+                reasons[reason] = reasons.get(reason, 0) + count
+        top_reasons = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:3]
+        present.note(
+            "Top unusable reasons: "
+            + (", ".join(f"{reason}: {count}" for reason, count in top_reasons) or "none")
         )
         return
 

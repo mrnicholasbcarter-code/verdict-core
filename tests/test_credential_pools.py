@@ -599,3 +599,34 @@ def test_round_robin_groups_aliases_by_canonical_pool(tmp_path: Path) -> None:
         "x/model",
         "antigravity/model-b",
     ]
+
+
+def test_census_human_output_shows_unusable_count_and_top_reasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from verdict import cli, present
+    from verdict.orchestration.health_cache import CATEGORY_PAYMENT, ProbeResult
+
+    inventory = tmp_path / "routes.json"
+    inventory.write_text(
+        json.dumps([{"route_id": f"p/m{i}", "provider": "p", "capacity": "free"} for i in range(2)])
+    )
+    cache = HealthCache(tmp_path / "cache.json")
+    cache.record(
+        "p/m0",
+        ProbeResult(category=CATEGORY_PAYMENT, chat_ok=False, tool_ok=False),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
+    tables: list[tuple[object, object]] = []
+    notes: list[str] = []
+    monkeypatch.setattr(present, "header", lambda _title: None)
+    monkeypatch.setattr(present, "table", lambda headers, rows: tables.append((headers, rows)))
+    monkeypatch.setattr(present, "note", notes.append)
+    cli.cmd_prove_at_rest("census", inventory_path=str(inventory), state_path=str(cache.path))
+    headers, rows = tables[0]
+    assert "Unusable" in headers
+    assert rows[0][headers.index("Unusable")] == 1
+    assert any("payment_required: 1" in note for note in notes)
