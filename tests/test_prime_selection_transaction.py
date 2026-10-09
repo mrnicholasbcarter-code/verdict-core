@@ -644,7 +644,8 @@ def test_absent_project_settings_under_group_writable_parent_applies(env: dict[s
     override". The optional project settings path must tolerate this.
     """
     project_dir = env["paths"].agent_dir / "cwd-prime"
-    project_dir.mkdir(mode=0o775)
+    project_dir.mkdir()
+    project_dir.chmod(0o775)  # explicit: mkdir(mode=) is masked by the runner umask (0022 on CI)
     project = project_dir / "settings.json"
     assert not project.exists()
     env["paths"] = replace(env["paths"], project_settings=project)
@@ -658,7 +659,8 @@ def test_present_project_settings_under_group_writable_parent_still_refused(
 ) -> None:
     """A *present* project file keeps full safety checks regardless of absence."""
     project_dir = env["paths"].agent_dir / "cwd-prime2"
-    project_dir.mkdir(mode=0o775)
+    project_dir.mkdir()
+    project_dir.chmod(0o775)  # explicit: mkdir(mode=) is masked by the runner umask (0022 on CI)
     project = project_dir / "settings.json"
     project.write_bytes(b'{"enabledModels": []}')
     project.chmod(0o644)
