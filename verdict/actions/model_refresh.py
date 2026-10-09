@@ -27,6 +27,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from verdict.actions.base import ActionResult
+from verdict.orchestration.health_cache import (
+    CATEGORY_AUTH,
+    CATEGORY_PAYMENT,
+    CATEGORY_PERMISSION,
+    CATEGORY_RATE_LIMITED,
+)
 from verdict.orchestration.verified_refresh import (
     CAPACITY_METERED,
     CAPACITY_UNKNOWN,
@@ -35,6 +41,13 @@ from verdict.orchestration.verified_refresh import (
     RefreshConfigError,
     RefreshSnapshot,
     RowInput,
+)
+
+# Availability-class negatives (auth / payment / permission / quota) surface as
+# UNAVAILABLE in a refresh result; every other genuine negative is a diagnostic
+# FAILED (design section 2, rules 2-3).
+_UNAVAILABLE_CATEGORIES = frozenset(
+    {CATEGORY_AUTH, CATEGORY_PAYMENT, CATEGORY_PERMISSION, CATEGORY_RATE_LIMITED}
 )
 
 PLAN_SCHEMA = "verdict.model-refresh-plan/v1"
@@ -288,14 +301,34 @@ def _route_results(
         status = row.status if row is not None else "UNAVAILABLE"
         if status not in {"STALE", "UNVERIFIED", "FAILED", "UNAVAILABLE", "VERIFIED"}:
             status = "UNAVAILABLE"
-        if probed:
-            status = "VERIFIED" if actual.verified else "FAILED"
+        alive = bool(actual is not None and actual.alive)
+        if probed and actual is not None:
+            # Full coding proof mints VERIFIED. A chat-only liveness success is
+            # alive but NOT coding-verified: it keeps the safe prior display
+            # status (STALE/UNVERIFIED) and never regresses to FAILED. Only a
+            # genuine negative demotes -- availability-class categories to
+            # UNAVAILABLE, every other diagnostic negative to FAILED.
+            if actual.verified:
+                status = "VERIFIED"
+            elif alive:
+                if status not in {"STALE", "UNVERIFIED"}:
+                    status = "STALE"  # chat-only success never leaves VERIFIED/FAILED
+            elif actual.category in _UNAVAILABLE_CATEGORIES:
+                status = "UNAVAILABLE"
+            else:
+                status = "FAILED"
+        elif not probed and reason in {"wall_cap", "not_tested", "cancelled"}:
+            # A no-write / untested / deadline outcome never establishes a new
+            # result: keep the safe prior status, demote only a stale VERIFIED.
+            if status == "VERIFIED":
+                status = "STALE"
         elif status == "VERIFIED":
             # An unprobed refresh cannot establish a new VERIFIED result.
             status = "STALE"
         results[route.route_id] = {
             "status_after": status,
             "probed": probed,
+            "alive": alive,
             "category": category,
             "http_status": (
                 actual.http_status

@@ -20,6 +20,7 @@ Findings covered:
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -29,6 +30,12 @@ from typing import Any, cast
 
 from verdict.actions.model_refresh import action_models_refresh_execute, action_models_refresh_plan
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
+from verdict.orchestration.verified_models import (
+    VerifiedModelQuery,
+    VerifiedStatus,
+    project_verified_models,
+    snapshots_from_documents,
+)
 from verdict.orchestration.verified_refresh import (
     CAPACITY_FREE,
     CAPACITY_METERED,
@@ -726,17 +733,120 @@ def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None
     assert result.ok and result.data["probed"] == 2
     assert result.data["requests_made"] == 2
     assert transport.calls == [("paid/a", "chat"), ("other/b", "chat")]
+    # A consented METERED/UNKNOWN route runs a CHAT-ONLY liveness probe. Chat
+    # success proves the route is alive, NOT that it passed coding verification:
+    # verified stays 0 and alive counts both routes. The per-route status_after
+    # keeps the safe prior status (STALE/UNVERIFIED) -- never VERIFIED (no
+    # coding proof) and never FAILED (the probe succeeded).
+    assert result.data["verified"] == 0
+    assert result.data["alive"] == 2
     outcomes = result.data["route_outcomes"]
     assert set(outcomes) == {"paid/a", "other/b"}
+    expected_status = {"paid/a": "STALE", "other/b": "UNVERIFIED"}
     for rid in outcomes:
         assert outcomes[rid] == {
-            "status_after": "VERIFIED",
+            "status_after": expected_status[rid],
             "probed": True,
+            "alive": True,
             "category": "ok",
             "http_status": 200,
             "refresh_reason": None,
             "requests_made": 1,
         }
+        assert outcomes[rid]["status_after"] not in {"VERIFIED", "FAILED"}
+
+
+def test_combined_chat_only_liveness_projects_verified_chat_only(tmp_path: Path) -> None:
+    """End-to-end contract across unit 3 refresh and the unit 1 pure projection.
+
+    A consented METERED route runs a chat-only liveness probe (one request). On
+    success the coordinator persists a healthy LIVENESS entry (``tool_ok`` false)
+    with a verified echoed identity. The REAL pure projection
+    (``verdict.orchestration.verified_models.project_verified_models``) must then
+    read that fresh at-rest positive as VERIFIED with ``coding_ok`` False and the
+    ``chat_only_not_coding_verified`` restriction -- a route can be VERIFIED
+    chat-only (design.md ~25,50,61). With the SAME cache but an identity that was
+    not echoed, strict identity (design s1) demotes the same route to UNVERIFIED
+    with ``identity_not_verified``. No live model/provider call: the transport is
+    injected and the projection does no I/O.
+    """
+    cache_path = tmp_path / "health-cache.json"
+    route_row = {
+        "route_id": "paid/a",
+        "provider": "paid",
+        "status": "STALE",
+        "capacity_class": CAPACITY_METERED,
+        "refreshable": True,
+    }
+    plan = action_models_refresh_plan(
+        snapshot_rows=[route_row],
+        needed_ids=["paid/a"],
+        include_metered=True,
+        now=NOW,
+        gateway_origin="http://g",
+        evidence_generation="gen1",
+    ).data
+    snap = RefreshSnapshot(
+        rows=(RowInput("paid/a", "paid", "STALE", CAPACITY_METERED, True),),
+        generation="gen1",
+        gateway_origin="http://g",
+    )
+    # The default transport echoes the route suffix ("a") as reported_model, so
+    # the chat liveness probe records identity == "verified".
+    result = action_models_refresh_execute(
+        confirmed=True,
+        plan=plan,
+        snapshot=snap,
+        now=NOW,
+        cache=HealthCache(cache_path),
+        transport=_Transport(),
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        lock_path=tmp_path / "c.lock",
+        marker_path=tmp_path / "c.json",
+    )
+    assert result.ok and result.data["verified"] == 0 and result.data["alive"] == 1
+    assert result.data["route_outcomes"]["paid/a"]["status_after"] == "STALE"
+
+    # Persist the live cache to disk, then read it back through the REAL loader.
+    HealthCache(cache_path).save()
+    cache_doc = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cache_doc["schema_version"] == "1"
+    entry = cache_doc["routes"]["paid/a"]
+    assert entry["chat_ok"] is True and entry["tool_ok"] is False
+    assert entry["identity"] == "verified"
+
+    inv = [
+        {
+            "id": "omniroute/paid/a",
+            "owned_by": "paid",
+            "context_length": 200_000,
+            "capabilities": {"tool_calling": True},
+        }
+    ]
+    conns = [{"provider": "paid", "isActive": True, "testStatus": "ok", "authType": "oauth"}]
+
+    # 1) Verified identity -> VERIFIED chat-only (coding_ok False).
+    snaps = snapshots_from_documents(health_cache_doc=cache_doc, now=NOW)
+    view = project_verified_models(inv, conns, snaps, now=NOW, query=VerifiedModelQuery())
+    assert len(view.rows) == 1
+    proj = view.rows[0]
+    assert proj.route_id == "paid/a"
+    assert proj.status is VerifiedStatus.VERIFIED
+    assert proj.coding_ok is False
+    assert "chat_only_not_coding_verified" in proj.restrictions
+
+    # 2) Same healthy chat-only entry but identity not reported -> strict
+    # identity demotes it to UNVERIFIED with identity_not_verified (design s1).
+    not_reported_doc = json.loads(json.dumps(cache_doc))
+    not_reported_doc["routes"]["paid/a"]["identity"] = "not_reported"
+    snaps2 = snapshots_from_documents(health_cache_doc=not_reported_doc, now=NOW)
+    view2 = project_verified_models(inv, conns, snaps2, now=NOW, query=VerifiedModelQuery())
+    proj2 = view2.rows[0]
+    assert proj2.status is VerifiedStatus.UNVERIFIED
+    assert proj2.reason == "identity_not_verified"
+    assert "identity_not_verified" in proj2.restrictions
 
 
 def test_consented_blocked_row_never_probed(tmp_path: Path) -> None:
