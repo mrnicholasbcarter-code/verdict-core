@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from threading import Event
 from typing import Any, Protocol
 
+from verdict.http_safety import open_no_redirect
+
 PROBE_PROMPT = "Return exactly: OK"
 PROBE_DIAGNOSTICS_VERSION = "1"
 
@@ -891,7 +893,7 @@ def openai_probe_transport(
     base_url: str,
     *,
     api_key: str | None = None,
-    opener: Any = urllib.request.urlopen,
+    opener: Any = open_no_redirect,
     max_response_bytes: int = 1_048_576,
     session_id: str | None = None,
 ) -> ProbeTransport:

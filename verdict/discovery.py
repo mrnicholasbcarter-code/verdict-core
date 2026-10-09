@@ -5,6 +5,7 @@ import time
 import urllib.request
 
 from verdict.classifier import classify
+from verdict.http_safety import open_no_redirect
 from verdict.models import ModelInfo, ProviderConfig
 
 _CACHE: dict[str, dict[str, float | list[ModelInfo]]] = {}
@@ -55,7 +56,7 @@ def fetch_models(provider_name: str, config: ProviderConfig, ttl: int = 60) -> l
         req.add_header("Authorization", f"Bearer {token}")
 
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
+        with open_no_redirect(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             models = []
             for m in data.get("data", []):

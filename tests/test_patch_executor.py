@@ -270,7 +270,7 @@ def test_default_openai_transport_sends_operational_loop_session_header(
         captured["url"] = request.full_url
         return Response()
 
-    monkeypatch.setattr("verdict.patch_executor.urllib.request.urlopen", opener)
+    monkeypatch.setattr("verdict.patch_executor.open_no_redirect", opener)
 
     executor = PatchExecutor(
         repo, PatchExecutorConfig(model="cheap/model"), runner=RecordingRunner()

@@ -23,12 +23,12 @@ import ast
 import re
 import subprocess
 import time
-import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from verdict.http_safety import open_no_redirect
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.relay import fatal_identity_mismatch
 from verdict.repository_files import UnsafeRepositoryPathError, read_repository_text
@@ -193,7 +193,7 @@ class PatchExecutor:
         self._transport = transport or openai_probe_transport(
             config.base_url,
             api_key=config.api_key,
-            opener=urllib.request.urlopen,
+            opener=open_no_redirect,
             max_response_bytes=config.max_response_bytes,
             session_id=config.session_id,
         )
