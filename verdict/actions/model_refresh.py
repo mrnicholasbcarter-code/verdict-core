@@ -304,15 +304,19 @@ def _route_results(
         alive = bool(actual is not None and actual.alive)
         if probed and actual is not None:
             # Full coding proof mints VERIFIED. A chat-only liveness success is
-            # alive but NOT coding-verified: it keeps the safe prior display
-            # status (STALE/UNVERIFIED) and never regresses to FAILED. Only a
-            # genuine negative demotes -- availability-class categories to
-            # UNAVAILABLE, every other diagnostic negative to FAILED.
+            # alive but NOT coding-verified: it keeps the prior display status
+            # unchanged when that prior is already VERIFIED/STALE/UNVERIFIED --
+            # it never upgrades to VERIFIED and never demotes an existing fresh
+            # VERIFIED. Only when the prior was FAILED/UNAVAILABLE/missing does
+            # the liveness success contradict that negative; it then becomes
+            # UNVERIFIED (proof of life, but no tool proof). A genuine negative
+            # demotes -- availability-class categories to UNAVAILABLE, every
+            # other diagnostic negative to FAILED.
             if actual.verified:
                 status = "VERIFIED"
             elif alive:
-                if status not in {"STALE", "UNVERIFIED"}:
-                    status = "STALE"  # chat-only success never leaves VERIFIED/FAILED
+                if status not in {"VERIFIED", "STALE", "UNVERIFIED"}:
+                    status = "UNVERIFIED"  # chat-only success never leaves VERIFIED/FAILED
             elif actual.category in _UNAVAILABLE_CATEGORIES:
                 status = "UNAVAILABLE"
             else:

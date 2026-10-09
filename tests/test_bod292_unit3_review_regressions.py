@@ -28,7 +28,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from verdict.actions.model_refresh import action_models_refresh_execute, action_models_refresh_plan
+from verdict.actions.model_refresh import (
+    PlanRoute,
+    _route_results,
+    action_models_refresh_execute,
+    action_models_refresh_plan,
+)
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.orchestration.verified_models import (
     VerifiedModelQuery,
@@ -47,6 +52,7 @@ from verdict.orchestration.verified_refresh import (
     RefreshCoordinator,
     RefreshOutcome,
     RefreshSnapshot,
+    RouteOutcome,
     RowInput,
 )
 
@@ -942,6 +948,98 @@ def test_execute_route_outcomes_report_blocked_and_missing_without_verified(tmp_
     assert all(o["requests_made"] == 0 for o in outcomes.values())
     assert outcomes["cc/blocked"]["refresh_reason"] == "blocked"
     assert outcomes["cc/missing"]["refresh_reason"] == "not_tested"
+
+
+def test_alive_only_keeps_fresh_verified_prior_status(tmp_path: Path) -> None:
+    """A chat-only liveness success must NOT demote an existing VERIFIED route.
+
+    Non-Claude review (mistral/codestral-latest, cohere/command-a) of 8aa1e32
+    flagged ``_route_results``'s ``elif alive:`` branch: it unconditionally
+    forced a VERIFIED prior down to STALE on any chat-only success, which
+    contradicted the code's own comment ("chat-only success never leaves
+    VERIFIED/FAILED"). This FAILS on 8aa1e32 (status_after was "STALE") and
+    passes after the fix (status_after stays "VERIFIED").
+    """
+    del tmp_path
+    row = RowInput("cc/a", "cc", "VERIFIED", CAPACITY_FREE, False)
+    snap = RefreshSnapshot((row,), generation="gen1", gateway_origin="http://g")
+    plan_routes = [PlanRoute("cc/a", "cc", CAPACITY_FREE, "full")]
+    route_outcome = RouteOutcome(
+        "cc/a", "cc", True, False, category="ok", http_status=200, alive=True, requests_made=1
+    )
+    outcome = RefreshOutcome(
+        outcome="completed",
+        job_id="j1",
+        consumer="c",
+        probed=1,
+        verified=0,
+        failed=0,
+        unavailable=0,
+        requests_made=1,
+        elapsed_seconds=0.0,
+        route_outcomes={"cc/a": route_outcome},
+        alive=1,
+    )
+    results = _route_results(plan_routes, snap, outcome)
+    assert results["cc/a"]["status_after"] == "VERIFIED"
+    assert results["cc/a"]["alive"] is True
+
+
+def test_alive_only_promotes_failed_prior_to_unverified(tmp_path: Path) -> None:
+    """A chat-only liveness success on a FAILED/UNAVAILABLE/missing prior
+    contradicts that negative but proves no tools, so it becomes UNVERIFIED
+    (never VERIFIED, never left at the stale negative).
+    """
+    del tmp_path
+    row = RowInput("cc/b", "cc", "FAILED", CAPACITY_FREE, False)
+    snap = RefreshSnapshot((row,), generation="gen1", gateway_origin="http://g")
+    plan_routes = [PlanRoute("cc/b", "cc", CAPACITY_FREE, "full")]
+    route_outcome = RouteOutcome(
+        "cc/b", "cc", True, False, category="ok", http_status=200, alive=True, requests_made=1
+    )
+    outcome = RefreshOutcome(
+        outcome="completed",
+        job_id="j2",
+        consumer="c",
+        probed=1,
+        verified=0,
+        failed=0,
+        unavailable=0,
+        requests_made=1,
+        elapsed_seconds=0.0,
+        route_outcomes={"cc/b": route_outcome},
+        alive=1,
+    )
+    results = _route_results(plan_routes, snap, outcome)
+    assert results["cc/b"]["status_after"] == "UNVERIFIED"
+    assert results["cc/b"]["alive"] is True
+
+
+def test_alive_only_stale_and_unverified_priors_unchanged(tmp_path: Path) -> None:
+    """Existing STALE/UNVERIFIED expectations are unchanged by the fix."""
+    del tmp_path
+    for prior_status in ("STALE", "UNVERIFIED"):
+        row = RowInput("cc/c", "cc", prior_status, CAPACITY_FREE, False)
+        snap = RefreshSnapshot((row,), generation="gen1", gateway_origin="http://g")
+        plan_routes = [PlanRoute("cc/c", "cc", CAPACITY_FREE, "full")]
+        route_outcome = RouteOutcome(
+            "cc/c", "cc", True, False, category="ok", http_status=200, alive=True, requests_made=1
+        )
+        outcome = RefreshOutcome(
+            outcome="completed",
+            job_id="j3",
+            consumer="c",
+            probed=1,
+            verified=0,
+            failed=0,
+            unavailable=0,
+            requests_made=1,
+            elapsed_seconds=0.0,
+            route_outcomes={"cc/c": route_outcome},
+            alive=1,
+        )
+        results = _route_results(plan_routes, snap, outcome)
+        assert results["cc/c"]["status_after"] == prior_status
 
 
 def test_review3_empty_bindings_refused(tmp_path: Path) -> None:
