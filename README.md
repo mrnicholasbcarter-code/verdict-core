@@ -16,7 +16,7 @@ you can check yourself afterward. A model that fails a safety check cannot be sc
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Why Verdict](#why-verdict) · [Try it](#try-it-in-60-seconds-no-keys) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+[Why Verdict](#why-verdict) · [Try it](#try-it-in-60-seconds-no-keys) · [What's new](#whats-new-in-050) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: an offline scenario runs a two-worker-node DAG, an injected rate limit triggers failover, a scripted review records PASS, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
@@ -162,6 +162,50 @@ were excluded.
 
 Source: [`scripts/demo_orchestrate.py`](scripts/demo_orchestrate.py).
 Test: [`tests/test_readme_assets.py`](tests/test_readme_assets.py).
+
+## What's new in 0.5.0
+
+Verdict 0.5.0 adds four ways to see — and safely act on — what it knows before you commit to a run.
+
+**See which models actually work right now.**
+
+```bash
+verdict eligibility --verified
+```
+
+Shows every model's real status (verified, stale, unverified, failed, excluded) from evidence
+Verdict already checked, with a reason for every drop. In the TUI prompt, the same view is
+`/eligibility`.
+
+**Refresh that list safely, with a cost cap and your confirmation.**
+
+```text
+/eligibility refresh
+```
+
+A bounded refresh probe that can spend prepaid quota — Verdict tells you that before it runs,
+and nothing is sent until you say yes.
+
+**Pick your Prime Agent models with a preview and a one-step undo.**
+
+```bash
+verdict harness prime select
+verdict harness prime restore
+```
+
+`select` shows you the exact change before it touches `~/.prime/agent/models.json`, backs up the
+file first, and `restore` reverses it. In the TUI prompt: `/bootstrap prime`.
+
+**An honest Claude Code compatibility report.**
+
+```text
+/bootstrap claude
+```
+
+Read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing.
+
+**Smart Tab-completion in the prompt.** Commands, flags, model ids and run ids all complete as
+you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md).
 
 ## Quick start
 
