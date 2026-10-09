@@ -404,6 +404,7 @@ def test_omniroute_management_requests_fall_back_to_local_gateway_probe(
 
     monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("verdict.doctor_diagnostics.open_no_redirect", fake_urlopen)
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
     assert "http://localhost:20128/api/health" in seen
@@ -433,7 +434,7 @@ def test_omniroute_management_requests_use_configured_endpoint(
         return Response()
 
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:24000/management")
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("verdict.doctor_diagnostics.open_no_redirect", fake_urlopen)
 
     assert cli._omniroute_api_request("GET", "/api/provider-nodes") == {"ok": True}
     assert seen == ["http://127.0.0.1:24000/management/api/provider-nodes"]

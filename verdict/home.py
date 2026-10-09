@@ -13,12 +13,13 @@ import os
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from rich import box
 from rich.console import Console, Group, RenderableType
@@ -27,6 +28,8 @@ from rich.table import Table
 from rich.text import Text
 
 from verdict.design import TOKENS, PresentationMode, panel, presentation_mode
+from verdict.http_safety import open_no_redirect
+from verdict.orchestration.run import resolve_api_key
 from verdict.terminal_ui import TerminalUI, clean
 from verdict.tui_completion import (
     ArgumentSpec,
@@ -122,8 +125,16 @@ _ACTION_PARAMS: dict[str, list[tuple[str, object]]] = {
 _COMMAND_INDEX: dict[str, tuple[str, str, str]] | None = None
 
 _PROBE_MAX_BYTES = 32 * 1024 * 1024
-HISTORY_DIR = Path.home() / ".verdict"
-HISTORY_FILE = HISTORY_DIR / "prompt_history"
+
+
+def history_file(env: dict[str, str] | None = None) -> Path:
+    """Resolve the prompt history file path based on VERDICT_HOME or $HOME."""
+    source = os.environ if env is None else env
+    configured = (source.get("VERDICT_HOME") or "").strip()
+    base = Path(configured) if configured else Path(source.get("HOME") or Path.home()) / ".verdict"
+    return base.expanduser() / "prompt_history"
+
+
 HISTORY_MAX_LINES = 500
 
 
@@ -163,11 +174,16 @@ def _get_command_index() -> dict[str, tuple[str, str, str]]:
     return _COMMAND_INDEX
 
 
+GatewayAuth = Literal["required", "rejected", "redirect refused"]
+ProbeResult = tuple[bool | None, int | None, GatewayAuth | None]
+
+
 @dataclass
 class HomeState:
     gateway: str = ""
     gateway_ok: bool | None = None
     gateway_models: int | None = None
+    gateway_auth: GatewayAuth | None = None
     runs: list[dict[str, Any]] = field(default_factory=list)
     completion_snapshot: CompletionSnapshot | None = None
     completion_view: dict[str, Any] | None = None
@@ -177,27 +193,37 @@ def _plain(console: Console) -> bool:
     return TerminalUI(console).plain
 
 
-def probe_gateway(url: str, *, timeout: float = 3.0) -> tuple[bool | None, int | None]:
-    """Bounded, unauthenticated reachability ping; never raises."""
+def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
+    """Bounded reachability ping; auth failures mean the gateway is up. Never raises."""
     try:
         scheme = urllib.parse.urlsplit(url).scheme
     except Exception:
-        return None, None
+        return None, None, None
     if scheme not in {"http", "https"}:
-        return None, None
+        return None, None, None
     try:
-        request = urllib.request.Request(f"{url.rstrip('/')}/v1/models", method="GET")
-        with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
+        key = resolve_api_key() or resolve_api_key("OMNIROUTE_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        request = urllib.request.Request(
+            f"{url.rstrip('/')}/v1/models", headers=headers, method="GET"
+        )
+        with open_no_redirect(request, timeout=timeout) as resp:
             # Bounded read: large catalogs are several MB; anything past the
             # cap is treated as a failed probe rather than read into memory.
             raw = resp.read(_PROBE_MAX_BYTES + 1)
             if len(raw) > _PROBE_MAX_BYTES:
-                return False, None
+                return False, None, None
             data = json.loads(raw)
         models = data.get("data", [])
-        return True, len(models) if isinstance(models, list) else None
+        return True, len(models) if isinstance(models, list) else None, None
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            return True, None, "rejected" if key else "required"
+        if 300 <= exc.code < 400:
+            return False, None, "redirect refused"
+        return False, None, None
     except Exception:
-        return False, None
+        return False, None, None
 
 
 def recent_runs(roots: Sequence[Path], *, limit: int = 5) -> list[dict[str, Any]]:
@@ -254,7 +280,9 @@ def render_home(
     blocks: list[RenderableType] = []
     blocks.append(Text("VERDICT  autonomous control plane"))
     gw = (
-        "reachable"
+        f"reachable (key {state.gateway_auth})"
+        if state.gateway_auth in {"required", "rejected"}
+        else "reachable"
         if state.gateway_ok
         else "unreachable"
         if state.gateway_ok is False
@@ -337,7 +365,9 @@ def _styled_home(state: HomeState, *, width: int, interactive: bool = False) -> 
     mark.append("plan · select · recover · verify · prove", style=TOKENS["SECONDARY"])
     gateway = Text("GATEWAY  ", style=TOKENS["SECONDARY"])
     gateway.append(
-        "REACHABLE"
+        f"REACHABLE (key {state.gateway_auth})"
+        if state.gateway_auth in {"required", "rejected"}
+        else "REACHABLE"
         if state.gateway_ok
         else "UNREACHABLE"
         if state.gateway_ok is False
@@ -1048,9 +1078,14 @@ def _load_history(path: Path) -> list[str]:
 def _save_history(path: Path, entries: list[str]) -> None:
     """Append and cap the history file; owner-only permissions."""
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # mkdir's mode does not apply to an existing directory: tighten it.
-        os.chmod(path.parent, 0o700)
+        parent = path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        # Tighten permissions only if owned by current user and group/other-writable.
+        info = parent.stat()
+        if info.st_uid == os.getuid() and (info.st_mode & 0o022):
+            os.chmod(parent, 0o700)
+
         existing = _load_history(path) if path.exists() else []
         combined = (existing + entries)[-HISTORY_MAX_LINES:]
         # Write a new owner-only file and atomically replace the old one, so
@@ -1074,7 +1109,7 @@ def _startup_with_motion(
     target: Console,
     state: HomeState,
     *,
-    probe_fn: Callable[[], tuple[bool | None, int | None]] | None = None,
+    probe_fn: Callable[[], ProbeResult] | None = None,
     max_sweep_s: float = 1.2,
 ) -> None:
     """Show wordmark line-by-line while probing gateway in a background thread.
@@ -1087,14 +1122,14 @@ def _startup_with_motion(
     """
     if probe_fn is not None:
         done = threading.Event()
-        result: list[tuple[bool | None, int | None]] = []
+        result: list[ProbeResult] = []
 
         def _probe_worker() -> None:
             try:
                 result.append(probe_fn())
             except Exception:
                 # A probe that raises is a failed probe, never a hang.
-                result.append((False, None))
+                result.append((False, None, None))
             finally:
                 done.set()
 
@@ -1103,7 +1138,7 @@ def _startup_with_motion(
     else:
         done = threading.Event()
         done.set()
-        result = [(state.gateway_ok, state.gateway_models)]
+        result = [(state.gateway_ok, state.gateway_models, state.gateway_auth)]
 
     # Sweep: reveal wordmark lines, sharing a single budget with the
     # checking state.  Each line waits up to line_delay for the probe;
@@ -1135,9 +1170,11 @@ def _startup_with_motion(
 
     # Resolve probe result
     if result:
-        state.gateway_ok, state.gateway_models = result[0]
+        state.gateway_ok, state.gateway_models, state.gateway_auth = result[0]
     gw_label = (
-        "REACHABLE"
+        f"REACHABLE (key {state.gateway_auth})"
+        if state.gateway_auth in {"required", "rejected"}
+        else "REACHABLE"
         if state.gateway_ok
         else "UNREACHABLE"
         if state.gateway_ok is False
@@ -1267,7 +1304,7 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
     # Loaded once into memory; new entries are written back through the capped
     # _save_history helper, so the file never grows past the cap.
     history: Any = InMemoryHistory()
-    for entry in _load_history(HISTORY_FILE):
+    for entry in _load_history(history_file()):
         history.append_string(entry)
 
     # Suppress CPR (cursor position request) warning in terminals that
@@ -1298,7 +1335,7 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         except EOFError:
             return 0
         if line.strip():
-            _save_history(HISTORY_FILE, [line.strip()])
+            _save_history(history_file(), [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         _reload_completion(state)
         completer.snapshot = state.completion_snapshot or completer.snapshot
@@ -1318,7 +1355,7 @@ def _fallback_input_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         except EOFError:
             return 0
         if line.strip():
-            _save_history(HISTORY_FILE, [line.strip()])
+            _save_history(history_file(), [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         _reload_completion(state)
         if result == "quit":
@@ -1471,10 +1508,14 @@ def run_home(
         # No animation: probe synchronously, render full home
         if probe:
             if plain:
-                state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+                state.gateway_ok, state.gateway_models, state.gateway_auth = probe_gateway(
+                    state.gateway
+                )
             else:
                 with ui.task("Checking gateway reachability"):
-                    state.gateway_ok, state.gateway_models = probe_gateway(state.gateway)
+                    state.gateway_ok, state.gateway_models, state.gateway_auth = probe_gateway(
+                        state.gateway
+                    )
         width = target.width or 100
         target.print(render_home(state, plain=plain, width=width, interactive=want_interactive))
 

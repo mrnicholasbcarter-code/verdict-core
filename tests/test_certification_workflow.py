@@ -73,24 +73,27 @@ def test_workflow_separates_cheap_push_receipt_from_manual_evidence():
     assert steps["Check out the exact event SHA"]["with"]["ref"] == "${{ github.sha }}"
     assert "git rev-parse HEAD" in steps["Verify checked-out SHA"]["run"]
     assert "uv sync --frozen --extra dev --extra server" in steps["Sync locked dependencies"]["run"]
-    generate = steps["Generate incomplete certification evidence"]
+    generate = steps["Generate certification evidence"]
     assert generate["continue-on-error"] == "true"
     assert "timeout --signal=TERM --kill-after=10s 70m" in generate["run"]
-    assert "--rehearsal" not in generate["run"]
+    assert "--attested-rehearsals" in generate["run"]
+    assert 'test "$GITHUB_REF" = refs/heads/main' in generate["run"]
     # The precise numeric exit code must be captured, not just outcome success/failure,
     # so the verifier can tell a legitimate INCOMPLETE (exit 1) apart from a
     # timeout/kill (124/137/143) or an unrelated crash.
     assert "exit_code=$code" in generate["run"]
     assert "$GITHUB_OUTPUT" in generate["run"]
-    check = steps["Verify INCOMPLETE evidence (not a certification gate)"]
+    check = steps["Verify certification evidence"]
     assert check["if"] == "${{ always() }}"
     assert check["id"] == "verify"
     assert check["env"]["EXPECTED_SHA"] == "${{ github.sha }}"
     assert check["env"]["GENERATOR_OUTCOME"] == "${{ steps.generate.outcome }}"
     assert check["env"]["GENERATOR_EXIT_CODE"] == "${{ steps.generate.outputs.exit_code }}"
-    upload = steps["Upload verified SHA-bound INCOMPLETE evidence"]
+    upload = steps["Upload verified SHA-bound evidence"]
     assert upload["if"] == "${{ steps.verify.outcome == 'success' }}"
-    assert upload["with"]["name"].startswith("certification-evidence-incomplete-")
+    assert upload["with"]["name"].startswith(
+        "certification-evidence-${{ steps.verify.outputs.artifact_kind }}-"
+    )
     assert "${{ github.run_attempt }}" in upload["with"]["name"]
     assert upload["with"]["if-no-files-found"] == "error"
     assert int(upload["with"]["retention-days"]) >= 90
@@ -138,21 +141,21 @@ def test_generate_step_captures_exact_numeric_exit_code(tmp_path, underlying_exi
     """
     steps = _workflow()["jobs"]["collect-certification-evidence"]["steps"]
     command = next(
-        step["run"]
-        for step in steps
-        if step["name"] == "Generate incomplete certification evidence"
+        step["run"] for step in steps if step["name"] == "Generate certification evidence"
     )
     assert "exit_code=$code" in command
     # Replace the real generator invocation with a stub that exits with the
     # parametrized code, keeping the rest of the step's shell logic intact.
     stub = command.replace(
-        "timeout --signal=TERM --kill-after=10s 70m \\\n  .venv/bin/python scripts/certify_release.py",
+        'timeout --signal=TERM --kill-after=10s 70m \\\n  .venv/bin/python scripts/certify_release.py "${args[@]}"',
         f"bash -c 'exit {underlying_exit}'",
     )
     assert stub != command, "stub substitution did not match the real command"
     github_output = tmp_path / "output.txt"
     env = os.environ.copy()
     env["GITHUB_OUTPUT"] = str(github_output)
+    env["REHEARSAL_RUN_ID"] = ""
+    env["REHEARSAL_DIR"] = str(tmp_path / "attested-rehearsals")
     result = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", stub],
         cwd=tmp_path,
@@ -195,7 +198,7 @@ def _run_manifest_check(
     repo, event_sha, *, generator_outcome="failure", exit_code="1", summary=None
 ):
     steps = _workflow()["jobs"]["collect-certification-evidence"]["steps"]
-    command = next(step["run"] for step in steps if step["name"].startswith("Verify INCOMPLETE"))
+    command = next(step["run"] for step in steps if step["name"] == "Verify certification evidence")
     # Run exactly the workflow's embedded Python verifier, without a network/action runner.
     assert command.startswith("python - <<'PY'\n") and command.endswith("\nPY\n")
     code = command[len("python - <<'PY'\n") : -len("\nPY\n")]
@@ -846,3 +849,42 @@ def test_release_gate_enabled_downloaded_manifest_verification(
     else:
         assert "does not match" in verified.stderr or "does not have a CERTIFIED" in verified.stderr
         assert not summary.exists()
+
+
+@pytest.mark.parametrize("violation", [None, "sha", "missing", "partial", "main", "exit"])
+def test_attested_dispatch_certified_path(sample_checkout, monkeypatch, violation):
+    repo, sha = sample_checkout
+    directory, manifest = _write_bundle(repo, sha)
+    manifest["verdict"] = "CERTIFIED"
+    for entry in manifest["steps"]:
+        entry["status"] = "PASS"
+        if entry["step_id"] == "rehearsals":
+            entry["evidence"] = {
+                "independent_producer_attestation": True,
+                "runs": {
+                    name: {"producer_git_sha": sha, "attestation": {"source_digest": sha}}
+                    for name in ("clean", "chaos")
+                },
+            }
+    if violation == "sha":
+        manifest["steps"][-1]["evidence"]["runs"]["clean"]["producer_git_sha"] = "0" * 40
+    elif violation == "missing":
+        manifest["steps"][-1]["evidence"]["runs"].pop("chaos")
+    elif violation == "partial":
+        manifest["steps"][0]["status"] = "INCOMPLETE"
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    (directory / "CERTIFICATION.md").write_text(f"**Verdict**: CERTIFIED\n**Git SHA**: {sha}\n")
+    monkeypatch.setenv("REHEARSAL_RUN_ID", "123")
+    monkeypatch.setenv(
+        "GITHUB_REF", "refs/heads/feature" if violation == "main" else "refs/heads/main"
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(repo / "verify-output.txt"))
+    result = _run_manifest_check(
+        repo, sha, generator_outcome="success", exit_code="1" if violation == "exit" else "0"
+    )
+    if violation:
+        assert result.returncode != 0
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "CERTIFIED: valid SHA-bound evidence" in result.stdout
+        assert (repo / "verify-output.txt").read_text() == "artifact_kind=certified\n"

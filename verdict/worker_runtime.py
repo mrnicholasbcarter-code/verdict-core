@@ -702,7 +702,7 @@ def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any
     )
 
 
-async def cli_run(directory: Path) -> int:
+async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
     config = json.loads((directory / "config.json").read_text())
     events = directory / "events.jsonl"
 
@@ -737,17 +737,30 @@ async def cli_run(directory: Path) -> int:
             asyncio.to_thread(transport.catalog), asyncio.to_thread(transport.runtime)
         )
         rows = _catalog_rows(catalog_payload)
-        # One catalog GET feeds both the Prime visibility refresh and admission.
-        # The snapshot is visibility only; admission and the exact confirmation
-        # probe below still decide launch authority.
-        from verdict.harness_prime import refresh_omniroute_visibility
+        # One catalog GET feeds both the (opt-in) Prime visibility refresh and
+        # admission. The snapshot is visibility only; admission and the exact
+        # confirmation probe below still decide launch authority.
+        #
+        # Default launch is read-only: it never writes the operator's Prime
+        # registry (openspec bod-293-295 design.md:16,44 -- "Picker must not
+        # call automatic visibility refresh or sync implicitly"). Only
+        # --sync-visibility opts into the old unconditional write.
+        if sync_visibility:
+            from verdict.harness_prime import refresh_omniroute_visibility
 
-        visibility = await asyncio.to_thread(
-            refresh_omniroute_visibility,
-            fetch_rows=lambda: rows,
-            source=transport.base_url.rstrip("/") + "/v1/models",
-            force=True,
-        )
+            visibility = await asyncio.to_thread(
+                refresh_omniroute_visibility,
+                fetch_rows=lambda: rows,
+                source=transport.base_url.rstrip("/") + "/v1/models",
+                force=True,
+            )
+        else:
+            from verdict.harness_prime import resolve_paths
+            from verdict.prime_inventory import PrimeInventoryStatus, _read, sidecar_path
+
+            registry_paths = resolve_paths()
+            snapshot, failure = await asyncio.to_thread(_read, sidecar_path(registry_paths.models))
+            visibility = PrimeInventoryStatus(snapshot, failure, refreshed=False, fresh=False)
         # CLI registry listing is complete; find_models has a bounded search limit.
         process = await asyncio.create_subprocess_exec(
             "prime-agent",
@@ -871,8 +884,13 @@ async def cli_run(directory: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
+    parser.add_argument(
+        "--sync-visibility",
+        action="store_true",
+        help="explicitly rewrite the Prime model registry before launch (default: read-only)",
+    )
     args = parser.parse_args()
-    return asyncio.run(cli_run(args.directory))
+    return asyncio.run(cli_run(args.directory, sync_visibility=args.sync_visibility))
 
 
 if __name__ == "__main__":

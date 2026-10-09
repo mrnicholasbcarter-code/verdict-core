@@ -22,6 +22,7 @@ from rich.prompt import Prompt
 # _doctor_gateway_lifecycle and _collect_doctor_diagnostics keep working.
 # ---------------------------------------------------------------------------
 from verdict.actions.helpers import _cli_bootstrap
+from verdict.http_safety import open_no_redirect
 
 # ---------------------------------------------------------------------------
 # _DOCTOR_NETWORK_ERROR_MARKERS — substrings that indicate a transient
@@ -81,7 +82,7 @@ def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None =
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:  # nosec B310
+        with open_no_redirect(req, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
     except (URLError, Exception):
         return None

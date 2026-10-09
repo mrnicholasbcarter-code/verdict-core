@@ -178,3 +178,18 @@ def test_cli_help_lists_prime_commands(
     for name in ("discover", "enable", "disable", "status", "certify"):
         assert name in out
     assert SECRET not in out
+
+
+def test_resolve_paths_blank_prime_agent_home_falls_through_to_prime_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRIME_AGENT_HOME="   " is set but blank after stripping: it must not
+    shadow a real PRIME_HOME. resolve_paths() strips each legacy alias BEFORE
+    choosing between them and takes the first non-blank value."""
+    monkeypatch.setenv("PRIME_AGENT_HOME", "   ")
+    prime_home_dir = tmp_path / "real-prime-home"
+    monkeypatch.setenv("PRIME_HOME", str(prime_home_dir))
+    monkeypatch.delenv("PRIME_AGENT_CODING_AGENT_DIR", raising=False)
+
+    resolved = resolve_paths().agent_home
+    assert resolved == prime_home_dir / "agent"

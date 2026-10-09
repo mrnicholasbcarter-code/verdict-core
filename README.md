@@ -2,9 +2,12 @@
 
 # Verdict
 
-**A goal goes in; Verdict plans, admits, validates, reviews and records a receipt.**
+**Give it a goal. Verdict picks the right AI models, splits the work, checks the results, gets a second opinion, and hands you a receipt you can verify.**
 
-Verdict plans a DAG, admits models from live evidence, runs parallel workers with bounded same-node recovery, verifies each node, requests a reviewer PASS from a route other than the final contributing implementers, then writes an event-digest receipt. Retained raw review output must show non-skipped coverage before that PASS counts as semantic review evidence. A model that fails a safety check cannot be scored back in.
+Point Verdict at a goal and a git repository. It plans the work, picks models from live
+evidence instead of guesses, runs the work in parallel, recovers on its own when a model
+fails, asks an independent model to review the result, and writes a tamper-evident receipt
+you can check yourself afterward. A model that fails a safety check cannot be scored back in.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -13,7 +16,7 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Try it](#try-it-with-no-keys) · [Live proof](#proof-from-a-live-run) · [How it works](#how-it-works) · [What it does](#what-it-does) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+[Why Verdict](#why-verdict) · [Try it](#try-it-without-api-keys) · [What's new](#whats-new-in-050) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: an offline scenario runs a two-worker-node DAG, an injected rate limit triggers failover, a scripted review records PASS, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
@@ -21,7 +24,16 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 
 </div>
 
-## Try it with no keys
+## Why Verdict
+
+- **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other.
+- **Uses free and already-paid capacity first.** Workers try free tiers, then subscriptions, before metered pay-per-token models.
+- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries.
+- **Gets an independent second opinion.** A separate model, on a separate route from whoever did the work, has to approve the result before a run can finish.
+- **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change.
+- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore.
+
+## Try it without API keys
 
 With `pipx` available, install and run the offline demo. The demo needs no API key,
 gateway or network (the install downloads from PyPI):
@@ -151,6 +163,56 @@ were excluded.
 Source: [`scripts/demo_orchestrate.py`](scripts/demo_orchestrate.py).
 Test: [`tests/test_readme_assets.py`](tests/test_readme_assets.py).
 
+## What's new in 0.5.0
+
+Verdict 0.5.0 adds new ways to inspect model evidence, refresh it safely, and set up a supported coding agent.
+
+**See which models are verified, stale or failing.**
+
+```bash
+verdict eligibility --verified
+```
+
+Shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE,
+UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason. In the TUI prompt, the same
+view is `/eligibility`.
+
+**Refresh that list safely, with a cost cap and your confirmation.**
+
+```text
+/eligibility refresh
+```
+
+For a manual refresh, Verdict shows a bounded request plan and asks you to confirm before
+sending probes; the plan may include metered or unknown routes, which can cost money. Automatic
+refresh only touches free or already-paid routes.
+
+**Pick your Prime Agent models with a preview and a one-step undo.**
+
+```bash
+verdict harness prime select
+verdict harness prime restore
+```
+
+`select` previews the change to `~/.prime/agent/settings.json` (your enabled-model list), asks
+you to confirm, backs the file up, then applies it; `restore` puts the backup back if its safety
+checks pass. In the TUI prompt: `/bootstrap prime`.
+
+**An honest Claude Code compatibility report.**
+
+```text
+/bootstrap claude
+```
+
+Read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing.
+
+**Smart Tab-completion in the prompt.** Commands, flags, model ids and run ids all complete as
+you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md).
+
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/verified-models-poster.svg"><img src="docs/assets/verified-models.svg" alt="Terminal recording: the verified-model eligibility view with mixed VERIFIED/STALE/FAILED statuses, Tab-completion of /bootstrap prime, a Prime picker preview answered N, and an honest /bootstrap claude compatibility report" width="860"></picture>
+
+<sub>Offline scenario, fixture health cache, no live calls: the demo gateway is a loopback-only fixture HTTP server started by the recorder itself. Recorded with <a href="scripts/record_verified_demo.py"><code>scripts/record_verified_demo.py</code></a>. Full cast: <a href="docs/assets/verified-models.cast"><code>docs/assets/verified-models.cast</code></a>.</sub>
+
 ## Quick start
 
 The fixture makes one deterministic routing decision (also credential-free):
@@ -239,7 +301,17 @@ See the full proof bundle in [`docs/proof/dogfood-bod-225-live-2026-09-29/`](doc
 
 ## How it works
 
-Give Verdict a goal and a git repository. It runs this loop:
+Give Verdict a goal and a git repository. It walks through five steps:
+
+1. **Plan.** A planner model breaks your goal into a small to-do list of work items ("nodes"), each with its own files to touch and a way to check the work.
+2. **Pick models.** Verdict checks live evidence — accounts, health, quota — and builds a list of models that can actually be used right now. It picks from that list, and tries already-paid or free capacity before anything that costs per call.
+3. **Run in parallel.** Each item runs as its own worker. If a worker hits a quota limit, a rate limit, a timeout, or gives a bad answer, Verdict quietly reassigns that one item to another admitted model — automatically, within a bounded number of tries.
+4. **Check and review.** Each item's own check must pass, the pieces must merge cleanly, and a separate model — one that did not do the work — has to review and approve the result.
+5. **Receipt.** The run writes a tamper-evident receipt: a stored digest of everything that happened. `verdict run-receipt` recomputes that digest later and tells you if anything in the log changed.
+
+### Under the hood (for engineers)
+
+The five steps above map onto this loop:
 
 1. **Plan.** A planner model splits the goal into a small DAG of work nodes. Each node has owned files and a verification command.
 2. **Admit.** Verdict builds one admitted set of models from live gateway evidence: inventory, provider accounts, health, cooldowns and quota. Every dropped model gets a named reason. A model with no runtime evidence is kept as `unknown`, never counted as healthy, and it must pass a live check of that exact route before it launches.
@@ -804,6 +876,9 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~290 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
 | [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~23 KB | first COMPLETE cockpit frame of `demo-tui.cast` | same command as `demo-tui.svg` |
 | `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
+| [`docs/assets/verified-models.cast`](docs/assets/verified-models.cast) | ~45 KB | offline, fixture health cache (no live calls); shows `/eligibility`, Tab-completion of `/bootstrap prime`, a Prime picker preview answered N, and `/bootstrap claude` | `python scripts/record_verified_demo.py` |
+| [`docs/assets/verified-models.svg`](docs/assets/verified-models.svg) | ~250 KB | `verified-models.cast` | `python scripts/render_demo_svg.py docs/assets/verified-models.cast docs/assets/verified-models.svg docs/assets/verified-models-poster.svg` |
+| [`docs/assets/verified-models-poster.svg`](docs/assets/verified-models-poster.svg) | ~20 KB | final frame of `verified-models.cast` | same command as `verified-models.svg` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
 [`tests/test_readme_assets.py`](tests/test_readme_assets.py) checks that every linked asset and chart
@@ -999,6 +1074,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | Command | Purpose |
 |---|---|
 | `setup` | Interactive setup wizard |
+| `harness` | Discover or configure supported coding-agent integrations; Prime model selection adds preview and guarded restore |
 | `doctor` | Scan and repair config / connectivity |
 | `check` | Validate config file syntax |
 | `quickstart` | Credential-free deterministic demo |

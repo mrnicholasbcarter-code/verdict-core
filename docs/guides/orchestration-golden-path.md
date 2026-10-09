@@ -78,6 +78,15 @@ verdict run-receipt <run-dir>
 
 Exit code is `0` only for `COMPLETE`.
 
+Keep the planner's `verification_command` test-focused: the runtime runs declared
+repo quality gates at integration, after the combined tests pass. Discovery reads
+Ruff/Mypy declarations from Python configuration and `typecheck`, `lint`, and
+`format:check` scripts from `package.json` in a fixed order. The event log records
+each gate's declared and executed command, source, exit code, and bounded output.
+A gate failure blocks completion with verification feedback. No declared gates
+is recorded as `none declared`, not a silent pass. `RuntimePolicy.run_repo_gates`
+defaults to `True`; isolated fixtures can opt out explicitly.
+
 ## Fault keys (`--inject KEY=FAULT[,FAULT]`)
 
 Keys:

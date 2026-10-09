@@ -196,6 +196,30 @@ def test_animated_first_frame_is_not_blank() -> None:
         assert _visible_svg_text(first.group(1)).strip()
 
 
+def test_verified_models_cast_is_valid_asciinema_v2() -> None:
+    """Offline 0.5.0 feature demo: fixture evidence only, no live calls."""
+    lines = (ASSETS / "verified-models.cast").read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["version"] == 2
+    assert isinstance(header["width"], int) and isinstance(header["height"], int)
+    last = -1.0
+    events = [json.loads(line) for line in lines[1:] if line.strip()]
+    assert events, "cast has no events"
+    for event in events:
+        assert isinstance(event, list) and len(event) == 3, event
+        at, kind, data = event
+        assert isinstance(at, (int, float)) and at >= last, event
+        assert kind in {"o", "i", "m", "r"} and isinstance(data, str), event
+        last = float(at)
+    output = "".join(e[2] for e in events if e[1] == "o")
+    assert "VERIFIED" in output
+    assert "STALE" in output
+    assert "Apply this exact interactive scope?" in output
+    assert "offline scenario, scripted fixture evidence (no live calls)" in header["title"]
+    for secret_marker in ("API_KEY", "Bearer ", "sk-"):
+        assert secret_marker not in output
+
+
 def test_committed_demo_run_verifies_and_shows_recovery() -> None:
     assert verify_run_receipt(DEMO_RUN) == []
     receipt = json.loads((DEMO_RUN / "receipt.json").read_text(encoding="utf-8"))

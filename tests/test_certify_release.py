@@ -2016,7 +2016,7 @@ def test_run_certification_supplies_certified_git_sha(temp_git_repo, monkeypatch
     sha = _git(repo, "rev-parse", "HEAD")
     captured = {}
 
-    def fake_rehearsals(repo_path, rehearsal_dirs, output_dir, certified_git_sha=None):
+    def fake_rehearsals(repo_path, rehearsal_dirs, output_dir, certified_git_sha=None, **kwargs):
         captured["certified_git_sha"] = certified_git_sha
         return certify_release.StepResult("rehearsals", "Rehearsals", "INCOMPLETE")
 

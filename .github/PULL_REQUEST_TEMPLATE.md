@@ -16,3 +16,15 @@ Fixes # (issue)
 - [ ] My changes generate no new warnings
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
+
+## Definition of Done (BOD-316: "done means wired")
+- [ ] A production caller exists for this change, OR this story is explicitly
+      scoped library-only (state that here).
+- [ ] **Who calls this in production?** (name the module/entrypoint; a test
+      file is not a production caller)
+- [ ] The live path is demonstrated (test, demo script, or evidence log of a
+      real call path exercising the new code).
+- [ ] No new stub is left as the default (or it is covered by an existing
+      ticket; name it here).
+- [ ] `scripts/check_reachability.py` passes (no new entries beyond
+      `reachability-baseline.json`).

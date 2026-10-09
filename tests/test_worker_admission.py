@@ -230,7 +230,9 @@ def test_mutated_candidate_list_is_caught_before_spawn(tmp_path: Path) -> None:
 def _patch_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fail: bool = False) -> None:
     from verdict.orchestration import run as orch_run
 
-    def fetch_connections(gateway: str, *, api_key: str | None, timeout: float = 30) -> list:
+    def fetch_connections(
+        gateway: str, *, api_key: str | None, timeout: float = 30
+    ) -> list[dict[str, Any]]:
         if fail:
             raise OSError("gateway down")
         return CONNECTIONS
@@ -433,11 +435,13 @@ def test_spawn_gate_rejects_admitted_but_unconfirmed_route(tmp_path: Path) -> No
         def __set__(self, obj: Any, value: Any) -> None:
             pass
 
-    type(ctrl).admitted = Reverting()  # type: ignore[assignment]
+    # Install a class-level descriptor to simulate a caller undoing admission.
+    # admitted is instance-only in the normal typed WorkerController API.
+    setattr(type(ctrl), "admitted", Reverting())  # noqa: B010 - intentional class descriptor
     try:
         outcome = asyncio.run(ctrl.run("task"))
     finally:
-        del type(ctrl).admitted
+        delattr(type(ctrl), "admitted")  # remove the test-only class descriptor
     assert outcome.state == "FAIL_CLOSED" and adapter.spawns == []
     assert "worker_runtime.spawn" in outcome.diagnostic
 
@@ -589,3 +593,50 @@ def test_worker_admission_gateway_comes_from_the_bootstrap_contract(
     with pytest.raises(adm.AdmissionUnavailableError):
         wr._worker_admission({"task": {}}, [])
     assert seen == ["http://127.0.0.1:29999"]
+
+
+def test_worker_cli_default_never_syncs_visibility_flag_opts_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """cli_run(sync_visibility=False) (the default) never calls
+    refresh_omniroute_visibility; cli_run(sync_visibility=True) calls it
+    exactly once. Both runs otherwise fail closed on the same patched
+    gateway (fetch_connections raises), so only the visibility call itself
+    is under test."""
+    import verdict.harness_prime as harness_prime
+    from verdict.prime_inventory import PrimeInventoryStatus
+
+    _patch_gateway(monkeypatch, tmp_path, fail=True)
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            lines = ["PROVIDER MODEL"] + [f"omniroute {r['id']}" for r in CATALOG]
+            return ("\n".join(lines).encode(), b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Proc:
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    _patch_catalog(monkeypatch, CATALOG)
+
+    calls: list[bool] = []
+
+    def recorder(*, fetch_rows: Any, source: str, force: bool = False, **kwargs: Any) -> Any:
+        calls.append(force)
+        return PrimeInventoryStatus(None, None, refreshed=False, fresh=False)
+
+    monkeypatch.setattr(harness_prime, "refresh_omniroute_visibility", recorder)
+
+    default_dir = tmp_path / "run-default"
+    default_dir.mkdir()
+    (default_dir / "config.json").write_text(json.dumps({"prompt": "p", "task": {}}))
+    asyncio.run(worker_runtime.cli_run(default_dir))
+    assert calls == []  # default: read-only, never calls the sync helper
+
+    flagged_dir = tmp_path / "run-flagged"
+    flagged_dir.mkdir()
+    (flagged_dir / "config.json").write_text(json.dumps({"prompt": "p", "task": {}}))
+    asyncio.run(worker_runtime.cli_run(flagged_dir, sync_visibility=True))
+    assert calls == [True]  # --sync-visibility: calls it once, force=True

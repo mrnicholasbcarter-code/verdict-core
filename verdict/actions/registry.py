@@ -556,6 +556,7 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
     reasoning: bool = kwargs.get("reasoning", False)
     frontier: bool = kwargs.get("frontier", False)
     do_probe: bool = kwargs.get("probe", False)
+    sync_visibility: bool = kwargs.get("sync_visibility", False)
 
     families = parse_provider_families(provider_family)
     requirements = TaskRequirements(
@@ -576,6 +577,7 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         provider_families=families,
         required_capabilities=requirements.required_capabilities,
         min_context_tokens=requirements.min_context_tokens,
+        sync_visibility=sync_visibility,
         **({"refresh_hook": refresh_hook} if refresh_hook is not None else {}),
     )
     now = datetime.now(timezone.utc)

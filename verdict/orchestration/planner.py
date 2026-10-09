@@ -168,7 +168,8 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
            it is verified by).
         6. Include exactly one final node with kind="integrate" that depends_on
            ALL implement nodes, whose verification_command runs the combined
-           test suite.
+           test suite. Keep verification_command test-focused: repo quality gates
+           are run by the runtime at integration.
         7. Use short, stable, snake_case or kebab-case node_id values.
         8. If new shared package-marker files (for example __init__.py) are needed,
            exactly one node must own each file. Every node that needs the file

@@ -15,6 +15,8 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
+* ``repo_gates``: discovery summary (``gates``, ``declared``, optional ``note``)
+* ``repo_gate``: ``name``, ``ok``, ``exit_code``, ``command``, ``executed_command``, ``source``, ``tail``
 * ``integrate``: ``commit``                        * ``review``: ``status``, ``reviewer``,
   ``route_id``, ``blocking``                       * ``reassign``/``cooldown``/``controller``: free-form
 
@@ -639,6 +641,13 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     producer = producer_from_started(started)
     if producer is not None:
         receipt["producer"] = producer
+    # BOD-289: project gate evidence only for runs that emit these new events.
+    # Legacy receipts retain their exact field set during replay verification.
+    repo_gates = _free("repo_gates")
+    repo_gate_results = _free("repo_gate")
+    if repo_gates or repo_gate_results:
+        receipt["repo_gates"] = repo_gates
+        receipt["repo_gate_results"] = repo_gate_results
     # Derived, omitted when empty so committed proof receipts still verify.
     if no_change_nodes:
         receipt["no_change_nodes"] = no_change_nodes

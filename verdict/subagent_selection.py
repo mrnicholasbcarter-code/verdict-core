@@ -19,6 +19,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from verdict.http_safety import open_no_redirect
+
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
 
@@ -660,7 +662,7 @@ def openai_health_probe(
     *,
     api_key: str | None = None,
     timeout_seconds: float = 10.0,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    opener: Callable[..., Any] = open_no_redirect,
 ) -> Callable[[LaunchCandidate], HealthResult]:
     """Build a privacy-safe one-output-token inference probe."""
     endpoint = base_url.rstrip("/") + "/chat/completions"

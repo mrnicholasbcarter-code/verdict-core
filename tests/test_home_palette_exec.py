@@ -688,8 +688,8 @@ def test_startup_motion_fast_probe_completes_quickly() -> None:
     console = _console(terminal=True)
     state = HomeState(gateway="http://test")
 
-    def fast_probe() -> tuple[bool, int]:
-        return True, 5
+    def fast_probe() -> tuple[bool, int, None]:
+        return True, 5, None
 
     start = time.monotonic()
     _startup_with_motion(console, state, probe_fn=fast_probe, max_sweep_s=1.2)
@@ -709,9 +709,9 @@ def test_startup_motion_slow_probe_stops_after_probe() -> None:
     console = _console(terminal=True)
     state = HomeState(gateway="http://test")
 
-    def slow_probe() -> tuple[bool, int]:
+    def slow_probe() -> tuple[bool, int, None]:
         time.sleep(0.5)
-        return True, 42
+        return True, 42, None
 
     start = time.monotonic()
     _startup_with_motion(console, state, probe_fn=slow_probe, max_sweep_s=1.2)
@@ -770,7 +770,7 @@ def test_startup_probe_that_raises_does_not_hang() -> None:
     console = _console(terminal=True)
     state = HomeState(gateway="http://test")
 
-    def broken_probe() -> tuple[bool, int]:
+    def broken_probe() -> tuple[bool, int, None]:
         raise RuntimeError("boom")
 
     start = time.monotonic()
@@ -801,12 +801,20 @@ def test_probe_gateway_read_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(home, "_PROBE_MAX_BYTES", 64)
     big = _Resp(b'{"data": [' + b'{"id": "m"},' * 50 + b'{"id": "m"}]}')
-    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: big)
-    assert home.probe_gateway("http://example.test") == (False, None)
+
+    class _Opener:
+        def __init__(self, response: _Resp) -> None:
+            self.response = response
+
+        def open(self, *args: object, **kwargs: object) -> _Resp:
+            return self.response
+
+    monkeypatch.setattr(home.urllib.request, "build_opener", lambda *a: _Opener(big))
+    assert home.probe_gateway("http://example.test") == (False, None, None)
     assert big.asked and all(n > 0 for n in big.asked), "read must be bounded"
     small = _Resp(b'{"data": [{"id": "a"}, {"id": "b"}]}')
-    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: small)
-    assert home.probe_gateway("http://example.test") == (True, 2)
+    monkeypatch.setattr(home.urllib.request, "build_opener", lambda *a: _Opener(small))
+    assert home.probe_gateway("http://example.test") == (True, 2, None)
 
 
 def test_history_is_capped_and_owner_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -876,7 +884,7 @@ def test_startup_prints_the_whole_wordmark_when_the_probe_is_fast() -> None:
     from verdict.home import WORDMARK, HomeState, _startup_with_motion
 
     console = _console(terminal=True)
-    _startup_with_motion(console, HomeState(gateway="http://t"), probe_fn=lambda: (True, 3))
+    _startup_with_motion(console, HomeState(gateway="http://t"), probe_fn=lambda: (True, 3, None))
     out = console.file.getvalue()
     for line in WORDMARK:
         assert line.rstrip() in out
@@ -999,8 +1007,8 @@ def test_history_tightens_existing_permissions(tmp_path: Path) -> None:
     import verdict.home as home
 
     d = tmp_path / "shared"
-    d.mkdir(mode=0o755)
-    d.chmod(0o755)
+    d.mkdir(mode=0o777)
+    d.chmod(0o777)
     path = d / "prompt_history"
     path.write_text("/old\n")
     path.chmod(0o644)
@@ -1013,8 +1021,8 @@ def test_history_tightens_existing_permissions(tmp_path: Path) -> None:
 def test_probe_gateway_malformed_url_never_raises() -> None:
     from verdict.home import probe_gateway
 
-    assert probe_gateway("http://[::1") == (None, None)
-    assert probe_gateway("ftp://example.test") == (None, None)
+    assert probe_gateway("http://[::1") == (None, None, None)
+    assert probe_gateway("ftp://example.test") == (None, None, None)
 
 
 def _load_recorder() -> types.ModuleType:

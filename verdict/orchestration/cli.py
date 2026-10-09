@@ -38,6 +38,20 @@ class _ExplicitPrefer(argparse.Action):
         namespace._prefer_explicit = True
 
 
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def _capacity_filter(raw: str) -> tuple[str, ...]:
+    values = tuple(part.strip() for part in raw.split(","))
+    if not values or any(v not in {"free", "subscription", "metered", "unknown"} for v in values):
+        raise argparse.ArgumentTypeError("expected comma-separated economic classes")
+    return tuple(dict.fromkeys(values))
+
+
 def add_parsers(subparsers: Any) -> None:
     orch = subparsers.add_parser(
         "orchestrate", help="Goal -> frontier plan -> DAG -> parallel workers -> review -> receipt"
@@ -54,6 +68,13 @@ def add_parsers(subparsers: Any) -> None:
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
     orch.add_argument("--max-parallel", type=int, default=3)
+    orch.add_argument("--max-attempts-per-node", type=_positive_int, default=4)
+    orch.add_argument(
+        "--capacity",
+        type=_capacity_filter,
+        default=(),
+        help="Hard economic-class filter, e.g. free,subscription (default: unchanged)",
+    )
     orch.add_argument("--attempt-timeout", type=float, default=900)
     orch.add_argument("--run-deadline", type=float, default=3600)
     orch.add_argument(
@@ -146,6 +167,13 @@ def add_parsers(subparsers: Any) -> None:
     elig.set_defaults(_prefer_explicit=False)
     elig.add_argument("--prefer", default="claude", action=_ExplicitPrefer)
     elig.add_argument("--probe", action="store_true", help="Probe lazily to reach SELECTED")
+    elig.add_argument(
+        "--sync-visibility",
+        action="store_true",
+        help="Write Prime's visibility registry from this live catalog before "
+        "evaluating (default: off, read-only). Prefer the explicit "
+        "'verdict harness prime sync-models [--dry-run]' surface instead.",
+    )
     elig.add_argument("--reasoning", action="store_true")
     elig.add_argument("--frontier", action="store_true")
     elig.add_argument(
@@ -511,6 +539,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         load=lambda route: sum(1 for r in inflight.values() if r == route),
         state_file=state_path,
         **refresh_kwargs,
+        **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
     )
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
@@ -524,6 +553,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
     )
     policy = RuntimePolicy(
         max_parallel=args.max_parallel,
+        max_attempts_per_node=getattr(args, "max_attempts_per_node", 4),
         attempt_timeout_seconds=args.attempt_timeout,
         run_deadline_seconds=args.run_deadline,
         require_review=True,
@@ -954,6 +984,7 @@ def _eligibility(args: argparse.Namespace) -> int:
             "reasoning": bool(args.reasoning),
             "frontier": bool(args.frontier),
             "probe": bool(args.probe),
+            "sync_visibility": bool(getattr(args, "sync_visibility", False)),
         },
     )
     payload = result.data
