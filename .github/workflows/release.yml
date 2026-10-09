@@ -77,7 +77,7 @@ jobs:
           PY
       - name: Download certified bundle from selected run
         if: steps.locate.outputs.found == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           artifact-ids: ${{ steps.locate.outputs.artifact_id }}
           run-id: ${{ steps.locate.outputs.run_id }}
@@ -349,6 +349,8 @@ jobs:
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           gh release view "$GITHUB_REF_NAME" --json body --jq .body > /tmp/release-notes.md
+          # Backticks below are literal Markdown code spans, not shell expansions.
+          # shellcheck disable=SC2016
           {
             printf '\n## Container image\n\n'
             printf 'Versioned image: `%s:%s`\n\n' "$IMAGE_REF" "$IMAGE_VERSION"
