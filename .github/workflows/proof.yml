@@ -64,7 +64,7 @@ jobs:
         # pip-audit scanned a dependency set that differs from uv.lock.
         run: |
           uv tool install semgrep
-          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+          uv tool dir --bin >> "$GITHUB_PATH"
       - name: Install build tooling
         run: uv pip install build
       - name: Canonical full proof (no-cache final mode)
