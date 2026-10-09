@@ -41,6 +41,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -96,6 +97,37 @@ ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
 
 class HealthCacheError(ValueError):
     """Raised when cache state or inputs violate the contract."""
+
+
+class HealthCacheLockTimeout(TimeoutError):
+    """Typed failure: no cache mutation ran because the lock wait expired."""
+
+    reason = "lock_timeout"
+
+
+LOCK_POLL_CAP = 40
+LOCK_WAIT_SECONDS = 2.0
+LOCK_POLL_SECONDS = 0.05
+
+
+def _acquire_cache_lock(
+    fd: int,
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> None:
+    end = monotonic() + LOCK_WAIT_SECONDS if deadline is None else deadline
+    for poll in range(LOCK_POLL_CAP):
+        if monotonic() >= end:
+            break
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if poll + 1 < LOCK_POLL_CAP:
+                sleep(min(LOCK_POLL_SECONDS, max(0.0, end - monotonic())))
+    raise HealthCacheLockTimeout("lock_timeout")
 
 
 def default_cache_path() -> Path:
@@ -616,7 +648,11 @@ class HealthCache:
             }
         return snapshot
 
-    def save(self) -> None:
+    def save(
+        self, *, deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         """Serialized read-merge-write: never clobber a newer concurrent write.
 
         BOD-292 review finding 4: a bare ``save()`` that wrote only this
@@ -634,7 +670,7 @@ class HealthCache:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            _acquire_cache_lock(handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep)
             try:
                 self._merge_in_memory_over_disk()
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
@@ -678,7 +714,11 @@ class HealthCache:
                 disk_bucket.zeroed_until = mine_zero
         self._cursor = mine_cursor
 
-    def merge_and_save(self, mutate: Callable[[HealthCache], None]) -> None:
+    def merge_and_save(
+        self, mutate: Callable[[HealthCache], None], *, deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         """Serialized read-modify-write under the existing exclusive lock.
 
         The coordinator's single writer calls this so a concurrent prober or a
@@ -693,7 +733,7 @@ class HealthCache:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            _acquire_cache_lock(handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep)
             try:
                 # Reload the authoritative on-disk state so a probe written by
                 # another process since we last saved is not lost.
@@ -932,7 +972,9 @@ class HealthCache:
         return self.bucket_for(provider, pool).remaining(now)
 
     def reserve_bucket(
-        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1
+        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1,
+        deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> bool:
         """Serialized reserve: persist ``amount`` tokens to disk before dispatch.
 
@@ -950,11 +992,13 @@ class HealthCache:
             nonlocal reserved
             reserved = cache.consume(provider, now, pool=pool, amount=amount)
 
-        self.merge_and_save(_mutate)
+        self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
         return reserved
 
     def release_bucket(
-        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1
+        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1,
+        deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """Serialized release of unused reservations back to the provider bucket."""
         if amount <= 0:
@@ -966,7 +1010,7 @@ class HealthCache:
                 if bucket.timestamps:
                     bucket.timestamps.pop()
 
-        self.merge_and_save(_mutate)
+        self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
 
     # -- cycle cursor (partial progress) -----------------------------------
 

@@ -614,7 +614,7 @@ def test_finding6_still_running_marker_not_reported_complete(tmp_path: Path) -> 
     # though the marker already carried a verified row for cc/a. A consumer must
     # not treat the still-in-flight result as a trustworthy finished proof.
     assert out.complete is False
-    assert out.cap_reason == "joined_job_not_covered"
+    assert out.cap_reason == "lock_timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -861,3 +861,55 @@ def test_review3_scope_requires_exact_route_name() -> None:
         outcome = FullProbeOutcome("free/alpha", None, 1, False, False, "", category,
                                    http_status=status, detail=detail)
         assert outcome.model_scoped is expected, detail
+
+
+def test_review3_frozen_join_has_poll_cap(tmp_path: Path) -> None:
+    import fcntl
+
+    coord = _coord(tmp_path, _Transport())
+    with (tmp_path / "refresh.lock").open("a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        result = coord.refresh_for_consumer(
+            RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
+            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(wall_seconds=0.01),
+        )
+    assert result.outcome == "lock_timeout"
+    assert not result.complete
+
+
+def test_review3_cache_locks_have_deadline_and_poll_cap(tmp_path: Path) -> None:
+    import fcntl
+    import pytest
+    from verdict.orchestration.health_cache import HealthCacheLockTimeout, LOCK_POLL_CAP
+
+    cache = HealthCache(tmp_path / "cache.json")
+    calls: list[float] = []
+    with (tmp_path / "cache.json.lock").open("a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        for save in (False, True):
+            calls.clear()
+            with pytest.raises(HealthCacheLockTimeout, match="lock_timeout"):
+                if save:
+                    cache.save(deadline=1, monotonic=lambda: 0.0, sleep=calls.append)
+                else:
+                    cache.merge_and_save(lambda _: None, deadline=1,
+                                         monotonic=lambda: 0.0, sleep=calls.append)
+            assert len(calls) < LOCK_POLL_CAP
+        with pytest.raises(HealthCacheLockTimeout):
+            cache.save(deadline=0, monotonic=lambda: 0.0, sleep=calls.append)
+
+
+def test_review3_cache_lock_timeout_stops_dispatch(tmp_path: Path) -> None:
+    import fcntl
+
+    transport = _Transport()
+    coord = _coord(tmp_path, transport)
+    with (tmp_path / "health-cache.json.lock").open("a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        result = coord.refresh_for_consumer(
+            RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
+            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(),
+        )
+    assert result.outcome == "lock_timeout"
+    assert not result.complete
+    assert transport.calls == []

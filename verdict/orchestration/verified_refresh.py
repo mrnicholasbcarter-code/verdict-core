@@ -50,6 +50,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_PERMISSION,
     CATEGORY_RATE_LIMITED,
     HealthCache,
+    HealthCacheLockTimeout,
     ScopedCooldown,
     format_datetime,
     negative_seconds,
@@ -277,9 +278,12 @@ OUTCOME_CAPPED = "capped"  # a cap fired; some rows left unrefreshed
 OUTCOME_CANCELLED = "cancelled"  # shared cancel requested
 OUTCOME_DEBOUNCED = "debounced"  # matching trigger within the debounce window
 OUTCOME_JOINED = "joined"  # joined an in-flight job owned by another trigger
+OUTCOME_LOCK_TIMEOUT = "lock_timeout"
 OUTCOME_NOTHING_ELIGIBLE = "nothing_eligible"  # no refreshable prepaid candidate
 
 # Per-route refresh reasons for rows that were NOT refreshed this job.
+REASON_LOCK_TIMEOUT = "lock_timeout"
+JOIN_POLL_CAP = 2401
 REASON_ROUTE_CAP = "route_cap"
 REASON_REQUEST_CAP = "request_cap"
 REASON_WALL_CAP = "wall_cap"
@@ -825,9 +829,15 @@ class RefreshCoordinator:
             # reload) sees the spend. An in-memory consume was dropped by the
             # reload, letting 8 routes each see a full bucket (review finding).
             now = self.clock()
-            if not self.cache.reserve_bucket(
-                row.provider, now, pool=row.pool, amount=probe_requests
-            ):
+            try:
+                reservation = self.cache.reserve_bucket(
+                    row.provider, now, pool=row.pool, amount=probe_requests,
+                    deadline=deadline, monotonic=self.monotonic, sleep=self.sleep,
+                )
+            except HealthCacheLockTimeout:
+                cap_reason = REASON_LOCK_TIMEOUT
+                break
+            if not reservation:
                 outcomes[row.route_id] = RouteOutcome(
                     row.route_id, row.provider, False, False, refresh_reason=REASON_BUCKET
                 )
@@ -835,15 +845,20 @@ class RefreshCoordinator:
 
             per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
             outcome = self._probe_one(row, per_call_timeout, deadline=deadline, cancel=cancel)
-            # Release the unused part of the reservation (persisted) after a
-            # short probe so an untested half is never double-counted as spent.
-            if outcome.requests_made < probe_requests:
-                self.cache.release_bucket(
-                    row.provider, now, pool=row.pool, amount=probe_requests - outcome.requests_made
-                )
             requests_made += outcome.requests_made
+            try:
+                # Release only unused spend before persisting the proof.
+                if outcome.requests_made < probe_requests:
+                    self.cache.release_bucket(
+                        row.provider, now, pool=row.pool,
+                        amount=probe_requests - outcome.requests_made,
+                        deadline=deadline, monotonic=self.monotonic, sleep=self.sleep,
+                    )
+                route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
+            except HealthCacheLockTimeout:
+                cap_reason = REASON_LOCK_TIMEOUT
+                break
 
-            route_out = self._persist_and_classify(row, outcome, scopes)
             outcomes[row.route_id] = route_out
             if route_out.probed:
                 probed += 1
@@ -897,6 +912,8 @@ class RefreshCoordinator:
         route_capped = bool(cut_by_route_cap)
         if cancelled:
             result_kind = OUTCOME_CANCELLED
+        elif cap_reason == REASON_LOCK_TIMEOUT:
+            result_kind = OUTCOME_LOCK_TIMEOUT
         elif cap_reason is not None:
             result_kind = OUTCOME_CAPPED
         elif route_capped:
@@ -975,7 +992,7 @@ class RefreshCoordinator:
         )
 
     def _persist_and_classify(
-        self, row: RowInput, outcome: FullProbeOutcome, scopes: _Scopes
+        self, row: RowInput, outcome: FullProbeOutcome, scopes: _Scopes, *, deadline: float
     ) -> RouteOutcome:
         """Serialize cache write + scope bookkeeping; return the row outcome."""
         if outcome.no_write:
@@ -1065,7 +1082,9 @@ class RefreshCoordinator:
                     )
                 )
 
-        self.cache.merge_and_save(_mutate)
+        self.cache.merge_and_save(
+            _mutate, deadline=deadline, monotonic=self.monotonic, sleep=self.sleep
+        )
 
         if provider_stop:
             scopes.stop_provider(row.provider, category)
@@ -1105,7 +1124,7 @@ class RefreshCoordinator:
         deadline = started + config.wall_seconds
         last_seq = -1
         job_running_at_exit = True
-        while True:
+        for _poll in range(JOIN_POLL_CAP):
             if cancel():
                 # A joined consumer's cancel is SHARED: raise the flag so the
                 # owner stops dispatch too (design s5:131). Do not break until
@@ -1170,7 +1189,10 @@ class RefreshCoordinator:
                     refresh_reason=REASON_JOINED_NOT_COVERED,
                 )
         cancelled = cancel() or self._shared_cancel_requested()
-        result_kind = OUTCOME_CANCELLED if cancelled else OUTCOME_JOINED
+        result_kind = (
+            OUTCOME_CANCELLED if cancelled else
+            OUTCOME_LOCK_TIMEOUT if job_running_at_exit else OUTCOME_JOINED
+        )
         all_covered = all(o.refresh_reason is None for o in outcomes.values())
         # A join is complete ONLY when every needed id was covered AND the owner
         # had finished. If the wait ended while the owner was still running
@@ -1188,7 +1210,8 @@ class RefreshCoordinator:
             requests_made=0,  # joined consumers make no calls themselves
             elapsed_seconds=self.monotonic() - started,
             route_outcomes=outcomes,
-            cap_reason=None if complete else REASON_JOINED_NOT_COVERED,
+            cap_reason=(REASON_LOCK_TIMEOUT if result_kind == OUTCOME_LOCK_TIMEOUT
+                        else None if complete else REASON_JOINED_NOT_COVERED),
             complete=complete,
             note="joined",
         )
