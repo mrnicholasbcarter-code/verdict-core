@@ -115,6 +115,24 @@ def test_preview_and_cancel_no_settings_or_backups(fixture: dict[str, Any]) -> N
         assert SECRET not in json.dumps(result.data)
 
 
+def test_consume_prime_preview_with_unsafe_registry_row_binds_exact_id(
+    fixture: dict[str, Any],
+) -> None:
+    """Defect 1 (d): end-to-end consume_prime preview against a registry that
+    contains an unsafe-spaced row (real-registry shape) still previews the
+    exact VERIFIED ids successfully; no live calls, injected rows only.
+    """
+    registry = json.loads(fixture["paths"].models.read_text())
+    registry["providers"]["omniroute"]["models"].append(
+        {"id": "aihorde/A-Zovya RPG Inpainting", "name": "aihorde/A-Zovya RPG Inpainting"}
+    )
+    fixture["paths"].models.write_text(json.dumps(registry))
+    result = consume(fixture, preview_only=True)
+    assert result.ok, result.data
+    assert result.data["rows"][0]["selectable"]
+    assert "A-Zovya" not in json.dumps(result.data)
+
+
 def test_multi_apply_restore_and_refresh_order(fixture: dict[str, Any]) -> None:
     result = consume(fixture, read_line=lambda _p: "y")
     assert result.data["status"] == "applied", result.data
