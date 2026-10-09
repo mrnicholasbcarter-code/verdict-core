@@ -72,6 +72,10 @@ def _args(**kw: Any) -> argparse.Namespace:
         "json": False,
         "no_pager": True,
         "provider_family": [],
+        # Explicit opt-in: these tests assert on SELECTED / the written Prime
+        # registry, which is now a deliberate, named write (BOD-319). Plain
+        # eligibility (the default omitted here) never writes the registry.
+        "sync_visibility": True,
     }
     base.update(kw)
     return argparse.Namespace(**base)
