@@ -75,7 +75,9 @@ class SpyAdapter:
     def __init__(self) -> None:
         self.spawns: list[str] = []
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> dict[str, Any]:
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> dict[str, Any]:
         self.spawns.append(model)
         return {"rlm_child_id": name, "model": model}
 
@@ -315,7 +317,9 @@ def test_worker_cli_fails_closed_when_live_admission_unavailable(
     _patch_catalog(monkeypatch, CATALOG)
     spawned: list[str] = []
 
-    async def spawn(self: Any, prompt: str, *, name: str, model: str) -> Any:
+    async def spawn(
+        self: Any, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Any:
         spawned.append(model)
         raise AssertionError("must not spawn")
 
@@ -510,7 +514,9 @@ def test_cli_run_end_to_end_rejects_dead_route_with_zero_spawns(
     monkeypatch.setattr(worker_runtime, "openai_health_probe", probe_factory)
     spawns: list[str] = []
 
-    async def spawn(self: Any, prompt: str, *, name: str, model: str) -> Any:
+    async def spawn(
+        self: Any, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Any:
         spawns.append(model)
         return {"rlm_child_id": name, "model": model}
 

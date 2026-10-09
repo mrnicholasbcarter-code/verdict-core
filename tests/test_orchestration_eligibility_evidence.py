@@ -94,3 +94,31 @@ def test_build_selector_injects_read_only_evidence(
     assert ladder._session_ledger is ledger
     assert not cache.path.exists()
     assert not ledger.path.exists()
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_real_action_session_gate_and_fail_open(
+    evidence: tuple[HealthCache, SessionLedger], unreadable: bool
+) -> None:
+    cache, ledger = evidence
+    qualify(cache)
+    if unreadable:
+        ledger.path.mkdir()
+    else:
+        ledger.append(
+            SessionOutcome(
+                ROUTE,
+                "fail",
+                "implement",
+                "false_success_claim",
+                True,
+                datetime.now(timezone.utc),
+                "controller",
+            )
+        )
+    payload = select()
+    if unreadable:
+        assert payload["selected"]["route_id"] == ROUTE
+    else:
+        assert payload["selected"] is None
+        assert payload["verdicts"][0]["reason"] == "recent_false_claim"
