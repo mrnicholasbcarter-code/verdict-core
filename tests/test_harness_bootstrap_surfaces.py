@@ -538,3 +538,58 @@ def test_unsafe_agent_dir_refusal_is_actionable(fixture: dict[str, Any]) -> None
     assert "~/prime" in message
     assert SECRET not in message
     assert str(agent_dir) not in message
+
+
+def _refusal_message(path: Path, code: str = "unsafe_directory") -> str:
+    from verdict.harness_prime_selection import PrimeSelectionError
+    from verdict.tui_bootstrap_controls import _actionable_refusal
+
+    result = _actionable_refusal(PrimeSelectionError(code, path=path))
+    assert not result.ok
+    message = result.data["error"]
+    assert isinstance(message, str)
+    return message
+
+
+def test_actionable_refusal_sanitizes_newline_in_path_name(tmp_path: Path) -> None:
+    """A directory name containing a newline must never forge extra lines."""
+    message = _refusal_message(tmp_path / "evil\nname")
+    assert "\n" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_sanitizes_escape_sequence_in_path_name(tmp_path: Path) -> None:
+    """A directory name containing ESC must never inject an ANSI escape."""
+    message = _refusal_message(tmp_path / "evil\x1b[31mname")
+    assert "\x1b" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_sanitizes_outside_home_control_chars(tmp_path: Path) -> None:
+    """An outside-HOME path is basename-only, but control chars in the
+    basename itself must still sanitize."""
+    message = _refusal_message(Path("/elsewhere/evil\x07name"))
+    assert "\x07" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_home_itself_renders_as_tilde(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``$HOME`` itself (the empty relative path) renders as bare ``~``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path)
+    assert "~ is group/other-writable" in message
+    assert "chmod go-w" in message
+    assert "'~'" in message
+    assert str(tmp_path) not in message
+
+
+def test_actionable_refusal_normal_path_still_gives_chmod_hint(tmp_path: Path) -> None:
+    """A normal, printable path name still gets the actionable ``chmod`` hint."""
+    message = _refusal_message(tmp_path / "normal-dir" / "nested")
+    assert "chmod go-w" in message
+    assert "nested" in message

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import time
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -244,32 +246,71 @@ def _refresh_selected(
 
 _PATH_CODES = frozenset({"unsafe_directory", "unsafe_file", "unsafe_path"})
 
+#: Unicode general categories that are not visibly printable: control (Cc) and
+#: format (Cf, e.g. zero-width/bidi-override codepoints used to forge display).
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf"})
+
+
+def _sanitize_text(text: str) -> str:
+    """Replace every non-printable or control/format character with ``?``.
+
+    Covers ASCII control bytes (ord < 32), DEL (127), and every Unicode ``Cc``/
+    ``Cf`` codepoint (newlines, ESC, zero-width/bidi-override characters, ...),
+    so a crafted filesystem name can never forge extra lines or inject ANSI
+    escape sequences into a rendered refusal message.
+    """
+    out = []
+    for ch in text:
+        if ord(ch) < 32 or ord(ch) == 127 or unicodedata.category(ch) in _UNSAFE_CATEGORIES:
+            out.append("?")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 
 def _home_relative(path: Path) -> str:
     """A displayable location for an unsafe path: never a secret, never bare absolute.
 
-    Paths under ``$HOME`` render as ``~/...``; anything else renders as only its
-    basename, so a refusal never reveals an arbitrary absolute filesystem layout.
+    Paths under ``$HOME`` render as ``~/...`` (``$HOME`` itself renders as just
+    ``~``); anything else renders as only its basename, so a refusal never
+    reveals an arbitrary absolute filesystem layout. The raw (unsanitized)
+    value is returned; callers must sanitize before rendering.
     """
     try:
-        return "~/" + str(path.relative_to(Path.home()))
+        relative = path.relative_to(Path.home())
     except ValueError:
         return path.name or str(path)
+    return "~" if str(relative) == "." else "~/" + str(relative)
 
 
 def _actionable_refusal(exc: Exception) -> ActionResult:
-    """Stable refusal code plus a home-relative path and fix hint when known.
+    """Stable refusal code plus a sanitized home-relative path and fix hint.
 
     ``PrimeSelectionError`` codes stay exactly what callers already match on;
     this only adds a rendering, never changes the code or raises on a path
-    outside ``$HOME``.
+    outside ``$HOME``. A location that needed sanitizing (a name containing
+    control characters, escape sequences, or other non-printable codepoints)
+    never gets a copy-pasteable ``chmod`` command: the raw name could still
+    forge terminal output through a shell that globs or re-renders it, so the
+    message instead asks the operator to inspect the directory directly.
     """
     code = str(exc) if isinstance(exc, PrimeSelectionError) else "bootstrap_input_unsafe"
     message = f"bootstrap refused: {code}; use /help bootstrap"
     path = getattr(exc, "path", None)
     if code in _PATH_CODES and isinstance(path, Path):
-        location = _home_relative(path)
-        message = f"bootstrap refused: {code}: {location} is group/other-writable; run: chmod go-w {location}"
+        raw_location = _home_relative(path)
+        location = _sanitize_text(raw_location)
+        if location != raw_location:
+            message = (
+                f"bootstrap refused: {code}: inspect this directory's permissions "
+                "(name contains non-printable characters)"
+            )
+        else:
+            quoted = shlex.quote(location)
+            message = (
+                f"bootstrap refused: {code}: {location} is group/other-writable; "
+                f"run: chmod go-w {quoted}"
+            )
     return ActionResult(data={"error": message}, ok=False, exit_code=2)
 
 
