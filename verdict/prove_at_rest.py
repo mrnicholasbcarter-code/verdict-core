@@ -75,6 +75,7 @@ from verdict.orchestration.health_cache import (
     STATE_UNPROBED,
     HealthCache,
     HealthCacheError,
+    HealthCacheLockTimeoutError,
     HealthEntry,
     ProbeResult,
     default_cache_path,
@@ -739,13 +740,25 @@ class Prober:
     def stop(self) -> None:
         self._stop.set()
 
+    def _save_for_cycle(self, started: float) -> None:
+        self.cache.save(
+            deadline=started + self.max_wall_seconds, monotonic=self.monotonic, sleep=self.sleep
+        )
+
     def run_once(self) -> CycleStats:
-        """Probe until the request cap or the wall cap, persisting as it goes."""
+        """Probe until request/wall/lock bounds, returning a typed stop reason."""
         started = self.monotonic()
+        stats = CycleStats()
+        try:
+            return self._run_once(started, stats)
+        except HealthCacheLockTimeoutError:
+            stats.stopped_reason = stats.stopped_reason or "lock_timeout"
+            return stats
+
+    def _run_once(self, started: float, stats: CycleStats) -> CycleStats:
         now = self.clock()
         routes = list(self.routes_loader())
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
-        stats = CycleStats()
         # Defect 2 fix: resume by route_id set, not by index.
         # If routes reorder or disappear between cycles the index-based cursor
         # would skip unprobed routes; a probed-ids set is order-independent.
@@ -770,23 +783,23 @@ class Prober:
             if reason:
                 stats.stopped_reason = reason
                 self._persist_cursor(probed_ids, open_cycle=True)
-                self.cache.save()
+                self._save_for_cycle(started)
                 break
             batch = pending[:batch_size]
             pending = pending[batch_size:]
             self._persist_cursor(probed_ids, open_cycle=True)
-            self.cache.save()
+            self._save_for_cycle(started)
             newly_probed = self._run_batch(batch, stats, started)
             probed_ids.update(newly_probed)
             self._persist_cursor(probed_ids, open_cycle=True)
-            self.cache.save()
+            self._save_for_cycle(started)
             if stats.stopped_reason:
                 # Cap fired inside the batch: do not drain remaining pending.
                 break
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
-            self.cache.save()
+            self._save_for_cycle(started)
         # Run agentic probes for FREE routes after the main cycle.
         if stats.requests < self.max_requests:
             self.run_agentic_probes(stats, started=started)
@@ -815,7 +828,7 @@ class Prober:
             before = stats.requests
             completed = self._probe_route(route, kind, stats, started=started)
             if stats.requests != before:
-                self.cache.save()
+                self._save_for_cycle(started)
             if not completed:
                 # The probe stopped part-way (a cap or bucket fired between the
                 # chat and the tool call). The route was left unchanged, so it
@@ -1085,7 +1098,7 @@ class Prober:
                 capacity_evidence=route.capacity_evidence,
             )
             self.cache.record(route.route_id, result, now)
-            self.cache.save()
+            self._save_for_cycle(wall_start)
             probed += 1
             stats.probed += 1
             if passed:

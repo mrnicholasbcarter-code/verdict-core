@@ -21,11 +21,11 @@ Findings covered:
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping
-from typing import Any, cast
 import time
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 from verdict.actions.model_refresh import action_models_refresh_execute, action_models_refresh_plan
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
@@ -906,8 +906,10 @@ def test_review3_frozen_join_has_poll_cap(tmp_path: Path) -> None:
 
 def test_review3_cache_locks_have_deadline_and_poll_cap(tmp_path: Path) -> None:
     import fcntl
+
     import pytest
-    from verdict.orchestration.health_cache import HealthCacheLockTimeout, LOCK_POLL_CAP
+
+    from verdict.orchestration.health_cache import LOCK_POLL_CAP, HealthCacheLockTimeoutError
 
     cache = HealthCache(tmp_path / "cache.json")
     calls: list[float] = []
@@ -915,7 +917,7 @@ def test_review3_cache_locks_have_deadline_and_poll_cap(tmp_path: Path) -> None:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         for save in (False, True):
             calls.clear()
-            with pytest.raises(HealthCacheLockTimeout, match="lock_timeout"):
+            with pytest.raises(HealthCacheLockTimeoutError, match="lock_timeout"):
                 if save:
                     cache.save(deadline=1, monotonic=lambda: 0.0, sleep=calls.append)
                 else:
@@ -923,7 +925,7 @@ def test_review3_cache_locks_have_deadline_and_poll_cap(tmp_path: Path) -> None:
                         lambda _: None, deadline=1, monotonic=lambda: 0.0, sleep=calls.append
                     )
             assert len(calls) < LOCK_POLL_CAP
-        with pytest.raises(HealthCacheLockTimeout):
+        with pytest.raises(HealthCacheLockTimeoutError):
             cache.save(deadline=0, monotonic=lambda: 0.0, sleep=calls.append)
 
 
@@ -947,6 +949,7 @@ def test_review3_cache_lock_timeout_stops_dispatch(tmp_path: Path) -> None:
 
 def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     from unittest.mock import patch
+
     from verdict.orchestration import verified_refresh as module
 
     transport = _Transport()
@@ -999,8 +1002,8 @@ def test_review3_bucket_merge_preserves_newer_reservations(tmp_path: Path) -> No
     assert reservation is not None
     stale.save()
     disk = HealthCache(path, bucket_capacity=10).bucket_for("cc")
-    assert set(reservation.token_ids) <= set(disk.token_ids)
     assert disk.remaining(NOW) == 8
+    assert set(reservation.token_ids) <= set(disk.token_ids)
 
 
 def test_review3_bucket_release_is_owned_and_idempotent(tmp_path: Path) -> None:
@@ -1043,6 +1046,7 @@ def test_review3_revision_rejects_stale_future_positive(tmp_path: Path) -> None:
 
 def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None:
     import json
+
     from verdict.orchestration import verified_refresh as module
 
     transport = _Transport()
@@ -1083,3 +1087,53 @@ def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None
     assert joined.verified == 0 and joined.alive == 1 and joined.failed == 0
     coord._emit_join_progress(progress.append, payload, 0.0)
     assert progress[-1].verified == 0 and progress[-1].alive == 1
+
+
+def test_review3_finished_marker_counters_agree(tmp_path: Path) -> None:
+    from verdict.orchestration import verified_refresh as module
+
+    script = {
+        ("auth/a", "chat"): ProbeExchange(401, False),
+        ("bad/a", "chat"): ProbeExchange(500, False),
+    }
+    coord = _coord(tmp_path, _Transport(script))
+    rows = tuple(
+        RowInput(f"{provider}/a", provider, "STALE", CAPACITY_FREE, True)
+        for provider in ("auth", "bad", "good")
+    )
+    result = coord.refresh_for_consumer(
+        RefreshSnapshot(rows),
+        consumer="picker",
+        needed_ids=[row.route_id for row in rows],
+        config=RefreshConfig(),
+    )
+    assert (result.probed, result.verified, result.failed, result.unavailable) == (3, 1, 1, 1)
+    payload = module._Marker(tmp_path / "refresh.json").read()
+    assert payload is not None and payload["sequence"] > 0
+    progress: list[module.ProgressEvent] = []
+    coord._emit_join_progress(progress.append, payload, 0.0)
+    assert (progress[-1].verified, progress[-1].failed, progress[-1].unavailable) == (1, 1, 1)
+    debounce = coord._from_marker(payload, "picker", "debounced", note="debounced")
+    assert (debounce.verified, debounce.failed, debounce.unavailable) == (1, 1, 1)
+
+
+def test_review3_daemon_cache_lock_is_bounded(tmp_path: Path) -> None:
+    import fcntl
+
+    from verdict.prove_at_rest import AdmittedRoute, Prober
+
+    cache = HealthCache(tmp_path / "cache.json")
+    transport = _Transport()
+    with (tmp_path / "cache.json.lock").open("a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        stats = Prober(
+            cache=cache,
+            routes_loader=lambda: [AdmittedRoute("cc/a", "cc", "free")],
+            transport=transport,
+            clock=lambda: NOW,
+            monotonic=lambda: 0.0,
+            sleep=lambda _: None,
+            max_wall_seconds=0.01,
+        ).run_once()
+    assert stats.stopped_reason == "lock_timeout"
+    assert transport.calls == []

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from verdict.orchestration.contracts import CapacityClass
+from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
@@ -46,7 +47,6 @@ from verdict.prove_at_rest import (
     AdmittedRoute,
     ProbeExchange,
     Prober,
-    capacity_class_of,
     order_cycle,
     status_report,
 )
@@ -898,7 +898,10 @@ def test_request_cap_after_chat_does_not_record_negative(tmp_path: Path) -> None
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, latency_ms=7.0),
         NOW - timedelta(seconds=FRESH_SECONDS + 1),
     )
-    before = seeded.to_dict()
+    cache.save()  # establish the persisted revision before testing no-write
+    persisted = cache.entry(seeded.route_id)
+    assert persisted is not None
+    before = persisted.to_dict()
     stats = prober.run_once()
     assert stats.stopped_reason == "request_cap", (
         f"unexpected stopped_reason: {stats.stopped_reason!r}"
@@ -1186,6 +1189,7 @@ def test_cli_once_forwards_max_wall_seconds(tmp_path: Path) -> None:
 
     assert collected, "run_action was never called"
     params = collected[0]["params"]
+    assert isinstance(params, dict)
     assert params.get("max_wall_seconds") == 123.0, (
         f"max_wall_seconds not forwarded to run_action params: {params!r}"
     )
@@ -1272,7 +1276,8 @@ def test_record_cooldown_keeps_the_later_deadline(tmp_path: Path) -> None:
             key="provider:cc", category=CATEGORY_RATE_LIMITED, checked_at=NOW, until=_at(120)
         )
     )
-    assert cache.cooldown_for("provider:cc", _at(10)).until == _at(3600)
+    current = cache.cooldown_for("provider:cc", _at(10))
+    assert current is not None and current.until == _at(3600)
 
 
 def test_merge_and_save_serializes_a_read_modify_write(tmp_path: Path) -> None:

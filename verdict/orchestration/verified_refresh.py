@@ -52,9 +52,8 @@ from verdict.orchestration.health_cache import (
     CATEGORY_PERMISSION,
     CATEGORY_RATE_LIMITED,
     HealthCache,
-    HealthCacheLockTimeout,
+    HealthCacheLockTimeoutError,
     ScopedCooldown,
-    format_datetime,
     negative_seconds,
 )
 from verdict.prove_at_rest import (
@@ -839,7 +838,7 @@ class RefreshCoordinator:
                     monotonic=self.monotonic,
                     sleep=self.sleep,
                 )
-            except HealthCacheLockTimeout:
+            except HealthCacheLockTimeoutError:
                 cap_reason = REASON_LOCK_TIMEOUT
                 break
             if not reservation:
@@ -862,7 +861,7 @@ class RefreshCoordinator:
                         sleep=self.sleep,
                     )
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
-            except HealthCacheLockTimeout:
+            except HealthCacheLockTimeoutError:
                 cap_reason = REASON_LOCK_TIMEOUT
                 break
 
@@ -892,7 +891,7 @@ class RefreshCoordinator:
                 failed,
                 unavailable,
                 requests_made,
-                min(config.max_requests, (probed + 1) * REQUESTS_PER_FULL_PROBE),
+                requests_made,  # all unused reservations have been released
                 started,
                 per_provider,
                 route_out.category,
@@ -1142,6 +1141,8 @@ class RefreshCoordinator:
             payload = marker.read()
             if payload is not None:
                 published_id = str(payload.get("job_id") or "")
+                if joined_id is not None and published_id != joined_id:
+                    break  # never cancel or consume a different owner's job
                 if payload.get("running") and published_id:
                     joined_id = published_id
                     if cancel():
@@ -1168,6 +1169,8 @@ class RefreshCoordinator:
             self.sleep(min(0.05, max(0.0, deadline - self.monotonic())))
 
         payload = marker.read() or {}
+        if joined_id is not None and str(payload.get("job_id") or "") != joined_id:
+            payload = {"job_id": joined_id, "running": True}
         if not payload.get("running", True) and not lock.live():
             job_running_at_exit = False
         job_id = str(payload.get("job_id") or "joined")
@@ -1459,9 +1462,9 @@ class RefreshCoordinator:
         *,
         alive: int = 0,
     ) -> None:
+        self._seq += 1
         if on_progress is None:
             return
-        self._seq += 1
         on_progress(
             ProgressEvent(
                 sequence=self._seq,
@@ -1495,9 +1498,9 @@ class RefreshCoordinator:
         *,
         alive: int = 0,
     ) -> None:
+        self._seq += 1
         if on_progress is None:
             return
-        self._seq += 1
         on_progress(
             ProgressEvent(
                 sequence=self._seq,
@@ -1599,19 +1602,19 @@ __all__ = [
     "OUTCOME_COMPLETED",
     "OUTCOME_DEBOUNCED",
     "OUTCOME_JOINED",
+    "OUTCOME_LOCK_TIMEOUT",
     "OUTCOME_NOTHING_ELIGIBLE",
     "OUTCOME_REUSED_FRESH",
     "REASON_BUCKET",
     "REASON_CANCELLED",
     "REASON_JOINED_NOT_COVERED",
+    "REASON_LOCK_TIMEOUT",
     "REASON_NOT_TESTED",
     "REASON_PROVIDER_STOP",
     "REASON_REQUEST_CAP",
     "REASON_ROUTE_CAP",
     "REASON_WALL_CAP",
     "ProbeExchange",
-    "OUTCOME_LOCK_TIMEOUT",
-    "REASON_LOCK_TIMEOUT",
     "ProgressEvent",
     "RefreshConfig",
     "RefreshConfigError",

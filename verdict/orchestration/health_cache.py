@@ -39,11 +39,11 @@ through ``consume``.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import time
 import uuid
-import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -101,7 +101,7 @@ class HealthCacheError(ValueError):
     """Raised when cache state or inputs violate the contract."""
 
 
-class HealthCacheLockTimeout(TimeoutError):
+class HealthCacheLockTimeoutError(TimeoutError):
     """Typed failure: no cache mutation ran because the lock wait expired."""
 
     reason = "lock_timeout"
@@ -125,11 +125,14 @@ def _acquire_cache_lock(
             break
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if monotonic() >= end:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                break
             return
         except BlockingIOError:
             if poll + 1 < LOCK_POLL_CAP:
                 sleep(min(LOCK_POLL_SECONDS, max(0.0, end - monotonic())))
-    raise HealthCacheLockTimeout("lock_timeout")
+    raise HealthCacheLockTimeoutError("lock_timeout")
 
 
 def default_cache_path() -> Path:
