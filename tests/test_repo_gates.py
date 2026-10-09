@@ -232,3 +232,51 @@ def test_ruff_toml_and_dot_ruff_toml_both_files(tmp_path: Path) -> None:
     gates = discover_repo_gates(tmp_path)
     assert _names(gates) == ["ruff-check", "ruff-format"]
     assert all(g.source == "ruff.toml" for g in gates)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '[tool.hatch.build.targets.wheel]\npackages = ["verdict"]\n',
+        '[tool.setuptools]\npackages = ["verdict"]\n',
+        '[tool.poetry]\npackages = [{include = "verdict"}]\n',
+    ],
+)
+def test_mypy_build_backend_resolves_distribution_name(tmp_path: Path, declaration: str) -> None:
+    (tmp_path / "verdict").mkdir()
+    _write(
+        tmp_path / "pyproject.toml",
+        '[project]\nname = "verdict-core"\n[tool.mypy]\nstrict = true\n' + declaration,
+    )
+    assert discover_repo_gates(tmp_path)[0].argv == ("mypy", "--strict", "verdict")
+
+
+def test_repo_self_declared_gates_are_resolvable() -> None:
+    repo = Path(__file__).resolve().parent.parent
+    gates = discover_repo_gates(repo)
+    assert _names(gates) == ["ruff-check", "ruff-format", "mypy"]
+    assert gates[-1].argv == ("mypy", "--strict", "verdict")
+
+
+@pytest.mark.parametrize("explicit", ['files = ["chosen"]', 'packages = ["chosen"]'])
+def test_mypy_explicit_targets_override_build_packages(tmp_path: Path, explicit: str) -> None:
+    (tmp_path / "verdict").mkdir()
+    _write(
+        tmp_path / "pyproject.toml",
+        "[tool.mypy]\n" + explicit + '\n[tool.hatch.build.targets.wheel]\npackages=["verdict"]\n',
+    )
+    argv = discover_repo_gates(tmp_path)[0].argv
+    assert argv == (
+        ("mypy", "chosen") if explicit.startswith("files") else ("mypy", "-p", "chosen")
+    )
+
+
+def test_mypy_build_packages_skip_files_and_missing_dirs(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "not_dir").touch()
+    _write(
+        tmp_path / "pyproject.toml",
+        '[project]\nname="pkg"\n[tool.mypy]\n[tool.hatch.build.targets.wheel]\n'
+        'packages=["missing", "not_dir"]\n',
+    )
+    assert discover_repo_gates(tmp_path)[0].argv == ("mypy", "pkg")

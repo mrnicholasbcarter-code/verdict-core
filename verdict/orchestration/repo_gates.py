@@ -90,17 +90,39 @@ def _split_scalar_or_list(value: object) -> list[str]:
     return []
 
 
+def _build_package_targets(root: dict[str, object], repo: Path) -> list[str]:
+    """Read declared package dirs in fixed Hatch, Setuptools, Poetry order."""
+    tool = _as_dict(root.get("tool"))
+    hatch = _as_dict(tool.get("hatch"))
+    build = _as_dict(hatch.get("build"))
+    wheel = _as_dict(_as_dict(build.get("targets")).get("wheel"))
+    poetry_packages = _as_dict(tool.get("poetry")).get("packages")
+    declarations = [wheel.get("packages"), _as_dict(tool.get("setuptools")).get("packages")]
+    if isinstance(poetry_packages, list):
+        declarations.append([_as_dict(package).get("include") for package in poetry_packages])
+    targets: list[str] = []
+    for packages in declarations:
+        if not isinstance(packages, list):
+            continue
+        for package in packages:
+            if isinstance(package, str) and (repo / package).is_dir() and package not in targets:
+                targets.append(package)
+    return targets
+
+
 def _mypy_targets(mypy: dict[str, object], root: dict[str, object], repo: Path) -> list[str]:
     """Resolve mypy targets without ever emitting a targetless argv.
 
     Precedence: ``files`` (list or CSV), ``packages`` (list or CSV -> ``-p <pkg>``),
-    then ``[project].name`` package dir at the repo root or under ``src/``.
+    build-backend package dirs, then ``[project].name`` at the root or under ``src/``.
     """
     targets: list[str] = []
     targets.extend(_split_scalar_or_list(mypy.get("files")))
     if not targets:
         for pkg in _split_scalar_or_list(mypy.get("packages")):
             targets.extend(["-p", pkg])
+    if not targets:
+        targets.extend(_build_package_targets(root, repo))
     if not targets:
         name = _as_dict(root.get("project")).get("name")
         if isinstance(name, str) and name:
