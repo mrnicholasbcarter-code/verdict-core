@@ -28,6 +28,9 @@ dependencies = [
     "rich>=15.0.0",
     "defusedxml>=0.7.1",
     "prompt-toolkit>=3.0.53",
+    # verdict.orchestration.repo_gates reads pyproject.toml gates at runtime;
+    # tomllib is stdlib only from Python 3.11.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

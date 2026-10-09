@@ -13,13 +13,23 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-
-try:  # Python 3.11+ ships tomllib in the stdlib.
-    import tomllib  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - exercised only on Python <3.11
-    import tomli as tomllib
+from types import ModuleType
 
 _NODE_SCRIPT_ORDER: tuple[str, ...] = ("typecheck", "lint", "format:check")
+
+
+def _tomllib() -> ModuleType:
+    """Load a TOML reader only when parsing pyproject gate configuration."""
+    from importlib import import_module
+
+    for module_name in ("tomllib", "tomli"):
+        try:
+            return import_module(module_name)
+        except ImportError:
+            continue
+    raise ValueError(
+        "cannot read pyproject.toml gates on Python < 3.11 without the 'tomli' package"
+    )
 
 
 @dataclass(frozen=True)
@@ -40,6 +50,7 @@ def _load_pyproject(repo: Path) -> dict[str, object]:
     path = repo / "pyproject.toml"
     if not path.is_file():
         return {}
+    tomllib = _tomllib()
     try:
         loaded = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
