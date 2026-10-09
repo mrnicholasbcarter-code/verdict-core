@@ -230,7 +230,9 @@ def test_mutated_candidate_list_is_caught_before_spawn(tmp_path: Path) -> None:
 def _patch_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fail: bool = False) -> None:
     from verdict.orchestration import run as orch_run
 
-    def fetch_connections(gateway: str, *, api_key: str | None, timeout: float = 30) -> list:
+    def fetch_connections(
+        gateway: str, *, api_key: str | None, timeout: float = 30
+    ) -> list[dict[str, Any]]:
         if fail:
             raise OSError("gateway down")
         return CONNECTIONS
@@ -433,11 +435,13 @@ def test_spawn_gate_rejects_admitted_but_unconfirmed_route(tmp_path: Path) -> No
         def __set__(self, obj: Any, value: Any) -> None:
             pass
 
-    type(ctrl).admitted = Reverting()  # type: ignore[assignment]
+    # Install a class-level descriptor to simulate a caller undoing admission.
+    # admitted is instance-only in the normal typed WorkerController API.
+    setattr(type(ctrl), "admitted", Reverting())  # noqa: B010 - intentional class descriptor
     try:
         outcome = asyncio.run(ctrl.run("task"))
     finally:
-        del type(ctrl).admitted
+        delattr(type(ctrl), "admitted")  # remove the test-only class descriptor
     assert outcome.state == "FAIL_CLOSED" and adapter.spawns == []
     assert "worker_runtime.spawn" in outcome.diagnostic
 
