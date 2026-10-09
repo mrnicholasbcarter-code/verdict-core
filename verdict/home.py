@@ -7,7 +7,6 @@ selection or recovery decisions live here.
 
 from __future__ import annotations
 
-import difflib
 import importlib
 import json
 import os
@@ -29,6 +28,15 @@ from rich.text import Text
 
 from verdict.design import TOKENS, PresentationMode, panel, presentation_mode
 from verdict.terminal_ui import TerminalUI, clean
+from verdict.tui_completion import (
+    ArgumentSpec,
+    CommandSpec,
+    CompletionSnapshot,
+    VerdictCompleter,
+    default_command_specs,
+    suggest_command,
+    syntax_help,
+)
 
 WORDMARK = (
     "██╗   ██╗███████╗██████╗ ██████╗ ██╗ ██████╗████████╗",
@@ -76,6 +84,12 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
     ("Config", "credentials", "manage stored credentials", "credentials.list"),
     ("Setup", "doctor", "health of gateways, harnesses, memory, docs", "doctor"),
     ("Setup", "setup", "plan or apply capability bootstrap", "setup.plan"),
+    (
+        "Setup",
+        "bootstrap",
+        "Prime interactive picker; read-only Claude compatibility",
+        "harness.prime.select.preview",
+    ),
     ("Setup", "quickstart", "credential-free deterministic demo", ""),
 )
 
@@ -155,6 +169,8 @@ class HomeState:
     gateway_ok: bool | None = None
     gateway_models: int | None = None
     runs: list[dict[str, Any]] = field(default_factory=list)
+    completion_snapshot: CompletionSnapshot | None = None
+    completion_view: dict[str, Any] | None = None
 
 
 def _plain(console: Console) -> bool:
@@ -569,14 +585,49 @@ def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, wid
 # ---------------------------------------------------------------------------
 
 
+def command_specs() -> tuple[CommandSpec, ...]:
+    """One immutable palette grammar for dispatch help and offline completion."""
+    defaults = {spec.name: spec for spec in default_command_specs()}
+    specs = []
+    for _section, name, description, action in PALETTE:
+        spec = defaults.get(name, CommandSpec(name, description, "/" + name, ()))
+        arguments = spec.arguments
+        if not arguments and action in _ACTION_PARAMS:
+            arguments = tuple(
+                ArgumentSpec(pname, "field", True, secret=pname == "value")
+                for pname, _default in _ACTION_PARAMS[action]
+            )
+        specs.append(CommandSpec(name, description, spec.syntax, arguments))
+    specs.extend(spec for name, spec in defaults.items() if name in {"help", "quit", "clear"})
+    return tuple(specs)
+
+
 def _suggest_command(text: str) -> str | None:
-    """Return the closest /command name for unknown input, or None."""
-    all_cmds = [f"/{cmd}" for _, cmd, _, _ in PALETTE]
-    all_cmds.extend(["/quit", "/help", "/clear", "/exit"])
-    matches = difflib.get_close_matches(
-        text if text.startswith("/") else f"/{text}", all_cmds, n=1, cutoff=0.5
-    )
-    return matches[0] if matches else None
+    hints = suggest_command(text, commands=command_specs(), limit=1)
+    return hints[0] if hints else None
+
+
+def _reload_completion(state: HomeState) -> None:
+    from verdict.actions.verified_models import utc_now
+    from verdict.tui_completion_snapshot import load_snapshot
+
+    state.completion_snapshot = load_snapshot(now=utc_now(), runs=state.runs)
+
+
+def _publish_completion(state: HomeState, console: Console) -> None:
+    from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
+    from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+
+    adapter = VerifiedSnapshotAdapter(state.gateway, StorePaths.defaults(), local_only=True)
+    try:
+        view = state.completion_view or local_projection(adapter, now=utc_now())
+        state.completion_view = None
+        warning = publish_snapshot(view)
+    except (ValueError, OSError, TypeError):
+        warning = "completion snapshot publication failed; evidence unchanged"
+    if warning:
+        console.print(Text(warning, style=TOKENS["MUTED"]))
+    _reload_completion(state)
 
 
 def _prompt_params_inline(
@@ -645,11 +696,24 @@ def _run_verified_command(
     def read_line(_prompt: str) -> str | None:
         return line_reader() if line_reader is not None else input()
 
-    return run_palette_action(
+    from verdict.actions.verified_models import VerifiedSnapshotAdapter
+    from verdict.tui_completion_snapshot import local_projection
+
+    def capture(final: Any, adapter: VerifiedSnapshotAdapter) -> None:
+        from datetime import datetime
+
+        stamp = datetime.fromisoformat(str(final["generated_at"]).replace("Z", "+00:00"))
+        view = local_projection(adapter, now=stamp)
+        if final.get("refresh", {}).get("last_known"):
+            view["source_errors"] = [*view.get("source_errors", []), "last_known_projection"]
+        state.completion_view = view
+
+    result = run_palette_action(
         "models.verified",
         {
             "_consumer": True,
             "gateway": state.gateway,
+            "on_projection": capture,
             "query": query,
             "manual": parsed.refresh,
             "read_line": read_line,
@@ -657,6 +721,7 @@ def _run_verified_command(
             "live": True,
         },
     )
+    return result
 
 
 def _run_command(
@@ -702,12 +767,49 @@ def _run_command(
             if palette_cmd == "quit":
                 return "quit"
             if palette_cmd == "help":
-                _show_help(console)
+                _show_help(console, cmd_args, state.completion_snapshot)
                 return None
             if palette_cmd == "clear":
                 return "clear"
             return None
 
+        if cmd_args == "--help":
+            _show_help(console, palette_cmd, state.completion_snapshot)
+            return None
+        if palette_cmd == "probe" and any(
+            token.startswith("-") for token in cmd_args.replace(",", " ").split()
+        ):
+            console.print(Text("ERROR: Invalid /probe model field: options are not model ids."))
+            _show_help(console, "probe", state.completion_snapshot)
+            return None
+        if palette_cmd == "bootstrap":
+            from verdict.actions.registry import run_action
+            from verdict.tui_bootstrap_controls import consume_prime, parse_bootstrap_args
+
+            try:
+                parsed = parse_bootstrap_args(cmd_args)
+                if parsed.target == "claude":
+                    result = run_action(
+                        "harness.claude.compat", {"selected_ids": parsed.ids, "mode": parsed.mode}
+                    )
+                else:
+                    result = consume_prime(
+                        parsed,
+                        gateway=state.gateway,
+                        read_line=lambda _prompt: (
+                            line_reader() if line_reader is not None else input()
+                        ),
+                        write=lambda line: console.print(Text(line)),
+                        on_projection=lambda view: setattr(state, "completion_view", dict(view)),
+                        live=True,
+                    )
+                _render_action_result(tui, result.ok, result.data, width=width)
+                if parsed.target == "prime" and not parsed.restore:
+                    _publish_completion(state, console)
+            except (ValueError, KeyboardInterrupt):
+                console.print(Text("Invalid bootstrap input or cancelled; no apply."))
+                _show_help(console, "bootstrap", state.completion_snapshot)
+            return None
         if ref == "models.verified":
             try:
                 ok, data = _run_verified_command(
@@ -721,6 +823,8 @@ def _run_command(
                     },
                 )
             _render_action_result(tui, ok, data, width=width)
+            if ok:
+                _publish_completion(state, console)
             return None
 
         # Resolve params: if args on the line, use them for the first required param
@@ -874,7 +978,30 @@ def _run_command(
     return None
 
 
-def _show_help(console: Console) -> None:
+def _show_help(
+    console: Console, command: str = "", snapshot: CompletionSnapshot | None = None
+) -> None:
+    """Same local syntax and typo help for both prompt paths."""
+    if command:
+        from verdict.actions.verified_models import utc_now
+        from verdict.tui_completion_snapshot import load_snapshot
+
+        help_result = syntax_help(
+            command.strip().lstrip("/"),
+            commands=command_specs(),
+            snapshot=snapshot or load_snapshot(now=utc_now()),
+            now=utc_now(),
+        )
+        if help_result is None:
+            console.print(
+                Text("Unknown help command. " + (_suggest_command(command) or "Use /help"))
+            )
+            return
+        console.print(Text(help_result.syntax))
+        console.print(Text(help_result.description))
+        for argument in help_result.arguments:
+            console.print(Text("; ".join(f"{key}: {value}" for key, value in argument.items())))
+        return
     """Print a compact command list, each group shown once."""
     from collections import OrderedDict
 
@@ -1057,6 +1184,8 @@ def _command_prompt(
     newline) or None on EOF. In production, prompt_toolkit handles the input.
     """
     tui = TerminalUI(target)
+    if isinstance(state, HomeState):
+        _reload_completion(state)
 
     if line_reader is not None:
         # Test mode: use injected reader
@@ -1071,6 +1200,8 @@ def _command_prompt(
             if line is None:
                 return 0
             result = _run_command(line, tui=tui, state=state, line_reader=line_reader)
+            if isinstance(state, HomeState):
+                _reload_completion(state)
             if result == "quit":
                 return 0
             if result == "clear":
@@ -1096,57 +1227,41 @@ def _prompt_toolkit_ready() -> None:
     create_output()
 
 
+def completion_key_bindings() -> Any:
+    """Tab cycles; Enter inserts only; Esc restores the pre-menu line."""
+    from prompt_toolkit.filters import has_completions
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+
+    bindings = KeyBindings()
+
+    @bindings.add("tab")
+    def tab(event: KeyPressEvent) -> None:
+        buffer = event.current_buffer
+        if buffer.complete_state:
+            buffer.complete_next()
+        else:
+            buffer.start_completion(select_first=True)
+
+    @bindings.add("enter", filter=has_completions)
+    def enter(event: KeyPressEvent) -> None:
+        buffer = event.current_buffer
+        if buffer.complete_state and buffer.complete_state.current_completion:
+            buffer.apply_completion(buffer.complete_state.current_completion)
+        else:
+            buffer.complete_state = None
+
+    @bindings.add("escape", filter=has_completions)
+    def escape(event: KeyPressEvent) -> None:
+        event.current_buffer.cancel_completion()
+
+    return bindings
+
+
 def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> int:
     """Interactive loop using prompt_toolkit with completions and history."""
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.history import InMemoryHistory
-
-    class VerdictCompleter(Completer):
-        def get_completions(self, document: Any, complete_event: Any) -> Any:
-            text = document.text_before_cursor.lstrip()
-            # Slash-prefix completions
-            if text.startswith("/") or not text:
-                prefix = text.lstrip("/")
-                for _section, cmd, desc, _action in PALETTE:
-                    if cmd.startswith(prefix):
-                        yield Completion(
-                            f"/{cmd}",
-                            start_position=-len(text),
-                            display=f"/{cmd}",
-                            display_meta=desc[:50],
-                        )
-                for builtin_cmd, builtin_desc in [
-                    ("quit", "exit"),
-                    ("help", "show commands"),
-                    ("clear", "clear screen"),
-                ]:
-                    if builtin_cmd.startswith(prefix):
-                        yield Completion(
-                            f"/{builtin_cmd}",
-                            start_position=-len(text),
-                            display=f"/{builtin_cmd}",
-                            display_meta=builtin_desc,
-                        )
-                return
-
-            # Complete run IDs for commands that take a run arg
-            parts = text.split(None, 1)
-            if len(parts) >= 1:
-                cmd_part = parts[0].lstrip("/")
-                # Commands that accept run IDs
-                run_cmds = {"trace", "routing", "context", "watch", "run-receipt", "receipt"}
-                if cmd_part in run_cmds and state.runs:
-                    partial = parts[1] if len(parts) > 1 else ""
-                    for row in state.runs:
-                        run_id = row["run"]
-                        if run_id.startswith(partial):
-                            yield Completion(
-                                run_id,
-                                start_position=-len(partial),
-                                display=run_id[:30],
-                                display_meta=f"{row['outcome']} {_age(row['age_s'])} ago",
-                            )
 
     # History: capped at HISTORY_MAX_LINES and owner-only (0700 dir, 0600 file).
     # Loaded once into memory; new entries are written back through the capped
@@ -1159,14 +1274,23 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
     # do not support it. Verdict does not need cursor position info.
     os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
 
+    from verdict.actions.verified_models import utc_now
+    from verdict.tui_completion_snapshot import load_snapshot
+
+    completer = VerdictCompleter(
+        command_specs(), state.completion_snapshot or load_snapshot(now=utc_now()), utc_now()
+    )
     session: PromptSession[str] = PromptSession(
         message="verdict › ",  # noqa: RUF001
-        completer=VerdictCompleter(),
+        completer=completer,
+        key_bindings=completion_key_bindings(),
         history=history,
         complete_while_typing=False,
     )
 
     while True:
+        # Time changes labels only; no keystroke I/O or live reads.
+        completer.now = utc_now()
         try:
             line = session.prompt()
         except KeyboardInterrupt:
@@ -1176,6 +1300,8 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         if line.strip():
             _save_history(HISTORY_FILE, [line.strip()])
         result = _run_command(line, tui=tui, state=state)
+        _reload_completion(state)
+        completer.snapshot = state.completion_snapshot or completer.snapshot
         if result == "quit":
             return 0
         if result == "clear":
@@ -1194,6 +1320,7 @@ def _fallback_input_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         if line.strip():
             _save_history(HISTORY_FILE, [line.strip()])
         result = _run_command(line, tui=tui, state=state)
+        _reload_completion(state)
         if result == "quit":
             return 0
         if result == "clear":

@@ -98,6 +98,15 @@ def register(subparsers: Any) -> None:
     harness_claude_sub.add_parser(
         "discover", help="Observe Claude Code install/config without mutating it"
     )
+    compat_p = harness_claude_sub.add_parser(
+        "compat", help="Read-only native/side-path report; NEEDS_OWNER BOD-102; no apply"
+    )
+    compat_p.add_argument(
+        "ids", nargs="*", help="Exact model ids; omitted uses current local Prime scope"
+    )
+    compat_p.add_argument("--mode", choices=("native", "openai-side-path"), default="native")
+    compat_p.add_argument("--json", action="store_true")
+
     claude_enable_p = harness_claude_sub.add_parser(
         "enable",
         help="Backup ~/.claude/settings.json and point OpenAI-compatible traffic at Verdict",
@@ -187,6 +196,24 @@ def register(subparsers: Any) -> None:
     harness_prime_sub.add_parser(
         "discover", help="Observe Prime Agent install/config without mutating it"
     )
+    select_p = harness_prime_sub.add_parser(
+        "select", help="Preview and confirm exact Alt+M scope (not launch permission)"
+    )
+    select_p.add_argument("ids", nargs="*", help="Exact comma/space separated model ids")
+    select_p.add_argument("--preview", action="store_true", help="Stop before settings mutation")
+    select_p.add_argument("--json", action="store_true", help="One final sanitized JSON envelope")
+    restore_p = harness_prime_sub.add_parser(
+        "restore", help="Preview and confirm safe prior-scope restore"
+    )
+    restore_p.add_argument("--transaction", help="Exact selection transaction id")
+    restore_p.add_argument("--preview", action="store_true")
+    restore_p.add_argument("--json", action="store_true")
+    sync_p = harness_prime_sub.add_parser(
+        "sync-models", help="Separate inventory/visibility sync, not health proof"
+    )
+    sync_p.add_argument("--dry-run", action="store_true")
+    sync_p.add_argument("--json", action="store_true")
+
     prime_enable_p = harness_prime_sub.add_parser(
         "enable",
         help="Backup ~/.prime/agent/models.json and upsert Verdict OpenAI-compatible provider",

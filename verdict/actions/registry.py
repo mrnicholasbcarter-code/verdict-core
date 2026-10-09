@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, cast
 
 from verdict.actions.base import (
     NOOP_SINK,
@@ -1328,11 +1328,57 @@ def _register_builtins() -> None:
         _action_setup_plan_scoped,
         _action_simulate,
     )
+    from verdict.actions.harness_bootstrap import (
+        action_claude_compat,
+        action_prime_restore_apply,
+        action_prime_restore_preview,
+        action_prime_select_apply,
+        action_prime_select_preview,
+    )
     from verdict.actions.model_refresh import (
         action_models_refresh_execute,
         action_models_refresh_plan,
     )
     from verdict.actions.verified_models import action_models_verified
+
+    for name, kind, summary, handler in (
+        (
+            "harness.prime.select.preview",
+            "read",
+            "Preview exact Prime interactive scope",
+            action_prime_select_preview,
+        ),
+        (
+            "harness.prime.select.apply",
+            "mutation",
+            "Apply confirmed Prime interactive scope",
+            action_prime_select_apply,
+        ),
+        (
+            "harness.prime.restore.preview",
+            "read",
+            "Preview safe Prime scope restore",
+            action_prime_restore_preview,
+        ),
+        (
+            "harness.prime.restore.apply",
+            "mutation",
+            "Restore confirmed Prime scope",
+            action_prime_restore_apply,
+        ),
+        (
+            "harness.claude.compat",
+            "read",
+            "Report unsupported native Claude selection",
+            action_claude_compat,
+        ),
+    ):
+        register(
+            ActionSpec(
+                name, "harness", cast(Literal["read", "mutation"], kind), summary, "Harness"
+            ),
+            handler,
+        )
     from verdict.actions.views import _action_context_view, _action_routing_view
 
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [

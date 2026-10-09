@@ -199,7 +199,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     from verdict import cli as legacy
     from verdict.orchestration import cli as orchestration_cli
 
-    orchestration_rc = orchestration_cli.dispatch(args)
+    orchestration_rc = (
+        legacy.cmd_verified_completion_view(args)
+        if args.command == "eligibility" and getattr(args, "verified", False)
+        else orchestration_cli.dispatch(args)
+    )
     if orchestration_rc is not None:
         raise SystemExit(orchestration_rc)
 
@@ -447,6 +451,14 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 model=getattr(args, "model", HERMES_HARNESS_DEFAULT_MODEL),
                 force=getattr(args, "force", False),
             )
+        elif args.harness_target == "claude" and args.harness_claude_command == "compat":
+            legacy.cmd_harness_bootstrap(
+                "claude",
+                "compat",
+                ids=args.ids,
+                mode=args.mode,
+                output_json=getattr(args, "json", False),
+            )
         elif args.harness_target == "claude":
             legacy.cmd_harness_claude(
                 args.harness_claude_command,
@@ -461,6 +473,20 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 token_env=getattr(args, "token_env", CURSOR_HARNESS_DEFAULT_TOKEN_ENV),
                 force=getattr(args, "force", False),
                 wrapper=getattr(args, "wrapper", False),
+            )
+        elif args.harness_target == "prime" and args.harness_prime_command in {
+            "select",
+            "restore",
+            "sync-models",
+        }:
+            legacy.cmd_harness_bootstrap(
+                "prime",
+                args.harness_prime_command,
+                ids=getattr(args, "ids", []),
+                transaction=getattr(args, "transaction", None),
+                preview=getattr(args, "preview", False),
+                dry_run=getattr(args, "dry_run", False),
+                output_json=getattr(args, "json", False),
             )
         elif args.harness_target == "prime":
             legacy.cmd_harness_prime(

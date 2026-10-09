@@ -3167,6 +3167,71 @@ def main() -> None:
     dispatch(parser, parser.parse_args())
 
 
+def cmd_verified_completion_view(args: argparse.Namespace) -> int:
+    """Same verified consumer; publish full frozen local pages only after render."""
+    from verdict.actions.verified_models import VerifiedSnapshotAdapter, consume_verified_models
+    from verdict.orchestration import cli as orchestration_cli
+    from verdict.orchestration.verified_models import VerifiedModelQuery
+    from verdict.orchestration.verified_models_render import render_verified_plain
+    from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+
+    # Preserve the existing incompatible legacy-filter refusal exactly.
+    incompatible = any(
+        (
+            getattr(args, "probe", False),
+            getattr(args, "scope", ""),
+            getattr(args, "reasoning", False),
+            getattr(args, "frontier", False),
+            getattr(args, "provider_family", []),
+            getattr(args, "_prefer_explicit", False),
+            getattr(args, "prefer", "claude") != "claude",
+        )
+    )
+    if incompatible:
+        return orchestration_cli._eligibility_verified(args)
+    views: list[dict[str, Any]] = []
+
+    def capture(final: Any, adapter: VerifiedSnapshotAdapter) -> None:
+        stamp = datetime.fromisoformat(str(final["generated_at"]).replace("Z", "+00:00"))
+        view = local_projection(adapter, now=stamp)
+        if final.get("refresh", {}).get("last_known"):
+            view["source_errors"] = [*view.get("source_errors", []), "last_known_projection"]
+        views.append(view)
+
+    query = VerifiedModelQuery(
+        status=getattr(args, "status", None),
+        provider=getattr(args, "provider", None),
+        search=getattr(args, "search", None),
+        page=getattr(args, "page", 1),
+        page_size=getattr(args, "page_size", 50),
+    )
+    result = consume_verified_models(
+        gateway=args.gateway,
+        on_projection=capture,
+        query=query,
+        no_refresh=bool(getattr(args, "no_refresh", False)),
+        read_line=input,
+        write=lambda line: print(line, file=sys.stderr),
+        live=True,
+    )
+    if args.json:
+        orchestration_cli._print_view_json(result.data)
+    elif result.ok:
+        orchestration_cli._page(
+            render_verified_plain(result.data), no_pager=bool(getattr(args, "no_pager", False))
+        )
+    else:
+        print("error: " + str(result.data.get("error", "verified models failed")), file=sys.stderr)
+    if result.ok and views:
+        try:
+            warning = publish_snapshot(views[-1])
+            if warning:
+                print(warning, file=sys.stderr)
+        except (ValueError, OSError, TypeError):
+            print("completion snapshot publication failed; evidence unchanged", file=sys.stderr)
+    return 0 if result.ok else result.exit_code or 1
+
+
 def cmd_resume(
     story: str,
     *,
@@ -3625,6 +3690,76 @@ def cmd_harness_cursor(
                 present.note(item)
         return
     raise SystemExit(f"unknown harness cursor command: {command}")
+
+
+def cmd_harness_bootstrap(
+    target: str,
+    command: str,
+    *,
+    ids: list[str] | None = None,
+    mode: str = "native",
+    transaction: str | None = None,
+    preview: bool = False,
+    dry_run: bool = False,
+    output_json: bool = False,
+) -> None:
+    """Additive controllers; JSON stdout is never a prompt/progress stream."""
+    from verdict.actions.registry import run_action
+    from verdict.tui_bootstrap_controls import BootstrapArgs, consume_prime, parse_bootstrap_args
+    from verdict.tui_verified_controls import prompt_consent
+
+    def write(line: str) -> None:
+        print(line, file=sys.stderr)
+
+    def read_line(prompt: str) -> str:
+        print(prompt, file=sys.stderr, end="", flush=True)
+        return input()
+
+    completion_views: list[dict[str, Any]] = []
+    if target == "claude":
+        parsed = parse_bootstrap_args("claude " + " ".join(ids or []) + " mode=" + mode)
+        result = run_action(
+            "harness.claude.compat", {"selected_ids": parsed.ids, "mode": parsed.mode}
+        )
+    elif command == "sync-models":
+        confirmed = dry_run or (
+            sys.stdin.isatty()
+            and prompt_consent(
+                "Sync registry inventory only (not verification)?", read_line=read_line
+            ).granted
+        )
+        from verdict.actions.base import ActionResult
+
+        result = (
+            run_action("harness.prime.sync-models", {"dry_run": dry_run})
+            if confirmed
+            else ActionResult(data={"status": "cancelled", "written": False})
+        )
+    else:
+        parsed = (
+            BootstrapArgs("prime", restore=True, transaction_id=transaction)
+            if command == "restore"
+            else parse_bootstrap_args("prime " + " ".join(ids or []))
+        )
+        result = consume_prime(
+            parsed,
+            gateway=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+            read_line=read_line,
+            write=write,
+            preview_only=preview,
+            interactive=sys.stdin.isatty(),
+            on_projection=lambda view: completion_views.append(dict(view)),
+            live=True,
+        )
+    if target == "prime" and command == "select" and completion_views:
+        from verdict.tui_completion_snapshot import publish_snapshot
+
+        warning = publish_snapshot(completion_views[-1])
+        if warning:
+            write(warning)
+    print(json.dumps(result.data, indent=2, ensure_ascii=True, default=str))
+    if not result.ok:
+        raise SystemExit(result.exit_code or 2)
 
 
 def cmd_harness_prime(

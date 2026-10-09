@@ -1160,3 +1160,49 @@ def test_build_selector_fake_hook_passes_through_without_live_transport(
 
 
 ORIGINAL_BUILD_SELECTOR = eligibility_report.build_selector
+
+
+def test_post_projection_callback_once_after_reload_not_initial(tmp_path: Path) -> None:
+    adapter = adapter_for(tmp_path, age=900)
+    events: list[Any] = []
+
+    def updated(_rid: str, _phase: str) -> None:
+        events.append("dispatch")
+
+    transport = RecordingTransport(on_call=updated)
+
+    def callback(final: Any, used: Any) -> None:
+        events.append((final, used))
+        assert used is adapter
+        assert final["rows"][0]["status"] == "VERIFIED"
+        assert adapter.load(VerifiedModelQuery()).rows[0].status.value == "VERIFIED"
+
+    result = consume(
+        adapter, transport=transport, config=refresh.RefreshConfig(), on_projection=callback
+    )
+    callbacks = [event for event in events if isinstance(event, tuple)]
+    assert len(callbacks) == 1
+    assert events[-1] is callbacks[0]
+    assert events[0] == "dispatch"
+    assert callbacks[0][0] == result.data
+
+
+def test_post_projection_raising_callback_harmless_and_default_unchanged(tmp_path: Path) -> None:
+    adapter = adapter_for(tmp_path, age=30)
+    baseline = consume(adapter, no_refresh=True)
+    explicit_none = consume(adapter, no_refresh=True, on_projection=None)
+    assert explicit_none.data == baseline.data
+
+    def raising(final: Any, used: Any) -> None:
+        assert final["refresh"]["last_known"] is True
+        raise RuntimeError("sk-private-callback-exception")
+
+    result = consume(adapter, no_refresh=True, on_projection=raising)
+    assert result.ok
+    assert (
+        result.data["completion_warning"] == "post-projection callback failed; evidence unchanged"
+    )
+    assert "sk-private" not in json.dumps(result.data)
+    assert {
+        key: value for key, value in result.data.items() if key != "completion_warning"
+    } == baseline.data
