@@ -30,9 +30,7 @@ class TestLiveHarnessGate:
         # Plain selection (sync=False, the default) never writes the registry.
         registry = _models_json(tmp_path / "models.json", ["cc/claude-sonnet-5"])
         gate = prime_visibility(
-            registry,
-            live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}],
-            sync=True,
+            registry, live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}], sync=True
         )
         ladder, _ = make_ladder(
             tmp_path,
