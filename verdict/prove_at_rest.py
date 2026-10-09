@@ -55,6 +55,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
@@ -1271,7 +1272,7 @@ def live_agentic_transport(
         )
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+            with open_no_redirect(request, timeout=timeout_seconds) as response:
                 raw = response.read(1_048_576)
                 elapsed = (time.monotonic() - started) * 1000.0
                 parsed = json.loads(raw) if raw else {}
@@ -1329,7 +1330,7 @@ def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
         )
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+            with open_no_redirect(request, timeout=timeout_seconds) as response:
                 raw = response.read(1_048_576)
                 elapsed = (time.monotonic() - started) * 1000.0
                 parsed = json.loads(raw) if raw else {}
