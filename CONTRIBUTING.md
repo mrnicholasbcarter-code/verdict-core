@@ -23,7 +23,9 @@ uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
-Run the reachability report locally (BOD-316) the same way CI does:
+The reachability gate runs in CI in `.github/workflows/lint.yml`.
+`vgate` is operator-owned and unchanged by BOD-316; this is a separate CI gate.
+Run the same report locally:
 
 ```bash
 .venv/bin/python scripts/check_reachability.py
