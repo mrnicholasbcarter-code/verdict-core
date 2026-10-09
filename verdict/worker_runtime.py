@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import json
 import os
+import stat
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -29,6 +31,7 @@ from verdict.availability import (
 )
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.orchestration.effort import PRIME_THINKING_LEVELS, choose_effort, effort_reason
+from verdict.repository_files import hold_repository_dirs
 from verdict.subagent_selection import (
     CONTEXT_LENGTH_CATEGORY,
     DEFAULT_OMNIROUTE_URL,
@@ -90,6 +93,10 @@ class WorkerAdapter(Protocol):
     ) -> Mapping[str, Any]: ...
     async def collect(self, handle: Mapping[str, Any]) -> WorkerTerminal | None: ...
     async def delete(self, handle: Mapping[str, Any]) -> None: ...
+
+
+class ReceiptPersistenceError(RuntimeError):
+    """Local durable receipt failure, never evidence of route/provider ill-health."""
 
 
 class AttemptFailureError(RuntimeError):
@@ -239,6 +246,60 @@ def validate_terminal(value: object) -> str:
     return value.output.strip()
 
 
+def _append_spawn_receipt(directory: Path, row: Mapping[str, Any]) -> None:
+    """Append to an owner-controlled run directory without following any links.
+
+    Held directory descriptors reuse the repository path walk. The run directory
+    follows Prime's private-parent policy; shared ancestors such as /tmp are OK.
+    Advisory locks serialize cooperating writers across the complete durable line.
+    """
+    if not directory.is_absolute() or ".." in directory.parts:
+        raise ValueError("unsafe receipt directory")
+    relative = str(directory / "spawn-receipts.jsonl").removeprefix("/")
+    with hold_repository_dirs("/", relative) as (parent_fd, leaf, _):
+        info = os.fstat(parent_fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError("unsafe receipt directory")
+        # The held O_PATH directory cannot fsync; open that exact directory inode.
+        sync_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+            created = False
+            try:
+                fd = os.open(leaf, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                fd = os.open(leaf, flags, dir_fd=parent_fd)
+            try:
+
+                def validate() -> None:
+                    info = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != os.getuid()
+                        or info.st_nlink != 1
+                    ):
+                        raise ValueError("unsafe receipt file")
+
+                validate()  # Refuse special files before attempting any lock.
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    validate()
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as stream:
+                        stream.write(json.dumps(row) + "\n")
+                        stream.flush()
+                        os.fsync(fd)
+                    if created:
+                        os.fsync(sync_fd)
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(sync_fd)
+
+
 class WorkerController:
     """One immutable task, one owned child at a time, exactly one final outcome."""
 
@@ -314,13 +375,7 @@ class WorkerController:
         }
         self.spawn_receipts.append(row)
         if self.run_dir is not None:
-            path = self.run_dir / "spawn-receipts.jsonl"
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(json.dumps(row) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
+            _append_spawn_receipt(self.run_dir, row)
 
     def finish(
         self,
@@ -495,6 +550,7 @@ class WorkerController:
             spawn_id: str | None = None
             name = f"verdict-{self.operation_id[:10]}-{number}"
             admission_pending = True
+            spawn_timed_out = False
             try:
                 attempt_deadline = min(deadline, time.monotonic() + self.budget.attempt_seconds)
                 try:
@@ -505,8 +561,16 @@ class WorkerController:
                         max(0.001, attempt_deadline - time.monotonic()),
                     )
                     admission_pending = False
+                except TimeoutError:
+                    spawn_timed_out = True
+                    raise
                 finally:
-                    self.spawn_receipt(number, candidate, thinking, reason, handle)
+                    try:
+                        self.spawn_receipt(number, candidate, thinking, reason, handle)
+                    except Exception as receipt_error:
+                        raise ReceiptPersistenceError(
+                            "local_persistence_failure"
+                        ) from receipt_error
                 spawn_id = handle.get("rlm_child_id")
                 if (
                     not isinstance(spawn_id, str)
@@ -543,11 +607,19 @@ class WorkerController:
                         break
                     await asyncio.sleep(min(0.1, remaining))
             except Exception as exc:
-                if admission_pending and isinstance(exc, TimeoutError):
+                if admission_pending and spawn_timed_out:
                     # Spawn may have been admitted after the RPC deadline. Reap by
                     # our unique name before permitting another writer.
                     handle = {"rlm_child_id": name, "model": candidate.selector}
-                health = self.failure(exc)
+                local_persistence = isinstance(exc, ReceiptPersistenceError)
+                health = (
+                    HealthResult(False, "local_persistence_failure")
+                    if local_persistence
+                    else self.failure(exc)
+                )
+                if handle is not None:
+                    reported_id = handle.get("rlm_child_id")
+                    spawn_id = reported_id if isinstance(reported_id, str) else None
                 provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
                 if provider_wide:
                     blocked_providers[provider] = health.category
@@ -555,7 +627,8 @@ class WorkerController:
                     window = candidate.context_tokens
                     overflowed_at = window if overflowed_at is None else max(overflowed_at, window)
                 self.attempts.append((candidate.selector, health.category))
-                self.cache.record_failure(candidate, health, now=self.now())
+                if not local_persistence:
+                    self.cache.record_failure(candidate, health, now=self.now())
                 self.event(
                     "failure",
                     attempt=number,
@@ -563,10 +636,10 @@ class WorkerController:
                     provider=provider,
                     spawn_id=spawn_id,
                     classification=health.category,
-                    cooldown_seconds=_failure_cooldown(health),
+                    cooldown_seconds=0 if local_persistence else _failure_cooldown(health),
                     provider_wide=provider_wide,
-                    excluded=True,
-                    replacement=True,
+                    excluded=not local_persistence,
+                    replacement=not local_persistence,
                 )
                 if handle is not None:
                     # A timed-out writer must be reaped before a replacement can write.
@@ -580,6 +653,12 @@ class WorkerController:
                             f"cleanup_unconfirmed spawn={spawn_id}: "
                             f"{cleanup}; stop this owned child before retrying",
                         )
+                if local_persistence:
+                    return self.finish(
+                        "FAIL_CLOSED",
+                        "local_persistence_failure: owned child reaped; "
+                        "restore safe receipt storage before retrying (no route cooldown)",
+                    )
                 previous = candidate.selector
                 continue
             self.attempts.append((candidate.selector, "completed"))
