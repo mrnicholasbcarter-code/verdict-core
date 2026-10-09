@@ -41,6 +41,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -119,8 +120,14 @@ def _acquire_cache_lock(
     monotonic: Callable[[], float],
     sleep: Callable[[float], None],
 ) -> None:
-    end = monotonic() + LOCK_WAIT_SECONDS if deadline is None else deadline
-    for poll in range(LOCK_POLL_CAP):
+    start = monotonic()
+    end = (
+        min(start + LOCK_WAIT_SECONDS, deadline)
+        if deadline is not None
+        else start + LOCK_WAIT_SECONDS
+    )
+    poll_cap = min(LOCK_POLL_CAP, max(1, math.ceil((end - start) / LOCK_POLL_SECONDS) + 1))
+    for poll in range(poll_cap):
         if monotonic() >= end:
             break
         try:
@@ -130,7 +137,7 @@ def _acquire_cache_lock(
                 break
             return
         except BlockingIOError:
-            if poll + 1 < LOCK_POLL_CAP:
+            if poll + 1 < poll_cap:
                 sleep(min(LOCK_POLL_SECONDS, max(0.0, end - monotonic())))
     raise HealthCacheLockTimeoutError("lock_timeout")
 

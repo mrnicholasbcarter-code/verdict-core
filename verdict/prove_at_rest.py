@@ -1098,7 +1098,15 @@ class Prober:
                 capacity_evidence=route.capacity_evidence,
             )
             self.cache.record(route.route_id, result, now)
-            self._save_for_cycle(wall_start)
+            try:
+                self._save_for_cycle(wall_start)
+            except HealthCacheLockTimeoutError:
+                stats.stopped_reason = (
+                    "wall_cap"
+                    if self.monotonic() - wall_start >= self.max_wall_seconds
+                    else "lock_timeout"
+                )
+                return
             probed += 1
             stats.probed += 1
             if passed:
@@ -1404,13 +1412,7 @@ def _detail_is_model_scoped(
 ) -> bool:
     """Only a named route/model without account-wide markers is route-scoped."""
     text = detail.strip().lower()
-    if (
-        not text
-        or not route_id
-        or any(
-            re.search(r"\b" + re.escape(marker) + r"\b", text) for marker in _ACCOUNT_SCOPE_MARKERS
-        )
-    ):
+    if not text or not route_id or any(marker in text for marker in _ACCOUNT_SCOPE_MARKERS):
         return False
     if http_status not in {403, 429} and category not in {
         CATEGORY_PERMISSION,
@@ -1567,7 +1569,7 @@ def probe_full(
                 requests_made,
                 False,
                 True,
-                NOWRITE_PARTIAL,
+                NOWRITE_DEADLINE,
                 CATEGORY_OK,
                 http_status=status,
                 latency_ms=latency,

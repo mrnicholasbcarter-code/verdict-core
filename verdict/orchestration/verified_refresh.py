@@ -36,6 +36,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -852,7 +853,7 @@ class RefreshCoordinator:
             requests_made += outcome.requests_made
             try:
                 # Release only unused spend before persisting the proof.
-                if outcome.requests_made < probe_requests:
+                if outcome.requests_made < probe_requests and self.monotonic() < deadline:
                     self.cache.release_bucket(
                         reservation,
                         probe_requests - outcome.requests_made,
@@ -862,9 +863,13 @@ class RefreshCoordinator:
                     )
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
             except HealthCacheLockTimeoutError:
-                cap_reason = REASON_LOCK_TIMEOUT
+                cap_reason = (
+                    REASON_WALL_CAP if self.monotonic() >= deadline else REASON_LOCK_TIMEOUT
+                )
                 break
 
+            if outcome.no_write_reason == "deadline":
+                cap_reason = REASON_WALL_CAP
             outcomes[row.route_id] = route_out
             if route_out.probed:
                 probed += 1
@@ -1137,7 +1142,8 @@ class RefreshCoordinator:
         last_seq = -1
         job_running_at_exit = True
         joined_id: str | None = None
-        for _poll in range(JOIN_POLL_CAP):
+        poll_cap = min(JOIN_POLL_CAP, max(1, math.ceil(config.wall_seconds / 0.05) + 1))
+        for _poll in range(poll_cap):
             payload = marker.read()
             if payload is not None:
                 published_id = str(payload.get("job_id") or "")

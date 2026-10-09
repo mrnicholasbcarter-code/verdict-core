@@ -474,15 +474,7 @@ def test_partial_chat_without_tool_is_not_tested(tmp_path: Path) -> None:
         marker_path=tmp_path / "refresh.json",
     )
 
-    # Deadline check uses monotonic; make it elapse right after the chat call.
-    original = coord._probe_one
-
-    def probe_one(row, timeout_seconds, *, deadline, cancel):  # type: ignore[no-untyped-def]
-        # Advance monotonic past the deadline before the tool phase by patching
-        # the transport to bump the clock on the chat call.
-        return original(row, timeout_seconds, deadline=deadline, cancel=cancel)
-
-    # Simpler: set wall so the deadline passes between chat and tool by making
+    # Set wall so the deadline passes between chat and tool by making
     # monotonic jump inside the transport.
     def chat_then_elapse(route_id: str, phase: str, timeout: float) -> ProbeExchange:
         if phase == "chat":

@@ -807,6 +807,7 @@ def test_wall_cap_before_tool_call_does_not_record_negative(tmp_path: Path) -> N
         if phase == "chat":
             clock_val[0] = 601.0  # deadline advances on dispatch, not on lock checks
         return exchange
+
     prober = Prober(
         cache=cache,
         routes_loader=lambda: [route],

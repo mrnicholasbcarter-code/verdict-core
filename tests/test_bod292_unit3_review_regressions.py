@@ -1148,3 +1148,25 @@ def test_review3_daemon_cache_lock_is_bounded(tmp_path: Path) -> None:
         ).run_once()
     assert stats.stopped_reason == "lock_timeout"
     assert transport.calls == []
+
+
+def test_review3_partial_deadline_is_wall_cap(tmp_path: Path) -> None:
+    tick = [0.0]
+    calls: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(phase)
+        tick[0] = 5.0
+        return _ok(route_id, phase)
+
+    coord = _coord(tmp_path, transport, monotonic=lambda: tick[0])
+    result = coord.refresh_for_consumer(
+        RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
+        consumer="picker",
+        needed_ids=["cc/a"],
+        config=RefreshConfig(wall_seconds=1.0),
+    )
+    assert result.route_outcomes["cc/a"].refresh_reason == "wall_cap"
+    assert not result.route_outcomes["cc/a"].probed
+    assert calls == ["chat"]
+    assert coord.cache.entry("cc/a") is None
