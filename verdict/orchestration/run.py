@@ -30,6 +30,7 @@ from pathlib import Path
 # SHADOW decision signals (import only for type checking)
 from typing import TYPE_CHECKING, Any
 
+from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassifier,
     ModelSelector,
@@ -159,7 +160,7 @@ def _get_json(url: str, *, api_key: str | None, timeout: float) -> Any:
         raise OrchestrationError(f"gateway URL must be http(s): {url!r}")
     request = urllib.request.Request(url, headers=headers)
     # Scheme validated above; the gateway URL is operator configuration.
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+    with open_no_redirect(request, timeout=timeout) as response:
         return json.loads(response.read(64 * 1024 * 1024))
 
 
