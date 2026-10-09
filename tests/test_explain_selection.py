@@ -290,6 +290,9 @@ class TestBehaviourParityAcrossFixtures:
                 "probe_class",
                 "cache_checked_at",
                 "cache_freshness",
+                "session_score",
+                "session_passes",
+                "session_fails",
             ]
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:
