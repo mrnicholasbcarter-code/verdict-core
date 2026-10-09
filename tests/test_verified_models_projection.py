@@ -1218,3 +1218,321 @@ def test_evidence_only_orphan_route_not_projected():
     view = project_one(inv, conns, snaps)
     ids = {r.route_id for r in view.rows}
     assert ids == {"cc/sonnet"}
+
+
+# ---------------------------------------------------------------------------
+# Independent-review regression tests (cx/gpt-6-sol REQUEST_CHANGES).
+# Each test below fails on d864926 and passes after the fix.
+# ---------------------------------------------------------------------------
+
+
+def _full_proof_cc_demo(checked_offset_s: int = 60) -> dict[str, Any]:
+    """A fresh, fully-proven at-rest positive for cc/demo."""
+    return health_cache(
+        at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=checked_offset_s))
+    )
+
+
+# -- Finding 1: admission / visibility denial beats positive proof ----------
+
+
+def test_entitlement_denial_beats_positive_proof():
+    # Fresh full-proof cc/demo, but current admission denies at ENTITLED stage
+    # (permission). The current denial must win: UNAVAILABLE, not VERIFIED.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    facts = {
+        "cc/demo": {"admitted": False, "first_failed_stage": "ENTITLED", "reason": "permission"}
+    }
+    snaps = snapshots_from_documents(
+        health_cache_doc=_full_proof_cc_demo(), admission_facts=facts, now=NOW
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.restriction == "entitlement_denied"
+    assert r.reason == "permission"
+
+
+def test_permission_reason_denial_beats_positive_proof():
+    # Admission reason alone (auth/payment/permission/quota) is a current denial
+    # even without an explicit ENTITLED stage label.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    facts = {"cc/demo": {"admitted": False, "first_failed_stage": "", "reason": "payment_required"}}
+    snaps = snapshots_from_documents(
+        health_cache_doc=_full_proof_cc_demo(), admission_facts=facts, now=NOW
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+
+
+def test_capability_gate_beats_positive_proof_is_excluded():
+    # Declared capability / context gate is EXCLUDED, evaluated before positives.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    facts = {
+        "cc/demo": {
+            "admitted": False,
+            "first_failed_stage": "CAPABILITY",
+            "reason": "context_too_small",
+        }
+    }
+    snaps = snapshots_from_documents(
+        health_cache_doc=_full_proof_cc_demo(), admission_facts=facts, now=NOW
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.EXCLUDED
+    assert r.restriction == "capability_excluded"
+    assert r.reason == "context_too_small"
+    assert r.refreshable is False
+
+
+def test_visibility_unavailable_beats_positive_proof():
+    # Required harness visibility is unavailable -> UNAVAILABLE even with proof.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=_full_proof_cc_demo(), visibility_unavailable=["cc/demo"], now=NOW
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.restriction == "visibility_unavailable"
+    assert r.evidence_source == "harness_visibility"
+
+
+def test_visibility_fact_without_proof_is_unavailable():
+    # Visibility fact is consulted even when there is no at-rest evidence at all.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(visibility_unavailable=["cc/demo"], now=NOW)
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert "visibility_unavailable" in r.restrictions
+
+
+def test_visibility_unavailable_does_not_sink_sibling_route():
+    # Only the named route is sunk; a sibling with proof stays VERIFIED.
+    inv = [row("omniroute/cc/demo"), row("omniroute/cc/sonnet")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=60)),
+        ),
+        visibility_unavailable=["cc/demo"],
+        now=NOW,
+    )
+    by_id = {r.route_id: r for r in project_one(inv, conns, snaps).rows}
+    assert by_id["cc/demo"].status is VerifiedStatus.UNAVAILABLE
+    assert by_id["cc/sonnet"].status is VerifiedStatus.VERIFIED
+
+
+# -- Finding 2: bound pool / account cooldowns beat positive proof ----------
+
+
+def test_bound_pool_cooldown_beats_positive_proof():
+    # A pool:p-1 cooldown bound to the route (via the inventory pool marker)
+    # must sink the route even over a fresh positive.
+    inv = [row("omniroute/cc/demo", subscription_pool_id="p-1")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "pool:p-1": {"category": "rate_limited", "until": iso(NOW + timedelta(seconds=300))}
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope == "pool:p-1"
+
+
+def test_bound_account_cooldown_beats_positive_proof():
+    # An account:acct-1 cooldown bound via the active connection's account_id.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc", account_id="acct-1")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "account:acct-1": {
+                    "category": "rate_limited",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope == "account:acct-1"
+
+
+def test_bound_pool_cooldown_does_not_sink_unrelated_route():
+    # pool:p-1 cooldown must not sink a route bound to a different pool.
+    inv = [
+        row("omniroute/cc/demo", subscription_pool_id="p-1"),
+        row("omniroute/cc/other", subscription_pool_id="p-2"),
+    ]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            at_rest_entry("cc/other", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "pool:p-1": {"category": "rate_limited", "until": iso(NOW + timedelta(seconds=300))}
+            },
+        ),
+        now=NOW,
+    )
+    by_id = {r.route_id: r for r in project_one(inv, conns, snaps).rows}
+    assert by_id["cc/demo"].status is VerifiedStatus.UNAVAILABLE
+    assert by_id["cc/other"].status is VerifiedStatus.VERIFIED
+
+
+def test_unbound_account_cooldown_does_not_sink_route():
+    # An account:acct-9 cooldown with no binding to this route is ignored.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc", account_id="acct-1")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "account:acct-9": {
+                    "category": "rate_limited",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.VERIFIED
+
+
+def test_route_bound_cooldown_via_at_rest_pool_field():
+    # The at-rest entry's own ``pool`` field also binds a pool cooldown.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60), pool="p-7"),
+            cooldowns={
+                "pool:p-7": {"category": "rate_limited", "until": iso(NOW + timedelta(seconds=300))}
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope == "pool:p-7"
+
+
+# -- Finding 3: source errors never leak secrets ----------------------------
+
+
+def test_source_error_from_bad_category_redacts_api_key():
+    secret = "TOPSECRET"
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    entry = at_rest_entry(
+        "cc/demo",
+        checked_at=NOW - timedelta(seconds=60),
+        category=f"authentication api_key={secret}",
+    )
+    snaps = snapshots_from_documents(
+        health_cache_doc={"schema_version": "1", "routes": {"cc/demo": entry}}, now=NOW
+    )
+    import json as _json
+
+    blob = _json.dumps(project_one(inv, conns, snaps).to_dict())
+    assert secret not in blob
+    assert "[redacted]" in blob
+
+
+def test_source_error_from_bad_identity_redacts_bearer_token():
+    secret = "sk-abc123"
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    entry = at_rest_entry(
+        "cc/demo", checked_at=NOW - timedelta(seconds=60), identity=f"Bearer {secret}"
+    )
+    snaps = snapshots_from_documents(
+        health_cache_doc={"schema_version": "1", "routes": {"cc/demo": entry}}, now=NOW
+    )
+    import json as _json
+
+    blob = _json.dumps(project_one(inv, conns, snaps).to_dict())
+    assert secret not in blob
+    assert "sk-abc123" not in blob
+
+
+def test_extra_source_errors_are_redacted():
+    # Secrets carried in extra_source_errors are scrubbed at the boundary too.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        now=NOW,
+        extra_source_errors=[
+            "loader failed: api_key=TOPSECRET",
+            "auth header Bearer sk-abc123 rejected",
+        ],
+    )
+    import json as _json
+
+    blob = _json.dumps(project_one(inv, conns, snaps).to_dict())
+    assert "TOPSECRET" not in blob
+    assert "sk-abc123" not in blob
+
+
+# -- Non-blocking: secondary restrictions preserved; worker half-open ------
+
+
+def test_cooldown_preserves_secondary_identity_restriction():
+    # An active cooldown wins the status, but a healthy-but-unverified identity
+    # remains observable as a secondary restriction (design s2).
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    entry = at_rest_entry(
+        "cc/demo",
+        checked_at=NOW - timedelta(seconds=60),
+        identity="not_reported",  # HTTP ok but identity never verified
+    )
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            entry,
+            cooldowns={
+                "provider:cc": {
+                    "category": "rate_limited",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert "availability_blocked" in r.restrictions
+    assert "identity_not_verified" in r.restrictions
+
+
+def test_expired_worker_negative_keeps_half_open_observable():
+    # An expired worker negative must leave the half-open reason observable,
+    # not silently vanish before the UNVERIFIED rule can read it.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    worker = {
+        "cc/demo": {
+            "healthy": False,
+            "category": "upstream",
+            "status_code": 503,
+            "observed_at": iso(NOW - timedelta(seconds=400)),
+            "expires_at": iso(NOW - timedelta(seconds=10)),  # expired
+        }
+    }
+    snaps = snapshots_from_documents(worker_health_doc=worker, now=NOW)
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNVERIFIED
+    assert "half_open" in r.restrictions

@@ -19,6 +19,7 @@ the network, writes anything, or probes a model.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -113,6 +114,35 @@ _DIAGNOSTIC_CATEGORIES: frozenset[str] = frozenset(
 
 _BAD_TEST_STATUS: frozenset[str] = frozenset(
     {"error", "failed", "expired", "unauthorized", "invalid", "unavailable"}
+)
+
+# Admission ``first_failed_stage`` classes (design section 2).  A declared
+# capability / context gate is an EXCLUDED reason; an entitlement / availability
+# denial is an UNAVAILABLE reason.  Both are current facts that beat positive
+# proof.  Other stages (policy / controller / downstream / discovered) fall
+# through to the inventory / non-admissible rules unchanged.
+_CAPABILITY_STAGES: frozenset[str] = frozenset(
+    {"CAPABILITY", "CAPABLE", "CONTEXT", "CONTEXT_WINDOW"}
+)
+_ENTITLEMENT_STAGES: frozenset[str] = frozenset({"ENTITLED", "ENTITLEMENT", "AVAILABLE"})
+# Admission ``reason`` codes that denote an entitlement / auth / payment /
+# permission / quota denial (design section 2 -> UNAVAILABLE).
+_DENIAL_REASONS: frozenset[str] = frozenset(
+    {
+        "authentication",
+        "unauthorized",
+        "payment_required",
+        "payment",
+        "permission",
+        "permission_denied",
+        "quota_exhausted",
+        "exhausted",
+        "rate_limited",
+        "rate_limit",
+        "no_connection_evidence",
+        "no_active_account",
+        "connection_status_bad",
+    }
 )
 
 _PREPAID: frozenset[CapacityClass] = frozenset({CapacityClass.FREE, CapacityClass.SUBSCRIPTION})
@@ -216,14 +246,41 @@ def _epoch(value: datetime | None) -> float:
     return value.timestamp() if value is not None else -math.inf
 
 
+# Bearer / sk- token shapes that ``redact_text`` does not catch on its own
+# (it only matches ``authorization: bearer`` and ``key=value`` forms).
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-/+=]+")
+_SK_TOKEN_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9._\-/+=]+")
+
+
+def _scrub(value: Any) -> str:
+    """Scrub a diagnostic string at the display boundary.
+
+    Drops credentials, bearer/``sk-`` tokens and control characters so a raw
+    untrusted value can never reach ``to_dict``. Applied to every source error
+    and every sanitized reason/restriction.
+    """
+    text = redact_text(str(value))
+    text = _BEARER_TOKEN_RE.sub("[redacted]", text)
+    text = _SK_TOKEN_RE.sub("[redacted]", text)
+    text = "".join(ch for ch in text if ch == " " or ch.isprintable())
+    return text.strip()
+
+
+def _safe_value(value: Any) -> str:
+    """Bounded, redacted rendering of an untrusted value for a source-error
+    message. Never echoes a raw secret; truncates to a short bound so even a
+    non-pattern secret cannot leak in full."""
+    text = _scrub(value)
+    if len(text) > 48:
+        text = text[:48] + "..."
+    return repr(text)
+
+
 def _sanitize(value: Any) -> str | None:
     """Sanitize an arbitrary diagnostic string; drop secrets and control chars."""
     if value is None:
         return None
-    text = redact_text(str(value))
-    text = "".join(ch for ch in text if ch == " " or ch.isprintable())
-    text = text.strip()
-    return text or None
+    return _scrub(value) or None
 
 
 def _bool_or_none(value: Any) -> bool | None:
@@ -522,10 +579,10 @@ def _parse_at_rest_entry(key: str, entry: Any, *, now: datetime) -> AtRestHealth
             raise ValueError(f"{name} must be a literal boolean")
     category = entry.get("category")
     if not isinstance(category, str) or category not in _KNOWN_CATEGORIES:
-        raise ValueError(f"unknown category {category!r}")
+        raise ValueError(f"unknown category (value={_safe_value(category)})")
     identity = entry.get("identity", "")
     if not isinstance(identity, str) or identity not in _KNOWN_IDENTITIES:
-        raise ValueError(f"unknown identity {identity!r}")
+        raise ValueError(f"unknown identity (value={_safe_value(identity)})")
     checked_at = _parse_ts(entry.get("checked_at"))
     if checked_at > now:
         raise ValueError("checked_at is in the future")
@@ -685,8 +742,7 @@ def _parse_worker(
         except ValueError as exc:
             errors.append(f"worker_health[{_sanitize(key)}]: {exc}")
             continue
-        if expires <= now:
-            continue  # expired worker evidence is half-open / unprobed
+        expired = expires <= now
         healthy = entry.get("healthy") is True
         category = str(entry.get("category", "unknown") or "unknown")
         observed_at: datetime | None = None
@@ -703,8 +759,9 @@ def _parse_worker(
         )
         text = str(key)
         if text.startswith("provider:"):
-            if healthy:
-                continue  # provider-level healthy is not route proof
+            # An expired provider cooldown is inactive; a positive is not proof.
+            if healthy or expired:
+                continue
             cooldowns.append(
                 ScopedCooldown(
                     scope="provider",
@@ -718,8 +775,13 @@ def _parse_worker(
             continue
         canon = canonical_route_id(text)
         if healthy:
+            if expired:
+                continue  # an expired positive proves nothing either way
             hints.add(canon)
             continue
+        # Retain route-level negatives even once expired: a fresh one drives
+        # rule 3 FAILED (deadline > now), an expired one keeps the half-open
+        # reason observable (``_is_half_open``) instead of silently vanishing.
         health[canon] = WorkerHealth(
             route_id=canon,
             category=category,
@@ -825,7 +887,7 @@ def snapshots_from_documents(
         admission_facts=facts,
         policy_exclusions=policy,
         visibility_unavailable=vis,
-        source_errors=tuple(errors),
+        source_errors=tuple(_scrub(e) for e in errors),
     )
 
 
@@ -867,17 +929,39 @@ def _resolve_provider_for_row(row: Mapping[str, Any], route_id: str) -> str:
     return resolved or owned or route_provider_prefix(route_id)
 
 
-def _index_cooldowns(
-    cooldowns: Sequence[ScopedCooldown],
-) -> tuple[dict[str, list[ScopedCooldown]], dict[str, list[ScopedCooldown]]]:
+@dataclass(frozen=True)
+class _CooldownIndex:
+    """Scoped availability cooldowns bucketed by their binding key."""
+
+    by_route: Mapping[str, list[ScopedCooldown]]
+    by_provider: Mapping[str, list[ScopedCooldown]]
+    by_pool: Mapping[str, list[ScopedCooldown]]
+    by_account: Mapping[str, list[ScopedCooldown]]
+
+
+def _index_cooldowns(cooldowns: Sequence[ScopedCooldown]) -> _CooldownIndex:
+    """Bucket cooldowns by scope so bound pool/account blockers can be matched.
+
+    Pool/account cooldowns are keyed by their (lower-cased) pool/account name and
+    only apply to a route that is bound to that pool/account (design rule 2); they
+    never sink unrelated providers' routes.
+    """
     by_route: dict[str, list[ScopedCooldown]] = {}
     by_provider: dict[str, list[ScopedCooldown]] = {}
+    by_pool: dict[str, list[ScopedCooldown]] = {}
+    by_account: dict[str, list[ScopedCooldown]] = {}
     for cd in cooldowns:
         if cd.scope == "route":
             by_route.setdefault(cd.name, []).append(cd)
+        elif cd.scope == "pool":
+            by_pool.setdefault(cd.name, []).append(cd)
+        elif cd.scope == "account":
+            by_account.setdefault(cd.name, []).append(cd)
         else:
             by_provider.setdefault(cd.name, []).append(cd)
-    return by_route, by_provider
+    return _CooldownIndex(
+        by_route=by_route, by_provider=by_provider, by_pool=by_pool, by_account=by_account
+    )
 
 
 def _cooldown_sort_key(cd: ScopedCooldown) -> tuple[int, int, float, float, int]:
@@ -955,6 +1039,34 @@ def _active_connections_for(
     return out
 
 
+def _secondary_restrictions(
+    route_id: str,
+    tools: bool | None,
+    at_rest: AtRestHealth | None,
+    evidence: EvidenceSnapshots,
+    *,
+    exclude: Sequence[str] = (),
+) -> list[str]:
+    """Independent restriction codes to preserve even when another reason wins.
+
+    Design section 2: "Preserve secondary restrictions even when another reason
+    wins." These are evidence-backed facts about the route that remain true
+    regardless of the winning status (e.g. an active cooldown also has an
+    unverified identity, a declared no-tools capability, or an unavailable
+    harness visibility). The winning branch's own code is passed in ``exclude``
+    so it is not duplicated; the caller keeps its primary ``restriction`` field.
+    """
+    codes: list[str] = []
+    if _identity_not_verified(at_rest):
+        codes.append("identity_not_verified")
+    if tools is False:
+        codes.append("tools_capability_unavailable")
+    if route_id in evidence.visibility_unavailable:
+        codes.append("visibility_unavailable")
+    excluded = set(exclude)
+    return [c for c in codes if c not in excluded]
+
+
 def _classify_row(
     route_id: str,
     row: Mapping[str, Any],
@@ -962,8 +1074,7 @@ def _classify_row(
     now: datetime,
     evidence: EvidenceSnapshots,
     conn_index: Mapping[str, list[Mapping[str, Any]]],
-    cd_by_route: Mapping[str, list[ScopedCooldown]],
-    cd_by_provider: Mapping[str, list[ScopedCooldown]],
+    cd_index: _CooldownIndex,
     contradictory: set[str],
 ) -> VerifiedModelRow:
     provider = _resolve_provider_for_row(row, route_id)
@@ -1039,13 +1150,47 @@ def _classify_row(
 
     # Admission fact for this route (precomputed or conservatively derived).
     fact = _admission_fact(route_id, provider_names, active_conns, evidence)
+    # A current admission denial is a current fact that beats positive proof: a
+    # declared capability / context gate is EXCLUDED (rule 1); an entitlement /
+    # auth / payment / permission / quota denial is UNAVAILABLE (rule 2). Both
+    # are evaluated BEFORE any positive at-rest proof below.
+    adm_block = _admission_block(fact)
+
+    # -- Rule 1 (cont.): EXCLUDED for a declared capability / context gate -
+    if adm_block is not None and adm_block[0] is VerifiedStatus.EXCLUDED:
+        _status, _reason, _restriction, _source = adm_block
+        restrictions.append(_restriction)
+        return base_row(
+            _status,
+            reason=_sanitize(_reason),
+            restriction=_restriction,
+            restrictions=tuple(restrictions),
+            evidence_source=_source,
+            refresh_reason="not_refreshable",
+        )
 
     # -- Rule 2: UNAVAILABLE (active scoped blockers beat positives) -------
+    bound_pools, bound_accounts = _route_bindings(route_id, row, active_conns, at_rest)
     blocker = _winning_blocker(
-        route_id, provider_names, now, cd_by_route, cd_by_provider, at_rest, worker, ladder
+        route_id,
+        provider_names,
+        now,
+        cd_index,
+        bound_pools,
+        bound_accounts,
+        at_rest,
+        worker,
+        ladder,
     )
     if blocker is not None:
         restrictions.append("availability_blocked")
+        # Design s2: preserve independent secondary restrictions even though the
+        # cooldown wins the status.
+        restrictions.extend(
+            _secondary_restrictions(
+                route_id, tools, at_rest, evidence, exclude=("availability_blocked",)
+            )
+        )
         cat = blocker.canonical_category or blocker.category
         return base_row(
             VerifiedStatus.UNAVAILABLE,
@@ -1070,6 +1215,31 @@ def _classify_row(
             restriction=conn_block,
             restrictions=tuple(restrictions),
             evidence_source="connections",
+            refreshable=False,
+            refresh_reason="blocked",
+        )
+    # Required harness visibility unavailable for this route (rule 2).
+    if route_id in evidence.visibility_unavailable:
+        restrictions.append("visibility_unavailable")
+        return base_row(
+            VerifiedStatus.UNAVAILABLE,
+            reason="visibility_unavailable",
+            restriction="visibility_unavailable",
+            restrictions=tuple(restrictions),
+            evidence_source="harness_visibility",
+            refreshable=False,
+            refresh_reason="blocked",
+        )
+    # Current entitlement / auth / payment / permission / quota denial (rule 2).
+    if adm_block is not None and adm_block[0] is VerifiedStatus.UNAVAILABLE:
+        _status, _reason, _restriction, _source = adm_block
+        restrictions.append(_restriction)
+        return base_row(
+            _status,
+            reason=_sanitize(_reason),
+            restriction=_restriction,
+            restrictions=tuple(restrictions),
+            evidence_source=_source,
             refreshable=False,
             refresh_reason="blocked",
         )
@@ -1197,23 +1367,75 @@ def _classify_row(
     )
 
 
+def _route_bindings(
+    route_id: str,
+    row: Mapping[str, Any],
+    active_conns: Sequence[Mapping[str, Any]],
+    at_rest: AtRestHealth | None,
+) -> tuple[set[str], set[str]]:
+    """Resolve the pool/account names bound to this route (design rule 2).
+
+    A cooldown scoped to ``pool:p`` / ``account:a`` only sinks a route that is
+    bound to that pool/account. Bindings come from the inventory row
+    (``subscription_pool_id`` / ``pool_id`` / ``account_id``), the active
+    connection rows (``account_id`` / ``pool_id`` / ``subscription_pool_id``),
+    an account encoded in the route id, and the at-rest entry's ``pool``.
+    Matching is case-insensitive to mirror the cooldown-name normalisation.
+    """
+    pools: set[str] = set()
+    accounts: set[str] = set()
+
+    def _add(target: set[str], value: Any) -> None:
+        text = str(value or "").strip().lower()
+        if text:
+            target.add(text)
+
+    _add(pools, row.get("subscription_pool_id"))
+    _add(pools, row.get("pool_id"))
+    _add(accounts, row.get("account_id"))
+    for c in active_conns:
+        _add(accounts, c.get("account_id"))
+        _add(pools, c.get("pool_id"))
+        _add(pools, c.get("subscription_pool_id"))
+    # Some legacy inventory rows encode the account in the route id
+    # (``prefix/account/model``); mirror admission's concrete-marker read.
+    parts = route_id.split("/")
+    prefix = route_provider_prefix(route_id)
+    owned = str(row.get("owned_by", "") or "").lower()
+    if len(parts) > 2 and owned.startswith(prefix + "/"):
+        _add(accounts, parts[1])
+    if at_rest is not None and at_rest.pool:
+        _add(pools, at_rest.pool)
+    return pools, accounts
+
+
 def _winning_blocker(
     route_id: str,
     provider_names: set[str],
     now: datetime,
-    cd_by_route: Mapping[str, list[ScopedCooldown]],
-    cd_by_provider: Mapping[str, list[ScopedCooldown]],
+    cd_index: _CooldownIndex,
+    bound_pools: set[str],
+    bound_accounts: set[str],
     at_rest: AtRestHealth | None,
     worker: WorkerHealth | None,
     ladder: LadderHealth | None,
 ) -> ScopedCooldown | None:
     """Pick the winning active availability blocker across all stores (design rule 2)."""
     active: list[ScopedCooldown] = []
-    for cd in cd_by_route.get(route_id, ()):
+    for cd in cd_index.by_route.get(route_id, ()):
         if cd.until > now:
             active.append(cd)
     for name in provider_names:
-        for cd in cd_by_provider.get(name, ()):
+        for cd in cd_index.by_provider.get(name, ()):
+            if cd.until > now:
+                active.append(cd)
+    # Pool / account cooldowns only block a route that is bound to that scope.
+    for pool in bound_pools:
+        for cd in cd_index.by_pool.get(pool, ()):
+            if cd.until > now:
+                active.append(cd)
+    for account in bound_accounts:
+        for cd in cd_index.by_account.get(account, ()):
             if cd.until > now:
                 active.append(cd)
     # At-rest / worker negatives whose category is an availability category also
@@ -1329,6 +1551,39 @@ def _identity_not_verified(at_rest: AtRestHealth | None) -> bool:
         and at_rest.chat_ok
         and at_rest.identity != "verified"
     )
+
+
+def _admission_block(fact: AdmissionFact) -> tuple[VerifiedStatus, str, str, str] | None:
+    """Map a current admission denial to an early EXCLUDED/UNAVAILABLE block.
+
+    Design rules 1-2: a declared capability / context gate is ``EXCLUDED``; an
+    entitlement / auth / payment / permission / quota denial is ``UNAVAILABLE``.
+    Both are current facts and are evaluated BEFORE any positive proof. Only
+    fires when the route is not admitted. Other stages (policy / controller /
+    downstream / unknown) return ``None`` and fall through to the inventory /
+    non-admissible rules unchanged.
+
+    Returns ``(status, reason, restriction, evidence_source)`` or ``None``.
+    """
+    if fact.admitted:
+        return None
+    stage = (fact.first_failed_stage or "").strip().upper()
+    reason = (fact.reason or "").strip().lower()
+    if stage in _CAPABILITY_STAGES:
+        return (
+            VerifiedStatus.EXCLUDED,
+            fact.reason or "capability_gate",
+            "capability_excluded",
+            "policy",
+        )
+    if stage in _ENTITLEMENT_STAGES or reason in _DENIAL_REASONS:
+        return (
+            VerifiedStatus.UNAVAILABLE,
+            fact.reason or "entitlement_denied",
+            "entitlement_denied",
+            "admission",
+        )
+    return None
 
 
 def _admission_fact(
@@ -1484,7 +1739,7 @@ def project_verified_models(
         + list(evidence.ladder_cooldowns)
         + list(evidence.worker_cooldowns)
     )
-    cd_by_route, cd_by_provider = _index_cooldowns(all_cooldowns)
+    cd_index = _index_cooldowns(all_cooldowns)
 
     projected: list[VerifiedModelRow] = []
     for route_id in rows_by_id:
@@ -1495,8 +1750,7 @@ def project_verified_models(
                 now=now,
                 evidence=evidence,
                 conn_index=conn_index,
-                cd_by_route=cd_by_route,
-                cd_by_provider=cd_by_provider,
+                cd_index=cd_index,
                 contradictory=contradictory,
             )
         )
@@ -1539,7 +1793,7 @@ def project_verified_models(
         page=page_index,
         page_size=page_size,
         page_count=page_count,
-        source_errors=tuple(errors),
+        source_errors=tuple(_scrub(e) for e in errors),
     )
 
 
