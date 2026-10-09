@@ -10,6 +10,7 @@ import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -129,8 +130,12 @@ def _fail(
 
 
 def _coordinator(
-    tmp_path: Path, transport: Callable[..., ProbeExchange] | None, *, clock=None, monotonic=None
-):
+    tmp_path: Path,
+    transport: Callable[[str, str, float], ProbeExchange] | None,
+    *,
+    clock: Callable[[], datetime] | None = None,
+    monotonic: Callable[[], float] | None = None,
+) -> RefreshCoordinator:
     cache = HealthCache(tmp_path / "health-cache.json")
 
     def frozen_mono() -> float:
@@ -485,7 +490,7 @@ def test_partial_chat_without_tool_is_not_tested(tmp_path: Path) -> None:
             return _ok(route_id, phase)
         return _ok(route_id, phase)
 
-    coord.transport = chat_then_elapse  # type: ignore[assignment]
+    coord.transport = chat_then_elapse
     out = coord.refresh_for_consumer(
         _snapshot([_row("free/a")]),
         consumer="verified_view",
@@ -696,15 +701,20 @@ def test_results_persist_and_reload(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _plan_for(rows: list[dict[str, object]], ids: list[str], *, now: datetime = NOW):
-    return action_models_refresh_plan(
-        snapshot_rows=rows,
-        needed_ids=ids,
-        now=now,
-        consumer="manual",
-        gateway_origin="http://gw",
-        evidence_generation="gen1",
-    ).data
+def _plan_for(
+    rows: list[dict[str, object]], ids: list[str], *, now: datetime = NOW
+) -> dict[str, Any]:
+    return cast(
+        dict[str, Any],
+        action_models_refresh_plan(
+            snapshot_rows=rows,
+            needed_ids=ids,
+            now=now,
+            consumer="manual",
+            gateway_origin="http://gw",
+            evidence_generation="gen1",
+        ).data,
+    )
 
 
 def test_execute_refuses_without_confirmation(tmp_path: Path) -> None:

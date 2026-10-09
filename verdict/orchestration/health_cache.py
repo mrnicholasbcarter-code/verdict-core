@@ -534,11 +534,16 @@ class TokenBucket:
             timestamps=[parse_datetime(item, "timestamp") for item in raw_times],
             token_ids=[str(item) for item in value.get("token_ids", [])],
             ledger_at=parse_datetime(value["ledger_at"], "ledger_at")
-            if value.get("ledger_at") else None,
-            removed={str(key): parse_datetime(stamp, "removed")
-                     for key, stamp in value.get("removed", {}).items()},
-            released={str(key): parse_datetime(stamp, "released")
-                      for key, stamp in value.get("released", {}).items()},
+            if value.get("ledger_at")
+            else None,
+            removed={
+                str(key): parse_datetime(stamp, "removed")
+                for key, stamp in value.get("removed", {}).items()
+            },
+            released={
+                str(key): parse_datetime(stamp, "released")
+                for key, stamp in value.get("released", {}).items()
+            },
             zeroed_until=parse_datetime(zeroed, "zeroed_until")
             if isinstance(zeroed, str)
             else None,
@@ -703,7 +708,9 @@ class HealthCache:
         return snapshot
 
     def save(
-        self, *, deadline: float | None = None,
+        self,
+        *,
+        deadline: float | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -724,7 +731,9 @@ class HealthCache:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
-            _acquire_cache_lock(handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep)
+            _acquire_cache_lock(
+                handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
+            )
             try:
                 self._merge_in_memory_over_disk()
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
@@ -768,19 +777,24 @@ class HealthCache:
             removed = bucket.removed | disk_bucket.removed
             released = bucket.released | disk_bucket.released
             stamps = [*tokens.values(), *removed.values(), *released.values()]
-            stamps.extend(stamp for stamp in (bucket.ledger_at, disk_bucket.ledger_at)
-                          if stamp is not None)
+            stamps.extend(
+                stamp for stamp in (bucket.ledger_at, disk_bucket.ledger_at) if stamp is not None
+            )
             disk_bucket.ledger_at = max(stamps) if stamps else None
-            cutoff = (max(stamps) - timedelta(seconds=disk_bucket.window_seconds)
-                      if stamps else None)
-            disk_bucket._set_tokens({
-                key: stamp for key, stamp in tokens.items()
-                if key not in removed and (cutoff is None or stamp > cutoff)
-            })
-            disk_bucket.removed = {key: stamp for key, stamp in removed.items()
-                                   if cutoff is None or stamp > cutoff}
-            disk_bucket.released = {key: stamp for key, stamp in released.items()
-                                    if cutoff is None or stamp > cutoff}
+            cutoff = max(stamps) - timedelta(seconds=disk_bucket.window_seconds) if stamps else None
+            disk_bucket._set_tokens(
+                {
+                    key: stamp
+                    for key, stamp in tokens.items()
+                    if key not in removed and (cutoff is None or stamp > cutoff)
+                }
+            )
+            disk_bucket.removed = {
+                key: stamp for key, stamp in removed.items() if cutoff is None or stamp > cutoff
+            }
+            disk_bucket.released = {
+                key: stamp for key, stamp in released.items() if cutoff is None or stamp > cutoff
+            }
             disk_zero = disk_bucket.zeroed_until
             mine_zero = bucket.zeroed_until
             if mine_zero is not None and (disk_zero is None or mine_zero > disk_zero):
@@ -788,7 +802,10 @@ class HealthCache:
         self._cursor = mine_cursor
 
     def merge_and_save(
-        self, mutate: Callable[[HealthCache], None], *, deadline: float | None = None,
+        self,
+        mutate: Callable[[HealthCache], None],
+        *,
+        deadline: float | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -806,7 +823,9 @@ class HealthCache:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
-            _acquire_cache_lock(handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep)
+            _acquire_cache_lock(
+                handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
+            )
             try:
                 # Reload the authoritative on-disk state so a probe written by
                 # another process since we last saved is not lost.
@@ -1054,8 +1073,14 @@ class HealthCache:
         return self.bucket_for(provider, pool).remaining(now)
 
     def reserve_bucket(
-        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1,
-        deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+        self,
+        provider: str,
+        now: datetime,
+        *,
+        pool: str | None = None,
+        amount: int = 1,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> BucketReservation | None:
         """Persist owned tokens before dispatch. None means no spend allowed."""
@@ -1067,14 +1092,20 @@ class HealthCache:
             before = set(bucket._tokens())
             if bucket.consume(now, amount):
                 ids = tuple(key for key in bucket.token_ids if key not in before)
-                reservation = BucketReservation(uuid.uuid4().hex, bucket_key(provider, pool), ids, now)
+                reservation = BucketReservation(
+                    uuid.uuid4().hex, bucket_key(provider, pool), ids, now
+                )
 
         self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
         return reservation
 
     def release_bucket(
-        self, handle: BucketReservation, unused_n: int, *,
-        deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+        self,
+        handle: BucketReservation,
+        unused_n: int,
+        *,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         """Release only this handle's unused tokens; repeat release is a no-op."""

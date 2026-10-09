@@ -390,11 +390,7 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
 
     plan_gateway = str(plan.get("gateway_origin") or "")
     current_gateway = str(snapshot.gateway_origin or "")
-    if (
-        not plan_gateway.strip()
-        or not current_gateway.strip()
-        or plan_gateway != current_gateway
-    ):
+    if not plan_gateway.strip() or not current_gateway.strip() or plan_gateway != current_gateway:
         return _refuse("gateway_changed")
 
     if not executable_ids:

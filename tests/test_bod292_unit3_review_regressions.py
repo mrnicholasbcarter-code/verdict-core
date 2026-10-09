@@ -21,8 +21,8 @@ Findings covered:
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import Any, cast
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +38,7 @@ from verdict.orchestration.verified_refresh import (
     ProbeExchange,
     RefreshConfig,
     RefreshCoordinator,
+    RefreshOutcome,
     RefreshSnapshot,
     RowInput,
 )
@@ -45,7 +46,13 @@ from verdict.orchestration.verified_refresh import (
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 
 
-def _coord(tmp_path: Path, transport, *, monotonic=None, sleep=None):
+def _coord(
+    tmp_path: Path,
+    transport: Callable[[str, str, float], ProbeExchange],
+    *,
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> RefreshCoordinator:
     return RefreshCoordinator(
         cache=HealthCache(tmp_path / "health-cache.json"),
         transport=transport,
@@ -55,6 +62,10 @@ def _coord(tmp_path: Path, transport, *, monotonic=None, sleep=None):
         lock_path=tmp_path / "refresh.lock",
         marker_path=tmp_path / "refresh.json",
     )
+
+
+def _record(cache: HealthCache, route: str, result: ProbeResult, now: datetime) -> None:
+    cache.record(route, result, now)
 
 
 def _ok(route_id: str, phase: str) -> ProbeExchange:
@@ -70,7 +81,7 @@ def _ok(route_id: str, phase: str) -> ProbeExchange:
 
 
 class _Transport:
-    def __init__(self, script=None):
+    def __init__(self, script: dict[tuple[str, str], ProbeExchange] | None = None) -> None:
         self.script = script or {}
         self.calls: list[tuple[str, str]] = []
         self.lock = threading.Lock()
@@ -238,7 +249,9 @@ def test_finding2_disabled_auto_refresh_allows_authorized_manual(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
-def _plan(now=NOW, gateway="http://planned", gen="gen1"):
+def _plan(
+    now: datetime = NOW, gateway: str = "http://planned", gen: str = "gen1"
+) -> dict[str, Any]:
     row = {
         "route_id": "free/a",
         "provider": "free",
@@ -246,13 +259,16 @@ def _plan(now=NOW, gateway="http://planned", gen="gen1"):
         "capacity_class": CAPACITY_FREE,
         "refreshable": True,
     }
-    return action_models_refresh_plan(
-        snapshot_rows=[row],
-        needed_ids=["free/a"],
-        now=now,
-        gateway_origin=gateway,
-        evidence_generation=gen,
-    ).data
+    return cast(
+        dict[str, Any],
+        action_models_refresh_plan(
+            snapshot_rows=[row],
+            needed_ids=["free/a"],
+            now=now,
+            gateway_origin=gateway,
+            evidence_generation=gen,
+        ).data,
+    )
 
 
 def test_finding3_execute_refuses_when_current_generation_missing(tmp_path: Path) -> None:
@@ -329,7 +345,7 @@ def test_finding4_stale_save_does_not_clobber_newer_merge(tmp_path: Path) -> Non
     stale = HealthCache(path)  # loaded while the file is empty
     coordinator = HealthCache(path)
     coordinator.merge_and_save(
-        lambda c: c.record("cc/a", ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
+        lambda c: _record(c, "cc/a", ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
     )
     assert "cc/a" in HealthCache(path).routes()
     # The stale object records its own route and saves (the daemon's path).
@@ -347,7 +363,7 @@ def test_finding4_daemon_cycle_save_preserves_coordinator_write(tmp_path: Path) 
     path = tmp_path / "health-cache.json"
     # Coordinator writes cc/a via the serialized merge path.
     HealthCache(path).merge_and_save(
-        lambda c: c.record("cc/a", ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
+        lambda c: _record(c, "cc/a", ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
     )
 
     # A daemon prober object that was constructed BEFORE that write (so its
@@ -508,7 +524,7 @@ def test_finding6_joined_cancel_stops_shared_owner(tmp_path: Path) -> None:
         lock_path=lock_path,
         marker_path=marker_path,
     )
-    result: dict[str, object] = {}
+    result: dict[str, RefreshOutcome] = {}
 
     def run_owner() -> None:
         result["owner"] = owner.refresh_for_consumer(
@@ -550,8 +566,8 @@ def test_finding6_joined_cancel_stops_shared_owner(tmp_path: Path) -> None:
     assert out.outcome == OUTCOME_CANCELLED
     assert out.complete is False
     # The shared owner was cancelled and stopped before dispatching all routes.
-    assert owner_outcome.outcome == OUTCOME_CANCELLED  # type: ignore[union-attr]
-    assert owner_outcome.probed < 6  # type: ignore[union-attr]
+    assert owner_outcome.outcome == OUTCOME_CANCELLED
+    assert owner_outcome.probed < 6
     # The joined consumer saw at least one live progress tick (shared progress).
     assert len(progress) >= 1
 
@@ -847,7 +863,12 @@ def test_review3_scope_requires_exact_route_name() -> None:
 
     cases = (
         (403, "permission", "Your account does not have access to models on this provider.", False),
-        (429, "rate_limited", "Your account has reached per model usage limit for all models on this provider.", False),
+        (
+            429,
+            "rate_limited",
+            "Your account has reached per model usage limit for all models on this provider.",
+            False,
+        ),
         (403, "permission", "No access to model alpha", True),
         (429, "rate_limited", "Per model usage limit for free/alpha", True),
         (403, "permission", "No access to model alphabet", False),
@@ -861,8 +882,9 @@ def test_review3_scope_requires_exact_route_name() -> None:
         (403, "permission", "", False),
     )
     for status, category, detail, expected in cases:
-        outcome = FullProbeOutcome("free/alpha", None, 1, False, False, "", category,
-                                   http_status=status, detail=detail)
+        outcome = FullProbeOutcome(
+            "free/alpha", None, 1, False, False, "", category, http_status=status, detail=detail
+        )
         assert outcome.model_scoped is expected, detail
 
 
@@ -874,7 +896,9 @@ def test_review3_frozen_join_has_poll_cap(tmp_path: Path) -> None:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         result = coord.refresh_for_consumer(
             RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
-            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(wall_seconds=0.01),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            config=RefreshConfig(wall_seconds=0.01),
         )
     assert result.outcome == "lock_timeout"
     assert not result.complete
@@ -895,8 +919,9 @@ def test_review3_cache_locks_have_deadline_and_poll_cap(tmp_path: Path) -> None:
                 if save:
                     cache.save(deadline=1, monotonic=lambda: 0.0, sleep=calls.append)
                 else:
-                    cache.merge_and_save(lambda _: None, deadline=1,
-                                         monotonic=lambda: 0.0, sleep=calls.append)
+                    cache.merge_and_save(
+                        lambda _: None, deadline=1, monotonic=lambda: 0.0, sleep=calls.append
+                    )
             assert len(calls) < LOCK_POLL_CAP
         with pytest.raises(HealthCacheLockTimeout):
             cache.save(deadline=0, monotonic=lambda: 0.0, sleep=calls.append)
@@ -911,7 +936,9 @@ def test_review3_cache_lock_timeout_stops_dispatch(tmp_path: Path) -> None:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         result = coord.refresh_for_consumer(
             RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
-            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            config=RefreshConfig(),
         )
     assert result.outcome == "lock_timeout"
     assert not result.complete
@@ -935,7 +962,10 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     with patch.object(module._Marker, "write", publish):
         result = coord.refresh_for_consumer(
             RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
-            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(), job_id="new-job",
+            consumer="picker",
+            needed_ids=["cc/a"],
+            config=RefreshConfig(),
+            job_id="new-job",
         )
     assert result.outcome == "cancelled"
     assert transport.calls == []
@@ -949,7 +979,9 @@ def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:
     stale.record("cc/a", ProbeResult("ok", True, True), NOW)
     stale.save()
     fresh = HealthCache(path)
-    fresh.merge_and_save(lambda cache: cache.record("cc/a", ProbeResult("permission", False, False), NOW))
+    fresh.merge_and_save(
+        lambda cache: _record(cache, "cc/a", ProbeResult("permission", False, False), NOW)
+    )
     stale.save()
     entry = HealthCache(path).entry("cc/a")
     assert entry is not None and entry.category == "permission"
@@ -999,7 +1031,9 @@ def test_review3_revision_rejects_stale_future_positive(tmp_path: Path) -> None:
     owner.record("cc/a", ProbeResult("ok", True, True), NOW)
     owner.save()
     stale = HealthCache(path)
-    owner.merge_and_save(lambda cache: cache.record("cc/a", ProbeResult("permission", False, False), NOW))
+    owner.merge_and_save(
+        lambda cache: _record(cache, "cc/a", ProbeResult("permission", False, False), NOW)
+    )
     stale.record("cc/a", ProbeResult("ok", True, True), NOW + timedelta(seconds=1))
     stale.save()
     entry = HealthCache(path).entry("cc/a")
@@ -1016,8 +1050,12 @@ def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None
     row = RowInput("paid/a", "paid", "STALE", CAPACITY_METERED, True)
     progress: list[module.ProgressEvent] = []
     result = coord.refresh_for_consumer(
-        RefreshSnapshot((row,)), consumer="manual", needed_ids=[row.route_id],
-        config=RefreshConfig(), authorized=True, on_progress=progress.append,
+        RefreshSnapshot((row,)),
+        consumer="manual",
+        needed_ids=[row.route_id],
+        config=RefreshConfig(),
+        authorized=True,
+        on_progress=progress.append,
     )
     assert result.verified == 0 and result.alive == 1 and result.failed == 0
     assert all(event.verified == 0 and event.alive == 1 for event in progress)
@@ -1026,15 +1064,21 @@ def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None
     assert payload["outcomes"][row.route_id]["alive"] is True
     assert coord.cache.entry(row.route_id) is not None
     debounce = coord.refresh_for_consumer(
-        RefreshSnapshot((row,)), consumer="manual", needed_ids=[row.route_id],
-        config=RefreshConfig(), authorized=True,
+        RefreshSnapshot((row,)),
+        consumer="manual",
+        needed_ids=[row.route_id],
+        config=RefreshConfig(),
+        authorized=True,
     )
     assert debounce.verified == 0 and debounce.alive == 1 and debounce.failed == 0
     joined = coord._join_and_wait(
-        [row], consumer="manual", config=RefreshConfig(),
+        [row],
+        consumer="manual",
+        config=RefreshConfig(),
         marker=module._Marker(tmp_path / "refresh.json"),
         lock=module._JobLock(tmp_path / "refresh.lock"),
-        on_progress=progress.append, cancel=lambda: False,
+        on_progress=progress.append,
+        cancel=lambda: False,
     )
     assert joined.verified == 0 and joined.alive == 1 and joined.failed == 0
     coord._emit_join_progress(progress.append, payload, 0.0)

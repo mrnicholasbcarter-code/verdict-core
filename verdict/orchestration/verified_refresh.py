@@ -831,8 +831,13 @@ class RefreshCoordinator:
             now = self.clock()
             try:
                 reservation = self.cache.reserve_bucket(
-                    row.provider, now, pool=row.pool, amount=probe_requests,
-                    deadline=deadline, monotonic=self.monotonic, sleep=self.sleep,
+                    row.provider,
+                    now,
+                    pool=row.pool,
+                    amount=probe_requests,
+                    deadline=deadline,
+                    monotonic=self.monotonic,
+                    sleep=self.sleep,
                 )
             except HealthCacheLockTimeout:
                 cap_reason = REASON_LOCK_TIMEOUT
@@ -850,8 +855,11 @@ class RefreshCoordinator:
                 # Release only unused spend before persisting the proof.
                 if outcome.requests_made < probe_requests:
                     self.cache.release_bucket(
-                        reservation, probe_requests - outcome.requests_made,
-                        deadline=deadline, monotonic=self.monotonic, sleep=self.sleep,
+                        reservation,
+                        probe_requests - outcome.requests_made,
+                        deadline=deadline,
+                        monotonic=self.monotonic,
+                        sleep=self.sleep,
                     )
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
             except HealthCacheLockTimeout:
@@ -1185,7 +1193,12 @@ class RefreshCoordinator:
                     verified += 1
                 elif raw.get("alive"):
                     alive += 1
-                elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {
+                    401,
+                    402,
+                    403,
+                    429,
+                }:
                     unavailable += 1
                 else:
                     failed += 1
@@ -1197,12 +1210,13 @@ class RefreshCoordinator:
                     False,
                     refresh_reason=REASON_JOINED_NOT_COVERED,
                 )
-        cancelled = cancel() or (
-            joined_id is not None and self._shared_cancel_requested(joined_id)
-        )
+        cancelled = cancel() or (joined_id is not None and self._shared_cancel_requested(joined_id))
         result_kind = (
-            OUTCOME_CANCELLED if cancelled else
-            OUTCOME_LOCK_TIMEOUT if job_running_at_exit else OUTCOME_JOINED
+            OUTCOME_CANCELLED
+            if cancelled
+            else OUTCOME_LOCK_TIMEOUT
+            if job_running_at_exit
+            else OUTCOME_JOINED
         )
         all_covered = all(o.refresh_reason is None for o in outcomes.values())
         # A join is complete ONLY when every needed id was covered AND the owner
@@ -1221,8 +1235,13 @@ class RefreshCoordinator:
             requests_made=0,  # joined consumers make no calls themselves
             elapsed_seconds=self.monotonic() - started,
             route_outcomes=outcomes,
-            cap_reason=(REASON_LOCK_TIMEOUT if result_kind == OUTCOME_LOCK_TIMEOUT
-                        else None if complete else REASON_JOINED_NOT_COVERED),
+            cap_reason=(
+                REASON_LOCK_TIMEOUT
+                if result_kind == OUTCOME_LOCK_TIMEOUT
+                else None
+                if complete
+                else REASON_JOINED_NOT_COVERED
+            ),
             complete=complete,
             note="joined",
             alive=alive,
@@ -1254,7 +1273,9 @@ class RefreshCoordinator:
                         verified += 1
                     elif raw.get("alive"):
                         alive += 1
-                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get(
+                        "http_status"
+                    ) in {401, 402, 403, 429}:
                         unavailable += 1
                     else:
                         failed += 1
@@ -1330,7 +1351,9 @@ class RefreshCoordinator:
                         verified += 1
                     elif raw.get("alive"):
                         alive += 1
-                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get(
+                        "http_status"
+                    ) in {401, 402, 403, 429}:
                         unavailable += 1
                     else:
                         failed += 1
@@ -1433,7 +1456,8 @@ class RefreshCoordinator:
         started: float,
         per_provider: Mapping[str, int],
         last_reason: str | None,
-        *, alive: int = 0,
+        *,
+        alive: int = 0,
     ) -> None:
         if on_progress is None:
             return
@@ -1468,7 +1492,8 @@ class RefreshCoordinator:
         requests_made: int,
         started: float,
         per_provider: Mapping[str, int],
-        *, alive: int = 0,
+        *,
+        alive: int = 0,
     ) -> None:
         if on_progress is None:
             return
