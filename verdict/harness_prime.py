@@ -126,9 +126,19 @@ def resolve_paths(*, prime_home: Path | None = None, home: Path | None = None) -
         if canonical and canonical.strip():
             root = Path(canonical.strip()).expanduser()
         else:
-            env_home = os.getenv("PRIME_AGENT_HOME") or os.getenv("PRIME_HOME")
-            if env_home and env_home.strip():
-                root = Path(env_home.strip()).expanduser()
+            # Strip each legacy alias BEFORE choosing between them, so a
+            # blank-but-set PRIME_AGENT_HOME (e.g. "   ") does not shadow a
+            # real PRIME_HOME: take the first non-blank value, in order.
+            env_home = next(
+                (
+                    stripped
+                    for candidate in (os.getenv("PRIME_AGENT_HOME"), os.getenv("PRIME_HOME"))
+                    if candidate is not None and (stripped := candidate.strip())
+                ),
+                None,
+            )
+            if env_home:
+                root = Path(env_home).expanduser()
                 if root.name != "agent":
                     root = root / "agent"
             else:
