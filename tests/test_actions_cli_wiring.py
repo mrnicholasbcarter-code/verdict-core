@@ -56,7 +56,12 @@ MISSING_REL = "no-such-log.jsonl"
 
 # Deterministic scrubs for values that vary between runs (timestamps, latency).
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)")
-_LAT_RE = re.compile(r"Latency\s+\d+(?:\.\d+)?ms")
+# Trailing ``[ \t]*`` absorbs the fixed-width table's padding after the ms
+# value, since a wider latency value (e.g. "12.4ms" vs "2.4ms") shifts that
+# padding by the same number of characters it grew (table rows pad to a
+# constant width). Without this the normalized row length differs whenever
+# subprocess latency crosses a digit-count boundary (BOD flaky-test report).
+_LAT_RE = re.compile(r"Latency\s+\d+(?:\.\d+)?ms[ \t]*")
 
 
 def _normalize(text: str) -> str:
@@ -261,6 +266,43 @@ def test_route_offline_stdout_matches_after_isotimestamp_normalization(tmp_path:
     exp_rc = int((BASELINES / "route_offline.rc").read_text())
     assert rc == exp_rc
     assert _normalize(out) == _normalize(exp_out)
+
+
+def test_route_offline_latency_padding_normalizes_across_digit_widths() -> None:
+    """Regression for the flaky latency-width bug.
+
+    The table renders fixed-width rows: a wider latency value (e.g. two or
+    three digits before the decimal point vs. one) shifts the row's trailing
+    padding left by exactly the number of characters the value grew, so the
+    row stays the same total width. ``_LAT_RE`` must absorb that padding
+    (not just the digits) or ``_normalize`` leaves a residual whitespace
+    difference between runs where the real subprocess happens to report a
+    latency >= 10ms and the 2.4ms baseline.
+
+    This rewrites the real baseline's Latency row to 12.4ms and 123.4ms
+    (padding shortened to preserve the row's fixed width) and asserts both
+    normalize identically to the original baseline.
+    """
+    baseline = (BASELINES / "route_offline.out").read_text()
+    lines = baseline.split("\n")
+    lat_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Latency"))
+    lat_line = lines[lat_idx]
+    row_width = len(lat_line)
+    match = re.search(r"\d+(?:\.\d+)?ms", lat_line)
+    assert match is not None, "baseline Latency row has no ms value to rewrite"
+    prefix = lat_line[: match.start()]
+
+    def _row_with_latency(value: str) -> str:
+        pad_len = row_width - len(prefix) - len(value)
+        assert pad_len >= 0, f"{value!r} is wider than the fixed row width"
+        return prefix + value + " " * pad_len
+
+    for value in ("12.4ms", "123.4ms"):
+        variant_lines = list(lines)
+        variant_lines[lat_idx] = _row_with_latency(value)
+        variant = "\n".join(variant_lines)
+        assert len(variant_lines[lat_idx]) == row_width
+        assert _normalize(variant) == _normalize(baseline), f"normalize drift for Latency={value!r}"
 
 
 def test_route_offline_terse_stdout_is_byte_equal(tmp_path: Path) -> None:
