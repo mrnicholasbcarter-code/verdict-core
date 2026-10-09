@@ -448,7 +448,7 @@ def test_finding5_per_model_429_scopes_route_only(tmp_path: Path) -> None:
             ok=False,
             error_category="rate_limited",
             retry_after_seconds=120.0,
-            detail="usage limit reached for this model",
+            detail="usage limit reached for this model cc/a",
         )
     }
     transport = _Transport(script)
@@ -837,3 +837,27 @@ def test_review3_empty_bindings_refused(tmp_path: Path) -> None:
         assert not result.ok
         assert result.data["reason"] == reason
         assert transport.calls == []
+
+
+def test_review3_scope_requires_exact_route_name() -> None:
+    from verdict.prove_at_rest import FullProbeOutcome
+
+    cases = (
+        (403, "permission", "Your account does not have access to models on this provider.", False),
+        (429, "rate_limited", "Your account has reached per model usage limit for all models on this provider.", False),
+        (403, "permission", "No access to model alpha", True),
+        (429, "rate_limited", "Per model usage limit for free/alpha", True),
+        (403, "permission", "No access to model alphabet", False),
+        (403, "permission", "No access to model beta", False),
+        (403, "permission", "No access to this model", False),
+        (429, "rate_limited", "Per model alpha limit for this provider", False),
+        (403, "permission", "Organization blocked model alpha", False),
+        (429, "rate_limited", "Plan limit for alpha", False),
+        (429, "rate_limited", "All models including alpha exceeded quota", False),
+        (500, "upstream", "Model alpha unavailable", False),
+        (403, "permission", "", False),
+    )
+    for status, category, detail, expected in cases:
+        outcome = FullProbeOutcome("free/alpha", None, 1, False, False, "", category,
+                                   http_status=status, detail=detail)
+        assert outcome.model_scoped is expected, detail

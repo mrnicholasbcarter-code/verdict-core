@@ -46,6 +46,7 @@ One bucket per provider/pool, shared with real calls through
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -1381,45 +1382,29 @@ def _no_write_category(exchange: ProbeExchange) -> str | None:
     return None
 
 
-# Provider message fragments that scope a 403 / 429 to a single model rather
-# than the whole account/provider. Mirrors recovery.py's canonical markers so
-# the at-rest prober and the live worker draw the same route-vs-provider line.
-_MODEL_SCOPED_403_MARKERS = (
-    "this model",
-    "for model",
-    "model not allowed",
-    "model is not allowed",
-    "not allowed to use model",
-    "does not have access to model",
-    "no access to model",
-    "model access",
-    "blocked model",
-    "model is blocked",
-)
-_MODEL_SCOPED_429_MARKERS = (
-    "for this model",
-    "model usage limit",
-    "per-model",
-    "per model",
-    "this model",
-)
+# Ambiguous account-wide errors must never leave sibling routes eligible.
+_ACCOUNT_SCOPE_MARKERS = ("account", "all models", "this provider", "organization", "plan")
 
 
-def _detail_is_model_scoped(category: str, http_status: int | None, detail: str) -> bool:
-    """True when a 403/429 message names one model, not the account/provider.
-
-    Empty/unknown detail is NOT model-scoped: the conservative default keeps the
-    whole provider stopped so a sibling route cannot stay VERIFIED behind an
-    account-wide blocker.
-    """
-    text = (detail or "").strip().lower()
-    if not text:
+def _detail_is_model_scoped(
+    category: str, http_status: int | None, detail: str, route_id: str = ""
+) -> bool:
+    """Only a named route/model without account-wide markers is route-scoped."""
+    text = detail.strip().lower()
+    if not text or not route_id or any(
+        re.search(r"\b" + re.escape(marker) + r"\b", text)
+        for marker in _ACCOUNT_SCOPE_MARKERS
+    ):
         return False
-    if http_status == 403 or category == CATEGORY_PERMISSION:
-        return any(marker in text for marker in _MODEL_SCOPED_403_MARKERS)
-    if http_status == 429 or category == CATEGORY_RATE_LIMITED:
-        return any(marker in text for marker in _MODEL_SCOPED_429_MARKERS)
-    return False
+    if http_status not in {403, 429} and category not in {
+        CATEGORY_PERMISSION, CATEGORY_RATE_LIMITED
+    }:
+        return False
+    names = {route_id.lower(), route_id.split("/", 1)[-1].lower()}
+    return any(
+        re.search(r"(?<![\w/.-])" + re.escape(name) + r"(?![\w/.-])", text)
+        for name in names if name
+    )
 
 
 def _aggregate_identity(reports: Sequence[str], route_id: str) -> str:
@@ -1481,7 +1466,7 @@ class FullProbeOutcome:
         A route-scoped 403 (explicit model denial) or 429 (per-model quota)
         leaves sibling routes on the same provider eligible (design s7:156,159).
         """
-        return _detail_is_model_scoped(self.category, self.http_status, self.detail)
+        return _detail_is_model_scoped(self.category, self.http_status, self.detail, self.route_id)
 
 
 def probe_full(
