@@ -333,6 +333,7 @@ _RESTRICTION_CODES: frozenset[str] = frozenset(
         "tools_capability_unavailable",
         "not_admissible",
         "account_binding_ambiguous",
+        "pool_binding_ambiguous",
         "stale_stale",
         "stale_expired",
     }
@@ -774,7 +775,9 @@ def _parse_scoped_cooldown(
     except ValueError as exc:
         errors.append(f"{source} cooldown[{_sanitize(key)}]: {exc}")
         return None
-    norm = canonical_route_id(name) if scope == "route" else name.strip().lower()
+    norm = canonical_route_id(name) if scope == "route" else name.strip()
+    if scope == "provider":
+        norm = norm.lower()
     category = str(entry.get("category", "cooldown") or "cooldown")
     canonical_category = entry.get("canonical_category")
     checked_at: datetime | None = None
@@ -1100,9 +1103,9 @@ def _index_cooldowns(cooldowns: Sequence[ScopedCooldown]) -> _CooldownIndex:
         if cd.scope == "route":
             by_route.setdefault(cd.name, []).append(cd)
         elif cd.scope == "pool":
-            by_pool.setdefault(cd.name, []).append(cd)
+            by_pool.setdefault(cd.name.strip().lower(), []).append(cd)
         elif cd.scope == "account":
-            by_account.setdefault(cd.name, []).append(cd)
+            by_account.setdefault(cd.name.strip().lower(), []).append(cd)
         else:
             by_provider.setdefault(cd.name, []).append(cd)
     return _CooldownIndex(
@@ -1253,6 +1256,9 @@ def _classify_row(
     at_rest = evidence.at_rest.get(route_id)
     worker = evidence.worker_health.get(route_id)
     ladder = evidence.ladder_health.get(route_id)
+    bindings = _route_bindings(route_id, row, active_conns, at_rest)
+    binding_blockers, binding_restrictions = _binding_cooldowns(bindings, now, cd_index)
+    carried.extend(binding_restrictions)
 
     def base_row(status: VerifiedStatus, **kw: Any) -> VerifiedModelRow:
         # Merge any carried secondary restrictions (e.g. account_binding_ambiguous)
@@ -1345,24 +1351,9 @@ def _classify_row(
         )
 
     # -- Rule 2: UNAVAILABLE (active scoped blockers beat positives) -------
-    bindings = _route_bindings(route_id, row, active_conns, at_rest)
-    # An unresolved account binding is an independent fact to surface regardless
-    # of the winning status (re-review finding 2): it both keeps us from sinking
-    # the route on an account cooldown and is recorded as a secondary restriction.
-    account_binding_ambiguous = bool(bindings.ambiguous_accounts)
     blocker = _winning_blocker(
-        route_id,
-        provider_names,
-        now,
-        cd_index,
-        bindings.pools,
-        bindings.accounts,
-        at_rest,
-        worker,
-        ladder,
+        route_id, provider_names, now, cd_index, binding_blockers, at_rest, worker, ladder
     )
-    if account_binding_ambiguous:
-        carried.append("account_binding_ambiguous")
     if blocker is not None:
         restrictions.append("availability_blocked")
         # Design s2: preserve independent secondary restrictions even though the
@@ -1577,20 +1568,22 @@ def _classify_row(
 
 
 @dataclass(frozen=True)
-class _RouteBindings:
-    """Pool/account scopes a route is bound to, plus declined ambiguous accounts.
+class _ConnectionScopes:
+    pools: frozenset[str]
+    accounts: frozenset[str]
 
-    ``pools`` / ``accounts`` are the scopes a pool/account cooldown may sink this
-    route through.  ``ambiguous_accounts`` are connection-derived account ids we
-    deliberately did NOT bind because the provider has several active
-    connections with distinct accounts and the route carries no explicit
-    binding; they are reported as ``account_binding_ambiguous`` rather than used
-    to sink the route (design rule 2, re-review finding 2).
-    """
+
+@dataclass(frozen=True)
+class _RouteBindings:
+    """Explicit scopes and active connection paths associated with a route."""
 
     pools: set[str]
     accounts: set[str]
-    ambiguous_accounts: set[str]
+    connections: tuple[_ConnectionScopes, ...]
+
+
+def _binding_names(row: Mapping[str, Any], *keys: str) -> set[str]:
+    return {text for key in keys if (text := str(row.get(key) or "").strip().lower())}
 
 
 def _route_bindings(
@@ -1599,60 +1592,54 @@ def _route_bindings(
     active_conns: Sequence[Mapping[str, Any]],
     at_rest: AtRestHealth | None,
 ) -> _RouteBindings:
-    """Resolve the pool/account names bound to this route (design rule 2).
-
-    A cooldown scoped to ``pool:p`` / ``account:a`` only sinks a route that is
-    bound to that pool/account.  An *exact* route binding takes precedence and is
-    used ALONE: the inventory row (``subscription_pool_id`` / ``pool_id`` /
-    ``account_id``), an account encoded in the route id, or the at-rest entry's
-    ``pool``.  Connection-derived accounts are an *inferred* binding and are only
-    trusted when the route has no explicit binding AND the provider has a single
-    unambiguous active account; with several active connections bound to distinct
-    accounts the route is not sunk and the ambiguity is reported instead.
-    Matching is case-insensitive to mirror the cooldown-name normalisation.
-    """
-    pools: set[str] = set()
-    accounts: set[str] = set()
-
-    def _add(target: set[str], value: Any) -> None:
-        text = str(value or "").strip().lower()
-        if text:
-            target.add(text)
-
-    # -- Explicit route bindings (used alone when any are present) ----------
-    _add(pools, row.get("subscription_pool_id"))
-    _add(pools, row.get("pool_id"))
-    _add(accounts, row.get("account_id"))
-    # Some legacy inventory rows encode the account in the route id
-    # (``prefix/account/model``); mirror admission's concrete-marker read.
+    """Associate active paths using both explicit pool and account constraints."""
+    pools = _binding_names(row, "subscription_pool_id", "pool_id")
+    accounts = _binding_names(row, "account_id")
     parts = route_id.split("/")
     prefix = route_provider_prefix(route_id)
     owned = str(row.get("owned_by", "") or "").lower()
     if len(parts) > 2 and owned.startswith(prefix + "/"):
-        _add(accounts, parts[1])
+        accounts.add(parts[1].strip().lower())
     if at_rest is not None and at_rest.pool:
-        _add(pools, at_rest.pool)
-
-    if pools or accounts:
-        # An exact route binding wins outright; never widen it with every active
-        # connection's account (re-review finding 2: over-applied cooldowns).
-        return _RouteBindings(pools=pools, accounts=accounts, ambiguous_accounts=set())
-
-    # -- Inferred connection bindings (only when unambiguous) ---------------
-    conn_pools: set[str] = set()
-    conn_accounts: set[str] = set()
+        pools.add(at_rest.pool.strip().lower())
+    associated: list[_ConnectionScopes] = []
     for c in active_conns:
-        _add(conn_accounts, c.get("account_id"))
-        _add(conn_pools, c.get("pool_id"))
-        _add(conn_pools, c.get("subscription_pool_id"))
-    if len(conn_accounts) <= 1:
-        # Exactly one (or zero) distinct active account => unambiguous binding.
-        return _RouteBindings(pools=conn_pools, accounts=conn_accounts, ambiguous_accounts=set())
-    # Several active connections bound to distinct accounts and no explicit
-    # route binding: do not sink the route from an account cooldown; report the
-    # ambiguity instead.  Connection pools stay bound (pool ambiguity is handled
-    # by the pool cooldown only matching a bound pool).
-    return _RouteBindings(pools=conn_pools, accounts=set(), ambiguous_accounts=conn_accounts)
+        conn_pools = _binding_names(c, "pool_id", "subscription_pool_id")
+        conn_accounts = _binding_names(c, "account_id")
+        if (not pools or pools & conn_pools) and (not accounts or accounts & conn_accounts):
+            associated.append(_ConnectionScopes(frozenset(conn_pools), frozenset(conn_accounts)))
+    return _RouteBindings(pools, accounts, tuple(associated))
+
+
+def _binding_cooldowns(
+    bindings: _RouteBindings, now: datetime, cd_index: _CooldownIndex
+) -> tuple[list[ScopedCooldown], list[str]]:
+    """Sink explicit matches or exhausted paths; disclose partial path blocks."""
+
+    def matches(
+        pools: Sequence[str] | set[str] | frozenset[str],
+        accounts: Sequence[str] | set[str] | frozenset[str],
+    ) -> list[ScopedCooldown]:
+        return [
+            cd
+            for names, index in ((pools, cd_index.by_pool), (accounts, cd_index.by_account))
+            for name in names
+            for cd in index.get(name, ())
+            if cd.until > now
+        ]
+
+    explicit = matches(bindings.pools, bindings.accounts)
+    paths = [matches(c.pools, c.accounts) for c in bindings.connections]
+    if paths and all(paths):
+        return [*explicit, *(cd for path in paths for cd in path)], []
+    if explicit:
+        return explicit, []
+    restrictions = [
+        f"{kind}_binding_ambiguous"
+        for kind in ("pool", "account")
+        if any(cd.scope == kind for path in paths for cd in path)
+    ]
+    return [], restrictions
 
 
 def _winning_blocker(
@@ -1660,8 +1647,7 @@ def _winning_blocker(
     provider_names: set[str],
     now: datetime,
     cd_index: _CooldownIndex,
-    bound_pools: set[str],
-    bound_accounts: set[str],
+    binding_blockers: Sequence[ScopedCooldown],
     at_rest: AtRestHealth | None,
     worker: WorkerHealth | None,
     ladder: LadderHealth | None,
@@ -1675,15 +1661,8 @@ def _winning_blocker(
         for cd in cd_index.by_provider.get(name, ()):
             if cd.until > now:
                 active.append(cd)
-    # Pool / account cooldowns only block a route that is bound to that scope.
-    for pool in bound_pools:
-        for cd in cd_index.by_pool.get(pool, ()):
-            if cd.until > now:
-                active.append(cd)
-    for account in bound_accounts:
-        for cd in cd_index.by_account.get(account, ()):
-            if cd.until > now:
-                active.append(cd)
+    # Explicit matches or exhaustion of every associated connection path.
+    active.extend(binding_blockers)
     # At-rest / worker negatives whose category is an availability category also
     # block here (auth/payment/permission/rate-limit), even if only a route
     # negative deadline is known.

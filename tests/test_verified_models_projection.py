@@ -1678,7 +1678,7 @@ def test_cooldown_scope_with_whitespace_or_secret_becomes_invalid():
     # must collapse and the secret must be absent from the whole serialized view.
     d = view.to_dict()
     assert d["rows"][0]["cooldown_scope"] == (
-        "pool:h-" + hashlib.sha256(f"p1 token={secret}".lower().encode()).hexdigest()[:12]
+        "pool:h-" + hashlib.sha256(f"p1 token={secret}".encode()).hexdigest()[:12]
     )
     assert secret not in _json.dumps(d)
 
@@ -2027,7 +2027,7 @@ def test_scope_pseudonyms_are_stable(kind, name, raw):
 )
 def test_secret_route_ids_are_withheld_and_counts_reconcile(bad_id):
     good_ids = ["cc/claude-opus-4-8", "openrouter/x:free"]
-    inv = [row(rid) for rid in good_ids + [bad_id, "omniroute/" + bad_id]]
+    inv = [row(rid) for rid in [*good_ids, bad_id, "omniroute/" + bad_id]]
     view = project_one(inv, [conn("cc"), conn("openrouter")], EvidenceSnapshots())
     assert {r.route_id for r in view.rows} == set(good_ids)
     assert view.source_errors == ("route_id_withheld:1",)
@@ -2040,3 +2040,581 @@ def test_secret_filter_values_are_redacted(field):
     query = VerifiedModelQuery(**{field: "api_key=VERYSECRET"})
     view = project_one([row("cc/demo")], [conn("cc")], EvidenceSnapshots(), query=query)
     assert view.to_dict()["filters"][field] == "[redacted]"
+
+
+# -- Round 3 bindings: explicit constraints plus associated usable paths ------
+
+
+@pytest.mark.parametrize(
+    "binding,connections,cooldowns,status,ambiguous",
+    [
+        ({}, [conn("cc", pool_id="p1")], ["pool:p1"], "UNAVAILABLE", None),
+        ({}, [conn("cc", account_id="acct1")], ["account:acct1"], "UNAVAILABLE", None),
+        (
+            {"pool_id": "p1"},
+            [conn("cc", pool_id="p1", account_id="acct1")],
+            ["account:acct1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {"subscription_pool_id": "p1"},
+            [conn("cc", subscription_pool_id="p1", account_id="acct1")],
+            ["account:acct1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", pool_id="p1"), conn("cc", pool_id="p2")],
+            ["pool:p1"],
+            "VERIFIED",
+            "pool_binding_ambiguous",
+        ),
+        (
+            {},
+            [conn("cc", pool_id="p1"), conn("cc", pool_id="p2")],
+            ["pool:p1", "pool:p2"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", account_id="acct1"), conn("cc", account_id="acct2")],
+            ["account:acct1"],
+            "VERIFIED",
+            "account_binding_ambiguous",
+        ),
+        (
+            {},
+            [conn("cc", account_id="acct1"), conn("cc", account_id="acct2")],
+            ["account:acct1", "account:acct2"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {},
+            [
+                conn("cc", pool_id="p1", account_id="acct1"),
+                conn("cc", pool_id="p2", account_id="acct2"),
+            ],
+            ["pool:p1", "account:acct2"],
+            "UNAVAILABLE",
+            None,
+        ),
+        ({"pool_id": "p1"}, [conn("cc", pool_id="p1")], ["pool:p2"], "VERIFIED", None),
+        (
+            {"account_id": "acct1"},
+            [conn("cc", account_id="acct1")],
+            ["account:acct2"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", active=False, pool_id="p1"), conn("cc", pool_id="p2")],
+            ["pool:p1"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", active=False, account_id="acct1"), conn("cc", account_id="acct2")],
+            ["account:acct1"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", pool_id="p1"), conn("cc", active=False, pool_id="p2")],
+            ["pool:p1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {},
+            [conn("cc", account_id="acct1"), conn("cc", active=False, account_id="acct2")],
+            ["account:acct1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        ({}, [conn("cc", pool_id="p2"), conn("kr", pool_id="p1")], ["pool:p1"], "VERIFIED", None),
+        (
+            {},
+            [conn("cc", account_id="acct2"), conn("kr", account_id="acct1")],
+            ["account:acct1"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {"account_id": "acct1"},
+            [
+                conn("cc", account_id="acct1", pool_id="p1"),
+                conn("cc", account_id="acct2", pool_id="p2"),
+            ],
+            ["pool:p1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {"pool_id": "p1", "account_id": "acct1"},
+            [
+                conn("cc", pool_id="p1", account_id="acct2"),
+                conn("cc", pool_id="p2", account_id="acct1"),
+            ],
+            ["account:acct2", "pool:p2"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {"pool_id": "p1"},
+            [
+                conn("cc", pool_id="p1", account_id="acct1"),
+                conn("cc", pool_id="p1", account_id="acct2"),
+            ],
+            ["account:acct1"],
+            "VERIFIED",
+            "account_binding_ambiguous",
+        ),
+        (
+            {"pool_id": "p1"},
+            [
+                conn("cc", pool_id="p1", account_id="acct1"),
+                conn("cc", pool_id="p1", account_id="acct2"),
+            ],
+            ["account:acct1", "account:acct2"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {"account_id": "acct1"},
+            [
+                conn("cc", pool_id="p1", account_id="acct1"),
+                conn("cc", pool_id="p2", account_id="acct1"),
+            ],
+            ["pool:p1"],
+            "VERIFIED",
+            "pool_binding_ambiguous",
+        ),
+        (
+            {"account_id": "acct1"},
+            [
+                conn("cc", pool_id="p1", account_id="acct1"),
+                conn("cc", pool_id="p2", account_id="acct1"),
+            ],
+            ["pool:p1", "pool:p2"],
+            "UNAVAILABLE",
+            None,
+        ),
+        ({"pool_id": "p1"}, [conn("cc", pool_id="p2")], ["pool:p1"], "UNAVAILABLE", None),
+        (
+            {"account_id": "acct1"},
+            [conn("cc", account_id="acct2")],
+            ["account:acct1"],
+            "UNAVAILABLE",
+            None,
+        ),
+        (
+            {"pool_id": "p1"},
+            [conn("cc", pool_id="p2", account_id="acct1")],
+            ["account:acct1"],
+            "VERIFIED",
+            None,
+        ),
+        (
+            {"account_id": "acct1"},
+            [conn("cc", account_id="acct2", pool_id="p1")],
+            ["pool:p1"],
+            "VERIFIED",
+            None,
+        ),
+        ({}, [conn("cc")], ["pool:p1", "account:acct1"], "VERIFIED", None),
+        (
+            {},
+            [conn("cc", pool_id="p1"), conn("cc")],
+            ["pool:p1"],
+            "VERIFIED",
+            "pool_binding_ambiguous",
+        ),
+        (
+            {"owned_by": "cc/acct1"},
+            [conn("cc", account_id="acct1", pool_id="p1")],
+            ["pool:p1"],
+            "UNAVAILABLE",
+            None,
+        ),
+    ],
+)
+def test_connection_association_binding_matrix(binding, connections, cooldowns, status, ambiguous):
+    rid = "cc/acct1/demo" if "owned_by" in binding else "cc/demo"
+    inv = [row(rid, **binding)]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry(rid, checked_at=NOW - timedelta(seconds=10)),
+            cooldowns={
+                key: {"category": "authentication", "until": iso(NOW + timedelta(seconds=200))}
+                for key in cooldowns
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, connections, snaps))
+    assert r.status.value == status
+    if status == "UNAVAILABLE":
+        assert r.cooldown_scope in cooldowns
+        assert r.coding_ok is False
+    else:
+        assert r.cooldown_scope is None
+        assert r.coding_ok is True
+    assert {code for code in r.restrictions if code.endswith("binding_ambiguous")} == (
+        {ambiguous} if ambiguous else set()
+    )
+
+
+@pytest.mark.parametrize(
+    "binding,expected",
+    [
+        ({}, {"cc/a": ("VERIFIED", "pool_binding_ambiguous"), "cc/b": ("VERIFIED", None)}),
+        ({"account_id": "acct2"}, {"cc/a": ("VERIFIED", None), "cc/b": ("VERIFIED", None)}),
+    ],
+)
+def test_reviewer_edge_probe_exact(binding, expected):
+    inv = [row("omniroute/cc/a", **binding), row("omniroute/cc/b", pool_id="p2")]
+    connections = [
+        conn("cc", pool_id="p1", account_id="acct1"),
+        conn("cc", pool_id="p2", account_id="acct2"),
+    ]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/a", checked_at=NOW - timedelta(seconds=10)),
+            at_rest_entry("cc/b", checked_at=NOW - timedelta(seconds=10)),
+            cooldowns={
+                "pool:p1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=200)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    by_id = {r.route_id: r for r in project_one(inv, connections, snaps).rows}
+    for rid, (status, ambiguity) in expected.items():
+        assert by_id[rid].status.value == status
+        assert by_id[rid].cooldown_scope is None
+        assert {c for c in by_id[rid].restrictions if c.endswith("binding_ambiguous")} == (
+            {ambiguity} if ambiguity else set()
+        )
+
+
+def test_reviewer_binding_probe_exact():
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=10)),
+            cooldowns={
+                "account:acct1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=200)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    view = project_one(
+        [row("omniroute/cc/demo", pool_id="p1")],
+        [conn("cc", account_id="acct1", pool_id="p1")],
+        snaps,
+    )
+    d = view.to_dict()["rows"][0]
+    assert d["status"] == "UNAVAILABLE"
+    assert d["cooldown_scope"] == "account:h-" + hashlib.sha256(b"acct1").hexdigest()[:12]
+
+
+def test_reviewer_security_probe_exact():
+    email = "jane.doe@example.com"
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=10)),
+            cooldowns={
+                "account:" + email: {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=200)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    view = project_one(
+        [row("omniroute/cc/demo", account_id=email)], [conn("cc", account_id=email)], snaps
+    )
+    assert view.to_dict()["rows"][0]["cooldown_scope"] == (
+        "account:h-" + hashlib.sha256(email.encode()).hexdigest()[:12]
+    )
+    filtered = project_one(
+        [row("omniroute/cc/demo")],
+        [conn("cc")],
+        snapshots_from_documents(now=NOW),
+        query=VerifiedModelQuery(search="api_key=VERYSECRET"),
+    )
+    assert filtered.to_dict()["filters"]["search"] == "[redacted]"
+    withheld = project_one(
+        [row("omniroute/cc/sk-SUPERSECRET123456")], [conn("cc")], snapshots_from_documents(now=NOW)
+    )
+    assert withheld.to_dict()["rows"] == []
+    assert withheld.source_errors == ("route_id_withheld:1",)
+
+
+@pytest.mark.parametrize("field", ["pool_id", "subscription_pool_id", "at_rest_pool"])
+def test_explicit_pool_sources_infer_account(field):
+    inv = row("cc/demo", **({field: "p1"} if field != "at_rest_pool" else {}))
+    entry = at_rest_entry(
+        "cc/demo", checked_at=NOW, **({"pool": "p1"} if field == "at_rest_pool" else {})
+    )
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            entry,
+            cooldowns={
+                "account:acct1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=200)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one([inv], [conn("cc", pool_id="p1", account_id="acct1")], snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+
+
+@pytest.mark.parametrize("deadline", [NOW - timedelta(seconds=1), NOW])
+def test_expired_binding_cooldowns_are_not_ambiguous(deadline):
+    connections = [
+        conn("cc", pool_id="p1", account_id="acct1"),
+        conn("cc", pool_id="p2", account_id="acct2"),
+    ]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW),
+            cooldowns={
+                "pool:p1": {"until": iso(deadline)},
+                "account:acct1": {"until": iso(deadline)},
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one([row("cc/demo")], connections, snaps))
+    assert r.status is VerifiedStatus.VERIFIED
+    assert not any(code.endswith("binding_ambiguous") for code in r.restrictions)
+
+
+@pytest.mark.parametrize(
+    "field,expected",
+    [
+        ("route_id", "cc/demo"),
+        ("provider", "cc"),
+        ("status", "VERIFIED"),
+        ("coding_ok", True),
+        ("last_success_at", iso(NOW)),
+        ("checked_at", iso(NOW)),
+        ("evidence_source", "health_cache"),
+        ("fresh_until", iso(NOW + timedelta(seconds=600))),
+        ("expires_at", iso(NOW + timedelta(seconds=1800))),
+        ("freshness", "fresh"),
+        ("capabilities", {"context_window": 200_000, "tools": True, "structured": False}),
+        ("restriction", None),
+        ("reason", None),
+        ("restrictions", []),
+        ("cooldown_until", None),
+        ("cooldown_scope", None),
+        ("failure_category", None),
+        ("http_status", 200),
+        ("latency_ms", 12.5),
+        ("identity", "verified"),
+        ("probe_class", "full"),
+        ("agentic_ok", True),
+        ("agentic_checked_at", iso(NOW)),
+        ("capacity_class", "subscription"),
+        ("refreshable", False),
+        ("refresh_reason", None),
+        ("hints", ["ladder_positive_hint", "worker_positive_hint", "receipt_admitted_hint"]),
+    ],
+)
+def test_public_row_field_audit(field, expected):
+    entry = at_rest_entry(
+        "cc/demo",
+        checked_at=NOW,
+        latency_ms=12.5,
+        http_status=200,
+        probe_class="full",
+        agentic_ok=True,
+        agentic_checked_at=iso(NOW),
+    )
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(entry),
+        ladder_state_doc={"health": {"cc/demo": {"healthy": True, "checked_at": iso(NOW)}}},
+        worker_health_doc={
+            "cc/demo": {"healthy": True, "expires_at": iso(NOW + timedelta(seconds=300))}
+        },
+        admission_receipt_doc={"admitted": ["cc/demo"]},
+        now=NOW,
+    )
+    inv = row("cc/demo")
+    inv["capabilities"]["structured_output"] = False
+    d = project_one([inv], [conn("cc")], snaps).to_dict()["rows"][0]
+    assert set(d) == _ROW_KEYS
+    assert d[field] == expected
+
+
+@pytest.mark.parametrize("field", sorted(_ENVELOPE_KEYS))
+def test_public_envelope_field_audit(field):
+    view = project_one(
+        [row("cc/demo")],
+        [conn("cc")],
+        EvidenceSnapshots(),
+        query=VerifiedModelQuery(provider="cc", search="demo"),
+    )
+    expected = {
+        "schema": SCHEMA,
+        "generated_at": iso(NOW),
+        "rows": [view.rows[0].to_dict()],
+        "counts_by_status": {s.value: int(s is VerifiedStatus.UNVERIFIED) for s in VerifiedStatus},
+        "filtered_counts_by_status": {
+            s.value: int(s is VerifiedStatus.UNVERIFIED) for s in VerifiedStatus
+        },
+        "total_count": 1,
+        "filtered_count": 1,
+        "filters": {"status": None, "provider": "cc", "search": "demo"},
+        "page": 1,
+        "page_size": 50,
+        "page_count": 1,
+        "source_errors": [],
+    }
+    assert view.to_dict()[field] == expected[field]
+
+
+@pytest.mark.parametrize("kind", ["pool", "account"])
+def test_binding_case_insensitive_matching_preserves_pseudonym_input(kind):
+    name = "Jane.Doe@example.com" if kind == "account" else "Pool-A"
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW),
+            cooldowns={f"{kind}:{name}": {"until": iso(NOW + timedelta(seconds=200))}},
+        ),
+        now=NOW,
+    )
+    view = project_one([row("cc/demo")], [conn("cc", **{f"{kind}_id": name.lower()})], snaps)
+    assert only_row(view).status is VerifiedStatus.UNAVAILABLE
+    expected = (
+        f"pool:{name}"
+        if kind == "pool"
+        else ("account:h-" + hashlib.sha256(name.encode()).hexdigest()[:12])
+    )
+    assert view.to_dict()["rows"][0]["cooldown_scope"] == expected
+
+
+@pytest.mark.parametrize("scope", ["pool:p1", "account:acct1"])
+@pytest.mark.parametrize("source", ["health_cache", "ladder_state"])
+def test_associated_cooldowns_from_each_store(scope, source):
+    doc = {"cooldowns": {scope: {"until": iso(NOW + timedelta(seconds=200))}}}
+    cache = health_cache(at_rest_entry("cc/demo", checked_at=NOW))
+    if source == "health_cache":
+        cache.update(doc)
+    snaps = snapshots_from_documents(
+        health_cache_doc=cache, ladder_state_doc=doc if source == "ladder_state" else None, now=NOW
+    )
+    r = only_row(
+        project_one([row("cc/demo")], [conn("cc", pool_id="p1", account_id="acct1")], snaps)
+    )
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.evidence_source == source
+
+
+@pytest.mark.parametrize(
+    "status", [s for s in VerifiedStatus if s is not VerifiedStatus.INVENTORY_ONLY]
+)
+@pytest.mark.parametrize("kind", ["pool", "account"])
+def test_partial_bindings_preserve_status_and_secondary_restriction(status, kind):
+    entry = at_rest_entry("cc/demo", checked_at=NOW)
+    docs = {"now": NOW}
+    cd = {f"{kind}:a1": {"until": iso(NOW + timedelta(seconds=200))}}
+    if status is VerifiedStatus.STALE:
+        entry = at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=900))
+    elif status is VerifiedStatus.FAILED:
+        entry = at_rest_entry(
+            "cc/demo",
+            checked_at=NOW,
+            healthy=False,
+            category="timeout",
+            chat_ok=False,
+            tool_ok=False,
+            until=NOW + timedelta(seconds=200),
+        )
+    elif status is VerifiedStatus.EXCLUDED:
+        docs["policy_exclusions"] = {"cc/demo": "policy"}
+    elif status is VerifiedStatus.UNAVAILABLE:
+        cd["provider:cc"] = {"until": iso(NOW + timedelta(seconds=200))}
+    cache = health_cache(entry, cooldowns=cd)
+    if status is VerifiedStatus.UNVERIFIED:
+        cache["routes"] = {}
+    docs["health_cache_doc"] = cache
+    snaps = snapshots_from_documents(**docs)
+    connections = [conn("cc", **{f"{kind}_id": "a1"}), conn("cc", **{f"{kind}_id": "a2"})]
+    r = only_row(project_one([row("cc/demo")], connections, snaps))
+    assert r.status is status
+    assert f"{kind}_binding_ambiguous" in r.restrictions
+
+
+@pytest.mark.parametrize("kind", ["pool", "account"])
+def test_partial_bindings_survive_inventory_only(kind):
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            cooldowns={f"{kind}:a1": {"until": iso(NOW + timedelta(seconds=200))}}
+        ),
+        admission_facts={"cc/demo": {"admitted": False, "first_failed_stage": "UNKNOWN"}},
+        now=NOW,
+    )
+    connections = [conn("cc", **{f"{kind}_id": "a1"}), conn("cc", **{f"{kind}_id": "a2"})]
+    r = only_row(project_one([row("cc/demo")], connections, snaps))
+    assert r.status is VerifiedStatus.INVENTORY_ONLY
+    assert f"{kind}_binding_ambiguous" in r.restrictions
+
+
+@pytest.mark.parametrize("kind", ["pool", "account"])
+def test_no_active_associations_does_not_promote_or_infer_bindings(kind):
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW),
+            cooldowns={f"{kind}:a1": {"until": iso(NOW + timedelta(seconds=200))}},
+        ),
+        now=NOW,
+    )
+    r = only_row(
+        project_one([row("cc/demo")], [conn("cc", active=False, **{f"{kind}_id": "a1"})], snaps)
+    )
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope is None
+    assert r.evidence_source == "connections"
+    assert not any(code.endswith("binding_ambiguous") for code in r.restrictions)
+
+
+def test_exhausted_associations_consider_all_blockers_for_precedence():
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW),
+            cooldowns={
+                "pool:p1": {"category": "rate_limited", "until": iso(NOW + timedelta(seconds=200))},
+                "account:a1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=100)),
+                },
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(
+        project_one(
+            [row("cc/demo", pool_id="p1")], [conn("cc", pool_id="p1", account_id="a1")], snaps
+        )
+    )
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope == "account:a1"
+    assert r.failure_category == "authentication"
