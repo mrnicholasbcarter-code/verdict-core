@@ -225,7 +225,9 @@ def _refresh_selected(
                         },
                     )
 
-                replace(controller, run_refresh=_wait_on_worker(execute, live=live)).refresh(
+                execution = replace(
+                    controller, run_refresh=_wait_on_worker(execute, live=live)
+                ).refresh(
                     current,
                     consumer=consumer,
                     needed_ids=manual_ids,
@@ -233,6 +235,8 @@ def _refresh_selected(
                     authorized=True,
                     on_progress=lambda event: controller.write(format_verified_progress(event)),
                 )
+                if not execution.ok or execution.data.get("outcome") == "cancelled":
+                    raise ControlsError("manual refresh refused or cancelled; no apply")
                 rows = _load_rows(scoped)
     return rows
 

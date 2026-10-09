@@ -51,7 +51,12 @@ class PrimeReadAdapter:
             release = match[1] if match else None
             digest = byte_digest(binary.read_bytes())
         registry = load_settings(self.paths.models)
-        provider = registry.value.get("providers", {}).get("omniroute", {})
+        providers = registry.value.get("providers")
+        if not isinstance(providers, Mapping) or not isinstance(
+            providers.get("omniroute"), Mapping
+        ):
+            raise PrimeSelectionError("registry_invalid")
+        provider = providers["omniroute"]
         project_digest = None
         override = False
         if self.paths.project_settings is not None and self.paths.project_settings.exists():
