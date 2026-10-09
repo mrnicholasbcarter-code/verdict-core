@@ -165,7 +165,7 @@ def _get_command_index() -> dict[str, tuple[str, str, str]]:
     return _COMMAND_INDEX
 
 
-GatewayAuth = Literal["required", "rejected"]
+GatewayAuth = Literal["required", "rejected", "redirect refused"]
 ProbeResult = tuple[bool | None, int | None, GatewayAuth | None]
 
 
@@ -184,6 +184,11 @@ def _plain(console: Console) -> bool:
     return TerminalUI(console).plain
 
 
+class _NoProbeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
 def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
     """Bounded reachability ping; auth failures mean the gateway is up. Never raises."""
     try:
@@ -198,7 +203,8 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
         request = urllib.request.Request(
             f"{url.rstrip('/')}/v1/models", headers=headers, method="GET"
         )
-        with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
+        opener = urllib.request.build_opener(_NoProbeRedirect())
+        with opener.open(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
             # Bounded read: large catalogs are several MB; anything past the
             # cap is treated as a failed probe rather than read into memory.
             raw = resp.read(_PROBE_MAX_BYTES + 1)
@@ -210,6 +216,8 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             return True, None, "rejected" if key else "required"
+        if 300 <= exc.code < 400:
+            return False, None, "redirect refused"
         return False, None, None
     except Exception:
         return False, None, None
@@ -270,7 +278,7 @@ def render_home(
     blocks.append(Text("VERDICT  autonomous control plane"))
     gw = (
         f"reachable (key {state.gateway_auth})"
-        if state.gateway_auth
+        if state.gateway_auth in {"required", "rejected"}
         else "reachable"
         if state.gateway_ok
         else "unreachable"
@@ -355,7 +363,7 @@ def _styled_home(state: HomeState, *, width: int, interactive: bool = False) -> 
     gateway = Text("GATEWAY  ", style=TOKENS["SECONDARY"])
     gateway.append(
         f"REACHABLE (key {state.gateway_auth})"
-        if state.gateway_auth
+        if state.gateway_auth in {"required", "rejected"}
         else "REACHABLE"
         if state.gateway_ok
         else "UNREACHABLE"
@@ -1157,7 +1165,7 @@ def _startup_with_motion(
         state.gateway_ok, state.gateway_models, state.gateway_auth = result[0]
     gw_label = (
         f"REACHABLE (key {state.gateway_auth})"
-        if state.gateway_auth
+        if state.gateway_auth in {"required", "rejected"}
         else "REACHABLE"
         if state.gateway_ok
         else "UNREACHABLE"

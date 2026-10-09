@@ -801,11 +801,19 @@ def test_probe_gateway_read_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(home, "_PROBE_MAX_BYTES", 64)
     big = _Resp(b'{"data": [' + b'{"id": "m"},' * 50 + b'{"id": "m"}]}')
-    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: big)
+
+    class _Opener:
+        def __init__(self, response: _Resp) -> None:
+            self.response = response
+
+        def open(self, *args: object, **kwargs: object) -> _Resp:
+            return self.response
+
+    monkeypatch.setattr(home.urllib.request, "build_opener", lambda *a: _Opener(big))
     assert home.probe_gateway("http://example.test") == (False, None, None)
     assert big.asked and all(n > 0 for n in big.asked), "read must be bounded"
     small = _Resp(b'{"data": [{"id": "a"}, {"id": "b"}]}')
-    monkeypatch.setattr(home.urllib.request, "urlopen", lambda *a, **k: small)
+    monkeypatch.setattr(home.urllib.request, "build_opener", lambda *a: _Opener(small))
     assert home.probe_gateway("http://example.test") == (True, 2, None)
 
 

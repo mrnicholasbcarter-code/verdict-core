@@ -47,6 +47,29 @@ def gateway(status: int, seen: list[str | None], *, delay: float = 0) -> Iterato
         thread.join(timeout=2)
 
 
+@contextmanager
+def redirect_gateway(target: str, seen: list[str | None]) -> Iterator[str]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(302)
+            self.send_header("Location", f"{target}/v1/models")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 @pytest.fixture(autouse=True)
 def no_gateway_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
@@ -107,6 +130,22 @@ def test_probe_200_with_fallback_key(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "REACHABLE" in output and "2 models" in output
         assert "secret-fallback-key" not in output
     assert seen == ["Bearer secret-fallback-key"]
+
+
+def test_probe_refuses_redirect_without_forwarding_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = "secret-redirect-key"
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", key)
+    source_seen: list[str | None] = []
+    target_seen: list[str | None] = []
+    with gateway(200, target_seen) as target, redirect_gateway(target, source_seen) as source:
+        result = probe_gateway(source)
+        output = rendered(source, result)
+    assert source_seen == [f"Bearer {key}"]
+    assert target_seen == []
+    assert result == (False, None, "redirect refused")
+    assert "UNREACHABLE" in output
+    assert key not in output
+    assert key not in str(result)
 
 
 def test_probe_timeout_is_unreachable() -> None:
