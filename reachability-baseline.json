@@ -1,163 +1,123 @@
 [
   {
     "qualified_name": "verdict.actions.launch.supervise_run",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: supervise_run has no resolved reference; Domain launch entries for BOD-275 Lane E (verdict/actions/launch.py)."
   },
   {
     "qualified_name": "verdict.actions.registry.get_action",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: get_action has only non-production references; Action registry \u2014 the single lookup table for CLI + TUI convergence (verdict/actions/registry.py)."
   },
   {
     "qualified_name": "verdict.adaptive_ranker.RankerInput",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: RankerInput has no resolved reference; Observe-only adaptive ranker with eligibility invariant (Issue #60 / Slice 33.3) (verdict/adaptive_ranker.py)."
   },
   {
     "qualified_name": "verdict.admission.evidence_from_quota_rows",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: evidence_from_quota_rows has only non-production references; Canonical live route admission (verdict/admission.py)."
   },
   {
     "qualified_name": "verdict.admission_with_subscription.admit_with_subscription",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: admit_with_subscription has only non-production references; Compatibility entry point for canonical subscription-aware admission (verdict/admission_with_subscription.py)."
   },
   {
     "qualified_name": "verdict.anthropic_messages_adapter.build_messages_url",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper build_messages_url; local callers are tests."
   },
   {
     "qualified_name": "verdict.anthropic_messages_adapter.is_messages_qualified",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper is_messages_qualified; local callers are tests."
   },
   {
     "qualified_name": "verdict.anthropic_messages_adapter.messages_request_digest",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.caller_authentication",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.chat_completions",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.execute_guidance",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.guidance_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.list_models",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.list_passports",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.no_store_cache_headers",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.qualify_model",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.route_explain",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.route_task_alias",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper messages_request_digest; local callers are tests."
   },
   {
     "qualified_name": "verdict.autodev_routing.OpenAICompatibleEvidenceAdapter",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review OpenAICompatibleEvidenceAdapter in verdict/autodev_routing.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.autodev_routing.attest_response",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review attest_response in verdict/autodev_routing.py before removal; uncalled."
   },
   {
     "qualified_name": "verdict.autodev_routing.discover_concrete_routes",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review discover_concrete_routes in verdict/autodev_routing.py before removal; uncalled."
   },
   {
     "qualified_name": "verdict.autodev_routing.normalize_retry_safety",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review normalize_retry_safety in verdict/autodev_routing.py before removal; uncalled."
   },
   {
     "qualified_name": "verdict.autodev_run.compare_execution_topologies",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review compare_execution_topologies in verdict/autodev_run.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.autodev_run.context_ablation_payload",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review context_ablation_payload in verdict/autodev_run.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.autodev_run.net_savings_report",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review net_savings_report in verdict/autodev_run.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.availability.CallableOmniRouteTransport",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: CallableOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
   },
   {
     "qualified_name": "verdict.availability.MappingOmniRouteTransport",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: MappingOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
   },
   {
     "qualified_name": "verdict.availability_cache.build_cache_report",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: build_cache_report has only non-production references; Bounded availability cache with documented TTL and stale-while-revalidate (verdict/availability_cache.py)."
   },
   {
     "qualified_name": "verdict.capability_registry.make_agentshield_stub",
-    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_agentshield_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capability_registry.make_codebase_memory_stub",
-    "reason": "BOD-316: codebase-memory adapter stub defaults health='unavailable' and no production call site raises it. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_codebase_memory_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capability_registry.make_context7_stub",
-    "reason": "BOD-316: Context7 adapter stub defaults health='unavailable' and no production call site raises it. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_context7_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capability_registry.make_gitleaks_stub",
-    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_gitleaks_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capability_registry.make_semgrep_security_stub",
-    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_semgrep_security_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capability_registry.make_serena_lsp_stub",
-    "reason": "BOD-316: Serena adapter stub defaults health='unavailable' and no production call site raises it; capability_registry.build_default_registry forwards the same default. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "Default-off enrichment stub make_serena_lsp_stub; native fallback exists; adapter activation ticket is not yet assigned."
   },
   {
     "qualified_name": "verdict.capacity_adapters.default_registry",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: default_registry has only non-production references; Capacity evidence adapter protocol and registry (verdict/capacity_adapters.py)."
   },
   {
     "qualified_name": "verdict.capacity_direct.codex_direct_adapter_from_fixtures",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: codex_direct_adapter_from_fixtures has only non-production references; Direct provider capacity adapters (fixture-backed for offline TDD) (verdict/capacity_direct.py)."
   },
   {
     "qualified_name": "verdict.capacity_gateway.omniroute_capacity_adapter_from_fixtures",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: omniroute_capacity_adapter_from_fixtures has only non-production references; Gateway capacity adapters (verdict/capacity_gateway.py)."
   },
   {
     "qualified_name": "verdict.capacity_live.probe_local_capacity_sources",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: probe_local_capacity_sources has only non-production references; Local live capacity discovery (capacity evidence follow-up) (verdict/capacity_live.py)."
   },
   {
     "qualified_name": "verdict.capacity_project.project_execution_path_evidence",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: project_execution_path_evidence has only non-production references; Project CapacitySnapshot into runtime-certification, expected-cost, and (verdict/capacity_project.py)."
   },
   {
     "qualified_name": "verdict.capacity_project.project_runtime_certification_quota",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: project_runtime_certification_quota has only non-production references; Project CapacitySnapshot into runtime-certification, expected-cost, and (verdict/capacity_project.py)."
   },
   {
     "qualified_name": "verdict.capacity_project.scarcest_quota_evidence",
@@ -762,18 +722,6 @@
   {
     "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
     "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.api.health",
-    "reason": "UNTRIAGED: uncalled at verdict/api.py:1317"
-  },
-  {
-    "qualified_name": "verdict.api.ready",
-    "reason": "UNTRIAGED: uncalled at verdict/api.py:1338"
-  },
-  {
-    "qualified_name": "verdict.api.responses",
-    "reason": "UNTRIAGED: uncalled at verdict/api.py:2203"
   },
   {
     "qualified_name": "verdict.benchmarking.format_comparison_report",
