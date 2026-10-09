@@ -467,6 +467,7 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
             "job_id": outcome.job_id,
             "probed": outcome.probed,
             "verified": outcome.verified,
+            "alive": outcome.alive,
             "failed": outcome.failed,
             "unavailable": outcome.unavailable,
             "requests_made": outcome.requests_made,

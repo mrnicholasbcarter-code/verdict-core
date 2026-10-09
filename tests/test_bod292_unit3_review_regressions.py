@@ -131,7 +131,8 @@ def test_finding1_confirmed_metered_plan_executes(tmp_path: Path) -> None:
     assert r.ok
     assert r.data["outcome"] == "completed"
     assert r.data["probed"] == 1
-    assert r.data["verified"] == 1
+    assert r.data["verified"] == 0
+    assert r.data["alive"] == 1
     assert r.data["requests_made"] == 1  # chat-only liveness: never 0, never 2
     assert transport.calls == [("paid/a", "chat")]
     # Recorded as a healthy LIVENESS entry: chat-only, not a coding worker.
@@ -1004,3 +1005,37 @@ def test_review3_revision_rejects_stale_future_positive(tmp_path: Path) -> None:
     entry = HealthCache(path).entry("cc/a")
     assert entry is not None and entry.category == "permission"
     assert entry.write_revision == 2
+
+
+def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None:
+    import json
+    from verdict.orchestration import verified_refresh as module
+
+    transport = _Transport()
+    coord = _coord(tmp_path, transport)
+    row = RowInput("paid/a", "paid", "STALE", CAPACITY_METERED, True)
+    progress: list[module.ProgressEvent] = []
+    result = coord.refresh_for_consumer(
+        RefreshSnapshot((row,)), consumer="manual", needed_ids=[row.route_id],
+        config=RefreshConfig(), authorized=True, on_progress=progress.append,
+    )
+    assert result.verified == 0 and result.alive == 1 and result.failed == 0
+    assert all(event.verified == 0 and event.alive == 1 for event in progress)
+    payload = json.loads((tmp_path / "refresh.json").read_text())
+    assert payload["outcomes"][row.route_id]["verified"] is False
+    assert payload["outcomes"][row.route_id]["alive"] is True
+    assert coord.cache.entry(row.route_id) is not None
+    debounce = coord.refresh_for_consumer(
+        RefreshSnapshot((row,)), consumer="manual", needed_ids=[row.route_id],
+        config=RefreshConfig(), authorized=True,
+    )
+    assert debounce.verified == 0 and debounce.alive == 1 and debounce.failed == 0
+    joined = coord._join_and_wait(
+        [row], consumer="manual", config=RefreshConfig(),
+        marker=module._Marker(tmp_path / "refresh.json"),
+        lock=module._JobLock(tmp_path / "refresh.lock"),
+        on_progress=progress.append, cancel=lambda: False,
+    )
+    assert joined.verified == 0 and joined.alive == 1 and joined.failed == 0
+    coord._emit_join_progress(progress.append, payload, 0.0)
+    assert progress[-1].verified == 0 and progress[-1].alive == 1

@@ -308,6 +308,7 @@ class RouteOutcome:
     http_status: int | None = None
     refresh_reason: str | None = None
     requests_made: int = 0
+    alive: bool = False  # chat-only success, never coding-worker verification
 
 
 @dataclass(frozen=True)
@@ -332,6 +333,7 @@ class ProgressEvent:
     per_provider: Mapping[str, int]
     last_reason: str | None
     kind: str = "progress"  # "progress" | "final"
+    alive: int = 0
 
 
 @dataclass(frozen=True)
@@ -357,6 +359,7 @@ class RefreshOutcome:
     cap_reason: str | None = None
     complete: bool = True
     note: str | None = None
+    alive: int = 0
 
     @property
     def made_calls(self) -> bool:
@@ -769,7 +772,7 @@ class RefreshCoordinator:
         outcomes: dict[str, RouteOutcome] = {}
         scopes = _Scopes()
         requests_made = 0
-        verified = failed = unavailable = probed = 0
+        verified = alive = failed = unavailable = probed = 0
         per_provider: dict[str, int] = {}
         cap_reason: str | None = None
         cancelled = False
@@ -861,6 +864,8 @@ class RefreshCoordinator:
                 per_provider[row.provider] = per_provider.get(row.provider, 0) + 1
                 if route_out.verified:
                     verified += 1
+                elif route_out.alive:
+                    alive += 1
                 elif route_out.category in _PROVIDER_STOP_CATEGORIES or (
                     route_out.http_status in {401, 402, 403, 429}
                 ):
@@ -883,6 +888,7 @@ class RefreshCoordinator:
                 started,
                 per_provider,
                 route_out.category,
+                alive=alive,
             )
             self._write_marker(
                 marker, job_id, consumer, candidates, started, deadline, outcomes, running=True
@@ -932,6 +938,7 @@ class RefreshCoordinator:
             verified=verified,
             failed=failed,
             unavailable=unavailable,
+            alive=alive,
             requests_made=requests_made,
             elapsed_seconds=elapsed,
             route_outcomes=outcomes,
@@ -961,6 +968,7 @@ class RefreshCoordinator:
             requests_made,
             started,
             per_provider,
+            alive=alive,
         )
         # The job is over; drop the shared-cancel flag so a later job starts clean.
         self._clear_shared_cancel(job_id)
@@ -1021,7 +1029,7 @@ class RefreshCoordinator:
         # successful chat as a healthy LIVENESS entry (tool_ok stays false),
         # never as a coding-worker proof and never as a negative.
         liveness_success = outcome.liveness and result.chat_ok and category == CATEGORY_OK
-        is_verified = bool(result.healthy) or liveness_success
+        is_verified = bool(result.healthy and result.tool_ok) and not outcome.liveness
         # Determine scope stop BEFORE the write so a provider block persists even
         # if a sibling later succeeds; the write records the scoped cooldown too.
         # Per-model 403 (explicit model denial) and per-model 429 (per-model
@@ -1092,6 +1100,7 @@ class RefreshCoordinator:
             row.provider,
             probed=True,
             verified=is_verified,
+            alive=liveness_success,
             category=category,
             http_status=outcome.http_status,
             refresh_reason=None,
@@ -1156,7 +1165,7 @@ class RefreshCoordinator:
         job_id = str(payload.get("job_id") or "joined")
         covered = payload.get("outcomes") or {}
         outcomes: dict[str, RouteOutcome] = {}
-        verified = failed = unavailable = probed = 0
+        verified = alive = failed = unavailable = probed = 0
         for row in candidates:
             raw = covered.get(row.route_id) if isinstance(covered, Mapping) else None
             if isinstance(raw, Mapping) and raw.get("probed"):
@@ -1170,9 +1179,14 @@ class RefreshCoordinator:
                     category=raw.get("category"),
                     http_status=raw.get("http_status"),
                     refresh_reason=None,
+                    alive=bool(raw.get("alive")),
                 )
                 if is_verified:
                     verified += 1
+                elif raw.get("alive"):
+                    alive += 1
+                elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                    unavailable += 1
                 else:
                     failed += 1
             else:
@@ -1211,6 +1225,7 @@ class RefreshCoordinator:
                         else None if complete else REASON_JOINED_NOT_COVERED),
             complete=complete,
             note="joined",
+            alive=alive,
         )
 
     def _emit_join_progress(
@@ -1227,7 +1242,7 @@ class RefreshCoordinator:
         if on_progress is None:
             return
         covered = payload.get("outcomes") or {}
-        probed = verified = failed = 0
+        probed = verified = alive = failed = unavailable = 0
         per_provider: dict[str, int] = {}
         if isinstance(covered, Mapping):
             for raw in covered.values():
@@ -1237,6 +1252,10 @@ class RefreshCoordinator:
                     per_provider[provider] = per_provider.get(provider, 0) + 1
                     if raw.get("verified"):
                         verified += 1
+                    elif raw.get("alive"):
+                        alive += 1
+                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                        unavailable += 1
                     else:
                         failed += 1
         self._seq += 1
@@ -1249,7 +1268,8 @@ class RefreshCoordinator:
                 total=total,
                 verified=verified,
                 failed=failed,
-                unavailable=0,
+                unavailable=unavailable,
+                alive=alive,
                 requests_made=0,
                 requests_reserved=0,
                 elapsed_seconds=self.monotonic() - started,
@@ -1288,7 +1308,7 @@ class RefreshCoordinator:
     ) -> RefreshOutcome:
         covered = payload.get("outcomes") or {}
         outcomes: dict[str, RouteOutcome] = {}
-        verified = failed = probed = 0
+        verified = alive = failed = unavailable = probed = 0
         if isinstance(covered, Mapping):
             for rid, raw in covered.items():
                 if not isinstance(raw, Mapping):
@@ -1302,11 +1322,16 @@ class RefreshCoordinator:
                     is_verified,
                     category=raw.get("category"),
                     http_status=raw.get("http_status"),
+                    alive=bool(raw.get("alive")),
                 )
                 if is_probed:
                     probed += 1
                     if is_verified:
                         verified += 1
+                    elif raw.get("alive"):
+                        alive += 1
+                    elif raw.get("category") in _PROVIDER_STOP_CATEGORIES or raw.get("http_status") in {401, 402, 403, 429}:
+                        unavailable += 1
                     else:
                         failed += 1
         return RefreshOutcome(
@@ -1316,7 +1341,8 @@ class RefreshCoordinator:
             probed=probed,
             verified=verified,
             failed=failed,
-            unavailable=0,
+            unavailable=unavailable,
+            alive=alive,
             requests_made=0,
             elapsed_seconds=0.0,
             route_outcomes=outcomes,
@@ -1379,6 +1405,7 @@ class RefreshCoordinator:
                     "provider": o.provider,
                     "probed": o.probed,
                     "verified": o.verified,
+                    "alive": o.alive,
                     "category": o.category,
                     "http_status": o.http_status,
                     "refresh_reason": o.refresh_reason,
@@ -1406,6 +1433,7 @@ class RefreshCoordinator:
         started: float,
         per_provider: Mapping[str, int],
         last_reason: str | None,
+        *, alive: int = 0,
     ) -> None:
         if on_progress is None:
             return
@@ -1424,6 +1452,7 @@ class RefreshCoordinator:
                 elapsed_seconds=self.monotonic() - started,
                 per_provider=dict(per_provider),
                 last_reason=last_reason,
+                alive=alive,
             )
         )
 
@@ -1439,6 +1468,7 @@ class RefreshCoordinator:
         requests_made: int,
         started: float,
         per_provider: Mapping[str, int],
+        *, alive: int = 0,
     ) -> None:
         if on_progress is None:
             return
@@ -1458,6 +1488,7 @@ class RefreshCoordinator:
                 per_provider=dict(per_provider),
                 last_reason=None,
                 kind="final",
+                alive=alive,
             )
         )
 
@@ -1553,6 +1584,9 @@ __all__ = [
     "REASON_REQUEST_CAP",
     "REASON_ROUTE_CAP",
     "REASON_WALL_CAP",
+    "ProbeExchange",
+    "OUTCOME_LOCK_TIMEOUT",
+    "REASON_LOCK_TIMEOUT",
     "ProgressEvent",
     "RefreshConfig",
     "RefreshConfigError",
