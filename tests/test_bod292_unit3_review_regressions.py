@@ -21,6 +21,8 @@ Findings covered:
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
+from typing import Any
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -913,3 +915,28 @@ def test_review3_cache_lock_timeout_stops_dispatch(tmp_path: Path) -> None:
     assert result.outcome == "lock_timeout"
     assert not result.complete
     assert transport.calls == []
+
+
+def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
+    from unittest.mock import patch
+    from verdict.orchestration import verified_refresh as module
+
+    transport = _Transport()
+    coord = _coord(tmp_path, transport)
+    original = module._Marker.write
+
+    def publish(marker: module._Marker, payload: Mapping[str, Any]) -> None:
+        original(marker, payload)
+        if payload.get("running"):
+            coord._request_shared_cancel(str(payload["job_id"]))
+
+    coord._request_shared_cancel("old-job")
+    with patch.object(module._Marker, "write", publish):
+        result = coord.refresh_for_consumer(
+            RefreshSnapshot((RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True),)),
+            consumer="picker", needed_ids=["cc/a"], config=RefreshConfig(), job_id="new-job",
+        )
+    assert result.outcome == "cancelled"
+    assert transport.calls == []
+    assert coord._shared_cancel_requested("old-job")
+    assert not coord._shared_cancel_requested("new-job")

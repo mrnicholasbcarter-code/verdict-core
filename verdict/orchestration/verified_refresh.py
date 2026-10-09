@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -626,29 +628,24 @@ class RefreshCoordinator:
         marker = self.marker_path or (base / "verified-refresh.json")
         return lock, marker
 
-    def _cancel_path(self) -> Path:
-        """Cross-process shared-cancel flag beside the marker (no credentials).
-
-        A joined consumer's Esc/Ctrl-C must cancel the shared owner, not just
-        its own wait (design s5:131, all waiters share cancellation). The owner
-        and every joiner watch this file; its presence requests cancellation of
-        the whole in-flight job.
-        """
+    def _cancel_path(self, job_id: str) -> Path:
+        """Cancellation is bound to one published job, never a later owner."""
         _, marker = self._paths()
-        return marker.with_suffix(marker.suffix + ".cancel")
+        key = hashlib.sha256(job_id.encode()).hexdigest()
+        return marker.with_suffix(marker.suffix + f".{key}.cancel")
 
-    def _request_shared_cancel(self) -> None:
-        path = self._cancel_path()
+    def _request_shared_cancel(self, job_id: str) -> None:
+        path = self._cancel_path(job_id)
         with contextlib.suppress(OSError):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
 
-    def _shared_cancel_requested(self) -> bool:
-        return self._cancel_path().exists()
+    def _shared_cancel_requested(self, job_id: str) -> bool:
+        return self._cancel_path(job_id).exists()
 
-    def _clear_shared_cancel(self) -> None:
+    def _clear_shared_cancel(self, job_id: str) -> None:
         with contextlib.suppress(OSError):
-            self._cancel_path().unlink()
+            self._cancel_path(job_id).unlink()
 
     # -- public entry point ------------------------------------------------
 
@@ -783,11 +780,11 @@ class RefreshCoordinator:
         # Fresh job: drop any stale shared-cancel flag so a prior cycle's Esc
         # does not pre-cancel this one. The owner cancels when its local cancel
         # fires OR a joined consumer raises the shared flag (design s5:131).
-        self._clear_shared_cancel()
+        self._clear_shared_cancel(job_id)
         local_cancel = cancel
 
         def combined_cancel() -> bool:
-            return local_cancel() or self._shared_cancel_requested()
+            return local_cancel() or self._shared_cancel_requested(job_id)
 
         cancel = combined_cancel
 
@@ -967,7 +964,7 @@ class RefreshCoordinator:
             per_provider,
         )
         # The job is over; drop the shared-cancel flag so a later job starts clean.
-        self._clear_shared_cancel()
+        self._clear_shared_cancel(job_id)
         return outcome_obj
 
     def _probe_one(
@@ -1124,25 +1121,24 @@ class RefreshCoordinator:
         deadline = started + config.wall_seconds
         last_seq = -1
         job_running_at_exit = True
+        joined_id: str | None = None
         for _poll in range(JOIN_POLL_CAP):
-            if cancel():
-                # A joined consumer's cancel is SHARED: raise the flag so the
-                # owner stops dispatch too (design s5:131). Do not break until
-                # the owner marks the job finished or the deadline passes, so a
-                # cancelled wait never reports JOINED/complete off a still-live
-                # marker.
-                self._request_shared_cancel()
             payload = marker.read()
             if payload is not None:
-                # Feed the owner's monotonic progress to this waiter's UI so a
-                # joined consumer sees live progress, not a frozen view.
-                seq = payload.get("sequence")
-                if isinstance(seq, int) and seq != last_seq:
-                    last_seq = seq
-                    self._emit_join_progress(on_progress, payload, started)
-                if not payload.get("running", True):
-                    job_running_at_exit = False
-                    break
+                published_id = str(payload.get("job_id") or "")
+                if payload.get("running") and published_id:
+                    joined_id = published_id
+                    if cancel():
+                        self._request_shared_cancel(joined_id)
+                # A completed previous marker is not this owner's publication.
+                if joined_id == published_id:
+                    seq = payload.get("sequence")
+                    if isinstance(seq, int) and seq != last_seq:
+                        last_seq = seq
+                        self._emit_join_progress(on_progress, payload, started)
+                    if not payload.get("running", True):
+                        job_running_at_exit = False
+                        break
             if not lock.live():
                 # Owner released the lock. Re-read once: a finished marker beats
                 # a crash. If it is still "running", the owner crashed and the
@@ -1156,7 +1152,7 @@ class RefreshCoordinator:
             self.sleep(min(0.05, max(0.0, deadline - self.monotonic())))
 
         payload = marker.read() or {}
-        if not payload.get("running", True):
+        if not payload.get("running", True) and not lock.live():
             job_running_at_exit = False
         job_id = str(payload.get("job_id") or "joined")
         covered = payload.get("outcomes") or {}
@@ -1188,7 +1184,9 @@ class RefreshCoordinator:
                     False,
                     refresh_reason=REASON_JOINED_NOT_COVERED,
                 )
-        cancelled = cancel() or self._shared_cancel_requested()
+        cancelled = cancel() or (
+            joined_id is not None and self._shared_cancel_requested(joined_id)
+        )
         result_kind = (
             OUTCOME_CANCELLED if cancelled else
             OUTCOME_LOCK_TIMEOUT if job_running_at_exit else OUTCOME_JOINED
@@ -1465,7 +1463,7 @@ class RefreshCoordinator:
         )
 
     def _new_job_id(self) -> str:
-        return format_datetime(self.clock()).replace(":", "").replace("-", "")
+        return uuid.uuid4().hex
 
     def _wall_now(self) -> float:
         return self.clock().timestamp()
