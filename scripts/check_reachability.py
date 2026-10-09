@@ -6,21 +6,15 @@ production caller, plus provider-stub factories whose default health leaves
 them off by default. A caller inside ``tests/`` does not count as a
 production caller.
 
-``vulture`` (2.16, repo-pinned via ``.vulture-whitelist.py`` /
-``pyproject.toml``) and ``code-review-graph dead-code`` both report *unused*
-code but do not distinguish a test-only caller from a production one, which
-is the exact distinction this story needs ("done means wired", not "done
-means imported by a test"). This script therefore uses the stdlib ``ast``
-module directly: it walks every tracked ``*.py`` file once, records which
-identifiers are referenced from ``tests/`` vs. everywhere else, and reports
-public ``verdict/`` symbols that are referenced only from tests (or not at
-all). Detection is name-based (like vulture): it matches AST identifier
-references by name, not by full type resolution, so it can under- or
-over-report for very common names. It is a TRIAGE signal for human review,
-not a proof of dead code -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md
-for the policy this feeds, and run ``vulture verdict/ .vulture-whitelist.py
---min-confidence 60`` or ``code-review-graph dead-code`` alongside it for a
-second opinion during triage.
+``vulture`` (2.16 pinned in CI, >=2.16 in the dev dependencies) and
+``code-review-graph dead-code`` both report unused code but do not distinguish
+non-production references. This script resolves imports, aliases, same-module
+names, registration decorators, entry points and literal ``getattr`` calls.
+It is a TRIAGE signal, not a proof of dead code: runtime dispatch and dynamic
+imports still need human review. See docs/quality/REACHABILITY-TRIAGE-2026-10.md.
+The optional vulture cross-check uses ``python -m vulture verdict/
+.vulture-whitelist.py --min-confidence 60`` with this interpreter. The whitelist
+is vulture input only; it is not a production caller or a version pin.
 
 Usage:
     scripts/check_reachability.py [--json] [--baseline PATH] [--skip-vulture]
@@ -80,6 +74,7 @@ class CheckResult:
     checked_symbols: int
     findings: tuple[Finding, ...]
     new_findings: tuple[Finding, ...]
+    stale_baseline_entries: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +82,7 @@ class CheckResult:
             "checked_symbols": self.checked_symbols,
             "findings": [f.to_dict() for f in self.findings],
             "new_findings": [f.to_dict() for f in self.new_findings],
+            "stale_baseline_entries": list(self.stale_baseline_entries),
         }
 
 
@@ -297,11 +293,11 @@ def run_vulture(root: Path) -> dict[tuple[str, int], str]:
     not know about ``tests/`` vs. production callers (its "used" means "used
     anywhere, including tests"), so this is a corroborating second opinion,
     not the primary signal -- see the module docstring. Returns an empty dict
-    (rather than raising) if the ``vulture`` executable is not on PATH, so
+    (rather than raising) if this interpreter has no ``vulture`` module, so
     this report degrades gracefully in environments without it installed.
     """
     whitelist = root / ".vulture-whitelist.py"
-    args = ["vulture", "verdict/"]
+    args = [sys.executable, "-m", "vulture", "verdict/"]
     if whitelist.exists():
         args.append(str(whitelist))
     args += ["--min-confidence", "60"]
@@ -406,7 +402,8 @@ def check(
 
     ordered = tuple(sorted(findings, key=lambda f: (f.qualified_name, f.kind)))
     new_ordered = tuple(f for f in ordered if f.qualified_name not in baseline)
-    return CheckResult(not new_ordered, checked, ordered, new_ordered)
+    stale = tuple(sorted(baseline - {f.qualified_name for f in ordered}))
+    return CheckResult(not new_ordered, checked, ordered, new_ordered, stale)
 
 
 def render_text(result: CheckResult) -> str:
@@ -445,6 +442,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"reachability check error: {exc}", file=sys.stderr)
         return 2
+    if result.stale_baseline_entries:
+        print(
+            "reachability warning: stale baseline entries: "
+            + ", ".join(result.stale_baseline_entries),
+            file=sys.stderr,
+        )
     if args.json_output:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     else:

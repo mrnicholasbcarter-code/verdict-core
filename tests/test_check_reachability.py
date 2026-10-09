@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -182,7 +181,9 @@ def test_duplicate_baseline_entries_are_rejected(tmp_path: Path) -> None:
         checker.load_baseline(baseline)
 
 
-@pytest.mark.skipif(shutil.which("vulture") is None, reason="vulture not on PATH")
+@pytest.mark.skipif(
+    importlib.util.find_spec("vulture") is None, reason="vulture module not installed"
+)
 def test_vulture_cross_check_annotates_uncalled_findings(tmp_path: Path) -> None:
     root = _repository(tmp_path, {"verdict/fixture.py": _BASELINED_UNCALLED})
 
@@ -286,3 +287,35 @@ def test_script_entry_point_and_literal_getattr_are_roots(tmp_path: Path) -> Non
 def test_stub_positional_and_async_defaults(tmp_path: Path, prefix: str, signature: str) -> None:
     root = _repository(tmp_path, {"verdict/m.py": f"{prefix} make_stub({signature}): pass\n"})
     assert any(f.kind == "stub_default" for f in checker.check(root, use_vulture=False).findings)
+
+
+def test_stale_baseline_entries_are_reported_without_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _repository(tmp_path, {"verdict/m.py": ""})
+    baseline = root / "reachability-baseline.json"
+    _write_baseline(baseline, [{"qualified_name": "verdict.m.removed", "reason": "removed API"}])
+    result = checker.check(root, baseline_path=baseline, use_vulture=False)
+    assert result.ok
+    assert result.to_dict()["stale_baseline_entries"] == ["verdict.m.removed"]
+    monkeypatch.setattr(checker, "check", lambda **kwargs: result)
+    assert checker.main(["--skip-vulture", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert "warning: stale baseline entries: verdict.m.removed" in captured.err
+    assert json.loads(captured.out)["stale_baseline_entries"] == ["verdict.m.removed"]
+
+
+def test_vulture_uses_current_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 1, "verdict/m.py:1: unused function 'f' (60% confidence)", ""
+        )
+
+    monkeypatch.setattr(checker.subprocess, "run", fake_run)
+    assert checker.run_vulture(tmp_path) == {
+        ("verdict/m.py", 1): "unused function 'f' (60% confidence)"
+    }
+    assert calls[0][:3] == [sys.executable, "-m", "vulture"]
