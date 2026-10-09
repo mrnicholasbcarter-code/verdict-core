@@ -1189,3 +1189,108 @@ def test_cli_once_forwards_max_wall_seconds(tmp_path: Path) -> None:
     assert params.get("max_wall_seconds") == 123.0, (
         f"max_wall_seconds not forwarded to run_action params: {params!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# BOD-292 additive schema-1 fields: cooldowns, last_success_at, merge_and_save
+# ---------------------------------------------------------------------------
+
+
+def test_last_success_at_preserved_across_a_later_failure(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "health-cache.json")
+    cache.record("free/m", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+    first = cache.entry("free/m")
+    assert first is not None and first.last_success_at == NOW
+    # A later failure overwrites checked_at but keeps the earlier success time.
+    later = _at(60)
+    cache.record(
+        "free/m",
+        ProbeResult(category=CATEGORY_UPSTREAM, chat_ok=False, tool_ok=False, http_status=500),
+        later,
+    )
+    failed = cache.entry("free/m")
+    assert failed is not None
+    assert failed.healthy is False
+    assert failed.checked_at == later
+    assert failed.last_success_at == NOW  # earlier success history retained
+
+
+def test_schema1_additive_fields_round_trip_and_old_readers_ignore(tmp_path: Path) -> None:
+    from verdict.orchestration.health_cache import ScopedCooldown
+
+    path = tmp_path / "health-cache.json"
+    cache = HealthCache(path)
+    cache.record("free/m", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+    cache.record_cooldown(
+        ScopedCooldown(
+            key="provider:cc",
+            category=CATEGORY_AUTH,
+            checked_at=NOW,
+            until=_at(3600),
+            provider_id="cc",
+        )
+    )
+    cache.save()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # New top-level key present; route carries last_success_at.
+    assert "cooldowns" in raw
+    assert raw["routes"]["free/m"]["last_success_at"].endswith("Z")
+    # A reader that ignores unknown keys still loads routes/buckets fine.
+    reloaded = HealthCache(path)
+    assert reloaded.lookup("free/m", _at(10)).state == STATE_FRESH
+    assert reloaded.cooldown_for("provider:cc", _at(10)) is not None
+    assert reloaded.cooldown_for("provider:cc", _at(4000)) is None  # expired
+
+
+def test_cooldowns_absent_by_default_keeps_snapshot_lean(tmp_path: Path) -> None:
+    path = tmp_path / "health-cache.json"
+    cache = HealthCache(path)
+    cache.record("free/m", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+    cache.save()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # No cooldowns were recorded, so the key is omitted (old goldens stable).
+    assert "cooldowns" not in raw
+
+
+def test_record_cooldown_keeps_the_later_deadline(tmp_path: Path) -> None:
+    from verdict.orchestration.health_cache import ScopedCooldown
+
+    cache = HealthCache(tmp_path / "health-cache.json")
+    cache.record_cooldown(
+        ScopedCooldown(
+            key="provider:cc", category=CATEGORY_RATE_LIMITED, checked_at=NOW, until=_at(60)
+        )
+    )
+    cache.record_cooldown(
+        ScopedCooldown(key="provider:cc", category=CATEGORY_AUTH, checked_at=NOW, until=_at(3600))
+    )
+    cd = cache.cooldown_for("provider:cc", _at(10))
+    assert cd is not None and cd.until == _at(3600)
+    # An earlier deadline does not shorten the active one.
+    cache.record_cooldown(
+        ScopedCooldown(
+            key="provider:cc", category=CATEGORY_RATE_LIMITED, checked_at=NOW, until=_at(120)
+        )
+    )
+    assert cache.cooldown_for("provider:cc", _at(10)).until == _at(3600)
+
+
+def test_merge_and_save_serializes_a_read_modify_write(tmp_path: Path) -> None:
+    path = tmp_path / "health-cache.json"
+    # Writer A records one route and saves.
+    HealthCache(path).record(
+        "free/a", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW
+    )
+    writer_a = HealthCache(path)
+    writer_a.record("free/a", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+    writer_a.save()
+    # Writer B merges a different route; merge_and_save reloads A's state first.
+    writer_b = HealthCache(path)
+
+    def mutate(cache: HealthCache) -> None:
+        cache.record("free/b", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+
+    writer_b.merge_and_save(mutate)
+    final = HealthCache(path)
+    assert final.entry("free/a") is not None  # A's write was not clobbered
+    assert final.entry("free/b") is not None  # B's merge landed

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -231,6 +232,7 @@ class EligibilityLadder:
         admission_receipt: Path | None = None,
         health_cache: Any | None = None,
         allow_unknown_capacity: bool | None = None,
+        refresh_hook: Callable[[Sequence[str], datetime], None] | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -261,6 +263,12 @@ class EligibilityLadder:
                 "true",
                 "yes",
             )
+        # BOD-292: optional selection-before-dispatch refresh hook. When set,
+        # ``select`` calls it with the candidate ids BEFORE probing so the
+        # bounded coordinator can refresh needed non-fresh prepaid evidence.
+        # Default None keeps behaviour identical; the existing exact ladder
+        # confirmation always still runs regardless of the hook.
+        self._refresh_hook = refresh_hook
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -801,6 +809,15 @@ class EligibilityLadder:
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
         assessments, candidates = self._assess_all(requirements, now)
+        # BOD-292 selection-before-dispatch: give the bounded refresh coordinator
+        # the candidate ids so it can refresh needed non-fresh prepaid evidence
+        # before we probe. The hook waits for its bounded job and never mutates
+        # selection; exact confirmation below is unchanged. A hook failure must
+        # not break selection, so it is best-effort.
+        refresh_hook = getattr(self, "_refresh_hook", None)
+        if refresh_hook is not None and candidates:
+            with contextlib.suppress(Exception):
+                refresh_hook([a.route_id for a in candidates], now)
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None

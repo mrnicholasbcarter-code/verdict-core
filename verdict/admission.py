@@ -289,6 +289,85 @@ def evidence_from_health_cache(path: Path, *, now: datetime) -> RuntimeEvidence:
     return RuntimeEvidence(tuple(out), (source,))
 
 
+def evidence_from_at_rest_health_cache(path: Path, *, now: datetime) -> RuntimeEvidence:
+    """NEGATIVE-ONLY adapter over the prove-at-rest ``health-cache.json``.
+
+    This is distinct from :func:`evidence_from_health_cache`, which reads the
+    flat worker ``subagent-health.json``. The at-rest cache is the prove-at-rest
+    prober's schema-1 store (``routes`` map plus an optional ``cooldowns``
+    envelope). It is local, writable display evidence, so this adapter admits
+    NO positives at all: a healthy route here is only a scheduling hint and
+    exact launch confirmation remains mandatory.
+
+    Emitted observations:
+      * each route whose entry is an unexpired negative (``healthy`` false and
+        ``until`` after ``now``), mapped to its canonical state/category;
+      * each unexpired scoped cooldown from the ``cooldowns`` envelope
+        (``provider:``/``pool:``/``account:`` etc.), as a cooldown observation.
+
+    Positives, expired negatives and half-open (``until`` at/before ``now``)
+    entries are omitted. A missing file is normal (``<source>:absent``).
+    """
+    source = f"at_rest_health_cache:{path.name}"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return RuntimeEvidence((), (source + ":absent",))
+    if not isinstance(raw, Mapping):
+        return RuntimeEvidence((), (source + ":absent",))
+    out: list[RuntimeObservation] = []
+    routes = raw.get("routes")
+    for route_id, entry in (routes or {}).items() if isinstance(routes, Mapping) else ():
+        if not isinstance(entry, Mapping):
+            continue
+        if entry.get("healthy") is True:
+            continue  # positive: display hint only, never admission evidence
+        until = _parse_iso(entry.get("until"))
+        if until is None or until <= now:
+            continue  # expired or half-open: not a current blocker
+        category = str(entry.get("category", "") or "")
+        state = _state_for_category(category)
+        out.append(
+            RuntimeObservation(
+                f"route:{canonical_route_id(str(route_id))}",
+                state,
+                category or state,
+                source,
+                entry.get("checked_at") if isinstance(entry.get("checked_at"), str) else None,
+                _iso(until),
+            )
+        )
+    cooldowns = raw.get("cooldowns")
+    for key, entry in (cooldowns or {}).items() if isinstance(cooldowns, Mapping) else ():
+        if not isinstance(entry, Mapping):
+            continue
+        until = _parse_iso(entry.get("until"))
+        if until is None or until <= now:
+            continue
+        scope, _, name = str(key).partition(":")
+        if scope not in {"route", "provider", "pool", "account"} or not name:
+            continue
+        norm = canonical_route_id(name) if scope == "route" else name.lower()
+        category = str(entry.get("category", "cooldown") or "cooldown")
+        out.append(
+            RuntimeObservation(
+                f"{scope}:{norm}",
+                "cooldown",
+                category,
+                source,
+                entry.get("checked_at") if isinstance(entry.get("checked_at"), str) else None,
+                _iso(until),
+                provider_id=(
+                    str(entry["provider_id"]) if isinstance(entry.get("provider_id"), str) else None
+                ),
+                account_id=(
+                    str(entry["account_id"]) if isinstance(entry.get("account_id"), str) else None
+                ),
+            )
+        )
+    return RuntimeEvidence(tuple(out), (source,))
+
+
 def evidence_from_quota_rows(
     rows: Iterable[Mapping[str, Any]], *, source: str = "quota"
 ) -> RuntimeEvidence:
@@ -1060,8 +1139,14 @@ def default_runtime_evidence(
     """
     base = state_dir or Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
     ladder = ladder_state or (base / "orchestration-health.json")
-    return evidence_from_ladder_state(ladder, now=now).merged(
-        evidence_from_health_cache(base / "subagent-health.json", now=now)
+    return (
+        evidence_from_ladder_state(ladder, now=now)
+        .merged(evidence_from_health_cache(base / "subagent-health.json", now=now))
+        # BOD-292: merge NEGATIVE-ONLY at-rest probe evidence (unexpired route
+        # negatives + scoped cooldowns). All positives are omitted; exact launch
+        # confirmation stays mandatory. Read from ``base`` so a test ``state_dir``
+        # fully controls hermeticity (the env cache override is not consulted here).
+        .merged(evidence_from_at_rest_health_cache(base / "health-cache.json", now=now))
     )
 
 
@@ -1125,6 +1210,7 @@ __all__ = [
     "admit",
     "canonical_route_id",
     "default_runtime_evidence",
+    "evidence_from_at_rest_health_cache",
     "evidence_from_health_cache",
     "evidence_from_ladder_state",
     "evidence_from_quota_rows",

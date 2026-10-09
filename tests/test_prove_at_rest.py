@@ -305,3 +305,115 @@ def test_skipped_requires_named_reason() -> None:
 
     with pytest.raises(ProveAtRestError, match="named reason"):
         ProofResult(identity_id="x/y", provider="x", status=STATUS_SKIPPED, reason=None)
+
+
+# ---------------------------------------------------------------------------
+# BOD-292 bounded full-probe API (probe_full) regressions
+# ---------------------------------------------------------------------------
+
+
+def test_probe_full_chat_then_tool_success() -> None:
+    from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, probe_full
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        suffix = route_id.split("/", 1)[1]
+        return ProbeExchange(
+            http_status=200,
+            ok=True,
+            chat_exact=(phase == "chat"),
+            tool_called=(phase == "tool"),
+            reported_model=suffix,
+        )
+
+    outcome = probe_full(
+        AdmittedRoute(route_id="free/a", provider="free", capacity="free"),
+        transport,
+        timeout_seconds=15.0,
+    )
+    assert outcome.no_write is False
+    assert outcome.requests_made == 2
+    assert outcome.result is not None and outcome.result.healthy
+    assert outcome.result.identity == "verified"
+
+
+def test_probe_full_cancel_before_first_dispatch_makes_no_call() -> None:
+    from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, probe_full
+
+    calls: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(phase)
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True)
+
+    outcome = probe_full(
+        AdmittedRoute(route_id="free/a", provider="free", capacity="free"),
+        transport,
+        timeout_seconds=15.0,
+        cancelled=lambda: True,
+    )
+    assert calls == []
+    assert outcome.no_write is True
+    assert outcome.requests_made == 0
+
+
+def test_probe_full_deadline_before_dispatch_makes_no_call() -> None:
+    from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, probe_full
+
+    calls: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(phase)
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True)
+
+    outcome = probe_full(
+        AdmittedRoute(route_id="free/a", provider="free", capacity="free"),
+        transport,
+        timeout_seconds=15.0,
+        deadline_ok=lambda: False,
+    )
+    assert calls == []
+    assert outcome.no_write is True
+
+
+def test_probe_full_identity_mismatch_voids_chat_and_skips_tool() -> None:
+    from verdict.orchestration.health_cache import CATEGORY_MODEL_MISMATCH
+    from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, probe_full
+
+    calls: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(phase)
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, reported_model="kr/other")
+
+    outcome = probe_full(
+        AdmittedRoute(route_id="cc/a", provider="cc", capacity="free"),
+        transport,
+        timeout_seconds=15.0,
+    )
+    assert "tool" not in calls  # tool never dispatched after a chat mismatch
+    assert outcome.result is not None
+    assert outcome.result.category == CATEGORY_MODEL_MISMATCH
+
+
+def test_probe_full_context_length_is_no_write() -> None:
+    from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, probe_full
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        return ProbeExchange(http_status=400, ok=False, error_category="context_length_exceeded")
+
+    outcome = probe_full(
+        AdmittedRoute(route_id="free/a", provider="free", capacity="free"),
+        transport,
+        timeout_seconds=15.0,
+    )
+    assert outcome.no_write is True
+    assert outcome.result is None
+
+
+def test_module_level_model_identity_matches() -> None:
+    from verdict.prove_at_rest import model_identity_matches
+
+    assert model_identity_matches("cc/x", "") is True  # no echo tolerated
+    assert model_identity_matches("cc/x", "x") is True  # stripped prefix
+    assert model_identity_matches("cc/x", "cc/x") is True
+    assert model_identity_matches("cc/x", "kr/x") is False  # different provider, same suffix

@@ -245,6 +245,16 @@ class HealthEntry:
     probe_class: str = "single_call"  # "agentic" | "single_call"
     agentic_ok: bool = False  # True only when a 3-turn agentic probe passed
     agentic_checked_at: datetime | None = None  # when the last agentic probe ran
+    # BOD-292 additive schema-1 fields. Old readers ignore them; new readers
+    # accept their absence (both default to ``None``).
+    # ``last_success_at`` keeps the most recent validated healthy time even
+    # after a later failure overwrites ``checked_at``. It is never invented
+    # from inventory or a lower-trust hint.
+    last_success_at: datetime | None = None
+    # ``failure_scope`` records the canonical blast radius of a failure
+    # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
+    # tell a route-local diagnostic failure from a provider-scoped blocker.
+    failure_scope: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -255,6 +265,8 @@ class HealthEntry:
         _aware(self.until, "until")
         if self.agentic_checked_at is not None:
             _aware(self.agentic_checked_at, "agentic_checked_at")
+        if self.last_success_at is not None:
+            _aware(self.last_success_at, "last_success_at")
 
     def state_at(self, now: datetime) -> str:
         return classify_state(
@@ -286,6 +298,10 @@ class HealthEntry:
         payload["agentic_ok"] = self.agentic_ok
         if self.agentic_checked_at is not None:
             payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
+        if self.last_success_at is not None:
+            payload["last_success_at"] = format_datetime(self.last_success_at)
+        if self.failure_scope is not None:
+            payload["failure_scope"] = self.failure_scope
         return payload
 
     @classmethod
@@ -322,6 +338,16 @@ class HealthEntry:
                 if value.get("agentic_checked_at")
                 else None
             ),
+            last_success_at=(
+                parse_datetime(value["last_success_at"], "last_success_at")
+                if value.get("last_success_at")
+                else None
+            ),
+            failure_scope=(
+                str(value["failure_scope"])
+                if isinstance(value.get("failure_scope"), str) and value["failure_scope"].strip()
+                else None
+            ),
         )
 
 
@@ -356,6 +382,10 @@ class ProbeResult:
     identity: str = ""
     probe_class: str = "single_call"  # "agentic" | "single_call"
     agentic_ok: bool = False
+    # BOD-292 additive: an explicitly supplied validated success time to carry
+    # forward onto a failure entry, and the canonical failure scope.
+    last_success_at: datetime | None = None
+    failure_scope: str | None = None
 
     @property
     def healthy(self) -> bool:
@@ -433,6 +463,78 @@ class TokenBucket:
         )
 
 
+@dataclass(frozen=True)
+class ScopedCooldown:
+    """An availability blocker scoped above a single route (BOD-292, additive).
+
+    Stored under the optional top-level ``cooldowns`` envelope key. The key is
+    a scope-bound string such as ``provider:<name>``, ``pool:<provider>/<pool>``
+    or ``account:<id>``. ``category`` is the cache category; ``canonical_category``
+    is the runtime classifier category (they differ by contract). Old readers
+    ignore this key; new readers accept its absence.
+    """
+
+    key: str
+    category: str
+    checked_at: datetime
+    until: datetime
+    canonical_category: str | None = None
+    provider_id: str | None = None
+    pool: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key.strip():
+            raise HealthCacheError("cooldown key must be non-empty")
+        _aware(self.checked_at, "checked_at")
+        _aware(self.until, "until")
+
+    def active_at(self, now: datetime) -> bool:
+        """True while the blocker is still in force (half-open at equality)."""
+        return _aware(now, "now") < _aware(self.until, "until")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "key": self.key,
+            "category": self.category,
+            "checked_at": format_datetime(self.checked_at),
+            "until": format_datetime(self.until),
+        }
+        if self.canonical_category is not None:
+            payload["canonical_category"] = self.canonical_category
+        if self.provider_id is not None:
+            payload["provider_id"] = self.provider_id
+        if self.pool is not None:
+            payload["pool"] = self.pool
+        if self.account_id is not None:
+            payload["account_id"] = self.account_id
+        return payload
+
+    @classmethod
+    def from_dict(cls, key: str, value: Mapping[str, Any]) -> ScopedCooldown:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("cooldown entry must be a mapping")
+        return cls(
+            key=str(value.get("key") or key),
+            category=str(value.get("category") or ""),
+            checked_at=parse_datetime(value.get("checked_at"), "checked_at"),
+            until=parse_datetime(value.get("until"), "until"),
+            canonical_category=(
+                str(value["canonical_category"])
+                if isinstance(value.get("canonical_category"), str)
+                and value["canonical_category"].strip()
+                else None
+            ),
+            provider_id=(
+                str(value["provider_id"]) if isinstance(value.get("provider_id"), str) else None
+            ),
+            pool=str(value["pool"]) if isinstance(value.get("pool"), str) else None,
+            account_id=(
+                str(value["account_id"]) if isinstance(value.get("account_id"), str) else None
+            ),
+        )
+
+
 def bucket_key(provider: str, pool: str | None = None) -> str:
     """Provider key, or ``provider/pool`` when a pool is named."""
     if not isinstance(provider, str) or not provider.strip():
@@ -467,6 +569,8 @@ class HealthCache:
         self._routes: dict[str, HealthEntry] = {}
         self._buckets: dict[str, TokenBucket] = {}
         self._cursor: dict[str, Any] = {}
+        # BOD-292: optional scoped-availability blockers, keyed by scope string.
+        self._cooldowns: dict[str, ScopedCooldown] = {}
         self._load()
 
     # -- persistence -------------------------------------------------------
@@ -488,14 +592,29 @@ class HealthCache:
         self._buckets = {key: TokenBucket.from_dict(value) for key, value in buckets.items()}
         cursor = payload.get("cursor") or {}
         self._cursor = dict(cursor) if isinstance(cursor, Mapping) else {}
+        cooldowns = payload.get("cooldowns") or {}
+        if not isinstance(cooldowns, Mapping):
+            raise HealthCacheError("cooldowns must be an object")
+        self._cooldowns = {
+            key: ScopedCooldown.from_dict(key, value)
+            for key, value in cooldowns.items()
+            if isinstance(value, Mapping)
+        }
 
     def _snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot: dict[str, Any] = {
             "schema_version": HEALTH_CACHE_SCHEMA_VERSION,
             "routes": {key: entry.to_dict() for key, entry in sorted(self._routes.items())},
             "buckets": {key: bucket.to_dict() for key, bucket in sorted(self._buckets.items())},
             "cursor": self._cursor,
         }
+        # Additive: only emit ``cooldowns`` when non-empty so existing readers
+        # and byte-for-byte goldens for cooldown-free caches stay unchanged.
+        if self._cooldowns:
+            snapshot["cooldowns"] = {
+                key: cooldown.to_dict() for key, cooldown in sorted(self._cooldowns.items())
+            }
+        return snapshot
 
     def save(self) -> None:
         """Write the snapshot under an exclusive lock, replacing atomically."""
@@ -506,6 +625,33 @@ class HealthCache:
         with lock_path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
+                temporary.write_text(body, encoding="utf-8")
+                os.replace(temporary, self.path)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def merge_and_save(self, mutate: Callable[[HealthCache], None]) -> None:
+        """Serialized read-modify-write under the existing exclusive lock.
+
+        The coordinator's single writer calls this so a concurrent prober or a
+        joined worker cannot clobber each other: take the lock, reload the file
+        from disk into this instance (discarding only the on-disk view, not
+        pending in-memory reservations held elsewhere), apply ``mutate`` to
+        merge the new probe outcome/cooldown, then atomically replace the file.
+
+        ``mutate`` runs while the lock is held and must only touch this cache.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                # Reload the authoritative on-disk state so a probe written by
+                # another process since we last saved is not lost.
+                self._load()
+                mutate(self)
+                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
                 temporary.write_text(body, encoding="utf-8")
                 os.replace(temporary, self.path)
             finally:
@@ -594,6 +740,9 @@ class HealthCache:
                 probe_class=probe_class,
                 agentic_ok=agentic_ok,
                 agentic_checked_at=agentic_checked_at,
+                # A fresh success is itself the latest validated success time.
+                last_success_at=current,
+                failure_scope=None,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -637,6 +786,13 @@ class HealthCache:
                     if agentic_checked_at is not None
                     else (previous.agentic_checked_at if previous is not None else None)
                 ),
+                # Preserve the earlier valid success time (never invent one).
+                last_success_at=(
+                    result.last_success_at
+                    if result.last_success_at is not None
+                    else (previous.last_success_at if previous is not None else None)
+                ),
+                failure_scope=result.failure_scope,
             )
         self._routes[route] = entry
         return entry
@@ -674,6 +830,7 @@ class HealthCache:
             http_status=200,
             healthy=True,
             identity=identity,
+            last_success_at=current,
         )
         self._routes[route] = entry
         return entry
@@ -738,6 +895,39 @@ class HealthCache:
     def clear_cursor(self) -> None:
         self._cursor = {}
 
+    # -- scoped cooldowns (BOD-292, additive) ------------------------------
+
+    def cooldowns(self) -> Mapping[str, ScopedCooldown]:
+        """Every stored scoped cooldown (active or expired)."""
+        return dict(self._cooldowns)
+
+    def active_cooldowns(self, now: datetime) -> tuple[ScopedCooldown, ...]:
+        """Scoped cooldowns still in force at ``now``."""
+        return tuple(c for c in self._cooldowns.values() if c.active_at(now))
+
+    def cooldown_for(self, key: str, now: datetime) -> ScopedCooldown | None:
+        """The active cooldown under ``key``, or None when absent/expired."""
+        found = self._cooldowns.get(key)
+        if found is None or not found.active_at(now):
+            return None
+        return found
+
+    def record_cooldown(self, cooldown: ScopedCooldown) -> None:
+        """Store a scoped blocker, keeping the later deadline on conflict.
+
+        A sibling route's success never deletes a provider/pool/account
+        cooldown; only a later deadline for the same key replaces it. Does not
+        save; the caller serializes the write.
+        """
+        existing = self._cooldowns.get(cooldown.key)
+        if existing is not None and existing.until >= cooldown.until:
+            return
+        self._cooldowns[cooldown.key] = cooldown
+
+    def clear_cooldown(self, key: str) -> None:
+        """Explicitly drop a scoped blocker after a deliberate scope recovery."""
+        self._cooldowns.pop(key, None)
+
 
 __all__ = [
     "CATEGORY_AUTH",
@@ -770,6 +960,7 @@ __all__ = [
     "HealthEntry",
     "Lookup",
     "ProbeResult",
+    "ScopedCooldown",
     "TokenBucket",
     "bucket_key",
     "classify_state",

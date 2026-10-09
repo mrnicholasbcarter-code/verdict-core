@@ -289,3 +289,121 @@ def test_zero_prices_are_parsed_as_known_zero_not_lost_to_truthiness():
     )
     assert s.catalog[0].price_known is True
     assert s.catalog[0].input_cost == 0 and s.catalog[0].output_cost == 0
+
+
+# ---------------------------------------------------------------------------
+# BOD-292: negative-only at-rest health-cache admission adapter
+# ---------------------------------------------------------------------------
+
+
+def test_at_rest_adapter_admits_negatives_only_not_positives(tmp_path):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from verdict.admission import evidence_from_at_rest_health_cache
+
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "health-cache.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "routes": {
+                    # A healthy positive MUST NOT be admitted as evidence.
+                    "cc/good": {
+                        "route_id": "cc/good",
+                        "category": "ok",
+                        "checked_at": now.isoformat(),
+                        "until": (now + timedelta(minutes=30)).isoformat(),
+                        "consecutive_failures": 0,
+                        "chat_ok": True,
+                        "tool_ok": True,
+                        "healthy": True,
+                    },
+                    # An unexpired negative IS admitted.
+                    "cc/dead": {
+                        "route_id": "cc/dead",
+                        "category": "upstream",
+                        "checked_at": now.isoformat(),
+                        "until": (now + timedelta(minutes=5)).isoformat(),
+                        "consecutive_failures": 1,
+                        "chat_ok": False,
+                        "tool_ok": False,
+                        "healthy": False,
+                        "http_status": 500,
+                    },
+                    # An expired negative is omitted (half-open / not current).
+                    "cc/old": {
+                        "route_id": "cc/old",
+                        "category": "timeout",
+                        "checked_at": (now - timedelta(hours=1)).isoformat(),
+                        "until": (now - timedelta(minutes=5)).isoformat(),
+                        "consecutive_failures": 2,
+                        "chat_ok": False,
+                        "tool_ok": False,
+                        "healthy": False,
+                    },
+                },
+                "cooldowns": {
+                    "provider:cc": {
+                        "key": "provider:cc",
+                        "category": "authentication",
+                        "checked_at": now.isoformat(),
+                        "until": (now + timedelta(hours=6)).isoformat(),
+                        "provider_id": "cc",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence = evidence_from_at_rest_health_cache(path, now=now)
+    keys = {o.key for o in evidence.observations}
+    assert "route:cc/dead" in keys  # unexpired negative admitted
+    assert "route:cc/good" not in keys  # positive omitted
+    assert "route:cc/old" not in keys  # expired negative omitted
+    assert "provider:cc" in keys  # scoped cooldown admitted
+
+
+def test_at_rest_adapter_absent_file_is_not_consulted(tmp_path):
+    from datetime import datetime, timezone
+
+    from verdict.admission import evidence_from_at_rest_health_cache
+
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    evidence = evidence_from_at_rest_health_cache(tmp_path / "missing.json", now=now)
+    assert evidence.consulted == ()
+    assert evidence.observations == ()
+
+
+def test_default_runtime_evidence_merges_at_rest_negatives(tmp_path):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from verdict.admission import default_runtime_evidence
+
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    (tmp_path / "health-cache.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "routes": {
+                    "cc/dead": {
+                        "route_id": "cc/dead",
+                        "category": "authentication",
+                        "checked_at": now.isoformat(),
+                        "until": (now + timedelta(hours=6)).isoformat(),
+                        "consecutive_failures": 1,
+                        "chat_ok": False,
+                        "tool_ok": False,
+                        "healthy": False,
+                        "http_status": 401,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence = default_runtime_evidence(now=now, state_dir=tmp_path)
+    keys = {o.key for o in evidence.observations}
+    assert "route:cc/dead" in keys

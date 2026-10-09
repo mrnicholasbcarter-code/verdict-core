@@ -724,3 +724,54 @@ def test_unknown_capability_ranks_after_known_sufficient(tmp_path: Path) -> None
     ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
     chosen, _ = ladder.select(TaskRequirements(max_capability_tier=3), now=NOW)
     assert chosen is not None and chosen.route_id == "kr/claude-sonnet-5"
+
+
+# ---------------------------------------------------------------------------
+# BOD-292: selection-before-dispatch refresh hook
+# ---------------------------------------------------------------------------
+
+
+class TestSelectionRefreshHook:
+    def test_hook_receives_candidate_ids_before_probing(self, tmp_path: Path) -> None:
+        rows = [
+            row("cc/claude-sonnet-5", owned_by="claude"),
+            row("cc/claude-opus-5", owned_by="claude"),
+        ]
+        seen: list[tuple[list[str], datetime]] = []
+
+        def hook(ids, now):  # type: ignore[no-untyped-def]
+            seen.append((list(ids), now))
+
+        ladder, _probe = make_ladder(tmp_path, rows, [conn("claude")], refresh_hook=hook)
+        selected, _verdicts = ladder.select(REQ, now=NOW)
+        # The hook fired once with the candidate ids and the select clock.
+        assert len(seen) == 1
+        assert set(seen[0][0]) <= {"cc/claude-sonnet-5", "cc/claude-opus-5"}
+        assert seen[0][1] == NOW
+        # Selection still works and still confirms a route.
+        assert selected is not None
+
+    def test_default_behaviour_unchanged_without_hook(self, tmp_path: Path) -> None:
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        ladder_no_hook, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        selected_a, _verdicts_a = ladder_no_hook.select(REQ, now=NOW)
+
+        ladder_hook, _ = make_ladder(
+            tmp_path, rows, [conn("claude")], refresh_hook=lambda ids, now: None
+        )
+        selected_b, _verdicts_b = ladder_hook.select(REQ, now=NOW)
+        # The hook is advisory; the selected route is identical.
+        assert (selected_a is None) == (selected_b is None)
+        if selected_a is not None and selected_b is not None:
+            assert selected_a.route_id == selected_b.route_id
+
+    def test_hook_failure_never_breaks_selection(self, tmp_path: Path) -> None:
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+
+        def boom(ids, now):  # type: ignore[no-untyped-def]
+            raise RuntimeError("refresh unavailable")
+
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")], refresh_hook=boom)
+        selected, _verdicts = ladder.select(REQ, now=NOW)
+        # A hook exception is swallowed; selection still proceeds.
+        assert selected is not None

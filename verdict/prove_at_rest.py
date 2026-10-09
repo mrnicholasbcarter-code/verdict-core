@@ -100,6 +100,7 @@ from verdict.prove_at_rest_legacy import (
     load_healthy_passports,
     passport_from_probe,
 )
+from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 CHAT_PROBE_MESSAGE = "Reply with exactly: OK"
 TOOL_NAME = "verdict_probe_ping"
@@ -549,6 +550,23 @@ def _provider_of(route_id: str) -> str:
     return route_id or "unknown"
 
 
+def model_identity_matches(route_id: str, reported: str) -> bool:
+    """True when *reported* is the expected model, tolerating a stripped prefix.
+
+    Rules (defect 4 fix):
+    - Empty reported: not a mismatch (the gateway chose not to echo an id).
+    - Otherwise the reported id must equal the full route id, or the route id
+      minus its gateway provider segment. OmniRoute was observed (2026-09-29)
+      echoing ``cc/claude-x`` as ``claude-x`` and
+      ``nvidia/moonshotai/kimi-k3`` as ``moonshotai/kimi-k3``. Anything else,
+      including a different provider with the same suffix, is a mismatch.
+    """
+    if not reported:
+        return True
+    route_suffix = route_id.split("/", 1)[1] if "/" in route_id else route_id
+    return reported in (route_id, route_suffix)
+
+
 def _pool_of(route: AdmittedRoute) -> str | None:
     return route.pool
 
@@ -808,6 +826,9 @@ class Prober:
     def _model_identity_matches(route_id: str, reported: str) -> bool:
         """True when *reported* is the expected model, tolerating provider-prefix.
 
+        Delegates to the module-level :func:`model_identity_matches`; retained
+        as a staticmethod for existing callers/tests.
+
         Rules (defect 4 fix):
         - Empty reported: not a mismatch (gateway chose not to echo).
         - Reported HAS a provider prefix: provider must equal the route's
@@ -815,15 +836,7 @@ class Prober:
         - Reported has NO provider prefix: suffix match is accepted (gateway
           stripped the prefix).
         """
-        if not reported:
-            return True
-        # Accepted echoes: the full route id, or the route id minus its gateway
-        # provider segment.  OmniRoute was observed (2026-09-29) echoing
-        # "cc/claude-x" as "claude-x" and "nvidia/moonshotai/kimi-k3" as
-        # "moonshotai/kimi-k3".  Anything else, including a different provider
-        # with the same model suffix, is a mismatch.
-        route_suffix = route_id.split("/", 1)[1] if "/" in route_id else route_id
-        return reported in (route_id, route_suffix)
+        return model_identity_matches(route_id, reported)
 
     def _probe_route(
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
@@ -1326,6 +1339,248 @@ def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
     return transport
 
 
+# ---------------------------------------------------------------------------
+# Bounded full-probe API (BOD-292)
+# ---------------------------------------------------------------------------
+#
+# The daemon's ``run_once`` cannot implement a safe, bounded, explicit-id
+# refresh job (global cursor, liveness policy, multi-writer snapshot). This
+# API probes one explicit route, chat then required tool, honouring the
+# coordinator's deadline and cancellation checks BEFORE each dispatch and
+# validating the reported model identity across BOTH phases. It never writes:
+# the coordinator serializes every cache write through
+# ``HealthCache.merge_and_save`` so daemon and joined workers cannot clobber
+# each other. Daemon defaults and behaviour are unchanged.
+
+# A failed probe whose category is one of these must NOT write route health:
+# the request/infra was rejected before the model was ever contacted, so the
+# route and provider stay as they were (no poison).
+NO_HEALTH_WRITE_CATEGORIES = frozenset({CONTEXT_LENGTH_CATEGORY, "gateway_busy"})
+
+# Why a full probe produced no health write.
+NOWRITE_PARTIAL = "partial_not_tested"  # chat passed but tool never dispatched
+NOWRITE_CONTEXT_LENGTH = CONTEXT_LENGTH_CATEGORY
+NOWRITE_GATEWAY_BUSY = "gateway_busy"
+NOWRITE_DEADLINE = "deadline"  # deadline elapsed before the chat dispatch
+NOWRITE_CANCELLED = "cancelled"  # cancellation requested before the chat dispatch
+
+
+def _no_write_category(exchange: ProbeExchange) -> str | None:
+    """Return the no-write category for *exchange*, else None.
+
+    Context-length overflow and gateway-local admission sheds are request or
+    infrastructure problems, not route/provider health, so they never poison
+    the cache.
+    """
+    named = (exchange.error_category or "").strip().lower()
+    if named in {CONTEXT_LENGTH_CATEGORY, "context_length", "context_length_exceeded"}:
+        return CONTEXT_LENGTH_CATEGORY
+    if named in {"gateway_busy", "chat_admission_busy", "admission_busy"}:
+        return "gateway_busy"
+    return None
+
+
+def _aggregate_identity(reports: Sequence[str], route_id: str) -> str:
+    """Fold the reported ids from every probe phase into one identity verdict.
+
+    ``mismatch`` if any phase echoed a different model; ``verified`` if at
+    least one phase echoed a matching id and none mismatched; ``not_reported``
+    when no phase echoed any id.
+    """
+    saw_match = False
+    for reported in reports:
+        if not reported:
+            continue
+        if model_identity_matches(route_id, reported):
+            saw_match = True
+        else:
+            return "mismatch"
+    return "verified" if saw_match else "not_reported"
+
+
+@dataclass(frozen=True)
+class FullProbeOutcome:
+    """Result of one bounded full probe, for the coordinator to persist.
+
+    ``result`` is None exactly when ``no_write`` is True: nothing may be
+    written to route health (a partial/cancelled/deadline probe, or a
+    request/infra-scope rejection). ``requests_made`` is the actual number of
+    HTTP calls dispatched (0, 1 or 2) so the coordinator can release the
+    unused half of a two-request reservation. ``category`` is always the
+    observed category, even when no write happens.
+    """
+
+    route_id: str
+    result: ProbeResult | None
+    requests_made: int
+    tool_tested: bool
+    no_write: bool
+    no_write_reason: str
+    category: str
+    http_status: int | None = None
+    retry_after_seconds: float | None = None
+    latency_ms: float | None = None
+
+    @property
+    def rate_limited(self) -> bool:
+        return self.category == CATEGORY_RATE_LIMITED or self.http_status == 429
+
+
+def probe_full(
+    route: AdmittedRoute,
+    transport: ProbeTransportFn,
+    *,
+    timeout_seconds: float,
+    deadline_ok: Callable[[], bool] = lambda: True,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> FullProbeOutcome:
+    """Probe one route chat-then-tool, bounded by the coordinator's checks.
+
+    ``deadline_ok`` returns True while time remains; ``cancelled`` returns True
+    once a shared cancel is requested. Both are checked BEFORE each HTTP
+    dispatch. This function performs no cache or bucket writes and no retries.
+    """
+    # Gate before the first dispatch.
+    if cancelled():
+        return FullProbeOutcome(
+            route.route_id, None, 0, False, True, NOWRITE_CANCELLED, CATEGORY_OK
+        )
+    if not deadline_ok():
+        return FullProbeOutcome(route.route_id, None, 0, False, True, NOWRITE_DEADLINE, CATEGORY_OK)
+
+    try:
+        chat = transport(route.route_id, "chat", timeout_seconds)
+    except TimeoutError:
+        chat = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+    requests_made = 1
+    latency = chat.latency_ms
+    chat_ok = bool(chat.ok and chat.chat_exact and chat.http_status == 200)
+
+    # Request/infra-scope rejections never write health.
+    nowrite = _no_write_category(chat)
+    if nowrite is not None:
+        return FullProbeOutcome(
+            route.route_id,
+            None,
+            requests_made,
+            False,
+            True,
+            nowrite,
+            nowrite,
+            http_status=chat.http_status,
+            retry_after_seconds=chat.retry_after_seconds,
+            latency_ms=latency,
+        )
+
+    category = category_for(chat)
+    status = chat.http_status
+    observed = chat
+    # Chat-phase identity check: a wrong model voids the chat success and we do
+    # not dispatch the tool call.
+    if chat_ok and not model_identity_matches(route.route_id, chat.reported_model):
+        category = CATEGORY_MODEL_MISMATCH
+        chat_ok = False
+
+    tool_ok = False
+    tool_tested = False
+    if chat_ok:
+        # Deadline / cancel BEFORE the tool dispatch. A partial chat without a
+        # tool call is NOT_TESTED full proof: leave prior proof unchanged, do
+        # not record a negative or renew coding health.
+        if cancelled():
+            return FullProbeOutcome(
+                route.route_id,
+                None,
+                requests_made,
+                False,
+                True,
+                NOWRITE_CANCELLED,
+                CATEGORY_OK,
+                http_status=status,
+                latency_ms=latency,
+            )
+        if not deadline_ok():
+            return FullProbeOutcome(
+                route.route_id,
+                None,
+                requests_made,
+                False,
+                True,
+                NOWRITE_PARTIAL,
+                CATEGORY_OK,
+                http_status=status,
+                latency_ms=latency,
+            )
+        try:
+            tool = transport(route.route_id, "tool", timeout_seconds)
+        except TimeoutError:
+            tool = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+        requests_made = 2
+        tool_tested = True
+        tool_nowrite = _no_write_category(tool)
+        if tool_nowrite is not None:
+            # The tool phase hit a request/infra rejection: chat passed but the
+            # tool was never truly tested, so leave prior proof unchanged.
+            return FullProbeOutcome(
+                route.route_id,
+                None,
+                requests_made,
+                True,
+                True,
+                tool_nowrite,
+                tool_nowrite,
+                http_status=tool.http_status,
+                retry_after_seconds=tool.retry_after_seconds,
+                latency_ms=latency,
+            )
+        tool_ok = bool(tool.ok and tool.tool_called and tool.http_status == 200)
+        if tool.latency_ms is not None:
+            latency = (latency or 0.0) + tool.latency_ms
+        if tool_ok and not model_identity_matches(route.route_id, tool.reported_model):
+            tool_ok = False
+            category = CATEGORY_MODEL_MISMATCH
+            status = tool.http_status
+            observed = tool
+        elif not tool_ok:
+            status = tool.http_status
+            category = category_for(tool)
+            observed = tool
+
+    if chat_ok and tool_ok:
+        category = CATEGORY_OK
+        status = 200
+
+    identity = _aggregate_identity(
+        [chat.reported_model, observed.reported_model if tool_tested else ""], route.route_id
+    )
+    if category == CATEGORY_MODEL_MISMATCH:
+        identity = "mismatch"
+
+    result = ProbeResult(
+        category=category,
+        chat_ok=chat_ok,
+        tool_ok=tool_ok,
+        latency_ms=latency,
+        http_status=status,
+        retry_after_seconds=observed.retry_after_seconds,
+        pool=route.pool,
+        capacity_evidence=route.capacity_evidence,
+        identity=identity,
+    )
+    return FullProbeOutcome(
+        route.route_id,
+        result,
+        requests_made,
+        tool_tested,
+        False,
+        "",
+        category,
+        http_status=status,
+        retry_after_seconds=observed.retry_after_seconds,
+        latency_ms=latency,
+    )
+
+
 @dataclass
 class ProverDaemon:
     """Long-running prober wired to a gateway. Writes only the health cache."""
@@ -1475,6 +1730,7 @@ __all__ = [
     "ENV_CACHE_PATH",
     "ENV_STATE_PATH",
     "LEGACY_STATE_RELATIVE",
+    "NO_HEALTH_WRITE_CATEGORIES",
     "PROVE_AT_REST_SCHEMA_VERSION",
     "STATUS_FAILED",
     "STATUS_HEALTHY",
@@ -1482,6 +1738,7 @@ __all__ = [
     "TOOL_NAME",
     "AdmittedRoute",
     "CycleStats",
+    "FullProbeOutcome",
     "ProbeExchange",
     "Prober",
     "ProofResult",
@@ -1497,8 +1754,10 @@ __all__ = [
     "default_state_path",
     "load_admitted_routes",
     "load_healthy_passports",
+    "model_identity_matches",
     "order_cycle",
     "passport_from_probe",
+    "probe_full",
     "routes_from_evidence",
     "status_report",
     "tool_payload",
