@@ -86,3 +86,17 @@ def test_preserves_normal_response_and_error(status: int) -> None:
             assert raised.value.read() == b"{}"
             raised.value.close()
     assert seen == ["Bearer test-key"]
+
+
+@pytest.mark.parametrize("location", [None, "https://[invalid", "file:///secret-key"])
+def test_redirect_refusal_ignores_untrusted_location(location: str | None) -> None:
+    seen: list[str | None] = []
+    with server(302, seen, location=location) as url:
+        request = urllib.request.Request(url, headers={"Authorization": "Bearer test-key"})
+        with pytest.raises(RedirectRefused) as raised:
+            open_no_redirect(request, timeout=2)
+    assert raised.value.code == 302
+    assert str(raised.value) == "HTTP Error 302: redirect refused"
+    assert raised.value.read() == b""
+    assert not raised.value.headers and raised.value.geturl() == ""
+    raised.value.close()

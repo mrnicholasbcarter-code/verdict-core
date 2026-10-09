@@ -29,18 +29,26 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _RefuseRedirectResponse(urllib.request.HTTPErrorProcessor):
+    def http_response(
+        self, request: urllib.request.Request, response: HTTPResponse
+    ) -> HTTPResponse:
+        # Refuse before urllib parses Location, which may itself be malformed
+        # or contain a credential. All 3xx stay on the caller's HTTPError path.
+        if 300 <= response.status < 400:
+            code = response.status
+            response.close()
+            raise RedirectRefused(code)
+        return cast(HTTPResponse, super().http_response(request, response))
+
+    https_response = http_response
+
+
 def open_no_redirect(request: urllib.request.Request, *, timeout: float) -> HTTPResponse:
     """Open once, refusing all 3xx without forwarding any request headers.
 
     Non-redirect HTTP errors and transport errors retain their usual types.
     The opener is private; the process-wide urllib default is not modified.
     """
-    opener = urllib.request.build_opener(_NoRedirect())
-    try:
-        return cast(HTTPResponse, opener.open(request, timeout=timeout))  # nosec B310
-    except urllib.error.HTTPError as exc:
-        if not 300 <= exc.code < 400:
-            raise
-        code = exc.code
-        exc.close()
-        raise RedirectRefused(code) from None
+    opener = urllib.request.build_opener(_NoRedirect(), _RefuseRedirectResponse())
+    return cast(HTTPResponse, opener.open(request, timeout=timeout))  # nosec B310
