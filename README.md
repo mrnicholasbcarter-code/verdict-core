@@ -207,6 +207,10 @@ Read-only: it tells you what would work if Claude Code pointed at Verdict, and c
 **Smart Tab-completion in the prompt.** Commands, flags, model ids and run ids all complete as
 you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md).
 
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/verified-models-poster.svg"><img src="docs/assets/verified-models.svg" alt="Terminal recording: the verified-model eligibility view with mixed VERIFIED/STALE/FAILED statuses, Tab-completion of /bootstrap prime, a Prime picker preview answered N, and an honest /bootstrap claude compatibility report" width="860"></picture>
+
+<sub>Offline scenario, fixture health cache, no live calls: the demo gateway is a loopback-only fixture HTTP server started by the recorder itself. Recorded with <a href="scripts/record_verified_demo.py"><code>scripts/record_verified_demo.py</code></a>. Full cast: <a href="docs/assets/verified-models.cast"><code>docs/assets/verified-models.cast</code></a>.</sub>
+
 ## Quick start
 
 The fixture makes one deterministic routing decision (also credential-free):
@@ -870,6 +874,9 @@ All assets come from committed code and committed data. None of the tools below 
 | [`docs/assets/demo-tui.svg`](docs/assets/demo-tui.svg) | ~290 KB | `demo-tui.cast` | `python scripts/render_demo_svg.py docs/assets/demo-tui.cast docs/assets/demo-tui.svg docs/assets/demo-tui-poster.svg` |
 | [`docs/assets/demo-tui-poster.svg`](docs/assets/demo-tui-poster.svg) | ~23 KB | first COMPLETE cockpit frame of `demo-tui.cast` | same command as `demo-tui.svg` |
 | `docs/assets/chart-*.svg` | ~65-95 KB each (text as paths) | `docs/proof/demo-run/*.json`, `benchmarks/fixtures/legit_paired_savings.json` | `uv run --with matplotlib==3.10.* --no-project python scripts/render_charts.py` |
+| [`docs/assets/verified-models.cast`](docs/assets/verified-models.cast) | ~45 KB | offline, fixture health cache (no live calls); shows `/eligibility`, Tab-completion of `/bootstrap prime`, a Prime picker preview answered N, and `/bootstrap claude` | `python scripts/record_verified_demo.py` |
+| [`docs/assets/verified-models.svg`](docs/assets/verified-models.svg) | ~250 KB | `verified-models.cast` | `python scripts/render_demo_svg.py docs/assets/verified-models.cast docs/assets/verified-models.svg docs/assets/verified-models-poster.svg` |
+| [`docs/assets/verified-models-poster.svg`](docs/assets/verified-models-poster.svg) | ~20 KB | final frame of `verified-models.cast` | same command as `verified-models.svg` |
 
 The recording's typing and line pacing are synthetic. Its text is the real output of each command.
 [`tests/test_readme_assets.py`](tests/test_readme_assets.py) checks that every linked asset and chart
