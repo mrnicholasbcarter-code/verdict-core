@@ -42,8 +42,10 @@ import fcntl
 import json
 import os
 import time
+import uuid
+import hashlib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -287,6 +289,7 @@ class HealthEntry:
     # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
     # tell a route-local diagnostic failure from a provider-scoped blocker.
     failure_scope: str | None = None
+    write_revision: int = 0  # allocated only under the shared writer lock
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -308,6 +311,7 @@ class HealthEntry:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "route_id": self.route_id,
+            "write_revision": self.write_revision,
             "category": self.category,
             "checked_at": format_datetime(self.checked_at),
             "until": format_datetime(self.until),
@@ -347,6 +351,7 @@ class HealthEntry:
         latency = value.get("latency_ms")
         return cls(
             route_id=route_id,
+            write_revision=int(value.get("write_revision") or 0),
             category=str(value.get("category") or ""),
             checked_at=parse_datetime(value.get("checked_at"), "checked_at"),
             until=parse_datetime(value.get("until"), "until"),
@@ -425,6 +430,16 @@ class ProbeResult:
         return self.chat_ok and self.tool_ok and self.category == CATEGORY_OK
 
 
+@dataclass(frozen=True)
+class BucketReservation:
+    """Opaque spend ownership. One release is allowed for this handle."""
+
+    id: str
+    bucket_key: str
+    token_ids: tuple[str, ...]
+    reserved_at: datetime
+
+
 @dataclass
 class TokenBucket:
     """Sliding-window counter. ``zeroed_until`` is set by a 429."""
@@ -433,12 +448,33 @@ class TokenBucket:
     window_seconds: float
     timestamps: list[datetime]
     zeroed_until: datetime | None = None
+    token_ids: list[str] = field(default_factory=list)
+    removed: dict[str, datetime] = field(default_factory=dict)
+    released: dict[str, datetime] = field(default_factory=dict)
+    ledger_at: datetime | None = None  # persisted high-water mark for pruning
 
     def __post_init__(self) -> None:
         if self.capacity < 1:
             raise HealthCacheError("bucket capacity must be >= 1")
         if self.window_seconds <= 0:
             raise HealthCacheError("bucket window must be positive")
+
+    def _tokens(self) -> dict[str, datetime]:
+        if len(self.token_ids) != len(self.timestamps):
+            # Deterministic migration preserves multiplicity of legacy stamps.
+            counts: dict[str, int] = {}
+            ids: list[str] = []
+            for stamp in self.timestamps:
+                key = format_datetime(stamp)
+                occurrence = counts.get(key, 0)
+                counts[key] = occurrence + 1
+                ids.append(hashlib.sha256(f"{key}:{occurrence}".encode()).hexdigest())
+            self.token_ids = ids
+        return dict(zip(self.token_ids, self.timestamps, strict=True))
+
+    def _set_tokens(self, tokens: Mapping[str, datetime]) -> None:
+        self.token_ids = list(tokens)
+        self.timestamps = list(tokens.values())
 
     def remaining(self, now: datetime) -> int:
         current = _aware(now, "now")
@@ -456,22 +492,29 @@ class TokenBucket:
         if self.remaining(current) < amount:
             return False
         cutoff = current - timedelta(seconds=self.window_seconds)
-        self.timestamps = [
-            stamp for stamp in self.timestamps if _aware(stamp, "timestamp") > cutoff
-        ]
-        self.timestamps.extend([current] * amount)
+        self.ledger_at = max(current, self.ledger_at or current)
+        tokens = {key: stamp for key, stamp in self._tokens().items() if stamp > cutoff}
+        tokens.update({uuid.uuid4().hex: current for _ in range(amount)})
+        self._set_tokens(tokens)
+        self.removed = {key: stamp for key, stamp in self.removed.items() if stamp > cutoff}
+        self.released = {key: stamp for key, stamp in self.released.items() if stamp > cutoff}
         return True
 
     def zero(self, until: datetime) -> None:
         """A 429 empties the bucket until ``until``."""
         self.zeroed_until = _aware(until, "until")
-        self.timestamps.clear()
+        self.removed.update(self._tokens())
+        self._set_tokens({})
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "capacity": self.capacity,
             "window_seconds": self.window_seconds,
             "timestamps": [format_datetime(stamp) for stamp in self.timestamps],
+            "token_ids": list(self._tokens()),
+            "removed": {key: format_datetime(stamp) for key, stamp in self.removed.items()},
+            "released": {key: format_datetime(stamp) for key, stamp in self.released.items()},
+            "ledger_at": format_datetime(self.ledger_at) if self.ledger_at else None,
         }
         if self.zeroed_until is not None:
             payload["zeroed_until"] = format_datetime(self.zeroed_until)
@@ -489,6 +532,13 @@ class TokenBucket:
             capacity=int(value.get("capacity") or DEFAULT_BUCKET_CAPACITY),
             window_seconds=float(value.get("window_seconds") or DEFAULT_BUCKET_WINDOW_SECONDS),
             timestamps=[parse_datetime(item, "timestamp") for item in raw_times],
+            token_ids=[str(item) for item in value.get("token_ids", [])],
+            ledger_at=parse_datetime(value["ledger_at"], "ledger_at")
+            if value.get("ledger_at") else None,
+            removed={str(key): parse_datetime(stamp, "removed")
+                     for key, stamp in value.get("removed", {}).items()},
+            released={str(key): parse_datetime(stamp, "released")
+                      for key, stamp in value.get("released", {}).items()},
             zeroed_until=parse_datetime(zeroed, "zeroed_until")
             if isinstance(zeroed, str)
             else None,
@@ -609,6 +659,10 @@ class HealthCache:
 
     def _load(self) -> None:
         if not self.path.exists():
+            self._routes = {}
+            self._buckets = {}
+            self._cursor = {}
+            self._cooldowns = {}
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -695,8 +749,12 @@ class HealthCache:
         self._load()
         for route_id, entry in mine_routes.items():
             disk = self._routes.get(route_id)
-            if disk is None or entry.checked_at > disk.checked_at:
-                self._routes[route_id] = entry
+            if disk is None or (
+                entry.write_revision >= disk.write_revision and entry.checked_at > disk.checked_at
+            ):
+                self._routes[route_id] = replace(
+                    entry, write_revision=(disk.write_revision if disk else 0) + 1
+                )
         for cooldown in mine_cooldowns.values():
             self.record_cooldown(cooldown)
         for key, bucket in mine_buckets.items():
@@ -704,10 +762,25 @@ class HealthCache:
             if disk_bucket is None:
                 self._buckets[key] = bucket
                 continue
-            # Conservative: keep the more-consumed timestamps and the later
-            # zeroing so a reservation written by another process survives.
-            if len(bucket.timestamps) >= len(disk_bucket.timestamps):
-                disk_bucket.timestamps = list(bucket.timestamps)
+            # Owned-token union, minus release/zero tombstones. Length is not
+            # ordering: ten expired stamps must never replace two live tokens.
+            tokens = bucket._tokens() | disk_bucket._tokens()
+            removed = bucket.removed | disk_bucket.removed
+            released = bucket.released | disk_bucket.released
+            stamps = [*tokens.values(), *removed.values(), *released.values()]
+            stamps.extend(stamp for stamp in (bucket.ledger_at, disk_bucket.ledger_at)
+                          if stamp is not None)
+            disk_bucket.ledger_at = max(stamps) if stamps else None
+            cutoff = (max(stamps) - timedelta(seconds=disk_bucket.window_seconds)
+                      if stamps else None)
+            disk_bucket._set_tokens({
+                key: stamp for key, stamp in tokens.items()
+                if key not in removed and (cutoff is None or stamp > cutoff)
+            })
+            disk_bucket.removed = {key: stamp for key, stamp in removed.items()
+                                   if cutoff is None or stamp > cutoff}
+            disk_bucket.released = {key: stamp for key, stamp in released.items()
+                                    if cutoff is None or stamp > cutoff}
             disk_zero = disk_bucket.zeroed_until
             mine_zero = bucket.zeroed_until
             if mine_zero is not None and (disk_zero is None or mine_zero > disk_zero):
@@ -738,7 +811,14 @@ class HealthCache:
                 # Reload the authoritative on-disk state so a probe written by
                 # another process since we last saved is not lost.
                 self._load()
+                previous = dict(self._routes)
                 mutate(self)
+                for route_id, entry in self._routes.items():
+                    prior = previous.get(route_id)
+                    if entry != prior:
+                        self._routes[route_id] = replace(
+                            entry, write_revision=(prior.write_revision if prior else 0) + 1
+                        )
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
                 temporary.write_text(body, encoding="utf-8")
                 os.replace(temporary, self.path)
@@ -882,6 +962,7 @@ class HealthCache:
                 ),
                 failure_scope=result.failure_scope,
             )
+        entry = replace(entry, write_revision=previous.write_revision if previous else 0)
         self._routes[route] = entry
         return entry
 
@@ -919,6 +1000,7 @@ class HealthCache:
             healthy=True,
             identity=identity,
             last_success_at=current,
+            write_revision=(self._routes[route].write_revision if route in self._routes else 0),
         )
         self._routes[route] = entry
         return entry
@@ -975,40 +1057,43 @@ class HealthCache:
         self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1,
         deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
-    ) -> bool:
-        """Serialized reserve: persist ``amount`` tokens to disk before dispatch.
-
-        BOD-292 review (token-bucket boundary): an in-memory ``consume`` is
-        dropped by the next ``merge_and_save`` disk reload, so concurrent or
-        sequential same-provider routes each saw a full bucket and overspent.
-        This takes the shared lock, reloads the authoritative bucket, consumes
-        only if enough tokens remain, and persists -- so the reservation is a
-        real spend boundary the next reserve observes. Returns False (no spend)
-        when the bucket cannot cover ``amount``.
-        """
-        reserved = False
+    ) -> BucketReservation | None:
+        """Persist owned tokens before dispatch. None means no spend allowed."""
+        reservation: BucketReservation | None = None
 
         def _mutate(cache: HealthCache) -> None:
-            nonlocal reserved
-            reserved = cache.consume(provider, now, pool=pool, amount=amount)
+            nonlocal reservation
+            bucket = cache.bucket_for(provider, pool)
+            before = set(bucket._tokens())
+            if bucket.consume(now, amount):
+                ids = tuple(key for key in bucket.token_ids if key not in before)
+                reservation = BucketReservation(uuid.uuid4().hex, bucket_key(provider, pool), ids, now)
 
         self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
-        return reserved
+        return reservation
 
     def release_bucket(
-        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1,
+        self, handle: BucketReservation, unused_n: int, *,
         deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        """Serialized release of unused reservations back to the provider bucket."""
-        if amount <= 0:
-            return
+        """Release only this handle's unused tokens; repeat release is a no-op."""
+        if not isinstance(handle, BucketReservation):
+            raise HealthCacheError("release requires a reservation handle")
+        if unused_n < 0 or unused_n > len(handle.token_ids):
+            raise HealthCacheError("unused_n exceeds the owned reservation")
 
         def _mutate(cache: HealthCache) -> None:
-            bucket = cache.bucket_for(provider, pool)
-            for _ in range(amount):
-                if bucket.timestamps:
-                    bucket.timestamps.pop()
+            bucket = cache._buckets.get(handle.bucket_key)
+            if bucket is None or handle.id in bucket.released:
+                return
+            tokens = bucket._tokens()
+            bucket.released[handle.id] = handle.reserved_at
+            for token in handle.token_ids[:unused_n]:
+                stamp = tokens.pop(token, None)
+                if stamp is not None:
+                    bucket.removed[token] = stamp
+            bucket._set_tokens(tokens)
 
         self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
 

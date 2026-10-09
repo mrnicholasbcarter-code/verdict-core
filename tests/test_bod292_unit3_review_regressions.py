@@ -952,3 +952,55 @@ def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:
     stale.save()
     entry = HealthCache(path).entry("cc/a")
     assert entry is not None and entry.category == "permission"
+
+
+def test_review3_bucket_merge_preserves_newer_reservations(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    path = tmp_path / "cache.json"
+    stale = HealthCache(path, bucket_capacity=10)
+    assert stale.consume("cc", NOW - timedelta(seconds=120), amount=10)
+    stale.save()
+    fresh = HealthCache(path, bucket_capacity=10)
+    reservation = fresh.reserve_bucket("cc", NOW, amount=2)
+    assert reservation is not None
+    stale.save()
+    disk = HealthCache(path, bucket_capacity=10).bucket_for("cc")
+    assert set(reservation.token_ids) <= set(disk.token_ids)
+    assert disk.remaining(NOW) == 8
+
+
+def test_review3_bucket_release_is_owned_and_idempotent(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    path = tmp_path / "cache.json"
+    a = HealthCache(path, bucket_capacity=10)
+    b = HealthCache(path, bucket_capacity=10)
+    handle_a = a.reserve_bucket("cc", NOW, amount=2)
+    handle_b = b.reserve_bucket("cc", NOW + timedelta(seconds=30))
+    assert handle_a is not None and handle_b is not None
+    a.release_bucket(handle_a, 1)
+    disk = HealthCache(path).bucket_for("cc")
+    assert set(handle_b.token_ids) <= set(disk.token_ids)
+    assert len(disk.timestamps) == 2
+    a.release_bucket(handle_a, 1)
+    a.save()  # stale reservation must not resurrect a released token
+    disk = HealthCache(path).bucket_for("cc")
+    assert len(disk.timestamps) == 2
+    assert disk.remaining(NOW + timedelta(seconds=61)) == 9
+
+
+def test_review3_revision_rejects_stale_future_positive(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    path = tmp_path / "cache.json"
+    owner = HealthCache(path)
+    owner.record("cc/a", ProbeResult("ok", True, True), NOW)
+    owner.save()
+    stale = HealthCache(path)
+    owner.merge_and_save(lambda cache: cache.record("cc/a", ProbeResult("permission", False, False), NOW))
+    stale.record("cc/a", ProbeResult("ok", True, True), NOW + timedelta(seconds=1))
+    stale.save()
+    entry = HealthCache(path).entry("cc/a")
+    assert entry is not None and entry.category == "permission"
+    assert entry.write_revision == 2

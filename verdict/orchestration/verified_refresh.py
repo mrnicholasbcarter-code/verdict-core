@@ -847,8 +847,7 @@ class RefreshCoordinator:
                 # Release only unused spend before persisting the proof.
                 if outcome.requests_made < probe_requests:
                     self.cache.release_bucket(
-                        row.provider, now, pool=row.pool,
-                        amount=probe_requests - outcome.requests_made,
+                        reservation, probe_requests - outcome.requests_made,
                         deadline=deadline, monotonic=self.monotonic, sleep=self.sleep,
                     )
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
