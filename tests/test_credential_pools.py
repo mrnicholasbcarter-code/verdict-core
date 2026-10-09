@@ -505,3 +505,44 @@ def test_auth_outage_streak_spans_main_and_agentic_phases(tmp_path: Path) -> Non
     assert stats.auth_outage
     assert calls == [routes[0].route_id]
     assert cache.routes() == {}
+
+
+@pytest.mark.parametrize("direct", [True, False])
+def test_agentic_phase_uses_the_same_filtered_plan(tmp_path: Path, direct: bool) -> None:
+    """Reviewer repro: aliases and non-chat routes never get agentic cache entries."""
+    from verdict.prove_at_rest import CycleStats
+
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [
+        _route("agy/model", "free"),
+        _route("antigravity/model", "free"),
+        _route("af/bge-reranker", "free", non_chat=True),
+        _route("p/base", "free"),
+        _route("p/base-high", "free"),
+    ]
+    calls: list[str] = []
+    loads: list[bool] = []
+
+    def loader() -> list[AdmittedRoute]:
+        loads.append(True)
+        return routes
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return ProbeExchange(http_status=403, ok=False, error_category="permission")
+
+    prober = Prober(
+        cache=cache,
+        routes_loader=loader,
+        transport=_auth_401,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    )
+    if direct:
+        prober.run_agentic_probes(CycleStats())
+    else:
+        prober.run_once()
+    assert calls == ["antigravity/model", "p/base"]
+    assert len(loads) == 1, "one loader snapshot must serve both phases"
+    assert set(cache.routes()) == set(calls)

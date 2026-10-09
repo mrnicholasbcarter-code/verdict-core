@@ -866,7 +866,7 @@ class Prober:
         # Keep the outage window across both phases; a broken gateway key
         # must not poison routes through agentic probes after chat probing stops.
         if not stats.auth_outage and stats.requests < self.max_requests:
-            self.run_agentic_probes(stats, started=started)
+            self.run_agentic_probes(stats, started=started, planned_routes=[r for r, _ in ordered])
         if not stats.auth_outage:
             self._flush_auth_fail_buffer(stats)
             self._save_for_cycle(started)
@@ -1102,7 +1102,13 @@ class Prober:
         age = now - ref
         return age.total_seconds() > self.agentic_interval_hours * 3600
 
-    def run_agentic_probes(self, stats: CycleStats, started: float | None = None) -> None:
+    def run_agentic_probes(
+        self,
+        stats: CycleStats,
+        started: float | None = None,
+        *,
+        planned_routes: Sequence[AdmittedRoute] | None = None,
+    ) -> None:
         """Run agentic probes for FREE routes that need them. Bounded.
 
         Enforces the cycle's wall-time budget and the stop signal before
@@ -1112,7 +1118,14 @@ class Prober:
             return
         wall_start = started if started is not None else self.monotonic()
         now = self.clock()
-        routes = [r for r in self.routes_loader() if self._needs_agentic(r, now)]
+        if planned_routes is None:
+            planned_routes = [
+                route
+                for route, _kind in order_cycle(
+                    self.routes_loader(), self.cache, now, epsilon=self.epsilon
+                )
+            ]
+        routes = [r for r in planned_routes if self._needs_agentic(r, now)]
         probed = 0
         max_agentic = min(8, self.max_requests - stats.requests)
         for route in routes[:max_agentic]:
