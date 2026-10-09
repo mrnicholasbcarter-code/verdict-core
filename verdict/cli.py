@@ -3164,7 +3164,23 @@ def main() -> None:
 
     from verdict.commands.dispatch import dispatch
 
-    dispatch(parser, parser.parse_args())
+    args = parser.parse_args()
+    dispatch(parser, args)
+    if args.command == "eligibility" and getattr(args, "verified", False):
+        from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
+        from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+
+        try:
+            adapter = VerifiedSnapshotAdapter(
+                getattr(args, "gateway", "http://127.0.0.1:20128"),
+                StorePaths.defaults(),
+                local_only=True,
+            )
+            warning = publish_snapshot(local_projection(adapter, now=utc_now()))
+            if warning:
+                print(warning, file=sys.stderr)
+        except (ValueError, OSError, TypeError):
+            print("completion snapshot publication failed; evidence unchanged", file=sys.stderr)
 
 
 def cmd_resume(
@@ -3625,6 +3641,83 @@ def cmd_harness_cursor(
                 present.note(item)
         return
     raise SystemExit(f"unknown harness cursor command: {command}")
+
+
+def cmd_harness_bootstrap(
+    target: str,
+    command: str,
+    *,
+    ids: list[str] | None = None,
+    mode: str = "native",
+    transaction: str | None = None,
+    preview: bool = False,
+    dry_run: bool = False,
+    output_json: bool = False,
+) -> None:
+    """Additive controllers; JSON stdout is never a prompt/progress stream."""
+    from verdict.actions.registry import run_action
+    from verdict.tui_bootstrap_controls import BootstrapArgs, consume_prime, parse_bootstrap_args
+    from verdict.tui_verified_controls import prompt_consent
+
+    def write(line: str) -> None:
+        print(line, file=sys.stderr)
+
+    def read_line(prompt: str) -> str:
+        print(prompt, file=sys.stderr, end="", flush=True)
+        return input()
+
+    if target == "claude":
+        parsed = parse_bootstrap_args("claude " + " ".join(ids or []) + " mode=" + mode)
+        result = run_action(
+            "harness.claude.compat", {"selected_ids": parsed.ids, "mode": parsed.mode}
+        )
+    elif command == "sync-models":
+        confirmed = dry_run or (
+            sys.stdin.isatty()
+            and prompt_consent(
+                "Sync registry inventory only (not verification)?", read_line=read_line
+            ).granted
+        )
+        from verdict.actions.base import ActionResult
+
+        result = (
+            run_action("harness.prime.sync-models", {"dry_run": dry_run})
+            if confirmed
+            else ActionResult(data={"status": "cancelled", "written": False})
+        )
+    else:
+        parsed = (
+            BootstrapArgs("prime", restore=True, transaction_id=transaction)
+            if command == "restore"
+            else parse_bootstrap_args("prime " + " ".join(ids or []))
+        )
+        result = consume_prime(
+            parsed,
+            gateway=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+            read_line=read_line,
+            write=write,
+            preview_only=preview,
+            interactive=sys.stdin.isatty(),
+            live=True,
+        )
+    if target == "prime" and command == "select" and result.ok:
+        from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
+        from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+
+        try:
+            adapter = VerifiedSnapshotAdapter(
+                os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+                StorePaths.defaults(),
+                local_only=True,
+            )
+            warning = publish_snapshot(local_projection(adapter, now=utc_now()))
+            if warning:
+                write(warning)
+        except (ValueError, OSError, TypeError):
+            write("completion snapshot publication failed; evidence unchanged")
+    print(json.dumps(result.data, indent=2, ensure_ascii=True, default=str))
+    if not result.ok:
+        raise SystemExit(result.exit_code or 2)
 
 
 def cmd_harness_prime(
