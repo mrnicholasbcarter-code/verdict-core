@@ -770,5 +770,105 @@
   {
     "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
     "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.health",
+    "reason": "UNTRIAGED: uncalled at verdict/api.py:1317"
+  },
+  {
+    "qualified_name": "verdict.api.ready",
+    "reason": "UNTRIAGED: uncalled at verdict/api.py:1338"
+  },
+  {
+    "qualified_name": "verdict.api.responses",
+    "reason": "UNTRIAGED: uncalled at verdict/api.py:2203"
+  },
+  {
+    "qualified_name": "verdict.benchmarking.format_comparison_report",
+    "reason": "UNTRIAGED: test_only_caller at verdict/benchmarking.py:233"
+  },
+  {
+    "qualified_name": "verdict.benchmarking.run_comparison_benchmarks",
+    "reason": "UNTRIAGED: test_only_caller at verdict/benchmarking.py:134"
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.pool_key",
+    "reason": "UNTRIAGED: uncalled at verdict/capacity_resolve.py:38"
+  },
+  {
+    "qualified_name": "verdict.chooser.human_summary",
+    "reason": "UNTRIAGED: uncalled at verdict/chooser.py:782"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_autodev.register",
+    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_autodev.py:8"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_config.register",
+    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_config.py:8"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_credentials.register",
+    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_credentials.py:8"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_harness.register",
+    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_harness.py:24"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_models.register",
+    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_models.py:8"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_openspec.register",
+    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_openspec.py:18"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_routing.register",
+    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_routing.py:8"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_runtime.register",
+    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_runtime.py:9"
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_setup.register",
+    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_setup.py:8"
+  },
+  {
+    "qualified_name": "verdict.controller_selection.InjectableControllerSelector",
+    "reason": "UNTRIAGED: uncalled at verdict/controller_selection.py:971"
+  },
+  {
+    "qualified_name": "verdict.controller_selection.build_production_controller_selection_bundle",
+    "reason": "UNTRIAGED: uncalled at verdict/controller_selection.py:2142"
+  },
+  {
+    "qualified_name": "verdict.controller_selection.select_controller_launch",
+    "reason": "UNTRIAGED: test_only_caller at verdict/controller_selection.py:515"
+  },
+  {
+    "qualified_name": "verdict.delivery.decide_repair_action",
+    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:234"
+  },
+  {
+    "qualified_name": "verdict.delivery.merge_gates_satisfied",
+    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:368"
+  },
+  {
+    "qualified_name": "verdict.delivery.post_merge_verify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:396"
+  },
+  {
+    "qualified_name": "verdict.delivery.run_local_proof",
+    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:434"
+  },
+  {
+    "qualified_name": "verdict.harness_claude.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:282"
+  },
+  {
+    "qualified_name": "verdict.harness_claude.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:217"
   }
 ]
