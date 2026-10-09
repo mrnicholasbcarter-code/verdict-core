@@ -260,32 +260,6 @@
       "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
     },
     {
-      "id": "CL-009",
-      "matrix_row": "PM-012",
-      "claim": "The trading system processed 100,000 messages per second with 82% parser improvement and zero risk-bound breaches.",
-      "status": "self_reported",
-      "allowed_wording": "A portfolio case study reports trading-system performance and risk-control results; this repository does not independently verify them.",
-      "evidence": [
-        "docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md"
-      ],
-      "evidence_locators": [
-        "throughput and latency claims"
-      ],
-      "observed_date_range": "undated source narrative; reviewed 2026-07-31",
-      "metric_definition": "The source documents do not provide a repository-local raw benchmark and controlled comparison for these figures.",
-      "authorship": "portfolio narrative; external system evidence not included",
-      "public": true,
-      "visibility": "redacted",
-      "redacted_substitute": "The public substitute labels the figures self-reported and excludes private trading records and account data.",
-      "confidence": "low",
-      "likely_objection": "Can a reviewer reproduce the result from this repository?",
-      "falsification_test": "Require the external repository, benchmark fixture, environment, raw results, and risk-event ledger with sensitive data redacted.",
-      "missing_evidence": "Independent reproducible artifacts and provenance for every metric.",
-      "downgrade_wording": "The figures are self-reported in the case study and are not release-gated evidence here.",
-      "review_after": "2026-10-06",
-      "review_status": "expired_as_of_2026-10-08; evidence and wording need renewed exact-source review before use"
-    },
-    {
       "id": "CL-010",
       "matrix_row": "PM-013",
       "claim": "Verdict has passed every release gate and is production-ready.",

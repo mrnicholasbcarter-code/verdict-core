@@ -1019,7 +1019,6 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | ADR index | [`docs/adr/README.md`](docs/adr/README.md) |
 | Full CLI reference | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) |
 | User journey | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
-| Proof-carrying decision plane case study | [`docs/portfolio/VERDICT_PROOF_CASE_STUDY.md`](docs/portfolio/VERDICT_PROOF_CASE_STUDY.md) |
 | Unknown ≠ healthy (fail-closed drops) | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
 | vs LiteLLM / OpenRouter / Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
 | Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |

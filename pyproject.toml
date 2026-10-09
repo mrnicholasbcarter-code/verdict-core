@@ -92,7 +92,12 @@ Issues = "https://github.com/mrnicholasbcarter-code/verdict-core/issues"
 line-length = 100
 target-version = "py310"
 # Vendored byte-identical from verdict-ecosystem@fec5556; do not edit
-extend-exclude = ["verdict/openspec_vendor/validate_openspec_change.py"]
+extend-exclude = [
+    "verdict/openspec_vendor/validate_openspec_change.py",
+    # Vulture whitelist: bare names are vulture's whitelist DSL (the line's mere
+    # presence marks the name as intentionally used), not executable statements.
+    ".vulture-whitelist.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]

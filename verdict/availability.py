@@ -1474,10 +1474,3 @@ class ProbeEnrichedAdapter:
         return probe_candidate
 
     check = evaluate
-
-
-def adapter_from_transport(
-    transport: OmniRouteTransport, **kwargs: Any
-) -> OmniRouteAvailabilityAdapter:
-    """Compatibility factory for API/CLI/MCP/A2A integrations."""
-    return OmniRouteAvailabilityAdapter(transport, **kwargs)

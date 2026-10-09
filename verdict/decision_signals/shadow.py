@@ -5,12 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from collections.abc import Callable
-from datetime import datetime, timezone
-from typing import Any
-
-from verdict.decision_signals.contracts import DecisionQuestionV1, DecisionSignalSetV1
-from verdict.decision_signals.openjev import OpenJevSystemOneProvider
 
 logger = logging.getLogger(__name__)
 
@@ -46,28 +40,4 @@ def should_collect_signals() -> bool:
     return get_signals_mode() in _COLLECT_MODES
 
 
-def collect_shadow_signals(
-    question: DecisionQuestionV1,
-    *,
-    base_url: str | None = None,
-    api_key: str | None = None,
-    transport: Callable[[str, dict[str, str], dict[str, Any]], tuple[int, dict[str, str], bytes]]
-    | None = None,
-) -> DecisionSignalSetV1:
-    """Collect decision signals in SHADOW or ADVISORY mode.
-
-    Args:
-        question: Decision question
-        base_url: Optional Codiv base URL (default: from TYPESAFE_BASE_URL env)
-        api_key: Optional API key (default: from TYPESAFE_API_KEY env)
-        transport: Optional injectable transport for testing
-
-    Returns:
-        DecisionSignalSetV1 (never raises; failures returned as signal set with failure_class)
-    """
-    now = datetime.now(timezone.utc)
-    provider = OpenJevSystemOneProvider(base_url=base_url, api_key=api_key, transport=transport)
-    return provider.signals(question, now=now)
-
-
-__all__ = ["collect_shadow_signals", "get_signals_mode", "should_collect_signals"]
+__all__ = ["get_signals_mode", "should_collect_signals"]

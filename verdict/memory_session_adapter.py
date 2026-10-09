@@ -615,15 +615,6 @@ class SessionAdapter:
         return SessionImportResult(tuple(records), manifest, report)
 
 
-def import_session_jsonl(
-    source: str | Path, *, project: str, session_id: str, policy: SessionImportPolicy | None = None
-) -> SessionImportResult:
-    """Convenience wrapper for the supported JSONL session format."""
-    return SessionAdapter().import_file(
-        source, project=project, session_id=session_id, format="jsonl", policy=policy
-    )
-
-
 def normalize_session_record(
     raw: Mapping[str, Any], *, line_number: int, project: str, session_id: str, redact: bool = True
 ) -> dict[str, Any] | None:
@@ -1088,7 +1079,6 @@ __all__ = [
     "discover_sessions",
     "import_discovered_sessions",
     "import_session",
-    "import_session_jsonl",
     "normalize_session_record",
     "poll_discovered_sessions",
     "session_record_to_memory_record",

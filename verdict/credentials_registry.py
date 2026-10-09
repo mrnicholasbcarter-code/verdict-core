@@ -405,11 +405,3 @@ def get_credential(env_name: str) -> CredentialSpec | None:
         if cred.env_name == env_name:
             return cred
     return None
-
-
-def get_dependency(name: str) -> DependencySpec | None:
-    """Look up a dependency by name."""
-    for dep in DEPENDENCIES:
-        if dep.name == name:
-            return dep
-    return None

@@ -34,7 +34,21 @@ verdict --help
 pytest -v
 ```
 
-### 3. OmniRoute (Local)
+### 3. Recommended Tooling
+
+`scripts/dev-start.sh` reports which recommended tools are installed. Install the missing ones with:
+
+```bash
+scripts/dev-tooling.sh --install   # Homebrew/Linuxbrew, uv tool, npm
+scripts/dev-tooling.sh --strict    # exit 1 if any recommended tool is missing
+```
+
+The set covers search (`rg`, `fd`, `jq`), structural code search (`ast-grep`), static analysis
+(`semgrep`, `shellcheck`, `actionlint`), hygiene (`typos`, `codespell`, `lychee`, `vulture`,
+`deptry`), secret scanning (`gitleaks`), the GitHub CLI (`gh`, preferred over raw REST calls) and
+the OpenSpec CLI. None of them is a runtime dependency of Verdict.
+
+### 4. OmniRoute (Local)
 
 OmniRoute is an external gateway and is not bundled with Verdict. Install and start it
 per its own documentation, then check that the inventory endpoint answers:
@@ -46,7 +60,7 @@ curl -s http://localhost:20128/v1/models | jq '.data | length'   # live model co
 For parallel agent workloads, apply the admission settings in
 [the orchestration golden path prerequisites](orchestration-golden-path.md#prerequisites).
 
-### 4. Run Verdict Core Server
+### 5. Run Verdict Core Server
 
 ```bash
 # With OmniRoute integration

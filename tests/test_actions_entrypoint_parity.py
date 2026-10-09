@@ -830,26 +830,6 @@ class TestConfigShowParity:
 
 
 # ---------------------------------------------------------------------------
-# xfail: actions whose CLI handler is NOT wired to run_action on this branch
-# ---------------------------------------------------------------------------
-
-XFAIL_NOT_WIRED: list[str] = []
-
-
-@pytest.mark.parametrize("action", XFAIL_NOT_WIRED)
-@pytest.mark.xfail(strict=True, reason="handler not wired: CLI does not call run_action")
-class TestNotWiredXfail:
-    def test_cli_calls_run_action(self, action: str) -> None:
-        """Expecting this to fail: CLI does not use run_action for this action."""
-        # If this passes, the xfail will flip → test failure, signalling wiring is done
-        import importlib
-        import inspect
-
-        src = inspect.getsource(importlib.import_module("verdict.cli"))
-        assert f'run_action("{action}"' in src, f"CLI does not call run_action for {action}"
-
-
-# ---------------------------------------------------------------------------
 # Mutation test: real credentials round-trip (no spy)
 # ---------------------------------------------------------------------------
 

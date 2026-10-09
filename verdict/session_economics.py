@@ -575,40 +575,6 @@ def decide_session_route(
     return _finish("STAY", reason="stay:expected_cost_or_hysteresis", selected=current)
 
 
-def apply_runtime_evidence(
-    session: SessionState,
-    *,
-    quota: QuotaEvidenceInput | None = None,
-    cache: CacheEvidenceInput | None = None,
-    quota_exhausted: bool | None = None,
-    cooldown_active: bool | None = None,
-    health_unusable: bool | None = None,
-) -> SessionState:
-    """Merge optional runtime certification (passport) evidence into session state (immutable replace)."""
-
-    exhausted = session.quota_exhausted if quota_exhausted is None else quota_exhausted
-    remaining_pct = None if quota is None else quota.get("remaining_pct")
-    if remaining_pct is not None and float(remaining_pct) <= 0.0:
-        exhausted = True
-    return SessionState(
-        session_id=session.session_id,
-        current_route=session.current_route,
-        last_served_route=session.last_served_route,
-        cache=session.cache,
-        consecutive_switch_signals=session.consecutive_switch_signals,
-        consecutive_stay_signals=session.consecutive_stay_signals,
-        recent_switches=session.recent_switches,
-        max_switches=session.max_switches,
-        switch_signal_threshold=session.switch_signal_threshold,
-        quota_exhausted=exhausted,
-        cooldown_active=session.cooldown_active if cooldown_active is None else cooldown_active,
-        health_unusable=session.health_unusable if health_unusable is None else health_unusable,
-        serving_failures=session.serving_failures,
-        quota_evidence=quota if quota is not None else session.quota_evidence,
-        cache_evidence=cache if cache is not None else session.cache_evidence,
-    )
-
-
 __all__ = [
     "SESSION_ECONOMICS_SCHEMA_VERSION",
     "ConcreteRoute",
@@ -620,6 +586,5 @@ __all__ = [
     "SessionRouteDecision",
     "SessionState",
     "TaskState",
-    "apply_runtime_evidence",
     "decide_session_route",
 ]

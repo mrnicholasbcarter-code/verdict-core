@@ -385,22 +385,6 @@
       "gap": "The snapshots are historical and partial; they do not certify current provider availability."
     },
     {
-      "id": "PM-012",
-      "area": "portfolio claims",
-      "requirement": "Quantified latency, throughput, memory, adoption, or quality claims have reproducible public evidence before publication.",
-      "status": "blocked",
-      "evidence": [
-        {
-          "path": "docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md",
-          "locator": "throughput and latency claims",
-          "kind": "claim-source"
-        }
-      ],
-      "verification": "For each metric, locate a reproducible artifact with definition, date, environment, and raw result before changing status.",
-      "public_wording": "No quantified portfolio claim is currently approved by this matrix unless it resolves to a listed reproducible artifact.",
-      "gap": "Several career-collateral drafts that previously carried unverified quantified claims were removed from the repository (public docs remediation); the remaining case study still lacks a reproducible artifact."
-    },
-    {
       "id": "PM-013",
       "area": "release readiness",
       "requirement": "Production readiness, adoption, performance leadership, and model intelligence claims are gated by a released evidence bundle.",
@@ -470,7 +454,7 @@
       ],
       "verification": "pytest -q tests/test_memory_plane.py tests/test_code_graph.py",
       "public_wording": "The repository contains tested local memory and code-graph components with explicit scope and offline-oriented behavior.",
-      "gap": "This local contract evidence does not verify the separate quantitative performance claims in the portfolio documents."
+      "gap": "This local contract evidence does not verify broader quantitative performance claims outside the cited implementation and tests."
     },
     {
       "id": "PM-015",

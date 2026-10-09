@@ -3,7 +3,7 @@
 - **Status:** Accepted — implementation tracked in GitHub Project #6
 - **Date:** 2026-09-06
 - **Deciders:** Nick (repo owner)
-- **Related:** [ADR-015](ADR-015-evidence-authority-and-portable-receipts.md), [ADR-016](ADR-016-deterministic-policy-and-transition-graphs.md), [ADR-017](ADR-017-durable-privacy-safe-receipt-ledger.md), [ADR-020](ADR-020-gateway-adapter-contracts.md), [ADR-021](ADR-021-deterministic-provider-receipts.md), [ADR-022](ADR-022-context-provider-conformance.md), [ADR-027](ADR-027-observed-free-status-and-context-omissions.md), [ADR-028](ADR-028-launch-gate-tooling.md), [ADR-029](ADR-029-portfolio-repositioning-plan.md); GitHub Project [Verdict Decision Infrastructure](https://github.com/users/mrnicholasbcarter-code/projects/6), issues #450–#468
+- **Related:** [ADR-015](ADR-015-evidence-authority-and-portable-receipts.md), [ADR-016](ADR-016-deterministic-policy-and-transition-graphs.md), [ADR-017](ADR-017-durable-privacy-safe-receipt-ledger.md), [ADR-020](ADR-020-gateway-adapter-contracts.md), [ADR-021](ADR-021-deterministic-provider-receipts.md), [ADR-022](ADR-022-context-provider-conformance.md), [ADR-027](ADR-027-observed-free-status-and-context-omissions.md), [ADR-028](ADR-028-launch-gate-tooling.md), ADR-029 (superseded; portfolio-repositioning plan, removed from the repo per BOD-257/BOD-317 — private copy retained outside the repo); GitHub Project [Verdict Decision Infrastructure](https://github.com/users/mrnicholasbcarter-code/projects/6), issues #450–#468
 
 ## Context
 

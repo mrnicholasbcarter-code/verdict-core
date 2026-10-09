@@ -15,7 +15,7 @@ semantic truth, source symbols, run provenance, or expired entry reviews.
 | Source revision for this wording audit | `8b1f9d8e82fd7853cdffe19aa1b49baac32229ed` |
 | Wording audit date | 2026-10-08 |
 | Historical claim freeze date | 2026-09-06 |
-| Per-entry review deadlines | 11 of 11 expired 2026-10-06; no dates renewed without exact-source re-review |
+| Per-entry review deadlines | 10 of 10 expired 2026-10-06; no dates renewed without exact-source re-review |
 | Matrix | [`proof_matrix.v1.json`](proof_matrix.v1.json) |
 | Claims ledger | [`claims_ledger.v1.json`](claims_ledger.v1.json) |
 | Redaction policy | [`REDACTION_POLICY.md`](REDACTION_POLICY.md) |
@@ -24,16 +24,16 @@ semantic truth, source symbols, run provenance, or expired entry reviews.
 
 ## Conversion assets
 
-- [Portfolio proof matrix](../portfolio/PORTFOLIO_PROOF_MATRIX.md) maps each
-  audience to an evidence-backed project story and preserves limitations.
 - [2026-09-06 claims audit](CLAIMS_AUDIT_2026-09-06.md) records **historical**
   claim statuses and the v0.3.0 candidate release boundary at its own SHA.
   It is not a current approval or replacement for expired per-entry reviews.
 - [v0.3.0 release boundary](RELEASE_BOUNDARY_0.3.0.md) defines what may be
   claimed and what remains explicitly outside the candidate release.
-- [AI Gateway Assurance Audit](../portfolio/AI_GATEWAY_ASSURANCE_AUDIT.md)
-  defines the scoped consulting offer, deliverables, exclusions, and safe
-  contact path.
+
+The portfolio/career-collateral case studies formerly linked here
+(`docs/portfolio/`) were removed from the repository (BOD-257/BOD-317); a
+private copy is retained outside the repo for historical reference, not for
+publication.
 
 ## Verified local contracts
 
@@ -64,10 +64,13 @@ semantic truth, source symbols, run provenance, or expired entry reviews.
   CodeQL paths. PR/main security jobs are blocking, but tag release does not
   require all exact successful SAST/dependency/CodeQL jobs. A workflow
   definition is not a successful exact-SHA run.
-- The matrix has 21 rows (15 verified, 1 observed, 4 partial, 1 blocked).
-  The ledger has 11 entries (5 verified, 2 observed, 1 self-reported,
-  2 unsupported, 1 aspiration). **Every entry review deadline expired on
-  2026-10-06**; status labels are historical until exact-source re-review.
+- The matrix has 20 rows (15 verified, 4 partial, 1 observed) after removing
+  the portfolio-claims row for the career-collateral case study deleted from
+  the repository (BOD-257/BOD-317). The ledger has 10 entries (5 verified,
+  2 observed, 2 unsupported, 1 aspiration) after removing the matching
+  self-reported entry for the same reason. **Every remaining entry review
+  deadline expired on 2026-10-06**; status labels are historical until
+  exact-source re-review.
 - The supervisor detects **controller-progress** stalls; a two-node injected
   stall proof and a separate three-node resume run are retained. Context
   overflow is request-scoped, not provider cooldown; live multi-provider

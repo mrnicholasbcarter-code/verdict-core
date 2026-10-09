@@ -32,3 +32,16 @@ jobs:
             echo "Error: retired domain reference found (BOD-254). Use github.com/mrnicholasbcarter-code/verdict-core instead."
             exit 1
           fi
+      - name: Run vulture (dead code)
+        run: |
+          python -m pip install vulture
+          vulture verdict/ .vulture-whitelist.py --min-confidence 80
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error

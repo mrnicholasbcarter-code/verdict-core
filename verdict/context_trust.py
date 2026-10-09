@@ -501,31 +501,6 @@ def apply_routing_eligibility(
     return make_eligible, updated
 
 
-def describe_trust_boundary() -> dict[str, Any]:
-    """Controller-friendly snapshot of the native trust boundary contract."""
-    return {
-        "schema_version": CONTEXT_TRUST_SCHEMA_VERSION,
-        "pipeline": [
-            "classify_trust_authority",
-            "detect_prompt_injection",
-            "filter_secrets",
-            "provenance_freshness",
-            "bounded_transformation",
-            "context_unit",
-        ],
-        "capabilities": sorted(
-            {
-                "security.prompt_injection",
-                "security.secrets",
-                "security.agent_config",
-                "security.mcp_config",
-            }
-        ),
-        "native_provider_id": _NATIVE_PROVIDER_ID,
-        "secret_redaction_token": SECRET_REDACTION_TOKEN,
-    }
-
-
 __all__ = [
     "CONTEXT_TRUST_SCHEMA_VERSION",
     "SECRET_REDACTION_TOKEN",
@@ -540,7 +515,6 @@ __all__ = [
     "admit_external_evidence",
     "apply_routing_eligibility",
     "classify_trust_authority",
-    "describe_trust_boundary",
     "detect_prompt_injection",
     "filter_secrets",
     "scan_agent_environment",

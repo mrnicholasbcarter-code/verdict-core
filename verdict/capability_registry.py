@@ -715,16 +715,6 @@ def resolve_capability(
     return active.resolve(capability_id)
 
 
-def describe_registry(registry: SemanticCapabilityRegistry | None = None) -> dict[str, Any]:
-    active = registry if registry is not None else build_default_registry()
-    return {
-        "schema_version": active.schema_version,
-        "vocabulary_size": len(SEMANTIC_CAPABILITIES),
-        "providers": [p.to_dict() for p in active.providers()],
-        "health": dict(active.health_report()),
-    }
-
-
 __all__ = [
     "AGENTSHIELD_AUTHORITY_RANK",
     "CODEBASE_MEMORY_AUTHORITY_RANK",
@@ -746,7 +736,6 @@ __all__ = [
     "SemanticCapabilityRegistry",
     "SkipReason",
     "build_default_registry",
-    "describe_registry",
     "make_agentshield_stub",
     "make_codebase_memory_stub",
     "make_context7_stub",

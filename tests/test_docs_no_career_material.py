@@ -103,3 +103,55 @@ def test_allowed_tokens_are_exact_branch_names_only() -> None:
         "feat/interview-golden-path",
         "cursor/interview-hardening-bod-178-2d40",
     )
+
+
+def test_no_portfolio_directory_tracked() -> None:
+    """Path-based guard: docs/portfolio/** must not exist in the tracked tree.
+
+    Career/portfolio case studies (Kalshi trading bots, AI Gateway Assurance
+    Audit, the Verdict proof case study, and the portfolio proof matrix) were
+    removed from the repository (BOD-257/BOD-317); a private copy is kept
+    outside the repo. This check is path-based so it catches the whole
+    directory being reintroduced even if its prose never repeats a banned
+    term from BANNED_TERMS above.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "docs/portfolio"], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    tracked = [line for line in result.stdout.splitlines() if line]
+    assert not tracked, (
+        f"docs/portfolio/ must not be tracked in the repository; found: {tracked}. "
+        "Move career-collateral material to a private location outside the repo."
+    )
+
+
+def _adr_title(path: Path) -> str:
+    """First Markdown H1 heading in an ADR file, or '' if none is found."""
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def test_no_portfolio_repositioning_adr() -> None:
+    """Path-based guard: no tracked ADR may title itself a portfolio-repositioning plan.
+
+    ADR-029 ("Portfolio repositioning plan — hygiene, positioning, launch")
+    was removed from the repository alongside docs/portfolio/ for the same
+    reason (BOD-257/BOD-317): it is career/positioning collateral, not a
+    product architecture decision. This check matches by ADR *title*, not by
+    the banned-term list above, so it also catches a differently-worded
+    reintroduction of the same kind of content.
+    """
+    adr_dir = ROOT / "docs" / "adr"
+    offending: list[str] = []
+    for rel in _tracked_files():
+        if rel.parent != adr_dir or rel.suffix != ".md":
+            continue
+        title = _adr_title(rel).lower()
+        if "portfolio repositioning" in title:
+            offending.append(rel.relative_to(ROOT).as_posix())
+    assert not offending, (
+        f"ADR title contains 'portfolio repositioning': {offending}. "
+        "Portfolio/career-positioning ADRs must not be tracked in the repository."
+    )
