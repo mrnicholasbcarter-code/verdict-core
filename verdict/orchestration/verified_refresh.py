@@ -977,8 +977,8 @@ class RefreshCoordinator:
             per_provider,
             alive=alive,
         )
-        # The job is over; drop the shared-cancel flag so a later job starts clean.
-        self._clear_shared_cancel(job_id)
+        # Keep this job's cancel signal for waiters; later UUID jobs cannot
+        # inherit it. Only the owner clears its own flag before publication.
         return outcome_obj
 
     def _probe_one(
@@ -1213,7 +1213,11 @@ class RefreshCoordinator:
                     False,
                     refresh_reason=REASON_JOINED_NOT_COVERED,
                 )
-        cancelled = cancel() or (joined_id is not None and self._shared_cancel_requested(joined_id))
+        cancelled = (
+            cancel()
+            or payload.get("result") == OUTCOME_CANCELLED
+            or (joined_id is not None and self._shared_cancel_requested(joined_id))
+        )
         result_kind = (
             OUTCOME_CANCELLED
             if cancelled

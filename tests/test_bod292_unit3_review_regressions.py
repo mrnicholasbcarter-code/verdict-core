@@ -973,7 +973,18 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     assert result.outcome == "cancelled"
     assert transport.calls == []
     assert coord._shared_cancel_requested("old-job")
-    assert not coord._shared_cancel_requested("new-job")
+    assert coord._shared_cancel_requested("new-job")
+    joined = coord._join_and_wait(
+        [RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True)],
+        consumer="picker",
+        config=RefreshConfig(),
+        marker=module._Marker(tmp_path / "refresh.json"),
+        lock=module._JobLock(tmp_path / "refresh.lock"),
+        on_progress=None,
+        cancel=lambda: False,
+    )
+    assert joined.outcome == "cancelled"
+    assert not joined.complete
 
 
 def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:

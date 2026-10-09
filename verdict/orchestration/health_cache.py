@@ -726,9 +726,10 @@ class HealthCache:
         lock, reloads the authoritative on-disk state, merges this object's
         in-memory state onto it (newest wins), then atomically replaces the
         file. A route present only on disk is preserved; a route present in
-        both keeps the newer ``checked_at``; scoped cooldowns keep the later
-        deadline; per-provider buckets keep the more-consumed side so a token
-        reservation is never silently dropped.
+        both requires a current write revision and a strictly newer
+        ``checked_at`` (disk wins ties). Scoped cooldowns keep the later
+        deadline. Buckets union owned token ids minus release tombstones,
+        pruned only against the persisted ledger high-water mark.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
@@ -749,8 +750,8 @@ class HealthCache:
         """Reload disk and fold this object's in-memory state over it.
 
         Must run while the exclusive lock is held. Keeps every disk-only entry
-        and, for keys present in both, the newest route proof / later cooldown
-        deadline / more-consumed bucket. The in-memory cursor wins (it is the
+        and, for keys present in both, revision-current strictly newer proof,
+        later cooldown, and owned-token union. The in-memory cursor wins (it is the
         saver's own partial-progress intent).
         """
         mine_routes = dict(self._routes)

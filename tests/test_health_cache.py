@@ -43,13 +43,7 @@ from verdict.orchestration.health_cache import (
     negative_seconds,
     next_backoff_seconds,
 )
-from verdict.prove_at_rest import (
-    AdmittedRoute,
-    ProbeExchange,
-    Prober,
-    order_cycle,
-    status_report,
-)
+from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, Prober, order_cycle, status_report
 
 NOW = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
 
@@ -804,13 +798,15 @@ def test_wall_cap_before_tool_call_does_not_record_negative(tmp_path: Path) -> N
     clock_val = [0.0]
 
     def monotonic() -> float:
-        # First call (before chat): within limit.
-        # After chat succeeds: return a value past max_wall_seconds.
-        v = clock_val[0]
-        clock_val[0] += 400.0  # each tick = 400s; wall cap = 600s
-        return v
+        return clock_val[0]
 
-    transport = _Script({("cx/walltgt", "chat"): _ok()})
+    script = _Script({("cx/walltgt", "chat"): _ok()})
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        exchange = script(route_id, phase, timeout)
+        if phase == "chat":
+            clock_val[0] = 601.0  # deadline advances on dispatch, not on lock checks
+        return exchange
     prober = Prober(
         cache=cache,
         routes_loader=lambda: [route],
