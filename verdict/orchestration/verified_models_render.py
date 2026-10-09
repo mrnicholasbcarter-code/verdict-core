@@ -212,6 +212,39 @@ def _row_notes(row: Mapping[str, Any], refresh: Mapping[str, Any]) -> list[str]:
     return parts
 
 
+_SOURCE_ERROR_KEY_PREFIX = re.compile(r"^[A-Za-z0-9_ ]+\[[^\]]*\]:\s*")
+_MAX_SOURCE_ERROR_GROUPS = 5
+
+
+def _grouped_source_error_lines(payload: Mapping[str, Any]) -> list[str]:
+    """Bound potentially thousands of source_errors to a handful of display
+    lines. Identical messages (per-key prefix such as ``health_cache[id]: ``
+    stripped) are grouped and counted; the full scrubbed list is unchanged in
+    the JSON contract (``payload["source_errors"]``), only this rendering is
+    bounded."""
+    errors = [
+        _display(value)
+        for value in _sequence(payload.get("source_errors"))
+        if isinstance(value, str)
+    ]
+    if not errors:
+        return []
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for text in errors:
+        key = _SOURCE_ERROR_KEY_PREFIX.sub("", text)
+        if key not in counts:
+            order.append(key)
+        counts[key] = counts.get(key, 0) + 1
+    lines = [f"source_errors ({len(errors)} total, {len(order)} distinct):"]
+    shown = order[:_MAX_SOURCE_ERROR_GROUPS]
+    lines.extend(f"  {key} x{counts[key]}" for key in shown)
+    remaining = len(order) - len(shown)
+    if remaining > 0:
+        lines.append(f"  {remaining} more; use --json for all")
+    return lines
+
+
 def _footer_lines(payload: Mapping[str, Any]) -> list[str]:
     lines: list[str] = []
     supplied = len(_sequence(payload.get("rows")))
@@ -220,13 +253,7 @@ def _footer_lines(payload: Mapping[str, Any]) -> list[str]:
             f"Display safety cap: {_MAX_PAGE_ROWS} supplied page rows shown; "
             f"{supplied - _MAX_PAGE_ROWS} extra rows not rendered."
         )
-    errors = [
-        _display(value)
-        for value in _sequence(payload.get("source_errors"))
-        if isinstance(value, str)
-    ]
-    if errors:
-        lines.append("source_errors: " + "; ".join(errors))
+    lines.extend(_grouped_source_error_lines(payload))
     return lines
 
 

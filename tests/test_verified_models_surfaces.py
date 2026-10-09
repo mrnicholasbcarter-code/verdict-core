@@ -785,6 +785,34 @@ def test_render_defensive_safety_cap_for_unpaged_input(tmp_path: Path) -> None:
     assert "Display safety cap: 200" in plain
 
 
+def test_render_bounds_thousands_of_source_errors_to_few_grouped_lines(tmp_path: Path) -> None:
+    """Defect 2: 1294 real-world http_error source_errors must not push the
+    table off screen. Identical messages (per-key prefix stripped) are
+    grouped and counted, capped at 5 groups plus an overflow note."""
+    adapter = adapter_for(tmp_path, age=None)
+    payload = run_action("models.verified", {"adapter": adapter}).data
+    payload["source_errors"] = [
+        f"health_cache[route/{n}]: unknown category (value='cat{n % 8}')" for n in range(1000)
+    ]
+    plain = render_verified_plain(payload)
+    plain_lines = plain.splitlines()
+    footer_start = next(i for i, text in enumerate(plain_lines) if text.startswith("source_errors"))
+    footer = plain_lines[footer_start:]
+    assert len(footer) <= 7
+    assert "1000 total, 8 distinct" in footer[0]
+    assert "x125" in "\n".join(footer)
+    assert "more; use --json for all" in footer[-1]
+    assert "route/" not in plain  # per-key prefix stripped before grouping
+    # JSON contract is unchanged: the full scrubbed list, not the grouped view.
+    assert len(payload["source_errors"]) == 1000
+    table_group = render_verified_table(payload)
+    table_lines = [
+        text.plain if hasattr(text, "plain") else str(text) for text in table_group.renderables
+    ]
+    table_footer = "\n".join(table_lines[-8:])
+    assert "more; use --json for all" in table_footer
+
+
 def test_snapshot_and_plan_progress_render_never_emit_secrets(tmp_path: Path) -> None:
     secret = "sk-0123456789abcdefghijklmnop"
     email = "operator-secret@example.invalid"

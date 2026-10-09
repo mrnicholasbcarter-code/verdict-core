@@ -71,6 +71,12 @@ _KNOWN_CATEGORIES: frozenset[str] = frozenset(
         CATEGORY_GONE,
         CATEGORY_CATALOG_STALE,
         CATEGORY_MODEL_MISMATCH,
+        # prove_at_rest.category_for's non-specific-HTTP-error fallback
+        # (``named or "http_error"``): a probed negative with a status that
+        # does not match any named category above. Real at-rest caches carry
+        # this for the large majority of negatives; rejecting it turned every
+        # such row into a source_error instead of a diagnostic FAILED row.
+        "http_error",
     }
 )
 _KNOWN_IDENTITIES: frozenset[str] = frozenset(
@@ -106,6 +112,7 @@ _DIAGNOSTIC_CATEGORIES: frozenset[str] = frozenset(
         CATEGORY_GONE,
         CATEGORY_CATALOG_STALE,
         CATEGORY_MODEL_MISMATCH,
+        "http_error",
         "upstream",
         "response_validation",
         "tool_validation",
