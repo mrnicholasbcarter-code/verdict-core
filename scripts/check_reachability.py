@@ -98,7 +98,12 @@ def tracked_python_files(root: Path) -> tuple[str, ...]:
 
 
 def _is_test_path(relative_path: str) -> bool:
-    return PurePosixPath(relative_path).parts[:1] == ("tests",)
+    parts = PurePosixPath(relative_path).parts
+    return (
+        parts[:1] in {("tests",), ("benchmarks",)}
+        or "fixtures" in parts
+        or relative_path == ".vulture-whitelist.py"
+    )
 
 
 def _is_verdict_path(relative_path: str) -> bool:
@@ -149,14 +154,59 @@ def _public_definitions(tree: ast.Module, relative_path: str) -> list[_Definitio
     return out
 
 
-def _referenced_names(tree: ast.Module) -> set[str]:
-    """Every identifier referenced by a Name(Load)/Attribute node in ``tree``."""
-    names: set[str] = set()
+def _referenced_names(tree: ast.Module, relative_path: str, module_symbols: set[str]) -> set[str]:
+    """Resolve references through this module's imports and top-level definitions."""
+    module = _module_dotted(relative_path)
+    local = {
+        n.name
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    imports: dict[str, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            for alias in node.names:
+                imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    names: set[str] = set()
+
+    class References(ast.NodeVisitor):
+        enclosing = ""
+
+        def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            previous, self.enclosing = self.enclosing, node.name
+            self.generic_visit(node)
+            self.enclosing = previous
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.visit_FunctionDef(node)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Load):
+                target = imports.get(node.id)
+                if target:
+                    names.add(target)
+                elif node.id in local and node.id != self.enclosing:
+                    names.add(f"{module}.{node.id}")
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            parts = [node.attr]
+            base = node.value
+            while isinstance(base, ast.Attribute):
+                parts.insert(0, base.attr)
+                base = base.value
+            if isinstance(base, ast.Name) and base.id in imports:
+                names.add(".".join([imports[base.id], *parts]))
+            # Keep name-only matching for methods, never module-level functions.
+            elif node.attr not in module_symbols:
+                names.add(f"method:{node.attr}")
+            self.generic_visit(node)
+
+    References().visit(tree)
     return names
 
 
@@ -267,15 +317,21 @@ def check(
         if tree is not None:
             trees[relative_path] = tree
 
-    # referenced_in[name] -> {"prod": bool, "test": bool}
+    module_symbols = {
+        n.name
+        for tree in trees.values()
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    # referenced_in[qualified_name] -> {"prod": bool, "test": bool}
     referenced_in: dict[str, dict[str, bool]] = {}
     for relative_path, tree in trees.items():
+        if relative_path == ".vulture-whitelist.py":
+            continue
         is_test = _is_test_path(relative_path)
-        for name in _referenced_names(tree):
+        for name in _referenced_names(tree, relative_path, module_symbols):
             bucket = referenced_in.setdefault(name, {"prod": False, "test": False})
-            bucket["test" if is_test else "prod"] = bucket["test" if is_test else "prod"] or True
-            bucket["prod"] = bucket["prod"] or (not is_test)
-            bucket["test"] = bucket["test"] or is_test
+            bucket["test" if is_test else "prod"] = True
 
     findings: list[Finding] = []
     checked = 0
@@ -286,7 +342,7 @@ def check(
         for definition in _public_definitions(tree, relative_path):
             checked += 1
             qualified_name = f"{_module_dotted(relative_path)}.{definition.name}"
-            usage = referenced_in.get(definition.name)
+            usage = referenced_in.get(qualified_name)
             if usage is None or not (usage["prod"] or usage["test"]):
                 vulture_hit = vulture_findings.get((relative_path, definition.line))
                 detail = "no reference found"
@@ -302,7 +358,7 @@ def check(
                         "test_only_caller",
                         relative_path,
                         definition.line,
-                        "only referenced from tests/",
+                        "only referenced from tests/ or other non-production paths",
                     )
                 )
 

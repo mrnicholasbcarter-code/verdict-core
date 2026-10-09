@@ -225,3 +225,37 @@ def test_two_modules_sharing_a_filename_stem_do_not_collide(tmp_path: Path) -> N
     flagged = {f.qualified_name for f in result.findings}
     assert "verdict.one.fixture.orphan_api" in flagged
     assert "verdict.two.fixture.orphan_api" in flagged
+
+
+@pytest.mark.parametrize(
+    ("caller_path", "caller", "kind"),
+    [
+        ("caller.py", "conn.f()", "uncalled"),
+        ("caller.py", "", "uncalled"),
+        ("caller.py", "from verdict.m import f as z; z()", None),
+        ("tests/test_m.py", "from verdict.m import f as z; z()", "test_only_caller"),
+        (".vulture-whitelist.py", "from verdict.m import f; f()", "uncalled"),
+        ("caller.py", "import verdict.m as mod; mod.f()", None),
+        ("caller.py", "import verdict.m; verdict.m.f()", None),
+    ],
+)
+def test_module_resolution(tmp_path: Path, caller_path: str, caller: str, kind: str | None) -> None:
+    root = _repository(tmp_path, {"verdict/m.py": "def f(): return f()\n", caller_path: caller})
+    result = checker.check(root, use_vulture=False)
+    assert [f.kind for f in result.findings if f.qualified_name == "verdict.m.f"] == (
+        [] if kind is None else [kind]
+    )
+
+
+def test_same_stem_call_and_unrelated_rollback_do_not_hide_functions(tmp_path: Path) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/a/m.py": "def f(): pass\n",
+            "verdict/b/m.py": "def f(): pass\n",
+            "verdict/x.py": "def rollback(): pass\n",
+            "caller.py": "from verdict.a.m import f; f(); conn.rollback()\n",
+        },
+    )
+    names = {f.qualified_name for f in checker.check(root, use_vulture=False).findings}
+    assert names == {"verdict.b.m.f", "verdict.x.rollback"}
