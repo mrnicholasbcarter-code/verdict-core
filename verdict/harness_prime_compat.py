@@ -87,6 +87,7 @@ class PrimeSelectionRow:
     execution: str
     reasons: tuple[str, ...]
     selectable: bool
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +107,7 @@ class PrimeSelectionRow:
             "execution": self.execution,
             "reasons": list(self.reasons),
             "selectable": self.selectable,
+            "warnings": list(self.warnings),
         }
 
 
@@ -265,7 +267,28 @@ def prime_selection_rows(
             reasons.append("invalid_cooldown")
         elif cooldown is not None and cooldown > now:
             reasons.append("active_cooldown")
-        if raw.get("restriction") or raw.get("restrictions"):
+        informational = {
+            "agentic_not_fresh": "agentic proof not fresh",
+            "chat_only_not_coding_verified": "chat verified; tools unverified",
+            "pool_binding_ambiguous": "pool binding ambiguous; runtime rechecks required",
+            "account_binding_ambiguous": "account binding ambiguous; runtime rechecks required",
+        }
+        restrictions = raw.get("restrictions") or []
+        if not isinstance(restrictions, (list, tuple)):
+            restrictions = ["unknown_restriction"]
+        codes = [raw.get("restriction"), *restrictions]
+        warnings = tuple(
+            dict.fromkeys(
+                informational[code]
+                for code in codes
+                if isinstance(code, str) and code in informational and status == "VERIFIED"
+            )
+        )
+        if any(
+            code
+            and (not isinstance(code, str) or status != "VERIFIED" or code not in informational)
+            for code in codes
+        ):
             reasons.append("active_restriction")
         readiness: list[str] = []
         if not context.installed:
@@ -327,6 +350,7 @@ def prime_selection_rows(
                 execution=execution,
                 reasons=tuple(dict.fromkeys(reasons)),
                 selectable=not reasons,
+                warnings=warnings,
             )
         )
     return tuple(output)

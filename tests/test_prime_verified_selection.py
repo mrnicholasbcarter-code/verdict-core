@@ -388,3 +388,64 @@ def test_malformed_untrusted_metadata_fail_closed(tmp_path: Path) -> None:
     assert not result.selectable
     assert "identity_unverified" in result.reasons and "unsupported_api" in result.reasons
     assert result.identity is None and result.cooldown_scope is None
+
+
+@pytest.mark.parametrize(
+    "code,warning",
+    [
+        ("chat_only_not_coding_verified", "chat verified; tools unverified"),
+        ("agentic_not_fresh", "agentic proof not fresh"),
+        ("pool_binding_ambiguous", "pool binding ambiguous"),
+        ("account_binding_ambiguous", "account binding ambiguous"),
+    ],
+)
+def test_informational_verified_restriction_warns_not_blocks(
+    tmp_path: Path, code: str, warning: str
+) -> None:
+    settings, deps = inputs(tmp_path)
+    plan = preview_selection(
+        settings,
+        [row(coding_ok=False, restriction=code, restrictions=[code])],
+        selected_ids=["cx/gpt-6-sol"],
+        dependencies=deps,
+        now=NOW,
+    )
+    assert not plan.refusals
+    assert plan.rows[0].selectable
+    assert warning in " ".join(plan.to_dict()["rows"][0]["warnings"])
+
+
+def test_unknown_restriction_still_blocks(tmp_path: Path) -> None:
+    settings, deps = inputs(tmp_path)
+    plan = preview_selection(
+        settings,
+        [row(restrictions=["future_unknown_rule"])],
+        selected_ids=["cx/gpt-6-sol"],
+        dependencies=deps,
+        now=NOW,
+    )
+    assert "active_restriction" in plan.rows[0].reasons
+    assert not plan.rows[0].selectable
+
+
+def test_actual_chat_projection_is_selectable_with_warning(tmp_path: Path) -> None:
+    from tests.test_verified_models_projection import at_rest_entry, conn, health_cache
+    from tests.test_verified_models_projection import row as inventory_row
+    from verdict.orchestration.verified_models import (
+        project_verified_models,
+        snapshots_from_documents,
+    )
+
+    proof = at_rest_entry(
+        "cc/claude-opus-5-5", checked_at=NOW - timedelta(seconds=60), tool_ok=False
+    )
+    evidence = snapshots_from_documents(health_cache_doc=health_cache(proof), now=NOW)
+    projected = project_verified_models(
+        [inventory_row("cc/claude-opus-5-5")], [conn("cc")], evidence, now=NOW
+    )
+    assert projected.rows[0].status.value == "VERIFIED"
+    ctx = replace(context(tmp_path), evidence_source="health_cache")
+    overlay = prime_selection_rows(registry(), projected.to_dict()["rows"], context=ctx, now=NOW)
+    assert overlay[0].selectable, overlay[0]
+    assert not overlay[0].coding_ok
+    assert "chat verified; tools unverified" in overlay[0].warnings
