@@ -636,3 +636,24 @@ def test_unevidenced_alias_candidates_stay_separate(prefix: str, other: str) -> 
     kept, inherited = collapse_alias_duplicates([f"{prefix}/model", f"{other}/model"])
     assert kept == [f"{prefix}/model", f"{other}/model"]
     assert inherited == {}
+
+
+@pytest.mark.parametrize(
+    "route_id, row",
+    [
+        ("kc/openai/gpt-audio-mini", {"capabilities": {"tool_calling": True}}),
+        ("x/vision", {"capabilities": {"image": True, "chat": True}}),
+        ("x/vision", {"capabilities": {"image": True}}),
+        ("x/audio-model", {"type": "chat", "capabilities": {"audio": True}}),
+        ("x/image-gen", {"capabilities": {"tool_calling": False}}),
+    ],
+)
+def test_catalog_chat_capabilities_override_non_chat_markers(
+    route_id: str, row: dict[str, object]
+) -> None:
+    assert not is_non_chat_route(route_id, row)
+
+
+def test_explicit_non_chat_type_and_silent_marker_fallback() -> None:
+    assert is_non_chat_route("x/vision", {"type": "image"})
+    assert is_non_chat_route("x/bge-reranker", {"capabilities": {}})

@@ -159,7 +159,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 _NON_CHAT_TYPES = frozenset({"embedding", "image", "audio", "rerank", "tts"})
-_NON_CHAT_CAPABILITY_KEYS = frozenset({"embedding", "image", "audio", "rerank", "tts"})
+# Image/audio capabilities can describe multimodal chat input, not generation.
+_NON_CHAT_CAPABILITY_KEYS = frozenset({"embedding", "rerank", "tts"})
 
 # Id-marker fallback: the same heuristic the 2026-10-09 controller census
 # scripts (/tmp/verdict-census/free_census3.py) used when inventory rows
@@ -174,17 +175,23 @@ _NON_CHAT_ID_MARKERS = re.compile(
 def is_non_chat_route(route_id: str, row: Mapping[str, object] | None = None) -> bool:
     """True when ``route_id`` is not a chat/completions model.
 
-    Checks the inventory ``row`` first: an explicit ``type`` in a known
-    non-chat set, or a ``capabilities`` map positively declaring a non-chat
-    modality. Falls back to an id-marker heuristic when ``row`` is absent or
-    silent on both.
+    Explicit chat/tool-calling evidence takes precedence over modalities
+    and id markers. Image/audio capabilities alone can describe multimodal
+    chat; only an explicit non-chat type or an unambiguous capability excludes
+    a route. Use id markers only when the catalog has no capability/type data.
     """
     if row is not None:
-        if str(row.get("type", "")).lower() in _NON_CHAT_TYPES:
-            return True
+        route_type = str(row.get("type") or "").lower()
         caps = row.get("capabilities")
-        if isinstance(caps, Mapping) and any(caps.get(key) for key in _NON_CHAT_CAPABILITY_KEYS):
-            return True
+        if route_type == "chat" or (
+            isinstance(caps, Mapping)
+            and (caps.get("chat") is True or caps.get("tool_calling") is True)
+        ):
+            return False
+        if route_type:
+            return route_type in _NON_CHAT_TYPES
+        if isinstance(caps, Mapping) and caps:
+            return any(caps.get(key) for key in _NON_CHAT_CAPABILITY_KEYS)
     return bool(_NON_CHAT_ID_MARKERS.search(route_id))
 
 
