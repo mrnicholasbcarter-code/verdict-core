@@ -1,5 +1,7 @@
 """CLI entry point for Verdict."""
 
+from __future__ import annotations
+
 import argparse
 import contextlib
 import json
@@ -7,7 +9,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.console import Console
@@ -17,10 +19,7 @@ import verdict.actions.helpers as _action_helpers
 
 # BOD-275: canonical implementations extracted from cli.py  ──────────────────
 from verdict.actions.helpers import _CLI_DEFAULT_PROVIDERS as _HELPERS_CLI_DEFAULT_PROVIDERS
-from verdict.benchmarking import format_benchmark_report, run_reproducible_benchmarks
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
-from verdict.free_tier_admit import execute_offload_chat, omniroute_endpoint_from_env
-from verdict.gate import Gate
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_cline import DEFAULT_BASE_URL as CLINE_HARNESS_DEFAULT_BASE_URL
@@ -39,6 +38,13 @@ from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOK
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.patch_executor import DEFAULT_BASE_URL
 from verdict.terminal_ui import TerminalUI
+
+if TYPE_CHECKING:
+    # BOD-321: Gate only appears as a type annotation in this module; the real
+    # import is deferred into the functions that construct/use one so a bare
+    # `import verdict.cli` does not pull in verdict.gate (which pulls in
+    # verdict.intelligence -> ... -> httpx).
+    from verdict.gate import Gate
 
 console = Console()
 
@@ -718,6 +724,8 @@ def _configured_completion_endpoint(
     providers: dict[str, ProviderConfig] | None,
 ) -> tuple[str, str | None] | None:
     """Return the OpenAI-compatible (base_url, api_key) used for CLI execution."""
+    from verdict.free_tier_admit import omniroute_endpoint_from_env
+
     endpoint = omniroute_endpoint_from_env(providers)
     if endpoint is not None:
         return endpoint
@@ -756,6 +764,19 @@ def _ensure_cli_gateway_ready() -> None:
         raise SystemExit(1) from exc
     if outcome.state != "not_required":
         print(f"verdict: {outcome.describe()}", file=sys.stderr)
+
+
+def execute_offload_chat(*args: Any, **kwargs: Any) -> tuple[str, str]:
+    """Trampoline to ``verdict.free_tier_admit.execute_offload_chat``.
+
+    Kept as a real module attribute (not a function-local import) so
+    ``monkeypatch.setattr("verdict.cli.execute_offload_chat", fake)`` keeps
+    working; the heavy ``verdict.free_tier_admit`` -> httpx chain is only
+    imported on first call, not at ``import verdict.cli`` time.
+    """
+    from verdict.free_tier_admit import execute_offload_chat as _impl
+
+    return _impl(*args, **kwargs)
 
 
 def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: bool) -> Any:
@@ -937,6 +958,25 @@ def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
     present.kv({"Total Requests": str(total), "P50 Latency": f"{avg_latency:.2f}ms"})
     present.section("Top Routed Models")
     present.table(["Model", "Calls"], [(mod, str(count)) for mod, count in top_models])
+
+
+def run_reproducible_benchmarks(*args: Any, **kwargs: Any) -> Any:
+    """Trampoline to ``verdict.benchmarking.run_reproducible_benchmarks``.
+
+    Kept as a real module attribute (not a function-local import) so
+    ``monkeypatch.setattr("verdict.cli.run_reproducible_benchmarks", fake)``
+    keeps working; ``verdict.benchmarking`` is only imported on first call.
+    """
+    from verdict.benchmarking import run_reproducible_benchmarks as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def format_benchmark_report(*args: Any, **kwargs: Any) -> str:
+    """Trampoline to ``verdict.benchmarking.format_benchmark_report`` (see above)."""
+    from verdict.benchmarking import format_benchmark_report as _impl
+
+    return _impl(*args, **kwargs)
 
 
 def cmd_benchmark(
