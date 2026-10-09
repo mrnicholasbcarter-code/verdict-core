@@ -156,39 +156,88 @@ def _public_definitions(tree: ast.Module, relative_path: str) -> list[_Definitio
 
 
 def _referenced_names(tree: ast.Module, relative_path: str, module_symbols: set[str]) -> set[str]:
-    """Resolve references through this module's imports and top-level definitions."""
+    """Resolve references through lexically scoped imports and top-level definitions."""
     module = _module_dotted(relative_path)
     local = {
         n.name
         for n in tree.body
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
-    imports: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports[alias.asname or alias.name.split(".")[0]] = (
-                    alias.name if alias.asname else alias.name.split(".")[0]
-                )
-        elif isinstance(node, ast.ImportFrom) and not node.level:
-            for alias in node.names:
-                imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def scoped_imports(body: list[ast.stmt]) -> dict[str, str]:
+        imports: dict[str, str] = {}
+
+        class Imports(ast.NodeVisitor):
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    imports[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                if not node.level:
+                    for alias in node.names:
+                        imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+            def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+                pass
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                pass
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                pass
+
+        collector = Imports()
+        for statement in body:
+            collector.visit(statement)
+        return imports
+
     names: set[str] = set()
 
     class References(ast.NodeVisitor):
         enclosing = ""
+        imports = scoped_imports(tree.body)
+        function_imports = imports
 
         def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            previous, self.enclosing = self.enclosing, node.name
-            self.generic_visit(node)
-            self.enclosing = previous
+            # Decorators, defaults and annotations belong to the enclosing scope.
+            for child in [
+                *node.decorator_list,
+                node.args,
+                node.returns,
+                *getattr(node, "type_params", []),
+            ]:
+                if child is not None:
+                    self.visit(child)
+            previous = self.enclosing, self.imports, self.function_imports
+            self.enclosing = node.name
+            self.imports = {**self.function_imports, **scoped_imports(node.body)}
+            self.function_imports = self.imports
+            for statement in node.body:
+                self.visit(statement)
+            self.enclosing, self.imports, self.function_imports = previous
 
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
             self.visit_FunctionDef(node)
 
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for child in [
+                *node.decorator_list,
+                *node.bases,
+                *node.keywords,
+                *getattr(node, "type_params", []),
+            ]:
+                self.visit(child)
+            previous = self.imports
+            self.imports = {**self.imports, **scoped_imports(node.body)}
+            for statement in node.body:
+                self.visit(statement)
+            self.imports = previous
+
         def visit_Name(self, node: ast.Name) -> None:
             if isinstance(node.ctx, ast.Load):
-                target = imports.get(node.id)
+                target = self.imports.get(node.id)
                 if target:
                     names.add(target)
                 elif node.id in local and node.id != self.enclosing:
@@ -202,9 +251,9 @@ def _referenced_names(tree: ast.Module, relative_path: str, module_symbols: set[
                 and isinstance(node.args[0], ast.Name)
                 and isinstance(node.args[1], ast.Constant)
                 and isinstance(node.args[1].value, str)
-                and node.args[0].id in imports
+                and node.args[0].id in self.imports
             ):
-                names.add(f"{imports[node.args[0].id]}.{node.args[1].value}")
+                names.add(f"{self.imports[node.args[0].id]}.{node.args[1].value}")
             self.generic_visit(node)
 
         def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -213,8 +262,8 @@ def _referenced_names(tree: ast.Module, relative_path: str, module_symbols: set[
             while isinstance(base, ast.Attribute):
                 parts.insert(0, base.attr)
                 base = base.value
-            if isinstance(base, ast.Name) and base.id in imports:
-                names.add(".".join([imports[base.id], *parts]))
+            if isinstance(base, ast.Name) and base.id in self.imports:
+                names.add(".".join([self.imports[base.id], *parts]))
             # Keep name-only matching for methods, never module-level functions.
             elif node.attr not in module_symbols:
                 names.add(f"method:{node.attr}")

@@ -248,6 +248,121 @@ def test_module_resolution(tmp_path: Path, caller_path: str, caller: str, kind: 
     )
 
 
+@pytest.mark.parametrize("prefix", ["def", "async def"])
+def test_lazy_trampolines_with_local_aliases_are_production_callers(
+    tmp_path: Path, prefix: str
+) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": "def run(): pass\ndef format_report(): pass\n",
+            "caller.py": f"""\
+{prefix} run(*args, **kwargs):
+    from verdict.fixture import run as _impl
+    return _impl(*args, **kwargs)
+
+{prefix} format_report(*args, **kwargs):
+    from verdict.fixture import format_report as _impl
+    return _impl(*args, **kwargs)
+""",
+        },
+    )
+
+    assert checker.check(root, use_vulture=False).findings == ()
+
+
+@pytest.mark.parametrize(
+    ("local_import", "unrelated_call"),
+    [
+        ("from verdict.fixture import run as _impl", "_impl()"),
+        ("import verdict.fixture as _impl", "_impl.run()"),
+        ("import verdict.fixture as _impl", 'getattr(_impl, "run")()'),
+    ],
+)
+def test_local_import_alias_does_not_leak_to_sibling_function(
+    tmp_path: Path, local_import: str, unrelated_call: str
+) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": "def run(): pass\n",
+            "caller.py": f"""\
+def function_a():
+    {local_import}
+
+def function_b():
+    return {unrelated_call}
+""",
+        },
+    )
+
+    assert [f.qualified_name for f in checker.check(root, use_vulture=False).findings] == [
+        "verdict.fixture.run"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("local_import", "call"),
+    [
+        ("import verdict.fixture as mod", "mod.run()"),
+        ("import verdict.fixture", "verdict.fixture.run()"),
+        ("import verdict.fixture as mod", 'getattr(mod, "run")()'),
+    ],
+)
+def test_local_module_imports_resolve_production_callers(
+    tmp_path: Path, local_import: str, call: str
+) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": "def run(): pass\n",
+            "caller.py": f"def caller():\n    {local_import}\n    return {call}\n",
+        },
+    )
+
+    assert checker.check(root, use_vulture=False).findings == ()
+
+
+@pytest.mark.parametrize("outside_reference", ["_impl()", "def sibling(arg=_impl()): pass"])
+def test_local_alias_does_not_resolve_outside_function(
+    tmp_path: Path, outside_reference: str
+) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": "def run(): pass\n",
+            "caller.py": f"""\
+def caller():
+    from verdict.fixture import run as _impl
+
+{outside_reference}
+""",
+        },
+    )
+
+    assert [f.qualified_name for f in checker.check(root, use_vulture=False).findings] == [
+        "verdict.fixture.run"
+    ]
+
+
+def test_enclosing_local_alias_resolves_in_nested_function(tmp_path: Path) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": "def run(): pass\n",
+            "caller.py": """\
+def caller():
+    from verdict.fixture import run as _impl
+    def nested():
+        return _impl()
+    return nested()
+""",
+        },
+    )
+
+    assert checker.check(root, use_vulture=False).findings == ()
+
+
 def test_same_stem_call_and_unrelated_rollback_do_not_hide_functions(tmp_path: Path) -> None:
     root = _repository(
         tmp_path,
