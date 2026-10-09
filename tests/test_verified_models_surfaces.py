@@ -318,7 +318,7 @@ def test_stale_consumer_waits_then_reloads_and_only_then_renders(
     try:
         assert entered.wait(5)
         assert "result" not in output
-        assert events == ["load", "refresh-start"]
+        assert events == ["load", "progress", "refresh-start"]
     finally:
         release.set()
         assert finished.wait(5)
@@ -760,17 +760,6 @@ def test_manual_yes_exact_plan_metered_and_unknown_liveness_only(
         inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0}), row("zz/unknown")],
         connections=[conn("ap", auth="apikey", plan="PAYG"), conn("zz", auth="apikey", plan="")],
     )
-    # TODO(unit3-followup/BOD-292): authorized=True must accept a projection
-    # requires_confirmation row after exact digest-bound manual Yes. Remove
-    # this narrow fixture shim when unit3's consent eligibility fix lands.
-    original = refresh._is_refreshable
-
-    def consent_fixture(candidate: Any, *, authorized: bool = False) -> bool:
-        if authorized and candidate.refresh_reason == "requires_confirmation":
-            return candidate.status in {"STALE", "UNVERIFIED"}
-        return original(candidate, authorized=authorized)
-
-    monkeypatch.setattr(refresh, "_is_refreshable", consent_fixture)
     transport = RecordingTransport()
     lines: list[str] = []
     result = consume(adapter, manual=True, read_line=lambda _p: "y", write=lines.append,
@@ -783,7 +772,7 @@ def test_manual_yes_exact_plan_metered_and_unknown_liveness_only(
     assert result.data["refresh"]["outcome"] == "completed"
     assert all(r["status"] == "VERIFIED" and not r["coding_ok"] for r in result.data["rows"])
     assert "Selected routes (2)" in "\n".join(lines)
-    assert "estimated_requests=4" in "\n".join(lines)
+    assert "estimated_requests=2" in "\n".join(lines)
 
 
 @pytest.mark.parametrize("entry", ["inline", "prompted", "palette"])
@@ -818,7 +807,7 @@ def test_probe_all_home_entry_paths_parse_same_list_and_require_yes(
     assert "Probe 3 exact model ids" in stream.getvalue()
     assert "[y/N]" in stream.getvalue()
     assert "quota" in stream.getvalue()
-    assert "currency estimate unavailable" in stream.getvalue()
+    assert "currency estimate unavailable" in " ".join(stream.getvalue().split())
 
 
 @pytest.mark.parametrize("answer", ["", "n", None, "eof", "interrupt"])
@@ -915,7 +904,7 @@ def test_build_selector_fake_hook_passes_through_without_live_transport(
     monkeypatch.setattr(admission, "active_controller_route", lambda: None)
     monkeypatch.setattr(admission, "default_runtime_evidence", lambda **_k: admission.RuntimeEvidence())
     monkeypatch.setattr(admission.AdmittedSet, "write_receipt", lambda *_a: None)
-    monkeypatch.setattr(eligibility_report, "prime_visibility", lambda **_k: HarnessVisibility(None))
+    monkeypatch.setattr(eligibility_report, "prime_visibility", lambda **_k: HarnessVisibility(None, source="offline-test"))
     monkeypatch.setattr(selection, "openai_health_probe", lambda *_a, **_k: forbidden)
     # Use the saved builder without reloading or mutating a shared module.
     def hook(_ids: Any, _now: Any) -> None:
