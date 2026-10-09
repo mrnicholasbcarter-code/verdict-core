@@ -438,14 +438,40 @@ def _lock(paths: SelectionPaths) -> Iterator[None]:
         os.close(fd)
 
 
+def _safe_optional_parent(path: Path) -> None:
+    """Ancestor-symlink refusal for a path whose leaf file may be absent.
+
+    Shares ``_safe_parent``'s symlink/absolute checks so a tolerant "file is
+    absent" result can never hide a symlinked (including dangling) ancestor:
+    ``lstat`` on a path under a symlinked or dangling-symlinked parent also
+    raises ``FileNotFoundError``, which looks identical to a genuinely missing
+    leaf unless the ancestor chain is checked first. Unlike ``_safe_parent``, a
+    wholly absent parent directory is tolerated (no project directory at all
+    means no project override, matching ``harness_bootstrap`` discovery), and
+    the 0o022 mode check never runs here: that tolerance is the whole point of
+    the optional project-settings path.
+    """
+    if not path.is_absolute() or any(p.is_symlink() for p in (path.parent, *path.parents)):
+        raise PrimeSelectionError("unsafe_path", path=path)
+    try:
+        info = path.parent.stat()
+    except FileNotFoundError:
+        return
+    if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode):
+        raise PrimeSelectionError("unsafe_directory", path=path.parent)
+
+
 def _project_digest(path: Path) -> str | None:
     """Digest an optional project settings file; absence needs no safe parent.
 
-    ``lstat`` on the exact path runs before any parent-directory mode check, so
-    a missing file under a group/other-writable project directory (a realistic
-    0775-umask checkout) is tolerated, not refused. A present file still goes
-    through ``_read``'s full ``_safe_parent``/ownership/mode checks unchanged.
+    ``_safe_optional_parent`` runs before ``lstat`` so a symlinked (including
+    dangling) ancestor is refused even when the leaf settings file is absent.
+    A missing file under a real, user-owned, group/other-writable project
+    directory (a realistic 0775-umask checkout) is still tolerated, not
+    refused. A present file still goes through ``_read``'s full
+    ``_safe_parent``/ownership/mode checks unchanged.
     """
+    _safe_optional_parent(path)
     try:
         path.lstat()
     except FileNotFoundError:

@@ -684,3 +684,65 @@ def test_project_settings_appearing_after_preview_refuses_dependencies_changed(
     project.chmod(0o600)
     assert apply(env).reasons == ("dependencies_changed",)
     assert not owned(env)
+
+
+def test_project_parent_symlink_with_absent_target_refused(env: dict[str, Any]) -> None:
+    """A parent symlink must not let an absent leaf look like "no project override".
+
+    Before this fix, ``_project_digest`` lstat'd only the exact leaf path, so a
+    project dir that is itself a symlink (even to a real, existing directory)
+    with no ``settings.json`` inside it returned ``None`` (tolerated) instead
+    of going through the same ancestor-symlink refusal ``_safe_parent`` uses.
+    """
+    real_dir = env["paths"].agent_dir / "real-cwd-prime"
+    real_dir.mkdir(mode=0o700)
+    link_dir = env["paths"].agent_dir / "linked-cwd-prime"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+    project = link_dir / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert apply(env).reasons == ("unsafe_path",)
+    assert not owned(env)
+
+
+def test_project_parent_symlink_dangling_refused(env: dict[str, Any]) -> None:
+    """A dangling parent symlink must also be refused, not treated as absent."""
+    missing_target = env["paths"].agent_dir / "does-not-exist"
+    link_dir = env["paths"].agent_dir / "dangling-cwd-prime"
+    link_dir.symlink_to(missing_target, target_is_directory=True)
+    project = link_dir / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert apply(env).reasons == ("unsafe_path",)
+    assert not owned(env)
+
+
+def test_project_ancestor_symlink_two_levels_up_refused(env: dict[str, Any]) -> None:
+    """A symlink higher in the chain (not the direct parent) must also refuse."""
+    real_root = env["paths"].agent_dir / "real-root"
+    real_root.mkdir(mode=0o700)
+    link_root = env["paths"].agent_dir / "linked-root"
+    link_root.symlink_to(real_root, target_is_directory=True)
+    nested = link_root / "nested"
+    nested.mkdir(mode=0o700)
+    project = nested / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert apply(env).reasons == ("unsafe_path",)
+    assert not owned(env)
+
+
+def test_absent_leaf_under_real_nested_group_writable_dir_applies(env: dict[str, Any]) -> None:
+    """A real (non-symlinked) ancestor chain with an absent leaf still applies."""
+    nested = env["paths"].agent_dir / "real-nested" / "cwd-prime"
+    nested.mkdir(mode=0o700, parents=True)
+    nested.chmod(0o775)
+    project = nested / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert env["plan"].refusals == ()
+    assert apply(env).status == "applied"
