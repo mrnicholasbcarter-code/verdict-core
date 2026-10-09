@@ -332,6 +332,11 @@ class CycleStats:
     negative: int = 0
     skipped_bucket: int = 0
     stopped_reason: str = ""
+    # BOD-297: True when the systemic-auth-outage breaker stopped the cycle
+    # (see ``Prober._note_auth_signal``). ``stopped_reason`` is also set to
+    # ``"auth_outage"`` in that case; this flag lets a caller branch on it by
+    # name instead of matching the reason string.
+    auth_outage: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -341,6 +346,7 @@ class CycleStats:
             "negative": self.negative,
             "skipped_bucket": self.skipped_bucket,
             "stopped_reason": self.stopped_reason,
+            "auth_outage": self.auth_outage,
         }
 
 
@@ -762,7 +768,17 @@ class Prober:
     on_cycle_error: Callable[[Exception], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
+    # BOD-297 systemic-auth-outage breaker: a burst of 401/403 across many
+    # pools in one cycle means the gateway key itself is broken, not the
+    # routes (the 2026-10-09 controller census lesson). Thresholds are
+    # tunable for tests; the defaults match the story's acceptance numbers.
+    auth_outage_consecutive: int = 5
+    auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _auth_fail_pools: list[str] = field(default_factory=list, init=False, repr=False)
+    _auth_fail_buffer: list[tuple[str, ProbeResult, datetime]] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.max_requests < 1:
@@ -786,6 +802,8 @@ class Prober:
         """Probe until request/wall/lock bounds, returning a typed stop reason."""
         started = self.monotonic()
         stats = CycleStats()
+        self._auth_fail_pools = []  # fresh auth-outage window per cycle
+        self._auth_fail_buffer = []
         try:
             return self._run_once(started, stats)
         except HealthCacheLockTimeoutError:
@@ -837,10 +855,24 @@ class Prober:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self._save_for_cycle(started)
+        # BOD-297: the cycle ended (cap, completion, or lock) without the
+        # auth-outage streak either breaking or crossing the threshold.
+        # Whatever is still buffered is a genuine run of negatives below the
+        # threshold, not an outage; write it now so it is never silently lost.
+        self._flush_auth_fail_buffer(stats)
         # Run agentic probes for FREE routes after the main cycle.
         if stats.requests < self.max_requests:
             self.run_agentic_probes(stats, started=started)
         return stats
+
+    def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
+        """Write every buffered auth-outage-window negative as a real failure."""
+        for buffered_id, buffered_result, buffered_now in self._auth_fail_buffer:
+            self.cache.record(buffered_id, buffered_result, buffered_now)
+            stats.probed += 1
+            stats.negative += 1
+        self._auth_fail_buffer = []
+        self._auth_fail_pools = []
 
     def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
         self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
@@ -986,6 +1018,31 @@ class Prober:
             capacity_evidence=route.capacity_evidence,
             identity=_identity,
         )
+        # BOD-297 systemic-auth-outage breaker: a 401/403 is buffered, not
+        # written, until the consecutive streak either breaks (a non-auth
+        # result flushes every buffered negative as genuine) or crosses the
+        # outage thresholds (the whole buffer is discarded unwritten and the
+        # cycle stops). This is the only way to guarantee zero poisoned
+        # negatives for the routes caught inside a real outage burst, since
+        # the breaker cannot know it is in one until the Nth failure arrives.
+        if category in {CATEGORY_AUTH, CATEGORY_PERMISSION} and status in (401, 403):
+            pool_key = route.pool or route.provider
+            self._auth_fail_buffer.append((route.route_id, result, now))
+            self._auth_fail_pools.append(pool_key)
+            if (
+                len(self._auth_fail_pools) >= self.auth_outage_consecutive
+                and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
+            ):
+                self._auth_fail_buffer = []
+                self._auth_fail_pools = []
+                stats.auth_outage = True
+                stats.stopped_reason = "auth_outage"
+                return False
+            return True
+        if self._auth_fail_buffer:
+            # The streak broke on a real result: every buffered 401/403 was a
+            # genuine route/pool negative, not an outage signal. Write them.
+            self._flush_auth_fail_buffer(stats)
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
         # tool_ok, so record it as a successful liveness entry directly.

@@ -17,7 +17,13 @@ from verdict.orchestration.credential_pools import (
 )
 from verdict.orchestration.health_cache import HealthCache
 from verdict.orchestration.provider_catalog import backend_pool
-from verdict.prove_at_rest import AdmittedRoute, order_cycle, routes_from_evidence
+from verdict.prove_at_rest import (
+    AdmittedRoute,
+    ProbeExchange,
+    Prober,
+    order_cycle,
+    routes_from_evidence,
+)
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -238,3 +244,88 @@ def test_order_cycle_defers_effort_variant_until_base_is_healthy(tmp_path: Path)
         for route, _kind in order_cycle(routes, cache, NOW + timedelta(seconds=1), epsilon=0)
     ]
     assert second == ["kr/model-thinking-high"]
+
+
+def _auth_401(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+    return ProbeExchange(http_status=401, ok=False, error_category="auth")
+
+
+def test_auth_outage_breaker_trips_on_five_failures_across_three_pools(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [
+        _route("p1/a", "free", pool="p1"),
+        _route("p2/a", "free", pool="p2"),
+        _route("p3/a", "free", pool="p3"),
+        _route("p1/b", "free", pool="p1"),
+        _route("p2/b", "free", pool="p2"),
+    ]
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=_auth_401,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+    )
+    stats = prober.run_once()
+    assert stats.auth_outage is True
+    assert stats.stopped_reason == "auth_outage"
+    # No negative was recorded for any of the 5 routes: the breaker
+    # discards the buffered outage-window failures unwritten.
+    for route in routes:
+        assert cache.entry(route.route_id) is None
+
+
+def test_auth_outage_breaker_does_not_trip_under_pool_threshold(tmp_path: Path) -> None:
+    """Five 401s from only two distinct pools are ordinary negatives, not an outage."""
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [
+        _route("p1/a", "free", pool="p1"),
+        _route("p1/b", "free", pool="p1"),
+        _route("p1/c", "free", pool="p1"),
+        _route("p2/a", "free", pool="p2"),
+        _route("p2/b", "free", pool="p2"),
+    ]
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=_auth_401,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+    )
+    stats = prober.run_once()
+    assert stats.auth_outage is False
+    assert stats.stopped_reason != "auth_outage"
+    for route in routes:
+        assert cache.entry(route.route_id) is not None
+
+
+def test_auth_outage_breaker_flushes_buffer_as_negatives_once_streak_breaks(tmp_path: Path) -> None:
+    """Fewer than the threshold, then a success: every buffered 401 writes as a real negative."""
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [
+        _route("p1/a", "free", pool="p1"),
+        _route("p2/a", "free", pool="p2"),
+        _route("p3/a", "free", pool="p3"),
+        _route("p4/ok", "free", pool="p4"),
+    ]
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        if route_id == "p4/ok":
+            return ProbeExchange(http_status=200, ok=True, chat_exact=True, latency_ms=5)
+        return ProbeExchange(http_status=401, ok=False, error_category="auth")
+
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+    )
+    stats = prober.run_once()
+    assert stats.auth_outage is False
+    for route in routes[:3]:
+        entry = cache.entry(route.route_id)
+        assert entry is not None and not entry.healthy
