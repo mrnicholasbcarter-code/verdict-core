@@ -1086,3 +1086,30 @@ def test_recorder_redacts_a_path_split_across_pty_chunks(
         text = b"".join(data for _, data in out).decode()
         assert cwd not in text and home not in text, (cut, text)
         assert text == "repo: .\nconfig ~/.config/verdict/verdict.yaml\n"
+
+
+def test_bootstrap_palette_uses_structured_controller_not_generic_first_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.actions.base import ActionResult
+    from verdict.home import HomeState, _run_command
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    console = _plain_console(180)
+    with (
+        patch(
+            "verdict.tui_bootstrap_controls.consume_prime",
+            return_value=ActionResult(data={"status": "cancelled"}),
+        ) as prime,
+        patch("verdict.home.run_palette_action") as generic,
+    ):
+        _run_command(
+            "/bootstrap prime cc/a cc/b",
+            tui=TerminalUI(console),
+            state=HomeState(gateway="http://127.0.0.1:9"),
+            line_reader=lambda: "n",
+        )
+    generic.assert_not_called()
+    assert prime.call_args.args[0].ids == ("cc/a", "cc/b")
+    assert [entry[1] for entry in PALETTE].count("bootstrap") == 1
+    assert "setup" in [entry[1] for entry in PALETTE]

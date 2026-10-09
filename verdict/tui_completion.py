@@ -301,16 +301,6 @@ def _model_description(row: Mapping[str, Any], value: str, now: datetime) -> str
     )
 
 
-def _model_options(snapshot: CompletionSnapshot, now: datetime) -> Iterable[tuple[str, str, str]]:
-    if not _valid(snapshot, now):
-        return
-    for row in snapshot.model_rows:
-        value = row.get("route_id", row.get("id", ""))
-        if not isinstance(value, str) or not _SAFE_ID.fullmatch(value) or len(value) > MAX_TOKEN:
-            continue
-        yield value, _model_description(row, value, now), "model"
-
-
 def _model_token(token: str) -> tuple[str, str]:
     """Split a comma list after the last delimiter; preserve earlier ids."""
     head, separator, tail = token.rpartition(",")

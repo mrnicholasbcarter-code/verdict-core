@@ -393,3 +393,7 @@ def test_sensitive_text_redaction(commands):
     result = candidates("/probe cc/", commands, snapshot(models=[row]))[0]
     assert "PRIVATE_DO_NOT_LEAK" not in result.description
     assert "[redacted]" in result.description
+
+
+def test_inner_comma_hyphen_is_not_a_model(commands):
+    assert not candidates("/probe cc/a,-opus", commands)

@@ -199,7 +199,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     from verdict import cli as legacy
     from verdict.orchestration import cli as orchestration_cli
 
-    orchestration_rc = orchestration_cli.dispatch(args)
+    orchestration_rc = (
+        legacy.cmd_verified_completion_view(args)
+        if args.command == "eligibility" and getattr(args, "verified", False)
+        else orchestration_cli.dispatch(args)
+    )
     if orchestration_rc is not None:
         raise SystemExit(orchestration_rc)
 

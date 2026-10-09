@@ -3164,23 +3164,69 @@ def main() -> None:
 
     from verdict.commands.dispatch import dispatch
 
-    args = parser.parse_args()
-    dispatch(parser, args)
-    if args.command == "eligibility" and getattr(args, "verified", False):
-        from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
-        from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+    dispatch(parser, parser.parse_args())
 
+
+def cmd_verified_completion_view(args: argparse.Namespace) -> int:
+    """Same verified consumer; publish full frozen local pages only after render."""
+    from verdict.actions.verified_models import (
+        StorePaths,
+        VerifiedSnapshotAdapter,
+        consume_verified_models,
+        utc_now,
+    )
+    from verdict.orchestration import cli as orchestration_cli
+    from verdict.orchestration.verified_models import VerifiedModelQuery
+    from verdict.orchestration.verified_models_render import render_verified_plain
+    from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+
+    # Preserve the existing incompatible legacy-filter refusal exactly.
+    incompatible = any(
+        (
+            getattr(args, "probe", False),
+            getattr(args, "scope", ""),
+            getattr(args, "reasoning", False),
+            getattr(args, "frontier", False),
+            getattr(args, "provider_family", []),
+            getattr(args, "_prefer_explicit", False),
+            getattr(args, "prefer", "claude") != "claude",
+        )
+    )
+    if incompatible:
+        return orchestration_cli._eligibility_verified(args)
+    adapter = VerifiedSnapshotAdapter(args.gateway, StorePaths.defaults())
+    query = VerifiedModelQuery(
+        status=getattr(args, "status", None),
+        provider=getattr(args, "provider", None),
+        search=getattr(args, "search", None),
+        page=getattr(args, "page", 1),
+        page_size=getattr(args, "page_size", 50),
+    )
+    result = consume_verified_models(
+        gateway=args.gateway,
+        adapter=adapter,
+        query=query,
+        no_refresh=bool(getattr(args, "no_refresh", False)),
+        read_line=input,
+        write=lambda line: print(line, file=sys.stderr),
+        live=True,
+    )
+    if args.json:
+        orchestration_cli._print_view_json(result.data)
+    elif result.ok:
+        orchestration_cli._page(
+            render_verified_plain(result.data), no_pager=bool(getattr(args, "no_pager", False))
+        )
+    else:
+        print("error: " + str(result.data.get("error", "verified models failed")), file=sys.stderr)
+    if result.ok:
         try:
-            adapter = VerifiedSnapshotAdapter(
-                getattr(args, "gateway", "http://127.0.0.1:20128"),
-                StorePaths.defaults(),
-                local_only=True,
-            )
             warning = publish_snapshot(local_projection(adapter, now=utc_now()))
             if warning:
                 print(warning, file=sys.stderr)
         except (ValueError, OSError, TypeError):
             print("completion snapshot publication failed; evidence unchanged", file=sys.stderr)
+    return 0 if result.ok else result.exit_code or 1
 
 
 def cmd_resume(
@@ -3666,6 +3712,7 @@ def cmd_harness_bootstrap(
         print(prompt, file=sys.stderr, end="", flush=True)
         return input()
 
+    completion_views: list[dict[str, Any]] = []
     if target == "claude":
         parsed = parse_bootstrap_args("claude " + " ".join(ids or []) + " mode=" + mode)
         result = run_action(
@@ -3698,23 +3745,15 @@ def cmd_harness_bootstrap(
             write=write,
             preview_only=preview,
             interactive=sys.stdin.isatty(),
+            on_projection=lambda view: completion_views.append(dict(view)),
             live=True,
         )
-    if target == "prime" and command == "select" and result.ok:
-        from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
-        from verdict.tui_completion_snapshot import local_projection, publish_snapshot
+    if target == "prime" and command == "select" and completion_views:
+        from verdict.tui_completion_snapshot import publish_snapshot
 
-        try:
-            adapter = VerifiedSnapshotAdapter(
-                os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
-                StorePaths.defaults(),
-                local_only=True,
-            )
-            warning = publish_snapshot(local_projection(adapter, now=utc_now()))
-            if warning:
-                write(warning)
-        except (ValueError, OSError, TypeError):
-            write("completion snapshot publication failed; evidence unchanged")
+        warning = publish_snapshot(completion_views[-1])
+        if warning:
+            write(warning)
     print(json.dumps(result.data, indent=2, ensure_ascii=True, default=str))
     if not result.ok:
         raise SystemExit(result.exit_code or 2)
