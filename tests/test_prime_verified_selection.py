@@ -449,3 +449,103 @@ def test_actual_chat_projection_is_selectable_with_warning(tmp_path: Path) -> No
     assert overlay[0].selectable, overlay[0]
     assert not overlay[0].coding_ok
     assert "chat verified; tools unverified" in overlay[0].warnings
+
+
+def test_unsafe_spaced_row_does_not_abort_registry_and_exact_id_binds(tmp_path: Path) -> None:
+    """Defect 1 (a): one unsafe-spaced row + the selected exact VERIFIED id.
+
+    preview_selection must succeed and the selected id must bind, exactly the
+    real-registry shape (242 omniroute rows like "aihorde/A-Zovya RPG
+    Inpainting" alongside normal exact ids).
+    """
+    models = registry()
+    models["providers"]["omniroute"]["models"].append(
+        {"id": "aihorde/A-Zovya RPG Inpainting", "name": "aihorde/A-Zovya RPG Inpainting"}
+    )
+    settings, deps = inputs(tmp_path)
+    deps = replace(deps, registry_bytes=json.dumps(models).encode())
+    plan = preview_selection(
+        settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
+    )
+    assert not plan.refusals
+    assert plan.rows[0].selectable
+    assert plan.rows[0].prime_id == "cx/gpt-6-sol"
+
+
+def test_unsafe_row_still_matches_as_competitor_fail_closed(tmp_path: Path) -> None:
+    """Defect 1 (b): a token that is a case-insensitive substring of an unsafe
+    row's id/name still refuses as identity_unsupported (fail closed), it is
+    never silently dropped from resolution.
+    """
+    models = registry()
+    models["providers"]["omniroute"]["models"].append(
+        {"id": "aihorde/A-Zovya RPG Inpainting", "name": "aihorde/A-Zovya RPG Inpainting"}
+    )
+    binding = bind_prime_token("zovya", models)
+    assert binding.disposition == "unsafe"
+    assert "identity_unsupported" in binding.reasons
+
+
+@pytest.mark.parametrize(
+    "unsafe_id", ["CX/GPT-6-SOL ", "cx/gpt-6-sol (old)", "CX/GPT-6-SOL\x1b", "cx/\u212a"]
+)
+def test_unsafe_row_matching_selected_id_makes_it_ambiguous(tmp_path: Path, unsafe_id: str) -> None:
+    """Review blocker: an unsafe row that Prime could still match for the selected
+    exact id (case-insensitive substring of its id) must make that id ambiguous.
+    It must never bind to the safe row or become selectable."""
+    models = registry()
+    token = "cx/k" if unsafe_id == "cx/\u212a" else "cx/gpt-6-sol"
+    if token == "cx/k":
+        models["providers"]["omniroute"]["models"].append({"id": "cx/k", "name": "cx/k"})
+    models["providers"]["omniroute"]["models"].append({"id": unsafe_id, "name": "unrelated"})
+    binding = bind_prime_token(token, models)
+    assert binding.disposition == "unsafe"
+    assert "identity_unsupported" in binding.reasons
+    settings, deps = inputs(tmp_path)
+    deps = replace(deps, registry_bytes=json.dumps(models).encode())
+    plan = preview_selection(
+        settings, [row(token)], selected_ids=[token], dependencies=deps, now=NOW
+    )
+    assert plan.refusals
+    assert not any(r.selectable for r in plan.rows)
+    assert unsafe_id not in json.dumps(plan.to_dict(), default=str)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["providers"]["omniroute"].update(models="not-a-list"),
+        lambda m: m["providers"]["omniroute"]["models"].append({"id": 123, "name": "x"}),
+        lambda m: m["providers"].update(omniroute="not-a-mapping"),
+        lambda m: m.update(providers="not-a-mapping"),
+    ],
+)
+def test_structurally_invalid_registry_still_refused(tmp_path: Path, mutate: Any) -> None:
+    """Defect 1 (c): structural invalidity (non-list models, non-str id, a
+    provider config/providers that is not a mapping) still raises, unlike an
+    individual unsafe-but-well-typed row.
+    """
+    models = registry()
+    mutate(models)
+    with pytest.raises(ValueError, match="registry_invalid"):
+        bind_prime_token("cx/gpt-6-sol", models)
+
+
+def test_consume_prime_preview_with_unsafe_row_never_echoes_raw_unsafe_id(tmp_path: Path) -> None:
+    """Defect 1 (d)+(e): an end-to-end preview_selection using a registry fixture
+    that contains an unsafe row (no live calls, injected rows) succeeds, and
+    no unsafe raw id/name ever appears in the preview JSON/text.
+    """
+    models = registry()
+    models["providers"]["omniroute"]["models"].append(
+        {"id": "aihorde/A-Zovya RPG Inpainting", "name": "aihorde/A-Zovya RPG Inpainting"}
+    )
+    settings, deps = inputs(tmp_path)
+    deps = replace(deps, registry_bytes=json.dumps(models).encode())
+    plan = preview_selection(
+        settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
+    )
+    assert not plan.refusals
+    text = json.dumps(plan.to_dict())
+    assert "A-Zovya" not in text
+    assert "Inpainting" not in text

@@ -218,6 +218,84 @@ def test_failed_route_negative():
     assert r.cooldown_until == NOW + timedelta(seconds=60)
 
 
+def test_http_error_category_is_failed_not_source_error():
+    """Defect 2: prove_at_rest.category_for's non-specific-HTTP-error fallback
+    (``named or "http_error"``) is a known diagnostic category: a probed
+    negative with it maps to FAILED, never a source_error and never widened
+    to UNAVAILABLE."""
+    inv = [row("omniroute/cc/sonnet")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry(
+                "cc/sonnet",
+                checked_at=NOW - timedelta(seconds=30),
+                healthy=False,
+                category="http_error",
+                chat_ok=False,
+                tool_ok=False,
+                identity="",
+                until=NOW + timedelta(seconds=60),
+                http_status=400,
+            )
+        ),
+        now=NOW,
+    )
+    view = project_one(inv, conns, snaps)
+    assert not view.source_errors
+    r = only_row(view)
+    assert r.status is VerifiedStatus.FAILED
+    assert r.failure_category == "http_error"
+    assert r.http_status == 400
+
+
+def test_agentic_fail_category_is_failed_not_source_error():
+    """Defect 2 follow-up: prove_at_rest.run_agentic_probes writes the literal
+    category "agentic_fail" directly via ``self.cache.record`` when a BOD-299
+    session-grade agentic qualification probe fails. It is a real cache
+    contract value (not request-scoped noise) and must map to FAILED, never
+    a source_error and never widened to UNAVAILABLE."""
+    inv = [row("omniroute/cc/sonnet")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry(
+                "cc/sonnet",
+                checked_at=NOW - timedelta(seconds=30),
+                healthy=False,
+                category="agentic_fail",
+                chat_ok=True,
+                tool_ok=False,
+                identity="",
+                until=NOW + timedelta(seconds=60),
+                probe_class="agentic",
+            )
+        ),
+        now=NOW,
+    )
+    view = project_one(inv, conns, snaps)
+    assert not view.source_errors
+    r = only_row(view)
+    assert r.status is VerifiedStatus.FAILED
+    assert r.failure_category == "agentic_fail"
+
+
+def test_other_unknown_category_still_rejected_as_source_error():
+    """A category outside the known vocabulary (not just http_error) is still
+    rejected: widening the vocabulary to accept http_error must not accept
+    arbitrary strings."""
+    inv = [row("omniroute/cc/sonnet")]
+    conns = [conn("cc")]
+    entry = at_rest_entry(
+        "cc/sonnet", checked_at=NOW - timedelta(seconds=30), category="totally_unknown"
+    )
+    hc = {"schema_version": "1", "routes": {"cc/sonnet": entry}}
+    snaps = snapshots_from_documents(health_cache_doc=hc, now=NOW)
+    view = project_one(inv, conns, snaps)
+    assert any("category" in e for e in view.source_errors)
+    assert only_row(view).status is not VerifiedStatus.VERIFIED
+
+
 def test_unavailable_auth_negative():
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]

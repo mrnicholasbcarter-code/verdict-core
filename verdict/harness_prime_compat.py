@@ -139,11 +139,24 @@ def exact_token(value: object) -> bool:
     )
 
 
-def _entries(models_doc: Mapping[str, Any]) -> tuple[tuple[str, str, str, Mapping[str, Any]], ...]:
+_Entry = tuple[str, str, str, Mapping[str, Any], bool]
+
+
+def _entries(models_doc: Mapping[str, Any]) -> tuple[_Entry, ...]:
+    """Parse registry rows. Structural shape always fails the registry closed.
+
+    An id that is a str but fails ``exact_token`` (spaces, parens, control
+    characters, a blocked prefix, ...) does NOT abort the registry: the row is
+    kept, flagged unsafe, so Prime's resolver can still substring-match it for
+    ambiguity/competitor detection. An unsafe row can never be the matched
+    "bound" entry (see ``_bind``'s ``e[4]`` guards) and its raw id/name are
+    never returned from this module; callers that must show one use a counted
+    placeholder such as ``"[unsafe registry entry]"``.
+    """
     providers = models_doc.get("providers")
     if not isinstance(providers, Mapping):
         raise ValueError("registry_invalid")
-    entries: list[tuple[str, str, str, Mapping[str, Any]]] = []
+    entries: list[_Entry] = []
     for provider, config in providers.items():
         if not exact_token(provider) or not isinstance(config, Mapping):
             raise ValueError("registry_invalid")
@@ -151,13 +164,15 @@ def _entries(models_doc: Mapping[str, Any]) -> tuple[tuple[str, str, str, Mappin
         if not isinstance(rows, list):
             raise ValueError("registry_invalid")
         for row in rows:
-            if not isinstance(row, Mapping) or not exact_token(row.get("id")):
+            if not isinstance(row, Mapping):
                 raise ValueError("registry_invalid")
-            rid = str(row["id"])
+            rid = row.get("id")
+            if not isinstance(rid, str):
+                raise ValueError("registry_invalid")
             name = row.get("name", rid)
             if not isinstance(name, str):
                 raise ValueError("registry_invalid")
-            entries.append((str(provider), rid, name, row))
+            entries.append((str(provider), rid, name, row, exact_token(rid)))
     return tuple(entries)
 
 
@@ -170,11 +185,23 @@ def bind_prime_token(token: str, models_doc: Mapping[str, Any]) -> PrimeBinding:
     return _bind(token, _entries(models_doc))
 
 
-def _bind(token: str, entries: tuple[tuple[str, str, str, Mapping[str, Any]], ...]) -> PrimeBinding:
+def _bind(token: str, entries: tuple[_Entry, ...]) -> PrimeBinding:
     if not exact_token(token):
         return PrimeBinding("[unsafe entry]", None, None, "unsafe", ("unsafe_scope_token",))
     lower = token.casefold()
-    matches = [e for e in entries if lower in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold())]
+    base = token.rsplit(":", 1)[0].casefold() if ":" in token else None
+    # A display-unsafe row is never a binding target, but Prime's resolver can
+    # still match it (id or name, case-insensitive substring). Any such hit makes
+    # the token ambiguous, so fail closed before considering safe rows.
+    for e in entries:
+        if e[4]:
+            continue
+        hay = (e[1].casefold(), f"{e[0]}/{e[1]}".casefold(), e[2].casefold())
+        if any(lower in h or (base is not None and base in h) for h in hay):
+            return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+    matches = [
+        e for e in entries if e[4] and lower in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold())
+    ]
     if len(matches) > 1:
         return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
     if matches:
@@ -239,7 +266,7 @@ def prime_selection_rows(
         if not exact_token(rid):
             continue
         binding = _bind(rid, entries)
-        exact = [e for e in entries if e[0] == "omniroute" and e[1] == rid]
+        exact = [e for e in entries if e[4] and e[0] == "omniroute" and e[1] == rid]
         visible = bool(exact)
         reasons: list[str] = []
         if not visible:
