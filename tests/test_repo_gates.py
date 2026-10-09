@@ -294,10 +294,17 @@ def test_lazy_toml_import_allows_runtime_only_install(
     import builtins
     import importlib
     import sys
+    from types import ModuleType
 
     import verdict.orchestration.repo_gates as repo_gates_module
 
     real_import = builtins.__import__
+    real_import_module = importlib.import_module
+
+    def _blocked_module(name: str, package: str | None = None) -> ModuleType:
+        if name in ("tomllib", "tomli"):
+            raise ImportError(f"No module named '{name}'")
+        return real_import_module(name, package)
 
     def _blocked_import(
         name: str,
@@ -311,6 +318,7 @@ def test_lazy_toml_import_allows_runtime_only_install(
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.setattr(importlib, "import_module", _blocked_module)
     monkeypatch.delitem(sys.modules, "tomllib", raising=False)
     monkeypatch.delitem(sys.modules, "tomli", raising=False)
 
