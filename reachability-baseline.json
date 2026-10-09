@@ -552,14 +552,6 @@
     "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
   },
   {
-    "qualified_name": "verdict.orchestration.candidate_builder.build_candidates",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
-    "qualified_name": "verdict.orchestration.candidate_builder.build_rejections",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
-  },
-  {
     "qualified_name": "verdict.orchestration.cockpit_nav.ScriptedKeyReader",
     "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
   },
@@ -970,5 +962,37 @@
   {
     "qualified_name": "verdict.metadata.store.file_transport",
     "reason": "UNTRIAGED: uncalled at verdict/metadata/store.py:515"
+  },
+  {
+    "qualified_name": "verdict.metadata.store.refresh_metadata",
+    "reason": "UNTRIAGED: test_only_caller at verdict/metadata/store.py:338"
+  },
+  {
+    "qualified_name": "verdict.orchestration.cockpit_nav.run_cockpit",
+    "reason": "UNTRIAGED: test_only_caller at verdict/orchestration/cockpit_nav.py:808"
+  },
+  {
+    "qualified_name": "verdict.orchestration.health_cache.fresh_until",
+    "reason": "UNTRIAGED: uncalled at verdict/orchestration/health_cache.py:233"
+  },
+  {
+    "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
+    "reason": "UNTRIAGED: test_only_caller at verdict/orchestration/prime_settings.py:332"
+  },
+  {
+    "qualified_name": "verdict.present.reset",
+    "reason": "UNTRIAGED: test_only_caller at verdict/present.py:37"
+  },
+  {
+    "qualified_name": "verdict.prove_at_rest_legacy.load_healthy_passports",
+    "reason": "UNTRIAGED: uncalled at verdict/prove_at_rest_legacy.py:606"
+  },
+  {
+    "qualified_name": "verdict.runtime_contract.ProcfsInspector",
+    "reason": "UNTRIAGED: uncalled at verdict/runtime_contract.py:82"
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.utc_now_iso",
+    "reason": "UNTRIAGED: uncalled at verdict/trusted_change_report.py:64"
   }
 ]
