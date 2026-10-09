@@ -43,6 +43,8 @@ import hashlib
 import json
 import math
 import os
+import stat
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -646,6 +648,47 @@ def bucket_key(provider: str, pool: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _private_cache_mode(path: Path) -> int:
+    """New caches are private; replacements never widen owner permissions."""
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        return 0o600
+    except OSError as exc:
+        raise HealthCacheError(f"cannot read health cache: {exc}") from exc
+    if not stat.S_ISREG(existing.st_mode):
+        raise HealthCacheError("health cache must be a regular file")
+    return stat.S_IMODE(existing.st_mode) & 0o600
+
+
+def _private_atomic_write(path: Path, body: str) -> None:
+    """Publish UTF-8 from a private same-directory file; caller holds the lock."""
+    mode = _private_cache_mode(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    temporary: Path | None = None
+    fd: int | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary = Path(name)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(fd)
+        os.close(fd)
+        fd = None
+        # Fail closed if a non-cooperating writer changed the destination.
+        _private_cache_mode(path)
+        os.replace(temporary, path)
+        os.fsync(directory_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        os.close(directory_fd)
+
+
 class HealthCache:
     """JSON file store. One ``fcntl`` lock, then an atomic replace."""
 
@@ -673,6 +716,8 @@ class HealthCache:
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
+        # Reject links/FIFOs before any read can dereference or block.
+        _private_cache_mode(self.path)
         if not self.path.exists():
             self._routes = {}
             self._buckets = {}
@@ -740,7 +785,6 @@ class HealthCache:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
             _acquire_cache_lock(
                 handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
@@ -748,8 +792,7 @@ class HealthCache:
             try:
                 self._merge_in_memory_over_disk()
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
-                temporary.write_text(body, encoding="utf-8")
-                os.replace(temporary, self.path)
+                _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -832,7 +875,6 @@ class HealthCache:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
             _acquire_cache_lock(
                 handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
@@ -850,8 +892,7 @@ class HealthCache:
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
-                temporary.write_text(body, encoding="utf-8")
-                os.replace(temporary, self.path)
+                _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
