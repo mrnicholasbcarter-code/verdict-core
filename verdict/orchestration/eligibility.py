@@ -232,7 +232,7 @@ class EligibilityLadder:
         admission_receipt: Path | None = None,
         health_cache: Any | None = None,
         allow_unknown_capacity: bool | None = None,
-        refresh_hook: Callable[[Sequence[str], datetime], None] | None = None,
+        refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -815,15 +815,24 @@ class EligibilityLadder:
         # selection; exact confirmation below is unchanged. A hook failure must
         # not break selection, so it is best-effort.
         refresh_hook = getattr(self, "_refresh_hook", None)
+        refresh_results: Mapping[str, str] | None = None
         if refresh_hook is not None and candidates:
             with contextlib.suppress(Exception):
-                refresh_hook([a.route_id for a in candidates], now)
+                refresh_results = refresh_hook([a.route_id for a in candidates], now)
+        if isinstance(refresh_results, Mapping):
+            for candidate in candidates:
+                status = refresh_results.get(candidate.route_id)
+                if isinstance(status, str) and status.lower() in {"failed", "unavailable"}:
+                    candidate.failed_stage = EligibilityStage.HEALTHY
+                    candidate.reason = status.lower()
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         for a in self._probe_order(candidates):
+            if a.failed_stage is not None:
+                continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
                 a.cooldown_until = blocked[a.provider]
