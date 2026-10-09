@@ -6,6 +6,7 @@ import argparse
 import io
 import json
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -145,7 +146,12 @@ def test_home_passes_configured_gateway_without_changing_other_actions() -> None
         _run_command(
             "/eligibility", tui=TerminalUI(console), state=HomeState(gateway="http://x:20128")
         )
-        spy.assert_called_once_with("eligibility", {"gateway": "http://x:20128"})
+        spy.assert_called_once()
+        name, params = spy.call_args.args
+        assert name == "models.verified"
+        assert params["gateway"] == "http://x:20128"
+        assert params["query"].status is None and params["query"].provider is None
+        assert params["_consumer"] is True
 
 
 def test_cli_tui_payload_parity_without_probe(
@@ -155,7 +161,17 @@ def test_cli_tui_payload_parity_without_probe(
         "verdict.subagent_selection.openai_health_probe",
         lambda *_a, **_k: lambda _c: pytest.fail("probe"),
     )
-    args = _args(scope="", provider_family=[])
+    monkeypatch.setenv("VERDICT_AUTO_REFRESH", "0")
+    from verdict.actions import verified_models as surfaces
+
+    original_consumer = surfaces.consume_verified_models
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+    def fixed_consumer(**kwargs: Any) -> Any:
+        return original_consumer(**kwargs, clock=lambda: fixed_now)
+
+    monkeypatch.setattr(surfaces, "consume_verified_models", fixed_consumer)
+    args = _args(scope="", provider_family=[], verified=True)
     assert cli._eligibility(args) == 0
     cli_payload = json.loads(capsys.readouterr().out)
     console = _isolated_console()
@@ -168,6 +184,8 @@ def test_cli_tui_payload_parity_without_probe(
         _run_command("/eligibility", tui=TerminalUI(console), state=HomeState(gateway=args.gateway))
     assert len(rendered) == 1
     assert rendered[0] == (True, cli_payload)
+    assert cli_payload["schema"] == "verdict.verified-models/v1"
+    assert cli_payload["filters"] == {"status": None, "provider": None, "search": None}
     assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"] * 2
 
 

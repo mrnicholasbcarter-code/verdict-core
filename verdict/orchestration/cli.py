@@ -24,6 +24,20 @@ from verdict.orchestration.runtime import RuntimePolicy
 DEFAULT_RUNS = Path(".verdict") / "runs"
 
 
+class _ExplicitPrefer(argparse.Action):
+    """Keep the legacy default while detecting an explicit eligibility preference."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace._prefer_explicit = True
+
+
 def add_parsers(subparsers: Any) -> None:
     orch = subparsers.add_parser(
         "orchestrate", help="Goal -> frontier plan -> DAG -> parallel workers -> review -> receipt"
@@ -129,7 +143,8 @@ def add_parsers(subparsers: Any) -> None:
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
     elig.add_argument("--scope", default="")
-    elig.add_argument("--prefer", default="claude")
+    elig.set_defaults(_prefer_explicit=False)
+    elig.add_argument("--prefer", default="claude", action=_ExplicitPrefer)
     elig.add_argument("--probe", action="store_true", help="Probe lazily to reach SELECTED")
     elig.add_argument("--reasoning", action="store_true")
     elig.add_argument("--frontier", action="store_true")
@@ -140,6 +155,19 @@ def add_parsers(subparsers: Any) -> None:
         metavar="FAMILY[,FAMILY]",
         help="Only evaluate routes whose id prefix (before '/') is one of these "
         "families, e.g. cc,kr; repeatable. Listed in output metadata.",
+    )
+    elig.add_argument(
+        "--verified", action="store_true", help="Show verified model evidence after bounded refresh"
+    )
+    elig.add_argument("--status", default=None, help="Verified model status filter")
+    elig.add_argument("--provider", default=None, help="Verified model provider filter")
+    elig.add_argument("--search", default=None, help="Case-insensitive verified model text filter")
+    elig.add_argument("--page", type=int, default=1, help="Verified model page (one-based)")
+    elig.add_argument(
+        "--page-size", type=int, default=50, help="Verified model page size (max 200)"
+    )
+    elig.add_argument(
+        "--no-refresh", action="store_true", help="Read verified evidence without automatic refresh"
     )
     elig.add_argument("--json", action="store_true")
     elig.add_argument(
@@ -466,13 +494,23 @@ def _orchestrate(args: argparse.Namespace) -> int:
                     + ", ".join(sorted(node_backend_map)),
                     file=sys.stderr,
                 )
+    from verdict.actions.verified_models import selection_refresh_hook
+
     inflight: dict[str, str] = {}  # node_id -> route_id, maintained by DagRuntime
+    state_path = _chaos_state(args, runs_root)
+    refresh_hook = selection_refresh_hook(
+        args.gateway, state_dir=state_path.parent if state_path else None
+    )
+    refresh_kwargs: dict[str, Any] = (
+        {"refresh_hook": refresh_hook} if refresh_hook is not None else {}
+    )
     selector = build_selector(
         args.gateway,
         scope=args.scope,
         prefer=args.prefer,
         load=lambda route: sum(1 for r in inflight.values() if r == route),
-        state_file=_chaos_state(args, runs_root),
+        state_file=state_path,
+        **refresh_kwargs,
     )
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
@@ -823,7 +861,87 @@ def _page(text: str, *, no_pager: bool) -> None:
         sys.stdout.write(text)
 
 
+def _verified_error(args: argparse.Namespace, message: str, *, exit_code: int) -> int:
+    """Keep verified failures to one final document and never echo raw exceptions."""
+    if args.json:
+        _print_view_json({"error": message})
+    else:
+        print(f"error: {message}", file=sys.stderr)
+    return exit_code
+
+
+def _eligibility_verified(args: argparse.Namespace) -> int:
+    """Validate before I/O, then wait for the shared consumer's final evidence."""
+    incompatible = []
+    if getattr(args, "probe", False):
+        incompatible.append("--probe")
+    if getattr(args, "scope", ""):
+        incompatible.append("--scope")
+    if getattr(args, "reasoning", False):
+        incompatible.append("--reasoning")
+    if getattr(args, "frontier", False):
+        incompatible.append("--frontier")
+    if getattr(args, "provider_family", []):
+        incompatible.append("--provider-family")
+    if getattr(args, "_prefer_explicit", False) or getattr(args, "prefer", "claude") != "claude":
+        incompatible.append("--prefer")
+    if incompatible:
+        return _verified_error(
+            args, "--verified cannot be combined with " + ", ".join(incompatible), exit_code=2
+        )
+
+    from verdict.orchestration.verified_models import (
+        EvidenceSnapshots,
+        VerifiedModelQuery,
+        project_verified_models,
+    )
+
+    query = VerifiedModelQuery(
+        status=getattr(args, "status", None),
+        provider=getattr(args, "provider", None),
+        search=getattr(args, "search", None),
+        page=getattr(args, "page", 1),
+        page_size=getattr(args, "page_size", 50),
+    )
+    try:
+        # The empty projection shares canonical validation without reading any sources.
+        project_verified_models(
+            [], [], EvidenceSnapshots(), now=datetime.now(timezone.utc), query=query
+        )
+    except ValueError:
+        return _verified_error(args, "invalid verified model filters or paging", exit_code=2)
+
+    from verdict.actions.verified_models import consume_verified_models
+
+    try:
+        result = consume_verified_models(
+            gateway=args.gateway,
+            query=query,
+            no_refresh=bool(getattr(args, "no_refresh", False)),
+            read_line=input,
+            write=lambda line: print(line, file=sys.stderr),
+            live=True,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        return _verified_error(args, f"verified models failed ({type(exc).__name__})", exit_code=1)
+    except KeyboardInterrupt:
+        return _verified_error(args, "verified models cancelled", exit_code=130)
+
+    if args.json:
+        _print_view_json(result.data)
+    elif not result.ok:
+        print(f"error: {result.data.get('error', 'verified models failed')}", file=sys.stderr)
+    else:
+        from verdict.orchestration.verified_models_render import render_verified_plain
+
+        _page(render_verified_plain(result.data), no_pager=bool(getattr(args, "no_pager", False)))
+    return 0 if result.ok else result.exit_code or 1
+
+
 def _eligibility(args: argparse.Namespace) -> int:
+    if getattr(args, "verified", False):
+        return _eligibility_verified(args)
+
     from verdict.actions.registry import run_action
 
     result = run_action(

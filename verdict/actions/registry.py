@@ -564,6 +564,11 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         reasoning=reasoning,
         frontier_worthy=frontier,
     )
+    from verdict.actions.verified_models import selection_refresh_hook
+
+    refresh_hook = kwargs.get("refresh_hook")
+    if refresh_hook is None and do_probe:
+        refresh_hook = selection_refresh_hook(gateway)
     selector = build_selector(
         gateway,
         scope=scope,
@@ -571,6 +576,7 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         provider_families=families,
         required_capabilities=requirements.required_capabilities,
         min_context_tokens=requirements.min_context_tokens,
+        **({"refresh_hook": refresh_hook} if refresh_hook is not None else {}),
     )
     now = datetime.now(timezone.utc)
     if do_probe:
@@ -1322,9 +1328,44 @@ def _register_builtins() -> None:
         _action_setup_plan_scoped,
         _action_simulate,
     )
+    from verdict.actions.model_refresh import (
+        action_models_refresh_execute,
+        action_models_refresh_plan,
+    )
+    from verdict.actions.verified_models import action_models_verified
     from verdict.actions.views import _action_context_view, _action_routing_view
 
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
+        (
+            ActionSpec(
+                "models.verified",
+                "models",
+                "read",
+                "Show unscoped verified-model evidence",
+                "Health",
+            ),
+            action_models_verified,
+        ),
+        (
+            ActionSpec(
+                "models.refresh.plan",
+                "models",
+                "read",
+                "Plan bounded model refresh with spend disclosure",
+                "Health",
+            ),
+            action_models_refresh_plan,
+        ),
+        (
+            ActionSpec(
+                "models.refresh.execute",
+                "models",
+                "mutation",
+                "Execute an affirmed digest-bound refresh plan",
+                "Health",
+            ),
+            action_models_refresh_execute,
+        ),
         (
             ActionSpec(
                 "models.list", "models", "read", "List the qualified model catalog", "Models"

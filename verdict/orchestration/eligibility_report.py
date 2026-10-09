@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -117,6 +117,7 @@ def build_selector(
     provider_families: tuple[str, ...] = (),
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
+    refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -184,6 +185,7 @@ def build_selector(
         harness_visible=prime_visibility(live_rows=catalog_rows),
         admitted=admitted,
         admission_receipt=receipt_path,
+        refresh_hook=refresh_hook,
     )
 
 
