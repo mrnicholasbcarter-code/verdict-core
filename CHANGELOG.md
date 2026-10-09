@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Worker selection does not read the verified-model health cache yet (BOD-300); verified status is informational, not a routing input.
 - The Prime picker's proof deadline gives roughly 74 seconds from the apply confirmation ("Yes") to the guarded rename; a slower confirm flow needs a fresh preview.
 - A `Retry-After` spec/code mismatch is tracked and not yet fixed in this release.
+- `install.sh` keeps installing 0.4.2 until 0.5.0 is published to PyPI; its pin is updated post-publish with real digests.
 
 ## [0.4.2] - 2026-10-01
 
