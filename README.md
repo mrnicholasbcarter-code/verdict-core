@@ -1072,6 +1072,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | Command | Purpose |
 |---|---|
 | `setup` | Interactive setup wizard |
+| `harness` | Point a coding-agent harness (Prime Agent, Claude Code, Codex, ...) at Verdict, with a preview and undo |
 | `doctor` | Scan and repair config / connectivity |
 | `check` | Validate config file syntax |
 | `quickstart` | Credential-free deterministic demo |
