@@ -635,12 +635,14 @@ class ScopedCooldown:
 
 
 def bucket_key(provider: str, pool: str | None = None) -> str:
-    """Provider key, or ``provider/pool`` when a pool is named."""
+    """Canonical pool key when named, otherwise the provider key.
+
+    Pools supplied by ``credential_pools.pool_of`` already identify the shared
+    credential; adding an alias provider would split its request budget.
+    """
     if not isinstance(provider, str) or not provider.strip():
         raise HealthCacheError("provider must be non-empty")
-    if pool:
-        return f"{provider}/{pool}"
-    return provider
+    return pool or provider
 
 
 # ---------------------------------------------------------------------------

@@ -695,10 +695,10 @@ def order_cycle(
 
 
 def _round_robin(routes: Sequence[AdmittedRoute]) -> list[AdmittedRoute]:
-    """Spread never-probed FREE routes across provider/pool buckets."""
+    """Spread never-probed FREE routes across canonical credential buckets."""
     groups: dict[str, list[AdmittedRoute]] = {}
     for route in routes:
-        key = route.provider if not route.pool else f"{route.provider}/{route.pool}"
+        key = route.pool or route.provider
         groups.setdefault(key, []).append(route)
     queues = list(groups.values())
     if not queues:

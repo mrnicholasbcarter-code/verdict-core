@@ -546,3 +546,56 @@ def test_agentic_phase_uses_the_same_filtered_plan(tmp_path: Path, direct: bool)
     assert calls == ["antigravity/model", "p/base"]
     assert len(loads) == 1, "one loader snapshot must serve both phases"
     assert set(cache.routes()) == set(calls)
+
+
+def test_alias_routes_consume_one_canonical_pool_bucket(tmp_path: Path) -> None:
+    from verdict.orchestration.health_cache import bucket_key
+
+    pool = pool_of("agy/model-a")
+    assert pool == pool_of("antigravity/model-b")
+    assert bucket_key("agy", pool) == bucket_key("antigravity", pool) == pool
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1)
+    assert cache.consume("agy", NOW, pool=pool)
+    assert not cache.consume("antigravity", NOW, pool=pool)
+    assert cache.bucket_remaining("antigravity", NOW, pool=pool) == 0
+    cache.save()
+    assert not HealthCache(cache.path).consume("antigravity", NOW, pool=pool)
+
+
+def test_prober_alias_routes_draw_from_one_bucket(tmp_path: Path) -> None:
+    pool = pool_of("agy/model-a")
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1)
+    routes = [
+        _route("agy/model-a", "free", pool=pool),
+        _route("antigravity/model-b", "free", pool=pool),
+    ]
+    calls: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return _auth_401(route_id, phase, timeout)
+
+    stats = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    ).run_once()
+    assert calls == ["agy/model-a"]
+    assert stats.skipped_bucket == 1
+
+
+def test_round_robin_groups_aliases_by_canonical_pool(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    pool = pool_of("agy/model-a")
+    routes = [
+        _route("agy/model-a", "free", pool=pool),
+        _route("antigravity/model-b", "free", pool=pool),
+        _route("x/model", "free", pool="x"),
+    ]
+    assert [route.route_id for route, _kind in order_cycle(routes, cache, NOW)] == [
+        "agy/model-a",
+        "x/model",
+        "antigravity/model-b",
+    ]
