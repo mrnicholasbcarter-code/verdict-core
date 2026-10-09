@@ -288,6 +288,100 @@ def _bool_or_none(value: Any) -> bool | None:
 
 
 # ---------------------------------------------------------------------------
+# Display-boundary vocabularies.  Every public string field a row exposes is
+# validated here so untrusted free text (provider errors, pool/account names,
+# admission reasons) can never reach ``to_dict``.  Restrictions are stable
+# machine codes; scope identifiers must match a safe id pattern; every other
+# free-text field is scrubbed.
+# ---------------------------------------------------------------------------
+
+# Fixed restriction vocabulary (design sections 2-3).  Any code outside this set
+# at the display boundary collapses to a generic marker so a raw admission
+# reason can never surface in ``restriction`` / ``restrictions``.
+_RESTRICTION_CODES: frozenset[str] = frozenset(
+    {
+        "agentic_not_fresh",
+        "availability_blocked",
+        "chat_only_not_coding_verified",
+        "contradictory_inventory",
+        "half_open",
+        "identity_not_verified",
+        "opaque_route",
+        "policy_excluded",
+        "route_negative",
+        "visibility_unavailable",
+        "capability_excluded",
+        "entitlement_denied",
+        "no_connection_evidence",
+        "no_active_account",
+        "tools_capability_unavailable",
+        "not_admissible",
+        "account_binding_ambiguous",
+        "stale_stale",
+        "stale_expired",
+    }
+)
+_RESTRICTION_UNKNOWN = "admission_denied_unknown"
+_CONNECTION_STATUS_PREFIX = "connection_status:"
+# Safe scope/id pattern: no whitespace, no credential punctuation.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._:/@-]{1,128}$")
+_SCOPE_KINDS: frozenset[str] = frozenset({"route", "provider", "pool", "account", "connection"})
+
+
+def _safe_restriction(code: str | None) -> str | None:
+    """Map a restriction to the fixed vocabulary.
+
+    Known codes pass through; the ``connection_status:<status>`` shape passes
+    only for a controlled bad-status token; anything else (e.g. a raw admission
+    reason) collapses to ``admission_denied_unknown`` so untrusted free text can
+    never leak in a public restriction field.
+    """
+    if code is None:
+        return None
+    if code in _RESTRICTION_CODES:
+        return code
+    if code.startswith(_CONNECTION_STATUS_PREFIX):
+        status = code[len(_CONNECTION_STATUS_PREFIX) :]
+        if status in _BAD_TEST_STATUS:
+            return code
+    return _RESTRICTION_UNKNOWN
+
+
+def _safe_scope(scope: str | None) -> str | None:
+    """Validate a cooldown scope identifier (``pool:p`` / ``account:a`` ...).
+
+    A name with whitespace, credential punctuation or a token shape collapses to
+    ``<kind>:<invalid>`` so a secret-bearing pool/account name cannot leak in
+    ``cooldown_scope``.  Matching mirrors the safe id pattern plus a scrub pass
+    that rejects ``sk-``/bearer token shapes which satisfy the pattern.
+    """
+    if scope is None:
+        return None
+    kind, sep, name = scope.partition(":")
+    kind = kind.strip().lower()
+    name = name.strip()
+    if sep and kind in _SCOPE_KINDS:
+        if _SAFE_ID_RE.match(name) and _scrub(name) == name:
+            return f"{kind}:{name}"
+        return f"{kind}:<invalid>"
+    text = scope.strip()
+    if _SAFE_ID_RE.match(text) and _scrub(text) == text:
+        return text
+    return "scope:<invalid>"
+
+
+def _display_safe(value: str | None) -> str | None:
+    """Scrub a free-text public field (reason/category/identity/source ...).
+
+    Redacts secrets and control characters; an empty result becomes ``None``.
+    Idempotent for the controlled vocabularies the projection already emits.
+    """
+    if value is None:
+        return None
+    return _scrub(value) or None
+
+
+# ---------------------------------------------------------------------------
 # Parsed evidence structures (internal, produced by the parsers)
 # ---------------------------------------------------------------------------
 
@@ -443,37 +537,48 @@ class VerifiedModelRow:
     _sort_checked: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the stable envelope (design section 3).
+
+        This is the display boundary: every public free-text field is scrubbed
+        and every restriction is coerced to the fixed vocabulary here, so an
+        untrusted value stored on the row can never leak into the rendered JSON
+        regardless of how the row was built.
+        """
         return {
             "route_id": self.route_id,
-            "provider": self.provider,
+            "provider": _display_safe(self.provider),
             "status": self.status.value,
             "coding_ok": self.coding_ok,
             "last_success_at": _iso(self.last_success_at),
             "checked_at": _iso(self.checked_at),
-            "evidence_source": self.evidence_source,
+            "evidence_source": _display_safe(self.evidence_source),
             "fresh_until": _iso(self.fresh_until),
             "expires_at": _iso(self.expires_at),
-            "freshness": self.freshness,
+            "freshness": _display_safe(self.freshness),
             "capabilities": {
                 "context_window": self.context_window,
                 "tools": self.tools,
                 "structured": self.structured,
             },
-            "restriction": self.restriction,
-            "reason": self.reason,
-            "restrictions": list(self.restrictions),
+            "restriction": _safe_restriction(self.restriction),
+            "reason": _display_safe(self.reason),
+            "restrictions": [
+                code
+                for code in (_safe_restriction(r) for r in self.restrictions)
+                if code is not None
+            ],
             "cooldown_until": _iso(self.cooldown_until),
-            "cooldown_scope": self.cooldown_scope,
-            "failure_category": self.failure_category,
+            "cooldown_scope": _safe_scope(self.cooldown_scope),
+            "failure_category": _display_safe(self.failure_category),
             "http_status": self.http_status,
             "latency_ms": self.latency_ms,
-            "identity": self.identity,
-            "probe_class": self.probe_class,
+            "identity": _display_safe(self.identity),
+            "probe_class": _display_safe(self.probe_class),
             "agentic_ok": self.agentic_ok,
             "agentic_checked_at": _iso(self.agentic_checked_at),
-            "capacity_class": self.capacity_class,
+            "capacity_class": _display_safe(self.capacity_class),
             "refreshable": self.refreshable,
-            "refresh_reason": self.refresh_reason,
+            "refresh_reason": _display_safe(self.refresh_reason),
             "hints": list(self.hints),
         }
 
@@ -918,8 +1023,23 @@ def _dedupe_inventory(
 
 
 def _rows_equivalent(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    """Compare the fields the projection relies on; ignore cosmetic differences."""
-    keys = ("owned_by", "capabilities", "context_length", "max_input_tokens", "pricing")
+    """Compare the fields the projection relies on; ignore cosmetic differences.
+
+    Binding fields (``pool_id`` / ``subscription_pool_id`` / ``account_id``) are
+    included: two inventory rows for the same canonical id that disagree on their
+    pool/account binding are contradictory duplicates and must fail closed, not
+    silently last-writer win (re-review non-blocking note).
+    """
+    keys = (
+        "owned_by",
+        "capabilities",
+        "context_length",
+        "max_input_tokens",
+        "pricing",
+        "pool_id",
+        "subscription_pool_id",
+        "account_id",
+    )
     return all(a.get(k) == b.get(k) for k in keys)
 
 
@@ -1091,6 +1211,11 @@ def _classify_row(
     capacity = _capacity_for_row(row, connection)
 
     restrictions: list[str] = []
+    # Independent secondary restriction codes that must survive into whatever
+    # terminal branch wins (re-review finding 2 / non-blocking: secondary
+    # restrictions were incomplete on early branches).  ``base_row`` merges
+    # these into every row's ``restrictions`` without duplicating.
+    carried: list[str] = []
     hints: list[str] = []
     if route_id in evidence.ladder_hints:
         hints.append("ladder_positive_hint")
@@ -1104,6 +1229,13 @@ def _classify_row(
     ladder = evidence.ladder_health.get(route_id)
 
     def base_row(status: VerifiedStatus, **kw: Any) -> VerifiedModelRow:
+        # Merge any carried secondary restrictions (e.g. account_binding_ambiguous)
+        # into the branch's own restriction codes without duplicating, preserving
+        # the branch's primary ``restriction`` field unchanged.
+        existing = list(kw.pop("restrictions", ()))
+        for code in carried:
+            if code not in existing:
+                existing.append(code)
         return VerifiedModelRow(
             route_id=route_id,
             provider=provider,
@@ -1113,6 +1245,7 @@ def _classify_row(
             structured=structured,
             capacity_class=capacity.value,
             hints=tuple(hints),
+            restrictions=tuple(existing),
             **kw,
         )
 
@@ -1120,6 +1253,11 @@ def _classify_row(
     policy_reason = evidence.policy_exclusions.get(route_id)
     if policy_reason:
         restrictions.append("policy_excluded")
+        restrictions.extend(
+            _secondary_restrictions(
+                route_id, tools, at_rest, evidence, exclude=("policy_excluded",)
+            )
+        )
         return base_row(
             VerifiedStatus.EXCLUDED,
             restriction="policy_excluded",
@@ -1129,6 +1267,11 @@ def _classify_row(
         )
     if contradictory and route_id in contradictory:
         restrictions.append("contradictory_inventory")
+        restrictions.extend(
+            _secondary_restrictions(
+                route_id, tools, at_rest, evidence, exclude=("contradictory_inventory",)
+            )
+        )
         return base_row(
             VerifiedStatus.INVENTORY_ONLY,
             restriction="contradictory_inventory",
@@ -1139,6 +1282,9 @@ def _classify_row(
         )
     if is_opaque(route_id) or owned == "combo":
         restrictions.append("opaque_route")
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=("opaque_route",))
+        )
         return base_row(
             VerifiedStatus.INVENTORY_ONLY,
             restriction="opaque_route",
@@ -1160,6 +1306,9 @@ def _classify_row(
     if adm_block is not None and adm_block[0] is VerifiedStatus.EXCLUDED:
         _status, _reason, _restriction, _source = adm_block
         restrictions.append(_restriction)
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=(_restriction,))
+        )
         return base_row(
             _status,
             reason=_sanitize(_reason),
@@ -1170,18 +1319,24 @@ def _classify_row(
         )
 
     # -- Rule 2: UNAVAILABLE (active scoped blockers beat positives) -------
-    bound_pools, bound_accounts = _route_bindings(route_id, row, active_conns, at_rest)
+    bindings = _route_bindings(route_id, row, active_conns, at_rest)
+    # An unresolved account binding is an independent fact to surface regardless
+    # of the winning status (re-review finding 2): it both keeps us from sinking
+    # the route on an account cooldown and is recorded as a secondary restriction.
+    account_binding_ambiguous = bool(bindings.ambiguous_accounts)
     blocker = _winning_blocker(
         route_id,
         provider_names,
         now,
         cd_index,
-        bound_pools,
-        bound_accounts,
+        bindings.pools,
+        bindings.accounts,
         at_rest,
         worker,
         ladder,
     )
+    if account_binding_ambiguous:
+        carried.append("account_binding_ambiguous")
     if blocker is not None:
         restrictions.append("availability_blocked")
         # Design s2: preserve independent secondary restrictions even though the
@@ -1209,6 +1364,10 @@ def _classify_row(
     conn_block = _connection_blocker(provider_names, conn_index, active_conns, route_id, now)
     if conn_block is not None:
         restrictions.append(conn_block)
+        # Preserve independent secondary restrictions (design s2).
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=(conn_block,))
+        )
         return base_row(
             VerifiedStatus.UNAVAILABLE,
             reason=conn_block,
@@ -1221,6 +1380,11 @@ def _classify_row(
     # Required harness visibility unavailable for this route (rule 2).
     if route_id in evidence.visibility_unavailable:
         restrictions.append("visibility_unavailable")
+        restrictions.extend(
+            _secondary_restrictions(
+                route_id, tools, at_rest, evidence, exclude=("visibility_unavailable",)
+            )
+        )
         return base_row(
             VerifiedStatus.UNAVAILABLE,
             reason="visibility_unavailable",
@@ -1234,6 +1398,9 @@ def _classify_row(
     if adm_block is not None and adm_block[0] is VerifiedStatus.UNAVAILABLE:
         _status, _reason, _restriction, _source = adm_block
         restrictions.append(_restriction)
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=(_restriction,))
+        )
         return base_row(
             _status,
             reason=_sanitize(_reason),
@@ -1249,6 +1416,9 @@ def _classify_row(
     if deadline is not None:
         neg = _negative_detail(route_id, neg_source, at_rest, worker, ladder)
         restrictions.append("route_negative")
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=("route_negative",))
+        )
         return base_row(
             VerifiedStatus.FAILED,
             reason=_sanitize(neg["category"]),
@@ -1346,25 +1516,55 @@ def _classify_row(
         "no_connection_evidence",
         "no_active_account",
     }:
-        restrictions.append(fact.reason or "no_connection_evidence")
+        # Restriction is a fixed code; the (possibly external) reason is scrubbed
+        # and carries only the sanitized detail (re-review finding 1).
+        code = fact.reason if fact.reason in _RESTRICTION_CODES else "no_connection_evidence"
+        restrictions.append(code)
+        restrictions.extend(
+            _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=(code,))
+        )
         return base_row(
             VerifiedStatus.UNAVAILABLE,
-            reason=fact.reason or "no_connection_evidence",
-            restriction=restrictions[0],
+            reason=_sanitize(fact.reason) or "no_connection_evidence",
+            restriction=code,
             restrictions=tuple(restrictions),
             evidence_source="connections",
             refreshable=False,
             refresh_reason="blocked",
         )
-    restrictions.append(fact.reason or "not_admissible")
+    # Unknown / undetermined admission: the external reason text is never a
+    # restriction code.  Store the fixed ``not_admissible`` code and keep the
+    # redacted detail only in the sanitized ``reason`` (re-review finding 1).
+    code = fact.reason if fact.reason in _RESTRICTION_CODES else "not_admissible"
+    restrictions.append(code)
+    restrictions.extend(
+        _secondary_restrictions(route_id, tools, at_rest, evidence, exclude=(code,))
+    )
     return base_row(
         VerifiedStatus.INVENTORY_ONLY,
         reason=_sanitize(fact.reason) or "not_admissible",
-        restriction=restrictions[0],
+        restriction=code,
         restrictions=tuple(restrictions),
         evidence_source="inventory",
         refresh_reason="not_refreshable",
     )
+
+
+@dataclass(frozen=True)
+class _RouteBindings:
+    """Pool/account scopes a route is bound to, plus declined ambiguous accounts.
+
+    ``pools`` / ``accounts`` are the scopes a pool/account cooldown may sink this
+    route through.  ``ambiguous_accounts`` are connection-derived account ids we
+    deliberately did NOT bind because the provider has several active
+    connections with distinct accounts and the route carries no explicit
+    binding; they are reported as ``account_binding_ambiguous`` rather than used
+    to sink the route (design rule 2, re-review finding 2).
+    """
+
+    pools: set[str]
+    accounts: set[str]
+    ambiguous_accounts: set[str]
 
 
 def _route_bindings(
@@ -1372,14 +1572,17 @@ def _route_bindings(
     row: Mapping[str, Any],
     active_conns: Sequence[Mapping[str, Any]],
     at_rest: AtRestHealth | None,
-) -> tuple[set[str], set[str]]:
+) -> _RouteBindings:
     """Resolve the pool/account names bound to this route (design rule 2).
 
     A cooldown scoped to ``pool:p`` / ``account:a`` only sinks a route that is
-    bound to that pool/account. Bindings come from the inventory row
-    (``subscription_pool_id`` / ``pool_id`` / ``account_id``), the active
-    connection rows (``account_id`` / ``pool_id`` / ``subscription_pool_id``),
-    an account encoded in the route id, and the at-rest entry's ``pool``.
+    bound to that pool/account.  An *exact* route binding takes precedence and is
+    used ALONE: the inventory row (``subscription_pool_id`` / ``pool_id`` /
+    ``account_id``), an account encoded in the route id, or the at-rest entry's
+    ``pool``.  Connection-derived accounts are an *inferred* binding and are only
+    trusted when the route has no explicit binding AND the provider has a single
+    unambiguous active account; with several active connections bound to distinct
+    accounts the route is not sunk and the ambiguity is reported instead.
     Matching is case-insensitive to mirror the cooldown-name normalisation.
     """
     pools: set[str] = set()
@@ -1390,13 +1593,10 @@ def _route_bindings(
         if text:
             target.add(text)
 
+    # -- Explicit route bindings (used alone when any are present) ----------
     _add(pools, row.get("subscription_pool_id"))
     _add(pools, row.get("pool_id"))
     _add(accounts, row.get("account_id"))
-    for c in active_conns:
-        _add(accounts, c.get("account_id"))
-        _add(pools, c.get("pool_id"))
-        _add(pools, c.get("subscription_pool_id"))
     # Some legacy inventory rows encode the account in the route id
     # (``prefix/account/model``); mirror admission's concrete-marker read.
     parts = route_id.split("/")
@@ -1406,7 +1606,27 @@ def _route_bindings(
         _add(accounts, parts[1])
     if at_rest is not None and at_rest.pool:
         _add(pools, at_rest.pool)
-    return pools, accounts
+
+    if pools or accounts:
+        # An exact route binding wins outright; never widen it with every active
+        # connection's account (re-review finding 2: over-applied cooldowns).
+        return _RouteBindings(pools=pools, accounts=accounts, ambiguous_accounts=set())
+
+    # -- Inferred connection bindings (only when unambiguous) ---------------
+    conn_pools: set[str] = set()
+    conn_accounts: set[str] = set()
+    for c in active_conns:
+        _add(conn_accounts, c.get("account_id"))
+        _add(conn_pools, c.get("pool_id"))
+        _add(conn_pools, c.get("subscription_pool_id"))
+    if len(conn_accounts) <= 1:
+        # Exactly one (or zero) distinct active account => unambiguous binding.
+        return _RouteBindings(pools=conn_pools, accounts=conn_accounts, ambiguous_accounts=set())
+    # Several active connections bound to distinct accounts and no explicit
+    # route binding: do not sink the route from an account cooldown; report the
+    # ambiguity instead.  Connection pools stay bound (pool ambiguity is handled
+    # by the pool cooldown only matching a bound pool).
+    return _RouteBindings(pools=conn_pools, accounts=set(), ambiguous_accounts=conn_accounts)
 
 
 def _winning_blocker(

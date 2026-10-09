@@ -1536,3 +1536,270 @@ def test_expired_worker_negative_keeps_half_open_observable():
     r = only_row(project_one(inv, conns, snaps))
     assert r.status is VerifiedStatus.UNVERIFIED
     assert "half_open" in r.restrictions
+
+
+# ---------------------------------------------------------------------------
+# Re-review (cx/gpt-6-sol REQUEST_CHANGES round 2). Each test below fails on
+# 4999e23 and passes after the fix.
+# ---------------------------------------------------------------------------
+
+
+# -- Finding 1: no secret leaks in ANY public row field ---------------------
+
+
+def test_no_secret_in_any_row_field_from_every_input():
+    # Generic leak test: feed one secret (in recognizable key=value / whitespace
+    # / bearer shapes, lower-cased so pool/account normalisation cannot hide it)
+    # through EVERY untrusted free-text input a row can surface, across the three
+    # terminal branches that each expose a different field set (cooldown scope,
+    # admission reason, policy exclusion). Assert the secret never appears
+    # anywhere in json.dumps(view.to_dict()).
+    import json as _json
+
+    secret = "topsecretxyz"
+
+    def _scenarios() -> list[tuple[list, list, Any]]:
+        out: list[tuple[list, list, Any]] = []
+        # (a) UNAVAILABLE via a bound pool cooldown whose scope name hides a
+        #     secret; also leak-bait every other field.
+        out.append(
+            (
+                [row("omniroute/cc/demo", pool_id=f"p1 token={secret}")],
+                [conn("cc", api_key=secret, authorization=f"Bearer {secret}")],
+                snapshots_from_documents(
+                    health_cache_doc=health_cache(
+                        at_rest_entry(
+                            "cc/demo",
+                            checked_at=NOW - timedelta(seconds=60),
+                            healthy=False,
+                            category=f"authentication api_key={secret}",
+                            chat_ok=False,
+                            tool_ok=False,
+                            identity=f"Bearer {secret}",
+                            until=NOW + timedelta(seconds=300),
+                        ),
+                        cooldowns={
+                            f"pool:p1 token={secret}": {
+                                "category": "authentication",
+                                "until": iso(NOW + timedelta(seconds=300)),
+                            }
+                        },
+                    ),
+                    now=NOW,
+                ),
+            )
+        )
+        # (b) INVENTORY_ONLY via an UNKNOWN admission denial carrying a secret
+        #     reason (no blocker, so the admission-reason branch runs).
+        out.append(
+            (
+                [row("omniroute/cc/demo")],
+                [conn("cc")],
+                snapshots_from_documents(
+                    admission_facts={
+                        "cc/demo": {
+                            "admitted": False,
+                            "first_failed_stage": "UNKNOWN",
+                            "reason": f"trouble api_key={secret}",
+                        }
+                    },
+                    now=NOW,
+                ),
+            )
+        )
+        # (c) EXCLUDED via a policy exclusion carrying a secret reason.
+        out.append(
+            (
+                [row("omniroute/cc/demo")],
+                [conn("cc")],
+                snapshots_from_documents(
+                    policy_exclusions={"cc/demo": f"blocked token={secret}"}, now=NOW
+                ),
+            )
+        )
+        return out
+
+    for inv, conns, snaps in _scenarios():
+        blob = _json.dumps(project_one(inv, conns, snaps).to_dict())
+        assert secret not in blob, blob
+
+
+def test_unknown_admission_restriction_is_generic_code_not_raw_reason():
+    # An unknown admission stage with a secret-bearing reason must map the
+    # restriction/restrictions to a fixed code; the redacted detail is only in
+    # the sanitized reason (never the raw text in a restriction field).
+    secret = "TOPSECRET"
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        admission_facts={
+            "cc/demo": {
+                "admitted": False,
+                "first_failed_stage": "UNKNOWN",
+                "reason": f"trouble api_key={secret}",
+            }
+        },
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.INVENTORY_ONLY
+    assert r.restriction == "not_admissible"
+    assert r.restrictions == ("not_admissible",)
+    assert secret not in (r.reason or "")
+    assert "[redacted]" in (r.reason or "")
+
+
+def test_cooldown_scope_with_whitespace_or_secret_becomes_invalid():
+    # A pool cooldown whose scope name carries a secret/whitespace must not leak
+    # it in cooldown_scope; the scope collapses to the safe placeholder.
+    import json as _json
+
+    secret = "TOPSECRET"
+    inv = [row("omniroute/cc/demo", pool_id=f"p1 token={secret}")]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                f"pool:p1 token={secret}": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    view = project_one(inv, conns, snaps)
+    r = only_row(view)
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    # The scrub is applied at the display boundary (to_dict), where the scope
+    # must collapse and the secret must be absent from the whole serialized view.
+    d = view.to_dict()
+    assert d["rows"][0]["cooldown_scope"] == "pool:<invalid>"
+    assert secret not in _json.dumps(d)
+
+
+def test_restrictions_vocabulary_is_fixed_in_output():
+    # A restriction carrying external text at the row level is coerced to the
+    # generic code at the to_dict boundary.
+    from verdict.orchestration.verified_models import VerifiedModelRow
+
+    r = VerifiedModelRow(
+        route_id="cc/demo",
+        provider="cc",
+        status=VerifiedStatus.INVENTORY_ONLY,
+        restriction="api_key=TOPSECRET",
+        restrictions=("api_key=TOPSECRET", "identity_not_verified"),
+        cooldown_scope="pool:p1 token=TOPSECRET",
+    )
+    d = r.to_dict()
+    assert d["restriction"] == "admission_denied_unknown"
+    assert d["restrictions"] == ["admission_denied_unknown", "identity_not_verified"]
+    assert d["cooldown_scope"] == "pool:<invalid>"
+    assert "TOPSECRET" not in str(d)
+
+
+# -- Finding 2: bound account cooldowns scope to exact bindings -------------
+
+
+def test_account_cooldown_does_not_over_apply_across_distinct_bindings():
+    # Repro: two inventory routes explicitly bound to distinct accounts, two
+    # active connections for those accounts, and a cooldown on acct1 only. Only
+    # the acct1-bound route is sunk; the acct2-bound route stays VERIFIED.
+    inv = [row("omniroute/cc/a", account_id="acct1"), row("omniroute/cc/b", account_id="acct2")]
+    conns = [conn("cc", account_id="acct1"), conn("cc", account_id="acct2")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/a", checked_at=NOW - timedelta(seconds=60)),
+            at_rest_entry("cc/b", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "account:acct1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    by_id = {r.route_id: r for r in project_one(inv, conns, snaps).rows}
+    assert by_id["cc/a"].status is VerifiedStatus.UNAVAILABLE
+    assert by_id["cc/a"].cooldown_scope == "account:acct1"
+    assert by_id["cc/b"].status is VerifiedStatus.VERIFIED
+    assert by_id["cc/b"].cooldown_scope is None
+
+
+def test_single_active_connection_account_binding_still_blocks():
+    # Unambiguous case: the route has no explicit binding and the provider has
+    # exactly one active connection, so the connection account binds and an
+    # account cooldown on it still sinks the route.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc", account_id="acct1")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "account:acct1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.UNAVAILABLE
+    assert r.cooldown_scope == "account:acct1"
+
+
+def test_ambiguous_multi_connection_account_cooldown_does_not_block_but_is_restricted():
+    # Several active connections with distinct accounts and NO explicit route
+    # binding: an account cooldown must not sink the route; the ambiguity is
+    # recorded as a secondary restriction instead.
+    inv = [row("omniroute/cc/demo")]
+    conns = [conn("cc", account_id="acct1"), conn("cc", account_id="acct2")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "account:acct1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert r.status is VerifiedStatus.VERIFIED
+    assert r.cooldown_scope is None
+    assert "account_binding_ambiguous" in r.restrictions
+
+
+# -- Non-blocking: contradictory duplicate bindings fail closed ------------
+
+
+def test_contradictory_binding_duplicates_fail_closed():
+    # Two inventory rows for the same canonical id disagreeing only on their
+    # pool binding are contradictory duplicates and must fail closed.
+    inv = [
+        row("omniroute/cc/demo", subscription_pool_id="p1"),
+        row("omniroute/cc/demo", subscription_pool_id="p2"),
+    ]
+    conns = [conn("cc")]
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=60)),
+            cooldowns={
+                "pool:p1": {
+                    "category": "authentication",
+                    "until": iso(NOW + timedelta(seconds=300)),
+                }
+            },
+        ),
+        now=NOW,
+    )
+    view = project_one(inv, conns, snaps)
+    r = only_row(view)
+    assert r.status is VerifiedStatus.INVENTORY_ONLY
+    assert r.restriction == "contradictory_inventory"
+    assert any("contradictory" in e for e in view.source_errors)
