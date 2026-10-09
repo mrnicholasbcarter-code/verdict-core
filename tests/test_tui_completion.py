@@ -1,207 +1,284 @@
-from datetime import datetime
+"""Offline completion contracts and real prompt_toolkit replacement tests."""
+
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone
+from time import perf_counter
 
 import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from verdict.tui_completion import (
+    SCHEMA,
     ArgumentSpec,
     CommandSpec,
     CompletionSnapshot,
     VerdictCompleter,
     complete,
+    default_command_specs,
+    suggest_command,
+    syntax_help,
 )
 
-
-@pytest.fixture
-def sample_commands():
-    return [
-        CommandSpec(
-            name="eligibility",
-            description="Check model eligibility",
-            syntax="/eligibility [status] [provider=..] [search=..] [page=..] [refresh]",
-            arguments=[
-                ArgumentSpec("status", "choice", False, choices=["all", "verified", "stale"]),
-                ArgumentSpec("provider", "field", False),
-                ArgumentSpec("search", "field", False),
-                ArgumentSpec("page", "field", False),
-                ArgumentSpec("refresh", "flag", False),
-            ],
-        ),
-        CommandSpec(
-            name="probe",
-            description="Probe models",
-            syntax="/probe <ids>",
-            arguments=[ArgumentSpec("ids", "models", True)],
-        ),
-        CommandSpec(
-            name="bootstrap",
-            description="Bootstrap harness",
-            syntax="/bootstrap <target> [ids...] [options]",
-            arguments=[
-                ArgumentSpec("target", "choice", True, choices=["prime", "claude"]),
-                ArgumentSpec("value", "models", False),  # simplified for now
-                ArgumentSpec("mode", "choice", False, choices=["native", "openai-side-path"]),
-            ],
-        ),
-        CommandSpec(
-            name="trace",
-            description="Trace run",
-            syntax="/trace <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-        CommandSpec(
-            name="routing",
-            description="Routing info",
-            syntax="/routing <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-        CommandSpec(
-            name="context",
-            description="Context info",
-            syntax="/context <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-        CommandSpec(
-            name="watch",
-            description="Watch run",
-            syntax="/watch <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-        CommandSpec(
-            name="run-receipt",
-            description="Run receipt",
-            syntax="/run-receipt <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-        CommandSpec(
-            name="receipt",
-            description="Receipt info",
-            syntax="/receipt <run_id>",
-            arguments=[ArgumentSpec("run_id", "run", True)],
-        ),
-    ]
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def sample_snapshot():
+def snapshot(*, models=None, runs=None, schema=SCHEMA, generated=None, errors=()):
     return CompletionSnapshot(
-        schema="v1",
-        generated_at="2023-01-01T00:00:00Z",
-        run_rows=[
-            {"run": "run-123", "outcome": "success", "age_s": 10},
-            {"run": "run-456", "outcome": "failed", "age_s": 60},
+        schema,
+        generated or (NOW - timedelta(minutes=1)).isoformat(),
+        runs or [],
+        models
+        if models is not None
+        else [
+            {
+                "route_id": "cc/claude-opus",
+                "provider": "cc",
+                "status": "VERIFIED",
+                "checked_at": (NOW - timedelta(minutes=2)).isoformat(),
+                "fresh_until": (NOW + timedelta(minutes=2)).isoformat(),
+                "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+            },
+            {"id": "kr/gpt-6", "provider": "kr", "status": "UNVERIFIED"},
         ],
-        model_rows=[
-            {"id": "omniroute/gpt-4", "name": "GPT-4", "status": "VERIFIED"},
-            {"id": "omniroute/claude-3", "name": "Claude 3", "status": "STALE"},
-            {"id": "omniroute/llama-3", "name": "Llama 3", "status": "UNVERIFIED"},
-        ],
-        provider_names=["omniroute"],
-        harness_targets=["prime"],
-        modes=["native"],
-        source_errors=[],
+        ["cc", "kr"],
+        ["prime", "claude"],
+        ["native", "openai-side-path"],
+        errors,
     )
 
 
-def test_complete_empty_string(sample_commands, sample_snapshot):
-    res = complete("", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now())
-    assert len(res) > 0
-    assert res[0].text.startswith("/")
-    assert res[0].kind == "command"
+@pytest.fixture
+def commands():
+    return default_command_specs()
 
 
-def test_complete_command_prefix(sample_commands, sample_snapshot):
-    # Typo: /elegibility -> /eligibility
-    res = complete("/eli", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now())
-    assert any(c.display == "/eligibility" for c in res)
+def candidates(text, commands, snap=None, **kwargs):
+    return complete(text, commands=commands, snapshot=snap or snapshot(), now=NOW, **kwargs)
 
 
-def test_complete_model_ids(sample_commands, sample_snapshot):
-    # /probe <ids>
-    res = complete(
-        "/probe ", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now()
+def apply_completion(doc, completion):
+    before = doc.text_before_cursor
+    return (
+        before[: len(before) + completion.start_position]
+        + completion.text
+        + doc.text[doc.cursor_position :]
     )
-    assert any("gpt-4" in c.display for c in res)
-    assert any("claude-3" in c.display for c in res)
 
 
-def test_complete_model_labels(sample_commands, sample_snapshot):
-    res = complete(
-        "/probe ", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now()
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/eli", "/eligibility"),
+        ("eli", "/eligibility"),
+        ("/elegibility", "/eligibility"),
+        ("/boot", "/bootstrap"),
+    ],
+)
+def test_command_completion_and_typo(commands, text, expected):
+    doc = Document(text + " after", cursor_position=len(text))
+    results = list(
+        VerdictCompleter(commands, snapshot(), NOW).get_completions(
+            doc, CompleteEvent(completion_requested=True)
+        )
     )
-    # Claude 3 is STALE
-    claude = next(c for c in res if "claude-3" in c.display)
-    assert "[stale]" in claude.description
-
-    # Llama 3 is UNVERIFIED
-    llama = next(c for c in res if "llama-3" in c.display)
-    assert "[unverified]" in llama.description
+    choice = next(item for item in results if item.text == expected)
+    assert apply_completion(doc, choice) == expected + " after"
+    assert choice.start_position == -len(text)
+    assert suggest_command(text, commands=commands)[0] == expected
 
 
-def test_complete_run_ids(sample_commands, sample_snapshot):
-    # /trace <run_id>
-    res = complete(
-        "/trace ", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now()
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("/probe cc/cl", "/probe cc/claude-opus"),
+        ("/probe laude-op", "/probe cc/claude-opus"),
+        ("/probe cc/claude-opus cc/cl", "/probe cc/claude-opus cc/claude-opus"),
+        ("/probe kr/gpt-6,cc/cl", "/probe kr/gpt-6,cc/claude-opus"),
+        ("/bootstrap prime cc/cl", "/bootstrap prime cc/claude-opus"),
+        ("/bootstrap claude kr/gpt-6,cc/cl", "/bootstrap claude kr/gpt-6,cc/claude-opus"),
+        ("/eligibility search=cc/cl", "/eligibility search=cc/claude-opus"),
+    ],
+)
+def test_model_full_exact_replacement(commands, line, expected):
+    doc = Document(line + " suffix", cursor_position=len(line))
+    options = list(
+        VerdictCompleter(commands, snapshot(), NOW).get_completions(doc, CompleteEvent())
     )
-    assert any("run-123" in c.display for c in res)
-    assert any("run-456" in c.display for c in res)
+    assert expected + " suffix" in [apply_completion(doc, option) for option in options]
+    assert all(len(option.text) <= 256 for option in options)
 
 
-def test_complete_choices(sample_commands, sample_snapshot):
-    # /eligibility [status]
-    res = complete(
-        "/eligibility ", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now()
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "/probe ",
+        "/probe cc/claude-opus ",
+        "/bootstrap prime ",
+        "/bootstrap prime cc/claude-opus ",
+        "/bootstrap claude cc/claude-opus ",
+    ],
+)
+def test_flag_never_model(commands, prefix):
+    for flag in ("--", "--probe", "-h"):
+        assert not any(c.kind == "model" for c in candidates(prefix + flag, commands))
+
+
+def test_bootstrap_choices_and_mode(commands):
+    assert {c.text for c in candidates("/bootstrap ", commands)} == {"prime", "claude"}
+    assert "restore" in {c.text for c in candidates("/bootstrap prime re", commands)}
+    assert "transaction=" in {c.text for c in candidates("/bootstrap prime restore ", commands)}
+    assert {c.text for c in candidates("/bootstrap claude mode=", commands)} == {
+        "mode=native",
+        "mode=openai-side-path",
+    }
+    assert {c.text for c in candidates("/bootstrap claude mode=nat", commands)} == {"mode=native"}
+
+
+def test_eligibility_any_order(commands):
+    base = "/eligibility page=2 refresh search=cc/claude-opus "
+    assert "provider=cc" in {c.text for c in candidates(base + "provider=c", commands)}
+    assert "verified" in {c.text for c in candidates(base + "ver", commands)}
+    assert "page=1" in {c.text for c in candidates("/eligibility page=", commands)}
+    assert "refresh" in {c.text for c in candidates("/eligibility ref", commands)}
+    assert "search=cc/claude-opus" in {
+        c.text for c in candidates("/eligibility verified search=cc/cl", commands)
+    }
+
+
+@pytest.mark.parametrize(
+    "command", ["trace", "routing", "context", "watch", "run-receipt", "receipt", "replay"]
+)
+def test_run_partial_offsets(commands, command):
+    snap = snapshot(runs=[{"run": "run-123", "outcome": "done"}])
+    doc = Document(f"/{command} run-1 trailing", cursor_position=len(command) + 7)
+    completions = list(VerdictCompleter(commands, snap, NOW).get_completions(doc, CompleteEvent()))
+    assert any(apply_completion(doc, c) == f"/{command} run-123 trailing" for c in completions)
+
+
+def test_bounds_and_timing(commands):
+    snap = snapshot(
+        models=[{"route_id": f"cc/{i:05d}", "status": "UNVERIFIED"} for i in range(10_000)]
     )
-    assert any("verified" in c.display for c in res)
-    assert any("stale" in c.display for c in res)
+    assert len(candidates("/probe ", commands, snap)) == 20
+    assert len(candidates("/probe ", commands, snap, limit=9999)) == 50
+    assert len(candidates("/probe ", commands, snap, limit=-100)) == 1
+    assert not candidates("/probe " + "a" * 257, commands, snap)
+    start = perf_counter()
+    for _ in range(5):
+        assert len(candidates("/probe cc/", commands, snap)) == 20
+    elapsed = (perf_counter() - start) / 5
+    assert elapsed < 0.1, f"average keystroke completion took {elapsed:.3f}s"
 
 
-def test_no_completion_for_flags_as_models(sample_commands, sample_snapshot):
-    # /probe --probe should not suggest models
-    res = complete(
-        "/probe --", commands=sample_commands, snapshot=sample_snapshot, now=datetime.now()
+def test_order_independent_of_row_order(commands):
+    rows = [{"route_id": v} for v in ["cc/z", "cc/a", "cc/A", "cc/b"]]
+    assert candidates("/probe cc/", commands, snapshot(models=rows)) == candidates(
+        "/probe cc/", commands, snapshot(models=list(reversed(rows)))
     )
-    # Should not be model candidates
-    assert not any(c.kind == "model" for c in res)
 
 
-def test_prompt_toolkit_adapter(sample_commands, sample_snapshot):
-    completer = VerdictCompleter(sample_commands, sample_snapshot, datetime.now())
-    doc = Document("/probe ")
-    event = CompleteEvent()
-
-    completions = list(completer.get_completions(doc, event))
-    assert len(completions) > 0
-    assert completions[0].text.startswith("omniroute")
-
-
-def test_performance_bounds(sample_commands):
-    # Create a huge snapshot
-    huge_model_rows = [
-        {"id": f"mod-{i}", "name": f"Model {i}", "status": "VERIFIED"} for i in range(10000)
+def test_health_and_sanitization(commands):
+    rows = [
+        {
+            "route_id": "cc/stale",
+            "status": "VERIFIED",
+            "fresh_until": NOW.isoformat(),
+            "checked_at": (NOW - timedelta(minutes=2)).isoformat(),
+            "provider": "cc",
+        },
+        {"route_id": "cc/missing", "status": "VERIFIED", "provider": "cc"},
+        {
+            "route_id": "cc/blocked",
+            "status": "FAILED",
+            "provider": "secret=sk-DO_NOT_LEAK\n",
+            "name": "Bearer sk-DO_NOT_LEAK\x00",
+            "checked_at": NOW.isoformat(),
+        },
     ]
-    snapshot = CompletionSnapshot(
-        schema="v1",
-        generated_at="...",
-        run_rows=[],
-        model_rows=huge_model_rows,
-        provider_names=[],
-        harness_targets=[],
-        modes=[],
-        source_errors=[],
+    results = candidates("/probe cc/", commands, snapshot(models=rows))
+    text = {r.text: r.description for r in results}
+    assert "STALE" in text["cc/stale"] and "recheck" in text["cc/stale"]
+    assert "UNVERIFIED" in text["cc/missing"]
+    assert "FAILED" in text["cc/blocked"] and "checked_at=" in text["cc/blocked"]
+    assert "sk-DO_NOT_LEAK" not in str(results)
+    assert "\n" not in str(results) and "\x00" not in str(results)
+
+
+@pytest.mark.parametrize(
+    "schema,generated,errors",
+    [
+        ("wrong", None, ()),
+        (SCHEMA, "garbage", ()),
+        (SCHEMA, (NOW + timedelta(seconds=1)).isoformat(), ()),
+        (SCHEMA, None, ("offline secret=sk-PRIVATE",)),
+    ],
+)
+def test_invalid_snapshot_never_yields_models(commands, schema, generated, errors):
+    snap = snapshot(schema=schema, generated=generated, errors=errors)
+    assert not candidates("/probe ", commands, snap)
+    assert (
+        "snapshot unavailable"
+        in syntax_help("probe", commands=commands, snapshot=snap, now=NOW).description
     )
 
-    import time
 
-    start = time.perf_counter()
-    complete("/probe ", commands=sample_commands, snapshot=snapshot, now=datetime.now())
-    duration = (time.perf_counter() - start) * 1000
-    assert duration < 50
+def test_snapshot_and_spec_immutability(commands):
+    row = {"route_id": "cc/original"}
+    models = [row]
+    snap = snapshot(models=models)
+    row["route_id"] = "cc/tampered"
+    models.clear()
+    assert snap.model_rows[0]["route_id"] == "cc/original"
+    with pytest.raises(TypeError):
+        snap.model_rows[0]["route_id"] = "cc/tampered"
+    with pytest.raises(FrozenInstanceError):
+        snap.generated_at = "change"
+    choices = ["native"]
+    argument = ArgumentSpec("mode", "choice", False, choices=choices)
+    choices.append("evil")
+    assert argument.choices == ("native",)
 
 
-def test_determinism(sample_commands, sample_snapshot):
-    text = "/probe "
-    res1 = complete(text, commands=sample_commands, snapshot=sample_snapshot, now=datetime.now())
-    res2 = complete(text, commands=sample_commands, snapshot=sample_snapshot, now=datetime.now())
-    assert res1 == res2
+def test_secret_argument_never_completed(commands):
+    custom = (
+        *commands,
+        CommandSpec(
+            "credentials.set",
+            "set secret",
+            "/credentials.set <name> <value>",
+            (
+                ArgumentSpec("name", "choice", True, secret=True, choices=("token-value",)),
+                ArgumentSpec("value", "models", True, secret=True),
+            ),
+        ),
+    )
+    for text in [
+        "/credentials ",
+        "/credentials set ",
+        "/credentials.set ",
+        "/credentials.set token-value ",
+    ]:
+        assert candidates(text, custom) == ()
+
+
+def test_help_and_palette(commands):
+    from verdict.home import PALETTE
+
+    assert {row[1] for row in PALETTE} <= {spec.name for spec in commands}
+    help_bootstrap = syntax_help("bootstrap", commands=commands, snapshot=snapshot())
+    assert help_bootstrap is not None
+    assert "prime restore" in help_bootstrap.syntax
+    assert "mode=native|openai-side-path" in help_bootstrap.syntax
+    assert "read-only" in help_bootstrap.description
+    help_eligibility = syntax_help("/eligibility", commands=commands, snapshot=snapshot())
+    assert help_eligibility is not None
+    assert all(
+        f"[{field}]" in help_eligibility.syntax
+        for field in ["provider=..", "search=..", "page=..", "refresh"]
+    )
+    assert "CLI uses --flags" in help_eligibility.description
+    assert any("prompted" in arg["info"] for arg in help_bootstrap.arguments)
+    assert suggest_command("/elegibility", commands=commands)[0] == "/eligibility"
