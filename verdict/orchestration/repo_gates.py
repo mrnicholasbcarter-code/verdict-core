@@ -63,20 +63,46 @@ def _python_gates(root: dict[str, object], repo: Path) -> list[RepoGate]:
         argv: list[str] = ["python", "-m", "mypy"]
         if mypy.get("strict") is True:
             argv.append("--strict")
-        argv.extend(str(pkg) for pkg in _mypy_packages(mypy, root, repo))
+        argv.extend(_mypy_targets(mypy, root, repo))
         gates.append(RepoGate("mypy", tuple(argv), "pyproject:tool.mypy"))
     return gates
 
 
-def _mypy_packages(mypy: dict[str, object], root: dict[str, object], repo: Path) -> list[str]:
-    """Resolve mypy target packages: ``[tool.mypy].files`` non-empty, else ``[project].name`` dir if present."""
-    files = mypy.get("files")
-    if isinstance(files, list) and files:
-        return [str(pkg) for pkg in files]
-    name = _as_dict(root.get("project")).get("name")
-    if isinstance(name, str) and (repo / name).is_dir():
-        return [name]
+def _split_scalar_or_list(value: object) -> list[str]:
+    """Normalize a list of strings or a comma-separated string into stripped parts."""
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
     return []
+
+
+def _mypy_targets(mypy: dict[str, object], root: dict[str, object], repo: Path) -> list[str]:
+    """Resolve mypy targets without ever emitting a targetless argv.
+
+    Precedence: ``files`` (list or CSV), ``packages`` (list or CSV -> ``-p <pkg>``),
+    then ``[project].name`` package dir at the repo root or under ``src/``.
+    """
+    targets: list[str] = []
+    targets.extend(_split_scalar_or_list(mypy.get("files")))
+    if not targets:
+        for pkg in _split_scalar_or_list(mypy.get("packages")):
+            targets.extend(["-p", pkg])
+    if not targets:
+        name = _as_dict(root.get("project")).get("name")
+        if isinstance(name, str) and name:
+            for cand in (name, name.replace("-", "_")):
+                for base in (repo, repo / "src"):
+                    if (base / cand).is_dir():
+                        targets.append(str((base / cand).relative_to(repo)))
+                        break
+                if targets:
+                    break
+    if not targets:
+        raise ValueError(
+            "mypy configured but no target resolvable: set [tool.mypy].files or packages"
+        )
+    return targets
 
 
 def _node_gates(repo: Path) -> list[RepoGate]:
