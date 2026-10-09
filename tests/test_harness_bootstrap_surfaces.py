@@ -518,3 +518,23 @@ def test_verified_cli_publishes_after_consumer_and_legacy_json_unchanged(
         assert orchestration_cli._eligibility(legacy) == 0
     assert json.loads(capsys.readouterr().out) == payload
     assert action.call_args.args[0] == "eligibility"
+
+
+def test_unsafe_agent_dir_refusal_is_actionable(fixture: dict[str, Any]) -> None:
+    """A group-writable agent dir refuses with the code, a ~-relative path and a
+    `chmod go-w` hint, not the old generic "unsafe, changed or missing" text.
+    """
+    agent_dir = fixture["paths"].agent_dir
+    original_mode = agent_dir.stat().st_mode
+    agent_dir.chmod(0o775)
+    try:
+        result = consume(fixture, preview_only=True)
+    finally:
+        agent_dir.chmod(original_mode)
+    assert not result.ok
+    message = result.data["error"]
+    assert "unsafe_directory" in message
+    assert "chmod go-w" in message
+    assert "~/prime" in message
+    assert SECRET not in message
+    assert str(agent_dir) not in message

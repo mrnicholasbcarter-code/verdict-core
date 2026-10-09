@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from verdict.actions.base import ActionResult
@@ -25,7 +26,7 @@ from verdict.actions.verified_models import (
 )
 from verdict.admission import canonical_route_id
 from verdict.harness_prime_compat import exact_token, prime_selection_rows
-from verdict.harness_prime_selection import load_settings, preview_selection
+from verdict.harness_prime_selection import PrimeSelectionError, load_settings, preview_selection
 from verdict.orchestration.health_cache import HealthCache
 from verdict.orchestration.verified_models import VerifiedModelQuery
 from verdict.orchestration.verified_models_render import (
@@ -241,6 +242,37 @@ def _refresh_selected(
     return rows
 
 
+_PATH_CODES = frozenset({"unsafe_directory", "unsafe_file", "unsafe_path"})
+
+
+def _home_relative(path: Path) -> str:
+    """A displayable location for an unsafe path: never a secret, never bare absolute.
+
+    Paths under ``$HOME`` render as ``~/...``; anything else renders as only its
+    basename, so a refusal never reveals an arbitrary absolute filesystem layout.
+    """
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return path.name or str(path)
+
+
+def _actionable_refusal(exc: Exception) -> ActionResult:
+    """Stable refusal code plus a home-relative path and fix hint when known.
+
+    ``PrimeSelectionError`` codes stay exactly what callers already match on;
+    this only adds a rendering, never changes the code or raises on a path
+    outside ``$HOME``.
+    """
+    code = str(exc) if isinstance(exc, PrimeSelectionError) else "bootstrap_input_unsafe"
+    message = f"bootstrap refused: {code}; use /help bootstrap"
+    path = getattr(exc, "path", None)
+    if code in _PATH_CODES and isinstance(path, Path):
+        location = _home_relative(path)
+        message = f"bootstrap refused: {code}: {location} is group/other-writable; run: chmod go-w {location}"
+    return ActionResult(data={"error": message}, ok=False, exit_code=2)
+
+
 def consume_prime(
     args: BootstrapArgs,
     *,
@@ -388,13 +420,7 @@ def consume_prime(
                 "clock": clock,
             },
         )
-    except (ValueError, OSError, TypeError, KeyError):
-        return ActionResult(
-            data={
-                "error": "bootstrap refused: unsafe, changed or missing local input; use /help bootstrap"
-            },
-            ok=False,
-            exit_code=2,
-        )
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        return _actionable_refusal(exc)
     except (EOFError, KeyboardInterrupt):
         return ActionResult(data={"status": "cancelled"})
