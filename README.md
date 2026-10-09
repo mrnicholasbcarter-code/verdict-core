@@ -295,7 +295,17 @@ See the full proof bundle in [`docs/proof/dogfood-bod-225-live-2026-09-29/`](doc
 
 ## How it works
 
-Give Verdict a goal and a git repository. It runs this loop:
+Give Verdict a goal and a git repository. It walks through five steps:
+
+1. **Plan.** A planner model breaks your goal into a small to-do list of work items ("nodes"), each with its own files to touch and a way to check the work.
+2. **Pick models.** Verdict checks live evidence — accounts, health, quota — and builds a list of models that can actually be used right now. It picks from that list, and tries already-paid or free capacity before anything that costs per call.
+3. **Run in parallel.** Each item runs as its own worker. If a worker hits a quota limit, a rate limit, a timeout, or gives a bad answer, Verdict quietly reassigns that one item to another admitted model — automatically, within a bounded number of tries.
+4. **Check and review.** Each item's own check must pass, the pieces must merge cleanly, and a separate model — one that did not do the work — has to review and approve the result.
+5. **Receipt.** The run writes a tamper-evident receipt: a stored digest of everything that happened. `verdict run-receipt` recomputes that digest later and tells you if anything in the log changed.
+
+### Under the hood (for engineers)
+
+The five steps above map onto this loop:
 
 1. **Plan.** A planner model splits the goal into a small DAG of work nodes. Each node has owned files and a verification command.
 2. **Admit.** Verdict builds one admitted set of models from live gateway evidence: inventory, provider accounts, health, cooldowns and quota. Every dropped model gets a named reason. A model with no runtime evidence is kept as `unknown`, never counted as healthy, and it must pass a live check of that exact route before it launches.
