@@ -182,3 +182,35 @@ def test_invalid_outcomes_and_naive_timestamps_are_rejected(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="window_days"):
         ledger.summarize(ROUTE, NOW, window_days=-1)
     assert not ledger.path.exists()
+
+
+@pytest.mark.parametrize(
+    "bad_line", ["not valid json", "null", "[]", "{}", '{"route_id":null}', '{"at":"invalid"}']
+)
+def test_load_skips_and_counts_bad_lines_without_losing_valid_evidence(
+    tmp_path: Path, bad_line: str
+) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.append(evidence())
+    valid_line = ledger.path.read_text()
+    ledger.path.write_text(bad_line + "\n\n" + valid_line)
+    assert ledger.load() == (evidence(),)
+    assert ledger.last_load_skipped == 1
+    assert ledger.summarize(ROUTE, NOW).passes == 1
+    ledger.append(evidence("fail", at=NOW - timedelta(seconds=1)))
+    assert len(ledger.load()) == 2
+    assert ledger.last_load_skipped == 1
+    ledger.path.write_text(valid_line)
+    assert ledger.load() == (evidence(),)
+    assert ledger.last_load_skipped == 0
+    ledger.path.unlink()
+    assert ledger.load() == ()
+    assert ledger.last_load_skipped == 0
+
+
+def test_load_skips_non_utf8_content(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.append(evidence())
+    ledger.path.write_bytes(b"\xff\n" + ledger.path.read_bytes())
+    assert ledger.load() == (evidence(),)
+    assert ledger.last_load_skipped == 1

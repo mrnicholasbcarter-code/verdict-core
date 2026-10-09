@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, TextIO
+from typing import Any, BinaryIO, Literal
 
 from verdict.orchestration.health_cache import format_datetime, parse_datetime
 
@@ -69,23 +69,31 @@ def _identity(item: SessionOutcome) -> tuple[str, datetime, str]:
     return item.route_id, item.at, item.outcome
 
 
-def _read(stream: TextIO) -> tuple[SessionOutcome, ...]:
+def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
     items: dict[tuple[str, datetime, str], SessionOutcome] = {}
+    skipped = 0
     for line in stream:
         if not line.strip():
             continue
-        raw: dict[str, Any] = json.loads(line)
-        item = SessionOutcome(
-            route_id=raw["route_id"],
-            outcome=raw["outcome"],
-            kind=raw["kind"],
-            failure_class=raw["failure_class"],
-            verified_by_controller=raw["verified_by_controller"],
-            at=parse_datetime(raw["at"], "at"),
-            source=raw["source"],
-        )
-        items.setdefault(_identity(item), item)
-    return tuple(items.values())
+        try:
+            raw: dict[str, Any] = json.loads(line)
+            if not isinstance(raw, dict) or any(
+                not isinstance(raw[key], str) for key in ("route_id", "outcome", "kind", "source")
+            ):
+                raise ValueError("session fields must be strings")
+            item = SessionOutcome(
+                route_id=raw["route_id"],
+                outcome=raw["outcome"],
+                kind=raw["kind"],
+                failure_class=raw["failure_class"],
+                verified_by_controller=raw["verified_by_controller"],
+                at=parse_datetime(raw["at"], "at"),
+                source=raw["source"],
+            )
+            items.setdefault(_identity(item), item)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            skipped += 1
+    return tuple(items.values()), skipped
 
 
 class SessionLedger:
@@ -99,18 +107,20 @@ class SessionLedger:
                 "VERDICT_SESSION_EVIDENCE", str(Path.home() / ".verdict" / "session-evidence.jsonl")
             )
         ).expanduser()
+        self.last_load_skipped = 0
 
     def append(self, outcome: SessionOutcome) -> None:
         """Append one complete line under an exclusive fcntl lock, once."""
         payload = asdict(outcome)
         payload["at"] = format_datetime(outcome.at)
-        line = json.dumps(payload, separators=(",", ":")) + "\n"
+        line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a+", encoding="utf-8") as stream:
+        with self.path.open("a+b") as stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
             try:
                 stream.seek(0)
-                if any(_identity(item) == _identity(outcome) for item in _read(stream)):
+                items, _ = _read(stream)
+                if any(_identity(item) == _identity(outcome) for item in items):
                     return
                 stream.write(line)
                 stream.flush()
@@ -119,15 +129,17 @@ class SessionLedger:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
     def load(self) -> tuple[SessionOutcome, ...]:
-        """Return a locked snapshot; an absent file is an empty ledger."""
+        """Return a locked snapshot, counting malformed lines; absence is empty."""
+        self.last_load_skipped = 0
         try:
-            stream = self.path.open(encoding="utf-8")
+            stream = self.path.open("rb")
         except FileNotFoundError:
             return ()
         with stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
             try:
-                return _read(stream)
+                items, self.last_load_skipped = _read(stream)
+                return items
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
