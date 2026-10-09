@@ -355,6 +355,21 @@ class FailureIntelligence:
                     evidence=_sanitize_error(error_text),
                 )
 
+            # 410 - Gone. The gateway reports the route permanently removed
+            # (catalog ghost / deprovisioned model). This is route-scoped and
+            # longer-lived than a 404 miss. BOD-292 extends the canonical
+            # classifier here, where it previously fell through to ``unknown``.
+            elif status == 410:
+                if not cooldown:
+                    cooldown = MAX_COOLDOWN_SECONDS
+                return FailureClassification(
+                    category="gone",
+                    action="REROUTE",
+                    cooldown_seconds=cooldown,
+                    scope="route",
+                    evidence=_sanitize_error(error_text),
+                )
+
             # 5xx - Server errors
             elif 500 <= status < 600:
                 if not cooldown:

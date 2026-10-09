@@ -39,10 +39,14 @@ through ``consume``.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+import math
 import os
+import time
+import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -96,6 +100,46 @@ ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
 
 class HealthCacheError(ValueError):
     """Raised when cache state or inputs violate the contract."""
+
+
+class HealthCacheLockTimeoutError(TimeoutError):
+    """Typed failure: no cache mutation ran because the lock wait expired."""
+
+    reason = "lock_timeout"
+
+
+LOCK_POLL_CAP = 40
+LOCK_WAIT_SECONDS = 2.0
+LOCK_POLL_SECONDS = 0.05
+
+
+def _acquire_cache_lock(
+    fd: int,
+    *,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> None:
+    start = monotonic()
+    end = (
+        min(start + LOCK_WAIT_SECONDS, deadline)
+        if deadline is not None
+        else start + LOCK_WAIT_SECONDS
+    )
+    poll_cap = min(LOCK_POLL_CAP, max(1, math.ceil((end - start) / LOCK_POLL_SECONDS) + 1))
+    for poll in range(poll_cap):
+        if monotonic() >= end:
+            break
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if monotonic() >= end:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                break
+            return
+        except BlockingIOError:
+            if poll + 1 < poll_cap:
+                sleep(min(LOCK_POLL_SECONDS, max(0.0, end - monotonic())))
+    raise HealthCacheLockTimeoutError("lock_timeout")
 
 
 def default_cache_path() -> Path:
@@ -245,6 +289,17 @@ class HealthEntry:
     probe_class: str = "single_call"  # "agentic" | "single_call"
     agentic_ok: bool = False  # True only when a 3-turn agentic probe passed
     agentic_checked_at: datetime | None = None  # when the last agentic probe ran
+    # BOD-292 additive schema-1 fields. Old readers ignore them; new readers
+    # accept their absence (both default to ``None``).
+    # ``last_success_at`` keeps the most recent validated healthy time even
+    # after a later failure overwrites ``checked_at``. It is never invented
+    # from inventory or a lower-trust hint.
+    last_success_at: datetime | None = None
+    # ``failure_scope`` records the canonical blast radius of a failure
+    # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
+    # tell a route-local diagnostic failure from a provider-scoped blocker.
+    failure_scope: str | None = None
+    write_revision: int = 0  # allocated only under the shared writer lock
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -255,6 +310,8 @@ class HealthEntry:
         _aware(self.until, "until")
         if self.agentic_checked_at is not None:
             _aware(self.agentic_checked_at, "agentic_checked_at")
+        if self.last_success_at is not None:
+            _aware(self.last_success_at, "last_success_at")
 
     def state_at(self, now: datetime) -> str:
         return classify_state(
@@ -264,6 +321,7 @@ class HealthEntry:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "route_id": self.route_id,
+            "write_revision": self.write_revision,
             "category": self.category,
             "checked_at": format_datetime(self.checked_at),
             "until": format_datetime(self.until),
@@ -286,6 +344,10 @@ class HealthEntry:
         payload["agentic_ok"] = self.agentic_ok
         if self.agentic_checked_at is not None:
             payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
+        if self.last_success_at is not None:
+            payload["last_success_at"] = format_datetime(self.last_success_at)
+        if self.failure_scope is not None:
+            payload["failure_scope"] = self.failure_scope
         return payload
 
     @classmethod
@@ -299,6 +361,7 @@ class HealthEntry:
         latency = value.get("latency_ms")
         return cls(
             route_id=route_id,
+            write_revision=int(value.get("write_revision") or 0),
             category=str(value.get("category") or ""),
             checked_at=parse_datetime(value.get("checked_at"), "checked_at"),
             until=parse_datetime(value.get("until"), "until"),
@@ -320,6 +383,16 @@ class HealthEntry:
             agentic_checked_at=(
                 parse_datetime(value["agentic_checked_at"], "agentic_checked_at")
                 if value.get("agentic_checked_at")
+                else None
+            ),
+            last_success_at=(
+                parse_datetime(value["last_success_at"], "last_success_at")
+                if value.get("last_success_at")
+                else None
+            ),
+            failure_scope=(
+                str(value["failure_scope"])
+                if isinstance(value.get("failure_scope"), str) and value["failure_scope"].strip()
                 else None
             ),
         )
@@ -356,11 +429,25 @@ class ProbeResult:
     identity: str = ""
     probe_class: str = "single_call"  # "agentic" | "single_call"
     agentic_ok: bool = False
+    # BOD-292 additive: an explicitly supplied validated success time to carry
+    # forward onto a failure entry, and the canonical failure scope.
+    last_success_at: datetime | None = None
+    failure_scope: str | None = None
 
     @property
     def healthy(self) -> bool:
         """A coding-worker success: chat and the required tool call both OK."""
         return self.chat_ok and self.tool_ok and self.category == CATEGORY_OK
+
+
+@dataclass(frozen=True)
+class BucketReservation:
+    """Opaque spend ownership. One release is allowed for this handle."""
+
+    id: str
+    bucket_key: str
+    token_ids: tuple[str, ...]
+    reserved_at: datetime
 
 
 @dataclass
@@ -371,12 +458,33 @@ class TokenBucket:
     window_seconds: float
     timestamps: list[datetime]
     zeroed_until: datetime | None = None
+    token_ids: list[str] = field(default_factory=list)
+    removed: dict[str, datetime] = field(default_factory=dict)
+    released: dict[str, datetime] = field(default_factory=dict)
+    ledger_at: datetime | None = None  # persisted high-water mark for pruning
 
     def __post_init__(self) -> None:
         if self.capacity < 1:
             raise HealthCacheError("bucket capacity must be >= 1")
         if self.window_seconds <= 0:
             raise HealthCacheError("bucket window must be positive")
+
+    def _tokens(self) -> dict[str, datetime]:
+        if len(self.token_ids) != len(self.timestamps):
+            # Deterministic migration preserves multiplicity of legacy stamps.
+            counts: dict[str, int] = {}
+            ids: list[str] = []
+            for stamp in self.timestamps:
+                key = format_datetime(stamp)
+                occurrence = counts.get(key, 0)
+                counts[key] = occurrence + 1
+                ids.append(hashlib.sha256(f"{key}:{occurrence}".encode()).hexdigest())
+            self.token_ids = ids
+        return dict(zip(self.token_ids, self.timestamps, strict=True))
+
+    def _set_tokens(self, tokens: Mapping[str, datetime]) -> None:
+        self.token_ids = list(tokens)
+        self.timestamps = list(tokens.values())
 
     def remaining(self, now: datetime) -> int:
         current = _aware(now, "now")
@@ -394,22 +502,29 @@ class TokenBucket:
         if self.remaining(current) < amount:
             return False
         cutoff = current - timedelta(seconds=self.window_seconds)
-        self.timestamps = [
-            stamp for stamp in self.timestamps if _aware(stamp, "timestamp") > cutoff
-        ]
-        self.timestamps.extend([current] * amount)
+        self.ledger_at = max(current, self.ledger_at or current)
+        tokens = {key: stamp for key, stamp in self._tokens().items() if stamp > cutoff}
+        tokens.update({uuid.uuid4().hex: current for _ in range(amount)})
+        self._set_tokens(tokens)
+        self.removed = {key: stamp for key, stamp in self.removed.items() if stamp > cutoff}
+        self.released = {key: stamp for key, stamp in self.released.items() if stamp > cutoff}
         return True
 
     def zero(self, until: datetime) -> None:
         """A 429 empties the bucket until ``until``."""
         self.zeroed_until = _aware(until, "until")
-        self.timestamps.clear()
+        self.removed.update(self._tokens())
+        self._set_tokens({})
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "capacity": self.capacity,
             "window_seconds": self.window_seconds,
             "timestamps": [format_datetime(stamp) for stamp in self.timestamps],
+            "token_ids": list(self._tokens()),
+            "removed": {key: format_datetime(stamp) for key, stamp in self.removed.items()},
+            "released": {key: format_datetime(stamp) for key, stamp in self.released.items()},
+            "ledger_at": format_datetime(self.ledger_at) if self.ledger_at else None,
         }
         if self.zeroed_until is not None:
             payload["zeroed_until"] = format_datetime(self.zeroed_until)
@@ -427,9 +542,93 @@ class TokenBucket:
             capacity=int(value.get("capacity") or DEFAULT_BUCKET_CAPACITY),
             window_seconds=float(value.get("window_seconds") or DEFAULT_BUCKET_WINDOW_SECONDS),
             timestamps=[parse_datetime(item, "timestamp") for item in raw_times],
+            token_ids=[str(item) for item in value.get("token_ids", [])],
+            ledger_at=parse_datetime(value["ledger_at"], "ledger_at")
+            if value.get("ledger_at")
+            else None,
+            removed={
+                str(key): parse_datetime(stamp, "removed")
+                for key, stamp in value.get("removed", {}).items()
+            },
+            released={
+                str(key): parse_datetime(stamp, "released")
+                for key, stamp in value.get("released", {}).items()
+            },
             zeroed_until=parse_datetime(zeroed, "zeroed_until")
             if isinstance(zeroed, str)
             else None,
+        )
+
+
+@dataclass(frozen=True)
+class ScopedCooldown:
+    """An availability blocker scoped above a single route (BOD-292, additive).
+
+    Stored under the optional top-level ``cooldowns`` envelope key. The key is
+    a scope-bound string such as ``provider:<name>``, ``pool:<provider>/<pool>``
+    or ``account:<id>``. ``category`` is the cache category; ``canonical_category``
+    is the runtime classifier category (they differ by contract). Old readers
+    ignore this key; new readers accept its absence.
+    """
+
+    key: str
+    category: str
+    checked_at: datetime
+    until: datetime
+    canonical_category: str | None = None
+    provider_id: str | None = None
+    pool: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key.strip():
+            raise HealthCacheError("cooldown key must be non-empty")
+        _aware(self.checked_at, "checked_at")
+        _aware(self.until, "until")
+
+    def active_at(self, now: datetime) -> bool:
+        """True while the blocker is still in force (half-open at equality)."""
+        return _aware(now, "now") < _aware(self.until, "until")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "key": self.key,
+            "category": self.category,
+            "checked_at": format_datetime(self.checked_at),
+            "until": format_datetime(self.until),
+        }
+        if self.canonical_category is not None:
+            payload["canonical_category"] = self.canonical_category
+        if self.provider_id is not None:
+            payload["provider_id"] = self.provider_id
+        if self.pool is not None:
+            payload["pool"] = self.pool
+        if self.account_id is not None:
+            payload["account_id"] = self.account_id
+        return payload
+
+    @classmethod
+    def from_dict(cls, key: str, value: Mapping[str, Any]) -> ScopedCooldown:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("cooldown entry must be a mapping")
+        return cls(
+            key=str(value.get("key") or key),
+            category=str(value.get("category") or ""),
+            checked_at=parse_datetime(value.get("checked_at"), "checked_at"),
+            until=parse_datetime(value.get("until"), "until"),
+            canonical_category=(
+                str(value["canonical_category"])
+                if isinstance(value.get("canonical_category"), str)
+                and value["canonical_category"].strip()
+                else None
+            ),
+            provider_id=(
+                str(value["provider_id"]) if isinstance(value.get("provider_id"), str) else None
+            ),
+            pool=str(value["pool"]) if isinstance(value.get("pool"), str) else None,
+            account_id=(
+                str(value["account_id"]) if isinstance(value.get("account_id"), str) else None
+            ),
         )
 
 
@@ -467,12 +666,18 @@ class HealthCache:
         self._routes: dict[str, HealthEntry] = {}
         self._buckets: dict[str, TokenBucket] = {}
         self._cursor: dict[str, Any] = {}
+        # BOD-292: optional scoped-availability blockers, keyed by scope string.
+        self._cooldowns: dict[str, ScopedCooldown] = {}
         self._load()
 
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
         if not self.path.exists():
+            self._routes = {}
+            self._buckets = {}
+            self._cursor = {}
+            self._cooldowns = {}
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -488,24 +693,163 @@ class HealthCache:
         self._buckets = {key: TokenBucket.from_dict(value) for key, value in buckets.items()}
         cursor = payload.get("cursor") or {}
         self._cursor = dict(cursor) if isinstance(cursor, Mapping) else {}
+        cooldowns = payload.get("cooldowns") or {}
+        if not isinstance(cooldowns, Mapping):
+            raise HealthCacheError("cooldowns must be an object")
+        self._cooldowns = {
+            key: ScopedCooldown.from_dict(key, value)
+            for key, value in cooldowns.items()
+            if isinstance(value, Mapping)
+        }
 
     def _snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot: dict[str, Any] = {
             "schema_version": HEALTH_CACHE_SCHEMA_VERSION,
             "routes": {key: entry.to_dict() for key, entry in sorted(self._routes.items())},
             "buckets": {key: bucket.to_dict() for key, bucket in sorted(self._buckets.items())},
             "cursor": self._cursor,
         }
+        # Additive: only emit ``cooldowns`` when non-empty so existing readers
+        # and byte-for-byte goldens for cooldown-free caches stay unchanged.
+        if self._cooldowns:
+            snapshot["cooldowns"] = {
+                key: cooldown.to_dict() for key, cooldown in sorted(self._cooldowns.items())
+            }
+        return snapshot
 
-    def save(self) -> None:
-        """Write the snapshot under an exclusive lock, replacing atomically."""
+    def save(
+        self,
+        *,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Serialized read-merge-write: never clobber a newer concurrent write.
+
+        BOD-292 review finding 4: a bare ``save()`` that wrote only this
+        object's snapshot destroyed route health another writer (the refresh
+        coordinator's ``merge_and_save``, or a second daemon) had just added.
+        Every writer -- the daemon included -- now takes the same exclusive
+        lock, reloads the authoritative on-disk state, merges this object's
+        in-memory state onto it (newest wins), then atomically replaces the
+        file. A route present only on disk is preserved; a route present in
+        both requires a current write revision and a strictly newer
+        ``checked_at`` (disk wins ties). Scoped cooldowns keep the later
+        deadline. Buckets union owned token ids minus release tombstones,
+        pruned only against the persisted ledger high-water mark.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
         with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            _acquire_cache_lock(
+                handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
+            )
             try:
+                self._merge_in_memory_over_disk()
+                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                temporary.write_text(body, encoding="utf-8")
+                os.replace(temporary, self.path)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _merge_in_memory_over_disk(self) -> None:
+        """Reload disk and fold this object's in-memory state over it.
+
+        Must run while the exclusive lock is held. Keeps every disk-only entry
+        and, for keys present in both, revision-current strictly newer proof,
+        later cooldown, and owned-token union. The in-memory cursor wins (it is the
+        saver's own partial-progress intent).
+        """
+        mine_routes = dict(self._routes)
+        mine_buckets = dict(self._buckets)
+        mine_cooldowns = dict(self._cooldowns)
+        mine_cursor = dict(self._cursor)
+        # Overwrite self with the authoritative on-disk view, then merge mine in.
+        self._load()
+        for route_id, entry in mine_routes.items():
+            disk = self._routes.get(route_id)
+            if disk is None or (
+                entry.write_revision >= disk.write_revision and entry.checked_at > disk.checked_at
+            ):
+                self._routes[route_id] = replace(
+                    entry, write_revision=(disk.write_revision if disk else 0) + 1
+                )
+        for cooldown in mine_cooldowns.values():
+            self.record_cooldown(cooldown)
+        for key, bucket in mine_buckets.items():
+            disk_bucket = self._buckets.get(key)
+            if disk_bucket is None:
+                self._buckets[key] = bucket
+                continue
+            # Owned-token union, minus release/zero tombstones. Length is not
+            # ordering: ten expired stamps must never replace two live tokens.
+            tokens = bucket._tokens() | disk_bucket._tokens()
+            removed = bucket.removed | disk_bucket.removed
+            released = bucket.released | disk_bucket.released
+            stamps = [*tokens.values(), *removed.values(), *released.values()]
+            stamps.extend(
+                stamp for stamp in (bucket.ledger_at, disk_bucket.ledger_at) if stamp is not None
+            )
+            disk_bucket.ledger_at = max(stamps) if stamps else None
+            cutoff = max(stamps) - timedelta(seconds=disk_bucket.window_seconds) if stamps else None
+            disk_bucket._set_tokens(
+                {
+                    key: stamp
+                    for key, stamp in tokens.items()
+                    if key not in removed and (cutoff is None or stamp > cutoff)
+                }
+            )
+            disk_bucket.removed = {
+                key: stamp for key, stamp in removed.items() if cutoff is None or stamp > cutoff
+            }
+            disk_bucket.released = {
+                key: stamp for key, stamp in released.items() if cutoff is None or stamp > cutoff
+            }
+            disk_zero = disk_bucket.zeroed_until
+            mine_zero = bucket.zeroed_until
+            if mine_zero is not None and (disk_zero is None or mine_zero > disk_zero):
+                disk_bucket.zeroed_until = mine_zero
+        self._cursor = mine_cursor
+
+    def merge_and_save(
+        self,
+        mutate: Callable[[HealthCache], None],
+        *,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Serialized read-modify-write under the existing exclusive lock.
+
+        The coordinator's single writer calls this so a concurrent prober or a
+        joined worker cannot clobber each other: take the lock, reload the file
+        from disk into this instance (discarding only the on-disk view, not
+        pending in-memory reservations held elsewhere), apply ``mutate`` to
+        merge the new probe outcome/cooldown, then atomically replace the file.
+
+        ``mutate`` runs while the lock is held and must only touch this cache.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            _acquire_cache_lock(
+                handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
+            )
+            try:
+                # Reload the authoritative on-disk state so a probe written by
+                # another process since we last saved is not lost.
+                self._load()
+                previous = dict(self._routes)
+                mutate(self)
+                for route_id, entry in self._routes.items():
+                    prior = previous.get(route_id)
+                    if entry != prior:
+                        self._routes[route_id] = replace(
+                            entry, write_revision=(prior.write_revision if prior else 0) + 1
+                        )
+                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
                 temporary.write_text(body, encoding="utf-8")
                 os.replace(temporary, self.path)
             finally:
@@ -594,6 +938,9 @@ class HealthCache:
                 probe_class=probe_class,
                 agentic_ok=agentic_ok,
                 agentic_checked_at=agentic_checked_at,
+                # A fresh success is itself the latest validated success time.
+                last_success_at=current,
+                failure_scope=None,
             )
         else:
             prior = previous.consecutive_failures if previous is not None else 0
@@ -637,7 +984,15 @@ class HealthCache:
                     if agentic_checked_at is not None
                     else (previous.agentic_checked_at if previous is not None else None)
                 ),
+                # Preserve the earlier valid success time (never invent one).
+                last_success_at=(
+                    result.last_success_at
+                    if result.last_success_at is not None
+                    else (previous.last_success_at if previous is not None else None)
+                ),
+                failure_scope=result.failure_scope,
             )
+        entry = replace(entry, write_revision=previous.write_revision if previous else 0)
         self._routes[route] = entry
         return entry
 
@@ -674,6 +1029,8 @@ class HealthCache:
             http_status=200,
             healthy=True,
             identity=identity,
+            last_success_at=current,
+            write_revision=(self._routes[route].write_revision if route in self._routes else 0),
         )
         self._routes[route] = entry
         return entry
@@ -726,6 +1083,62 @@ class HealthCache:
     def bucket_remaining(self, provider: str, now: datetime, *, pool: str | None = None) -> int:
         return self.bucket_for(provider, pool).remaining(now)
 
+    def reserve_bucket(
+        self,
+        provider: str,
+        now: datetime,
+        *,
+        pool: str | None = None,
+        amount: int = 1,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> BucketReservation | None:
+        """Persist owned tokens before dispatch. None means no spend allowed."""
+        reservation: BucketReservation | None = None
+
+        def _mutate(cache: HealthCache) -> None:
+            nonlocal reservation
+            bucket = cache.bucket_for(provider, pool)
+            before = set(bucket._tokens())
+            if bucket.consume(now, amount):
+                ids = tuple(key for key in bucket.token_ids if key not in before)
+                reservation = BucketReservation(
+                    uuid.uuid4().hex, bucket_key(provider, pool), ids, now
+                )
+
+        self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
+        return reservation
+
+    def release_bucket(
+        self,
+        handle: BucketReservation,
+        unused_n: int,
+        *,
+        deadline: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Release only this handle's unused tokens; repeat release is a no-op."""
+        if not isinstance(handle, BucketReservation):
+            raise HealthCacheError("release requires a reservation handle")
+        if unused_n < 0 or unused_n > len(handle.token_ids):
+            raise HealthCacheError("unused_n exceeds the owned reservation")
+
+        def _mutate(cache: HealthCache) -> None:
+            bucket = cache._buckets.get(handle.bucket_key)
+            if bucket is None or handle.id in bucket.released:
+                return
+            tokens = bucket._tokens()
+            bucket.released[handle.id] = handle.reserved_at
+            for token in handle.token_ids[:unused_n]:
+                stamp = tokens.pop(token, None)
+                if stamp is not None:
+                    bucket.removed[token] = stamp
+            bucket._set_tokens(tokens)
+
+        self.merge_and_save(_mutate, deadline=deadline, monotonic=monotonic, sleep=sleep)
+
     # -- cycle cursor (partial progress) -----------------------------------
 
     @property
@@ -737,6 +1150,39 @@ class HealthCache:
 
     def clear_cursor(self) -> None:
         self._cursor = {}
+
+    # -- scoped cooldowns (BOD-292, additive) ------------------------------
+
+    def cooldowns(self) -> Mapping[str, ScopedCooldown]:
+        """Every stored scoped cooldown (active or expired)."""
+        return dict(self._cooldowns)
+
+    def active_cooldowns(self, now: datetime) -> tuple[ScopedCooldown, ...]:
+        """Scoped cooldowns still in force at ``now``."""
+        return tuple(c for c in self._cooldowns.values() if c.active_at(now))
+
+    def cooldown_for(self, key: str, now: datetime) -> ScopedCooldown | None:
+        """The active cooldown under ``key``, or None when absent/expired."""
+        found = self._cooldowns.get(key)
+        if found is None or not found.active_at(now):
+            return None
+        return found
+
+    def record_cooldown(self, cooldown: ScopedCooldown) -> None:
+        """Store a scoped blocker, keeping the later deadline on conflict.
+
+        A sibling route's success never deletes a provider/pool/account
+        cooldown; only a later deadline for the same key replaces it. Does not
+        save; the caller serializes the write.
+        """
+        existing = self._cooldowns.get(cooldown.key)
+        if existing is not None and existing.until >= cooldown.until:
+            return
+        self._cooldowns[cooldown.key] = cooldown
+
+    def clear_cooldown(self, key: str) -> None:
+        """Explicitly drop a scoped blocker after a deliberate scope recovery."""
+        self._cooldowns.pop(key, None)
 
 
 __all__ = [
@@ -770,6 +1216,7 @@ __all__ = [
     "HealthEntry",
     "Lookup",
     "ProbeResult",
+    "ScopedCooldown",
     "TokenBucket",
     "bucket_key",
     "classify_state",
