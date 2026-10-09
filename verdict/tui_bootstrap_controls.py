@@ -322,6 +322,14 @@ def _actionable_refusal(exc: Exception) -> ActionResult:
                 f"bootstrap refused: {code}: inspect this directory's permissions "
                 "(name contains non-printable characters)"
             )
+        elif not location.startswith("~"):
+            # Outside $HOME only the basename is shown, so a chmod on it would act
+            # on an unrelated path relative to the operator's cwd (or parse as an
+            # option, e.g. "-R"). Never emit an executable command for it.
+            message = (
+                f"bootstrap refused: {code}: a directory named {location} outside your "
+                "home directory is group/other-writable; inspect its permissions"
+            )
         else:
             quoted = _quote_home_relative(location)
             message = (

@@ -613,8 +613,27 @@ def test_actionable_refusal_name_with_space_quotes_only_the_remainder(
     assert "run: chmod go-w ~/'my dir'" in message
 
 
-def test_actionable_refusal_normal_path_still_gives_chmod_hint(tmp_path: Path) -> None:
-    """A normal, printable path name still gets the actionable ``chmod`` hint."""
-    message = _refusal_message(tmp_path / "normal-dir" / "nested")
-    assert "chmod go-w" in message
-    assert "nested" in message
+def test_actionable_refusal_outside_home_never_emits_chmod(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Outside $HOME only the basename is shown; a chmod on a bare basename would
+    act on an unrelated ./name in the operator's cwd (or parse "-R" as an
+    option), so no executable command is emitted at all."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for leaf in ("nested", "-R", "leaf with space"):
+        message = _refusal_message(Path("/elsewhere/secret") / leaf)
+        assert "chmod" not in message
+        assert "inspect its permissions" in message
+        assert "/elsewhere" not in message and "secret" not in message
+
+
+def test_actionable_refusal_under_home_still_gives_chmod_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A normal, printable path under $HOME still gets the actionable hint, and a
+    dash-leading name stays a path operand because it keeps the ~/ prefix."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert "run: chmod go-w ~/normal-dir/nested" in _refusal_message(
+        tmp_path / "normal-dir" / "nested"
+    )
+    assert "run: chmod go-w ~/-R" in _refusal_message(tmp_path / "-R")
