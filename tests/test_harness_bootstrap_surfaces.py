@@ -470,15 +470,12 @@ def test_verified_cli_publishes_after_consumer_and_legacy_json_unchanged(
 
     def consumer(**kwargs: Any) -> Any:
         from verdict.actions.base import ActionResult
+        from verdict.orchestration.verified_models import VerifiedModelQuery
 
         timeline.append("consumer-done")
-        return ActionResult(
-            data=adapter.load(
-                __import__(
-                    "verdict.orchestration.verified_models", fromlist=["VerifiedModelQuery"]
-                ).VerifiedModelQuery()
-            ).to_dict()
-        )
+        final = adapter.load(VerifiedModelQuery()).to_dict()
+        kwargs["on_projection"](final, adapter)
+        return ActionResult(data=final)
 
     def publisher(view: Any) -> None:
         timeline.append("publish")

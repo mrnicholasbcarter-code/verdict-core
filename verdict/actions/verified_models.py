@@ -474,8 +474,14 @@ def consume_verified_models(
     live: bool = False,
     clock: Callable[[], datetime] = utc_now,
     monotonic: Callable[[], float] = time.monotonic,
+    on_projection: Callable[[Mapping[str, Any], VerifiedSnapshotAdapter], None] | None = None,
 ) -> ActionResult:
-    """CLI and TUI share one sequence: snapshot, wait, reload, final projection."""
+    """Snapshot, wait, reload, final projection, then optional convenience callback.
+
+    ``on_projection`` observes exactly the final render payload and actual adapter,
+    never initial/provisional rows. Its failure adds only a sanitized warning;
+    verification and presentation remain valid. The default has no extra I/O.
+    """
     from verdict.actions.registry import run_action
     from verdict.orchestration.verified_models_render import (
         format_verified_progress,
@@ -645,6 +651,13 @@ def consume_verified_models(
             if row["refreshable"]:
                 row["refresh_reason"] = "wall_cap"
     final["refresh"] = summary
+    if on_projection is not None:
+        try:
+            on_projection(final, adapter)
+        except Exception:
+            # Convenience callbacks must not leak provider/file exception text
+            # or invalidate evidence, admission, consent, or final presentation.
+            final["completion_warning"] = "post-projection callback failed; evidence unchanged"
     return ActionResult(data=final)
 
 

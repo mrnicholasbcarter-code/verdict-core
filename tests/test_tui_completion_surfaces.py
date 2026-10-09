@@ -178,3 +178,82 @@ async def test_actual_prompt_keys_insert_then_submit_and_escape_restores() -> No
         assert not prompt.done()
         pipe.send_text("\r")
         assert await asyncio.wait_for(prompt, timeout=2) == "/boot"
+
+
+def test_home_render_and_snapshot_reload_after_prepaid_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_verified_models_projection import at_rest_entry, conn, health_cache, row
+    from verdict.actions import verified_models as surfaces
+    from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter
+    from verdict.orchestration.verified_refresh import RefreshConfig, refresh_for_consumer
+    from verdict.prove_at_rest import ProbeExchange
+    from verdict.tui_completion_snapshot import load_snapshot
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setattr(surfaces, "active_controller_route", lambda: None)
+    paths = StorePaths.defaults(tmp_path)
+    paths.health_cache.write_text(
+        __import__("json").dumps(
+            health_cache(at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(minutes=15)))
+        )
+    )
+    adapter = VerifiedSnapshotAdapter(
+        "http://127.0.0.1:20128", paths, [row("cc/sonnet")], [conn("cc")], clock=lambda: NOW
+    )
+    assert (
+        adapter.load(
+            __import__(
+                "verdict.orchestration.verified_models", fromlist=["VerifiedModelQuery"]
+            ).VerifiedModelQuery()
+        )
+        .rows[0]
+        .status.value
+        == "STALE"
+    )
+    calls = []
+
+    def transport(rid: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(phase)
+        return ProbeExchange(
+            http_status=200,
+            ok=True,
+            chat_exact=phase == "chat",
+            tool_called=phase == "tool",
+            reported_model=rid,
+            latency_ms=1,
+        )
+
+    original = surfaces.consume_verified_models
+
+    def consume(**kwargs: object) -> object:
+        values = dict(kwargs)
+        values.update(
+            adapter=adapter,
+            config=RefreshConfig(),
+            clock=lambda: NOW,
+            live=False,
+            transport=transport,
+            run_refresh=refresh_for_consumer,
+        )
+        return original(**values)
+
+    # Home captures from its actual consumer adapter, not pre-refresh bytes.
+    monkeypatch.setattr(surfaces, "consume_verified_models", consume)
+    rendered = []
+    monkeypatch.setattr(
+        home, "_render_action_result", lambda _tui, ok, data, **_k: rendered.append((ok, data))
+    )
+    target = console()
+    home._run_command(
+        "/eligibility", tui=TerminalUI(target), state=home.HomeState(gateway=adapter.gateway)
+    )
+    assert calls == ["chat", "tool"]
+    assert rendered[0][0]
+    assert rendered[0][1]["rows"][0]["status"] == "VERIFIED"
+    snapshot = load_snapshot(
+        paths.health_cache.parent / "verified-completion-snapshot.json",
+        now=__import__("verdict.actions.verified_models", fromlist=["utc_now"]).utc_now(),
+    )
+    assert snapshot.model_rows[0]["status"] == "VERIFIED"
+    assert snapshot.model_rows[0]["checked_at"] == NOW.isoformat()

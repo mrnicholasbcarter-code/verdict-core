@@ -696,16 +696,24 @@ def _run_verified_command(
     def read_line(_prompt: str) -> str | None:
         return line_reader() if line_reader is not None else input()
 
-    from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter, utc_now
+    from verdict.actions.verified_models import VerifiedSnapshotAdapter
     from verdict.tui_completion_snapshot import local_projection
 
-    adapter = VerifiedSnapshotAdapter(state.gateway, StorePaths.defaults())
+    def capture(final: Any, adapter: VerifiedSnapshotAdapter) -> None:
+        from datetime import datetime
+
+        stamp = datetime.fromisoformat(str(final["generated_at"]).replace("Z", "+00:00"))
+        view = local_projection(adapter, now=stamp)
+        if final.get("refresh", {}).get("last_known"):
+            view["source_errors"] = [*view.get("source_errors", []), "last_known_projection"]
+        state.completion_view = view
+
     result = run_palette_action(
         "models.verified",
         {
             "_consumer": True,
             "gateway": state.gateway,
-            "adapter": adapter,
+            "on_projection": capture,
             "query": query,
             "manual": parsed.refresh,
             "read_line": read_line,
@@ -713,8 +721,6 @@ def _run_verified_command(
             "live": True,
         },
     )
-    if result[0] and adapter._metadata_loaded:
-        state.completion_view = local_projection(adapter, now=utc_now())
     return result
 
 

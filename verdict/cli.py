@@ -3169,12 +3169,7 @@ def main() -> None:
 
 def cmd_verified_completion_view(args: argparse.Namespace) -> int:
     """Same verified consumer; publish full frozen local pages only after render."""
-    from verdict.actions.verified_models import (
-        StorePaths,
-        VerifiedSnapshotAdapter,
-        consume_verified_models,
-        utc_now,
-    )
+    from verdict.actions.verified_models import VerifiedSnapshotAdapter, consume_verified_models
     from verdict.orchestration import cli as orchestration_cli
     from verdict.orchestration.verified_models import VerifiedModelQuery
     from verdict.orchestration.verified_models_render import render_verified_plain
@@ -3194,7 +3189,15 @@ def cmd_verified_completion_view(args: argparse.Namespace) -> int:
     )
     if incompatible:
         return orchestration_cli._eligibility_verified(args)
-    adapter = VerifiedSnapshotAdapter(args.gateway, StorePaths.defaults())
+    views: list[dict[str, Any]] = []
+
+    def capture(final: Any, adapter: VerifiedSnapshotAdapter) -> None:
+        stamp = datetime.fromisoformat(str(final["generated_at"]).replace("Z", "+00:00"))
+        view = local_projection(adapter, now=stamp)
+        if final.get("refresh", {}).get("last_known"):
+            view["source_errors"] = [*view.get("source_errors", []), "last_known_projection"]
+        views.append(view)
+
     query = VerifiedModelQuery(
         status=getattr(args, "status", None),
         provider=getattr(args, "provider", None),
@@ -3204,7 +3207,7 @@ def cmd_verified_completion_view(args: argparse.Namespace) -> int:
     )
     result = consume_verified_models(
         gateway=args.gateway,
-        adapter=adapter,
+        on_projection=capture,
         query=query,
         no_refresh=bool(getattr(args, "no_refresh", False)),
         read_line=input,
@@ -3219,9 +3222,9 @@ def cmd_verified_completion_view(args: argparse.Namespace) -> int:
         )
     else:
         print("error: " + str(result.data.get("error", "verified models failed")), file=sys.stderr)
-    if result.ok:
+    if result.ok and views:
         try:
-            warning = publish_snapshot(local_projection(adapter, now=utc_now()))
+            warning = publish_snapshot(views[-1])
             if warning:
                 print(warning, file=sys.stderr)
         except (ValueError, OSError, TypeError):
