@@ -863,18 +863,18 @@ class DagRuntime:
         try:
             gates = discover_repo_gates(worktree)
         except ValueError as exc:
-            reason = f"repo_gates_config_error: {exc}"[:300]
+            config_reason = f"repo_gates_config_error: {exc}"[:300]
             self.events.emit(
                 "repo_gates",
                 node_id,
                 declared=None,
                 gates=[],
                 note="discovery failed",
-                error=reason,
+                error=config_reason,
             )
-            return reason
+            return config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
-        reason = None
+        reason: str | None = None
         for gate in gates:
             resolved = list(gate.argv)
             try:
