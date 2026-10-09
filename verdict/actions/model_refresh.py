@@ -316,7 +316,10 @@ def _route_results(
                 status = "VERIFIED"
             elif alive:
                 if status not in {"VERIFIED", "STALE", "UNVERIFIED"}:
-                    status = "UNVERIFIED"  # chat-only success never leaves VERIFIED/FAILED
+                    # alive-only: keep VERIFIED/STALE/UNVERIFIED prior; a
+                    # contradicted FAILED/UNAVAILABLE or missing prior becomes
+                    # UNVERIFIED (proof of life, but no tool proof).
+                    status = "UNVERIFIED"
             elif actual.category in _UNAVAILABLE_CATEGORIES:
                 status = "UNAVAILABLE"
             else:
