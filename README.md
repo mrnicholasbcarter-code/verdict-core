@@ -2,9 +2,12 @@
 
 # Verdict
 
-**A goal goes in; Verdict plans, admits, validates, reviews and records a receipt.**
+**Give it a goal. Verdict picks the right AI models, splits the work, checks the results, gets a second opinion, and hands you a receipt you can verify.**
 
-Verdict plans a DAG, admits models from live evidence, runs parallel workers with bounded same-node recovery, verifies each node, requests a reviewer PASS from a route other than the final contributing implementers, then writes an event-digest receipt. Retained raw review output must show non-skipped coverage before that PASS counts as semantic review evidence. A model that fails a safety check cannot be scored back in.
+Point Verdict at a goal and a git repository. It plans the work, picks models from live
+evidence instead of guesses, runs the work in parallel, recovers on its own when a model
+fails, asks an independent model to review the result, and writes a tamper-evident receipt
+you can check yourself afterward. A model that fails a safety check cannot be scored back in.
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -13,7 +16,7 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Try it](#try-it-with-no-keys) · [Live proof](#proof-from-a-live-run) · [How it works](#how-it-works) · [What it does](#what-it-does) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+[Why Verdict](#why-verdict) · [Try it](#try-it-in-60-seconds-no-keys) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: an offline scenario runs a two-worker-node DAG, an injected rate limit triggers failover, a scripted review records PASS, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
@@ -21,7 +24,16 @@ Verdict plans a DAG, admits models from live evidence, runs parallel workers wit
 
 </div>
 
-## Try it with no keys
+## Why Verdict
+
+- **Picks models that actually work right now, not just ones that are listed.** Verdict checks live account, health and quota evidence before it trusts a model, and names the reason it dropped anything else.
+- **Saves money by default.** Already-paid subscription capacity and free tiers are tried before metered, pay-per-token models — never the other way round.
+- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or bad answer moves the same work to another admitted model automatically, with a bounded number of tries.
+- **Gets an independent second opinion.** A separate model, on a separate route from whoever did the work, has to approve the result before a run can finish.
+- **Hands you a receipt you can verify.** Every run ends with a tamper-evident digest; `verdict run-receipt` recomputes it and tells you if anything changed.
+- **Safe by default.** Spending real money needs your confirmation first, and anything that could change your settings shows you a preview and a one-step undo before it touches a file.
+
+## Try it in 60 seconds (no keys)
 
 With `pipx` available, install and run the offline demo. The demo needs no API key,
 gateway or network (the install downloads from PyPI):
