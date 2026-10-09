@@ -28,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verdict.design import TOKENS, PresentationMode, panel, presentation_mode
+from verdict.http_safety import open_no_redirect
 from verdict.orchestration.run import resolve_api_key
 from verdict.terminal_ui import TerminalUI, clean
 from verdict.tui_completion import (
@@ -184,11 +185,6 @@ def _plain(console: Console) -> bool:
     return TerminalUI(console).plain
 
 
-class _NoProbeRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
 def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
     """Bounded reachability ping; auth failures mean the gateway is up. Never raises."""
     try:
@@ -203,8 +199,7 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
         request = urllib.request.Request(
             f"{url.rstrip('/')}/v1/models", headers=headers, method="GET"
         )
-        opener = urllib.request.build_opener(_NoProbeRedirect())
-        with opener.open(request, timeout=timeout) as resp:  # nosec B310 — scheme validated above
+        with open_no_redirect(request, timeout=timeout) as resp:
             # Bounded read: large catalogs are several MB; anything past the
             # cap is treated as a failed probe rather than read into memory.
             raw = resp.read(_PROBE_MAX_BYTES + 1)
