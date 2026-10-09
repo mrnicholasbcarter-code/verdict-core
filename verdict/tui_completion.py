@@ -23,7 +23,9 @@ MAX_TOKEN = 256
 MAX_MODELS = 10_000
 PAGE_SIZE = 50
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:+@-]*\Z")
-_SECRET = re.compile(r"(?i)(?:\b(?:key|token|secret|bearer)\b|sk-[A-Za-z0-9_-]+)")
+_SECRET = re.compile(
+    r"(?i)(?:\b(?:key|token|secret|bearer)\b(?:\s*(?:[:=]|\s)\s*[^\s;,]+)?|sk-[A-Za-z0-9_-]+)"
+)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
@@ -447,7 +449,7 @@ def _models(
                 head + value,
                 -len(token),
                 head + value,
-                _safe(_model_description(row, value, now)),
+                _safe(_model_description(row, value, now), length=320),
                 "model",
             )
         )
@@ -479,7 +481,7 @@ def _eligibility(
                 (
                     (v, "cached provider", "choice")
                     for v in snapshot.provider_names
-                    if isinstance(v, str) and len(v) <= MAX_TOKEN
+                    if isinstance(v, str) and len(v) <= MAX_TOKEN and _SAFE_ID.fullmatch(v)
                 ),
                 prefix="provider=",
                 limit=limit,
@@ -488,13 +490,18 @@ def _eligibility(
             else ()
         )
     if token.startswith("search="):
-        return _offer(
-            token[7:],
-            ((v, desc, "model") for v, desc, _ in _model_options(snapshot, now)),
-            prefix="search=",
-            limit=limit,
+        return tuple(
+            replace(
+                candidate,
+                text="search=" + candidate.text,
+                display="search=" + candidate.display,
+                start_position=-len(token),
+            )
+            for candidate in _models(token[7:], snapshot, now, limit)
         )
     if token.startswith("page="):
+        if not _valid(snapshot, now):
+            return ()
         pages = max(1, (len(snapshot.model_rows) + PAGE_SIZE - 1) // PAGE_SIZE)
         return _offer(
             token[5:],

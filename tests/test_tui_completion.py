@@ -352,3 +352,44 @@ def test_secret_mutation_sensitive_custom_grammar():
     )
     for text in ("/secret ", "/secret PRI"):
         assert complete(text, commands=(secret,), snapshot=snapshot(), now=NOW) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/bootstrap prime cc/a --probe ", "/bootstrap prime cc/a,--probe", "/probe cc/a --probe "],
+)
+def test_no_flags_after_previous_ids(commands, text):
+    assert not any(c.kind == "model" for c in candidates(text, commands))
+
+
+def test_search_page_snapshot_invalid_and_full_labels(commands):
+    bad = snapshot(schema="unsupported")
+    assert not candidates("/eligibility search=", commands, bad)
+    assert not candidates("/eligibility page=", commands, bad)
+    row = {
+        "route_id": "cc/model",
+        "status": "VERIFIED",
+        "provider": "cc",
+        "checked_at": NOW.isoformat(),
+        "fresh_until": (NOW + timedelta(minutes=2)).isoformat(),
+        "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+    }
+    item = candidates("/probe cc/model", commands, snapshot(models=[row]))[0]
+    assert all(
+        field in item.description
+        for field in ("VERIFIED", "cc", "checked_at=", "fresh_until=", "expires_at=")
+    )
+    assert "2026-01-01" in item.description
+
+
+def test_sensitive_text_redaction(commands):
+    row = {
+        "route_id": "cc/model",
+        "status": "FAILED",
+        "provider": "token = PRIVATE_DO_NOT_LEAK",
+        "name": "Authorization: Bearer PRIVATE_DO_NOT_LEAK",
+        "checked_at": NOW.isoformat(),
+    }
+    result = candidates("/probe cc/", commands, snapshot(models=[row]))[0]
+    assert "PRIVATE_DO_NOT_LEAK" not in result.description
+    assert "[redacted]" in result.description
