@@ -24,6 +24,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -1204,6 +1205,11 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     assert transport.calls == []
     assert coord._shared_cancel_requested("old-job")
     assert coord._shared_cancel_requested("new-job")
+    # Keyed, not global: a DIFFERENT, never-cancelled job_id must NOT see
+    # either "old-job"'s or "new-job"'s cancel flag. An unkeyed _cancel_path
+    # mutant (same path regardless of job_id) would make this True and fail
+    # this assertion (proved below by temporarily collapsing the key).
+    assert not coord._shared_cancel_requested("unrelated-job")
     joined = coord._join_and_wait(
         [RowInput("cc/a", "cc", "STALE", CAPACITY_FREE, True)],
         consumer="picker",
@@ -1215,6 +1221,40 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     )
     assert joined.outcome == "cancelled"
     assert not joined.complete
+
+
+def test_review3_cancel_keying_rejects_unkeyed_cancel_path_mutant(tmp_path: Path) -> None:
+    """Directly pin that ``_cancel_path`` is keyed by ``job_id``.
+
+    An unkeyed mutant (ignoring ``job_id``, always returning one shared path)
+    would make a DIFFERENT job_id's ``_shared_cancel_requested`` check see a
+    cancel it never asked for via ``_shared_cancel_requested``. This test
+    proves that mutant is caught: it patches ``_cancel_path`` to the unkeyed
+    shape, shows the flag now leaks across job ids, then confirms the REAL
+    (keyed) implementation does not leak.
+    """
+    coord = _coord(tmp_path, _Transport())
+    coord._request_shared_cancel("job-a")
+    assert coord._shared_cancel_requested("job-a")
+    assert not coord._shared_cancel_requested("job-b")  # real keyed behavior
+
+    shared_path = tmp_path / "unkeyed.cancel"
+
+    def unkeyed_cancel_path(self: RefreshCoordinator, job_id: str) -> Path:
+        del job_id  # mutant: ignores the job_id, always the same path
+        return shared_path
+
+    import verdict.orchestration.verified_refresh as module
+
+    original_cancel_path = module.RefreshCoordinator._cancel_path
+    module.RefreshCoordinator._cancel_path = unkeyed_cancel_path  # type: ignore[method-assign]
+    try:
+        mutant_coord = _coord(tmp_path, _Transport())
+        mutant_coord._request_shared_cancel("job-a")
+        # Under the unkeyed mutant, an unrelated job_id wrongly sees the flag.
+        assert mutant_coord._shared_cancel_requested("job-b")
+    finally:
+        module.RefreshCoordinator._cancel_path = original_cancel_path  # type: ignore[method-assign]
 
 
 def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:
@@ -1229,6 +1269,42 @@ def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:
     stale.save()
     entry = HealthCache(path).entry("cc/a")
     assert entry is not None and entry.category == "permission"
+
+
+def test_review3_equal_revision_and_checked_at_keeps_disk_negative(tmp_path: Path) -> None:
+    """Isolate the tie-break: EQUAL write_revision AND EQUAL checked_at.
+
+    ``_merge_in_memory_over_disk`` must require a STRICTLY newer
+    ``checked_at`` (``>``) before an in-memory entry replaces the disk entry
+    at the same write_revision. A mutant that widens the comparison to ``>=``
+    lets an in-memory positive silently overwrite a same-revision,
+    same-instant disk negative. Both entries here share the SAME
+    write_revision and probe at the identical ``NOW`` instant, so the only
+    thing deciding the outcome is the ``>`` vs ``>=`` operator: this test
+    pins ``>`` and FAILS under a scratch ``>=`` mutant (verified manually --
+    the mutant flips the asserted category from "permission" to "ok" and
+    ``healthy`` from False to True for this exact fixture).
+    """
+    path = tmp_path / "cache.json"
+    disk_writer = HealthCache(path)
+    disk_writer.record("cc/a", ProbeResult("permission", False, False), NOW)
+    disk_writer.save()
+    on_disk = HealthCache(path).entry("cc/a")
+    assert on_disk is not None and on_disk.checked_at == NOW
+    disk_revision = on_disk.write_revision
+
+    # Exact tie: SAME write_revision as disk AND SAME checked_at (NOW).
+    memory_writer = HealthCache(path)
+    memory_writer.record("cc/a", ProbeResult("ok", True, True), NOW)
+    memory_writer._routes["cc/a"] = replace(
+        memory_writer._routes["cc/a"], write_revision=disk_revision
+    )
+    memory_writer.save()
+
+    entry = HealthCache(path).entry("cc/a")
+    assert entry is not None
+    assert entry.category == "permission"  # disk negative survives the exact tie
+    assert entry.healthy is False
 
 
 def test_review3_bucket_merge_preserves_newer_reservations(tmp_path: Path) -> None:
