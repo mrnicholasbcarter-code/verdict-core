@@ -23,9 +23,8 @@ from typing import Any
 import pytest
 
 from tests.test_orch_eligibility import NOW, REQ, conn, row
-from verdict.orchestration import cli as orch_cli
 from verdict.orchestration import run as orch_run
-from verdict.orchestration.eligibility_report import prime_visibility
+from verdict.orchestration.eligibility_report import build_selector, prime_visibility
 from verdict.orchestration.prime_settings import default_prime_agent_dir
 
 
@@ -67,7 +66,7 @@ def test_build_selector_honours_prime_agent_home_and_never_touches_home(
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
 
-    ladder = orch_cli.build_selector(
+    ladder = build_selector(
         "http://127.0.0.1:1", scope="", prefer="", state_file=tmp_path / "state.json"
     )
     verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
