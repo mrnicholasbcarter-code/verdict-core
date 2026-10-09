@@ -56,7 +56,6 @@
 | PM-011 | runtime catalog observation | The recorded catalog snapshots are bounded observations, not proof that every listed route is runnable. | `docs/evidence/omniroute-catalog-qualification-2026-07-28.json` | public, management, and liveness_sample | observed-artifact | `Validate the checked-in JSON artifacts and inspect their recorded hashes, aggregate consistency, and limitations; raw-payload digest replay is not available.` | observed |
 | | | | `docs/evidence/omniroute-catalog-qualification-2026-07-29.json` | projection_reconciliation and limitations | observed-artifact | | |
 | | | | `docs/adr/ADR-007-omniroute-catalog-qualification.md` | qualification boundary | documentation | | |
-| PM-012 | portfolio claims | No quantified portfolio claim is currently approved by this matrix unless it resolves to a listed reproducible artifact. | `docs/portfolio/KALSHI_TRADING_BOTS_CASE_STUDY.md` | throughput and latency claims | claim-source | `For each metric, locate a reproducible artifact with definition, date, environment, and raw result before changing status.` | blocked |
 | PM-013 | release readiness | The repository defines release evidence gates; the current checkout is not authorized to claim all gates passed. | `ACCEPTANCE_GATES.md` | G1-G7 gate definitions | requirement | `Run the release checklist against an exact tagged artifact and attach the resulting bundle and CI records.` | partial |
 | | | | `scripts/evidence_bundle.py` | bundle verifier | implementation | | |
 | | | | `RELEASE_CHECKLIST.md` | pre-release validation | checklist | | |

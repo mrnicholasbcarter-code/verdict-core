@@ -95,7 +95,7 @@ hardening pass (successor for ADR-023).
 | [026](ADR-026-responses-compatibility-boundary.md) — Responses boundary | Compatibility before HTTP Responses transport | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [027](ADR-027-observed-free-status-and-context-omissions.md) — Observed free status | Free status observed, never inferred from missing price | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [028](ADR-028-launch-gate-tooling.md) — Launch-gate tooling | Release dependency/privacy/HTTP evidence | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
-| [029](ADR-029-portfolio-repositioning-plan.md) — Portfolio repositioning | Hygiene / positioning / launch sequencing | Superseded | SUPERSEDED | NOT_VERIFIED | Superseded by this remediation; kept for ADR-030 cross-reference |
+| 029 — Portfolio repositioning (removed, BOD-257/BOD-317) | Hygiene / positioning / launch sequencing | Superseded | SUPERSEDED | NOT_VERIFIED | Superseded by this remediation; file removed from the repo (career-collateral material), private copy retained outside the repo; cited by ADR-030 as historical context only |
 | [030](ADR-030-proof-carrying-decision-plane.md) — Proof-carrying decision plane | Context→decision→receipt→proof owned by Verdict | Accepted | PARTIALLY_TRUE | NOT_VERIFIED | — |
 | [031](ADR-031-prime-workflow-skills.md) — Prime workflow skills | Resume/hydrate/dispatch/proof/finish leases | Accepted for implementation | PARTIALLY_TRUE | VERIFIED | — |
 | [032](ADR-032-core-model-metadata-store.md) — Core owns model metadata | OmniRoute inventory/execute/health only | Accepted | PARTIALLY_TRUE | VERIFIED | — |
