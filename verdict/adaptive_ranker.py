@@ -100,17 +100,9 @@ class AdaptiveRanker:
     authority is ``optimize_execution_path``.
     """
 
-    def __init__(
-        self,
-        config: AdaptiveRankerConfig | None = None,
-        *,
-        ruvector_db_path: str | None = None,
-        sona_enabled: bool = False,
-    ) -> None:
+    def __init__(self, config: AdaptiveRankerConfig | None = None) -> None:
         self.config = config or AdaptiveRankerConfig()
         self._history: list[dict[str, Any]] = []
-        self._ruvector_db_path = ruvector_db_path
-        self._sona_enabled = sona_enabled
         self._version = "1.0.0"
 
     def _compute_candidate_set_hash(self, candidates: tuple[RankingCandidate, ...]) -> str:
@@ -288,8 +280,6 @@ class AdaptiveRanker:
         return {"status": "rolled_back", "new_mode": self.config.mode.value}
 
 
-def build_adaptive_ranker(
-    config: AdaptiveRankerConfig | None = None, *, ruvector_db_path: str | None = None
-) -> AdaptiveRanker:
+def build_adaptive_ranker(config: AdaptiveRankerConfig | None = None) -> AdaptiveRanker:
     """Factory function for adaptive ranker."""
-    return AdaptiveRanker(config=config, ruvector_db_path=ruvector_db_path)
+    return AdaptiveRanker(config=config)
