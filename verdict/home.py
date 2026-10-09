@@ -125,8 +125,16 @@ _ACTION_PARAMS: dict[str, list[tuple[str, object]]] = {
 _COMMAND_INDEX: dict[str, tuple[str, str, str]] | None = None
 
 _PROBE_MAX_BYTES = 32 * 1024 * 1024
-HISTORY_DIR = Path.home() / ".verdict"
-HISTORY_FILE = HISTORY_DIR / "prompt_history"
+
+
+def history_file(env: dict[str, str] | None = None) -> Path:
+    """Resolve the prompt history file path based on VERDICT_HOME or $HOME."""
+    source = os.environ if env is None else env
+    configured = (source.get("VERDICT_HOME") or "").strip()
+    base = Path(configured) if configured else Path(source.get("HOME") or Path.home()) / ".verdict"
+    return base.expanduser() / "prompt_history"
+
+
 HISTORY_MAX_LINES = 500
 
 
@@ -1070,9 +1078,14 @@ def _load_history(path: Path) -> list[str]:
 def _save_history(path: Path, entries: list[str]) -> None:
     """Append and cap the history file; owner-only permissions."""
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # mkdir's mode does not apply to an existing directory: tighten it.
-        os.chmod(path.parent, 0o700)
+        parent = path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        # Tighten permissions only if owned by current user and group/other-writable.
+        info = parent.stat()
+        if info.st_uid == os.getuid() and (info.st_mode & 0o022):
+            os.chmod(parent, 0o700)
+
         existing = _load_history(path) if path.exists() else []
         combined = (existing + entries)[-HISTORY_MAX_LINES:]
         # Write a new owner-only file and atomically replace the old one, so
@@ -1291,7 +1304,7 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
     # Loaded once into memory; new entries are written back through the capped
     # _save_history helper, so the file never grows past the cap.
     history: Any = InMemoryHistory()
-    for entry in _load_history(HISTORY_FILE):
+    for entry in _load_history(history_file()):
         history.append_string(entry)
 
     # Suppress CPR (cursor position request) warning in terminals that
@@ -1322,7 +1335,7 @@ def _prompt_toolkit_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         except EOFError:
             return 0
         if line.strip():
-            _save_history(HISTORY_FILE, [line.strip()])
+            _save_history(history_file(), [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         _reload_completion(state)
         completer.snapshot = state.completion_snapshot or completer.snapshot
@@ -1342,7 +1355,7 @@ def _fallback_input_loop(target: Console, tui: TerminalUI, state: HomeState) -> 
         except EOFError:
             return 0
         if line.strip():
-            _save_history(HISTORY_FILE, [line.strip()])
+            _save_history(history_file(), [line.strip()])
         result = _run_command(line, tui=tui, state=state)
         _reload_completion(state)
         if result == "quit":
