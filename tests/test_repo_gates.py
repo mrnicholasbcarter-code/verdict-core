@@ -299,10 +299,16 @@ def test_lazy_toml_import_allows_runtime_only_install(
 
     real_import = builtins.__import__
 
-    def _blocked_import(name: str, *args: object, **kwargs: object) -> object:
+    def _blocked_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
         if name in ("tomllib", "tomli"):
             raise ImportError(f"No module named '{name}'")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
     monkeypatch.delitem(sys.modules, "tomllib", raising=False)
