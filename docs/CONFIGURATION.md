@@ -344,6 +344,29 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 
+### Session evidence (orchestration, phase 1)
+
+`SessionLedger` stores controller-verified worker-session outcomes separately
+from probe health. Its default path is `~/.verdict/session-evidence.jsonl`.
+`VERDICT_SESSION_EVIDENCE` overrides that path. An explicit constructor path
+wins over the environment. Reading an absent ledger does not create it.
+
+Attach it with `EligibilityLadder(..., session_ledger=SessionLedger(path))`.
+The default ladder has no session ledger attached. For FREE implementation
+routes, the existing fresh agentic-probe requirement still applies. Verified
+outcomes in the last 14 days additionally require a Laplace score of at least
+0.5. A false success claim counts as two failures and blocks the route for
+7 days. No outcomes in the window leaves the probe-only behavior unchanged.
+
+`import_worker_outcomes(path)` reads trusted controller JSONL and returns
+outcomes without writing. Append its results to the ledger to import them.
+Route, timestamp and outcome identify duplicates. Worker self-reports must not
+be passed off as controller-verified evidence.
+
+Eligibility JSON rank components expose `session_score`, `session_passes`
+and `session_fails`. They are null when no ledger is attached. Phase 1 does
+not change the sort order or automatically attach a ledger to the CLI.
+
 ### Admission boundary
 
 Controller and worker launches start from one canonical live admission set

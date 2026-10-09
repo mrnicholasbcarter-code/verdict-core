@@ -35,6 +35,7 @@ from verdict.subagent_selection import HealthResult
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
+    from verdict.orchestration.session_evidence import SessionLedger, SessionStats
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 # Capacity that costs nothing extra per call (already paid for or free).
@@ -231,6 +232,7 @@ class EligibilityLadder:
         admitted: AdmittedSet | None = None,
         admission_receipt: Path | None = None,
         health_cache: Any | None = None,
+        session_ledger: SessionLedger | None = None,
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
     ) -> None:
@@ -254,6 +256,9 @@ class EligibilityLadder:
         self._admission_receipt = admission_receipt
         # Health cache (from #742 prove-at-rest daemon). Read-only in selection.
         self._health_cache = health_cache
+        # BOD-299 phase 1: optional real-session evidence, read-only in selection.
+        self._session_ledger = session_ledger
+        self._session_evidence_error: str | None = None
         # UNKNOWN capacity opt-in: env override if not set explicitly.
         if allow_unknown_capacity is not None:
             self._allow_unknown = allow_unknown_capacity
@@ -645,7 +650,29 @@ class EligibilityLadder:
             age = (gate_now - ack).total_seconds()
             if age > FRESH_SECONDS:
                 return "agentic_probe_stale"
+            # Real session outcomes can narrow, never replace, probe qualification.
+            stats = self._session_summary(route_id, gate_now)
+            if stats is not None and stats.passes + stats.fails:
+                recent = self._session_summary(route_id, gate_now, window_days=7)
+                if recent is not None:
+                    if recent.false_claims:
+                        return "recent_false_claim"
+                    if stats.score < 0.5:
+                        return "session_evidence_insufficient"
         return ""
+
+    def _session_summary(
+        self, route_id: str, now: datetime, window_days: int = 14
+    ) -> SessionStats | None:
+        """Unreadable evidence fails open once per selection, not once per route."""
+        ledger: SessionLedger | None = getattr(self, "_session_ledger", None)
+        if ledger is None or getattr(self, "_session_evidence_error", None) is not None:
+            return None
+        try:
+            return ledger.summarize_pool(route_id, now, window_days=window_days)
+        except OSError:
+            self._session_evidence_error = "unreadable"
+            return None
 
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:
         score = 0
@@ -700,14 +727,15 @@ class EligibilityLadder:
         probe_class = "none"
         cache_checked_at: str | None = None
         cache_freshness: str | None = None
+        rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+        session = self._session_summary(a.route_id, rc_now)
         if cache is not None:
-            rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
             lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
                 probe_class = lookup.entry.probe_class
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
-        return {
+        components = {
             "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
@@ -719,7 +747,15 @@ class EligibilityLadder:
             "probe_class": probe_class,
             "cache_checked_at": cache_checked_at,
             "cache_freshness": cache_freshness,
+            # Observational only in phase 1; _rank_key intentionally ignores these.
+            "session_score": session.score if session is not None else None,
+            "session_passes": session.passes if session is not None else None,
+            "session_fails": session.fails if session is not None else None,
         }
+        error = getattr(self, "_session_evidence_error", None)
+        if error is not None:
+            components["session_evidence_error"] = error
+        return components
 
     def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
@@ -746,7 +782,7 @@ class EligibilityLadder:
         """
         price_known = components.get("price_known", False)
         price_value = components.get("price_for_rank", 0.0)
-        return {
+        display = {
             "capacity_order": components["capacity_order"],
             "slack": components["slack"],
             "price": price_value if price_known else None,
@@ -757,13 +793,20 @@ class EligibilityLadder:
             "probe_class": components.get("probe_class", "none"),
             "cache_checked_at": components.get("cache_checked_at"),
             "cache_freshness": components.get("cache_freshness"),
+            "session_score": components.get("session_score"),
+            "session_passes": components.get("session_passes"),
+            "session_fails": components.get("session_fails"),
         }
+        if "session_evidence_error" in components:
+            display["session_evidence_error"] = components["session_evidence_error"]
+        return display
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
         self._current_requirements = requirements
         self._current_now = now
+        self._session_evidence_error = None
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
             row = self._rows[route_id]
