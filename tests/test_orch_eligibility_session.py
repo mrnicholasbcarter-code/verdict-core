@@ -157,3 +157,72 @@ def test_cli_json_exposes_attached_session_counts(
     assert components["session_score"] == pytest.approx(2 / 3)
     assert components["session_passes"] == 1
     assert components["session_fails"] == 0
+
+
+@pytest.mark.parametrize("frontier", [False, True])
+@pytest.mark.parametrize("non_free", [False, True])
+@pytest.mark.parametrize("method", ["select", "evaluate"])
+def test_unreadable_ledger_fails_open_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frontier: bool, non_free: bool, method: str
+) -> None:
+    ladder, ledger, cache = setup_ladder(tmp_path)
+    other = "gl/glm-6"
+    ladder._rows[other] = row(other, owned_by="glm", pricing={"input": 0.0, "output": 0.0})
+    cache._routes[other] = replace(cache._routes[ROUTE], route_id=other)
+    if non_free:
+        ladder._connections = [conn("glm")]
+    ledger.append(outcome(False))
+    attempts = 0
+    real_load = ledger.load
+
+    def track_load() -> tuple[SessionOutcome, ...]:
+        nonlocal attempts
+        attempts += 1
+        return real_load()
+
+    monkeypatch.setattr(ledger, "load", track_load)
+    ledger.path.chmod(0o000)
+    try:
+        requirements = TaskRequirements(frontier_worthy=frontier)
+        if method == "select":
+            selected, verdicts = ladder.select(requirements, now=NOW)
+            assert selected is not None
+        else:
+            verdicts = ladder.evaluate(requirements, now=NOW)
+        assert all(v.failed_stage is None for v in verdicts)
+        assert all(v.rank_components["session_score"] is None for v in verdicts)
+        assert all(v.rank_components["session_evidence_error"] == "unreadable" for v in verdicts)
+        assert attempts == 1
+    finally:
+        ledger.path.chmod(0o600)
+    # A new selection retries the repaired file, rather than hiding evidence forever.
+    if not frontier and not non_free:
+        assert ladder.evaluate(REQ, now=NOW)[0].reason == "session_evidence_insufficient"
+
+
+@pytest.mark.parametrize("frontier", [False, True])
+def test_corrupt_ledger_preserves_valid_evidence_and_returns_verdicts(
+    tmp_path: Path, frontier: bool
+) -> None:
+    ladder, ledger, _ = setup_ladder(tmp_path)
+    ledger.append(outcome(False))
+    ledger.path.write_text("not valid json\n" + ledger.path.read_text())
+    selected, verdicts = ladder.select(TaskRequirements(frontier_worthy=frontier), now=NOW)
+    assert ledger.last_load_skipped == 1
+    if frontier:
+        assert selected is not None
+    else:
+        assert selected is None
+        assert verdicts[0].reason == "session_evidence_insufficient"
+
+
+def test_other_ledger_os_errors_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ladder, ledger, _ = setup_ladder(tmp_path)
+
+    def broken_load() -> tuple[SessionOutcome, ...]:
+        raise OSError("I/O error")
+
+    monkeypatch.setattr(ledger, "load", broken_load)
+    selected, _ = ladder.select(REQ, now=NOW)
+    assert selected is not None
+    assert selected.rank_components["session_evidence_error"] == "unreadable"

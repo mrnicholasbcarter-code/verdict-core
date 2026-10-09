@@ -35,7 +35,7 @@ from verdict.subagent_selection import HealthResult
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
-    from verdict.orchestration.session_evidence import SessionLedger
+    from verdict.orchestration.session_evidence import SessionLedger, SessionStats
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 # Capacity that costs nothing extra per call (already paid for or free).
@@ -258,6 +258,7 @@ class EligibilityLadder:
         self._health_cache = health_cache
         # BOD-299 phase 1: optional real-session evidence, read-only in selection.
         self._session_ledger = session_ledger
+        self._session_evidence_error: str | None = None
         # UNKNOWN capacity opt-in: env override if not set explicitly.
         if allow_unknown_capacity is not None:
             self._allow_unknown = allow_unknown_capacity
@@ -650,15 +651,28 @@ class EligibilityLadder:
             if age > FRESH_SECONDS:
                 return "agentic_probe_stale"
             # Real session outcomes can narrow, never replace, probe qualification.
-            ledger = getattr(self, "_session_ledger", None)
-            if ledger is not None:
-                stats = ledger.summarize(route_id, gate_now)
-                if stats.passes + stats.fails:
-                    if ledger.summarize(route_id, gate_now, window_days=7).false_claims:
+            stats = self._session_summary(route_id, gate_now)
+            if stats is not None and stats.passes + stats.fails:
+                recent = self._session_summary(route_id, gate_now, window_days=7)
+                if recent is not None:
+                    if recent.false_claims:
                         return "recent_false_claim"
                     if stats.score < 0.5:
                         return "session_evidence_insufficient"
         return ""
+
+    def _session_summary(
+        self, route_id: str, now: datetime, window_days: int = 14
+    ) -> SessionStats | None:
+        """Unreadable evidence fails open once per selection, not once per route."""
+        ledger: SessionLedger | None = getattr(self, "_session_ledger", None)
+        if ledger is None or getattr(self, "_session_evidence_error", None) is not None:
+            return None
+        try:
+            return ledger.summarize(route_id, now, window_days=window_days)
+        except OSError:
+            self._session_evidence_error = "unreadable"
+            return None
 
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:
         score = 0
@@ -714,8 +728,7 @@ class EligibilityLadder:
         cache_checked_at: str | None = None
         cache_freshness: str | None = None
         rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
-        ledger = getattr(self, "_session_ledger", None)
-        session = ledger.summarize(a.route_id, rc_now) if ledger is not None else None
+        session = self._session_summary(a.route_id, rc_now)
         if cache is not None:
             lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
@@ -738,6 +751,7 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
+            "session_evidence_error": getattr(self, "_session_evidence_error", None),
         }
 
     def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
@@ -779,6 +793,7 @@ class EligibilityLadder:
             "session_score": components.get("session_score"),
             "session_passes": components.get("session_passes"),
             "session_fails": components.get("session_fails"),
+            "session_evidence_error": components.get("session_evidence_error"),
         }
 
     def _assess_all(
@@ -786,6 +801,7 @@ class EligibilityLadder:
     ) -> tuple[list[_Assessment], list[_Assessment]]:
         self._current_requirements = requirements
         self._current_now = now
+        self._session_evidence_error = None
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
             row = self._rows[route_id]
