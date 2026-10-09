@@ -1,0 +1,946 @@
+[
+  {
+    "qualified_name": "verdict.actions.launch.supervise_run",
+    "reason": "UNTRIAGED: supervise_run has no resolved reference; Domain launch entries for BOD-275 Lane E (verdict/actions/launch.py)."
+  },
+  {
+    "qualified_name": "verdict.actions.registry.get_action",
+    "reason": "UNTRIAGED: get_action has only non-production references; Action registry \u2014 the single lookup table for CLI + TUI convergence (verdict/actions/registry.py)."
+  },
+  {
+    "qualified_name": "verdict.adaptive_ranker.RankerInput",
+    "reason": "UNTRIAGED: RankerInput has no resolved reference; Observe-only adaptive ranker with eligibility invariant (Issue #60 / Slice 33.3) (verdict/adaptive_ranker.py)."
+  },
+  {
+    "qualified_name": "verdict.admission.evidence_from_quota_rows",
+    "reason": "UNTRIAGED: evidence_from_quota_rows has only non-production references; Canonical live route admission (verdict/admission.py)."
+  },
+  {
+    "qualified_name": "verdict.admission_with_subscription.admit_with_subscription",
+    "reason": "UNTRIAGED: admit_with_subscription has only non-production references; Compatibility entry point for canonical subscription-aware admission (verdict/admission_with_subscription.py)."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.build_messages_url",
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper build_messages_url; local callers are tests."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.is_messages_qualified",
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper is_messages_qualified; local callers are tests."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.messages_request_digest",
+    "reason": "Public SDK/library API: Anthropic Messages adapter helper messages_request_digest; local callers are tests."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.OpenAICompatibleEvidenceAdapter",
+    "reason": "DELETE candidate: BOD-259 review OpenAICompatibleEvidenceAdapter in verdict/autodev_routing.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.attest_response",
+    "reason": "DELETE candidate: BOD-259 review attest_response in verdict/autodev_routing.py before removal; uncalled."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.discover_concrete_routes",
+    "reason": "DELETE candidate: BOD-259 review discover_concrete_routes in verdict/autodev_routing.py before removal; uncalled."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.normalize_retry_safety",
+    "reason": "DELETE candidate: BOD-259 review normalize_retry_safety in verdict/autodev_routing.py before removal; uncalled."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.compare_execution_topologies",
+    "reason": "DELETE candidate: BOD-259 review compare_execution_topologies in verdict/autodev_run.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.context_ablation_payload",
+    "reason": "DELETE candidate: BOD-259 review context_ablation_payload in verdict/autodev_run.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.net_savings_report",
+    "reason": "DELETE candidate: BOD-259 review net_savings_report in verdict/autodev_run.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.availability.CallableOmniRouteTransport",
+    "reason": "UNTRIAGED: CallableOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
+  },
+  {
+    "qualified_name": "verdict.availability.MappingOmniRouteTransport",
+    "reason": "UNTRIAGED: MappingOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
+  },
+  {
+    "qualified_name": "verdict.availability_cache.build_cache_report",
+    "reason": "UNTRIAGED: build_cache_report has only non-production references; Bounded availability cache with documented TTL and stale-while-revalidate (verdict/availability_cache.py)."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_agentshield_stub",
+    "reason": "Default-off enrichment stub make_agentshield_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_codebase_memory_stub",
+    "reason": "Default-off enrichment stub make_codebase_memory_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_context7_stub",
+    "reason": "Default-off enrichment stub make_context7_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_gitleaks_stub",
+    "reason": "Default-off enrichment stub make_gitleaks_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_semgrep_security_stub",
+    "reason": "Default-off enrichment stub make_semgrep_security_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_serena_lsp_stub",
+    "reason": "Default-off enrichment stub make_serena_lsp_stub; native fallback exists; adapter activation ticket is not yet assigned."
+  },
+  {
+    "qualified_name": "verdict.capacity_adapters.default_registry",
+    "reason": "UNTRIAGED: default_registry has only non-production references; Capacity evidence adapter protocol and registry (verdict/capacity_adapters.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_direct.codex_direct_adapter_from_fixtures",
+    "reason": "UNTRIAGED: codex_direct_adapter_from_fixtures has only non-production references; Direct provider capacity adapters (fixture-backed for offline TDD) (verdict/capacity_direct.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_gateway.omniroute_capacity_adapter_from_fixtures",
+    "reason": "UNTRIAGED: omniroute_capacity_adapter_from_fixtures has only non-production references; Gateway capacity adapters (verdict/capacity_gateway.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_live.probe_local_capacity_sources",
+    "reason": "UNTRIAGED: probe_local_capacity_sources has only non-production references; Local live capacity discovery (capacity evidence follow-up) (verdict/capacity_live.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.project_execution_path_evidence",
+    "reason": "UNTRIAGED: project_execution_path_evidence has only non-production references; Project CapacitySnapshot into runtime-certification, expected-cost, and (verdict/capacity_project.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.project_runtime_certification_quota",
+    "reason": "UNTRIAGED: project_runtime_certification_quota has only non-production references; Project CapacitySnapshot into runtime-certification, expected-cost, and (verdict/capacity_project.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.scarcest_quota_evidence",
+    "reason": "UNTRIAGED: scarcest_quota_evidence has only non-production references; Project CapacitySnapshot into runtime-certification, expected-cost, and (verdict/capacity_project.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.resolve_capacity_snapshots",
+    "reason": "UNTRIAGED: resolve_capacity_snapshots has only non-production references; Conflict resolution for capacity evidence (verdict/capacity_resolve.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.stale_cannot_overwrite",
+    "reason": "UNTRIAGED: stale_cannot_overwrite has only non-production references; Conflict resolution for capacity evidence (verdict/capacity_resolve.py)."
+  },
+  {
+    "qualified_name": "verdict.claims_ledger.evaluate_claim_freshness",
+    "reason": "UNTRIAGED: evaluate_claim_freshness has no resolved reference; Append-only claims ledger with deterministic selection and hydration (verdict/claims_ledger.py)."
+  },
+  {
+    "qualified_name": "verdict.claims_ledger.hydrate_claims",
+    "reason": "UNTRIAGED: hydrate_claims has no resolved reference; Append-only claims ledger with deterministic selection and hydration (verdict/claims_ledger.py)."
+  },
+  {
+    "qualified_name": "verdict.compaction.compact_session_state",
+    "reason": "WIRE: BOD-38 session compaction has no external production importer."
+  },
+  {
+    "qualified_name": "verdict.compaction.emit_semantic_event",
+    "reason": "WIRE: BOD-38 session compaction has no external production importer."
+  },
+  {
+    "qualified_name": "verdict.compaction.may_enter_ready",
+    "reason": "WIRE: BOD-38 session compaction has no external production importer."
+  },
+  {
+    "qualified_name": "verdict.compaction.project_compacted_to_handoff",
+    "reason": "WIRE: BOD-38 session compaction has no external production importer."
+  },
+  {
+    "qualified_name": "verdict.compaction.resume_projection",
+    "reason": "WIRE: BOD-38 session compaction has no external production importer."
+  },
+  {
+    "qualified_name": "verdict.context_envelope.ContextCompiler",
+    "reason": "UNTRIAGED: ContextCompiler has only non-production references; Dynamic ContextEnvelope contracts and the ContextCompiler aggregator (verdict/context_envelope.py)."
+  },
+  {
+    "qualified_name": "verdict.context_inject.extract_envelope",
+    "reason": "UNTRIAGED: extract_envelope has only non-production references; Inject the compiled cheap-path context pack into the upstream request (verdict/context_inject.py)."
+  },
+  {
+    "qualified_name": "verdict.context_lift.refuse_secret_write",
+    "reason": "UNTRIAGED: refuse_secret_write has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
+  },
+  {
+    "qualified_name": "verdict.context_lift.run_context_lift",
+    "reason": "UNTRIAGED: run_context_lift has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
+  },
+  {
+    "qualified_name": "verdict.context_sources.CapabilityProviderProtocol",
+    "reason": "UNTRIAGED: CapabilityProviderProtocol has no resolved reference; Native Context Intelligence source providers (Wave-1 baseline) (verdict/context_sources.py)."
+  },
+  {
+    "qualified_name": "verdict.context_sources.SharedMemoryCapabilityProvider",
+    "reason": "WIRE: BOD-146 shared-memory provider is absent from build_native_providers()."
+  },
+  {
+    "qualified_name": "verdict.context_trust.apply_routing_eligibility",
+    "reason": "UNTRIAGED: apply_routing_eligibility has only non-production references; Untrusted context + agent tooling security boundary (verdict/context_trust.py)."
+  },
+  {
+    "qualified_name": "verdict.context_trust.scan_agent_environment",
+    "reason": "UNTRIAGED: scan_agent_environment has only non-production references; Untrusted context + agent tooling security boundary (verdict/context_trust.py)."
+  },
+  {
+    "qualified_name": "verdict.contracts.contract_from_legacy_dict",
+    "reason": "UNTRIAGED: contract_from_legacy_dict has only non-production references; Strict version-1 shared JSON contracts for planning and routing (verdict/contracts.py)."
+  },
+  {
+    "qualified_name": "verdict.contracts.verify_execution_envelope",
+    "reason": "UNTRIAGED: verify_execution_envelope has only non-production references; Strict version-1 shared JSON contracts for planning and routing (verdict/contracts.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_launch.build_prime_argv",
+    "reason": "UNTRIAGED: build_prime_argv has only non-production references; Verdict-selected Prime controller launch contracts and verification (verdict/controller_launch.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_launch.fence_owned_root_plan",
+    "reason": "UNTRIAGED: fence_owned_root_plan has only non-production references; Verdict-selected Prime controller launch contracts and verification (verdict/controller_launch.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_selection.ControllerSelector",
+    "reason": "UNTRIAGED: ControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel.verify_decision",
+    "reason": "UNTRIAGED: verify_decision has only non-production references; Deterministic DecisionKernel facade (VER-002 #219) (verdict/decision_kernel.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision_with_advisory_promoting_excluded",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.degraded_decision",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.degraded_inputs",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.demo_inputs",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.denied_decision",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.denied_inputs",
+    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
+  },
+  {
+    "qualified_name": "verdict.decision_signals.advisory.AdvisoryRanker",
+    "reason": "UNTRIAGED: AdvisoryRanker has only non-production references; Pure advisory reordering for OpenJev ADVISORY mode (verdict/decision_signals/advisory.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.DeliveryController",
+    "reason": "UNTRIAGED: DeliveryController has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.build_pr_body",
+    "reason": "UNTRIAGED: build_pr_body has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.build_review_packet",
+    "reason": "UNTRIAGED: build_review_packet has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery_ports.GhCliPort",
+    "reason": "UNTRIAGED: GhCliPort has only non-production references; Concrete GitHub/Linear ports for autonomous delivery (live ``gh`` / local evidence) (verdict/delivery_ports.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery_ports.LinearEvidencePort",
+    "reason": "UNTRIAGED: LinearEvidencePort has only non-production references; Concrete GitHub/Linear ports for autonomous delivery (live ``gh`` / local evidence) (verdict/delivery_ports.py)."
+  },
+  {
+    "qualified_name": "verdict.dependency_ingest.build_memory_record",
+    "reason": "UNTRIAGED: build_memory_record has only non-production references; Offline dependency-documentation discovery and ingestion (verdict/dependency_ingest.py)."
+  },
+  {
+    "qualified_name": "verdict.design.color_capability",
+    "reason": "UNTRIAGED: color_capability has only non-production references; Verdict visual system: semantic palette, observed states, panels, and policy (verdict/design.py)."
+  },
+  {
+    "qualified_name": "verdict.dispatcher.SubagentExecutor",
+    "reason": "UNTRIAGED: SubagentExecutor has no resolved reference; Bounded, availability-aware swarm assignment (verdict/dispatcher.py)."
+  },
+  {
+    "qualified_name": "verdict.enforcement.EnforcementVerificationGate",
+    "reason": "UNTRIAGED: EnforcementVerificationGate has only non-production references; Native runtime enforcement kernel (feature 004, VER-008 #225) (verdict/enforcement.py)."
+  },
+  {
+    "qualified_name": "verdict.enforcement.dispatch_with_enforcement",
+    "reason": "UNTRIAGED: dispatch_with_enforcement has only non-production references; Native runtime enforcement kernel (feature 004, VER-008 #225) (verdict/enforcement.py)."
+  },
+  {
+    "qualified_name": "verdict.environment_discovery.build_discovery_report",
+    "reason": "UNTRIAGED: build_discovery_report has only non-production references; Pure contracts for safe environment discovery and recommendations (verdict/environment_discovery.py)."
+  },
+  {
+    "qualified_name": "verdict.evaluation.EvaluationController",
+    "reason": "UNTRIAGED: EvaluationController has only non-production references; Evidence-gated shadow, counterfactual, and promotion evaluation (verdict/evaluation.py)."
+  },
+  {
+    "qualified_name": "verdict.evaluation.build_evaluation_report",
+    "reason": "UNTRIAGED: build_evaluation_report has only non-production references; Evidence-gated shadow, counterfactual, and promotion evaluation (verdict/evaluation.py)."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.build_execution_preview",
+    "reason": "UNTRIAGED: build_execution_preview has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.canonical_preview_digest",
+    "reason": "UNTRIAGED: canonical_preview_digest has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.validate_adapter_capabilities",
+    "reason": "UNTRIAGED: validate_adapter_capabilities has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
+  },
+  {
+    "qualified_name": "verdict.execution_path.apply_bounded_recovery",
+    "reason": "UNTRIAGED: apply_bounded_recovery has only non-production references; Execution-path optimizer \u2014 cheapest SAFE COMPLETE path (verdict/execution_path.py)."
+  },
+  {
+    "qualified_name": "verdict.failover_engine.is_retryable_status_code",
+    "reason": "UNTRIAGED: is_retryable_status_code has only non-production references; Capability-matched provider failover for execution continuity (issue #258) (verdict/failover_engine.py)."
+  },
+  {
+    "qualified_name": "verdict.failover_engine.is_transient_error_class",
+    "reason": "UNTRIAGED: is_transient_error_class has only non-production references; Capability-matched provider failover for execution continuity (issue #258) (verdict/failover_engine.py)."
+  },
+  {
+    "qualified_name": "verdict.free_tier_admit.why_not_model",
+    "reason": "UNTRIAGED: why_not_model has only non-production references; Admit free-tier \u2229 active-provider concrete identities for offloadable work (verdict/free_tier_admit.py)."
+  },
+  {
+    "qualified_name": "verdict.gateway_conformance.run_gateway_adapter_conformance",
+    "reason": "UNTRIAGED: run_gateway_adapter_conformance has no resolved reference; Hermetic conformance checks for provider-neutral gateway adapters (verdict/gateway_conformance.py)."
+  },
+  {
+    "qualified_name": "verdict.handoff.write_handoff",
+    "reason": "UNTRIAGED: write_handoff has only non-production references; Durable `.verdict/handoff.md` schema for cross-harness resume (verdict/handoff.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_certify",
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_discover",
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_certify",
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_discover",
+    "reason": "UNTRIAGED: format_discover has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.format_certify",
+    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_certify",
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_discover",
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.format_certify",
+    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_certify",
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_discover",
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_certify",
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_discover",
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_status",
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.headroom.headroom_is_unknown",
+    "reason": "UNTRIAGED: headroom_is_unknown has only non-production references; Provider quota and headroom checks (verdict/headroom.py)."
+  },
+  {
+    "qualified_name": "verdict.home.palette_actions",
+    "reason": "UNTRIAGED: palette_actions has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+  },
+  {
+    "qualified_name": "verdict.home.palette_launches",
+    "reason": "UNTRIAGED: palette_launches has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+  },
+  {
+    "qualified_name": "verdict.intelligence_adapter.build_intelligence_adapter",
+    "reason": "UNTRIAGED: build_intelligence_adapter has only non-production references; Intelligence Adapter v1 - Versioned, Fail-Closed Intelligence Boundary (verdict/intelligence_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.live_routing_run.run_live_routing",
+    "reason": "UNTRIAGED: run_live_routing has only non-production references; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.CanonicalManifestAdapter",
+    "reason": "UNTRIAGED: CanonicalManifestAdapter has no resolved reference; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.build_default_adapter_registry",
+    "reason": "UNTRIAGED: build_default_adapter_registry has only non-production references; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.load_context_records",
+    "reason": "UNTRIAGED: load_context_records has only non-production references; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_gate.MemoryGovernor",
+    "reason": "UNTRIAGED: MemoryGovernor has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_gate.MemoryNamespace",
+    "reason": "UNTRIAGED: MemoryNamespace has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.archive_legacy_memory",
+    "reason": "DELETE candidate: BOD-259 review archive_legacy_memory in verdict/memory_migration.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.detect_legacy_memory_artifacts",
+    "reason": "DELETE candidate: BOD-259 review detect_legacy_memory_artifacts in verdict/memory_migration.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.ingest_legacy_artifacts",
+    "reason": "DELETE candidate: BOD-259 review ingest_legacy_artifacts in verdict/memory_migration.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.purge_legacy_artifacts",
+    "reason": "DELETE candidate: BOD-259 review purge_legacy_artifacts in verdict/memory_migration.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.memory_mirror.MemoryMirrorWorker",
+    "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
+  },
+  {
+    "qualified_name": "verdict.memory_providers.ai_memory_experimental.AiMemoryExperimentalProvider",
+    "reason": "UNTRIAGED: AiMemoryExperimentalProvider has only non-production references; EXPERIMENTAL: HTTP adapter for akitaonrails/ai-memory as a SharedMemoryProvider (verdict/memory_providers/ai_memory_experimental.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.import_session",
+    "reason": "UNTRIAGED: import_session has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.normalize_session_record",
+    "reason": "UNTRIAGED: normalize_session_record has no resolved reference; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.verify_session_manifest",
+    "reason": "UNTRIAGED: verify_session_manifest has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.models.Route",
+    "reason": "UNTRIAGED: Route has no resolved reference; Core immutable data models used by Verdict routing (verdict/models.py)."
+  },
+  {
+    "qualified_name": "verdict.motion.trace_step",
+    "reason": "UNTRIAGED: trace_step has only non-production references; Pure, event-driven motion helpers. No scheduler, input polling, or delays (verdict/motion.py)."
+  },
+  {
+    "qualified_name": "verdict.openspec_lifecycle.can_archive_openspec_change",
+    "reason": "UNTRIAGED: can_archive_openspec_change has no resolved reference; OpenSpec lifecycle binding for verdict-core (verdict/openspec_lifecycle.py)."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.execute_optimized_dispatch",
+    "reason": "UNTRIAGED: execute_optimized_dispatch has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.hydrate_worker_context",
+    "reason": "UNTRIAGED: hydrate_worker_context has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.validate_worker_return",
+    "reason": "UNTRIAGED: validate_worker_return has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.cockpit_nav.ScriptedKeyReader",
+    "reason": "UNTRIAGED: ScriptedKeyReader has only non-production references; Interactive cockpit navigation for ``verdict watch`` (read-only) (verdict/orchestration/cockpit_nav.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.contracts.ProbeClass",
+    "reason": "UNTRIAGED: ProbeClass has only non-production references; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.contracts.dedupe",
+    "reason": "UNTRIAGED: dedupe has no resolved reference; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.health_cache.is_transient",
+    "reason": "UNTRIAGED: is_transient has no resolved reference; File-backed route health cache with three states and per-provider buckets (verdict/orchestration/health_cache.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.prime_settings.resolved_retry_policy",
+    "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.provider_catalog.is_not_free_overridden",
+    "reason": "UNTRIAGED: is_not_free_overridden has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.provider_catalog.routes_share_pool",
+    "reason": "UNTRIAGED: routes_share_pool has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.review.StaticDiffGate",
+    "reason": "UNTRIAGED: StaticDiffGate has only non-production references; Independent OpenCodeReview: independent, fail-closed semantic review via OpenCodeReview (``ocr``) (verdict/orchestration/review.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
+    "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline \u2014 feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.verified_refresh.VerifiedRow",
+    "reason": "UNTRIAGED: VerifiedRow has no resolved reference; Bounded verification refresh coordinator (BOD-292, unit 3) (verdict/orchestration/verified_refresh.py)."
+  },
+  {
+    "qualified_name": "verdict.passport_eligibility.evaluate_passports",
+    "reason": "UNTRIAGED: evaluate_passports has only non-production references; Fail-closed hard eligibility checks for qualified capability passports (verdict/passport_eligibility.py)."
+  },
+  {
+    "qualified_name": "verdict.policy.compile_policy",
+    "reason": "UNTRIAGED: compile_policy has only non-production references; Versioned, deterministic hard-eligibility policy compilation (verdict/policy.py)."
+  },
+  {
+    "qualified_name": "verdict.policy.explain_policy",
+    "reason": "UNTRIAGED: explain_policy has no resolved reference; Versioned, deterministic hard-eligibility policy compilation (verdict/policy.py)."
+  },
+  {
+    "qualified_name": "verdict.policy.migrate_task_policy",
+    "reason": "UNTRIAGED: migrate_task_policy has no resolved reference; Versioned, deterministic hard-eligibility policy compilation (verdict/policy.py)."
+  },
+  {
+    "qualified_name": "verdict.proof_receipts.build_proof_receipt",
+    "reason": "UNTRIAGED: build_proof_receipt has only non-production references; Versioned, privacy-safe proof receipts for routing decisions (verdict/proof_receipts.py)."
+  },
+  {
+    "qualified_name": "verdict.proof_receipts.build_receipt_manifest",
+    "reason": "UNTRIAGED: build_receipt_manifest has only non-production references; Versioned, privacy-safe proof receipts for routing decisions (verdict/proof_receipts.py)."
+  },
+  {
+    "qualified_name": "verdict.protocol_probes.ProtocolProbeRunner",
+    "reason": "UNTRIAGED: ProtocolProbeRunner has only non-production references; Hermetic protocol-surface qualification for exact executable routes (verdict/protocol_probes.py)."
+  },
+  {
+    "qualified_name": "verdict.prove_at_rest_legacy.build_legacy_daemon",
+    "reason": "UNTRIAGED: build_legacy_daemon has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
+  },
+  {
+    "qualified_name": "verdict.provider_bootstrap.GatewayProbeResult",
+    "reason": "UNTRIAGED: GatewayProbeResult has only non-production references; Deterministic provider/gateway bootstrap contract (verdict/provider_bootstrap.py)."
+  },
+  {
+    "qualified_name": "verdict.provider_bootstrap.verify_gateway_reachable",
+    "reason": "UNTRIAGED: verify_gateway_reachable has only non-production references; Deterministic provider/gateway bootstrap contract (verdict/provider_bootstrap.py)."
+  },
+  {
+    "qualified_name": "verdict.provider_receipts.build_provider_receipt",
+    "reason": "UNTRIAGED: build_provider_receipt has only non-production references; Provider-neutral deterministic evaluation receipts (verdict/provider_receipts.py)."
+  },
+  {
+    "qualified_name": "verdict.providers.codiv.codiv_routes",
+    "reason": "UNTRIAGED: codiv_routes has only non-production references; Codiv provider identification (verdict/providers/codiv.py)."
+  },
+  {
+    "qualified_name": "verdict.release.evidence.check_result_from_junit_xml",
+    "reason": "UNTRIAGED: check_result_from_junit_xml has only non-production references; LaunchGateEvidenceRecord assembly and schema validation (verdict/release/evidence.py)."
+  },
+  {
+    "qualified_name": "verdict.release.evidence.memory_boundary_results_from_junit_xml",
+    "reason": "UNTRIAGED: memory_boundary_results_from_junit_xml has only non-production references; LaunchGateEvidenceRecord assembly and schema validation (verdict/release/evidence.py)."
+  },
+  {
+    "qualified_name": "verdict.release.normalize.findings_from_bandit_json",
+    "reason": "DELETE candidate: BOD-259 review findings_from_bandit_json in verdict/release/normalize.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.release.normalize.findings_from_npm_audit_json",
+    "reason": "DELETE candidate: BOD-259 review findings_from_npm_audit_json in verdict/release/normalize.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.release.normalize.findings_from_pip_audit_json",
+    "reason": "DELETE candidate: BOD-259 review findings_from_pip_audit_json in verdict/release/normalize.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.release.normalize.sbom_artifact_from_cyclonedx_json",
+    "reason": "DELETE candidate: BOD-259 review sbom_artifact_from_cyclonedx_json in verdict/release/normalize.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.routing_receipt.link_recovery_attempt",
+    "reason": "UNTRIAGED: link_recovery_attempt has only non-production references; One versioned routing receipt with the full decision/evidence chain (verdict/routing_receipt.py)."
+  },
+  {
+    "qualified_name": "verdict.runtime_certification.register_detector",
+    "reason": "UNTRIAGED: register_detector has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
+  },
+  {
+    "qualified_name": "verdict.runtime_certification.reset_detectors",
+    "reason": "UNTRIAGED: reset_detectors has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
+  },
+  {
+    "qualified_name": "verdict.runtime_compatibility.build_runtime_compatibility_report",
+    "reason": "UNTRIAGED: build_runtime_compatibility_report has only non-production references; Deterministic, fail-closed compatibility reports for runtime passports (verdict/runtime_compatibility.py)."
+  },
+  {
+    "qualified_name": "verdict.semantic_capabilities.assert_brand_free_capability_id",
+    "reason": "UNTRIAGED: assert_brand_free_capability_id has only non-production references; Versioned semantic capability vocabulary (verdict/semantic_capabilities.py)."
+  },
+  {
+    "qualified_name": "verdict.serve_path.free_tier_feed_identities",
+    "reason": "UNTRIAGED: free_tier_feed_identities has only non-production references; Serve-path cutover: ``optimize_execution_path`` is sole strategy authority on serve (verdict/serve_path.py)."
+  },
+  {
+    "qualified_name": "verdict.shared_memory.FakeSharedMemoryProvider",
+    "reason": "UNTRIAGED: FakeSharedMemoryProvider has only non-production references; Versioned boundary for optional, advisory shared memory providers (verdict/shared_memory.py)."
+  },
+  {
+    "qualified_name": "verdict.shared_memory.normalize_hit_to_memory_record",
+    "reason": "UNTRIAGED: normalize_hit_to_memory_record has only non-production references; Versioned boundary for optional, advisory shared memory providers (verdict/shared_memory.py)."
+  },
+  {
+    "qualified_name": "verdict.strength_profiles.aggregate_strength",
+    "reason": "UNTRIAGED: aggregate_strength has only non-production references; Deterministic, evidence-backed task-strength profiles (verdict/strength_profiles.py)."
+  },
+  {
+    "qualified_name": "verdict.structured_qualification.StructuredOutputRunner",
+    "reason": "UNTRIAGED: StructuredOutputRunner has only non-production references; Hermetic strict structured-output qualification for exact protocol routes (verdict/structured_qualification.py)."
+  },
+  {
+    "qualified_name": "verdict.subagent_models.select_model_for_role",
+    "reason": "UNTRIAGED: select_model_for_role has no resolved reference; Subagent Role-Aware Model Selection via OmniRoute/Verdict Eligibility Pipeline (verdict/subagent_models.py)."
+  },
+  {
+    "qualified_name": "verdict.subagent_models.select_models_for_parallel_roles",
+    "reason": "UNTRIAGED: select_models_for_parallel_roles has no resolved reference; Subagent Role-Aware Model Selection via OmniRoute/Verdict Eligibility Pipeline (verdict/subagent_models.py)."
+  },
+  {
+    "qualified_name": "verdict.subagent_selection.execute_with_worker_failover",
+    "reason": "WIRE: BOD-157 worker selection/failover is not called by supervisor_admission."
+  },
+  {
+    "qualified_name": "verdict.subagent_selection.select_worker_model",
+    "reason": "WIRE: BOD-157 worker selection/failover is not called by supervisor_admission."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.check_headroom_subscription",
+    "reason": "DELETE candidate: BOD-259 review check_headroom_subscription in verdict/subscription_headroom.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.is_subscription_exhausted",
+    "reason": "DELETE candidate: BOD-259 review is_subscription_exhausted in verdict/subscription_headroom.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.subscription_headroom_pct",
+    "reason": "DELETE candidate: BOD-259 review subscription_headroom_pct in verdict/subscription_headroom.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.subscription_pool_key",
+    "reason": "DELETE candidate: BOD-259 review subscription_pool_key in verdict/subscription_headroom.py before removal; test_only_caller."
+  },
+  {
+    "qualified_name": "verdict.tool_qualification.ToolLifecycleRunner",
+    "reason": "UNTRIAGED: ToolLifecycleRunner has only non-production references; Bounded hermetic tool lifecycle qualification for Chat and Responses routes (verdict/tool_qualification.py)."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.compute_report_digest",
+    "reason": "UNTRIAGED: compute_report_digest has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.reproduce_report",
+    "reason": "UNTRIAGED: reproduce_report has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.verify_report",
+    "reason": "UNTRIAGED: verify_report has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+  },
+  {
+    "qualified_name": "verdict.tui_verified_controls.ProgressRecorder",
+    "reason": "UNTRIAGED: ProgressRecorder has no resolved reference; Injected controller for the verified-models TUI/CLI surfaces (BOD-292) (verdict/tui_verified_controls.py)."
+  },
+  {
+    "qualified_name": "verdict.workers.WorkerPool",
+    "reason": "UNTRIAGED: WorkerPool has only non-production references; Bounded worker execution against an OpenAI-compatible OmniRoute gateway (verdict/workers.py)."
+  },
+  {
+    "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
+    "reason": "UNTRIAGED: AutoDevWorkflow has no resolved reference; 12-Stage Autonomous Software Development Workflow (issue #259) (verdict/workflows/autodev.py)."
+  },
+  {
+    "qualified_name": "verdict.benchmarking.format_comparison_report",
+    "reason": "UNTRIAGED: format_comparison_report has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
+  },
+  {
+    "qualified_name": "verdict.benchmarking.run_comparison_benchmarks",
+    "reason": "UNTRIAGED: run_comparison_benchmarks has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.pool_key",
+    "reason": "UNTRIAGED: pool_key has no resolved reference; Conflict resolution for capacity evidence (verdict/capacity_resolve.py)."
+  },
+  {
+    "qualified_name": "verdict.chooser.human_summary",
+    "reason": "UNTRIAGED: human_summary has no resolved reference; Evidence-based model chooser (verdict/chooser.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_autodev.register",
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict autodev command family (verdict/commands/parsers_autodev.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_config.register",
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict config command family (verdict/commands/parsers_config.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_credentials.register",
+    "reason": "UNTRIAGED: register has only non-production references; Parsers for credential management commands (verdict/commands/parsers_credentials.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_harness.register",
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict harness command family (verdict/commands/parsers_harness.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_models.register",
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict models command family (verdict/commands/parsers_models.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_openspec.register",
+    "reason": "UNTRIAGED: register has no resolved reference; OpenSpec lifecycle CLI commands (verdict/commands/parsers_openspec.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_routing.register",
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict routing command family (verdict/commands/parsers_routing.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_runtime.register",
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict runtime command family (verdict/commands/parsers_runtime.py)."
+  },
+  {
+    "qualified_name": "verdict.commands.parsers_setup.register",
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict setup command family (verdict/commands/parsers_setup.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_selection.InjectableControllerSelector",
+    "reason": "UNTRIAGED: InjectableControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_selection.build_production_controller_selection_bundle",
+    "reason": "UNTRIAGED: build_production_controller_selection_bundle has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+  },
+  {
+    "qualified_name": "verdict.controller_selection.select_controller_launch",
+    "reason": "UNTRIAGED: select_controller_launch has only non-production references; Live controller selection before Prime launch (verdict/controller_selection.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.decide_repair_action",
+    "reason": "UNTRIAGED: decide_repair_action has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.merge_gates_satisfied",
+    "reason": "UNTRIAGED: merge_gates_satisfied has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.post_merge_verify",
+    "reason": "UNTRIAGED: post_merge_verify has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.delivery.run_local_proof",
+    "reason": "UNTRIAGED: run_local_proof has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.certify",
+    "reason": "UNTRIAGED: certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.certify",
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.disable",
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.enable",
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+  },
+  {
+    "qualified_name": "verdict.home.main",
+    "reason": "UNTRIAGED: main has no resolved reference; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+  },
+  {
+    "qualified_name": "verdict.live_routing_run.utc_now",
+    "reason": "UNTRIAGED: utc_now has no resolved reference; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.discover_sessions",
+    "reason": "UNTRIAGED: discover_sessions has no resolved reference; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.import_discovered_sessions",
+    "reason": "UNTRIAGED: import_discovered_sessions has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.poll_discovered_sessions",
+    "reason": "UNTRIAGED: poll_discovered_sessions has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
+  },
+  {
+    "qualified_name": "verdict.metadata.store.file_transport",
+    "reason": "UNTRIAGED: file_transport has no resolved reference; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
+  },
+  {
+    "qualified_name": "verdict.metadata.store.refresh_metadata",
+    "reason": "UNTRIAGED: refresh_metadata has only non-production references; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.cockpit_nav.run_cockpit",
+    "reason": "UNTRIAGED: run_cockpit has only non-production references; Interactive cockpit navigation for ``verdict watch`` (read-only) (verdict/orchestration/cockpit_nav.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.health_cache.fresh_until",
+    "reason": "UNTRIAGED: fresh_until has no resolved reference; File-backed route health cache with three states and per-provider buckets (verdict/orchestration/health_cache.py)."
+  },
+  {
+    "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
+    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+  },
+  {
+    "qualified_name": "verdict.present.reset",
+    "reason": "UNTRIAGED: reset has only non-production references; Shared human-output helpers for `verdict` commands (verdict/present.py)."
+  },
+  {
+    "qualified_name": "verdict.prove_at_rest_legacy.load_healthy_passports",
+    "reason": "UNTRIAGED: load_healthy_passports has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
+  },
+  {
+    "qualified_name": "verdict.runtime_contract.ProcfsInspector",
+    "reason": "UNTRIAGED: ProcfsInspector has no resolved reference; Versioned, privacy-safe contracts for global runtime ownership (verdict/runtime_contract.py)."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.utc_now_iso",
+    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+  }
+]
