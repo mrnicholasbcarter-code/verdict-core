@@ -695,7 +695,7 @@ class HealthCache:
         self._load()
         for route_id, entry in mine_routes.items():
             disk = self._routes.get(route_id)
-            if disk is None or entry.checked_at >= disk.checked_at:
+            if disk is None or entry.checked_at > disk.checked_at:
                 self._routes[route_id] = entry
         for cooldown in mine_cooldowns.values():
             self.record_cooldown(cooldown)

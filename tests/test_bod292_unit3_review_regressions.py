@@ -940,3 +940,15 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
     assert transport.calls == []
     assert coord._shared_cancel_requested("old-job")
     assert not coord._shared_cancel_requested("new-job")
+
+
+def test_review3_equal_time_keeps_disk_negative(tmp_path: Path) -> None:
+    path = tmp_path / "cache.json"
+    stale = HealthCache(path)
+    stale.record("cc/a", ProbeResult("ok", True, True), NOW)
+    stale.save()
+    fresh = HealthCache(path)
+    fresh.merge_and_save(lambda cache: cache.record("cc/a", ProbeResult("permission", False, False), NOW))
+    stale.save()
+    entry = HealthCache(path).entry("cc/a")
+    assert entry is not None and entry.category == "permission"
