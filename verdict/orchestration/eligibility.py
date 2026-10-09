@@ -735,7 +735,7 @@ class EligibilityLadder:
                 probe_class = lookup.entry.probe_class
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
-        return {
+        components = {
             "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
@@ -751,8 +751,11 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
-            "session_evidence_error": getattr(self, "_session_evidence_error", None),
         }
+        error = getattr(self, "_session_evidence_error", None)
+        if error is not None:
+            components["session_evidence_error"] = error
+        return components
 
     def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
@@ -779,7 +782,7 @@ class EligibilityLadder:
         """
         price_known = components.get("price_known", False)
         price_value = components.get("price_for_rank", 0.0)
-        return {
+        display = {
             "capacity_order": components["capacity_order"],
             "slack": components["slack"],
             "price": price_value if price_known else None,
@@ -793,8 +796,10 @@ class EligibilityLadder:
             "session_score": components.get("session_score"),
             "session_passes": components.get("session_passes"),
             "session_fails": components.get("session_fails"),
-            "session_evidence_error": components.get("session_evidence_error"),
         }
+        if "session_evidence_error" in components:
+            display["session_evidence_error"] = components["session_evidence_error"]
+        return display
 
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
