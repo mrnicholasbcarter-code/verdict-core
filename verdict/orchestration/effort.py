@@ -10,14 +10,17 @@ _TASK_EFFORT = {"implement": "medium", "review": "high", "plan": "high", "trivia
 def choose_effort(task_kind: str, model_row: Mapping[str, Any]) -> str | None:
     """Keep the task default unless support explicitly excludes it; never step up.
 
-    Missing reasoning/map metadata is unknown, not a declaration of no support.
-    A known map with no supported lower level means omit the spawn override.
+    An absent map is unknown: request the task default, subject to Prime validation.
+    In a known map, missing/null keys do not declare support. Use only an explicit
+    supported default or lower level; otherwise omit the spawn override.
     """
     if model_row.get("reasoning") is False:
         return None
     default = _TASK_EFFORT.get(task_kind, "medium")
     levels = model_row.get("thinkingLevelMap")
-    if not isinstance(levels, Mapping) or default not in levels or levels[default] is not None:
+    if not isinstance(levels, Mapping):
+        return default
+    if default in levels and levels[default] is not None:
         return default
     for level in reversed(PRIME_THINKING_LEVELS[: PRIME_THINKING_LEVELS.index(default)]):
         if level in levels and levels[level] is not None:

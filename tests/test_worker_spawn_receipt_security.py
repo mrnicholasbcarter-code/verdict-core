@@ -67,6 +67,21 @@ def test_fifo_refused_without_blocking(tmp_path: Path) -> None:
     assert stat.S_IMODE(receipts.stat().st_mode) == 0o644
 
 
+def test_fifo_without_reader_refused_within_process_deadline(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    os.mkfifo(tmp_path / "spawn-receipts.jsonl", 0o644)
+    script = (
+        "from pathlib import Path; from tests.test_worker_spawn_receipt_security import runtime; "
+        f"ctrl = runtime(Path({str(tmp_path)!r})); "
+        "ctrl.spawn_receipt(1, ctrl.candidates[0], 'medium', {}, None)"
+    )
+    result = subprocess.run([sys.executable, "-c", script], timeout=3, capture_output=True)
+    assert result.returncode != 0 and b"OSError" in result.stderr
+    assert stat.S_IMODE((tmp_path / "spawn-receipts.jsonl").stat().st_mode) == 0o644
+
+
 @pytest.mark.parametrize("ancestor", [False, True])
 async def test_receipt_refuses_symlinked_run_directory(tmp_path: Path, ancestor: bool) -> None:
     actual = tmp_path / "actual"
