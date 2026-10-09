@@ -40,7 +40,7 @@ def test_get_callers_refuse_redirect(caller: str, monkeypatch: pytest.MonkeyPatc
         assert key not in str(error)
 
 
-@pytest.mark.parametrize("caller", ["worker", "rest", "payload"])
+@pytest.mark.parametrize("caller", ["probe", "worker", "rest", "payload"])
 def test_post_callers_refuse_redirect(caller: str) -> None:
     from verdict.probes import openai_probe_transport
     from verdict.prove_at_rest import live_agentic_transport, live_transport

@@ -16,12 +16,12 @@ from __future__ import annotations
 import json
 import re
 import time
-import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from verdict.http_safety import open_no_redirect
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
     PatchExecutorError,
@@ -104,7 +104,7 @@ class Decomposer:
         self._transport = transport or openai_probe_transport(
             self.config.base_url,
             api_key=self.config.api_key,
-            opener=urllib.request.urlopen,
+            opener=open_no_redirect,
             max_response_bytes=self.config.max_response_bytes,
         )
 
