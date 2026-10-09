@@ -7,7 +7,9 @@ projection and Prime's separate compatibility checks can authorize a transaction
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+import re
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -81,7 +83,10 @@ def parse_bootstrap_args(text: str) -> BootstrapArgs:
         else:
             model_tokens.append(token)
     ids = parse_probe_model_list(" ".join(model_tokens)) if model_tokens else []
-    if any(not exact_token(rid) for rid in ids):
+    if any(
+        not exact_token(rid) or re.search(r"(?i)(sk-|bearer|api[_-]?key|token[=:]|https?://)", rid)
+        for rid in ids
+    ):
         raise ControlsError("exact ids only; no patterns or unsafe identities")
     return BootstrapArgs(target, tuple(ids), mode=mode)
 
@@ -198,13 +203,10 @@ def _refresh_selected(
         if plan.ok and plan.data.get("routes"):
             controller.write(render_refresh_plan(plan.data))
             if controller.confirm("Spend quota for this exact manual refresh plan?").granted:
-                # Re-read generation so edits while confirming refuse in execute.
-                current = replace(
-                    current,
-                    generation=scoped.refresh_snapshot(
-                        scoped.load(VerifiedModelQuery())
-                    ).generation,
-                )
+                # Re-read exact current rows AND generation; consent never
+                # relabels capacity or carries forward vanished/blocked ids.
+                latest_view = scoped.load(VerifiedModelQuery(page_size=200))
+                current = scoped.refresh_snapshot(latest_view)
 
                 def execute(snap: Any, **extra: Any) -> ActionResult:
                     return run_action(
@@ -251,6 +253,7 @@ def consume_prime(
     live: bool = False,
     preview_only: bool = False,
     interactive: bool = True,
+    on_projection: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> ActionResult:
     """Discover, refresh/reload, preview, default-No, refresh/reload, guarded apply."""
     from verdict.actions.registry import run_action
@@ -286,7 +289,12 @@ def consume_prime(
                     "reload_dependencies": reader.dependencies,
                 },
             )
-        adapter = adapter or VerifiedSnapshotAdapter(gateway, StorePaths.defaults(), clock=clock)
+        adapter = adapter or VerifiedSnapshotAdapter(
+            gateway,
+            StorePaths.defaults(),
+            clock=clock,
+            deadline=time.monotonic() + config.wall_seconds,
+        )
         ids = args.ids
         if not ids:
             page = adapter.load(VerifiedModelQuery())
@@ -331,6 +339,10 @@ def consume_prime(
             live=live,
             interactive=interactive,
         )
+        if on_projection is not None:
+            from verdict.tui_completion_snapshot import local_projection
+
+            on_projection(local_projection(adapter, now=clock()))
         preview = preview_selection(
             settings, rows, selected_ids=ids, dependencies=dependencies, now=clock()
         )
@@ -353,6 +365,10 @@ def consume_prime(
             live=live,
             interactive=interactive,
         )
+        if on_projection is not None:
+            from verdict.tui_completion_snapshot import local_projection
+
+            on_projection(local_projection(adapter, now=clock()))
         # Core refuses changed config/dependencies/diff or expired original consent.
         # Under lock the callback reads local evidence only; metadata stays frozen.
         adapter._load_metadata()

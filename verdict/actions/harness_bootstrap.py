@@ -181,7 +181,7 @@ def restore_preview(reader: PrimeReadAdapter, transaction_id: str | None = None)
 def action_claude_compat(**kwargs: Any) -> ActionResult:
     from verdict.harness_claude import discover, resolve_paths, status
     from verdict.harness_claude_compat import build_claude_compat_report
-    from verdict.tui_completion_snapshot import load_snapshot
+    from verdict.tui_completion_snapshot import load_snapshot, sanitize_rows
 
     try:
         mode = kwargs.get("mode", "native")
@@ -194,6 +194,7 @@ def action_claude_compat(**kwargs: Any) -> ActionResult:
             rows = load_snapshot(
                 kwargs.get("snapshot_path"), now=kwargs.get("now") or utc_now()
             ).model_rows
+        rows = sanitize_rows(rows)
         if not selected:
             source = "current exact Prime scope joined to last local projection"
             try:
@@ -206,7 +207,12 @@ def action_claude_compat(**kwargs: Any) -> ActionResult:
                 selected = [rid for rid in scope if exact_token(rid) and rid in known]
             except (OSError, ValueError):
                 selected = ()
-        if any(not exact_token(rid) or rid in {"apply", "select", "restore"} for rid in selected):
+        if any(
+            not exact_token(rid)
+            or re.search(r"(?i)(sk-|bearer|api[_-]?key|token[=:]|https?://)", rid)
+            or rid in {"apply", "select", "restore"}
+            for rid in selected
+        ):
             return _refusal()
         path = resolve_paths(claude_home=kwargs.get("claude_home")).config
 
@@ -231,6 +237,7 @@ def action_claude_compat(**kwargs: Any) -> ActionResult:
             kwargs.get("now") or utc_now(),
         )
         report["selected_ids_source"] = source
+        report["side_path_label"] = "OpenAI side path; not native Claude Code selection"
         return ActionResult(data=report)
     except (ValueError, OSError, TypeError, KeyError):
         return _refusal()
