@@ -339,6 +339,16 @@ class EligibilityLadder:
             self.__dict__["_connection_index"] = index
         return index[1].get(key)
 
+    def capacity_class(self, route_id: str) -> CapacityClass:
+        """Economic class from the same account evidence used by selection."""
+        row = self._rows.get(route_id, {})
+        raw_provider = str(row.get("owned_by", "")).lower()
+        provider = resolve_provider(raw_provider) if raw_provider else route_id.split("/", 1)[0]
+        conn = self._connection_for(provider)
+        if conn is None and raw_provider and raw_provider != provider:
+            conn = self._connection_for(raw_provider)
+        return self._capacity_class(conn, row, route_id=route_id)[0]
+
     def _capacity_class(
         self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
     ) -> tuple[CapacityClass, str, str]:

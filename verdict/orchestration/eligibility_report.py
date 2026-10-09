@@ -117,6 +117,7 @@ def build_selector(
     provider_families: tuple[str, ...] = (),
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
+    capacity: tuple[str, ...] = (),
     refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
@@ -126,10 +127,15 @@ def build_selector(
     CAPABILITY drops appear in the receipt. The ladder still applies each
     request's own requirements later.
     """
-    from verdict.admission import active_controller_route, admit, default_runtime_evidence
+    from verdict.admission import (
+        AdmissionStage,
+        active_controller_route,
+        admit,
+        default_runtime_evidence,
+    )
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
-    from verdict.subagent_selection import LaunchCandidate, openai_health_probe
+    from verdict.subagent_selection import HealthResult, LaunchCandidate, openai_health_probe
 
     gateway = normalize_omniroute_origin(gateway)
     key = resolve_api_key()
@@ -158,6 +164,18 @@ def build_selector(
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
     admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
     admitted = admitted.exclude_controller(active_controller_route())
+    if capacity:
+        if any(c not in {"free", "subscription", "metered", "unknown"} for c in capacity):
+            raise ValueError("Invalid capacity filter")
+        classifier = EligibilityLadder(
+            rows, connections, lambda _: HealthResult(False, "not_probed"), state_path
+        )
+        admitted = admitted.narrow(
+            AdmissionStage.POLICY,
+            "outside_capacity_filter",
+            lambda rid: classifier.capacity_class(rid).value in capacity,
+            source="orchestrate:capacity",
+        )
     receipt_path = state_path.parent / "admission-latest.json"
     admitted.write_receipt(receipt_path)
     # Prime visibility is refreshed from the FULL live catalog. Scope and
