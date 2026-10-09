@@ -91,11 +91,7 @@ def write_json(path: Path, document: Any) -> None:
 
 
 def files_under(path: Path) -> dict[str, bytes]:
-    return {
-        str(p.relative_to(path)): p.read_bytes()
-        for p in path.rglob("*")
-        if p.is_file()
-    }
+    return {str(p.relative_to(path)): p.read_bytes() for p in path.rglob("*") if p.is_file()}
 
 
 def adapter_for(
@@ -215,12 +211,7 @@ def test_local_only_cached_json_never_refreshes_or_fetches(
     monkeypatch.setattr(WaitRunner, "run", forbidden)
     result = run_action(
         "models.verified",
-        {
-            "gateway": GATEWAY,
-            "paths": adapter.paths,
-            "local_only": True,
-            "clock": lambda: NOW,
-        },
+        {"gateway": GATEWAY, "paths": adapter.paths, "local_only": True, "clock": lambda: NOW},
     )
     assert result.ok
     assert result.data["rows"][0]["status"] == "STALE"
@@ -231,8 +222,12 @@ def test_local_only_cached_json_never_refreshes_or_fetches(
 def test_missing_local_catalog_has_no_live_fallback(tmp_path: Path) -> None:
     result = run_action(
         "models.verified",
-        {"gateway": GATEWAY, "paths": StorePaths.defaults(tmp_path), "local_only": True,
-         "clock": lambda: NOW},
+        {
+            "gateway": GATEWAY,
+            "paths": StorePaths.defaults(tmp_path),
+            "local_only": True,
+            "clock": lambda: NOW,
+        },
     )
     assert result.ok
     assert result.data["total_count"] == 0
@@ -240,8 +235,14 @@ def test_missing_local_catalog_has_no_live_fallback(tmp_path: Path) -> None:
     assert files_under(tmp_path) == {}
 
 
-@pytest.mark.parametrize("query", [VerifiedModelQuery(page=0), VerifiedModelQuery(page_size=0),
-                                    VerifiedModelQuery(status="TYPO")])
+@pytest.mark.parametrize(
+    "query",
+    [
+        VerifiedModelQuery(page=0),
+        VerifiedModelQuery(page_size=0),
+        VerifiedModelQuery(status="TYPO"),
+    ],
+)
 def test_action_rejects_bad_query_before_any_snapshot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: VerifiedModelQuery
 ) -> None:
@@ -304,8 +305,9 @@ def test_stale_consumer_waits_then_reloads_and_only_then_renders(
 
     def worker() -> None:
         try:
-            output["result"] = consume(adapter, transport=transport, run_refresh=runner,
-                                       write=progress)
+            output["result"] = consume(
+                adapter, transport=transport, run_refresh=runner, write=progress
+            )
             events.append("render")
             output["rendered"] = render_verified_plain(output["result"].data)
         except BaseException as exc:
@@ -345,8 +347,7 @@ def test_stale_consumer_waits_then_reloads_and_only_then_renders(
 def test_auto_refresh_only_the_current_filtered_page(tmp_path: Path) -> None:
     ids = tuple(f"cc/model-{n:03d}" for n in range(8))
     adapter = adapter_for(tmp_path, ids)
-    query = VerifiedModelQuery(status="STALE", provider="cc", search="model", page=2,
-                               page_size=2)
+    query = VerifiedModelQuery(status="STALE", provider="cc", search="model", page=2, page_size=2)
     expected_ids = [r.route_id for r in adapter.load(query).rows]
     transport = RecordingTransport()
     result = consume(adapter, query=query, transport=transport)
@@ -361,17 +362,28 @@ def test_auto_refresh_only_the_current_filtered_page(tmp_path: Path) -> None:
 
 
 def test_auto_mixed_capacity_probes_prepaid_only(tmp_path: Path) -> None:
-    inventory = [row("cc/prepaid"), row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
-                 row("zz/unknown")]
-    connections = [conn("cc"), conn("ap", auth="apikey", plan="PAYG"),
-                   conn("zz", auth="apikey", plan="")]
-    adapter = adapter_for(tmp_path, ("cc/prepaid", "ap/metered", "zz/unknown"),
-                          inventory=inventory, connections=connections)
+    inventory = [
+        row("cc/prepaid"),
+        row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
+        row("zz/unknown"),
+    ]
+    connections = [
+        conn("cc"),
+        conn("ap", auth="apikey", plan="PAYG"),
+        conn("zz", auth="apikey", plan=""),
+    ]
+    adapter = adapter_for(
+        tmp_path,
+        ("cc/prepaid", "ap/metered", "zz/unknown"),
+        inventory=inventory,
+        connections=connections,
+    )
     transport = RecordingTransport()
     result = consume(adapter, transport=transport)
     assert result.ok
     assert [(rid, phase) for rid, phase, _ in transport.calls] == [
-        ("cc/prepaid", "chat"), ("cc/prepaid", "tool")
+        ("cc/prepaid", "chat"),
+        ("cc/prepaid", "tool"),
     ]
     rows = rows_by_id(result.data)
     assert rows["cc/prepaid"]["status"] == "VERIFIED"
@@ -386,7 +398,9 @@ def test_metered_unknown_only_zero_calls_and_no_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = adapter_for(
-        tmp_path, ("ap/metered", "zz/unknown"), age=None,
+        tmp_path,
+        ("ap/metered", "zz/unknown"),
+        age=None,
         inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0}), row("zz/unknown")],
         connections=[conn("ap", auth="apikey", plan="PAYG"), conn("zz", auth="apikey", plan="")],
     )
@@ -408,10 +422,13 @@ def test_disabled_refresh_keeps_last_known_and_does_not_wait(
     if mode == "environment":
         monkeypatch.setenv("VERDICT_AUTO_REFRESH", "0")
     monkeypatch.setattr(WaitRunner, "run", forbidden)
-    result = consume(adapter, run_refresh=forbidden, transport=forbidden,
-                     no_refresh=mode == "no-refresh")
+    result = consume(
+        adapter, run_refresh=forbidden, transport=forbidden, no_refresh=mode == "no-refresh"
+    )
     summary = result.data["refresh"]
-    assert summary["outcome"] == ("auto_refresh_disabled" if mode == "environment" else "no_refresh")
+    assert summary["outcome"] == (
+        "auto_refresh_disabled" if mode == "environment" else "no_refresh"
+    )
     assert summary["last_known"] is True
     assert summary["requests_made"] == 0
     assert result.data["rows"][0]["status"] == "STALE"
@@ -420,13 +437,13 @@ def test_disabled_refresh_keeps_last_known_and_does_not_wait(
 
 
 @pytest.mark.parametrize("cap", ["route_cap", "request_cap", "wall_cap", "bucket"])
-def test_incomplete_refresh_keeps_stale_rows_and_exact_cap_labels(
-    tmp_path: Path, cap: str
-) -> None:
+def test_incomplete_refresh_keeps_stale_rows_and_exact_cap_labels(tmp_path: Path, cap: str) -> None:
     adapter = adapter_for(tmp_path, ("cc/a", "cc/b", "cc/c"))
-    config = refresh.RefreshConfig(max_routes=1 if cap == "route_cap" else 3,
-                                   max_requests=2 if cap == "request_cap" else 6,
-                                   wall_seconds=1 if cap == "wall_cap" else 120)
+    config = refresh.RefreshConfig(
+        max_routes=1 if cap == "route_cap" else 3,
+        max_requests=2 if cap == "request_cap" else 6,
+        wall_seconds=1 if cap == "wall_cap" else 120,
+    )
     ticks = [0.0]
 
     def advance(_rid: str, phase: str) -> None:
@@ -435,8 +452,7 @@ def test_incomplete_refresh_keeps_stale_rows_and_exact_cap_labels(
 
     if cap == "bucket":
         document = json.loads(adapter.paths.health_cache.read_text())
-        document["buckets"] = {"cc": {"capacity": 1, "window_seconds": 60,
-                                      "timestamps": []}}
+        document["buckets"] = {"cc": {"capacity": 1, "window_seconds": 60, "timestamps": []}}
         write_json(adapter.paths.health_cache, document)
     transport = RecordingTransport(advance)
     result = consume(adapter, transport=transport, config=config, monotonic=lambda: ticks[0])
@@ -523,11 +539,13 @@ def test_concurrent_consumers_join_singleflight_without_sleep(
             done[name].set()
 
     owner_thread = threading.Thread(
-        target=worker, args=("owner", VerifiedModelQuery(search="cc/a"), owner_transport, owner_runner),
+        target=worker,
+        args=("owner", VerifiedModelQuery(search="cc/a"), owner_transport, owner_runner),
         daemon=True,
     )
     join_thread = threading.Thread(
-        target=worker, args=("joiner", VerifiedModelQuery(), join_transport, joined_runner),
+        target=worker,
+        args=("joiner", VerifiedModelQuery(), join_transport, joined_runner),
         daemon=True,
     )
     owner_thread.start()
@@ -554,7 +572,8 @@ def test_concurrent_consumers_join_singleflight_without_sleep(
     assert join_data["refresh"]["outcome"] == "joined"
     assert join_data["refresh"]["job_id"] == owner_data["refresh"]["job_id"]
     assert [(rid, phase) for rid, phase, _ in owner_transport.calls] == [
-        ("cc/a", "chat"), ("cc/a", "tool")
+        ("cc/a", "chat"),
+        ("cc/a", "tool"),
     ]
     assert join_transport.calls == []
     rows = rows_by_id(join_data)
@@ -572,8 +591,13 @@ def test_cli_json_tui_payload_exact_parity_progress_only_on_stderr(
     original_consume = surfaces.consume_verified_models
 
     def injected(**kwargs: Any) -> Any:
-        kwargs.update(adapter=adapter, clock=lambda: NOW, monotonic=lambda: 0.0,
-                      transport=transport, live=False)
+        kwargs.update(
+            adapter=adapter,
+            clock=lambda: NOW,
+            monotonic=lambda: 0.0,
+            transport=transport,
+            live=False,
+        )
         return original_consume(**kwargs)
 
     monkeypatch.setattr(surfaces, "consume_verified_models", injected)
@@ -583,7 +607,9 @@ def test_cli_json_tui_payload_exact_parity_progress_only_on_stderr(
     assert "probed" in captured.err
     assert captured.out.count('"schema": "verdict.verified-models/v1"') == 1
     assert cli_data["rows"][0]["status"] == "VERIFIED"
-    ok, tui_data = home.run_palette_action("models.verified", {"_consumer": True, "gateway": GATEWAY})
+    ok, tui_data = home.run_palette_action(
+        "models.verified", {"_consumer": True, "gateway": GATEWAY}
+    )
     assert ok
     # Complete stable envelope, including generated_at, counts, filters, and
     # source_errors. Only the separately disclosed job summary differs.
@@ -595,10 +621,17 @@ def test_cli_json_tui_payload_exact_parity_progress_only_on_stderr(
     assert len(transport.calls) == 2
 
 
-@pytest.mark.parametrize("flags", [
-    ("--probe",), ("--scope", "cc/"), ("--reasoning",), ("--frontier",),
-    ("--provider-family", "cc"), ("--prefer", "claude"),
-])
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--probe",),
+        ("--scope", "cc/"),
+        ("--reasoning",),
+        ("--frontier",),
+        ("--provider-family", "cc"),
+        ("--prefer", "claude"),
+    ],
+)
 def test_cli_verified_rejects_legacy_probe_and_task_filters_before_io(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flags: tuple[str, ...]
 ) -> None:
@@ -618,27 +651,55 @@ def test_cli_verified_validates_before_io(
     assert "filters or paging" in json.loads(capsys.readouterr().out)["error"]
 
 
-def test_unscoped_default_preserves_chat_only_small_context_and_all_statuses(tmp_path: Path) -> None:
-    inventory = [row("cc/full"), row("cc/chat", tools=False, ctx=512), row("kr/stale"),
-                 row("cc/unverified"), row("cc/failed"), row("ap/offline"),
-                 row("auto"), row("cc/excluded")]
-    adapter = adapter_for(tmp_path, age=None, inventory=inventory,
-                          connections=[conn("cc"), conn("kr"), conn("ap", active=False)])
+def test_unscoped_default_preserves_chat_only_small_context_and_all_statuses(
+    tmp_path: Path,
+) -> None:
+    inventory = [
+        row("cc/full"),
+        row("cc/chat", tools=False, ctx=512),
+        row("kr/stale"),
+        row("cc/unverified"),
+        row("cc/failed"),
+        row("ap/offline"),
+        row("auto"),
+        row("cc/excluded"),
+    ]
+    adapter = adapter_for(
+        tmp_path,
+        age=None,
+        inventory=inventory,
+        connections=[conn("cc"), conn("kr"), conn("ap", active=False)],
+    )
     adapter.policy_exclusions = {"cc/excluded": "operator policy"}
-    write_json(adapter.paths.health_cache, health_cache(
-        at_rest_entry("cc/full", checked_at=NOW - timedelta(seconds=30)),
-        at_rest_entry("cc/chat", checked_at=NOW - timedelta(seconds=30), tool_ok=False),
-        at_rest_entry("kr/stale", checked_at=NOW - timedelta(seconds=900)),
-        at_rest_entry("cc/failed", checked_at=NOW - timedelta(seconds=10), healthy=False,
-                      category="timeout", chat_ok=False, tool_ok=False,
-                      until=NOW + timedelta(seconds=60)),
-    ))
+    write_json(
+        adapter.paths.health_cache,
+        health_cache(
+            at_rest_entry("cc/full", checked_at=NOW - timedelta(seconds=30)),
+            at_rest_entry("cc/chat", checked_at=NOW - timedelta(seconds=30), tool_ok=False),
+            at_rest_entry("kr/stale", checked_at=NOW - timedelta(seconds=900)),
+            at_rest_entry(
+                "cc/failed",
+                checked_at=NOW - timedelta(seconds=10),
+                healthy=False,
+                category="timeout",
+                chat_ok=False,
+                tool_ok=False,
+                until=NOW + timedelta(seconds=60),
+            ),
+        ),
+    )
     payload = run_action("models.verified", {"adapter": adapter}).data
     assert payload["filters"] == {"status": None, "provider": None, "search": None}
     assert payload["total_count"] == payload["filtered_count"] == 8
     assert payload["page_size"] == 50
     assert set(payload["counts_by_status"]) == {
-        "VERIFIED", "STALE", "FAILED", "UNAVAILABLE", "UNVERIFIED", "INVENTORY_ONLY", "EXCLUDED"
+        "VERIFIED",
+        "STALE",
+        "FAILED",
+        "UNAVAILABLE",
+        "UNVERIFIED",
+        "INVENTORY_ONLY",
+        "EXCLUDED",
     }
     assert all(n > 0 for n in payload["counts_by_status"].values())
     rows = rows_by_id(payload)
@@ -651,8 +712,17 @@ def test_unscoped_default_preserves_chat_only_small_context_and_all_statuses(tmp
 def test_filters_conjunctive_case_insensitive_search_and_page_clamping(tmp_path: Path) -> None:
     ids = (*(f"cc/SONNET-{n:03d}" for n in range(7)), "kr/SONNET-000")
     adapter = adapter_for(tmp_path, ids, connections=[conn("cc"), conn("kr")])
-    result = run_action("models.verified", {"adapter": adapter, "status": "STALE", "provider": "cc",
-                                          "search": "sonnet", "page": 999, "page_size": 3})
+    result = run_action(
+        "models.verified",
+        {
+            "adapter": adapter,
+            "status": "STALE",
+            "provider": "cc",
+            "search": "sonnet",
+            "page": 999,
+            "page_size": 3,
+        },
+    )
     assert result.ok
     payload = result.data
     assert payload["total_count"] == 8
@@ -689,7 +759,9 @@ def test_render_defensive_safety_cap_for_unpaged_input(tmp_path: Path) -> None:
     payload = run_action("models.verified", {"adapter": adapter}).data
     sample = payload["rows"][0]
     payload["rows"] = [{**sample, "route_id": f"cc/unsafe-{n:03d}"} for n in range(230)]
-    tables = [part for part in render_verified_table(payload).renderables if isinstance(part, Table)]
+    tables = [
+        part for part in render_verified_table(payload).renderables if isinstance(part, Table)
+    ]
     assert len(tables[0].rows) == 200
     plain = render_verified_plain(payload)
     assert "cc/unsafe-199" in plain and "cc/unsafe-200" not in plain
@@ -704,15 +776,28 @@ def test_snapshot_and_plan_progress_render_never_emit_secrets(tmp_path: Path) ->
     adapter.connections = [conn("cc", api_key=secret, account_email=email, base_url=raw_url)]
     adapter.policy_exclusions = {"cc/sonnet": f"Authorization: Bearer {secret} {raw_url}"}
     payload = run_action("models.verified", {"adapter": adapter}).data
-    plan = run_action("models.refresh.plan", {
-        "snapshot_rows": payload["rows"], "needed_ids": ["cc/sonnet"],
-        "gateway_origin": adapter.gateway, "now": NOW,
-    })
-    progress = format_verified_progress({
-        "probed": 0, "total": 1, "verified": 0, "failed": 0, "unavailable": 0,
-        "requests_made": 0, "requests_reserved": 2, "elapsed_seconds": 0.0,
-        "last_reason": f"Bearer {secret} {email} {raw_url}",
-    })
+    plan = run_action(
+        "models.refresh.plan",
+        {
+            "snapshot_rows": payload["rows"],
+            "needed_ids": ["cc/sonnet"],
+            "gateway_origin": adapter.gateway,
+            "now": NOW,
+        },
+    )
+    progress = format_verified_progress(
+        {
+            "probed": 0,
+            "total": 1,
+            "verified": 0,
+            "failed": 0,
+            "unavailable": 0,
+            "requests_made": 0,
+            "requests_reserved": 2,
+            "elapsed_seconds": 0.0,
+            "last_reason": f"Bearer {secret} {email} {raw_url}",
+        }
+    )
     tui, stream = console_ui()
     home._render_action_result(tui, True, payload)
     combined = json.dumps(payload) + render_verified_plain(payload) + stream.getvalue()
@@ -737,8 +822,14 @@ def test_manual_refresh_decline_defaults_no_and_zero_calls_writes(
             raise KeyboardInterrupt
         return answer
 
-    result = consume(adapter, manual=True, read_line=read_line, write=lines.append,
-                     transport=forbidden, run_refresh=forbidden)
+    result = consume(
+        adapter,
+        manual=True,
+        read_line=read_line,
+        write=lines.append,
+        transport=forbidden,
+        run_refresh=forbidden,
+    )
     assert result.ok
     assert result.data["refresh"]["outcome"] in {"not_confirmed", "cancelled"}
     assert result.data["refresh"]["requests_made"] == 0
@@ -756,23 +847,91 @@ def test_manual_yes_exact_plan_metered_and_unknown_liveness_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = adapter_for(
-        tmp_path, ("ap/metered", "zz/unknown"), age=None,
+        tmp_path,
+        ("ap/metered", "zz/unknown"),
+        age=None,
         inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0}), row("zz/unknown")],
         connections=[conn("ap", auth="apikey", plan="PAYG"), conn("zz", auth="apikey", plan="")],
     )
     transport = RecordingTransport()
     lines: list[str] = []
-    result = consume(adapter, manual=True, read_line=lambda _p: "y", write=lines.append,
-                     transport=transport)
+    result = consume(
+        adapter, manual=True, read_line=lambda _p: "y", write=lines.append, transport=transport
+    )
     assert result.ok
     assert [(rid, phase) for rid, phase, _ in transport.calls] == [
-        ("ap/metered", "chat"), ("zz/unknown", "chat")
+        ("ap/metered", "chat"),
+        ("zz/unknown", "chat"),
     ]
     assert result.data["refresh"]["requests_made"] == 2
     assert result.data["refresh"]["outcome"] == "completed"
+    assert result.data["refresh"]["verified"] == 0
+    assert result.data["refresh"]["alive"] == 2
     assert all(r["status"] == "VERIFIED" and not r["coding_ok"] for r in result.data["rows"])
     assert "Selected routes (2)" in "\n".join(lines)
     assert "estimated_requests=2" in "\n".join(lines)
+
+
+def test_progress_distinguishes_healthy_chat_from_full_verified() -> None:
+    line = format_verified_progress(
+        {
+            "probed": 1,
+            "total": 1,
+            "verified": 0,
+            "alive": 1,
+            "failed": 0,
+            "unavailable": 0,
+            "requests_made": 1,
+            "requests_reserved": 0,
+            "elapsed_seconds": 0.25,
+        }
+    )
+    assert "1/1 probed" in line
+    assert "healthy=1 failed=0" in line
+    assert "elapsed=0.2s" in line
+
+
+def test_manual_metered_alive_only_reloads_chat_verified_evidence(tmp_path: Path) -> None:
+    adapter = adapter_for(
+        tmp_path,
+        ("ap/metered",),
+        age=None,
+        inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0})],
+        connections=[conn("ap", auth="apikey", plan="PAYG")],
+    )
+    transport = RecordingTransport()
+    result = consume(adapter, manual=True, read_line=lambda _p: "y", transport=transport)
+    assert result.ok
+    assert [(rid, phase) for rid, phase, _ in transport.calls] == [("ap/metered", "chat")]
+    summary = result.data["refresh"]
+    assert summary["verified"] == 0
+    assert summary["alive"] == 1
+    assert summary["route_outcomes"]["ap/metered"]["status_after"] == "UNVERIFIED"
+    assert summary["route_outcomes"]["ap/metered"]["alive"] is True
+    cached = json.loads(adapter.paths.health_cache.read_text())["routes"]["ap/metered"]
+    assert cached["chat_ok"] is True
+    assert cached["tool_ok"] is False
+    final = result.data["rows"][0]
+    assert final["status"] == "VERIFIED"
+    assert final["coding_ok"] is False
+    assert "chat_only_not_coding_verified" in final["restrictions"]
+    assert "chat verified; tools unverified" in render_verified_plain(result.data)
+    reloaded = run_action("models.verified", {"adapter": adapter}).data
+    assert {k: v for k, v in result.data.items() if k != "refresh"} == reloaded
+
+
+def test_chat_only_without_reported_identity_remains_unverified(tmp_path: Path) -> None:
+    adapter = adapter_for(tmp_path, age=0)
+    document = json.loads(adapter.paths.health_cache.read_text())
+    document["routes"]["cc/sonnet"].update(tool_ok=False, identity="not_reported")
+    write_json(adapter.paths.health_cache, document)
+    result = consume(adapter, no_refresh=True, run_refresh=forbidden, transport=forbidden)
+    assert result.ok
+    final = result.data["rows"][0]
+    assert final["status"] == "UNVERIFIED"
+    assert final["coding_ok"] is False
+    assert "identity_not_verified" in final["restrictions"]
+    assert "chat verified; tools unverified" not in render_verified_plain(result.data)
 
 
 @pytest.mark.parametrize("entry", ["inline", "prompted", "palette"])
@@ -790,13 +949,18 @@ def test_probe_all_home_entry_paths_parse_same_list_and_require_yes(
 
     monkeypatch.setattr(home, "run_palette_action", action)
     if entry == "palette":
-        monkeypatch.setattr(home, "_COMMAND_INDEX", {"/palette-probe": ("probe", "probe", "action")})
+        monkeypatch.setattr(
+            home, "_COMMAND_INDEX", {"/palette-probe": ("probe", "probe", "action")}
+        )
     answers = iter(([raw] if entry != "inline" else []) + ["y"])
-    command = f"/probe {raw}" if entry == "inline" else (
-        "/palette-probe" if entry == "palette" else "/probe"
+    command = (
+        f"/probe {raw}"
+        if entry == "inline"
+        else ("/palette-probe" if entry == "palette" else "/probe")
     )
-    home._run_command(command, tui=tui, state=home.HomeState(gateway=GATEWAY),
-                      line_reader=lambda: next(answers))
+    home._run_command(
+        command, tui=tui, state=home.HomeState(gateway=GATEWAY), line_reader=lambda: next(answers)
+    )
     assert len(calls) == 1
     name, params = calls[0]
     assert name == "probe"
@@ -824,8 +988,9 @@ def test_probe_no_consent_never_dispatches(
             raise KeyboardInterrupt
         return answer
 
-    home._run_command("/probe cc/x,kr/y", tui=tui, state=home.HomeState(gateway=GATEWAY),
-                      line_reader=read_line)
+    home._run_command(
+        "/probe cc/x,kr/y", tui=tui, state=home.HomeState(gateway=GATEWAY), line_reader=read_line
+    )
     assert "[y/N]" in stream.getvalue()
     assert "no probes" in stream.getvalue()
 
@@ -836,14 +1001,24 @@ def test_probe_options_and_empty_list_rejected_before_consent(
 ) -> None:
     tui, stream = console_ui()
     monkeypatch.setattr(home, "run_palette_action", forbidden)
-    home._run_command(command, tui=tui, state=home.HomeState(gateway=GATEWAY),
-                      line_reader=forbidden)
+    home._run_command(
+        command, tui=tui, state=home.HomeState(gateway=GATEWAY), line_reader=forbidden
+    )
     assert "ERROR" in stream.getvalue()
     assert "[y/N]" not in stream.getvalue()
 
 
-@pytest.mark.parametrize("text", ["", "stale", "provider=cc", "search=sonnet", "page=2",
-                                  "stale provider=cc search=sonnet page=2"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "stale",
+        "provider=cc",
+        "search=sonnet",
+        "page=2",
+        "stale provider=cc search=sonnet page=2",
+    ],
+)
 def test_home_eligibility_uses_independent_filters_no_scope_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
 ) -> None:
@@ -853,14 +1028,24 @@ def test_home_eligibility_uses_independent_filters_no_scope_prompt(
 
     def injected(**kwargs: Any) -> Any:
         requests.append(dict(kwargs))
-        kwargs.update(adapter=adapter, clock=lambda: NOW, monotonic=lambda: 0.0,
-                      no_refresh=True, live=False, transport=forbidden)
+        kwargs.update(
+            adapter=adapter,
+            clock=lambda: NOW,
+            monotonic=lambda: 0.0,
+            no_refresh=True,
+            live=False,
+            transport=forbidden,
+        )
         return original_consume(**kwargs)
 
     monkeypatch.setattr(surfaces, "consume_verified_models", injected)
     tui, stream = console_ui()
-    home._run_command(f"/eligibility {text}", tui=tui, state=home.HomeState(gateway=GATEWAY),
-                      line_reader=forbidden)
+    home._run_command(
+        f"/eligibility {text}",
+        tui=tui,
+        state=home.HomeState(gateway=GATEWAY),
+        line_reader=forbidden,
+    )
     assert len(requests) == 1
     query = requests[0]["query"]
     assert query.status == ("STALE" if "stale" in text else None)
@@ -885,11 +1070,40 @@ def test_selection_hook_default_none_and_injected_hook_runs_before_confirmation(
     def hook(ids: Any, now: Any) -> None:
         calls.append(("refresh", list(ids), now))
 
-    ladder = EligibilityLadder([row("cc/sonnet")], [conn("cc")], probe,
-                               tmp_path / "selection.json", refresh_hook=hook)
+    ladder = EligibilityLadder(
+        [row("cc/sonnet")], [conn("cc")], probe, tmp_path / "selection.json", refresh_hook=hook
+    )
     chosen, _ = ladder.select(TaskRequirements(), now=NOW)
     assert chosen is not None
     assert calls == [("refresh", ["cc/sonnet"], NOW), ("confirm", "cc/sonnet")]
+
+
+@pytest.mark.parametrize("age,capacity", [(0, "subscription"), (None, "metered")])
+def test_selection_hook_no_eligible_candidates_never_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, age: int | None, capacity: str
+) -> None:
+    ids = ("cc/sonnet",) if capacity == "subscription" else ("ap/metered",)
+    adapter = adapter_for(
+        tmp_path,
+        ids,
+        age=age,
+        inventory=None
+        if capacity == "subscription"
+        else [row("ap/metered", pricing={"input": 1.0, "output": 2.0})],
+        connections=None
+        if capacity == "subscription"
+        else [conn("ap", auth="apikey", plan="PAYG")],
+    )
+    monkeypatch.setattr(WaitRunner, "run", forbidden)
+    transport = RecordingTransport()
+    before = files_under(tmp_path)
+    hook = surfaces.selection_refresh_hook(
+        GATEWAY, adapter=adapter, transport=transport, run_refresh=forbidden
+    )
+    assert hook is not None
+    assert hook(ids, NOW) is None
+    assert transport.calls == []
+    assert files_under(tmp_path) == before
 
 
 def test_build_selector_fake_hook_passes_through_without_live_transport(
@@ -902,18 +1116,28 @@ def test_build_selector_fake_hook_passes_through_without_live_transport(
     monkeypatch.setattr(orchestration_run, "fetch_connections", lambda *_a, **_k: [conn("cc")])
     monkeypatch.setattr(orchestration_run, "resolve_api_key", lambda: None)
     monkeypatch.setattr(admission, "active_controller_route", lambda: None)
-    monkeypatch.setattr(admission, "default_runtime_evidence", lambda **_k: admission.RuntimeEvidence())
+    monkeypatch.setattr(
+        admission, "default_runtime_evidence", lambda **_k: admission.RuntimeEvidence()
+    )
     monkeypatch.setattr(admission.AdmittedSet, "write_receipt", lambda *_a: None)
-    monkeypatch.setattr(eligibility_report, "prime_visibility", lambda **_k: HarnessVisibility(None, source="offline-test"))
+    monkeypatch.setattr(
+        eligibility_report,
+        "prime_visibility",
+        lambda **_k: HarnessVisibility(None, source="offline-test"),
+    )
     monkeypatch.setattr(selection, "openai_health_probe", lambda *_a, **_k: forbidden)
+
     # Use the saved builder without reloading or mutating a shared module.
     def hook(_ids: Any, _now: Any) -> None:
         return None
-    selector = ORIGINAL_BUILD_SELECTOR(GATEWAY, scope="", prefer="claude",
-                                       state_file=tmp_path / "state.json", refresh_hook=hook)
+
+    selector = ORIGINAL_BUILD_SELECTOR(
+        GATEWAY, scope="", prefer="claude", state_file=tmp_path / "state.json", refresh_hook=hook
+    )
     assert selector._refresh_hook is hook
-    default_selector = ORIGINAL_BUILD_SELECTOR(GATEWAY, scope="", prefer="claude",
-                                               state_file=tmp_path / "default.json")
+    default_selector = ORIGINAL_BUILD_SELECTOR(
+        GATEWAY, scope="", prefer="claude", state_file=tmp_path / "default.json"
+    )
     assert default_selector._refresh_hook is None
     assert files_under(tmp_path) == {}
 

@@ -127,6 +127,22 @@ def test_action_uses_origin_endpoints_and_never_probes(
     assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
 
 
+@pytest.mark.parametrize(
+    "gateway", ["http://x:20128", "http://x:20128/", "http://x:20128/v1", "http://x:20128/v1/"]
+)
+def test_verified_action_uses_origin_endpoints_without_probes(
+    gateway: str, offline_gateway: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.prove_at_rest as prove
+
+    monkeypatch.setattr(prove, "live_transport", lambda *_a, **_k: pytest.fail("live transport"))
+    result = run_action("models.verified", {"gateway": gateway})
+    assert result.ok, result.data
+    assert result.data["schema"] == "verdict.verified-models/v1"
+    assert result.data["total_count"] == 2
+    assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
+
+
 def test_action_default_uses_home_cli_gateway_env(
     offline_gateway: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -136,6 +152,15 @@ def test_action_default_uses_home_cli_gateway_env(
         lambda *_a, **_k: lambda _c: pytest.fail("probe"),
     )
     result = run_action("eligibility")
+    assert result.ok, result.data
+    assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
+
+
+def test_verified_action_default_uses_home_cli_gateway_env(
+    offline_gateway: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VERDICT_GATEWAY", "http://x:20128/v1/")
+    result = run_action("models.verified")
     assert result.ok, result.data
     assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
 
