@@ -692,6 +692,10 @@ def test_token_reservations_persist_and_cap_same_provider_spend(tmp_path: Path) 
 
 def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None:
     """Real unit-1 metered/unknown rows need consent despite refreshable=False."""
+    route_specs: list[tuple[str, str, str]] = [
+        ("paid/a", "STALE", CAPACITY_METERED),
+        ("other/b", "UNVERIFIED", CAPACITY_UNKNOWN),
+    ]
     rows = [
         {
             "route_id": rid,
@@ -701,17 +705,27 @@ def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None
             "refreshable": False,
             "refresh_reason": "requires_confirmation",
         }
-        for rid, status, capacity in (
-            ("paid/a", "STALE", CAPACITY_METERED),
-            ("other/b", "UNVERIFIED", CAPACITY_UNKNOWN),
-        )
+        for rid, status, capacity in route_specs
     ]
+    needed_ids: list[str] = [rid for rid, _status, _capacity in route_specs]
     snap = RefreshSnapshot(
-        rows=tuple(RowInput(**r) for r in rows), generation="gen1", gateway_origin="http://g"
+        rows=tuple(
+            RowInput(
+                route_id=rid,
+                provider=rid.split("/")[0],
+                status=status,
+                capacity_class=capacity,
+                refreshable=False,
+                refresh_reason="requires_confirmation",
+            )
+            for rid, status, capacity in route_specs
+        ),
+        generation="gen1",
+        gateway_origin="http://g",
     )
     plan = action_models_refresh_plan(
         snapshot_rows=rows,
-        needed_ids=[r["route_id"] for r in rows],
+        needed_ids=needed_ids,
         include_metered=True,
         now=NOW,
         gateway_origin="http://g",
@@ -719,7 +733,7 @@ def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None
     ).data
     auto_transport = _Transport()
     auto = _coord(tmp_path, auto_transport).refresh_for_consumer(
-        snap, consumer="picker", needed_ids=[r["route_id"] for r in rows], config=RefreshConfig()
+        snap, consumer="picker", needed_ids=needed_ids, config=RefreshConfig()
     )
     assert auto.requests_made == 0 and auto_transport.calls == []
     transport = _Transport()
@@ -877,6 +891,14 @@ def test_changed_confirmation_plan_is_refused_without_probe(tmp_path: Path) -> N
         "refreshable": False,
         "refresh_reason": "requires_confirmation",
     }
+    row_input = RowInput(
+        route_id="paid/a",
+        provider="paid",
+        status="STALE",
+        capacity_class=CAPACITY_METERED,
+        refreshable=False,
+        refresh_reason="requires_confirmation",
+    )
     plan = action_models_refresh_plan(
         snapshot_rows=[row],
         needed_ids=["paid/a"],
@@ -890,7 +912,7 @@ def test_changed_confirmation_plan_is_refused_without_probe(tmp_path: Path) -> N
     result = action_models_refresh_execute(
         confirmed=True,
         plan=plan,
-        snapshot=RefreshSnapshot((RowInput(**row),), "gen1", "http://g"),
+        snapshot=RefreshSnapshot((row_input,), "gen1", "http://g"),
         now=NOW,
         transport=transport,
     )
