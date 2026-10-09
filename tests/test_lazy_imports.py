@@ -95,6 +95,9 @@ def test_version_cli_output_unchanged() -> None:
 
 
 def test_cli_gate_is_gate_gate() -> None:
+    import verdict.cli
+    import verdict.gate
+
     assert verdict.cli.Gate is verdict.gate.Gate
 
 
@@ -112,6 +115,9 @@ def test_cli_import_does_not_load_verdict_gate() -> None:
 
 
 def test_get_type_hints_after_gate_access() -> None:
+    import verdict.cli
+    import verdict.gate
+
     # Ensure Gate is accessed to trigger lazy import
     _ = verdict.cli.Gate
     import typing
@@ -121,4 +127,7 @@ def test_get_type_hints_after_gate_access() -> None:
 
 
 def test_getattr_returns_none_for_missing() -> None:
+    import verdict.cli
+    import verdict.gate
+
     assert getattr(verdict.cli, "NoSuchName", None) is None
