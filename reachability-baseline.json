@@ -721,203 +721,203 @@
   },
   {
     "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: AutoDevWorkflow has no resolved reference; 12-Stage Autonomous Software Development Workflow (issue #259) (verdict/workflows/autodev.py)."
   },
   {
     "qualified_name": "verdict.benchmarking.format_comparison_report",
-    "reason": "UNTRIAGED: test_only_caller at verdict/benchmarking.py:233"
+    "reason": "UNTRIAGED: format_comparison_report has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
   },
   {
     "qualified_name": "verdict.benchmarking.run_comparison_benchmarks",
-    "reason": "UNTRIAGED: test_only_caller at verdict/benchmarking.py:134"
+    "reason": "UNTRIAGED: run_comparison_benchmarks has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
   },
   {
     "qualified_name": "verdict.capacity_resolve.pool_key",
-    "reason": "UNTRIAGED: uncalled at verdict/capacity_resolve.py:38"
+    "reason": "UNTRIAGED: pool_key has no resolved reference; Conflict resolution for capacity evidence (verdict/capacity_resolve.py)."
   },
   {
     "qualified_name": "verdict.chooser.human_summary",
-    "reason": "UNTRIAGED: uncalled at verdict/chooser.py:782"
+    "reason": "UNTRIAGED: human_summary has no resolved reference; Evidence-based model chooser (verdict/chooser.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_autodev.register",
-    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_autodev.py:8"
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict autodev command family (verdict/commands/parsers_autodev.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_config.register",
-    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_config.py:8"
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict config command family (verdict/commands/parsers_config.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_credentials.register",
-    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_credentials.py:8"
+    "reason": "UNTRIAGED: register has only non-production references; Parsers for credential management commands (verdict/commands/parsers_credentials.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_harness.register",
-    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_harness.py:24"
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict harness command family (verdict/commands/parsers_harness.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_models.register",
-    "reason": "UNTRIAGED: test_only_caller at verdict/commands/parsers_models.py:8"
+    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict models command family (verdict/commands/parsers_models.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_openspec.register",
-    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_openspec.py:18"
+    "reason": "UNTRIAGED: register has no resolved reference; OpenSpec lifecycle CLI commands (verdict/commands/parsers_openspec.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_routing.register",
-    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_routing.py:8"
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict routing command family (verdict/commands/parsers_routing.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_runtime.register",
-    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_runtime.py:9"
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict runtime command family (verdict/commands/parsers_runtime.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_setup.register",
-    "reason": "UNTRIAGED: uncalled at verdict/commands/parsers_setup.py:8"
+    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict setup command family (verdict/commands/parsers_setup.py)."
   },
   {
     "qualified_name": "verdict.controller_selection.InjectableControllerSelector",
-    "reason": "UNTRIAGED: uncalled at verdict/controller_selection.py:971"
+    "reason": "UNTRIAGED: InjectableControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
   },
   {
     "qualified_name": "verdict.controller_selection.build_production_controller_selection_bundle",
-    "reason": "UNTRIAGED: uncalled at verdict/controller_selection.py:2142"
+    "reason": "UNTRIAGED: build_production_controller_selection_bundle has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
   },
   {
     "qualified_name": "verdict.controller_selection.select_controller_launch",
-    "reason": "UNTRIAGED: test_only_caller at verdict/controller_selection.py:515"
+    "reason": "UNTRIAGED: select_controller_launch has only non-production references; Live controller selection before Prime launch (verdict/controller_selection.py)."
   },
   {
     "qualified_name": "verdict.delivery.decide_repair_action",
-    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:234"
+    "reason": "UNTRIAGED: decide_repair_action has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
   },
   {
     "qualified_name": "verdict.delivery.merge_gates_satisfied",
-    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:368"
+    "reason": "UNTRIAGED: merge_gates_satisfied has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
   },
   {
     "qualified_name": "verdict.delivery.post_merge_verify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:396"
+    "reason": "UNTRIAGED: post_merge_verify has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
   },
   {
     "qualified_name": "verdict.delivery.run_local_proof",
-    "reason": "UNTRIAGED: test_only_caller at verdict/delivery.py:434"
+    "reason": "UNTRIAGED: run_local_proof has only non-production references; Autonomous delivery controller (proof \u2192 PR \u2192 CI \u2192 merge \u2192 Done) (verdict/delivery.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:282"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:217"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:155"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:406"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:312"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:215"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_codex.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:480"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
   },
   {
     "qualified_name": "verdict.harness_codex.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:180"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
   },
   {
     "qualified_name": "verdict.harness_codex.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:133"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:363"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:274"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:197"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_hermes.certify",
-    "reason": "UNTRIAGED: uncalled at verdict/harness_hermes.py:361"
+    "reason": "UNTRIAGED: certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
   },
   {
     "qualified_name": "verdict.harness_hermes.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_hermes.py:153"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
   },
   {
     "qualified_name": "verdict.harness_hermes.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_hermes.py:87"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:285"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:216"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:162"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.certify",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:305"
+    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.disable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:236"
+    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.enable",
-    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:183"
+    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.home.main",
-    "reason": "UNTRIAGED: uncalled at verdict/home.py:1519"
+    "reason": "UNTRIAGED: main has no resolved reference; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
   },
   {
     "qualified_name": "verdict.live_routing_run.utc_now",
-    "reason": "UNTRIAGED: uncalled at verdict/live_routing_run.py:110"
+    "reason": "UNTRIAGED: utc_now has no resolved reference; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.discover_sessions",
-    "reason": "UNTRIAGED: uncalled at verdict/memory_session_adapter.py:698"
+    "reason": "UNTRIAGED: discover_sessions has no resolved reference; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.import_discovered_sessions",
-    "reason": "UNTRIAGED: test_only_caller at verdict/memory_session_adapter.py:703"
+    "reason": "UNTRIAGED: import_discovered_sessions has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.poll_discovered_sessions",
-    "reason": "UNTRIAGED: test_only_caller at verdict/memory_session_adapter.py:721"
+    "reason": "UNTRIAGED: poll_discovered_sessions has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.metadata.store.file_transport",
-    "reason": "UNTRIAGED: uncalled at verdict/metadata/store.py:515"
+    "reason": "UNTRIAGED: file_transport has no resolved reference; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
   },
   {
     "qualified_name": "verdict.metadata.store.refresh_metadata",
-    "reason": "UNTRIAGED: test_only_caller at verdict/metadata/store.py:338"
+    "reason": "UNTRIAGED: refresh_metadata has only non-production references; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
   },
   {
     "qualified_name": "verdict.orchestration.cockpit_nav.run_cockpit",
-    "reason": "UNTRIAGED: test_only_caller at verdict/orchestration/cockpit_nav.py:808"
+    "reason": "UNTRIAGED: run_cockpit has only non-production references; Interactive cockpit navigation for ``verdict watch`` (read-only) (verdict/orchestration/cockpit_nav.py)."
   },
   {
     "qualified_name": "verdict.orchestration.health_cache.fresh_until",
