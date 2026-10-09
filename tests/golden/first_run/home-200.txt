@@ -13,7 +13,8 @@ VERDICT  autonomous control plane
 |           verdict run-receipt  verify an orchestration receipt (proof surface)               |
 |           verdict receipt      inspect routing receipts (RoutingReceiptV1)                   |
 |           verdict replay       replay a routing decision session                             |
-| Health    verdict eligibility  DISCOVERED > ENTITLED > HEALTHY > AVAILABLE > ELIGIBLE        |
+| Health    verdict eligibility  unscoped verified evidence; bounded refresh, progress and     |
+|                                consent                                                       |
 |           verdict probe        one-token liveness probes                                     |
 |           verdict detect       detect reachable providers                                    |
 | Models    verdict models       local model catalog view                                      |
