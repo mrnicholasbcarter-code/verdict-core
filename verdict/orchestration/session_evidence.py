@@ -92,7 +92,7 @@ def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
                 source=raw["source"],
             )
             items.setdefault(_identity(item), item)
-        except (ValueError, TypeError, KeyError, UnicodeError):
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             skipped += 1
     return tuple(items.values()), skipped
 

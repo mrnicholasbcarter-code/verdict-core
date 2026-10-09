@@ -187,7 +187,16 @@ def test_invalid_outcomes_and_naive_timestamps_are_rejected(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    "bad_line", ["not valid json", "null", "[]", "{}", '{"route_id":null}', '{"at":"invalid"}']
+    "bad_line",
+    [
+        "not valid json",
+        "null",
+        "[]",
+        "{}",
+        '{"route_id":null}',
+        '{"at":"invalid"}',
+        pytest.param("[" * 20000 + "]" * 20000, id="excessive-nesting"),
+    ],
 )
 def test_load_skips_and_counts_bad_lines_without_losing_valid_evidence(
     tmp_path: Path, bad_line: str
