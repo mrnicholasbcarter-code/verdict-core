@@ -132,7 +132,9 @@ def _refresh_lines(refresh: Mapping[str, Any]) -> list[str]:
     fields = [f"outcome={outcome}"]
     for key, label in (
         ("probed", "probed"),
-        ("verified", "healthy"),
+        ("healthy", "healthy"),
+        ("verified", "verified"),
+        ("alive", "alive"),
         ("failed", "failed"),
         ("unavailable", "unavailable"),
         ("requests_made", "requests"),
@@ -171,6 +173,8 @@ def _proof_details(row: Mapping[str, Any]) -> str:
     # These are recorded facts. In particular, catalog tool support and agentic
     # hints are not substituted for the explicit coding_ok proof flag.
     parts = [f"coding_ok={_display(row.get('coding_ok'))}"]
+    if row.get("status") == "VERIFIED" and row.get("coding_ok") is False:
+        parts.append("chat verified; tools unverified")
     for key in ("probe_class", "identity", "freshness", "checked_at", "last_success_at"):
         if row.get(key) is not None:
             parts.append(f"{key}={_display(row[key])}")
@@ -294,7 +298,15 @@ def format_verified_progress(event: Any) -> str:
     """
     probed = _count(_progress_field(event, "probed"))
     total = _count(_progress_field(event, "total"))
-    healthy = _count(_progress_field(event, "verified"))
+    verified = _progress_field(event, "verified")
+    alive = _progress_field(event, "alive")
+    if alive is None:
+        alive = 0
+    healthy = (
+        str(verified + alive)
+        if type(verified) is int and verified >= 0 and type(alive) is int and alive >= 0
+        else "unknown"
+    )
     failed = _count(_progress_field(event, "failed"))
     unavailable = _count(_progress_field(event, "unavailable"))
     requests = _count(_progress_field(event, "requests_made"))

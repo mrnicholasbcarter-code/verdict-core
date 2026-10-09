@@ -318,8 +318,9 @@ def _summary(outcome: RefreshOutcome) -> dict[str, Any]:
         "outcome": outcome.outcome,
         "job_id": outcome.job_id,
         "probed": outcome.probed,
-        "healthy": outcome.verified,
+        "healthy": outcome.verified + getattr(outcome, "alive", 0),
         "verified": outcome.verified,
+        "alive": getattr(outcome, "alive", 0),
         "failed": outcome.failed,
         "unavailable": outcome.unavailable,
         "requests_made": outcome.requests_made,
@@ -687,32 +688,37 @@ def selection_refresh_hook(
         remaining = config.wall_seconds - (time.monotonic() - started)
         if remaining <= 0:
             return None
-        controller = VerifiedControlsController(
-            read_line=lambda _p: None,
-            write=lambda line: print(line, file=sys.stderr),
-            run_refresh=_wait_on_worker(run_refresh, live=transport is None),
-        )
-        from verdict.orchestration.verified_models_render import format_verified_progress
-
-        outcome = controller.refresh(
-            snapshot,
-            consumer="selection",
-            needed_ids=ids,
-            config=replace(config, wall_seconds=remaining),
-            explicit=True,
-            cache=HealthCache(scoped.paths.health_cache),
-            transport=transport or _lazy_live_transport(scoped.gateway),
-            clock=lambda: now,
-            on_progress=lambda event: print(format_verified_progress(event), file=sys.stderr),
-        )
         blocked: dict[str, str] = {}
-        for rid, route_outcome in outcome.route_outcomes.items():
-            if rid not in wanted:
-                continue
-            if route_outcome.probed and not route_outcome.verified:
-                blocked[rid] = "refresh_failed"
-            elif route_outcome.refresh_reason == "provider_scope_stopped":
-                blocked[rid] = "refresh_unavailable"
+        if select_candidates(snapshot, needed_ids=ids, explicit=True, config=config):
+            controller = VerifiedControlsController(
+                read_line=lambda _p: None,
+                write=lambda line: print(line, file=sys.stderr),
+                run_refresh=_wait_on_worker(run_refresh, live=transport is None),
+            )
+            from verdict.orchestration.verified_models_render import format_verified_progress
+
+            outcome = controller.refresh(
+                snapshot,
+                consumer="selection",
+                needed_ids=ids,
+                config=replace(config, wall_seconds=remaining),
+                explicit=True,
+                cache=HealthCache(scoped.paths.health_cache),
+                transport=transport or _lazy_live_transport(scoped.gateway),
+                clock=lambda: now,
+                on_progress=lambda event: print(format_verified_progress(event), file=sys.stderr),
+            )
+            for rid, route_outcome in outcome.route_outcomes.items():
+                if rid not in wanted:
+                    continue
+                if (
+                    route_outcome.probed
+                    and not route_outcome.verified
+                    and not getattr(route_outcome, "alive", False)
+                ):
+                    blocked[rid] = "refresh_failed"
+                elif route_outcome.refresh_reason == "provider_scope_stopped":
+                    blocked[rid] = "refresh_unavailable"
         # Successful siblings cannot clear an active provider blocker. The
         # reloaded projection provides the same validated gates as the view.
         for page in range(1, (len(metadata) + 199) // 200 + 1):
