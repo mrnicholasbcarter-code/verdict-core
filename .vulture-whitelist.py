@@ -38,3 +38,8 @@ _MAX_CANDIDATES
 # call-site/API compatibility with existing callers; not read in the
 # current function body.
 refresh_fallback
+
+# verdict/orchestration/cli.py: _ExplicitPrefer.__call__ -- argparse.Action
+# interface signature (parser, namespace, values, option_string); the
+# override must accept option_string even though it does not read it.
+option_string
