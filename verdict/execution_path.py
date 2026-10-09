@@ -1026,54 +1026,6 @@ def legacy_selector_must_yield(
         )
 
 
-def infer_strategy_name(
-    *,
-    plan: AssistancePlan,
-    is_cheap: bool = False,
-    is_paid: bool = False,
-    is_frontier: bool = False,
-    session_decision: str | None = None,
-    prefer_verify: bool = False,
-    prefer_rehydrate: bool = False,
-    prefer_escalate: bool = False,
-) -> StrategyName:
-    """Map assistance/session flags to the execution-path authority strategy vocabulary.
-
-    Helper for callers assembling :class:`ExecutionPathOffer` rows. Does not
-    qualify or price — only names the strategy axis.
-    """
-
-    if session_decision == "STAY":
-        return "stay_current_route"
-    if session_decision == "SWITCH":
-        return "switch_equivalent_route"
-    if plan.result != "sufficient":
-        return "blocked"
-    if prefer_rehydrate and is_cheap:
-        return "cheap_execute_then_rehydrate_retry"
-    if prefer_escalate and is_cheap:
-        return "cheap_execute_then_bounded_escalate"
-    if plan.decomposition.required and is_cheap:
-        return "frontier_plan_then_cheap_execute"
-    if prefer_verify and is_cheap:
-        return "cheap_execute_then_verify"
-    if is_frontier and plan.intrinsic_sufficient:
-        return "frontier_direct"
-    if is_paid and plan.intrinsic_sufficient:
-        return "direct_paid"
-    if is_cheap and plan.intrinsic_sufficient:
-        return "direct_cheap"
-    if is_cheap and plan.assisted_sufficient:
-        return "cheap_with_assistance"
-    if is_frontier:
-        return "frontier_direct"
-    if is_paid:
-        return "direct_paid"
-    if is_cheap:
-        return "cheap_with_assistance"
-    return "blocked"
-
-
 __all__ = [
     "EXECUTION_PATH_SCHEMA_VERSION",
     "STRATEGY_AUTHORITY",
@@ -1085,7 +1037,6 @@ __all__ = [
     "RejectedStrategy",
     "StrategyName",
     "apply_bounded_recovery",
-    "infer_strategy_name",
     "legacy_selector_must_yield",
     "optimize_execution_path",
 ]

@@ -580,23 +580,6 @@ def _tail(text: str, limit: int = 400) -> str:
     return cleaned[-limit:] if len(cleaned) > limit else cleaned
 
 
-def load_patch_executor(
-    repo_root: str | Path,
-    model: str,
-    *,
-    base_url: str = DEFAULT_BASE_URL,
-    api_key: str | None = None,
-    timeout_seconds: float = 120.0,
-) -> PatchExecutor:
-    """Convenience constructor for CLI callers."""
-    return PatchExecutor(
-        repo_root,
-        PatchExecutorConfig(
-            model=model, base_url=base_url, api_key=api_key, timeout_seconds=timeout_seconds
-        ),
-    )
-
-
 __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_SESSION_ID",
@@ -612,7 +595,6 @@ __all__ = [
     "build_unit_prompt",
     "extract_content",
     "extract_diff",
-    "load_patch_executor",
     "parse_patch_paths",
     "parse_usage",
 ]
