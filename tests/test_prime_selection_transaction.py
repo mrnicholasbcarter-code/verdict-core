@@ -633,3 +633,54 @@ def test_directory_fsync_failure_reports_applied_incomplete(
     assert result.post_digest == byte_digest(env["paths"].settings.read_bytes())
     monkeypatch.setattr(selection, "_sync_dir", original)
     assert restore(env, recovery(env)).status == "restored"
+
+
+def test_absent_project_settings_under_group_writable_parent_applies(env: dict[str, Any]) -> None:
+    """A realistic 0775-umask ``.prime`` dir with no project settings must not refuse.
+
+    Before the fix, ``_safe_parent`` checked the parent directory's mode before
+    the open ever ran, so a merely-absent file under a group/other-writable
+    parent raised ``unsafe_directory`` instead of being treated as "no project
+    override". The optional project settings path must tolerate this.
+    """
+    project_dir = env["paths"].agent_dir / "cwd-prime"
+    project_dir.mkdir(mode=0o775)
+    project = project_dir / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert env["plan"].refusals == ()
+    assert apply(env).status == "applied"
+
+
+def test_present_project_settings_under_group_writable_parent_still_refused(
+    env: dict[str, Any],
+) -> None:
+    """A *present* project file keeps full safety checks regardless of absence."""
+    project_dir = env["paths"].agent_dir / "cwd-prime2"
+    project_dir.mkdir(mode=0o775)
+    project = project_dir / "settings.json"
+    project.write_bytes(b'{"enabledModels": []}')
+    project.chmod(0o644)
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["deps"] = replace(env["deps"], project_digest=byte_digest(project.read_bytes()))
+    env["plan"] = make_plan(env)
+    assert apply(env).reasons == ("unsafe_directory",)
+    assert not owned(env)
+
+
+def test_project_settings_appearing_after_preview_refuses_dependencies_changed(
+    env: dict[str, Any],
+) -> None:
+    """A project file created between preview and apply must change the digest."""
+    project_dir = env["paths"].agent_dir / "cwd-prime3"
+    project_dir.mkdir(mode=0o700)
+    project = project_dir / "settings.json"
+    assert not project.exists()
+    env["paths"] = replace(env["paths"], project_settings=project)
+    env["plan"] = make_plan(env)
+    assert env["plan"].refusals == ()
+    project.write_bytes(b'{"enabledModels": ["external"]}')
+    project.chmod(0o600)
+    assert apply(env).reasons == ("dependencies_changed",)
+    assert not owned(env)
