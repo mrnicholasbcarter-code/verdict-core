@@ -776,11 +776,13 @@ class TestSelectionRefreshHook:
         # A hook exception is swallowed; selection still proceeds.
         assert selected is not None
 
-
     def test_refresh_failed_unavailable_ids_are_not_confirmed(self, tmp_path: Path) -> None:
         ids = ("cc/claude-sonnet-5", "cc/claude-opus-5", "cc/claude-haiku-4-5")
         rows = [row(rid, owned_by="claude") for rid in ids]
-        hook = lambda _ids, _now: {ids[0]: "FAILED", ids[1]: "unavailable"}
+
+        def hook(_ids: list[str], _now: datetime) -> dict[str, str]:
+            return {ids[0]: "FAILED", ids[1]: "unavailable"}
+
         ladder, probe = make_ladder(tmp_path, rows, [conn("claude")], refresh_hook=hook)
         chosen, verdicts = ladder.select(REQ, now=NOW)
         assert chosen is not None and chosen.route_id == ids[2]

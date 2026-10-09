@@ -262,6 +262,60 @@ def action_models_refresh_plan(**kwargs: Any) -> ActionResult:
 # ---------------------------------------------------------------------------
 
 
+def _safe_code(value: object) -> str | None:
+    """Expose only bounded machine codes, never free-form provider text."""
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    if not all(c.isascii() and (c.islower() or c.isdigit() or c == "_") for c in value):
+        return None
+    return value
+
+
+def _route_results(
+    plan_routes: Sequence[PlanRoute], snapshot: RefreshSnapshot, outcome: Any
+) -> dict[str, dict[str, Any]]:
+    """Report every exact planned id, including narrowed or untested ids."""
+    current = snapshot.by_id()
+    results: dict[str, dict[str, Any]] = {}
+    for route in plan_routes:
+        actual = outcome.route_outcomes.get(route.route_id)
+        row = current.get(route.route_id)
+        probed = bool(actual is not None and actual.probed)
+        category = _safe_code(actual.category) if actual is not None else None
+        reason = _safe_code(actual.refresh_reason) if actual is not None else None
+        if not probed and reason is None and row is not None:
+            reason = _safe_code(row.refresh_reason)
+        status = row.status if row is not None else "UNAVAILABLE"
+        if status not in {"STALE", "UNVERIFIED", "FAILED", "UNAVAILABLE", "VERIFIED"}:
+            status = "UNAVAILABLE"
+        if probed:
+            status = "VERIFIED" if actual.verified else "FAILED"
+        elif status == "VERIFIED":
+            # An unprobed refresh cannot establish a new VERIFIED result.
+            status = "STALE"
+        results[route.route_id] = {
+            "status_after": status,
+            "probed": probed,
+            "category": category,
+            "http_status": (
+                actual.http_status
+                if actual is not None
+                and type(actual.http_status) is int
+                and 100 <= actual.http_status <= 599
+                else None
+            ),
+            "refresh_reason": reason or ("not_tested" if not probed else None),
+            "requests_made": (
+                actual.requests_made
+                if actual is not None
+                and type(actual.requests_made) is int
+                and 0 <= actual.requests_made <= 2
+                else 0
+            ),
+        }
+    return results
+
+
 def _refuse(reason: str) -> ActionResult:
     return ActionResult(
         data={"error": "refresh execute refused", "reason": reason, "calls": 0, "writes": 0},
@@ -349,6 +403,17 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
                 "outcome": "nothing_eligible",
                 "requests_made": 0,
                 "probed": 0,
+                "route_outcomes": {
+                    pr.route_id: {
+                        "status_after": "UNAVAILABLE",
+                        "probed": False,
+                        "category": None,
+                        "http_status": None,
+                        "refresh_reason": "not_tested",
+                        "requests_made": 0,
+                    }
+                    for pr in plan_routes
+                },
             },
             ok=True,
             exit_code=0,
@@ -405,6 +470,7 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
             "requests_made": outcome.requests_made,
             "complete": outcome.complete,
             "cap_reason": outcome.cap_reason,
+            "route_outcomes": _route_results(plan_routes, snapshot, outcome),
         },
         ok=True,
         exit_code=0,

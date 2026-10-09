@@ -661,65 +661,103 @@ def test_token_reservations_persist_and_cap_same_provider_spend(tmp_path: Path) 
 def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None:
     """Real unit-1 metered/unknown rows need consent despite refreshable=False."""
     rows = [
-        {"route_id": rid, "provider": rid.split("/")[0], "status": status,
-         "capacity_class": capacity, "refreshable": False,
-         "refresh_reason": "requires_confirmation"}
+        {
+            "route_id": rid,
+            "provider": rid.split("/")[0],
+            "status": status,
+            "capacity_class": capacity,
+            "refreshable": False,
+            "refresh_reason": "requires_confirmation",
+        }
         for rid, status, capacity in (
             ("paid/a", "STALE", CAPACITY_METERED),
             ("other/b", "UNVERIFIED", CAPACITY_UNKNOWN),
         )
     ]
     snap = RefreshSnapshot(
-        rows=tuple(RowInput(**r) for r in rows), generation="gen1",
-        gateway_origin="http://g",
+        rows=tuple(RowInput(**r) for r in rows), generation="gen1", gateway_origin="http://g"
     )
     plan = action_models_refresh_plan(
-        snapshot_rows=rows, needed_ids=[r["route_id"] for r in rows],
-        include_metered=True, now=NOW, gateway_origin="http://g",
+        snapshot_rows=rows,
+        needed_ids=[r["route_id"] for r in rows],
+        include_metered=True,
+        now=NOW,
+        gateway_origin="http://g",
         evidence_generation="gen1",
     ).data
     auto_transport = _Transport()
     auto = _coord(tmp_path, auto_transport).refresh_for_consumer(
-        snap, consumer="picker", needed_ids=[r["route_id"] for r in rows],
-        config=RefreshConfig(),
+        snap, consumer="picker", needed_ids=[r["route_id"] for r in rows], config=RefreshConfig()
     )
     assert auto.requests_made == 0 and auto_transport.calls == []
     transport = _Transport()
     result = action_models_refresh_execute(
-        confirmed=True, plan=plan, snapshot=snap, now=NOW,
-        cache=HealthCache(tmp_path / "consent-cache.json"), transport=transport,
-        clock=lambda: NOW, monotonic=lambda: 0.0, sleep=lambda _s: None,
-        lock_path=tmp_path / "consent.lock", marker_path=tmp_path / "consent.json",
+        confirmed=True,
+        plan=plan,
+        snapshot=snap,
+        now=NOW,
+        cache=HealthCache(tmp_path / "consent-cache.json"),
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        lock_path=tmp_path / "consent.lock",
+        marker_path=tmp_path / "consent.json",
     )
     assert result.ok and result.data["probed"] == 2
     assert result.data["requests_made"] == 2
     assert transport.calls == [("paid/a", "chat"), ("other/b", "chat")]
+    outcomes = result.data["route_outcomes"]
+    assert set(outcomes) == {"paid/a", "other/b"}
+    for rid in outcomes:
+        assert outcomes[rid] == {
+            "status_after": "VERIFIED",
+            "probed": True,
+            "category": "ok",
+            "http_status": 200,
+            "refresh_reason": None,
+            "requests_made": 1,
+        }
 
 
 def test_consented_blocked_row_never_probed(tmp_path: Path) -> None:
     row = RowInput("paid/a", "paid", "STALE", CAPACITY_METERED, False, "blocked")
     transport = _Transport()
     out = _coord(tmp_path, transport).refresh_for_consumer(
-        RefreshSnapshot((row,), generation="gen1"), consumer="manual",
-        needed_ids=[row.route_id], config=RefreshConfig(), authorized=True,
+        RefreshSnapshot((row,), generation="gen1"),
+        consumer="manual",
+        needed_ids=[row.route_id],
+        config=RefreshConfig(),
+        authorized=True,
     )
     assert out.requests_made == 0 and transport.calls == []
 
 
 def test_changed_confirmation_plan_is_refused_without_probe(tmp_path: Path) -> None:
-    row = {"route_id": "paid/a", "provider": "paid", "status": "STALE",
-           "capacity_class": CAPACITY_METERED, "refreshable": False,
-           "refresh_reason": "requires_confirmation"}
+    row = {
+        "route_id": "paid/a",
+        "provider": "paid",
+        "status": "STALE",
+        "capacity_class": CAPACITY_METERED,
+        "refreshable": False,
+        "refresh_reason": "requires_confirmation",
+    }
     plan = action_models_refresh_plan(
-        snapshot_rows=[row], needed_ids=["paid/a"], include_metered=True,
-        now=NOW, gateway_origin="http://g", evidence_generation="gen1",
+        snapshot_rows=[row],
+        needed_ids=["paid/a"],
+        include_metered=True,
+        now=NOW,
+        gateway_origin="http://g",
+        evidence_generation="gen1",
     ).data
     plan["routes"][0]["route_id"] = "paid/changed"
     transport = _Transport()
     result = action_models_refresh_execute(
-        confirmed=True, plan=plan,
+        confirmed=True,
+        plan=plan,
         snapshot=RefreshSnapshot((RowInput(**row),), "gen1", "http://g"),
-        now=NOW, transport=transport,
+        now=NOW,
+        transport=transport,
     )
     assert not result.ok and result.data["reason"] == "digest_mismatch"
     assert transport.calls == []
@@ -727,8 +765,51 @@ def test_changed_confirmation_plan_is_refused_without_probe(tmp_path: Path) -> N
 
 def test_probe_model_list_rejects_option_like_ids() -> None:
     import pytest
+
     from verdict.tui_verified_controls import parse_probe_model_list
 
     for value in ("--probe", "cc/a, -force"):
         with pytest.raises(ValueError):
             parse_probe_model_list(value)
+
+
+def test_execute_route_outcomes_report_blocked_and_missing_without_verified(tmp_path: Path) -> None:
+    rows = [
+        {
+            "route_id": rid,
+            "provider": "cc",
+            "status": "STALE",
+            "capacity_class": CAPACITY_FREE,
+            "refreshable": True,
+        }
+        for rid in ("cc/blocked", "cc/missing")
+    ]
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows,
+        needed_ids=[r["route_id"] for r in rows],
+        now=NOW,
+        gateway_origin="http://g",
+        evidence_generation="gen1",
+    ).data
+    blocked = RowInput("cc/blocked", "cc", "STALE", CAPACITY_FREE, False, "blocked")
+    transport = _Transport()
+    result = action_models_refresh_execute(
+        confirmed=True,
+        plan=plan,
+        snapshot=RefreshSnapshot((blocked,), "gen1", "http://g"),
+        now=NOW,
+        cache=HealthCache(tmp_path / "cache.json"),
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        lock_path=tmp_path / "lock",
+        marker_path=tmp_path / "marker",
+    )
+    assert result.ok and transport.calls == []
+    outcomes = result.data["route_outcomes"]
+    assert set(outcomes) == {"cc/blocked", "cc/missing"}
+    assert all(not o["probed"] and o["status_after"] != "VERIFIED" for o in outcomes.values())
+    assert all(o["requests_made"] == 0 for o in outcomes.values())
+    assert outcomes["cc/blocked"]["refresh_reason"] == "blocked"
+    assert outcomes["cc/missing"]["refresh_reason"] == "not_tested"
