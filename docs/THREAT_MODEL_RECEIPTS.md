@@ -37,3 +37,41 @@ Raw-field allowlists should be narrow, exact paths controlled by the deployment
 owner. They do not grant access to credentials or authorize external provider
 calls. Replay only reads local receipt facts; it never contacts a model,
 provider, adapter, or network endpoint.
+
+## Independent rehearsal attestation
+
+Certification can consume receipt bytes signed by GitHub Actions OIDC and
+Sigstore. The trusted signer is the pinned
+`mrnicholasbcarter-code/verdict-core/.github/workflows/certify-rehearsal.yml`
+workflow, running on `refs/heads/main` at the exact certified source SHA.
+The workflow uses the protected `certification` environment and GitHub-hosted
+runners. The verifier enforces repository, signer workflow, source ref, source
+and signer digests, issuer, and SLSA predicate through `gh attestation verify`.
+It then checks the SHA256 subject in verified output against the actual receipt
+bytes. Raw bundle predicate fields are never accepted as signer identity.
+
+The verifier still rebuilds each receipt from its graph and event evidence.
+Both clean and chaos must be `COMPLETE`. Clean must have no injected faults;
+chaos must record a failed injected worker attempt. Producer SHA equality is
+exact on this path, even if only documentation changed between commits.
+A missing bundle or unavailable verifier is `INCOMPLETE`. A failed verification,
+digest mismatch, stale producer, malformed output or semantic failure is `FAIL`.
+Unattested local evidence and self-asserted evidence flags cannot certify.
+
+| Threat | Control | Residual risk |
+| --- | --- | --- |
+| Local forger rewrites a receipt and recomputes its own digest | GitHub/Sigstore signed subject digest plus semantic replay | A signer or trusted workflow compromise can sign false evidence |
+| Receipt from a different workflow, branch or commit is replayed | Pinned certificate signer workflow, main ref, exact source and signer SHA; exact producer SHA | Trusted main code and Actions administration remain security boundaries |
+| Attestation is missing or verifier cannot start | Non-certifying `INCOMPLETE`; timeout or invalid verifier result fails | Availability does not imply certification |
+| Gateway lies about route, identity or response | Model identity remains explicitly receipt-reported | Gateway and providers are operator-controlled; OIDC does not attest provider execution |
+| Workflow or provider output leaks credentials | Environment protection, masked gateway secrets, no provider output in logs, known-secret scan before upload | Arbitrary sensitive content needs operator review; masking is not a universal secret scanner |
+
+This proves that a specific GitHub workflow on main at a specific SHA produced
+specific receipt bytes. It does not move generation of rehearsal content outside
+Verdict. It does not prove provider honesty, model execution, correctness of
+accepted work, or reviewer competence. Protect main, workflow changes, environment
+approvals, gateway configuration and scoped credentials. A compromised certifier
+host can replace verification code and is outside this local verification boundary.
+
+See [certification operations](certification/README.md#attested-ci-rehearsals).
+Adding this lane does not create secrets or enable `VERDICT_REQUIRE_CERTIFIED_BUNDLE`.
