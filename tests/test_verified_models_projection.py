@@ -5,6 +5,8 @@ Offline only: injected ``now``, no ``~/.verdict`` access, no network, no probes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1675,7 +1677,9 @@ def test_cooldown_scope_with_whitespace_or_secret_becomes_invalid():
     # The scrub is applied at the display boundary (to_dict), where the scope
     # must collapse and the secret must be absent from the whole serialized view.
     d = view.to_dict()
-    assert d["rows"][0]["cooldown_scope"] == "pool:<invalid>"
+    assert d["rows"][0]["cooldown_scope"] == (
+        "pool:h-" + hashlib.sha256(f"p1 token={secret}".lower().encode()).hexdigest()[:12]
+    )
     assert secret not in _json.dumps(d)
 
 
@@ -1695,7 +1699,9 @@ def test_restrictions_vocabulary_is_fixed_in_output():
     d = r.to_dict()
     assert d["restriction"] == "admission_denied_unknown"
     assert d["restrictions"] == ["admission_denied_unknown", "identity_not_verified"]
-    assert d["cooldown_scope"] == "pool:<invalid>"
+    assert d["cooldown_scope"] == (
+        "pool:h-" + hashlib.sha256(b"p1 token=TOPSECRET").hexdigest()[:12]
+    )
     assert "TOPSECRET" not in str(d)
 
 
@@ -1803,3 +1809,234 @@ def test_contradictory_binding_duplicates_fail_closed():
     assert r.status is VerifiedStatus.INVENTORY_ONLY
     assert r.restriction == "contradictory_inventory"
     assert any("contradictory" in e for e in view.source_errors)
+
+
+# -- Round 3 privacy: every input path at the public JSON boundary -----------
+
+_PRIVACY_INPUTS = {
+    "inventory": (
+        "id",
+        "owned_by",
+        "context_length",
+        "max_input_tokens",
+        "pricing",
+        "pool_id",
+        "subscription_pool_id",
+        "account_id",
+        "capabilities",
+    ),
+    "capabilities": ("tool_calling", "structured_output"),
+    "connection": (
+        "provider",
+        "isActive",
+        "testStatus",
+        "authType",
+        "plan_label",
+        "pool_id",
+        "subscription_pool_id",
+        "account_id",
+        "api_key",
+        "authorization",
+    ),
+    "at_rest": (
+        "route_id",
+        "category",
+        "checked_at",
+        "until",
+        "consecutive_failures",
+        "chat_ok",
+        "tool_ok",
+        "healthy",
+        "identity",
+        "latency_ms",
+        "http_status",
+        "probe_class",
+        "agentic_ok",
+        "agentic_checked_at",
+        "last_success_at",
+        "pool",
+    ),
+    "cooldown": ("category", "canonical_category", "until", "checked_at", "pool_id", "account_id"),
+    "ladder": ("healthy", "category", "checked_at"),
+    "worker": ("healthy", "category", "observed_at", "expires_at", "status_code"),
+    "receipt": ("route_id", "admitted", "reason"),
+    "admission": ("admitted", "first_failed_stage", "reason"),
+    "filter": ("provider", "search", "status"),
+    "key": (
+        "health_cache",
+        "ladder_state",
+        "worker_health",
+        "admission_facts",
+        "receipt_admitted",
+        "visibility",
+        "policy",
+        "source_errors",
+        "pool_cooldown",
+        "account_cooldown",
+        "route_cooldown",
+        "provider_cooldown",
+        "health_schema",
+    ),
+}
+_PRIVACY_PAYLOADS = (
+    "jane.doe@example.com",
+    "api_key=TOPSECRET",
+    "api_key=VERYSECRET",
+    "sk-SUPERSECRET123456",
+    "rk-SUPERSECRET123456",
+    "pk-SUPERSECRET123456",
+    "Bearer TOPSECRET",
+    "eyJTOPSECRET.eyJVERYSECRET.signature1234",
+)
+
+
+@pytest.mark.parametrize(
+    "group,field", [(group, field) for group, fields in _PRIVACY_INPUTS.items() for field in fields]
+)
+@pytest.mark.parametrize("payload", _PRIVACY_PAYLOADS)
+def test_every_input_field_is_private(group, field, payload):
+    inv = row("cc/demo")
+    connection = conn("cc")
+    entry = at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=10))
+    cooldown = {"category": "authentication", "until": iso(NOW + timedelta(seconds=200))}
+    ladder = {"healthy": False, "category": "upstream", "checked_at": iso(NOW)}
+    worker = {
+        "healthy": False,
+        "category": "upstream",
+        "expires_at": iso(NOW + timedelta(seconds=200)),
+    }
+    receipt = {"route_id": "cc/demo", "admitted": True, "reason": "ok"}
+    admission = {"admitted": False, "first_failed_stage": "UNKNOWN", "reason": "no proof"}
+    cache = health_cache(entry, cooldowns={"route:cc/demo": cooldown})
+    docs = {
+        "health_cache_doc": cache,
+        "ladder_state_doc": {"health": {"cc/demo": ladder}},
+        "worker_health_doc": {"cc/demo": worker},
+        "admission_receipt_doc": {"candidates": [receipt]},
+    }
+    targets = {
+        "inventory": inv,
+        "capabilities": inv["capabilities"],
+        "connection": connection,
+        "at_rest": entry,
+        "cooldown": cooldown,
+        "ladder": ladder,
+        "worker": worker,
+        "receipt": receipt,
+        "admission": admission,
+    }
+    query = VerifiedModelQuery()
+    if group in targets:
+        targets[group][field] = payload
+        if group == "admission":
+            docs["admission_facts"] = {"cc/demo": admission}
+            docs.pop("health_cache_doc")
+            docs.pop("ladder_state_doc")
+            docs.pop("worker_health_doc")
+    elif group == "filter":
+        query = VerifiedModelQuery(**{field: payload})
+        if field == "status":
+            with pytest.raises(ValueError, match="invalid status filter"):
+                project_one([inv], [connection], EvidenceSnapshots(), query=query)
+            return  # Invalid status never produces a public envelope.
+    elif field == "health_schema":
+        cache["schema_version"] = payload
+    elif field == "health_cache":
+        cache["routes"] = {payload: entry}
+    elif field == "ladder_state":
+        docs["ladder_state_doc"] = {"health": {payload: ladder}, "cooldowns": {payload: cooldown}}
+    elif field == "worker_health":
+        docs["worker_health_doc"] = {payload: worker}
+    elif field == "admission_facts":
+        docs["admission_facts"] = {payload: "not an object"}
+    elif field == "receipt_admitted":
+        docs["admission_receipt_doc"] = {"admitted": [payload]}
+    elif field == "visibility":
+        docs["visibility_unavailable"] = [payload]
+    elif field == "policy":
+        docs["policy_exclusions"] = {"cc/demo": payload}
+    elif field == "source_errors":
+        docs["extra_source_errors"] = [payload]
+    else:
+        kind = field.removesuffix("_cooldown")
+        cache["cooldowns"] = {f"{kind}:{payload}": cooldown}
+        if kind in {"pool", "account"}:
+            inv[f"{kind}_id"] = payload
+            connection[f"{kind}_id"] = payload
+        elif kind == "route":
+            inv["id"] = payload
+        else:
+            inv["owned_by"] = payload
+            connection["provider"] = payload
+    # Let the tested input win, rather than hiding it behind another blocker.
+    if group == "at_rest":
+        cache.pop("cooldowns")
+    if group != "ladder" and not (group == "key" and field == "ladder_state"):
+        docs.pop("ladder_state_doc", None)
+    if group != "worker" and not (group == "key" and field == "worker_health"):
+        docs.pop("worker_health_doc", None)
+    if group != "receipt" and not (group == "key" and field == "receipt_admitted"):
+        docs.pop("admission_receipt_doc", None)
+    if group in {"ladder", "worker"}:
+        docs.pop("health_cache_doc", None)
+    snaps = snapshots_from_documents(now=NOW, **docs)
+    blob = json.dumps(project_one([inv], [connection], snaps, query=query).to_dict())
+    for forbidden in ("@example.com", "TOPSECRET", "VERYSECRET", "sk-SUPER"):
+        assert forbidden.lower() not in blob.lower(), (group, field, payload, blob)
+
+
+@pytest.mark.parametrize(
+    "kind,name,raw",
+    [
+        ("account", "acct1", False),
+        ("account", "jane.doe@example.com", False),
+        ("pool", "p1", True),
+        ("pool", "x:free/path-1._", True),
+        ("pool", "jane.doe@example.com", False),
+        ("pool", "sk-SUPERSECRET123456", False),
+        ("pool", "p1 token=TOPSECRET", False),
+        ("pool", "p" * 129, False),
+    ],
+)
+def test_scope_pseudonyms_are_stable(kind, name, raw):
+    from verdict.orchestration.verified_models import VerifiedModelRow
+
+    r = VerifiedModelRow(
+        "cc/demo", "cc", VerifiedStatus.UNAVAILABLE, cooldown_scope=f"{kind}:{name}"
+    )
+    expected = (
+        f"{kind}:{name}" if raw else (f"{kind}:h-" + hashlib.sha256(name.encode()).hexdigest()[:12])
+    )
+    assert r.to_dict()["cooldown_scope"] == expected
+    assert r.to_dict()["cooldown_scope"] == expected
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "cc/sk-SUPERSECRET123456",
+        "cc/rk-SUPERSECRET123456",
+        "cc/pk-SUPERSECRET123456",
+        "cc/Bearer TOPSECRET",
+        "cc/api_key=VERYSECRET",
+        "cc/secret=TOPSECRET",
+        "cc/password=TOPSECRET",
+        "cc/eyJTOPSECRET.eyJVERYSECRET.signature1234",
+        "cc/jane.doe@example.com",
+    ],
+)
+def test_secret_route_ids_are_withheld_and_counts_reconcile(bad_id):
+    good_ids = ["cc/claude-opus-4-8", "openrouter/x:free"]
+    inv = [row(rid) for rid in good_ids + [bad_id, "omniroute/" + bad_id]]
+    view = project_one(inv, [conn("cc"), conn("openrouter")], EvidenceSnapshots())
+    assert {r.route_id for r in view.rows} == set(good_ids)
+    assert view.source_errors == ("route_id_withheld:1",)
+    assert view.total_count == view.filtered_count == sum(view.counts_by_status.values()) == 2
+    assert bad_id not in json.dumps(view.to_dict())
+
+
+@pytest.mark.parametrize("field", ["provider", "search"])
+def test_secret_filter_values_are_redacted(field):
+    query = VerifiedModelQuery(**{field: "api_key=VERYSECRET"})
+    view = project_one([row("cc/demo")], [conn("cc")], EvidenceSnapshots(), query=query)
+    assert view.to_dict()["filters"][field] == "[redacted]"

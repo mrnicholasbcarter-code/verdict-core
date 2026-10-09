@@ -18,6 +18,7 @@ the network, writes anything, or probes a model.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -246,24 +247,39 @@ def _epoch(value: datetime | None) -> float:
     return value.timestamp() if value is not None else -math.inf
 
 
-# Bearer / sk- token shapes that ``redact_text`` does not catch on its own
-# (it only matches ``authorization: bearer`` and ``key=value`` forms).
+# Secret shapes are checked before output so route ids are never rewritten.
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-/+=]+")
-_SK_TOKEN_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9._\-/+=]+")
+_SK_TOKEN_RE = re.compile(r"(?i)\b[srp]k-[A-Za-z0-9._\-/+=]+")
+_SECRET_KEY_RE = re.compile(
+    r"(?i)\b[A-Za-z0-9_]*(?:key|token|secret|password)[A-Za-z0-9_]*\s*=\s*[^\s,;]+"
+)
+_SECRET_ID_RE = re.compile(r"(?i)\b[srp]k-[A-Za-z0-9._\-/+=]{12,}")
+_JWT_RE = re.compile(
+    r"\b(?:eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _secret_like(value: str) -> bool:
+    return any(
+        pattern.search(value)
+        for pattern in (_SECRET_ID_RE, _BEARER_TOKEN_RE, _SECRET_KEY_RE, _JWT_RE)
+    )
 
 
 def _scrub(value: Any) -> str:
-    """Scrub a diagnostic string at the display boundary.
-
-    Drops credentials, bearer/``sk-`` tokens and control characters so a raw
-    untrusted value can never reach ``to_dict``. Applied to every source error
-    and every sanitized reason/restriction.
-    """
+    """Redact credentials, account emails and control characters at display."""
     text = redact_text(str(value))
-    text = _BEARER_TOKEN_RE.sub("[redacted]", text)
-    text = _SK_TOKEN_RE.sub("[redacted]", text)
+    for pattern in (_BEARER_TOKEN_RE, _SK_TOKEN_RE, _SECRET_KEY_RE, _JWT_RE, _EMAIL_RE):
+        text = pattern.sub("[redacted]", text)
     text = "".join(ch for ch in text if ch == " " or ch.isprintable())
     return text.strip()
+
+
+def _withhold_route_id(route_id: str) -> bool:
+    """Reject sensitive ids, rather than rewriting a canonical route identity."""
+    return _secret_like(route_id) or _scrub(route_id) != route_id
 
 
 def _safe_value(value: Any) -> str:
@@ -324,7 +340,7 @@ _RESTRICTION_CODES: frozenset[str] = frozenset(
 _RESTRICTION_UNKNOWN = "admission_denied_unknown"
 _CONNECTION_STATUS_PREFIX = "connection_status:"
 # Safe scope/id pattern: no whitespace, no credential punctuation.
-_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._:/@-]{1,128}$")
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 _SCOPE_KINDS: frozenset[str] = frozenset({"route", "provider", "pool", "account", "connection"})
 
 
@@ -348,24 +364,23 @@ def _safe_restriction(code: str | None) -> str | None:
 
 
 def _safe_scope(scope: str | None) -> str | None:
-    """Validate a cooldown scope identifier (``pool:p`` / ``account:a`` ...).
-
-    A name with whitespace, credential punctuation or a token shape collapses to
-    ``<kind>:<invalid>`` so a secret-bearing pool/account name cannot leak in
-    ``cooldown_scope``.  Matching mirrors the safe id pattern plus a scrub pass
-    that rejects ``sk-``/bearer token shapes which satisfy the pattern.
-    """
+    """Pseudonymize accounts and unsafe pools; never display an account id."""
     if scope is None:
         return None
     kind, sep, name = scope.partition(":")
     kind = kind.strip().lower()
     name = name.strip()
     if sep and kind in _SCOPE_KINDS:
-        if _SAFE_ID_RE.match(name) and _scrub(name) == name:
+        if kind == "account" or (
+            kind == "pool" and not (_SAFE_ID_RE.fullmatch(name) and _scrub(name) == name)
+        ):
+            digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+            return f"{kind}:h-{digest}"
+        if _SAFE_ID_RE.fullmatch(name) and _scrub(name) == name:
             return f"{kind}:{name}"
         return f"{kind}:<invalid>"
     text = scope.strip()
-    if _SAFE_ID_RE.match(text) and _scrub(text) == text:
+    if _SAFE_ID_RE.fullmatch(text) and _scrub(text) == text:
         return text
     return "scope:<invalid>"
 
@@ -544,6 +559,8 @@ class VerifiedModelRow:
         untrusted value stored on the row can never leak into the rendered JSON
         regardless of how the row was built.
         """
+        if _withhold_route_id(self.route_id):
+            raise ValueError("route id withheld")
         return {
             "route_id": self.route_id,
             "provider": _display_safe(self.provider),
@@ -579,7 +596,7 @@ class VerifiedModelRow:
             "capacity_class": _display_safe(self.capacity_class),
             "refreshable": self.refreshable,
             "refresh_reason": _display_safe(self.refresh_reason),
-            "hints": list(self.hints),
+            "hints": [_display_safe(hint) for hint in self.hints],
         }
 
 
@@ -613,14 +630,17 @@ class VerifiedModelsView:
             "total_count": self.total_count,
             "filtered_count": self.filtered_count,
             "filters": {
-                "status": self.filters.get("status"),
-                "provider": self.filters.get("provider"),
-                "search": self.filters.get("search"),
+                key: (
+                    "[redacted]"
+                    if _secret_like(self.filters.get(key) or "")
+                    else _display_safe(self.filters.get(key))
+                )
+                for key in ("status", "provider", "search")
             },
             "page": self.page,
             "page_size": self.page_size,
             "page_count": self.page_count,
-            "source_errors": list(self.source_errors),
+            "source_errors": [_scrub(error) for error in self.source_errors],
         }
 
 
@@ -1007,11 +1027,15 @@ def _dedupe_inventory(
     """One row per canonical id. Contradictory duplicates fail closed."""
     rows: dict[str, Mapping[str, Any]] = {}
     contradictory: set[str] = set()
+    withheld: set[str] = set()
     for row in inventory_rows:
         rid = row.get("id")
         if not isinstance(rid, str) or not rid.strip():
             continue
         canon = canonical_route_id(rid)
+        if _withhold_route_id(canon):
+            withheld.add(canon)
+            continue
         if canon in rows:
             if not _rows_equivalent(rows[canon], row):
                 if canon not in contradictory:
@@ -1019,6 +1043,8 @@ def _dedupe_inventory(
                 contradictory.add(canon)
             continue
         rows[canon] = row
+    if withheld:
+        errors.append(f"route_id_withheld:{len(withheld)}")
     return rows, contradictory
 
 
