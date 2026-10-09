@@ -534,8 +534,8 @@ def test_unsafe_agent_dir_refusal_is_actionable(fixture: dict[str, Any]) -> None
     assert not result.ok
     message = result.data["error"]
     assert "unsafe_directory" in message
-    assert "chmod go-w" in message
-    assert "~/prime" in message
+    assert "~/prime is group/other-writable" in message
+    assert "run: chmod go-w ~/prime" in message
     assert SECRET not in message
     assert str(agent_dir) not in message
 
@@ -579,13 +579,38 @@ def test_actionable_refusal_sanitizes_outside_home_control_chars(tmp_path: Path)
 def test_actionable_refusal_home_itself_renders_as_tilde(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``$HOME`` itself (the empty relative path) renders as bare ``~``."""
+    """``$HOME`` itself (the empty relative path) renders as bare ``~``, and the
+    chmod hint quotes nothing (a quoted "~" would still expand; keep it plain)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     message = _refusal_message(tmp_path)
     assert "~ is group/other-writable" in message
-    assert "chmod go-w" in message
-    assert "'~'" in message
+    assert "run: chmod go-w ~" in message
     assert str(tmp_path) not in message
+
+
+def test_actionable_refusal_normal_path_hint_preserves_tilde_expansion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The ``chmod`` hint must keep ``~/`` unquoted so the shell still expands it.
+
+    ``shlex.quote("~/.prime/agent")`` wraps the whole string in single quotes,
+    and a shell never expands ``~`` inside single quotes, so a naively quoted
+    hint would tell the operator to run a command that fails with "No such
+    file or directory" against their own real, existing directory.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path / ".prime" / "agent")
+    assert "run: chmod go-w ~/.prime/agent" in message
+    assert "'~" not in message
+
+
+def test_actionable_refusal_name_with_space_quotes_only_the_remainder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A space in the directory name is quoted, but the ``~/`` prefix is not."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path / "my dir")
+    assert "run: chmod go-w ~/'my dir'" in message
 
 
 def test_actionable_refusal_normal_path_still_gives_chmod_hint(tmp_path: Path) -> None:

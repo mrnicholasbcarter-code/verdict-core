@@ -283,6 +283,23 @@ def _home_relative(path: Path) -> str:
     return "~" if str(relative) == "." else "~/" + str(relative)
 
 
+def _quote_home_relative(location: str) -> str:
+    """Shell-quote a ``_home_relative`` location without breaking ``~`` expansion.
+
+    ``shlex.quote("~/foo")`` wraps the whole string in single quotes, and a
+    shell never expands ``~`` inside single quotes, so a naively quoted
+    ``chmod go-w '~/foo'`` would fail with "No such file or directory" even
+    though the operator's intended target plainly exists. Keep a leading
+    ``~`` (alone, meaning ``$HOME`` itself) or ``~/`` prefix unquoted so the
+    shell still expands it, and quote only the remainder.
+    """
+    if location == "~":
+        return "~"
+    if location.startswith("~/"):
+        return "~/" + shlex.quote(location[2:])
+    return shlex.quote(location)
+
+
 def _actionable_refusal(exc: Exception) -> ActionResult:
     """Stable refusal code plus a sanitized home-relative path and fix hint.
 
@@ -306,7 +323,7 @@ def _actionable_refusal(exc: Exception) -> ActionResult:
                 "(name contains non-printable characters)"
             )
         else:
-            quoted = shlex.quote(location)
+            quoted = _quote_home_relative(location)
             message = (
                 f"bootstrap refused: {code}: {location} is group/other-writable; "
                 f"run: chmod go-w {quoted}"
