@@ -380,12 +380,14 @@ def test_existing_screens_plain_bytes_branch_snapshot(width: int, condition: str
     changed controller detail output (planner selected/observed identity lines,
     BOD-276). The harness column (BOD-284) is suppressed when no node has harness
     data, so the snapshot events (which have no terminals) produce the same hashes
-    as before BOD-284. To update: run capture_plain_screens and replace the dict.
+    as before BOD-284. BOD-291 updates the home palette description to the
+    verified view; only that displayed description changes these captures.
+    To update: run capture_plain_screens and replace the dict.
     """
     expected = {
-        60: "f9e2db941622be624f12b28046b11efff86cc560f96b1023cd8aa7c1f33dc3bb",
-        100: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
-        200: "f657cd4c2c7b2676457062a94427ee20bfef5b4b449b9df6654894478652b90b",
+        60: "2e7bbba7e6d23b2964a3b667576d5a94f90a47a742d8606c75d7cdcb8a2ef24c",
+        100: "740894f02f09641bdbc145ed05af48685efd8d28ad3820158cb4f5a9bb5940f0",
+        200: "740894f02f09641bdbc145ed05af48685efd8d28ad3820158cb4f5a9bb5940f0",
     }
     output = capture_plain_screens(width, condition)
     assert "\x1b" not in output

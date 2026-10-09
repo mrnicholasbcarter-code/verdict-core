@@ -58,8 +58,8 @@ PALETTE: tuple[tuple[str, str, str, str], ...] = (
     (
         "Health",
         "eligibility",
-        "DISCOVERED > ENTITLED > HEALTHY > AVAILABLE > ELIGIBLE",
-        "eligibility",
+        "unscoped verified evidence; bounded refresh, progress and consent",
+        "models.verified",
     ),
     ("Health", "probe", "one-token liveness probes", "probe"),
     ("Health", "detect", "detect reachable providers", "detect"),
@@ -415,7 +415,13 @@ def run_palette_action(action_name: str, params: dict[str, Any] | None = None) -
     """
     from verdict.actions import run_action
 
-    result = run_action(action_name, params)
+    values = dict(params or {})
+    if action_name == "models.verified" and values.pop("_consumer", False):
+        from verdict.actions.verified_models import consume_verified_models
+
+        result = consume_verified_models(**values)
+    else:
+        result = run_action(action_name, values or None)
     return result.ok, result.data
 
 
@@ -458,6 +464,16 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
     """
     console = tui.console
     effective_width = max(40, min(width, console.width or width))
+    if ok and isinstance(data, dict) and data.get("schema") == "verdict.verified-models/v1":
+        from verdict.orchestration.verified_models_render import (
+            render_verified_plain,
+            render_verified_table,
+        )
+
+        console.print(
+            Text(render_verified_plain(data)) if tui.plain else render_verified_table(data)
+        )
+        return
 
     if not ok:
         # Error panel
@@ -469,7 +485,7 @@ def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 
         else:
             err_msg = "action failed with no error detail"
         if tui.plain:
-            console.print(f"ERROR: {err_msg}")
+            console.print(Text(f"ERROR: {err_msg}"))
         else:
             console.print(
                 panel(
@@ -596,10 +612,51 @@ def _prompt_params_inline(
             params[param_name] = default
         else:
             if param_name == "models":
-                params[param_name] = [v.strip() for v in val.split(",") if v.strip()]
+                try:
+                    params[param_name] = _probe_model_ids(val)
+                except ValueError:
+                    console.print(Text("/probe expects a nonempty exact model list, not options"))
+                    return None
             else:
                 params[param_name] = val
     return params
+
+
+def _probe_model_ids(text: str) -> list[str]:
+    from verdict.tui_verified_controls import ControlsError, parse_probe_model_list
+
+    ids = parse_probe_model_list(text)
+    if any(route_id.startswith("-") for route_id in ids):
+        raise ControlsError("/probe expects exact model ids, not options such as --probe")
+    return ids
+
+
+def _run_verified_command(
+    text: str, *, tui: TerminalUI, state: HomeState, line_reader: Callable[[], str | None] | None
+) -> tuple[bool, Any]:
+    from verdict.orchestration.verified_models import VerifiedModelQuery
+    from verdict.tui_verified_controls import parse_eligibility_args
+
+    parsed = parse_eligibility_args(text)
+    query = VerifiedModelQuery(
+        status=parsed.status, provider=parsed.provider, search=parsed.search, page=parsed.page
+    )
+
+    def read_line(_prompt: str) -> str | None:
+        return line_reader() if line_reader is not None else input()
+
+    return run_palette_action(
+        "models.verified",
+        {
+            "_consumer": True,
+            "gateway": state.gateway,
+            "query": query,
+            "manual": parsed.refresh,
+            "read_line": read_line,
+            "write": lambda line: tui.console.print(Text(line), end="\n"),
+            "live": True,
+        },
+    )
 
 
 def _run_command(
@@ -651,6 +708,21 @@ def _run_command(
                 return "clear"
             return None
 
+        if ref == "models.verified":
+            try:
+                ok, data = _run_verified_command(
+                    cmd_args, tui=tui, state=state, line_reader=line_reader
+                )
+            except (ValueError, KeyboardInterrupt):
+                ok, data = (
+                    False,
+                    {
+                        "error": "invalid /eligibility arguments or cancelled; use [status] [provider=..] [search=..] [page=..] [refresh]"
+                    },
+                )
+            _render_action_result(tui, ok, data, width=width)
+            return None
+
         # Resolve params: if args on the line, use them for the first required param
         params: dict[str, Any] | None = {}
         param_specs = _ACTION_PARAMS.get(ref, [])
@@ -694,10 +766,33 @@ def _run_command(
 
         try:
             if kind == "action":
-                if ref == "eligibility":
+                if ref == "probe":
+                    from verdict.actions.model_refresh import SPEND_NOTE
+                    from verdict.tui_verified_controls import VerifiedControlsController
+
+                    raw_models = (params or {}).get("models", "")
+                    models = _probe_model_ids(
+                        " ".join(raw_models) if isinstance(raw_models, list) else str(raw_models)
+                    )
+                    controller = VerifiedControlsController(
+                        read_line=lambda _prompt: (
+                            line_reader() if line_reader is not None else input()
+                        ),
+                        write=lambda line: console.print(Text(line)),
+                        run_refresh=lambda *_a, **_k: None,
+                    )
+                    console.print(
+                        Text(f"Probe {len(models)} exact model ids: " + ", ".join(models))
+                    )
+                    console.print(Text(SPEND_NOTE))
+                    if not controller.confirm("Run bounded liveness probes?").granted:
+                        console.print(Text("(cancelled; no probes)"))
+                        return None
                     params = {
                         **(params or {}),
-                        "gateway": (params or {}).get("gateway", state.gateway),
+                        "models": models,
+                        "allow_live_probe": True,
+                        "base_url": state.gateway.rstrip("/").removesuffix("/v1") + "/v1",
                     }
                 ok, data = run_palette_action(ref, params if params else None)
             else:
@@ -1153,7 +1248,11 @@ def _prompt_params(
         else:
             # Coerce known list params
             if param_name == "models":
-                params[param_name] = [v.strip() for v in val.split(",") if v.strip()]
+                try:
+                    params[param_name] = _probe_model_ids(val)
+                except ValueError:
+                    console.print(Text("/probe expects a nonempty exact model list, not options"))
+                    return None
             else:
                 params[param_name] = val
     return params
