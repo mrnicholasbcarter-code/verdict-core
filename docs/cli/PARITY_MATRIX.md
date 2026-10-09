@@ -21,7 +21,7 @@
 | `doctor` | `doctor` | Doctor | read | ✅ action |
 | `eligibility` | `eligibility` | Health | read | ✅ action |
 | `failover-proof` | `failover-proof` | Traces | read | ✅ action |
-| `harness` | `harness.claude.status` | Harness | read | ✅ action |
+| `harness` | `harness.prime.select.preview` | Harness | read | ✅ action |
 | `hook` | `hook.status` | Configuration | read | ✅ action |
 | `inspect` | `inspect` | Models | read | ✅ action |
 | `mcp` | `mcp.init` | Configuration | mutation | ✅ action |

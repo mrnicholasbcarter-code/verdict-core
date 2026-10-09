@@ -773,7 +773,7 @@ def _run_command(
         if palette_cmd == "probe" and any(
             token.startswith("-") for token in cmd_args.replace(",", " ").split()
         ):
-            console.print(Text("Invalid /probe model field: options are not model ids."))
+            console.print(Text("ERROR: Invalid /probe model field: options are not model ids."))
             _show_help(console, "probe", state.completion_snapshot)
             return None
         if palette_cmd == "bootstrap":
