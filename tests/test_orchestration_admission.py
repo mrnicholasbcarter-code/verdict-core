@@ -219,8 +219,9 @@ def test_eligibility_command_passes_task_requirements_into_admission(
         json=True,
     )
     result_code = orch_cli._eligibility(args)
-    # run_action catches the StopError, so we check the result and captured params
-    assert result_code == 0  # JSON output path returns 0
+    # run_action catches the StopError and reports failure; the CLI now
+    # surfaces that as a nonzero exit even on the JSON output path.
+    assert result_code == 1
     assert captured["required_capabilities"] == frozenset({"tools"})
     assert captured["min_context_tokens"] == 32_000
 

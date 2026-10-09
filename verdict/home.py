@@ -694,6 +694,11 @@ def _run_command(
 
         try:
             if kind == "action":
+                if ref == "eligibility":
+                    params = {
+                        **(params or {}),
+                        "gateway": (params or {}).get("gateway", state.gateway),
+                    }
                 ok, data = run_palette_action(ref, params if params else None)
             else:
                 from verdict.actions.registry import LAUNCH

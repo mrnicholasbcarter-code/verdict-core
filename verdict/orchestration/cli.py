@@ -839,6 +839,12 @@ def _eligibility(args: argparse.Namespace) -> int:
         },
     )
     payload = result.data
+    if not result.ok:
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"error: {payload.get('error', 'eligibility failed')}", file=sys.stderr)
+        return result.exit_code or 1
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0
