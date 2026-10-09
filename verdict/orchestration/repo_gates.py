@@ -38,7 +38,7 @@ class RepoGate:
 def _load_pyproject(repo: Path) -> dict[str, object]:
     """Load ``pyproject.toml`` from *repo*, or ``{}`` when absent; malformed TOML -> ValueError."""
     path = repo / "pyproject.toml"
-    if not path.exists():
+    if not path.is_file():
         return {}
     try:
         loaded = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -54,9 +54,9 @@ def _as_dict(value: object) -> dict[str, object]:
 
 def _ruff_source(root: dict[str, object], repo: Path) -> str | None:
     """Ruff config source precedence: ``ruff.toml`` > ``.ruff.toml`` > ``pyproject:tool.ruff``."""
-    if (repo / "ruff.toml").exists():
+    if (repo / "ruff.toml").is_file():
         return "ruff.toml"
-    if (repo / ".ruff.toml").exists():
+    if (repo / ".ruff.toml").is_file():
         return ".ruff.toml"
     if isinstance(_as_dict(root.get("tool")).get("ruff"), dict):
         return "pyproject:tool.ruff"
@@ -121,7 +121,7 @@ def _mypy_targets(mypy: dict[str, object], root: dict[str, object], repo: Path) 
 def _node_gates(repo: Path) -> list[RepoGate]:
     """Discover Node script gates in a fixed, deterministic order."""
     path = repo / "package.json"
-    if not path.exists():
+    if not path.is_file():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

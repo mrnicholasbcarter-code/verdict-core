@@ -205,3 +205,30 @@ def test_deterministic_across_separate_repos(tmp_path: Path) -> None:
         RepoGate("format:check", ("npm", "run", "format:check"), "package.json:scripts"),
     )
     assert first == expected
+
+
+def test_ruff_toml_dir_with_dot_ruff_toml_file(tmp_path: Path) -> None:
+    # A ``ruff.toml`` *directory* must not mask a real ``.ruff.toml`` file.
+    (tmp_path / "ruff.toml").mkdir()
+    _write(tmp_path / ".ruff.toml", "line-length = 88\n")
+    gates = discover_repo_gates(tmp_path)
+    assert _names(gates) == ["ruff-check", "ruff-format"]
+    assert all(g.source == ".ruff.toml" for g in gates)
+
+
+def test_ruff_toml_dir_only_falls_back_to_pyproject(tmp_path: Path) -> None:
+    # A ``ruff.toml`` *directory* is treated as absent; fall back to ``pyproject:tool.ruff``.
+    (tmp_path / "ruff.toml").mkdir()
+    _write(tmp_path / "pyproject.toml", "[tool.ruff]\nline-length = 100\n")
+    gates = discover_repo_gates(tmp_path)
+    assert _names(gates) == ["ruff-check", "ruff-format"]
+    assert all(g.source == "pyproject:tool.ruff" for g in gates)
+
+
+def test_ruff_toml_and_dot_ruff_toml_both_files(tmp_path: Path) -> None:
+    # Both are real files; precedence is ``ruff.toml`` > ``.ruff.toml``.
+    _write(tmp_path / ".ruff.toml", "line-length = 88\n")
+    _write(tmp_path / "ruff.toml", "line-length = 80\n")
+    gates = discover_repo_gates(tmp_path)
+    assert _names(gates) == ["ruff-check", "ruff-format"]
+    assert all(g.source == "ruff.toml" for g in gates)
