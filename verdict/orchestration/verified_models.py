@@ -77,6 +77,12 @@ _KNOWN_CATEGORIES: frozenset[str] = frozenset(
         # this for the large majority of negatives; rejecting it turned every
         # such row into a source_error instead of a diagnostic FAILED row.
         "http_error",
+        # prove_at_rest.run_agentic_probes writes this literal category
+        # directly via ``self.cache.record`` (CATEGORY_OK if passed else
+        # "agentic_fail") when a BOD-299 session-grade agentic qualification
+        # probe fails. It is a real cache contract value, not request-scoped
+        # noise: once agentic probes run, those rows hit the same defect.
+        "agentic_fail",
     }
 )
 _KNOWN_IDENTITIES: frozenset[str] = frozenset(
@@ -113,6 +119,7 @@ _DIAGNOSTIC_CATEGORIES: frozenset[str] = frozenset(
         CATEGORY_CATALOG_STALE,
         CATEGORY_MODEL_MISMATCH,
         "http_error",
+        "agentic_fail",
         "upstream",
         "response_validation",
         "tool_validation",
