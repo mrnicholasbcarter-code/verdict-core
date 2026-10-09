@@ -200,3 +200,55 @@ def test_fchmod_file_sync_replace_directory_sync_order(
     _write(cache, writer)
     assert events == ["fchmod", "file", "replace", "directory"]
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("failure", ["mkstemp", "directory_open", "directory_fsync"])
+def test_creation_and_postpublication_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str, failure: str
+) -> None:
+    path = tmp_path / "cache.json"
+    path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0o600)
+    before = path.read_bytes()
+    cache = HealthCache(path)
+    parent_mode = stat.S_IMODE(tmp_path.stat().st_mode)
+    home_mode = stat.S_IMODE(Path.home().stat().st_mode)
+    directory_fds: list[int] = []
+    real_open, real_sync = os.open, os.fsync
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise OSError(f"injected {failure}")
+
+    def open_directory(name: str | Path, flags: int, *args: object, **kwargs: object) -> int:
+        if Path(name) == path.parent and failure == "directory_open":
+            fail()
+        fd = real_open(name, flags, *args, **kwargs)  # type: ignore[arg-type]
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory_fds.append(fd)
+        return fd
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            fail()
+        real_sync(fd)
+
+    if failure == "mkstemp":
+        monkeypatch.setattr(health_cache.tempfile, "mkstemp", fail)
+    monkeypatch.setattr(health_cache.os, "open", open_directory)
+    if failure == "directory_fsync":
+        monkeypatch.setattr(health_cache.os, "fsync", fsync)
+    with pytest.raises(OSError, match=f"injected {failure}"):
+        _write(cache, writer)
+    if failure == "directory_fsync":
+        # Publication already happened; report failed durability without rollback.
+        assert path.read_bytes() != before
+        assert HealthCache(path).cursor == {}
+    else:
+        assert path.read_bytes() == before
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == parent_mode
+    assert stat.S_IMODE(Path.home().stat().st_mode) == home_mode
+    assert set(tmp_path.iterdir()) == {path, path.with_suffix(".json.lock")}
+    for fd in directory_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
