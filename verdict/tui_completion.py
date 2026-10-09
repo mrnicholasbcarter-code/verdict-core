@@ -33,7 +33,18 @@ def _safe(value: object, *, length: int = 100) -> str:
 
 
 def _freeze(rows: Iterable[Mapping[str, Any]], cap: int) -> tuple[Mapping[str, Any], ...]:
-    return tuple(MappingProxyType(dict(row)) for row in list(rows)[:cap])
+    def frozen_value(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return MappingProxyType({key: frozen_value(item) for key, item in value.items()})
+        if isinstance(value, (list, tuple)):
+            return tuple(frozen_value(item) for item in value)
+        if isinstance(value, set):
+            return frozenset(frozen_value(item) for item in value)
+        return value
+
+    from itertools import islice
+
+    return tuple(frozen_value(row) for row in islice(rows, cap))
 
 
 @dataclass(frozen=True)
@@ -338,7 +349,7 @@ def complete(
     # No argument from a secret command may surface in completion.
     if any(arg.secret for arg in spec.arguments):
         return ()
-    if token.startswith("-"):
+    if token.startswith("-") or any(value.startswith("-") for value in args):
         return ()
     if spec.name == "eligibility":
         return _eligibility(token, args, snapshot, now, limit)

@@ -282,3 +282,73 @@ def test_help_and_palette(commands):
     assert "CLI uses --flags" in help_eligibility.description
     assert any("prompted" in arg["info"] for arg in help_bootstrap.arguments)
     assert suggest_command("/elegibility", commands=commands)[0] == "/eligibility"
+
+
+def test_io_isolation(monkeypatch, commands):
+    import builtins
+    import socket
+    import time
+    from unittest.mock import patch
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("completion attempted I/O or a clock read")
+
+    with (
+        patch.object(builtins, "open", forbidden),
+        patch.object(socket.socket, "connect", forbidden),
+        patch.object(time, "time", forbidden),
+        patch.object(time, "perf_counter", forbidden),
+        patch("verdict.tui_completion.datetime", autospec=True) as clock,
+    ):
+        clock.now.side_effect = forbidden
+        clock.fromisoformat.side_effect = datetime.fromisoformat
+        snap = snapshot()
+        assert candidates("/probe cc/", commands, snap)
+        assert candidates("/eligibility provider=", commands, snap)
+        assert syntax_help("eligibility", commands=commands, snapshot=snap, now=NOW)
+        assert suggest_command("elegibility", commands=commands)
+        assert clock.now.call_count == 0
+
+
+def test_all_flag_positions_and_deep_immutability(commands):
+    for text in (
+        "/probe cc/a --probe ",
+        "/bootstrap prime cc/a --probe ",
+        "/bootstrap claude --probe ",
+        "/probe cc/a,--probe",
+        "/bootstrap prime cc/a,--probe",
+    ):
+        assert not [c for c in candidates(text, commands) if c.kind == "model"]
+    nested = {"route_id": "cc/a", "extra": {"keys": ["one"]}}
+    snap = snapshot(models=[nested])
+    nested["extra"]["keys"].append("two")
+    assert snap.model_rows[0]["extra"]["keys"] == ("one",)
+    with pytest.raises(TypeError):
+        snap.model_rows[0]["extra"]["keys"] = ("two",)
+
+
+def test_invalid_ids_and_fuzzy_only_for_commands(commands):
+    snap = snapshot(
+        models=[
+            {"route_id": "cc/a"},
+            {"route_id": ""},
+            {"route_id": "--probe"},
+            {"route_id": "cc/ bad"},
+            {"route_id": "cc/ab\n"},
+            {"id": "kr/ok"},
+        ]
+    )
+    assert {c.text for c in candidates("/probe ", commands, snap)} == {"cc/a", "kr/ok"}
+    assert candidates("/probe cc/aa", commands, snap) == ()
+    assert "/bootstrap" in suggest_command("/btstrp", commands=commands)
+
+
+def test_secret_mutation_sensitive_custom_grammar():
+    secret = CommandSpec(
+        "secret",
+        "secret",
+        "/secret <value>",
+        (ArgumentSpec("value", "choice", True, secret=True, choices=("PRIVATE",)),),
+    )
+    for text in ("/secret ", "/secret PRI"):
+        assert complete(text, commands=(secret,), snapshot=snapshot(), now=NOW) == ()
