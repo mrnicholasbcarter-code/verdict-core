@@ -321,203 +321,203 @@
   },
   {
     "qualified_name": "verdict.failover_engine.is_transient_error_class",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: is_transient_error_class has only non-production references; Capability-matched provider failover for execution continuity (issue #258) (verdict/failover_engine.py)."
   },
   {
     "qualified_name": "verdict.free_tier_admit.why_not_model",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: why_not_model has only non-production references; Admit free-tier \u2229 active-provider concrete identities for offloadable work (verdict/free_tier_admit.py)."
   },
   {
     "qualified_name": "verdict.gateway_conformance.run_gateway_adapter_conformance",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: run_gateway_adapter_conformance has no resolved reference; Hermetic conformance checks for provider-neutral gateway adapters (verdict/gateway_conformance.py)."
   },
   {
     "qualified_name": "verdict.handoff.write_handoff",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: write_handoff has only non-production references; Durable `.verdict/handoff.md` schema for cross-harness resume (verdict/handoff.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.format_discover",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_claude.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.format_discover",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_discover has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_cline.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Cline harness switching for Verdict (verdict/harness_cline.py)."
   },
   {
     "qualified_name": "verdict.harness_codex.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
   },
   {
     "qualified_name": "verdict.harness_codex.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.format_discover",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_cursor.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Cursor harness switching for Verdict (verdict/harness_cursor.py)."
   },
   {
     "qualified_name": "verdict.harness_hermes.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
   },
   {
     "qualified_name": "verdict.harness_hermes.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.format_discover",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_opencode.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked OpenCode harness switching for Verdict (verdict/harness_opencode.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.format_certify",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.format_discover",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.harness_prime.format_status",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
   },
   {
     "qualified_name": "verdict.headroom.headroom_is_unknown",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: headroom_is_unknown has only non-production references; Provider quota and headroom checks (verdict/headroom.py)."
   },
   {
     "qualified_name": "verdict.home.palette_actions",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: palette_actions has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
   },
   {
     "qualified_name": "verdict.home.palette_launches",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: palette_launches has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
   },
   {
     "qualified_name": "verdict.intelligence_adapter.build_intelligence_adapter",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: build_intelligence_adapter has only non-production references; Intelligence Adapter v1 - Versioned, Fail-Closed Intelligence Boundary (verdict/intelligence_adapter.py)."
   },
   {
     "qualified_name": "verdict.live_routing_run.run_live_routing",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: run_live_routing has only non-production references; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
   },
   {
     "qualified_name": "verdict.memory_adapters.CanonicalManifestAdapter",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: CanonicalManifestAdapter has no resolved reference; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
   },
   {
     "qualified_name": "verdict.memory_adapters.build_default_adapter_registry",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: build_default_adapter_registry has only non-production references; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
   },
   {
     "qualified_name": "verdict.memory_adapters.load_context_records",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: load_context_records has only non-production references; Safe, provider-neutral memory adapter and manifest boundaries (verdict/memory_adapters.py)."
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryGovernor",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: MemoryGovernor has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryNamespace",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: MemoryNamespace has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
   },
   {
     "qualified_name": "verdict.memory_migration.archive_legacy_memory",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review archive_legacy_memory in verdict/memory_migration.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.memory_migration.detect_legacy_memory_artifacts",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review detect_legacy_memory_artifacts in verdict/memory_migration.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.memory_migration.ingest_legacy_artifacts",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review ingest_legacy_artifacts in verdict/memory_migration.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.memory_migration.purge_legacy_artifacts",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "DELETE candidate: BOD-259 review purge_legacy_artifacts in verdict/memory_migration.py before removal; test_only_caller."
   },
   {
     "qualified_name": "verdict.memory_mirror.MemoryMirrorWorker",
-    "reason": "BOD-146 outbox/mirror: MemoryMirrorWorker.run_once has no production caller (prove_at_rest's daemon.run_once is a different class). Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
   },
   {
     "qualified_name": "verdict.memory_providers.ai_memory_experimental.AiMemoryExperimentalProvider",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: AiMemoryExperimentalProvider has only non-production references; EXPERIMENTAL: HTTP adapter for akitaonrails/ai-memory as a SharedMemoryProvider (verdict/memory_providers/ai_memory_experimental.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.import_session",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: import_session has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.normalize_session_record",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: normalize_session_record has no resolved reference; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.verify_session_manifest",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: verify_session_manifest has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
     "qualified_name": "verdict.models.Route",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: Route has no resolved reference; Core immutable data models used by Verdict routing (verdict/models.py)."
   },
   {
     "qualified_name": "verdict.motion.trace_step",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: trace_step has only non-production references; Pure, event-driven motion helpers. No scheduler, input polling, or delays (verdict/motion.py)."
   },
   {
     "qualified_name": "verdict.openspec_lifecycle.can_archive_openspec_change",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: can_archive_openspec_change has no resolved reference; OpenSpec lifecycle binding for verdict-core (verdict/openspec_lifecycle.py)."
   },
   {
     "qualified_name": "verdict.optimized_dispatch.execute_optimized_dispatch",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: execute_optimized_dispatch has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
   },
   {
     "qualified_name": "verdict.optimized_dispatch.hydrate_worker_context",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: hydrate_worker_context has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
   },
   {
     "qualified_name": "verdict.optimized_dispatch.validate_worker_return",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: validate_worker_return has only non-production references; Hydrate proof-bound worker context and bind authorized dispatch (verdict/optimized_dispatch.py)."
   },
   {
     "qualified_name": "verdict.orchestration.cockpit_nav.ScriptedKeyReader",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: ScriptedKeyReader has only non-production references; Interactive cockpit navigation for ``verdict watch`` (read-only) (verdict/orchestration/cockpit_nav.py)."
   },
   {
     "qualified_name": "verdict.orchestration.contracts.ProbeClass",
-    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+    "reason": "UNTRIAGED: ProbeClass has only non-production references; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
   },
   {
     "qualified_name": "verdict.orchestration.contracts.dedupe",
