@@ -1075,6 +1075,7 @@ def step_rehearsals(
                 ],
             }
             if attested_rehearsals is not None:
+                assert certified_git_sha is not None  # Exact-SHA guard above already passed.
                 bundle = run_dir / "attestation.json"
                 if not bundle.is_file():
                     stale_notes.append(f"{name} attestation is missing")
@@ -1391,14 +1392,8 @@ def _run_certification(
                 rehearsal_dirs or {},
                 staging_dir or destination,
                 certified_git_sha=manifest.git_sha,
-                **(
-                    {
-                        "attested_rehearsals": attested_rehearsals,
-                        "attestation_verifier": attestation_verifier,
-                    }
-                    if attested_rehearsals is not None
-                    else {}
-                ),
+                attested_rehearsals=attested_rehearsals,
+                attestation_verifier=attestation_verifier,
             ),
         )
     )
