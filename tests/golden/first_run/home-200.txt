@@ -30,6 +30,7 @@ VERDICT  autonomous control plane
 |           verdict credentials  manage stored credentials                                     |
 | Setup     verdict doctor       health of gateways, harnesses, memory, docs                   |
 |           verdict setup        plan or apply capability bootstrap                            |
+|           verdict bootstrap    Prime interactive picker; read-only Claude compatibility      |
 |           verdict quickstart   credential-free deterministic demo                            |
 +----------------------------------------------------------------------------------------------+
 verdict --help lists every command · VERDICT_NO_ANIMATION=1 disables motion
