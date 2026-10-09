@@ -25,13 +25,15 @@ def test_task_effort_defaults(kind: str, expected: str) -> None:
     [
         ({"thinkingLevelMap": {"high": None, "medium": None, "low": 1024}}, "low"),
         ({"reasoning": False}, None),
-        ({"thinkingLevelMap": {}}, "high"),
+        ({"thinkingLevelMap": {}}, None),
         ({"thinkingLevelMap": None}, "high"),
         ({"thinkingLevelMap": {"high": "high"}}, "high"),
         ({"thinkingLevelMap": {"high": None, "max": "max"}}, None),
         ({"thinkingLevelMap": {"high": None, "off": 0}}, "off"),
         ({"thinkingLevelMap": {"high": None, "made_up": 1024}}, None),
-        ({"thinkingLevelMap": {"max": None}}, "high"),
+        ({"thinkingLevelMap": {"max": None}}, None),
+        ({"thinkingLevelMap": {"medium": "medium"}}, "medium"),
+        ({"thinkingLevelMap": {"max": "max"}}, None),
     ],
 )
 def test_clamps_only_explicit_unsupported_levels(
