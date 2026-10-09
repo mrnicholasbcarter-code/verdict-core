@@ -1,0 +1,81 @@
+name: Attested Certification Rehearsals
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  rehearse:
+    if: github.ref == 'refs/heads/main'
+    environment: certification
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    defaults:
+      run:
+        shell: bash -euo pipefail {0}
+    env:
+      OCR_VERSION: v1.12.9
+      OCR_SHA256: 9105c7081b8362a1cb0167f1ddfd1437e147a0e3c9a5af89c03c8859a5b0f0e8
+      PYTHONPATH: ${{ github.workspace }}
+      VERDICT_ALLOW_UNKNOWN_CAPACITY: 'false'
+    steps:
+      - name: Check out exact source SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify source identity
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v7
+      - name: Sync locked dependencies
+        run: uv sync --frozen --extra dev --extra server
+      - name: Install pinned independent reviewer
+        run: |
+          test "${#OCR_SHA256}" = 64
+          curl --fail --silent --show-error --location             "https://github.com/alibaba/open-code-review/releases/download/$OCR_VERSION/opencodereview-linux-amd64"             --output "$RUNNER_TEMP/ocr"
+          printf '%s  %s\n' "$OCR_SHA256" "$RUNNER_TEMP/ocr" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/ocr"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Build fixtures and run bounded live rehearsals
+        env:
+          VERDICT_CERT_GATEWAY_URL: ${{ secrets.VERDICT_CERT_GATEWAY_URL }}
+          VERDICT_OMNIROUTE_API_KEY: ${{ secrets.VERDICT_CERT_GATEWAY_KEY }}
+        run: |
+          test -n "$VERDICT_CERT_GATEWAY_URL"
+          test -n "$VERDICT_OMNIROUTE_API_KEY"
+          printf '::add-mask::%s\n' "$VERDICT_CERT_GATEWAY_URL" "$VERDICT_OMNIROUTE_API_KEY"
+          export VERDICT_HOME="$RUNNER_TEMP/verdict-certification"
+          .venv/bin/python scripts/run_certification_rehearsals.py
+      - name: Attest clean receipt bytes
+        id: clean
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.temp }}/attested-rehearsals/clean/receipt.json
+      - name: Attest chaos receipt bytes
+        id: chaos
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.temp }}/attested-rehearsals/chaos/receipt.json
+      - name: Retain signed bundles beside receipts
+        env:
+          CLEAN_BUNDLE: ${{ steps.clean.outputs.bundle-path }}
+          CHAOS_BUNDLE: ${{ steps.chaos.outputs.bundle-path }}
+        run: |
+          cp "$CLEAN_BUNDLE" "$RUNNER_TEMP/attested-rehearsals/clean/attestation.json"
+          cp "$CHAOS_BUNDLE" "$RUNNER_TEMP/attested-rehearsals/chaos/attestation.json"
+      - name: Upload attested run evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: certify-rehearsals-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/attested-rehearsals/
+          if-no-files-found: error
+          retention-days: 90

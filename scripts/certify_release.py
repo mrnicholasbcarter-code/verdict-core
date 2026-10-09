@@ -40,6 +40,7 @@ class StepResult:
     reason: str = ""  # Details for FAIL or SKIPPED
     duration_seconds: float = 0.0
     evidence: dict[str, Any] = field(default_factory=dict)
+    _attestation_token: object | None = field(default=None, init=False, repr=False)
 
 
 @dataclass
@@ -856,19 +857,101 @@ def verdict_tree_changed_between(repo_path: Path, left_sha: str, right_sha: str)
     return None
 
 
+# This token is deliberately not serialized. Evidence flags cannot mint PASS.
+_VERIFIED_REHEARSALS = object()
+ATTESTATION_REPO = "mrnicholasbcarter-code/verdict-core"
+ATTESTATION_WORKFLOW = f"{ATTESTATION_REPO}/.github/workflows/certify-rehearsal.yml"
+AttestationVerifier = Callable[[Path, Path, str, str], list[dict[str, Any]]]
+
+
+class AttestationUnavailableError(RuntimeError):
+    """The independent verifier cannot be started (not a verification failure)."""
+
+
+def verify_rehearsal_attestation(
+    receipt: Path, bundle: Path, repository: str, certified_sha: str
+) -> list[dict[str, Any]]:
+    """Delegate signature and certificate identity checks to GitHub's verifier.
+
+    Only verified JSON statements may reach the local subject-digest check.
+    Never treat raw bundle predicate fields as trusted signer identity.
+    """
+    if repository != ATTESTATION_REPO or not re.fullmatch(r"[0-9a-f]{40}", certified_sha):
+        raise ValueError("Invalid attestation policy")
+    command = [
+        "gh",
+        "attestation",
+        "verify",
+        str(receipt),
+        "--bundle",
+        str(bundle),
+        "--repo",
+        repository,
+        "--signer-workflow",
+        ATTESTATION_WORKFLOW,
+        "--source-ref",
+        "refs/heads/main",
+        "--source-digest",
+        certified_sha,
+        "--signer-digest",
+        certified_sha,
+        "--cert-oidc-issuer",
+        "https://token.actions.githubusercontent.com",
+        "--deny-self-hosted-runners",
+        "--predicate-type",
+        "https://slsa.dev/provenance/v1",
+        "--format",
+        "json",
+    ]
+    result = run_command(command, timeout=120)
+    if command_failure(result).get("error_class") in {"FileNotFoundError", "PermissionError"}:
+        raise AttestationUnavailableError("GitHub attestation verifier unavailable")
+    if result.returncode != 0:
+        raise ValueError("GitHub attestation verification failed")
+    verified = json.loads(result.stdout)
+    if (
+        not isinstance(verified, list)
+        or not verified
+        or not all(isinstance(v, dict) for v in verified)
+    ):
+        raise ValueError("Invalid verified attestation output")
+    return verified
+
+
+def _verified_subject_digest(verified: list[dict[str, Any]], expected: str) -> bool:
+    """Accept only the exact SHA256 subject in a cryptographically verified statement."""
+    if not verified:
+        return False
+    for entry in verified:
+        statement = entry.get("verificationResult", {}).get("statement", {})
+        if statement.get("predicateType") != "https://slsa.dev/provenance/v1":
+            return False
+        subjects = statement.get("subject")
+        if not isinstance(subjects, list) or len(subjects) != 1:
+            return False
+        if not isinstance(subjects[0], dict) or subjects[0].get("digest") != {"sha256": expected}:
+            return False
+    return True
+
+
 def step_rehearsals(
     repo_path: Path,
     rehearsal_dirs: dict[str, Path],
     output_dir: Path,
     certified_git_sha: str | None = None,
+    *,
+    attested_rehearsals: Path | None = None,
+    attestation_verifier: AttestationVerifier = verify_rehearsal_attestation,
 ) -> StepResult:
-    """Verify receipts and producer freshness, never independent attestation.
+    """Verify semantics and, only for explicit attested input, GitHub provenance.
 
-    Missing or stale producer SHAs remain INCOMPLETE. Existing receipt and fault
-    checks still take precedence (FAIL), and even fresh local evidence cannot
-    PASS without an independent producer verifier. Three-argument callers use
-    the checkout HEAD as the certified SHA.
+    Local receipts remain non-certifying. Missing proof or unavailable gh is
+    INCOMPLETE; failed signature, identity, SHA, digest or semantics is FAIL.
     """
+    if attested_rehearsals is not None:
+        if rehearsal_dirs:
+            return StepResult("rehearsals", "Rehearsal verification", "FAIL", "Ambiguous inputs")
+        rehearsal_dirs = {name: attested_rehearsals / name for name in ("clean", "chaos")}
     if not rehearsal_dirs:
         return StepResult(
             "rehearsals",
@@ -933,11 +1016,17 @@ def step_rehearsals(
                 raise ValueError("clean rehearsal includes injected faults")
             producer_sha = _producer_git_sha_from_receipt(receipt)
             producer_reports.append(f"{name}={producer_sha or 'null'}")
+            if attested_rehearsals is not None and (
+                not certified_git_sha or producer_sha != certified_git_sha
+            ):
+                raise ValueError("attested producer SHA differs from certified SHA")
             changed: bool | None = None
             if producer_sha is None:
                 stale_notes.append(f"{name} producer git_sha is null (cannot verify freshness)")
             elif not certified_git_sha:
                 stale_notes.append(f"{name} certified git_sha is null (cannot verify freshness)")
+            elif attested_rehearsals is not None:
+                changed = False
             else:
                 changed = verdict_tree_changed_between(repo_path, producer_sha, certified_git_sha)
                 if changed is True:
@@ -985,7 +1074,35 @@ def step_rehearsals(
                     for attempt in node.get("attempts", [])
                 ],
             }
-        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            if attested_rehearsals is not None:
+                assert certified_git_sha is not None  # Exact-SHA guard above already passed.
+                bundle = run_dir / "attestation.json"
+                if not bundle.is_file():
+                    stale_notes.append(f"{name} attestation is missing")
+                    continue
+                if bundle.is_symlink():
+                    raise ValueError("attestation must not be a symlink")
+                copied_bundle = target / "attestation.json"
+                shutil.copy2(bundle, copied_bundle)
+                digest = sha256_file(target / "receipt.json")
+                try:
+                    verified = attestation_verifier(
+                        target / "receipt.json", copied_bundle, ATTESTATION_REPO, certified_git_sha
+                    )
+                except AttestationUnavailableError:
+                    stale_notes.append(f"{name} independent verifier unavailable")
+                    continue
+                if not _verified_subject_digest(verified, digest):
+                    raise ValueError("attestation subject digest differs from receipt SHA256")
+                proof[name]["attestation"] = {
+                    "receipt_sha256": digest,
+                    "bundle_sha256": sha256_file(copied_bundle),
+                    "repository": ATTESTATION_REPO,
+                    "signer_workflow": ATTESTATION_WORKFLOW,
+                    "source_ref": "refs/heads/main",
+                    "source_digest": certified_git_sha,
+                }
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             return StepResult(
                 "rehearsals",
                 "Rehearsal verification",
@@ -998,6 +1115,16 @@ def step_rehearsals(
     notes.extend(stale_notes)
     if not {"clean", "chaos"}.issubset(proof):
         notes.append("Both clean and chaos (controlled-failure) rehearsals are required")
+    if attested_rehearsals is not None and not stale_notes and set(proof) == {"clean", "chaos"}:
+        result = StepResult(
+            "rehearsals",
+            "Rehearsal verification",
+            "PASS",
+            "GitHub OIDC provenance and clean/chaos receipt semantics verified",
+            evidence={"runs": proof, "independent_producer_attestation": True},
+        )
+        result._attestation_token = _VERIFIED_REHEARSALS
+        return result
     # These artifacts are produced by the very runtime under test. Rebuilding
     # its receipt does not independently attest to the producer or execution.
     notes.append("Independent producer attestation is unavailable")
@@ -1080,9 +1207,12 @@ def compute_verdict(
     if len(junit_steps) == 2:
         missing_evidence |= not junit_parity(steps)
 
-    # No independent producer verifier exists yet. A self-asserted flag in
-    # StepResult.evidence must not convert local run files into attestation.
-    missing_evidence |= "rehearsals" in present
+    # A serialized/self-asserted evidence flag cannot mint independent verification.
+    missing_evidence |= any(
+        step._attestation_token is not _VERIFIED_REHEARSALS
+        for step in steps
+        if step.step_id == "rehearsals"
+    )
     missing_evidence |= any(
         not step.evidence.get("artifacts") for step in steps if step.step_id == "build"
     )
@@ -1119,6 +1249,8 @@ def _run_certification(
     *,
     allow_dirty: bool = False,
     rehearsal_dirs: dict[str, Path] | None = None,
+    attested_rehearsals: Path | None = None,
+    attestation_verifier: AttestationVerifier = verify_rehearsal_attestation,
     output_dir: Path | None = None,
     staging_dir: Path | None = None,
     attempt_id: str | None = None,
@@ -1131,10 +1263,13 @@ def _run_certification(
     manifest.git_sha = get_git_sha(repo_path)
     assert_git_sha(repo_path, manifest.git_sha)
     destination = output_dir or (repo_path / "artifacts" / "certification" / manifest.git_sha)
+    sources = list((rehearsal_dirs or {}).values())
+    if attested_rehearsals is not None:
+        sources.append(attested_rehearsals)
     if any(
         source.resolve() == destination.resolve()
         or destination.resolve() in source.resolve().parents
-        for source in (rehearsal_dirs or {}).values()
+        for source in sources
     ):
         raise ValueError("Rehearsal source must not be inside the output directory")
     prepare_bundle_dir(destination, repo_path, create=False)
@@ -1257,6 +1392,8 @@ def _run_certification(
                 rehearsal_dirs or {},
                 staging_dir or destination,
                 certified_git_sha=manifest.git_sha,
+                attested_rehearsals=attested_rehearsals,
+                attestation_verifier=attestation_verifier,
             ),
         )
     )
@@ -1508,6 +1645,8 @@ def run_certification(
     *,
     allow_dirty: bool = False,
     rehearsal_dirs: dict[str, Path] | None = None,
+    attested_rehearsals: Path | None = None,
+    attestation_verifier: AttestationVerifier = verify_rehearsal_attestation,
     output_dir: Path | None = None,
     staging_dir: Path | None = None,
     attempt_id: str | None = None,
@@ -1524,6 +1663,8 @@ def run_certification(
             repo_path,
             allow_dirty=allow_dirty,
             rehearsal_dirs=rehearsal_dirs,
+            attested_rehearsals=attested_rehearsals,
+            attestation_verifier=attestation_verifier,
             output_dir=output_dir,
             staging_dir=staging_dir,
             attempt_id=attempt_id,
@@ -1593,6 +1734,11 @@ def main() -> None:
         help="Add rehearsal run directory (e.g., clean=/path/to/run, chaos=/path/to/run)",
     )
     parser.add_argument(
+        "--attested-rehearsals",
+        type=Path,
+        help="Directory with clean/chaos receipts and attestation.json bundles from protected CI",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         help="Override output directory (default: artifacts/certification/<sha>)",
@@ -1631,6 +1777,7 @@ def main() -> None:
                 repo_path,
                 allow_dirty=args.allow_dirty,
                 rehearsal_dirs=rehearsal_dirs,
+                attested_rehearsals=args.attested_rehearsals,
                 output_dir=output_dir,
                 staging_dir=staging_dir,
                 attempt_id=attempt_id,

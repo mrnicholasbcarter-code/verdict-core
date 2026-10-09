@@ -163,11 +163,12 @@ when available, including per-attempt `node_id`, `attempt`, `intended_route`,
 independently attested**. Invalid JSON, missing files, failed runs and forged digest-only
 receipts are `FAIL`. Missing either proof is `INCOMPLETE`.
 
-The current verifier **does not independently attest to the run producer**.
-The runtime's own files can be self-consistent without proving a real gateway
-execution. Thus even valid local rehearsals are `INCOMPLETE`, never `CERTIFIED`.
-An independently verifiable producer attestation must be added before that verdict
-can be issued. No rehearsals also means `SKIPPED` and `INCOMPLETE`.
+Local receipts **do not independently attest to the run producer**. They remain
+`INCOMPLETE`, never `CERTIFIED`. No rehearsals means `SKIPPED` and `INCOMPLETE`.
+The optional `--attested-rehearsals <dir>` path requires both `clean/` and `chaos/`,
+each with `receipt.json`, `events.jsonl`, `graph.json`, and `attestation.json`.
+The signed bundle is retained beside the copied evidence. This path also verifies
+GitHub OIDC/Sigstore provenance before it can pass; see [attested CI](#attested-ci-rehearsals).
 
 ### `CERTIFICATION.md`
 
@@ -186,7 +187,7 @@ can be issued. No rehearsals also means `SKIPPED` and `INCOMPLETE`.
 All conditions met:
 - Git working tree is clean (`git_dirty: false`)
 - All eleven required steps are `PASS` and required step evidence exists
-- Clean and controlled-failure rehearsals were independently attested (not yet supported)
+- Clean and controlled-failure rehearsals passed independent GitHub OIDC attestation verification
 - No step returned `FAIL`
 
 ### `INCOMPLETE`
@@ -218,8 +219,11 @@ Evidence includes normalized checkout and temporary command paths (JUnit, lint, 
 
 The current CI push lane creates a cheap source receipt; it **does not run the
 full certification** or upload a full certification bundle on each push. The
-manual evidence generator may produce an `INCOMPLETE` bundle; this is not a
-`CERTIFIED` release gate. A complete certification workflow is not installed.
+manual evidence generator produces `INCOMPLETE` when no rehearsal run is given.
+With independently attested clean/chaos evidence, it can produce `CERTIFIED`.
+This does not enable the release gate: `VERDICT_REQUIRE_CERTIFIED_BUNDLE` remains
+an operator-controlled repository variable. Source receipts and `INCOMPLETE`
+artifacts never satisfy that gate.
 
 `ci-job.yml` is a reference example, not the active push workflow. Do not
 interpret a source receipt or a manual `INCOMPLETE` artifact as certification.
@@ -295,6 +299,55 @@ the verdict-core root; replace paths and goals with real values.
    `INCOMPLETE` **only if no step fails**; local receipts cannot independently
    attest to their producer. A dirty checkout or other failed step yields
    `FAILED`.
+
+### Attested CI rehearsals
+
+1. An operator dispatches `.github/workflows/certify-rehearsal.yml` on `main`.
+   The job uses the protected `certification` environment. Its secrets are
+   `VERDICT_CERT_GATEWAY_URL` and `VERDICT_CERT_GATEWAY_KEY`. Environment approval
+   and a scoped gateway key are prerequisites; this feature does not create them.
+2. The job checks out the exact event SHA and syncs frozen dependencies. It builds
+   two isolated fixture repositories. It uses direct-gateway workers and a pinned,
+   SHA256-checked OCR binary. All model selection is narrowed to `free,subscription`
+   in canonical admission. Workers have four attempts per node, 300-second attempt
+   timeouts, and a 1500-second run deadline. An outer 1800-second timeout bounds each
+   run. Chaos injects planning quota/no-final-answer and worker rate-limit faults.
+3. Both receipts must be `COMPLETE`, pass `verify_run_receipt`, and record the exact
+   checkout SHA. The workflow signs each receipt with `actions/attest-build-provenance`.
+   It uploads run evidence and signed bundles as `certify-rehearsals-<sha>-<run_id>`.
+   Known gateway secrets are masked and checked in run files before upload. This is
+   not a claim that arbitrary sensitive content is detectable.
+4. Dispatch `certification.yml` at the **same main SHA** with `rehearsal_run_id`.
+   It downloads that named artifact and runs the certifier with the attested input.
+   Eleven `PASS` steps and exit 0 are required to retain
+   `certification-evidence-certified-<sha>-<run_id>-<attempt>`, as the release gate expects.
+   Omitting the input keeps the existing `INCOMPLETE` path and exact exit-1 check.
+
+For a downloaded artifact, run from its exact clean checkout:
+
+```bash
+python scripts/certify_release.py --attested-rehearsals /path/to/downloaded-artifact
+```
+
+The independent verifier calls `gh attestation verify` with the local bundle,
+the pinned repository `mrnicholasbcarter-code/verdict-core`, signer workflow
+`mrnicholasbcarter-code/verdict-core/.github/workflows/certify-rehearsal.yml`,
+`refs/heads/main`, the exact source and signer SHA, GitHub's OIDC issuer,
+SLSA provenance v1, and a ban on self-hosted runners. Only exit 0 and parsed
+verified statements proceed. Every subject must have the exact receipt SHA256.
+The receipt producer SHA must match exactly; the local-path `verdict/`-unchanged
+relaxation does **not** apply. Both semantic checks and clean/chaos fault checks
+still run. Missing bundles or an unavailable executable yield `INCOMPLETE`.
+Signature, policy, digest, SHA, timeout, malformed output, or semantic failures
+are `FAIL`. The injectable verifier lets tests cover these paths without gh or
+network access. Serialized evidence flags alone cannot mint certification.
+
+The independence boundary is **GitHub OIDC plus Sigstore**, not the receipt's own
+claim about its producer. It attests that the named main workflow at the named
+SHA produced these receipt bytes. It does not prove that a model actually ran,
+that its answer is correct, or that the gateway reported truthful identities.
+The gateway and providers remain operator-controlled. Rehearsal content remains
+produced by Verdict. See the [receipt threat model](../THREAT_MODEL_RECEIPTS.md#independent-rehearsal-attestation).
 
 ## Schema Evolution
 
