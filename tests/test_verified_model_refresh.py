@@ -796,7 +796,13 @@ def test_execute_confirmed_runs_within_two_requests_per_route(tmp_path: Path) ->
         }
     ]
     plan = _plan_for(rows, ["free/a"])
-    snap = _snapshot([_row("free/a", status="STALE")])
+    # The plan is digest-bound to gateway "http://gw" and generation "gen1"
+    # (see ``_plan_for``). Finding 3: execute re-reads the CURRENT endpoint and
+    # generation and refuses a missing/mismatched binding, so the snapshot must
+    # carry the same gateway/generation for a valid execute.
+    snap = RefreshSnapshot(
+        rows=(_row("free/a", status="STALE"),), generation="gen1", gateway_origin="http://gw"
+    )
     cache = HealthCache(tmp_path / "health-cache.json")
     transport = ScriptedTransport({})
     r = action_models_refresh_execute(

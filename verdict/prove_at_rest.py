@@ -307,6 +307,7 @@ class ProbeExchange:
     response_body: Mapping[str, Any] | None = None  # parsed JSON for agentic scoring
     status_code: int | None = None  # alias for http_status (used by score_agentic_probe)
     reported_model: str = ""  # model returned by the backend (for identity check)
+    detail: str = ""  # sanitized provider message (for model-vs-provider scope)
 
 
 # A transport probes one route for one phase ("chat" or "tool") and must not
@@ -1380,6 +1381,47 @@ def _no_write_category(exchange: ProbeExchange) -> str | None:
     return None
 
 
+# Provider message fragments that scope a 403 / 429 to a single model rather
+# than the whole account/provider. Mirrors recovery.py's canonical markers so
+# the at-rest prober and the live worker draw the same route-vs-provider line.
+_MODEL_SCOPED_403_MARKERS = (
+    "this model",
+    "for model",
+    "model not allowed",
+    "model is not allowed",
+    "not allowed to use model",
+    "does not have access to model",
+    "no access to model",
+    "model access",
+    "blocked model",
+    "model is blocked",
+)
+_MODEL_SCOPED_429_MARKERS = (
+    "for this model",
+    "model usage limit",
+    "per-model",
+    "per model",
+    "this model",
+)
+
+
+def _detail_is_model_scoped(category: str, http_status: int | None, detail: str) -> bool:
+    """True when a 403/429 message names one model, not the account/provider.
+
+    Empty/unknown detail is NOT model-scoped: the conservative default keeps the
+    whole provider stopped so a sibling route cannot stay VERIFIED behind an
+    account-wide blocker.
+    """
+    text = (detail or "").strip().lower()
+    if not text:
+        return False
+    if http_status == 403 or category == CATEGORY_PERMISSION:
+        return any(marker in text for marker in _MODEL_SCOPED_403_MARKERS)
+    if http_status == 429 or category == CATEGORY_RATE_LIMITED:
+        return any(marker in text for marker in _MODEL_SCOPED_429_MARKERS)
+    return False
+
+
 def _aggregate_identity(reports: Sequence[str], route_id: str) -> str:
     """Fold the reported ids from every probe phase into one identity verdict.
 
@@ -1420,10 +1462,26 @@ class FullProbeOutcome:
     http_status: int | None = None
     retry_after_seconds: float | None = None
     latency_ms: float | None = None
+    # Sanitized provider message, kept so the coordinator can tell an explicit
+    # model-scoped denial / per-model quota from an account/provider blocker.
+    detail: str = ""
+    # True for a chat-only liveness probe (metered/unknown under explicit
+    # consent): success is recorded via ``record_liveness`` (tool_ok stays
+    # false), never as a coding-worker proof.
+    liveness: bool = False
 
     @property
     def rate_limited(self) -> bool:
         return self.category == CATEGORY_RATE_LIMITED or self.http_status == 429
+
+    @property
+    def model_scoped(self) -> bool:
+        """True when the failure names a single model, not the account/provider.
+
+        A route-scoped 403 (explicit model denial) or 429 (per-model quota)
+        leaves sibling routes on the same provider eligible (design s7:156,159).
+        """
+        return _detail_is_model_scoped(self.category, self.http_status, self.detail)
 
 
 def probe_full(
@@ -1578,6 +1636,97 @@ def probe_full(
         http_status=status,
         retry_after_seconds=observed.retry_after_seconds,
         latency_ms=latency,
+        detail=observed.detail,
+    )
+
+
+def probe_liveness(
+    route: AdmittedRoute,
+    transport: ProbeTransportFn,
+    *,
+    timeout_seconds: float,
+    deadline_ok: Callable[[], bool] = lambda: True,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> FullProbeOutcome:
+    """Chat-only liveness probe (one request) for a metered/unknown route.
+
+    Used ONLY by an explicitly consented manual plan: metered/unknown routes
+    are never auto-probed, and even under consent they must not burn a second
+    (tool) request. A chat success is a liveness success (``tool_ok`` false,
+    recorded via ``record_liveness``), never a coding-worker proof. Identity,
+    no-write (context-length/gateway-busy) and failure classification match
+    :func:`probe_full`'s chat phase.
+    """
+    if cancelled():
+        return FullProbeOutcome(
+            route.route_id, None, 0, False, True, NOWRITE_CANCELLED, CATEGORY_OK, liveness=True
+        )
+    if not deadline_ok():
+        return FullProbeOutcome(
+            route.route_id, None, 0, False, True, NOWRITE_DEADLINE, CATEGORY_OK, liveness=True
+        )
+    try:
+        chat = transport(route.route_id, "chat", timeout_seconds)
+    except TimeoutError:
+        chat = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+    latency = chat.latency_ms
+    chat_ok = bool(chat.ok and chat.chat_exact and chat.http_status == 200)
+
+    nowrite = _no_write_category(chat)
+    if nowrite is not None:
+        return FullProbeOutcome(
+            route.route_id,
+            None,
+            1,
+            False,
+            True,
+            nowrite,
+            nowrite,
+            http_status=chat.http_status,
+            retry_after_seconds=chat.retry_after_seconds,
+            latency_ms=latency,
+            detail=chat.detail,
+            liveness=True,
+        )
+
+    category = category_for(chat)
+    status = chat.http_status
+    if chat_ok and not model_identity_matches(route.route_id, chat.reported_model):
+        category = CATEGORY_MODEL_MISMATCH
+        chat_ok = False
+    if chat_ok:
+        category = CATEGORY_OK
+        status = 200
+    identity = _aggregate_identity([chat.reported_model], route.route_id)
+    if category == CATEGORY_MODEL_MISMATCH:
+        identity = "mismatch"
+    result = ProbeResult(
+        category=category,
+        chat_ok=chat_ok,
+        # Liveness never claims the required tool call; a chat-only success is
+        # recorded through ``record_liveness`` so ``healthy`` tool gates exclude
+        # it. A chat FAILURE still records a negative with tool_ok false.
+        tool_ok=False,
+        latency_ms=latency,
+        http_status=status,
+        retry_after_seconds=chat.retry_after_seconds,
+        pool=route.pool,
+        capacity_evidence=route.capacity_evidence,
+        identity=identity,
+    )
+    return FullProbeOutcome(
+        route.route_id,
+        result,
+        1,
+        False,
+        False,
+        "",
+        category,
+        http_status=status,
+        retry_after_seconds=chat.retry_after_seconds,
+        latency_ms=latency,
+        detail=chat.detail,
+        liveness=True,
     )
 
 

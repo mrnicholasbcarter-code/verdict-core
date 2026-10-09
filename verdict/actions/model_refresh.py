@@ -324,9 +324,22 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
             return _refuse("identity_changed")
         executable_ids.append(pr.route_id)
 
-    gen = str(plan.get("evidence_generation") or "")
-    if gen and snapshot.generation and gen != snapshot.generation:
+    # Re-read current generation and gateway endpoint; refuse a missing or
+    # mismatched binding before ANY call (design s6:141-143). The plan digest
+    # binds endpoint + generation, so a plan with a generation but a snapshot
+    # with none (or a different one) must NOT silently run: that is exactly the
+    # "stale/ambiguous evidence" case the binding exists to catch.
+    plan_gen = str(plan.get("evidence_generation") or "")
+    current_gen = str(snapshot.generation or "")
+    if (plan_gen or current_gen) and (not plan_gen or not current_gen or plan_gen != current_gen):
         return _refuse("evidence_changed")
+
+    plan_gateway = str(plan.get("gateway_origin") or "")
+    current_gateway = str(snapshot.gateway_origin or "")
+    if (plan_gateway or current_gateway) and (
+        not plan_gateway or not current_gateway or plan_gateway != current_gateway
+    ):
+        return _refuse("gateway_changed")
 
     if not executable_ids:
         # Everything narrowed away: nothing to probe, zero calls.
@@ -368,7 +381,13 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
         consumer=str(plan.get("consumer") or "manual"),
         needed_ids=executable_ids,
         config=config,
-        explicit=True,  # a confirmed plan is an explicit prepaid authorization
+        # A confirmed plan is a separately typed consent authorization: it is
+        # NOT an automatic trigger (so VERDICT_AUTO_REFRESH does not gate it)
+        # and it lifts the prepaid-only rule so its exact METERED/UNKNOWN ids
+        # DO execute (chat-only liveness). ``explicit`` still marks the ids as
+        # top priority within the plan.
+        explicit=True,
+        authorized=True,
         on_progress=kwargs.get("on_progress"),
         cancel=kwargs.get("cancel"),
     )

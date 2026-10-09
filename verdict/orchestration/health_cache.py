@@ -617,18 +617,66 @@ class HealthCache:
         return snapshot
 
     def save(self) -> None:
-        """Write the snapshot under an exclusive lock, replacing atomically."""
+        """Serialized read-merge-write: never clobber a newer concurrent write.
+
+        BOD-292 review finding 4: a bare ``save()`` that wrote only this
+        object's snapshot destroyed route health another writer (the refresh
+        coordinator's ``merge_and_save``, or a second daemon) had just added.
+        Every writer -- the daemon included -- now takes the same exclusive
+        lock, reloads the authoritative on-disk state, merges this object's
+        in-memory state onto it (newest wins), then atomically replaces the
+        file. A route present only on disk is preserved; a route present in
+        both keeps the newer ``checked_at``; scoped cooldowns keep the later
+        deadline; per-provider buckets keep the more-consumed side so a token
+        reservation is never silently dropped.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
         with lock_path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
+                self._merge_in_memory_over_disk()
+                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
                 temporary.write_text(body, encoding="utf-8")
                 os.replace(temporary, self.path)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _merge_in_memory_over_disk(self) -> None:
+        """Reload disk and fold this object's in-memory state over it.
+
+        Must run while the exclusive lock is held. Keeps every disk-only entry
+        and, for keys present in both, the newest route proof / later cooldown
+        deadline / more-consumed bucket. The in-memory cursor wins (it is the
+        saver's own partial-progress intent).
+        """
+        mine_routes = dict(self._routes)
+        mine_buckets = dict(self._buckets)
+        mine_cooldowns = dict(self._cooldowns)
+        mine_cursor = dict(self._cursor)
+        # Overwrite self with the authoritative on-disk view, then merge mine in.
+        self._load()
+        for route_id, entry in mine_routes.items():
+            disk = self._routes.get(route_id)
+            if disk is None or entry.checked_at >= disk.checked_at:
+                self._routes[route_id] = entry
+        for cooldown in mine_cooldowns.values():
+            self.record_cooldown(cooldown)
+        for key, bucket in mine_buckets.items():
+            disk_bucket = self._buckets.get(key)
+            if disk_bucket is None:
+                self._buckets[key] = bucket
+                continue
+            # Conservative: keep the more-consumed timestamps and the later
+            # zeroing so a reservation written by another process survives.
+            if len(bucket.timestamps) >= len(disk_bucket.timestamps):
+                disk_bucket.timestamps = list(bucket.timestamps)
+            disk_zero = disk_bucket.zeroed_until
+            mine_zero = bucket.zeroed_until
+            if mine_zero is not None and (disk_zero is None or mine_zero > disk_zero):
+                disk_bucket.zeroed_until = mine_zero
+        self._cursor = mine_cursor
 
     def merge_and_save(self, mutate: Callable[[HealthCache], None]) -> None:
         """Serialized read-modify-write under the existing exclusive lock.
@@ -882,6 +930,43 @@ class HealthCache:
 
     def bucket_remaining(self, provider: str, now: datetime, *, pool: str | None = None) -> int:
         return self.bucket_for(provider, pool).remaining(now)
+
+    def reserve_bucket(
+        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1
+    ) -> bool:
+        """Serialized reserve: persist ``amount`` tokens to disk before dispatch.
+
+        BOD-292 review (token-bucket boundary): an in-memory ``consume`` is
+        dropped by the next ``merge_and_save`` disk reload, so concurrent or
+        sequential same-provider routes each saw a full bucket and overspent.
+        This takes the shared lock, reloads the authoritative bucket, consumes
+        only if enough tokens remain, and persists -- so the reservation is a
+        real spend boundary the next reserve observes. Returns False (no spend)
+        when the bucket cannot cover ``amount``.
+        """
+        reserved = False
+
+        def _mutate(cache: HealthCache) -> None:
+            nonlocal reserved
+            reserved = cache.consume(provider, now, pool=pool, amount=amount)
+
+        self.merge_and_save(_mutate)
+        return reserved
+
+    def release_bucket(
+        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1
+    ) -> None:
+        """Serialized release of unused reservations back to the provider bucket."""
+        if amount <= 0:
+            return
+
+        def _mutate(cache: HealthCache) -> None:
+            bucket = cache.bucket_for(provider, pool)
+            for _ in range(amount):
+                if bucket.timestamps:
+                    bucket.timestamps.pop()
+
+        self.merge_and_save(_mutate)
 
     # -- cycle cursor (partial progress) -----------------------------------
 

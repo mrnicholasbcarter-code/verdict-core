@@ -32,6 +32,7 @@ is testable with fixtures. Unit 2 integrates the real projection.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -44,6 +45,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
+    CATEGORY_OK,
     CATEGORY_PAYMENT,
     CATEGORY_PERMISSION,
     CATEGORY_RATE_LIMITED,
@@ -52,7 +54,13 @@ from verdict.orchestration.health_cache import (
     format_datetime,
     negative_seconds,
 )
-from verdict.prove_at_rest import AdmittedRoute, FullProbeOutcome, ProbeExchange, probe_full
+from verdict.prove_at_rest import (
+    AdmittedRoute,
+    FullProbeOutcome,
+    ProbeExchange,
+    probe_full,
+    probe_liveness,
+)
 
 # ---------------------------------------------------------------------------
 # Narrow input contract from unit 1's pure projection (fixture-testable).
@@ -241,12 +249,15 @@ class RefreshSnapshot:
 
     ``rows`` are the projection rows (one per canonical route). ``now`` is the
     snapshot clock. ``generation`` is an opaque evidence-generation token used
-    for debounce/marker matching. The coordinator reads rows read-only; it
-    never mutates the snapshot.
+    for debounce/marker matching and change binding. ``gateway_origin`` is the
+    CURRENT gateway endpoint (so a consented plan can refuse to run against a
+    different endpoint than it was digest-bound to). The coordinator reads rows
+    read-only; it never mutates the snapshot.
     """
 
     rows: tuple[RowInput, ...]
     generation: str = ""
+    gateway_origin: str = ""
 
     def by_id(self) -> dict[str, RowInput]:
         return {row.route_id: row for row in self.rows}
@@ -351,17 +362,25 @@ class RefreshOutcome:
 # ---------------------------------------------------------------------------
 
 
-def _is_refreshable(row: RowInput) -> bool:
-    """A row is an automatic candidate only when prepaid and stale/unverified.
+def _is_refreshable(row: RowInput, *, authorized: bool = False) -> bool:
+    """Is this row a candidate for a refresh job?
 
-    Fresh (VERIFIED) rows never re-probe. METERED/UNKNOWN never auto-probe.
-    FAILED/UNAVAILABLE/INVENTORY_ONLY/EXCLUDED are not candidates. The row's own
-    ``refreshable`` flag (from unit 1, which already applied the active-gate
-    checks) must also be set.
+    Automatic triggers (``authorized`` False): prepaid FREE/SUBSCRIPTION only,
+    STALE/UNVERIFIED only, and the row's own ``refreshable`` flag (from unit 1,
+    which already applied the active entitlement/cooldown/identity/policy gate
+    checks). Fresh (VERIFIED) rows never re-probe; METERED/UNKNOWN never
+    auto-probe; FAILED/UNAVAILABLE/INVENTORY_ONLY/EXCLUDED are never candidates.
+
+    A consented manual plan (``authorized`` True) is the digest-bound authority
+    for its exact ids, so the prepaid-only capacity gate is lifted: METERED and
+    UNKNOWN DO execute (chat-only liveness) under explicit consent. The status
+    and ``refreshable`` gates still apply, so a route that became
+    VERIFIED/FAILED/UNAVAILABLE or picked up a new blocker since planning is
+    narrowed away rather than probed.
     """
-    if row.capacity_class not in _PREPAID:
-        return False
     if row.status not in {STATUS_STALE, STATUS_UNVERIFIED}:
+        return False
+    if not authorized and row.capacity_class not in _PREPAID:
         return False
     return bool(row.refreshable)
 
@@ -387,7 +406,12 @@ def _rank_hint(row: RowInput) -> tuple[int, str]:
 
 
 def select_candidates(
-    snapshot: RefreshSnapshot, *, needed_ids: Sequence[str], explicit: bool, config: RefreshConfig
+    snapshot: RefreshSnapshot,
+    *,
+    needed_ids: Sequence[str],
+    explicit: bool,
+    config: RefreshConfig,
+    authorized: bool = False,
 ) -> list[RowInput]:
     """Ordered, capped candidate list. Only supplied ids may enter the plan.
 
@@ -396,10 +420,13 @@ def select_candidates(
     admitted routes in canonical ladder rank order. Within each priority band,
     round-robin by provider with a stable route tie-break and unknown rank last.
     Inventory/capacity alone never makes a route eligible.
+
+    ``authorized`` marks a consented manual plan, which lifts the prepaid-only
+    capacity gate for its exact ids (METERED/UNKNOWN are then eligible).
     """
     by_id = snapshot.by_id()
     wanted = [by_id[rid] for rid in dict.fromkeys(needed_ids) if rid in by_id]
-    candidates = [row for row in wanted if _is_refreshable(row)]
+    candidates = [row for row in wanted if _is_refreshable(row, authorized=authorized)]
     if explicit:
         # Explicit ids are their own top band; preserve priority then rank
         # inside it but keep all supplied refreshable ids ahead of nothing.
@@ -518,14 +545,27 @@ def _provider_token_key(row: RowInput) -> str:
 
 
 def _admitted_route(row: RowInput) -> AdmittedRoute:
-    capacity = row.capacity_class if row.capacity_class in _PREPAID else CAPACITY_FREE
+    # AdmittedRoute accepts all four capacity classes; pass the row's real
+    # class through so a consented METERED/UNKNOWN liveness probe keeps its
+    # true capacity (it is never silently reclassified as FREE).
     return AdmittedRoute(
         route_id=row.route_id,
         provider=row.provider,
-        capacity=capacity,
+        capacity=row.capacity_class,
         pool=row.pool,
         capacity_evidence=row.capacity_evidence,
     )
+
+
+def _probe_requests_for(row: RowInput) -> int:
+    """Request budget for one route's probe.
+
+    Prepaid FREE/SUBSCRIPTION run the full chat+tool probe (2 requests).
+    A consented METERED/UNKNOWN route runs a chat-only liveness probe (1
+    request): it is never auto-probed, and even under consent it must not burn
+    the second (tool) request.
+    """
+    return 1 if row.capacity_class not in _PREPAID else REQUESTS_PER_FULL_PROBE
 
 
 class _Scopes:
@@ -579,6 +619,30 @@ class RefreshCoordinator:
         marker = self.marker_path or (base / "verified-refresh.json")
         return lock, marker
 
+    def _cancel_path(self) -> Path:
+        """Cross-process shared-cancel flag beside the marker (no credentials).
+
+        A joined consumer's Esc/Ctrl-C must cancel the shared owner, not just
+        its own wait (design s5:131, all waiters share cancellation). The owner
+        and every joiner watch this file; its presence requests cancellation of
+        the whole in-flight job.
+        """
+        _, marker = self._paths()
+        return marker.with_suffix(marker.suffix + ".cancel")
+
+    def _request_shared_cancel(self) -> None:
+        path = self._cancel_path()
+        with contextlib.suppress(OSError):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    def _shared_cancel_requested(self) -> bool:
+        return self._cancel_path().exists()
+
+    def _clear_shared_cancel(self) -> None:
+        with contextlib.suppress(OSError):
+            self._cancel_path().unlink()
+
     # -- public entry point ------------------------------------------------
 
     def refresh_for_consumer(
@@ -589,24 +653,35 @@ class RefreshCoordinator:
         needed_ids: Sequence[str],
         config: RefreshConfig,
         explicit: bool = False,
+        authorized: bool = False,
         on_progress: Callable[[ProgressEvent], None] | None = None,
         cancel: Callable[[], bool] | None = None,
         job_id: str | None = None,
     ) -> RefreshOutcome:
-        """Refresh the needed prepaid stale/unverified rows, waiting for the job.
+        """Refresh the needed stale/unverified rows, waiting for the job.
 
         Returns a :class:`RefreshOutcome` only after the bounded job ends.
-        ``explicit`` marks picker/selection triggers whose ids are top priority.
-        ``cancel`` lets the consumer request shared cancellation. ``on_progress``
-        receives bounded progress ticks in monotonic order BEFORE the final
-        result. Fresh-only needed entries bypass the lock/join entirely.
+        ``explicit`` marks picker/selection triggers whose ids are top priority
+        (still an AUTOMATIC trigger, governed by ``auto_refresh`` and the
+        prepaid-only rule). ``authorized`` marks a separately typed consented
+        manual plan (``models.refresh.execute``): it is NOT an automatic
+        trigger, so ``VERDICT_AUTO_REFRESH`` does not gate it, and it lifts the
+        prepaid-only rule so its exact METERED/UNKNOWN ids run a chat-only
+        liveness probe. ``cancel`` lets the consumer request shared
+        cancellation. ``on_progress`` receives bounded progress ticks in
+        monotonic order BEFORE the final result. Fresh-only needed entries
+        bypass the lock/join entirely.
         """
         cancel = cancel or (lambda: False)
         by_id = snapshot.by_id()
         wanted = [by_id[rid] for rid in dict.fromkeys(needed_ids) if rid in by_id]
 
-        # Disabled auto-refresh: snapshot view, labelled, no implicit consent.
-        if not config.auto_refresh and not explicit:
+        # Disabled auto-refresh governs EVERY automatic trigger -- verified-view
+        # open, picker preview/apply and selection-before-dispatch are all
+        # automatic even though picker/selection are ``explicit``. Only a
+        # separately typed consented manual plan (``authorized``) runs while
+        # auto-refresh is disabled. ``explicit`` alone never bypasses the gate.
+        if not config.auto_refresh and not authorized:
             return self._empty(
                 OUTCOME_AUTO_DISABLED, consumer, job_id or "disabled", wanted, REASON_NOT_TESTED
             )
@@ -618,6 +693,7 @@ class RefreshCoordinator:
             needed_ids=needed_ids,
             explicit=explicit,
             config=replace(config, max_routes=HARD_MAX_ROUTES),
+            authorized=authorized,
         )
         candidates = all_eligible[: config.max_routes]
         cut_by_route_cap = all_eligible[config.max_routes :]
@@ -697,6 +773,17 @@ class RefreshCoordinator:
 
         timeout_cap = min(PER_CALL_TIMEOUT_CAP, config.wall_seconds)
 
+        # Fresh job: drop any stale shared-cancel flag so a prior cycle's Esc
+        # does not pre-cancel this one. The owner cancels when its local cancel
+        # fires OR a joined consumer raises the shared flag (design s5:131).
+        self._clear_shared_cancel()
+        local_cancel = cancel
+
+        def combined_cancel() -> bool:
+            return local_cancel() or self._shared_cancel_requested()
+
+        cancel = combined_cancel
+
         self._write_marker(
             marker, job_id, consumer, candidates, started, deadline, outcomes, running=True
         )
@@ -709,7 +796,8 @@ class RefreshCoordinator:
             if remaining <= 0:
                 cap_reason = REASON_WALL_CAP
                 break
-            if requests_made + REQUESTS_PER_FULL_PROBE > config.max_requests:
+            probe_requests = _probe_requests_for(row)
+            if requests_made + probe_requests > config.max_requests:
                 cap_reason = REASON_REQUEST_CAP
                 break
             stop = scopes.provider_stopped(row.provider)
@@ -728,23 +816,28 @@ class RefreshCoordinator:
                     row.route_id, row.provider, False, False, refresh_reason=REASON_PROVIDER_STOP
                 )
                 continue
-            # Per-provider token bucket: whole-probe (2-request) reservation.
+            # Per-provider token bucket: reserve the whole probe up front and
+            # PERSIST the reservation under the shared lock before dispatch, so
+            # a following same-provider route (and the next merge_and_save disk
+            # reload) sees the spend. An in-memory consume was dropped by the
+            # reload, letting 8 routes each see a full bucket (review finding).
             now = self.clock()
-            if (
-                self.cache.bucket_remaining(row.provider, now, pool=row.pool)
-                < REQUESTS_PER_FULL_PROBE
+            if not self.cache.reserve_bucket(
+                row.provider, now, pool=row.pool, amount=probe_requests
             ):
                 outcomes[row.route_id] = RouteOutcome(
                     row.route_id, row.provider, False, False, refresh_reason=REASON_BUCKET
                 )
                 continue
-            self.cache.consume(row.provider, now, pool=row.pool, amount=REQUESTS_PER_FULL_PROBE)
 
             per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
             outcome = self._probe_one(row, per_call_timeout, deadline=deadline, cancel=cancel)
-            # Release the unused half of the reservation after a short probe.
-            if outcome.requests_made < REQUESTS_PER_FULL_PROBE:
-                self._release_tokens(row, REQUESTS_PER_FULL_PROBE - outcome.requests_made, now)
+            # Release the unused part of the reservation (persisted) after a
+            # short probe so an untested half is never double-counted as spent.
+            if outcome.requests_made < probe_requests:
+                self.cache.release_bucket(
+                    row.provider, now, pool=row.pool, amount=probe_requests - outcome.requests_made
+                )
             requests_made += outcome.requests_made
 
             route_out = self._persist_and_classify(row, outcome, scopes)
@@ -853,6 +946,8 @@ class RefreshCoordinator:
             started,
             per_provider,
         )
+        # The job is over; drop the shared-cancel flag so a later job starts clean.
+        self._clear_shared_cancel()
         return outcome_obj
 
     def _probe_one(
@@ -865,7 +960,10 @@ class RefreshCoordinator:
         def deadline_ok() -> bool:
             return self.monotonic() < deadline
 
-        return probe_full(
+        # Prepaid routes get the full chat+tool coding proof; a consented
+        # METERED/UNKNOWN route gets a chat-only liveness probe (one request).
+        prober = probe_full if row.capacity_class in _PREPAID else probe_liveness
+        return prober(
             _admitted_route(row),
             self.transport,
             timeout_seconds=timeout_seconds,
@@ -903,13 +1001,33 @@ class RefreshCoordinator:
         now = self.clock()
         category = result.category
         retry_after = outcome.retry_after_seconds
+        # A chat-only liveness probe (consented METERED/UNKNOWN) records a
+        # successful chat as a healthy LIVENESS entry (tool_ok stays false),
+        # never as a coding-worker proof and never as a negative.
+        liveness_success = outcome.liveness and result.chat_ok and category == CATEGORY_OK
+        is_verified = bool(result.healthy) or liveness_success
         # Determine scope stop BEFORE the write so a provider block persists even
         # if a sibling later succeeds; the write records the scoped cooldown too.
-        provider_stop = category in _PROVIDER_STOP_CATEGORIES
-        model_scoped = outcome.http_status == 403 and not provider_stop
+        # Per-model 403 (explicit model denial) and per-model 429 (per-model
+        # quota) stop ONLY that route so sibling routes stay eligible
+        # (design s7:156,159). Empty/unknown detail stays provider-scoped: the
+        # conservative default keeps a sibling from remaining VERIFIED behind an
+        # account-wide blocker.
+        model_scoped = outcome.model_scoped
+        provider_stop = category in _PROVIDER_STOP_CATEGORIES and not model_scoped
 
         def _mutate(cache: HealthCache) -> None:
-            cache.record(row.route_id, result, now)
+            if liveness_success:
+                cache.record_liveness(
+                    row.route_id,
+                    latency_ms=result.latency_ms,
+                    pool=row.pool,
+                    capacity_evidence=row.capacity_evidence,
+                    now=now,
+                    identity=result.identity,
+                )
+            else:
+                cache.record(row.route_id, result, now)
             if provider_stop:
                 seconds = negative_seconds(
                     category, http_status=outcome.http_status, retry_after_seconds=retry_after
@@ -925,6 +1043,24 @@ class RefreshCoordinator:
                 )
                 if category == CATEGORY_RATE_LIMITED:
                     cache.zero_bucket(row.provider, now + timedelta(seconds=seconds), pool=row.pool)
+            elif model_scoped:
+                # Route-scoped cooldown: the route's own negative entry carries
+                # the retry gate; a scoped cooldown keyed on the route records
+                # the explicit model-level block without poisoning siblings or
+                # zeroing the whole provider bucket.
+                seconds = negative_seconds(
+                    category, http_status=outcome.http_status, retry_after_seconds=retry_after
+                )
+                cache.record_cooldown(
+                    ScopedCooldown(
+                        key=f"route:{row.route_id}",
+                        category=category,
+                        checked_at=now,
+                        until=now + timedelta(seconds=seconds),
+                        provider_id=row.provider,
+                        pool=row.pool,
+                    )
+                )
 
         self.cache.merge_and_save(_mutate)
 
@@ -937,21 +1073,12 @@ class RefreshCoordinator:
             row.route_id,
             row.provider,
             probed=True,
-            verified=bool(result.healthy),
+            verified=is_verified,
             category=category,
             http_status=outcome.http_status,
             refresh_reason=None,
             requests_made=outcome.requests_made,
         )
-
-    def _release_tokens(self, row: RowInput, amount: int, now: datetime) -> None:
-        """Return unused request reservations to the provider bucket."""
-        if amount <= 0:
-            return
-        bucket = self.cache.bucket_for(row.provider, row.pool)
-        for _ in range(amount):
-            if bucket.timestamps:
-                bucket.timestamps.pop()
 
     # -- join path ---------------------------------------------------------
 
@@ -973,20 +1100,42 @@ class RefreshCoordinator:
         """
         started = self.monotonic()
         deadline = started + config.wall_seconds
-        wanted = {row.route_id for row in candidates}
+        last_seq = -1
+        job_running_at_exit = True
         while True:
             if cancel():
-                break
-            if not lock.live():
-                break  # owner finished or crashed
+                # A joined consumer's cancel is SHARED: raise the flag so the
+                # owner stops dispatch too (design s5:131). Do not break until
+                # the owner marks the job finished or the deadline passes, so a
+                # cancelled wait never reports JOINED/complete off a still-live
+                # marker.
+                self._request_shared_cancel()
             payload = marker.read()
-            if payload is not None and not payload.get("running", True):
+            if payload is not None:
+                # Feed the owner's monotonic progress to this waiter's UI so a
+                # joined consumer sees live progress, not a frozen view.
+                seq = payload.get("sequence")
+                if isinstance(seq, int) and seq != last_seq:
+                    last_seq = seq
+                    self._emit_join_progress(on_progress, payload, started)
+                if not payload.get("running", True):
+                    job_running_at_exit = False
+                    break
+            if not lock.live():
+                # Owner released the lock. Re-read once: a finished marker beats
+                # a crash. If it is still "running", the owner crashed and the
+                # job did NOT finish -- unfinished routes stay NOT_TESTED.
+                payload = marker.read()
+                job_running_at_exit = bool(payload is None or payload.get("running", True))
                 break
             if self.monotonic() >= deadline:
+                job_running_at_exit = True  # deadline hit a still-running job
                 break
             self.sleep(min(0.05, max(0.0, deadline - self.monotonic())))
 
         payload = marker.read() or {}
+        if not payload.get("running", True):
+            job_running_at_exit = False
         job_id = str(payload.get("job_id") or "joined")
         covered = payload.get("outcomes") or {}
         outcomes: dict[str, RouteOutcome] = {}
@@ -1017,12 +1166,14 @@ class RefreshCoordinator:
                     False,
                     refresh_reason=REASON_JOINED_NOT_COVERED,
                 )
-        cancelled = cancel()
+        cancelled = cancel() or self._shared_cancel_requested()
         result_kind = OUTCOME_CANCELLED if cancelled else OUTCOME_JOINED
-        complete = result_kind == OUTCOME_JOINED and all(
-            o.refresh_reason is None for o in outcomes.values()
-        )
-        del wanted
+        all_covered = all(o.refresh_reason is None for o in outcomes.values())
+        # A join is complete ONLY when every needed id was covered AND the owner
+        # had finished. If the wait ended while the owner was still running
+        # (deadline or crash), unfinished routes stay NOT_TESTED, never reported
+        # healthy, and the outcome is not complete (design s5:127, s5:131).
+        complete = result_kind == OUTCOME_JOINED and all_covered and not job_running_at_exit
         return RefreshOutcome(
             outcome=result_kind,
             job_id=job_id,
@@ -1037,6 +1188,52 @@ class RefreshCoordinator:
             cap_reason=None if complete else REASON_JOINED_NOT_COVERED,
             complete=complete,
             note="joined",
+        )
+
+    def _emit_join_progress(
+        self,
+        on_progress: Callable[[ProgressEvent], None] | None,
+        payload: Mapping[str, Any],
+        started: float,
+    ) -> None:
+        """Mirror the owner's marker progress to a joined consumer's UI.
+
+        A joined waiter makes no calls of its own; it renders the shared job's
+        probed/verified/failed counts so all waiters see the same progress.
+        """
+        if on_progress is None:
+            return
+        covered = payload.get("outcomes") or {}
+        probed = verified = failed = 0
+        per_provider: dict[str, int] = {}
+        if isinstance(covered, Mapping):
+            for raw in covered.values():
+                if isinstance(raw, Mapping) and raw.get("probed"):
+                    probed += 1
+                    provider = str(raw.get("provider") or "")
+                    per_provider[provider] = per_provider.get(provider, 0) + 1
+                    if raw.get("verified"):
+                        verified += 1
+                    else:
+                        failed += 1
+        self._seq += 1
+        total = len(payload.get("ids") or [])
+        on_progress(
+            ProgressEvent(
+                sequence=self._seq,
+                job_id=str(payload.get("job_id") or "joined"),
+                probed=probed,
+                total=total,
+                verified=verified,
+                failed=failed,
+                unavailable=0,
+                requests_made=0,
+                requests_reserved=0,
+                elapsed_seconds=self.monotonic() - started,
+                per_provider=per_provider,
+                last_reason=None,
+                kind="progress",
+            )
         )
 
     # -- helpers -----------------------------------------------------------
@@ -1260,6 +1457,7 @@ def refresh_for_consumer(
     monotonic: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
     explicit: bool = False,
+    authorized: bool = False,
     on_progress: Callable[[ProgressEvent], None] | None = None,
     cancel: Callable[[], bool] | None = None,
     lock_path: Path | None = None,
@@ -1269,6 +1467,7 @@ def refresh_for_consumer(
     """Module-level convenience wrapper over :class:`RefreshCoordinator`.
 
     Matches the design signature; all I/O is injected for hermetic tests.
+    ``authorized`` marks a consented manual plan (see the coordinator method).
     """
     coordinator = RefreshCoordinator(
         cache=cache,
@@ -1285,6 +1484,7 @@ def refresh_for_consumer(
         needed_ids=needed_ids,
         config=config,
         explicit=explicit,
+        authorized=authorized,
         on_progress=on_progress,
         cancel=cancel,
         job_id=job_id,
