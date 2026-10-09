@@ -92,3 +92,33 @@ def test_version_cli_output_unchanged() -> None:
         (sys.executable, "-m", "verdict", "--version"), check=True, capture_output=True, text=True
     )
     assert result.stdout.strip() == f"verdict-core __main__.py {verdict.__version__}"
+
+
+def test_cli_gate_is_gate_gate() -> None:
+    assert verdict.cli.Gate is verdict.gate.Gate
+
+
+def test_cli_import_does_not_load_verdict_gate() -> None:
+    probe = (
+        "import sys\n"
+        "import verdict.cli\n"
+        "gate_loaded = any(m.startswith('verdict.gate') for m in sys.modules)\n"
+        "print('1' if gate_loaded else '0')\n"
+    )
+    result = subprocess.run(
+        (sys.executable, "-c", probe), check=True, capture_output=True, text=True
+    )
+    assert result.stdout.strip() == "0"
+
+
+def test_get_type_hints_after_gate_access() -> None:
+    # Ensure Gate is accessed to trigger lazy import
+    _ = verdict.cli.Gate
+    import typing
+
+    hints = typing.get_type_hints(verdict.cli._execute_cli_decision)
+    assert hints["gate"] is verdict.gate.Gate
+
+
+def test_getattr_returns_none_for_missing() -> None:
+    assert getattr(verdict.cli, "NoSuchName", None) is None

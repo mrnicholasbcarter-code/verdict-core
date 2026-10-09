@@ -46,6 +46,20 @@ if TYPE_CHECKING:
     # verdict.intelligence -> ... -> httpx).
     from verdict.gate import Gate
 
+
+def __getattr__(name: str) -> Any:
+    """Get Gate lazily.
+
+    get_type_hints on private cli helpers resolves after `verdict.cli.Gate` is first accessed.
+    """
+    if name == "Gate":
+        from verdict.gate import Gate
+
+        globals()["Gate"] = Gate
+        return Gate
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 console = Console()
 
 
