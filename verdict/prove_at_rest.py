@@ -1972,6 +1972,88 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
     }
 
 
+# ---------------------------------------------------------------------------
+# Census (BOD-297: pool-aware, read-only; no live calls)
+# ---------------------------------------------------------------------------
+
+
+def census_report(
+    routes: Sequence[AdmittedRoute], cache: HealthCache, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Per-canonical-pool rollup over an admitted-route inventory and the cache.
+
+    Read-only: reads ``cache`` and the given ``routes`` (a fixture inventory
+    in tests, ``routes_from_evidence`` output otherwise). Never probes and
+    never writes. Non-chat routes are tallied under ``non_chat_skipped`` and
+    excluded from every pool's counts. Alias duplicates (BOD-297 collapse)
+    are tallied under their pool's ``inherited_from_alias``: an inherited
+    route borrows its canonical member's *reported* status for this report
+    only -- nothing is written to the cache on its behalf.
+    """
+    from verdict.orchestration.credential_pools import collapse_alias_duplicates
+
+    current = now or _now()
+    chat_routes = [route for route in routes if not route.non_chat]
+    non_chat_skipped = len(routes) - len(chat_routes)
+    kept_ids, inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    kept_id_set = set(kept_ids)
+
+    def _status_of(route_id: str) -> tuple[str, str]:
+        """Return ``(bucket, category)`` for one canonical route_id's cache state."""
+        lookup = cache.lookup(route_id, current)
+        entry = lookup.entry
+        if entry is None or lookup.state == STATE_UNPROBED:
+            return "unknown_unprobed", ""
+        if lookup.healthy and entry.tool_ok:
+            return "usable", CATEGORY_OK
+        if lookup.healthy:
+            return "usable_liveness_only", CATEGORY_OK
+        return "unusable", entry.category or "unknown"
+
+    pools: dict[str, dict[str, Any]] = {}
+
+    def _pool_bucket(pool: str) -> dict[str, Any]:
+        return pools.setdefault(
+            pool,
+            {
+                "routes": 0,
+                "canonical_probed": 0,
+                "usable": 0,
+                "agentic_ok": 0,
+                "unusable": {},
+                "unknown_unprobed": 0,
+                "inherited_from_alias": 0,
+            },
+        )
+
+    for route in chat_routes:
+        pool = route.pool or route.provider
+        bucket = _pool_bucket(pool)
+        bucket["routes"] += 1
+        if route.route_id not in kept_id_set:
+            bucket["inherited_from_alias"] += 1
+            continue
+        status, category = _status_of(route.route_id)
+        bucket["canonical_probed"] += 1
+        if status in {"usable", "usable_liveness_only"}:
+            bucket["usable"] += 1
+        elif status == "unusable":
+            bucket["unusable"][category] = bucket["unusable"].get(category, 0) + 1
+        else:
+            bucket["unknown_unprobed"] += 1
+        entry = cache.entry(route.route_id)
+        if entry is not None and entry.agentic_ok:
+            bucket["agentic_ok"] += 1
+
+    return {
+        "schema_version": "1",
+        "cache_path": str(cache.path),
+        "non_chat_skipped": non_chat_skipped,
+        "pools": dict(sorted(pools.items())),
+        "inherited": dict(sorted(inherited.items())),
+    }
+
+
 __all__ = [
     "CHAT_PROBE_MESSAGE",
     "DEFAULT_CONCURRENCY",
@@ -2003,6 +2085,7 @@ __all__ = [
     "ProverDaemon",
     "build_live_daemon",
     "category_for",
+    "census_report",
     "chat_payload",
     "default_state_path",
     "load_admitted_routes",

@@ -21,6 +21,7 @@ from verdict.prove_at_rest import (
     AdmittedRoute,
     ProbeExchange,
     Prober,
+    census_report,
     order_cycle,
     routes_from_evidence,
 )
@@ -329,3 +330,75 @@ def test_auth_outage_breaker_flushes_buffer_as_negatives_once_streak_breaks(tmp_
     for route in routes[:3]:
         entry = cache.entry(route.route_id)
         assert entry is not None and not entry.healthy
+
+
+def test_census_report_groups_by_canonical_pool_and_tallies_usable(tmp_path: Path) -> None:
+    from verdict.orchestration.health_cache import CATEGORY_OK, CATEGORY_PAYMENT, ProbeResult
+
+    cache = HealthCache(tmp_path / "cache.json")
+    cache.record(
+        "antigravity/model-x", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW
+    )
+    cache.record(
+        "af/model-y", ProbeResult(category=CATEGORY_PAYMENT, chat_ok=False, tool_ok=False), NOW
+    )
+    routes = [
+        _route("agy/model-x", "free", pool="antigravity"),
+        _route("antigravity/model-x", "free", pool="antigravity"),
+        _route("af/model-y", "free", pool="api-airforce"),
+        _route("af/bge-reranker", "free", pool="api-airforce", non_chat=True),
+    ]
+    report = census_report(routes, cache, now=NOW)
+    assert report["non_chat_skipped"] == 1
+    assert report["inherited"] == {"agy/model-x": "antigravity/model-x"}
+    pools = report["pools"]
+    assert pools["antigravity"]["routes"] == 2
+    assert pools["antigravity"]["inherited_from_alias"] == 1
+    assert pools["antigravity"]["usable"] == 1
+    assert pools["api-airforce"]["unusable"] == {"payment_required": 1}
+    assert pools["api-airforce"]["usable"] == 0
+
+
+def test_census_report_is_read_only_and_never_writes_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "cache.json"
+    cache = HealthCache(cache_path)
+    routes = [_route("openrouter/model-a", "unknown", pool="openrouter")]
+    census_report(routes, cache, now=NOW)
+    assert not cache_path.exists(), "census_report must never call cache.save()"
+
+
+def test_census_action_reads_offline_inventory_file_and_cache(tmp_path: Path) -> None:
+    import json
+
+    from verdict.actions.registry import run_action
+
+    inventory_file = tmp_path / "routes.json"
+    inventory_file.write_text(
+        json.dumps(
+            [
+                {"route_id": "openrouter/model-a", "provider": "openrouter", "capacity": "free"},
+                {
+                    "route_id": "af/bge-reranker",
+                    "provider": "af",
+                    "capacity": "free",
+                    "non_chat": True,
+                },
+            ]
+        )
+    )
+    result = run_action(
+        "prove-at-rest.census",
+        {"inventory_path": str(inventory_file), "state_path": str(tmp_path / "cache.json")},
+    )
+    assert result.ok
+    assert result.data["non_chat_skipped"] == 1
+    assert "openrouter" in result.data["pools"]
+    assert not (tmp_path / "cache.json").exists(), "the census action must never write the cache"
+
+
+def test_census_action_requires_inventory_path() -> None:
+    from verdict.actions.registry import run_action
+
+    result = run_action("prove-at-rest.census", {})
+    assert not result.ok
+    assert "inventory_path" in result.data["error"]

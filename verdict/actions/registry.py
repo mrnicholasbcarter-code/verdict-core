@@ -1318,6 +1318,7 @@ def _register_builtins() -> None:
         _action_metadata_refresh,
         _action_metadata_show,
         _action_openspec_admit,
+        _action_prove_at_rest_census,
         _action_prove_at_rest_once,
         _action_prove_at_rest_status,
         _action_receipt_export,
@@ -1835,6 +1836,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_prove_at_rest_once,
+        ),
+        (
+            ActionSpec(
+                "prove-at-rest.census",
+                "health",
+                "read",
+                "BOD-297 read-only per-pool census (cache + an inventory file)",
+                "Health",
+            ),
+            _action_prove_at_rest_census,
         ),
         # metadata family (per subcommand)
         (
