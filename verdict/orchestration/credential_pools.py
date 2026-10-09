@@ -24,8 +24,10 @@ model sets, and the short prefix's ``owned_by`` resolves to the long one
 (af/api-airforce, bm/bluesminds, kc/kilocode generally — not only its
 ``:free`` rows, gh/github, cc/claude, cx/codex, oc/opencode, zm/zenmux).
 ``ollama-cloud``/``ollamacloud`` rows carry ``owned_by: "ollama-cloud"``.
-``sambanova``/``samba``: free_census3 ledger shows equal attempt counts
-(8/8) under both; no connections fixture distinguishes them.
+
+Candidates pending evidence (kept as separate pools): ``samba``/``sambanova``
+have only equal attempted-outcome counts, not shared-quota or upstream-id
+proof; bare ``dv`` has no inventory evidence tying it to ``devin-cli``.
 
 Fail-closed decisions, noted rather than silently assumed:
   - cu/cua vs cursor/cursor-api are NOT merged into one pool. ``cursor``
@@ -38,8 +40,7 @@ Fail-closed decisions, noted rather than silently assumed:
     (``devin-cli-agentic``) resolves only to ``devin-cli`` via
     ``provider_catalog.OWNED_BY_ALIASES``; no evidence ties any route to
     ``devin-desktop`` or to a bare ``dv`` prefix, so ``devin-desktop`` is
-    left out of this table (kept its own pool); ``dv`` is mapped like
-    ``dva`` as the simplest guess.
+    left out of this table (kept its own pool), as is bare ``dv``.
 """
 
 from __future__ import annotations
@@ -78,13 +79,10 @@ ALIAS_FAMILIES: Mapping[str, str] = {
     "opencode": "opencode",  # equal model sets, owned_by resolves
     "zm": "zenmux",
     "zenmux": "zenmux",  # equal model sets, owned_by resolves
-    "sambanova": "sambanova",
-    "samba": "sambanova",  # free-attempts.json 8/8 parity
     "cu": "cursor",
     "cursor": "cursor",  # distinct connection, own pool
     "cua": "cursor-api",
     "cursor-api": "cursor-api",  # distinct connection, own pool
-    "dv": "devin-cli",
     "dva": "devin-cli",  # owned_by=devin-cli-agentic -> devin-cli only
 }
 

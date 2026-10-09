@@ -79,9 +79,6 @@ def test_pool_of_collapses_known_extra_alias_pairs() -> None:
         ("cx", "codex"),
         ("oc", "opencode"),
         ("zm", "zenmux"),
-        ("sambanova", "sambanova"),
-        ("samba", "sambanova"),
-        ("dv", "devin-cli"),
         ("dva", "devin-cli"),
     ]
     for prefix, pool in pairs:
@@ -630,3 +627,12 @@ def test_census_human_output_shows_unusable_count_and_top_reasons(
     assert "Unusable" in headers
     assert rows[0][headers.index("Unusable")] == 1
     assert any("payment_required: 1" in note for note in notes)
+
+
+@pytest.mark.parametrize("prefix, other", [("samba", "sambanova"), ("dv", "devin-cli")])
+def test_unevidenced_alias_candidates_stay_separate(prefix: str, other: str) -> None:
+    assert prefix not in ALIAS_FAMILIES
+    assert pool_of(f"{prefix}/model") != pool_of(f"{other}/model")
+    kept, inherited = collapse_alias_duplicates([f"{prefix}/model", f"{other}/model"])
+    assert kept == [f"{prefix}/model", f"{other}/model"]
+    assert inherited == {}
