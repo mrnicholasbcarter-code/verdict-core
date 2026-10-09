@@ -669,7 +669,7 @@ class EligibilityLadder:
         if ledger is None or getattr(self, "_session_evidence_error", None) is not None:
             return None
         try:
-            return ledger.summarize(route_id, now, window_days=window_days)
+            return ledger.summarize_pool(route_id, now, window_days=window_days)
         except OSError:
             self._session_evidence_error = "unreadable"
             return None

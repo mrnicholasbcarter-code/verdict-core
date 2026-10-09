@@ -214,3 +214,29 @@ def test_load_skips_non_utf8_content(tmp_path: Path) -> None:
     ledger.path.write_bytes(b"\xff\n" + ledger.path.read_bytes())
     assert ledger.load() == (evidence(),)
     assert ledger.last_load_skipped == 1
+
+
+@pytest.mark.parametrize(
+    "first,alias",
+    [
+        ("agy/claude-opus-4-6-thinking", "antigravity/claude-opus-4-6-thinking"),
+        ("kc/vendor/model:free", "openrouter/vendor/model:free"),
+    ],
+)
+def test_pool_summary_combines_aliases_but_not_other_models_or_pools(
+    tmp_path: Path, first: str, alias: str
+) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.append(evidence(route_id=first))
+    ledger.append(evidence("fail", route_id=alias))
+    ledger.append(evidence("fail", route_id=first + "-other"))
+    ledger.append(evidence("fail", route_id="independent/" + first.split("/", 1)[1]))
+    ledger.append(evidence("fail", route_id=alias, at=NOW - timedelta(days=15)))
+    ledger.append(evidence("fail", route_id=alias, at=NOW + timedelta(seconds=1)))
+    ledger.append(evidence("fail", route_id=alias, verified_by_controller=False))
+    stats = ledger.summarize_pool(alias, NOW)
+    assert (stats.passes, stats.fails, stats.false_claims, stats.score) == (1, 1, 0, 0.5)
+    assert ledger.summarize_pool(first, NOW) == stats
+    assert ledger.summarize(first, NOW).fails == 0  # exact-route API stays exact
+    with pytest.raises(ValueError, match="window_days"):
+        ledger.summarize_pool(alias, NOW, window_days=-1)

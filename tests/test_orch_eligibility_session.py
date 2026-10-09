@@ -226,3 +226,36 @@ def test_other_ledger_os_errors_fail_open(tmp_path: Path, monkeypatch: pytest.Mo
     selected, _ = ladder.select(REQ, now=NOW)
     assert selected is not None
     assert selected.rank_components["session_evidence_error"] == "unreadable"
+
+
+@pytest.mark.parametrize("false_claim", [False, True])
+def test_pool_alias_cannot_bypass_worker_evidence_gate(tmp_path: Path, false_claim: bool) -> None:
+    ladder, ledger, cache = setup_ladder(tmp_path)
+    first = "agy/claude-opus-4-6-thinking"
+    alias = "antigravity/claude-opus-4-6-thinking"
+    ladder._rows = {
+        alias: row(alias, owned_by="antigravity", pricing={"input": 0.0, "output": 0.0})
+    }
+    ladder._connections = [conn("antigravity", auth="apikey", plan="free", free_only=True)]
+    cache._routes[alias] = replace(cache._routes[ROUTE], route_id=alias)
+    for day in range(3):
+        ledger.append(
+            replace(
+                outcome(
+                    False,
+                    days=day,
+                    failure="false_success_claim" if false_claim else "wrong_result",
+                ),
+                route_id=first,
+            )
+        )
+    selected, verdicts = ladder.select(REQ, now=NOW)
+    assert selected is None
+    assert verdicts[0].reason == (
+        "recent_false_claim" if false_claim else "session_evidence_insufficient"
+    )
+    # Pool observations remain visible for frontier work without gating it.
+    selected, _ = ladder.select(TaskRequirements(frontier_worthy=True), now=NOW)
+    assert selected is not None
+    assert selected.rank_components["session_passes"] == 0
+    assert selected.rank_components["session_fails"] == (6 if false_claim else 3)

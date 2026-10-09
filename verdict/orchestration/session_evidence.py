@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 from verdict.orchestration.health_cache import format_datetime, parse_datetime
+from verdict.orchestration.provider_catalog import backend_pool
 
 FAILURE_CLASSES = frozenset(
     {
@@ -144,16 +145,28 @@ class SessionLedger:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
     def summarize(self, route: str, now: datetime, window_days: int = 14) -> SessionStats:
-        """Summarize verified outcomes inside the inclusive, non-future window."""
+        """Summarize verified outcomes for exactly one route."""
+        return _summarize(item for item in self._window(now, window_days) if item.route_id == route)
+
+    def summarize_pool(self, route: str, now: datetime, window_days: int = 14) -> SessionStats:
+        """Combine aliases for the same model and catalog-defined backend pool."""
+        pool = backend_pool(route)
+        model = route.partition("/")[2]
+        return _summarize(
+            item
+            for item in self._window(now, window_days)
+            if backend_pool(item.route_id) == pool and item.route_id.partition("/")[2] == model
+        )
+
+    def _window(self, now: datetime, window_days: int) -> Iterable[SessionOutcome]:
+        """Verified outcomes inside the inclusive, non-future window."""
         format_datetime(now)
         if window_days < 0:
             raise ValueError("window_days must be non-negative")
-        return _summarize(
+        return (
             item
             for item in self.load()
-            if item.route_id == route
-            and item.verified_by_controller
-            and now - timedelta(days=window_days) <= item.at <= now
+            if item.verified_by_controller and now - timedelta(days=window_days) <= item.at <= now
         )
 
 
