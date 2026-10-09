@@ -77,31 +77,6 @@ DEFAULT_CONFIG = SupervisorGovernorConfig()
 
 
 # ---------------------------------------------------------------------------
-# Feature flag
-# ---------------------------------------------------------------------------
-
-_MULTI_STORY_ENV = "VERDICT_MULTI_STORY"
-
-
-def multi_story_enabled() -> bool:
-    """Return True only when the flag is explicitly ``"on"`` (case-insensitive).
-
-    Any other value (including absent, empty, ``"off"``, ``"yes"``, ``"1"``)
-    returns False and logs a warning for unrecognised non-empty values.
-    """
-    raw = os.environ.get(_MULTI_STORY_ENV, "").strip().lower()
-    if raw == "on":
-        return True
-    if raw and raw != "off":
-        log.warning(
-            "VERDICT_MULTI_STORY=%r is not a recognised value (expected 'on' or 'off'); "
-            "treating as OFF",
-            os.environ.get(_MULTI_STORY_ENV, ""),
-        )
-    return False
-
-
-# ---------------------------------------------------------------------------
 # Cross-process file-lock state (used only when flag is on)
 # ---------------------------------------------------------------------------
 
