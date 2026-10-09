@@ -2,22 +2,50 @@
 
 from __future__ import annotations
 
+import pytest
+
 from verdict.orchestration.credential_pools import (
     ALIAS_FAMILIES,
     base_route,
     canonical_route,
     pool_of,
 )
+from verdict.orchestration.provider_catalog import backend_pool
 
 
-def test_pool_of_collapses_known_alias_pairs() -> None:
+@pytest.mark.parametrize(
+    "route_id",
+    [
+        "agy/claude-opus-4-6",
+        "antigravity/claude-opus-4-6",
+        "kc/model:free",
+        "kilocode/model:free",
+        "openrouter/model:free",
+    ],
+)
+def test_pool_of_matches_backend_pool_for_shared_families(route_id: str) -> None:
+    """Where provider_catalog.backend_pool already has an answer, agree with it.
+
+    eligibility.py (reviewer independence) and this census planner must never
+    disagree about which families share a quota.
+    """
+    assert pool_of(route_id) == backend_pool(route_id)
+
+
+def test_pool_of_delegates_before_falling_back_to_extra_table() -> None:
+    # kc/model (no :free) is not covered by backend_pool's :free rule, so
+    # pool_of falls back to this module's extra table (kc -> kilocode),
+    # rather than backend_pool's bare-prefix default (kc -> "kc").
+    assert backend_pool("kc/model") == "kc"
+    assert pool_of("kc/model") == "kilocode"
+
+
+def test_pool_of_collapses_known_extra_alias_pairs() -> None:
     pairs = [
-        ("agy", "antigravity"),
         ("af", "api-airforce"),
         ("ollama-cloud", "ollama-cloud"),
         ("ollamacloud", "ollama-cloud"),
         ("bm", "bluesminds"),
-        ("kc", "kilocode"),
         ("gh", "github"),
         ("cc", "claude"),
         ("cx", "codex"),

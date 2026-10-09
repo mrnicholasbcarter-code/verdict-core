@@ -7,36 +7,39 @@ agy/antigravity 504/429 incident recorded in BOD-297's accepted criteria).
 This module answers "what quota does this route draw from" and "what is
 the one prefix to actually probe for this family".
 
-Deliberately separate from ``verdict.orchestration.provider_catalog``
-(``backend_pool`` / ``OWNED_BY_ALIASES``), which serves eligibility /
-reviewer-independence under its own pool names. Neither module reads the
-other.
+``verdict.orchestration.provider_catalog.backend_pool`` already recognizes
+two of these pairs from empirical evidence (identical upstream ids):
+agy/antigravity (-> ``google-antigravity``) and kc/kilocode/openrouter's
+``:free`` suffix (-> ``openrouter-free``). This module does NOT compete
+with that table: ``pool_of`` delegates to ``backend_pool`` first, and only
+falls back to the extra table below for pairs ``backend_pool`` does not
+yet cover (the census needs more alias pairs than eligibility's reviewer-
+independence check does). Where ``backend_pool`` already has an answer,
+``pool_of(x) == backend_pool(x)`` — eligibility and the census agree.
 
-Evidence (2026-10-09 controller census, /tmp/verdict-census and
-tests/fixtures/catalog_truth/*.json):
-  - agy/antigravity: research-empirical.md — identical tool-call ids
-    observed across both prefixes (one Google Antigravity quota).
-  - af/api-airforce, bm/bluesminds, kc/kilocode, gh/github, cc/claude,
-    cx/codex, oc/opencode, zm/zenmux: short and long prefix both appear in
-    the live inventory with matching, equal-count model sets, and the
-    short prefix's ``owned_by`` resolves to the long one.
-  - ollama-cloud/ollamacloud: ``ollamacloud`` rows carry
-    ``owned_by: "ollama-cloud"``, the real connection name.
-  - sambanova/samba: free_census3 ledger shows equal attempt counts (8/8)
-    under both; no connections fixture distinguishes them, so the full
-    vendor name is kept canonical.
-  - cu/cua vs cursor/cursor-api: NOT merged. ``cursor`` (oauth,
-    testStatus "unavailable") and ``cursor-api`` (apikey, "active") are
-    distinct connections with no shared-quota evidence, so each pair stays
+Evidence for the extra pairs (2026-10-09 controller census,
+/tmp/verdict-census and tests/fixtures/catalog_truth/*.json): short and
+long prefix both appear in the live inventory with matching, equal-count
+model sets, and the short prefix's ``owned_by`` resolves to the long one
+(af/api-airforce, bm/bluesminds, kc/kilocode generally — not only its
+``:free`` rows, gh/github, cc/claude, cx/codex, oc/opencode, zm/zenmux).
+``ollama-cloud``/``ollamacloud`` rows carry ``owned_by: "ollama-cloud"``.
+``sambanova``/``samba``: free_census3 ledger shows equal attempt counts
+(8/8) under both; no connections fixture distinguishes them.
+
+Fail-closed decisions, noted rather than silently assumed:
+  - cu/cua vs cursor/cursor-api are NOT merged into one pool. ``cursor``
+    (oauth, testStatus "unavailable") and ``cursor-api`` (apikey,
+    "active") are distinct connections with no shared-quota evidence
+    (unlike agy/antigravity's matching tool-call ids), so each pair stays
     its own pool: cu<->cursor, cua<->cursor-api.
   - dv/dva vs devin-cli/devin-desktop: ``devin-cli`` and ``devin-desktop``
     are separate connections in the same fixture. ``dva``'s ``owned_by``
     (``devin-cli-agentic``) resolves only to ``devin-cli`` via
     ``provider_catalog.OWNED_BY_ALIASES``; no evidence ties any route to
-    ``devin-desktop`` or to a bare ``dv`` prefix. Fail-closed choice, noted
-    rather than silently assumed: ``devin-desktop`` is left out of this
-    table (kept its own, separate pool); ``dv`` is mapped like ``dva`` as
-    the simplest guess.
+    ``devin-desktop`` or to a bare ``dv`` prefix, so ``devin-desktop`` is
+    left out of this table (kept its own pool); ``dv`` is mapped like
+    ``dva`` as the simplest guess.
 """
 
 from __future__ import annotations
@@ -44,7 +47,16 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping
 
-# alias prefix (lower-cased) -> canonical pool / prefix name.
+from verdict.orchestration.provider_catalog import backend_pool
+
+# alias prefix (lower-cased) -> canonical/representative prefix.
+#
+# Used for two purposes: (1) a fallback pool identity when ``backend_pool``
+# does not recognize the pair (see ``pool_of``); (2) the representative
+# prefix ``canonical_route`` rewrites onto. ``agy``/``antigravity`` are
+# intentionally included even though ``backend_pool`` already pools them
+# under a different internal name (``google-antigravity``) — the human-
+# readable "antigravity" is what ``canonical_route`` should show.
 ALIAS_FAMILIES: Mapping[str, str] = {
     "agy": "antigravity",
     "antigravity": "antigravity",  # research-empirical.md tool-call ids
@@ -55,7 +67,7 @@ ALIAS_FAMILIES: Mapping[str, str] = {
     "bm": "bluesminds",
     "bluesminds": "bluesminds",  # equal model sets, owned_by resolves
     "kc": "kilocode",
-    "kilocode": "kilocode",  # equal model sets, owned_by resolves
+    "kilocode": "kilocode",  # equal model sets, owned_by resolves (all rows, not just :free)
     "gh": "github",
     "github": "github",  # equal model sets, owned_by resolves
     "cc": "claude",
@@ -84,10 +96,18 @@ _STRIP_EFFORT = re.compile(rf"-{_EFFORT}$")
 def pool_of(route_id: str) -> str:
     """Canonical credential-pool name for ``route_id``.
 
-    Unaliased prefixes are their own pool (same default as
-    ``provider_catalog.backend_pool``).
+    Delegates to ``provider_catalog.backend_pool`` first: when it recognizes
+    an alias (its result differs from the bare prefix), that answer is
+    authoritative and this function returns it unchanged, so
+    ``pool_of(x) == backend_pool(x)`` for every family ``backend_pool``
+    already knows (agy/antigravity, kc/kilocode/openrouter ``:free``).
+    Otherwise falls back to this module's extra ``ALIAS_FAMILIES`` table.
+    Unaliased prefixes are their own pool either way.
     """
     prefix = route_id.split("/", 1)[0].lower()
+    delegated = backend_pool(route_id)
+    if delegated != prefix:
+        return delegated
     return ALIAS_FAMILIES.get(prefix, prefix)
 
 
