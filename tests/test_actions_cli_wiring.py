@@ -56,17 +56,21 @@ MISSING_REL = "no-such-log.jsonl"
 
 # Deterministic scrubs for values that vary between runs (timestamps, latency).
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)")
-# Trailing ``[ \t]*`` absorbs the fixed-width table's padding after the ms
-# value, since a wider latency value (e.g. "12.4ms" vs "2.4ms") shifts that
-# padding by the same number of characters it grew (table rows pad to a
-# constant width). Without this the normalized row length differs whenever
-# subprocess latency crosses a digit-count boundary (BOD flaky-test report).
-_LAT_RE = re.compile(r"Latency\s+\d+(?:\.\d+)?ms[ \t]*")
+# Anchored to the Latency row itself (``(?m)^...$``) and restricted to
+# horizontal whitespace (``[ \t]`` instead of ``\s``) so the match cannot:
+# (1) span a newline if output drift ever splits the "Latency" label from
+#     its value across two lines, or
+# (2) hit a "Latency <n>ms" substring embedded inside an unrelated row
+#     (e.g. the Reason text).
+# The leading ``([ \t]*)`` capture preserves the row's indent via backref
+# in ``_normalize`` so only the label/value/padding is scrubbed, not the
+# indentation that precedes it.
+_LAT_RE = re.compile(r"(?m)^([ \t]*)Latency[ \t]+\d+(?:\.\d+)?ms[ \t]*$")
 
 
 def _normalize(text: str) -> str:
     text = _ISO_RE.sub("<ISO>", text)
-    text = _LAT_RE.sub("Latency N.Nms", text)
+    text = _LAT_RE.sub(r"\1Latency N.Nms", text)
     text = text.replace(str(FIX), "<FIXROOT>")
     return text
 
@@ -303,6 +307,125 @@ def test_route_offline_latency_padding_normalizes_across_digit_widths() -> None:
         variant = "\n".join(variant_lines)
         assert len(variant_lines[lat_idx]) == row_width
         assert _normalize(variant) == _normalize(baseline), f"normalize drift for Latency={value!r}"
+
+
+def test_route_offline_latency_anchor_rejects_split_label_and_value() -> None:
+    """Negative case (a): label and value split across two lines.
+
+    Output drift that breaks the "Latency" row onto two lines (label alone,
+    then the ms value on the next line) must NOT be normalized away: the
+    anchored, line-scoped ``_LAT_RE`` cannot span the newline, so this stays
+    different from the baseline.
+    """
+    baseline = (BASELINES / "route_offline.out").read_text()
+    lines = baseline.split("\n")
+    lat_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Latency"))
+    lat_line = lines[lat_idx]
+    row_width = len(lat_line)
+    split_lines = list(lines)
+    split_lines[lat_idx] = "  Latency"
+    split_lines.insert(lat_idx + 1, "2.4ms" + " " * (row_width - len("2.4ms")))
+    variant = "\n".join(split_lines)
+    assert _normalize(variant) != _normalize(baseline), (
+        "split Latency label/value across lines must not normalize away"
+    )
+
+
+def test_route_offline_latency_anchor_rejects_trailing_garbage() -> None:
+    """Negative case (b): extra non-whitespace text after the ms value.
+
+    The row-anchored pattern requires only horizontal whitespace (or
+    end-of-line) after the ms value, so trailing non-whitespace content on
+    the Latency row must survive normalization as a real difference.
+    """
+    baseline = (BASELINES / "route_offline.out").read_text()
+    lines = baseline.split("\n")
+    lat_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Latency"))
+    variant_lines = list(lines)
+    variant_lines[lat_idx] = "  Latency    2.4ms EXTRA"
+    variant = "\n".join(variant_lines)
+    assert _normalize(variant) != _normalize(baseline), (
+        "trailing non-whitespace text after the ms value must not normalize away"
+    )
+
+
+def test_route_offline_latency_anchor_rejects_embedded_substring() -> None:
+    """Negative case (c): a "Latency <n>ms" substring embedded mid-row.
+
+    A "Latency 9.9ms" fragment appearing inside a different row (here, the
+    Reason row) is not the Latency row itself. The ``(?m)^...$`` anchoring
+    means ``_LAT_RE`` must not match it, so this must remain different from
+    the baseline after normalization.
+    """
+    baseline = (BASELINES / "route_offline.out").read_text()
+    lines = baseline.split("\n")
+    reason_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Reason"))
+    variant_lines = list(lines)
+    variant_lines[reason_idx] = (
+        "  Reason     offline routing Latency 9.9ms does not execute a provider completion"
+    )
+    variant = "\n".join(variant_lines)
+    assert _normalize(variant) != _normalize(baseline), (
+        "a Latency-shaped substring embedded in another row must not normalize away"
+    )
+
+
+def test_route_offline_latency_old_unanchored_regex_misses_cases_a_and_c() -> None:
+    """Proof that the pre-fix (90bb330) ``_LAT_RE`` let cases (a) and (c) through.
+
+    This does not swap the module-level ``_LAT_RE``; it recreates the old
+    unanchored pattern locally so the comparison is explicit and the
+    production regex is never put into a broken state. It shows the old
+    pattern normalized the split-label/value row (a) and the embedded
+    mid-row substring (c) away to the same string as the baseline -- the
+    exact drift this change closes.
+    """
+    old_lat_re = re.compile(r"Latency\s+\d+(?:\.\d+)?ms[ \t]*")
+
+    def _old_normalize(text: str) -> str:
+        text = _ISO_RE.sub("<ISO>", text)
+        text = old_lat_re.sub("Latency N.Nms", text)
+        text = text.replace(str(FIX), "<FIXROOT>")
+        return text
+
+    baseline = (BASELINES / "route_offline.out").read_text()
+    lines = baseline.split("\n")
+
+    # Case (a): label and value split across two lines.
+    lat_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Latency"))
+    lat_line = lines[lat_idx]
+    row_width = len(lat_line)
+    split_lines = list(lines)
+    split_lines[lat_idx] = "  Latency"
+    split_lines.insert(lat_idx + 1, "2.4ms" + " " * (row_width - len("2.4ms")))
+    variant_a = "\n".join(split_lines)
+    assert _old_normalize(variant_a) == _old_normalize(baseline), (
+        "expected the old unanchored regex to (incorrectly) erase the split-row drift"
+    )
+
+    # Case (c): a "Latency <n>ms" substring embedded in the Reason row, with
+    # two DIFFERENT embedded values. A baseline-vs-variant comparison does not
+    # fit here (the clean baseline's Reason row has no "Latency" text at all,
+    # so it can never equal a variant with "Latency N.Nms" inserted, under
+    # either regex). The real bug is erasure of a genuine difference between
+    # two outputs: the old unanchored regex scrubs the embedded substring in
+    # both rows, collapsing two distinct real values (9.9ms vs 15.2ms) down to
+    # the same normalized string.
+    reason_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  Reason"))
+    variant_9_lines = list(lines)
+    variant_9_lines[reason_idx] = (
+        "  Reason     offline routing Latency 9.9ms does not execute a provider completion"
+    )
+    variant_15_lines = list(lines)
+    variant_15_lines[reason_idx] = (
+        "  Reason     offline routing Latency 15.2ms does not execute a provider completion"
+    )
+    variant_9 = "\n".join(variant_9_lines)
+    variant_15 = "\n".join(variant_15_lines)
+    assert _old_normalize(variant_9) == _old_normalize(variant_15), (
+        "expected the old unanchored regex to (incorrectly) erase the "
+        "embedded-substring difference between two distinct real values"
+    )
 
 
 def test_route_offline_terse_stdout_is_byte_equal(tmp_path: Path) -> None:
