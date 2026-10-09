@@ -870,5 +870,105 @@
   {
     "qualified_name": "verdict.harness_claude.disable",
     "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:217"
+  },
+  {
+    "qualified_name": "verdict.harness_claude.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_claude.py:155"
+  },
+  {
+    "qualified_name": "verdict.harness_cline.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:406"
+  },
+  {
+    "qualified_name": "verdict.harness_cline.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:312"
+  },
+  {
+    "qualified_name": "verdict.harness_cline.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cline.py:215"
+  },
+  {
+    "qualified_name": "verdict.harness_codex.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:480"
+  },
+  {
+    "qualified_name": "verdict.harness_codex.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:180"
+  },
+  {
+    "qualified_name": "verdict.harness_codex.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_codex.py:133"
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:363"
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:274"
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_cursor.py:197"
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.certify",
+    "reason": "UNTRIAGED: uncalled at verdict/harness_hermes.py:361"
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_hermes.py:153"
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_hermes.py:87"
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:285"
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:216"
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_opencode.py:162"
+  },
+  {
+    "qualified_name": "verdict.harness_prime.certify",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:305"
+  },
+  {
+    "qualified_name": "verdict.harness_prime.disable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:236"
+  },
+  {
+    "qualified_name": "verdict.harness_prime.enable",
+    "reason": "UNTRIAGED: test_only_caller at verdict/harness_prime.py:183"
+  },
+  {
+    "qualified_name": "verdict.home.main",
+    "reason": "UNTRIAGED: uncalled at verdict/home.py:1519"
+  },
+  {
+    "qualified_name": "verdict.live_routing_run.utc_now",
+    "reason": "UNTRIAGED: uncalled at verdict/live_routing_run.py:110"
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.discover_sessions",
+    "reason": "UNTRIAGED: uncalled at verdict/memory_session_adapter.py:698"
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.import_discovered_sessions",
+    "reason": "UNTRIAGED: test_only_caller at verdict/memory_session_adapter.py:703"
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.poll_discovered_sessions",
+    "reason": "UNTRIAGED: test_only_caller at verdict/memory_session_adapter.py:721"
+  },
+  {
+    "qualified_name": "verdict.metadata.store.file_transport",
+    "reason": "UNTRIAGED: uncalled at verdict/metadata/store.py:515"
   }
 ]
