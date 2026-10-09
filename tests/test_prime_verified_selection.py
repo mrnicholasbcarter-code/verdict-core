@@ -487,6 +487,31 @@ def test_unsafe_row_still_matches_as_competitor_fail_closed(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
+    "unsafe_id", ["CX/GPT-6-SOL ", "cx/gpt-6-sol (old)", "CX/GPT-6-SOL\x1b", "cx/\u212a"]
+)
+def test_unsafe_row_matching_selected_id_makes_it_ambiguous(tmp_path: Path, unsafe_id: str) -> None:
+    """Review blocker: an unsafe row that Prime could still match for the selected
+    exact id (case-insensitive substring of its id) must make that id ambiguous.
+    It must never bind to the safe row or become selectable."""
+    models = registry()
+    token = "cx/k" if unsafe_id == "cx/\u212a" else "cx/gpt-6-sol"
+    if token == "cx/k":
+        models["providers"]["omniroute"]["models"].append({"id": "cx/k", "name": "cx/k"})
+    models["providers"]["omniroute"]["models"].append({"id": unsafe_id, "name": "unrelated"})
+    binding = bind_prime_token(token, models)
+    assert binding.disposition == "unsafe"
+    assert "identity_unsupported" in binding.reasons
+    settings, deps = inputs(tmp_path)
+    deps = replace(deps, registry_bytes=json.dumps(models).encode())
+    plan = preview_selection(
+        settings, [row(token)], selected_ids=[token], dependencies=deps, now=NOW
+    )
+    assert plan.refusals
+    assert not any(r.selectable for r in plan.rows)
+    assert unsafe_id not in json.dumps(plan.to_dict(), default=str)
+
+
+@pytest.mark.parametrize(
     "mutate",
     [
         lambda m: m["providers"]["omniroute"].update(models="not-a-list"),

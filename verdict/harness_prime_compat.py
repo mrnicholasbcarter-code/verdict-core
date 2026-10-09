@@ -189,6 +189,16 @@ def _bind(token: str, entries: tuple[_Entry, ...]) -> PrimeBinding:
     if not exact_token(token):
         return PrimeBinding("[unsafe entry]", None, None, "unsafe", ("unsafe_scope_token",))
     lower = token.casefold()
+    base = token.rsplit(":", 1)[0].casefold() if ":" in token else None
+    # A display-unsafe row is never a binding target, but Prime's resolver can
+    # still match it (id or name, case-insensitive substring). Any such hit makes
+    # the token ambiguous, so fail closed before considering safe rows.
+    for e in entries:
+        if e[4]:
+            continue
+        hay = (e[1].casefold(), f"{e[0]}/{e[1]}".casefold(), e[2].casefold())
+        if any(lower in h or (base is not None and base in h) for h in hay):
+            return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
     matches = [
         e for e in entries if e[4] and lower in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold())
     ]
