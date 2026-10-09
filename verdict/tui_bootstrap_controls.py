@@ -276,11 +276,21 @@ def _home_relative(path: Path) -> str:
     reveals an arbitrary absolute filesystem layout. The raw (unsanitized)
     value is returned; callers must sanitize before rendering.
     """
+    return _locate(path)[1]
+
+
+def _locate(path: Path) -> tuple[bool, str]:
+    """``(under_home, display)`` decided from the path itself, never from the text.
+
+    The display string alone cannot tell ``$HOME`` apart from an outside-HOME
+    directory whose basename happens to be ``~`` or ``~name``, so callers that
+    emit a command must branch on ``under_home``.
+    """
     try:
         relative = path.relative_to(Path.home())
     except ValueError:
-        return path.name or str(path)
-    return "~" if str(relative) == "." else "~/" + str(relative)
+        return False, path.name or str(path)
+    return True, ("~" if str(relative) == "." else "~/" + str(relative))
 
 
 def _quote_home_relative(location: str) -> str:
@@ -315,14 +325,14 @@ def _actionable_refusal(exc: Exception) -> ActionResult:
     message = f"bootstrap refused: {code}; use /help bootstrap"
     path = getattr(exc, "path", None)
     if code in _PATH_CODES and isinstance(path, Path):
-        raw_location = _home_relative(path)
+        under_home, raw_location = _locate(path)
         location = _sanitize_text(raw_location)
         if location != raw_location:
             message = (
                 f"bootstrap refused: {code}: inspect this directory's permissions "
                 "(name contains non-printable characters)"
             )
-        elif not location.startswith("~"):
+        elif not under_home:
             # Outside $HOME only the basename is shown, so a chmod on it would act
             # on an unrelated path relative to the operator's cwd (or parse as an
             # option, e.g. "-R"). Never emit an executable command for it.

@@ -620,7 +620,7 @@ def test_actionable_refusal_outside_home_never_emits_chmod(
     act on an unrelated ./name in the operator's cwd (or parse "-R" as an
     option), so no executable command is emitted at all."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    for leaf in ("nested", "-R", "leaf with space"):
+    for leaf in ("nested", "-R", "leaf with space", "~", "~root", "~/x"):
         message = _refusal_message(Path("/elsewhere/secret") / leaf)
         assert "chmod" not in message
         assert "inspect its permissions" in message
