@@ -727,6 +727,11 @@ def _epsilon_slice(
     cached entries is fresh. Routes already ordered in this cycle are skipped,
     so the slice never repeats work the earlier passes already cover.
     """
+    from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
+
+    chat_routes = [route for route in routes if not route.non_chat]
+    kept_ids, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    candidate_ids = set(kept_ids)
     fresh_providers: set[str] = set()
     for entry in cache.routes().values():
         if entry.state_at(now) == STATE_FRESH and entry.healthy:
@@ -738,7 +743,10 @@ def _epsilon_slice(
             break
         if route.provider in fresh_providers or route.provider in taken:
             continue
-        if route.route_id in seen:
+        if route.route_id in seen or route.route_id not in candidate_ids:
+            continue
+        base_id = base_route(route.route_id, candidate_ids)
+        if base_id != route.route_id and not cache.lookup(base_id, now).healthy:
             continue
         taken.add(route.provider)
         out.append((by_id[route.route_id], "liveness"))

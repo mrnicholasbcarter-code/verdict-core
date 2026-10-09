@@ -402,3 +402,23 @@ def test_census_action_requires_inventory_path() -> None:
     result = run_action("prove-at-rest.census", {})
     assert not result.ok
     assert "inventory_path" in result.data["error"]
+
+
+@pytest.mark.parametrize("capacity", ["free", "subscription"])
+def test_default_epsilon_does_not_probe_deferred_effort(tmp_path: Path, capacity: str) -> None:
+    """Reviewer repro: epsilon must not re-add p/base-high before its base passes."""
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route("p/base", capacity), _route("p/base-high", capacity)]
+    assert [route.route_id for route, _kind in order_cycle(routes, cache, NOW)] == ["p/base"]
+
+
+def test_default_epsilon_keeps_alias_and_non_chat_filters(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [
+        _route("agy/model", "free"),
+        _route("antigravity/model", "free"),
+        _route("af/bge-reranker", "free", non_chat=True),
+    ]
+    assert [route.route_id for route, _kind in order_cycle(routes, cache, NOW)] == [
+        "antigravity/model"
+    ]
