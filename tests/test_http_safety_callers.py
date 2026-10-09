@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import urllib.error
+from pathlib import Path
 
 import pytest
 from test_http_safety import server
@@ -86,3 +87,34 @@ def test_post_callers_refuse_redirect(caller: str) -> None:
     assert key not in str(result) and key not in str(error)
     if caller == "probe":
         assert isinstance(error, RedirectRefused) and error.code == 302
+
+
+@pytest.mark.parametrize("caller", ["patch", "decomposer"])
+def test_wrapper_defaults_refuse_redirect(caller: str, tmp_path: Path) -> None:
+    from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
+    from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
+    from verdict.work_unit import WorkUnit
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "unit.py").write_text("pass\n", encoding="utf-8")
+    key = "secret-wrapper-key"
+    source_seen: list[str | None] = []
+    target_seen: list[str | None] = []
+    with server(200, target_seen) as target, server(302, source_seen, location=target) as source:
+        if caller == "patch":
+            executor = PatchExecutor(
+                tmp_path, PatchExecutorConfig(model="fixture/model", base_url=source, api_key=key)
+            )
+            unit = WorkUnit("unit", "fixture task", ("unit.py",), ("true",))
+            attempt = executor.execute_unit(unit)
+            assert attempt.outcome == "error"
+            message = attempt.reason
+        else:
+            decomposer = Decomposer(DecompositionConfig(base_url=source, api_key=key))
+            with pytest.raises(DecompositionError) as raised:
+                decomposer.decompose("fixture task", repo_root=tmp_path)
+            message = str(raised.value)
+    assert source_seen == [f"Bearer {key}"]
+    assert target_seen == []
+    assert "redirect refused" in message
+    assert key not in message and source not in message and target not in message
