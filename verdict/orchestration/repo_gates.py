@@ -1,6 +1,10 @@
 """Repo gate discovery: pure, deterministic quality-gate discovery.
 
-Reads ``pyproject.toml`` (ruff/mypy) and ``package.json`` (npm scripts) and returns immutable ``RepoGate`` descriptors. No execution, no network.
+Discovery reads only configuration files -- ``pyproject.toml`` (ruff/mypy),
+``ruff.toml``, ``.ruff.toml`` (ruff) and ``package.json`` (npm scripts) -- and
+stats candidate package directories at the repo root and under ``src/`` to
+resolve mypy targets. It returns immutable ``RepoGate`` descriptors. No
+execution, no network.
 """
 
 from __future__ import annotations
@@ -48,19 +52,28 @@ def _as_dict(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def _ruff_source(root: dict[str, object], repo: Path) -> str | None:
+    """Ruff config source precedence: ``ruff.toml`` > ``.ruff.toml`` > ``pyproject:tool.ruff``."""
+    if (repo / "ruff.toml").exists():
+        return "ruff.toml"
+    if (repo / ".ruff.toml").exists():
+        return ".ruff.toml"
+    if isinstance(_as_dict(root.get("tool")).get("ruff"), dict):
+        return "pyproject:tool.ruff"
+    return None
+
+
 def _python_gates(root: dict[str, object], repo: Path) -> list[RepoGate]:
-    """Discover ruff (check + format) and mypy gates from *root*."""
+    """Discover ruff (check + format) and mypy gates from *repo*."""
     tool = _as_dict(root.get("tool"))
     gates: list[RepoGate] = []
-    if isinstance(tool.get("ruff"), dict):
-        for label, cmd in (
-            ("ruff-check", ("python", "-m", "ruff", "check", ".")),
-            ("ruff-format", ("python", "-m", "ruff", "format", "--check", ".")),
-        ):
-            gates.append(RepoGate(label, cmd, "pyproject:tool.ruff"))
+    ruff_source = _ruff_source(root, repo)
+    if ruff_source is not None:
+        gates.append(RepoGate("ruff-check", ("ruff", "check", "."), ruff_source))
+        gates.append(RepoGate("ruff-format", ("ruff", "format", "--check", "."), ruff_source))
     mypy = tool.get("mypy")
     if isinstance(mypy, dict):
-        argv: list[str] = ["python", "-m", "mypy"]
+        argv: list[str] = ["mypy"]
         if mypy.get("strict") is True:
             argv.append("--strict")
         argv.extend(_mypy_targets(mypy, root, repo))
@@ -114,6 +127,8 @@ def _node_gates(repo: Path) -> list[RepoGate]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"malformed package.json in {repo}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"package.json root is not a JSON object in {repo}: {type(data).__name__}")
     scripts = _as_dict(data.get("scripts"))
     return [
         RepoGate(name=script, argv=("npm", "run", script), source="package.json:scripts")

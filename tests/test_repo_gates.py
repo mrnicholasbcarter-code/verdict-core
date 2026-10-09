@@ -28,9 +28,9 @@ def test_ruff_and_mypy_strict_pyproject(tmp_path: Path) -> None:
     )
     gates = discover_repo_gates(tmp_path)
     assert _names(gates) == ["ruff-check", "ruff-format", "mypy"]
-    assert gates[0].argv == ("python", "-m", "ruff", "check", ".")
-    assert gates[1].argv == ("python", "-m", "ruff", "format", "--check", ".")
-    assert gates[2].argv == ("python", "-m", "mypy", "--strict", "src/pkg")
+    assert gates[0].argv == ("ruff", "check", ".")
+    assert gates[1].argv == ("ruff", "format", "--check", ".")
+    assert gates[2].argv == ("mypy", "--strict", "src/pkg")
     assert all(g.source == "pyproject:tool.ruff" for g in gates[:2])
     assert gates[2].source == "pyproject:tool.mypy"
     assert describe_gates(gates)["declared"] is True
@@ -48,7 +48,7 @@ def test_mypy_packages_derived_from_project_name_dir(tmp_path: Path) -> None:
     _write(tmp_path / "pyproject.toml", '[project]\nname = "pkg"\n\n[tool.mypy]\n')
     gates = discover_repo_gates(tmp_path)
     assert _names(gates) == ["mypy"]
-    assert gates[0].argv == ("python", "-m", "mypy", "pkg")
+    assert gates[0].argv == ("mypy", "pkg")
 
 
 def test_package_json_scripts(tmp_path: Path) -> None:
@@ -88,7 +88,7 @@ def test_both_pyproject_and_package_json(tmp_path: Path) -> None:
         "lint",
         "format:check",
     ]
-    assert gates[2].argv == ("python", "-m", "mypy", "pkg")
+    assert gates[2].argv == ("mypy", "pkg")
 
 
 def test_nothing_declared(tmp_path: Path) -> None:
