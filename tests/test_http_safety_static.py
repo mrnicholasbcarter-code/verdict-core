@@ -95,6 +95,31 @@ def test_authenticated_modules_never_use_default_urllib_opener() -> None:
         for function, argument, lineno in unsafe_references(source):
             key = (path.relative_to(root).as_posix(), function, argument)
             if key in _ALLOWED:
+                # Require an inline Accept-only header dict for the allowlisted
+                # Request, so adding Authorization cannot bypass the guard.
+                functions = [
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == function
+                ]
+                requests = [
+                    node.value
+                    for fn in functions
+                    for node in ast.walk(fn)
+                    if isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == argument for t in node.targets)
+                ]
+                assert requests and all(
+                    isinstance(req, ast.Call)
+                    and any(
+                        kw.arg == "headers"
+                        and isinstance(kw.value, ast.Dict)
+                        and ast.literal_eval(kw.value) == {"Accept": "application/json"}
+                        for kw in req.keywords
+                    )
+                    for req in requests
+                ), f"Allowlisted request now carries unexpected headers: {key}"
                 used.add(key)
             else:
                 violations.append(f"{path.relative_to(root)}:{lineno}: {function}")
