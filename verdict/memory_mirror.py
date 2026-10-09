@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from verdict.memory_outbox import MemoryOutbox, OutboxEvent
-from verdict.shared_memory import (
-    ProviderErrorCode,
-    SharedMemoryEnvelope,
-    SharedMemoryProvider,
-    SharedMemoryProviderError,
-)
+from verdict.shared_memory import ProviderErrorCode, SharedMemoryProvider, SharedMemoryProviderError
 
 _DEAD_LETTER_CODES = frozenset(
     {
@@ -95,10 +90,6 @@ class MemoryMirrorWorker:
 
             return time.time()
         return float(self._clock())
-
-
-def envelope_from_dict(payload: dict[str, Any]) -> SharedMemoryEnvelope:
-    return SharedMemoryEnvelope.from_dict(payload)
 
 
 __all__ = ["MemoryMirrorWorker", "MirrorBatchResult"]

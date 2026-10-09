@@ -730,23 +730,6 @@ def _has_inference_output(payload: Any) -> bool:
     return False
 
 
-def fetch_omniroute_inventory(
-    base_url: str = DEFAULT_OMNIROUTE_URL, *, timeout_seconds: float = 10.0
-) -> tuple[Mapping[str, Any], ...]:
-    """Fetch discovery rows. The result is not availability evidence."""
-    url = base_url.rstrip("/") + "/models"
-    if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
-        raise ValueError(f"OmniRoute base URL must be http(s): {base_url!r}")
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    # Scheme validated above; the gateway URL is operator configuration.
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
-        raw = json.loads(response.read(16_777_217))
-    data = raw.get("data") if isinstance(raw, Mapping) else None
-    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
-        raise ValueError("OmniRoute /models response has no data array")
-    return tuple(item for item in data if isinstance(item, Mapping))
-
-
 def _provider_cache_key(selector: str) -> str:
     route = selector.removeprefix("omniroute/")
     provider = route.split("/", 1)[0].strip().lower()

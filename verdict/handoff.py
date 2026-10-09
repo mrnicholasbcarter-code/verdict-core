@@ -10,7 +10,7 @@ Field vocabulary aligns with Continuity / Prime checkpoint packets
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -287,8 +287,3 @@ def discover_handoff(worktree: Path | str) -> HandoffDocument | None:
     if not path.is_file():
         return None
     return read_handoff(path)
-
-
-def iter_story_ids(value: str | Iterable[str]) -> tuple[str, ...]:
-    text = value if isinstance(value, str) else " ".join(value)
-    return tuple(dict.fromkeys(s.upper() for s in _STORY_ID_RE.findall(text)))
