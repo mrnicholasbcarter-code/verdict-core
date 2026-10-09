@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
+import verdict.home as home_module
 from tests.test_orch_eligibility import conn, row
 from verdict.actions.registry import run_action
 from verdict.free_tier_admit import normalize_omniroute_origin
@@ -21,6 +22,46 @@ from verdict.orchestration import cli, eligibility_report
 from verdict.orchestration import run as orch_run
 from verdict.orchestration.eligibility import HarnessVisibility
 from verdict.terminal_ui import TerminalUI
+
+
+def _isolated_console() -> Console:
+    """A Console whose presentation inputs never depend on ambient process
+    state (COLUMNS/LINES/NO_COLOR/TERM, the real stdout, or Rich's module-
+    global theme stack). Every test in this module must build its own
+    Console this way instead of reusing a shared instance, so a TUI render
+    here cannot perturb an unrelated test's captured stdout."""
+    return Console(
+        file=io.StringIO(),
+        width=110,
+        height=40,
+        force_terminal=False,
+        no_color=True,
+        color_system=None,
+        legacy_windows=False,
+        _environ={},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tui_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Root-cause isolation for the intermittent order-dependent leak.
+
+    ``verdict.home._COMMAND_INDEX`` is a module-level cache populated lazily
+    on first ``_run_command`` call and never reset between tests. This
+    module calls ``_run_command`` directly (not through a subprocess), so it
+    is the only file in the suite that can populate that cache from a
+    PALETTE/LAUNCH snapshot taken mid-test-session. Force a rebuild on each
+    test, and pin the presentation-relevant environment variables Rich's
+    ``Console`` and ``verdict.design.presentation_mode`` read directly from
+    ``os.environ`` (COLUMNS/LINES/NO_COLOR/TERM/CI), so this module's
+    explicit-width Console construction can never be shadowed by whatever
+    terminal env the process happened to inherit.
+    """
+    monkeypatch.setattr(home_module, "_COMMAND_INDEX", None)
+    for name in ("COLUMNS", "LINES", "NO_COLOR", "TERM", "CI", "FORCE_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    yield
+    monkeypatch.setattr(home_module, "_COMMAND_INDEX", None)
 
 
 @pytest.mark.parametrize(
@@ -99,7 +140,7 @@ def test_action_default_uses_home_cli_gateway_env(
 
 
 def test_home_passes_configured_gateway_without_changing_other_actions() -> None:
-    console = Console(file=io.StringIO(), width=110, force_terminal=False)
+    console = _isolated_console()
     with patch("verdict.home.run_palette_action", return_value=(True, {"status": "ok"})) as spy:
         _run_command(
             "/eligibility", tui=TerminalUI(console), state=HomeState(gateway="http://x:20128")
@@ -117,7 +158,7 @@ def test_cli_tui_payload_parity_without_probe(
     args = _args(scope="", provider_family=[])
     assert cli._eligibility(args) == 0
     cli_payload = json.loads(capsys.readouterr().out)
-    console = Console(file=io.StringIO(), width=110, force_terminal=False)
+    console = _isolated_console()
     rendered: list[tuple[bool, dict[str, Any]]] = []
 
     def capture(_tui: TerminalUI, ok: bool, data: dict[str, Any], *, width: int) -> None:
@@ -164,7 +205,7 @@ def test_gateway_failure_reports_endpoint_without_secrets(
     assert endpoint in human.err
     assert "super-secret-token" not in human.err
     assert not human.out
-    console = Console(file=io.StringIO(), width=110, force_terminal=False)
+    console = _isolated_console()
     _run_command("/eligibility", tui=TerminalUI(console), state=HomeState(gateway=args.gateway))
     output = console.file.getvalue()
     assert endpoint in output

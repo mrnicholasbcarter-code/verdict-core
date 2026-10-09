@@ -99,7 +99,7 @@ def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
     return HarnessVisibility(visible, source="models.json")
 
 
-def _gateway_fetch_error(endpoint: str, exc: OSError) -> OrchestrationError:
+def _gateway_fetch_error(endpoint: str, exc: urllib.error.URLError | OSError) -> OrchestrationError:
     """Give actionable endpoint context without exposing request headers or credentials."""
     failure = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else "connection error"
     return OrchestrationError(
