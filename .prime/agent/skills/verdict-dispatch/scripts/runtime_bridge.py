@@ -127,8 +127,12 @@ class PrimeWorkerOperation:
                             raise ValueError(
                                 "worker provider is outside the authorized route scope"
                             )
+                        thinking = request.get("thinking")
                         child = await self.rlm.spawn(
-                            request["prompt"], name=request["name"], model=model
+                            request["prompt"],
+                            name=request["name"],
+                            model=model,
+                            **({"thinking": thinking} if thinking is not None else {}),
                         )
                         owned[child.rlm_child_id] = child
                         value: Any = asdict(child)

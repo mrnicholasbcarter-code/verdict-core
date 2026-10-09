@@ -28,6 +28,7 @@ from verdict.availability import (
     StaticOmniRouteTransport,
 )
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.orchestration.effort import PRIME_THINKING_LEVELS, choose_effort, effort_reason
 from verdict.subagent_selection import (
     CONTEXT_LENGTH_CATEGORY,
     DEFAULT_OMNIROUTE_URL,
@@ -84,7 +85,9 @@ class WorkerOutcome:
 
 
 class WorkerAdapter(Protocol):
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]: ...
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]: ...
     async def collect(self, handle: Mapping[str, Any]) -> WorkerTerminal | None: ...
     async def delete(self, handle: Mapping[str, Any]) -> None: ...
 
@@ -254,10 +257,15 @@ class WorkerController:
         validator: Callable[[str], bool] | None = None,
         admitted: AdmittedSet | None = None,
         require_admission: bool = False,
+        run_dir: Path | None = None,
     ) -> None:
         # The canonical admitted set is applied before Prime visibility, ranking
         # and probing; replacements iterate this same narrowed list only.
         self.admitted = admitted
+        self.task_kind = task.task_kind
+        self.run_dir = run_dir
+        inventory_rows = tuple(inventory_rows)
+        self.model_rows = {str(row.get("id", "")): row for row in inventory_rows}
         self.candidates = eligible_worker_candidates(
             task,
             inventory_rows,
@@ -271,6 +279,7 @@ class WorkerController:
         self.validator = validator or (lambda output: bool(output.strip()))
         self.attempts: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
+        self.spawn_receipts: list[dict[str, Any]] = []
         self.outcome: WorkerOutcome | None = None
         self.operation_id = uuid.uuid4().hex
 
@@ -278,6 +287,40 @@ class WorkerController:
         row = {"event": event, "operation_id": self.operation_id, **fields}
         self.events.append(row)
         self.emit(row)
+
+    def spawn_receipt(
+        self,
+        attempt: int,
+        candidate: LaunchCandidate,
+        thinking: str | None,
+        reason: Mapping[str, Any],
+        handle: Mapping[str, Any] | None,
+    ) -> None:
+        """One admission-time record per spawn attempt, including failed admissions."""
+        executed_effort = handle.get("thinking") if handle is not None else None
+        row = {
+            "schema": "verdict.spawn-receipt/v1",
+            "operation_id": self.operation_id,
+            "attempt": attempt,
+            "at": self.now().isoformat(),
+            "chosen_model": candidate.selector,
+            "chosen_effort": thinking,
+            "reason": dict(reason),
+            "executed_model": handle.get("model") if handle is not None else None,
+            "executed_effort": executed_effort
+            if executed_effort in PRIME_THINKING_LEVELS
+            else "unverified",
+            "spawn_id": handle.get("rlm_child_id") if handle is not None else None,
+        }
+        self.spawn_receipts.append(row)
+        if self.run_dir is not None:
+            path = self.run_dir / "spawn-receipts.jsonl"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(json.dumps(row) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
 
     def finish(
         self,
@@ -434,6 +477,9 @@ class WorkerController:
                 # Asserted precondition: admitted AND (proven healthy OR confirmed).
                 self.admitted.require_launchable(candidate.route_id, surface="worker_runtime.spawn")
             number = len(self.attempts) + 1
+            model_row = self.model_rows.get(candidate.route_id, {})
+            thinking = choose_effort(self.task_kind, model_row)
+            reason = effort_reason(self.task_kind, thinking, model_row)
             self.event(
                 "selection",
                 attempt=number,
@@ -441,6 +487,9 @@ class WorkerController:
                 provider=provider,
                 previous_model=previous,
                 replacement_model=candidate.selector if previous else None,
+                chosen_model=candidate.selector,
+                chosen_effort=thinking,
+                reason=reason,
             )
             handle: Mapping[str, Any] | None = None
             spawn_id: str | None = None
@@ -448,11 +497,16 @@ class WorkerController:
             admission_pending = True
             try:
                 attempt_deadline = min(deadline, time.monotonic() + self.budget.attempt_seconds)
-                handle = await asyncio.wait_for(
-                    self.adapter.spawn(prompt, name=name, model=candidate.selector),
-                    max(0.001, attempt_deadline - time.monotonic()),
-                )
-                admission_pending = False
+                try:
+                    handle = await asyncio.wait_for(
+                        self.adapter.spawn(
+                            prompt, name=name, model=candidate.selector, thinking=thinking
+                        ),
+                        max(0.001, attempt_deadline - time.monotonic()),
+                    )
+                    admission_pending = False
+                finally:
+                    self.spawn_receipt(number, candidate, thinking, reason, handle)
                 spawn_id = handle.get("rlm_child_id")
                 if (
                     not isinstance(spawn_id, str)
@@ -466,6 +520,8 @@ class WorkerController:
                     model=candidate.selector,
                     spawn_id=spawn_id,
                     admitted=True,
+                    executed_model=handle.get("model"),
+                    executed_effort=self.spawn_receipts[-1]["executed_effort"],
                 )
                 while True:
                     remaining = attempt_deadline - time.monotonic()
@@ -549,7 +605,9 @@ class CallbackAdapter:
     def __init__(self, execute: Callable[[str], Awaitable[WorkerTerminal]]) -> None:
         self.execute = execute
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]:
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]:
         return {"rlm_child_id": name, "model": model}
 
     async def collect(self, handle: Mapping[str, Any]) -> WorkerTerminal:
@@ -592,8 +650,10 @@ class PrimeFileAdapter:
                     return response.get("value")
             await asyncio.sleep(0.05)
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]:
-        value = await self.rpc("spawn", prompt=prompt, name=name, model=model)
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]:
+        value = await self.rpc("spawn", prompt=prompt, name=name, model=model, thinking=thinking)
         if not isinstance(value, dict):
             raise AttemptFailureError("malformed_admission")
         return value
@@ -831,6 +891,7 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             emit=emit,
             admitted=admitted,
             require_admission=True,
+            run_dir=directory,
         )
         try:
             outcome = await controller.run(config["prompt"])
