@@ -921,26 +921,26 @@
   },
   {
     "qualified_name": "verdict.orchestration.health_cache.fresh_until",
-    "reason": "UNTRIAGED: uncalled at verdict/orchestration/health_cache.py:233"
+    "reason": "UNTRIAGED: fresh_until has no resolved reference; File-backed route health cache with three states and per-provider buckets (verdict/orchestration/health_cache.py)."
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
-    "reason": "UNTRIAGED: test_only_caller at verdict/orchestration/prime_settings.py:332"
+    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
   {
     "qualified_name": "verdict.present.reset",
-    "reason": "UNTRIAGED: test_only_caller at verdict/present.py:37"
+    "reason": "UNTRIAGED: reset has only non-production references; Shared human-output helpers for `verdict` commands (verdict/present.py)."
   },
   {
     "qualified_name": "verdict.prove_at_rest_legacy.load_healthy_passports",
-    "reason": "UNTRIAGED: uncalled at verdict/prove_at_rest_legacy.py:606"
+    "reason": "UNTRIAGED: load_healthy_passports has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
   },
   {
     "qualified_name": "verdict.runtime_contract.ProcfsInspector",
-    "reason": "UNTRIAGED: uncalled at verdict/runtime_contract.py:82"
+    "reason": "UNTRIAGED: ProcfsInspector has no resolved reference; Versioned, privacy-safe contracts for global runtime ownership (verdict/runtime_contract.py)."
   },
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",
-    "reason": "UNTRIAGED: uncalled at verdict/trusted_change_report.py:64"
+    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   }
 ]
