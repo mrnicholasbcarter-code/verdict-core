@@ -14,6 +14,12 @@
 set -euo pipefail
 
 # ── Pinned version & expected hashes ────────────────────────────────
+# Policy: this default pin is updated only AFTER a release is published on
+# PyPI, using real digests pulled from the PyPI JSON API (see pypi_sha256()
+# below) — never invented or pre-computed ahead of publication. That is why
+# this stays at 0.4.2 until the next release (0.5.0) actually exists on
+# PyPI; an override via VERDICT_VERSION already fetches its own hashes
+# unpinned.
 VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"
 # SHA-256 digests from PyPI JSON API for verdict-core 0.4.2
 VERDICT_WHL_SHA256="202496d4235d9b810d5f62e4b31e364809df9cc2333ce039d6637ab6cd2bb15d"

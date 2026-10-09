@@ -518,3 +518,122 @@ def test_verified_cli_publishes_after_consumer_and_legacy_json_unchanged(
         assert orchestration_cli._eligibility(legacy) == 0
     assert json.loads(capsys.readouterr().out) == payload
     assert action.call_args.args[0] == "eligibility"
+
+
+def test_unsafe_agent_dir_refusal_is_actionable(fixture: dict[str, Any]) -> None:
+    """A group-writable agent dir refuses with the code, a ~-relative path and a
+    `chmod go-w` hint, not the old generic "unsafe, changed or missing" text.
+    """
+    agent_dir = fixture["paths"].agent_dir
+    original_mode = agent_dir.stat().st_mode
+    agent_dir.chmod(0o775)
+    try:
+        result = consume(fixture, preview_only=True)
+    finally:
+        agent_dir.chmod(original_mode)
+    assert not result.ok
+    message = result.data["error"]
+    assert "unsafe_directory" in message
+    assert "~/prime is group/other-writable" in message
+    assert "run: chmod go-w ~/prime" in message
+    assert SECRET not in message
+    assert str(agent_dir) not in message
+
+
+def _refusal_message(path: Path, code: str = "unsafe_directory") -> str:
+    from verdict.harness_prime_selection import PrimeSelectionError
+    from verdict.tui_bootstrap_controls import _actionable_refusal
+
+    result = _actionable_refusal(PrimeSelectionError(code, path=path))
+    assert not result.ok
+    message = result.data["error"]
+    assert isinstance(message, str)
+    return message
+
+
+def test_actionable_refusal_sanitizes_newline_in_path_name(tmp_path: Path) -> None:
+    """A directory name containing a newline must never forge extra lines."""
+    message = _refusal_message(tmp_path / "evil\nname")
+    assert "\n" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_sanitizes_escape_sequence_in_path_name(tmp_path: Path) -> None:
+    """A directory name containing ESC must never inject an ANSI escape."""
+    message = _refusal_message(tmp_path / "evil\x1b[31mname")
+    assert "\x1b" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_sanitizes_outside_home_control_chars(tmp_path: Path) -> None:
+    """An outside-HOME path is basename-only, but control chars in the
+    basename itself must still sanitize."""
+    message = _refusal_message(Path("/elsewhere/evil\x07name"))
+    assert "\x07" not in message
+    assert "inspect this directory's permissions" in message
+    assert "chmod" not in message
+
+
+def test_actionable_refusal_home_itself_renders_as_tilde(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``$HOME`` itself (the empty relative path) renders as bare ``~``, and the
+    chmod hint quotes nothing (a quoted "~" would still expand; keep it plain)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path)
+    assert "~ is group/other-writable" in message
+    assert "run: chmod go-w ~" in message
+    assert str(tmp_path) not in message
+
+
+def test_actionable_refusal_normal_path_hint_preserves_tilde_expansion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The ``chmod`` hint must keep ``~/`` unquoted so the shell still expands it.
+
+    ``shlex.quote("~/.prime/agent")`` wraps the whole string in single quotes,
+    and a shell never expands ``~`` inside single quotes, so a naively quoted
+    hint would tell the operator to run a command that fails with "No such
+    file or directory" against their own real, existing directory.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path / ".prime" / "agent")
+    assert "run: chmod go-w ~/.prime/agent" in message
+    assert "'~" not in message
+
+
+def test_actionable_refusal_name_with_space_quotes_only_the_remainder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A space in the directory name is quoted, but the ``~/`` prefix is not."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    message = _refusal_message(tmp_path / "my dir")
+    assert "run: chmod go-w ~/'my dir'" in message
+
+
+def test_actionable_refusal_outside_home_never_emits_chmod(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Outside $HOME only the basename is shown; a chmod on a bare basename would
+    act on an unrelated ./name in the operator's cwd (or parse "-R" as an
+    option), so no executable command is emitted at all."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for leaf in ("nested", "-R", "leaf with space", "~", "~root", "~/x"):
+        message = _refusal_message(Path("/elsewhere/secret") / leaf)
+        assert "chmod" not in message
+        assert "inspect its permissions" in message
+        assert "/elsewhere" not in message and "secret" not in message
+
+
+def test_actionable_refusal_under_home_still_gives_chmod_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A normal, printable path under $HOME still gets the actionable hint, and a
+    dash-leading name stays a path operand because it keeps the ~/ prefix."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert "run: chmod go-w ~/normal-dir/nested" in _refusal_message(
+        tmp_path / "normal-dir" / "nested"
+    )
+    assert "run: chmod go-w ~/-R" in _refusal_message(tmp_path / "-R")

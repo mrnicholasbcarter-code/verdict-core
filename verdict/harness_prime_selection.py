@@ -49,7 +49,16 @@ FileIdentity = tuple[int, int, int, int, int, int]
 
 
 class PrimeSelectionError(ValueError):
-    """A stable, secret-free refusal code, not an underlying OS/JSON error."""
+    """A stable, secret-free refusal code, not an underlying OS/JSON error.
+
+    ``path`` (when set) is the specific unsafe filesystem path a caller may
+    want to render as an actionable hint. ``str(exc)`` stays exactly the code;
+    nothing here changes what callers already match on.
+    """
+
+    def __init__(self, code: str, *, path: Path | None = None) -> None:
+        super().__init__(code)
+        self.path = path
 
 
 def byte_digest(raw: bytes) -> str:
@@ -366,10 +375,10 @@ def _identity(s: os.stat_result) -> FileIdentity:
 
 def _safe_parent(path: Path) -> None:
     if not path.is_absolute() or any(p.is_symlink() for p in (path.parent, *path.parents)):
-        raise PrimeSelectionError("unsafe_path")
+        raise PrimeSelectionError("unsafe_path", path=path)
     info = path.parent.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o022 or not stat.S_ISDIR(info.st_mode):
-        raise PrimeSelectionError("unsafe_directory")
+        raise PrimeSelectionError("unsafe_directory", path=path.parent)
 
 
 def _read(path: Path, *, private: bool = False) -> tuple[bytes, FileIdentity]:
@@ -384,7 +393,7 @@ def _read(path: Path, *, private: bool = False) -> tuple[bytes, FileIdentity]:
             or info.st_nlink != 1
             or (private and stat.S_IMODE(info.st_mode) != 0o600)
         ):
-            raise PrimeSelectionError("unsafe_file")
+            raise PrimeSelectionError("unsafe_file", path=path)
         with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read()
         if _identity(os.fstat(fd)) != _identity(info) or _identity(path.lstat()) != _identity(info):
@@ -414,9 +423,9 @@ def _lock(paths: SelectionPaths) -> Iterator[None]:
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
-            raise PrimeSelectionError("unsafe_lock")
+            raise PrimeSelectionError("unsafe_lock", path=paths.lock)
         if stat.S_IMODE(info.st_mode) != 0o600:
-            raise PrimeSelectionError("unsafe_lock")
+            raise PrimeSelectionError("unsafe_lock", path=paths.lock)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -427,6 +436,49 @@ def _lock(paths: SelectionPaths) -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+def _safe_optional_parent(path: Path) -> None:
+    """Ancestor-symlink refusal for a path whose leaf file may be absent.
+
+    Shares ``_safe_parent``'s symlink/absolute checks so a tolerant "file is
+    absent" result can never hide a symlinked (including dangling) ancestor:
+    ``lstat`` on a path under a symlinked or dangling-symlinked parent also
+    raises ``FileNotFoundError``, which looks identical to a genuinely missing
+    leaf unless the ancestor chain is checked first. Unlike ``_safe_parent``, a
+    wholly absent parent directory is tolerated (no project directory at all
+    means no project override, matching ``harness_bootstrap`` discovery), and
+    the 0o022 mode check never runs here: that tolerance is the whole point of
+    the optional project-settings path.
+    """
+    if not path.is_absolute() or any(p.is_symlink() for p in (path.parent, *path.parents)):
+        raise PrimeSelectionError("unsafe_path", path=path)
+    try:
+        info = path.parent.stat()
+    except FileNotFoundError:
+        return
+    if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode):
+        raise PrimeSelectionError("unsafe_directory", path=path.parent)
+
+
+def _project_digest(path: Path) -> str | None:
+    """Digest an optional project settings file; absence needs no safe parent.
+
+    ``_safe_optional_parent`` runs before ``lstat`` so a symlinked (including
+    dangling) ancestor is refused even when the leaf settings file is absent.
+    A missing file under a real, user-owned, group/other-writable project
+    directory (a realistic 0775-umask checkout) is still tolerated, not
+    refused. A present file still goes through ``_read``'s full
+    ``_safe_parent``/ownership/mode checks unchanged.
+    """
+    _safe_optional_parent(path)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    project, _ = _read(path)
+    _json(project)
+    return byte_digest(project)
 
 
 def _verify_dependencies(dependencies: PrimeDependencies, paths: SelectionPaths) -> None:
@@ -442,13 +494,7 @@ def _verify_dependencies(dependencies: PrimeDependencies, paths: SelectionPaths)
         if dependencies.project_digest is not None:
             raise PrimeSelectionError("project_path_required")
     else:
-        try:
-            project, _ = _read(paths.project_settings)
-            _json(project)
-            digest: str | None = byte_digest(project)
-        except FileNotFoundError:
-            digest = None
-        if digest != dependencies.project_digest:
+        if _project_digest(paths.project_settings) != dependencies.project_digest:
             raise PrimeSelectionError("dependencies_changed")
 
 
