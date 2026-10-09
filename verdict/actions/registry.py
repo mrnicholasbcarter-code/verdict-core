@@ -1338,6 +1338,12 @@ def _register_builtins() -> None:
     _specs: list[tuple[ActionSpec, Callable[..., ActionResult]]] = [
         (
             ActionSpec(
+                "models.list", "models", "read", "List the qualified model catalog", "Models"
+            ),
+            _action_models_list,
+        ),
+        (
+            ActionSpec(
                 "models.verified",
                 "models",
                 "read",
@@ -1365,12 +1371,6 @@ def _register_builtins() -> None:
                 "Health",
             ),
             action_models_refresh_execute,
-        ),
-        (
-            ActionSpec(
-                "models.list", "models", "read", "List the qualified model catalog", "Models"
-            ),
-            _action_models_list,
         ),
         (
             ActionSpec(

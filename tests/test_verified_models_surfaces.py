@@ -173,6 +173,23 @@ def rows_by_id(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {r["route_id"]: r for r in payload["rows"]}
 
 
+def test_verified_and_refresh_actions_registered_once_with_declared_kinds() -> None:
+    from verdict.actions.registry import list_actions
+
+    actions = list_actions()
+    expected = {
+        "models.verified": "read",
+        "models.refresh.plan": "read",
+        "models.refresh.execute": "mutation",
+    }
+    for name, kind in expected.items():
+        matching = [spec for spec in actions if spec.name == name]
+        assert len(matching) == 1
+        assert matching[0].kind == kind
+    model_actions = [spec.name for spec in actions if spec.name.startswith("models.")]
+    assert model_actions[0] == "models.list"
+
+
 @pytest.mark.parametrize("through_palette", [False, True])
 def test_models_verified_is_read_only_even_when_stale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_palette: bool
