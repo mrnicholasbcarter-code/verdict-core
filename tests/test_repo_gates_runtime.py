@@ -227,3 +227,92 @@ def test_resolve_falls_back_to_path_and_leaves_npm_unchanged(
         "run",
         "lint",
     ]
+
+
+async def test_gate_diagnostics_do_not_change_verification_failure_category(
+    repo: Path, gate_bin: Path
+) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    git_runner = runtime.runner
+
+    async def timeout_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff":
+            return 124, "timeout after 600s"
+        return await git_runner(argv, cwd, timeout)
+
+    runtime.runner = timeout_runner
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert result.nodes["i"].failures[-1].category == "verification_failed"
+    assert result.nodes["i"].failures[-1].scope == "none"
+    assert "timeout after 600s" in result.nodes["i"].failure_feedback
+    assert not events.of("cooldown")
+
+
+async def test_gates_are_not_run_before_passing_integration_tests(
+    repo: Path, gate_bin: Path
+) -> None:
+    runtime, events, calls = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def failed_pytest(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if "pytest" in argv and cwd.name == "i-a1":
+            return 1, "combined pytest failed"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = failed_pytest
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert "combined pytest failed" in result.nodes["i"].failure_feedback
+    assert not events.of("repo_gate")
+    assert not any(Path(argv[0]).name in {"ruff", "mypy"} for argv, _, _ in calls)
+
+
+@pytest.mark.parametrize("config", ["", "[tool.ruff]\n"])
+async def test_real_receipt_records_gate_discovery_and_results(
+    repo: Path, gate_bin: Path, config: str
+) -> None:
+    import json
+
+    from verdict.orchestration.receipt import EventLog, verify_run_receipt, write_run_receipt
+
+    runtime, _, _ = make_runtime(repo, config)
+    (runtime.run_dir / "graph.json").parent.mkdir(parents=True, exist_ok=True)
+    (runtime.run_dir / "graph.json").write_text(json.dumps(runtime.graph.to_dict()))
+    runtime.events = EventLog(runtime.run_dir / "events.jsonl")
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    receipt = json.loads(write_run_receipt(runtime.run_dir).read_text())
+    [summary] = receipt["repo_gates"]
+    assert summary["declared"] is bool(config)
+    if config:
+        assert [gate["name"] for gate in receipt["repo_gate_results"]] == [
+            "ruff-check",
+            "ruff-format",
+        ]
+        assert all(gate["exit_code"] == 0 for gate in receipt["repo_gate_results"])
+        assert receipt["repo_gate_results"][0]["executed_command"].startswith(
+            str(gate_bin / "ruff")
+        )
+    else:
+        assert summary["note"] == "none declared"
+        assert receipt["repo_gate_results"] == []
+    assert verify_run_receipt(runtime.run_dir) == []
+
+
+def test_committed_legacy_receipt_keeps_bytes_and_field_set() -> None:
+    import json
+
+    from verdict.orchestration.receipt import build_run_receipt, verify_run_receipt
+
+    run_dir = Path(__file__).resolve().parent.parent / "docs" / "proof" / "demo-run"
+    path = run_dir / "receipt.json"
+    before = path.read_bytes()
+    stored = json.loads(before)
+    fresh = build_run_receipt(run_dir)
+    assert "repo_gates" not in fresh
+    assert "repo_gate_results" not in fresh
+    assert fresh == stored
+    assert set(fresh) == set(stored)
+    assert verify_run_receipt(run_dir) == []
+    assert path.read_bytes() == before
