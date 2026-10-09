@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,10 +11,27 @@ from verdict.orchestration.credential_pools import (
     ALIAS_FAMILIES,
     base_route,
     canonical_route,
+    collapse_alias_duplicates,
+    is_non_chat_route,
     pool_of,
 )
+from verdict.orchestration.health_cache import HealthCache
 from verdict.orchestration.provider_catalog import backend_pool
-from verdict.prove_at_rest import routes_from_evidence
+from verdict.prove_at_rest import AdmittedRoute, order_cycle, routes_from_evidence
+
+NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def _route(
+    route_id: str, capacity: str, *, pool: str | None = None, non_chat: bool = False
+) -> AdmittedRoute:
+    return AdmittedRoute(
+        route_id=route_id,
+        provider=route_id.split("/", 1)[0],
+        capacity=capacity,
+        pool=pool,
+        non_chat=non_chat,
+    )
 
 
 @pytest.mark.parametrize(
@@ -166,3 +183,58 @@ def test_routes_from_evidence_sets_pool_from_pool_of(tmp_path: Path) -> None:
     by_id = {route.route_id: route for route in routes}
     assert by_id["agy/model-a"].pool == pool_of("agy/model-a")
     assert by_id["af/model-b"].pool == pool_of("af/model-b") == "api-airforce"
+
+
+def test_collapse_alias_duplicates_keeps_canonical_member() -> None:
+    kept, inherited = collapse_alias_duplicates(["agy/model-x", "antigravity/model-x"])
+    assert kept == ["antigravity/model-x"]
+    assert inherited == {"agy/model-x": "antigravity/model-x"}
+
+
+def test_collapse_alias_duplicates_is_a_noop_for_unaliased_routes() -> None:
+    kept, inherited = collapse_alias_duplicates(["openrouter/a", "nvidia/b"])
+    assert kept == ["openrouter/a", "nvidia/b"]
+    assert inherited == {}
+
+
+def test_is_non_chat_route_flags_known_embedding_marker() -> None:
+    assert is_non_chat_route("af/BAAI/bge-reranker-v2-m3") is True
+    assert is_non_chat_route("agy/claude-opus-4-6") is False
+
+
+def test_is_non_chat_route_uses_row_type_and_capabilities() -> None:
+    assert is_non_chat_route("x/y", {"type": "embedding"}) is True
+    assert is_non_chat_route("x/y", {"capabilities": {"tts": True}}) is True
+    assert is_non_chat_route("x/y", {"capabilities": {"tool_calling": True}}) is False
+
+
+def test_order_cycle_collapses_alias_duplicates_to_one_probe(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route("agy/model-x", "free"), _route("antigravity/model-x", "free")]
+    ordered = [route.route_id for route, _kind in order_cycle(routes, cache, NOW, epsilon=0)]
+    assert ordered == ["antigravity/model-x"]
+
+
+def test_order_cycle_skips_non_chat_routes_entirely(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route("af/bge-reranker", "free", non_chat=True), _route("af/chat-model", "free")]
+    ordered = [route.route_id for route, _kind in order_cycle(routes, cache, NOW, epsilon=0)]
+    assert ordered == ["af/chat-model"]
+
+
+def test_order_cycle_defers_effort_variant_until_base_is_healthy(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_route("kr/model-thinking", "free"), _route("kr/model-thinking-high", "free")]
+    first = [route.route_id for route, _kind in order_cycle(routes, cache, NOW, epsilon=0)]
+    assert first == ["kr/model-thinking"]
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, ProbeResult
+
+    cache.record(
+        "kr/model-thinking", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW
+    )
+    second = [
+        route.route_id
+        for route, _kind in order_cycle(routes, cache, NOW + timedelta(seconds=1), epsilon=0)
+    ]
+    assert second == ["kr/model-thinking-high"]

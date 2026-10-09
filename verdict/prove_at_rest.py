@@ -281,6 +281,9 @@ class AdmittedRoute:
 
     ``capacity`` is the evidence-backed class (``free``, ``subscription``,
     ``metered``, ``unknown``). ``pool`` is an optional shared-quota pool.
+    ``non_chat`` (BOD-297) marks a route ``order_cycle`` must never probe
+    (embedding/image/audio/rerank/tts): default ``False`` so every existing
+    caller that builds an ``AdmittedRoute`` without naming it is unaffected.
     """
 
     route_id: str
@@ -288,6 +291,7 @@ class AdmittedRoute:
     capacity: str
     pool: str | None = None
     capacity_evidence: str | None = None
+    non_chat: bool = False
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or not self.provider.strip():
@@ -585,12 +589,38 @@ def order_cycle(
     """Order one cycle. Each item is ``(route, kind)``.
 
     ``kind`` is ``full`` (chat then tool) or ``liveness`` (chat only).
+
+    BOD-297 pool-aware planning, applied before the existing ordering:
+
+    1. A ``non_chat`` route (embedding/image/audio/rerank/tts) is dropped
+       entirely; it is never probed here (the census report records it
+       with reason ``"non_chat"``).
+    2. Alias-family duplicates (``agy``/``antigravity``, ``af``/
+       ``api-airforce``, ...) collapse onto one canonical member per
+       cycle; the others are not ordered at all. This function never
+       writes a synthetic cache entry for the dropped members -- a report
+       reads ``credential_pools.collapse_alias_duplicates`` separately to
+       record which routes inherited whose evidence.
+    3. A never-probed effort variant (``-low``/``-medium``/.../``-high``,
+       or ``-thinking-<effort>``) is skipped this cycle unless its base
+       route is already healthy in the cache, so a cycle never spends
+       budget proving a stronger variant before its cheaper base passed.
+       A variant with an already-probed history (half-open or stale) is
+       exempt: once known, refreshing it does not wait on the base again.
     """
-    by_id = {route.route_id: route for route in routes}
+    from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
+
+    chat_routes = [route for route in routes if not route.non_chat]
+    kept_ids, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    kept_id_set = set(kept_ids)
+    candidates = [route for route in chat_routes if route.route_id in kept_id_set]
+    candidate_ids = {route.route_id for route in candidates}
+
+    by_id = {route.route_id: route for route in candidates}
     half_open: list[AdmittedRoute] = []
     stale: list[AdmittedRoute] = []
     seen: set[str] = set()
-    for route in routes:
+    for route in candidates:
         lookup = cache.lookup(route.route_id, now)
         entry = lookup.entry
         if entry is None:
@@ -608,19 +638,25 @@ def order_cycle(
             stale.append(route)
             seen.add(route.route_id)
 
+    def _base_is_ready(route: AdmittedRoute) -> bool:
+        base_id = base_route(route.route_id, candidate_ids)
+        return base_id == route.route_id or cache.lookup(base_id, now).healthy
+
     free_new = [
         route
-        for route in routes
+        for route in candidates
         if route.capacity == CapacityClass.FREE.value
         and route.route_id not in seen
         and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+        and _base_is_ready(route)
     ]
     other_new = [
         route
-        for route in routes
+        for route in candidates
         if route.capacity != CapacityClass.FREE.value
         and route.route_id not in seen
         and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+        and _base_is_ready(route)
     ]
 
     ordered: list[tuple[AdmittedRoute, str]] = []
@@ -641,7 +677,7 @@ def order_cycle(
     ordered.extend((route, "liveness") for route in other_new)
     ordered.extend(
         _epsilon_slice(
-            routes,
+            candidates,
             cache,
             now,
             seen=set(item[0].route_id for item in ordered),
@@ -1153,7 +1189,7 @@ def routes_from_evidence(
     agree on FREE versus SUBSCRIPTION.
     """
     from verdict.admission import admit, default_runtime_evidence
-    from verdict.orchestration.credential_pools import pool_of
+    from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
 
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
@@ -1181,6 +1217,7 @@ def routes_from_evidence(
                 # census report can group by pool.
                 pool=pool_of(record.route_id),
                 capacity_evidence=plan or None,
+                non_chat=is_non_chat_route(record.route_id, row),
             )
         )
     return tuple(out)

@@ -45,7 +45,7 @@ Fail-closed decisions, noted rather than silently assumed:
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 
 from verdict.orchestration.provider_catalog import backend_pool
 
@@ -146,4 +146,86 @@ def base_route(route_id: str, inventory_ids: Collection[str]) -> str:
     return route_id
 
 
-__all__ = ["ALIAS_FAMILIES", "base_route", "canonical_route", "pool_of"]
+__all__ = [
+    "ALIAS_FAMILIES",
+    "base_route",
+    "canonical_route",
+    "collapse_alias_duplicates",
+    "is_non_chat_route",
+    "pool_of",
+]
+
+
+# ---------------------------------------------------------------------------
+# Non-chat route detection (BOD-297 census: skip embed/image/audio/rerank/tts)
+# ---------------------------------------------------------------------------
+
+_NON_CHAT_TYPES = frozenset({"embedding", "image", "audio", "rerank", "tts"})
+_NON_CHAT_CAPABILITY_KEYS = frozenset({"embedding", "image", "audio", "rerank", "tts"})
+
+# Id-marker fallback: the same heuristic the 2026-10-09 controller census
+# scripts (/tmp/verdict-census/free_census3.py) used when inventory rows
+# carry no capabilities/type (the live OmniRoute catalog usually does not).
+_NON_CHAT_ID_MARKERS = re.compile(
+    r"(embed|rerank|bge-|e5-|gte-|tts|whisper|transcri|speech|audio-|moderation|"
+    r"dall-e|imagen|image-gen|flux|stable-diffusion|sdxl|midjourney|ocr|clip-)",
+    re.IGNORECASE,
+)
+
+
+def is_non_chat_route(route_id: str, row: Mapping[str, object] | None = None) -> bool:
+    """True when ``route_id`` is not a chat/completions model.
+
+    Checks the inventory ``row`` first: an explicit ``type`` in a known
+    non-chat set, or a ``capabilities`` map positively declaring a non-chat
+    modality. Falls back to an id-marker heuristic when ``row`` is absent or
+    silent on both.
+    """
+    if row is not None:
+        if str(row.get("type", "")).lower() in _NON_CHAT_TYPES:
+            return True
+        caps = row.get("capabilities")
+        if isinstance(caps, Mapping) and any(caps.get(key) for key in _NON_CHAT_CAPABILITY_KEYS):
+            return True
+    return bool(_NON_CHAT_ID_MARKERS.search(route_id))
+
+
+def collapse_alias_duplicates(route_ids: Sequence[str]) -> tuple[list[str], dict[str, str]]:
+    """Group route ids that share one canonical id; keep only one per group.
+
+    Routes whose ``canonical_route`` matches are the same underlying model
+    reachable through more than one alias prefix (e.g. ``agy/x`` and
+    ``antigravity/x``). Only the member already named under the canonical
+    prefix is kept for probing; every other member is recorded as
+    *inherited* from it. A group with exactly one member is returned as-is
+    (nothing to collapse). Input order is preserved for the kept ids.
+
+    Returns ``(kept_ids, inherited)`` where ``inherited`` maps a dropped
+    route id to the kept route id whose probe result it should borrow. The
+    caller is responsible for surfacing that inheritance (a report field);
+    this function never invents or writes a cache entry.
+    """
+    groups: dict[str, list[str]] = {}
+    for route_id in route_ids:
+        groups.setdefault(canonical_route(route_id), []).append(route_id)
+    kept: list[str] = []
+    inherited: dict[str, str] = {}
+    decided: set[str] = set()
+    for route_id in route_ids:
+        canon = canonical_route(route_id)
+        if canon in decided:
+            continue
+        decided.add(canon)
+        members = groups[canon]
+        if len(members) == 1:
+            kept.append(members[0])
+            continue
+        # Prefer the member already named under the canonical prefix; fall
+        # back to the first-seen member when none matches (fail-closed,
+        # deterministic — never silently drops the whole group).
+        probed = next((member for member in members if member == canon), members[0])
+        kept.append(probed)
+        for member in members:
+            if member != probed:
+                inherited[member] = probed
+    return kept, inherited
