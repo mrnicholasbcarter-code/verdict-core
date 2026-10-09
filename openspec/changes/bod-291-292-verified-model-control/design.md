@@ -37,7 +37,9 @@ def project_verified_models(
     inventory_rows: Sequence[Mapping[str, Any]],
     connections: Sequence[Mapping[str, Any]] | None,
     evidence: EvidenceSnapshots,
-    *, now: datetime, query: VerifiedModelQuery = VerifiedModelQuery(),
+    *,
+    now: datetime,
+    query: VerifiedModelQuery = VerifiedModelQuery(),
 ) -> VerifiedModelsView: ...
 ```
 
@@ -102,9 +104,18 @@ TUI `/eligibility` uses the new consumer controller and renderer, not generic fi
 **INFERRED:** New `verdict/orchestration/verified_refresh.py` coordinator exposes:
 
 ```python
-def refresh_for_consumer(snapshot, *, consumer, needed_ids, query, now,
-                         config, transport=None, on_progress=None,
-                         cancel=None) -> RefreshOutcome: ...
+def refresh_for_consumer(
+    snapshot,
+    *,
+    consumer,
+    needed_ids,
+    query,
+    now,
+    config,
+    transport=None,
+    on_progress=None,
+    cancel=None,
+) -> RefreshOutcome: ...
 ```
 
 A cancel-aware UI/CLI worker executes probes; the main event loop stays responsive and displays progress ONLY until the bounded job ends. Final row rendering/use is after refresh completion and snapshot reload. No provisional model list. For selection, refresh completes before evaluation/use and existing exact ladder confirmation still happens before dispatch. Picker preview/apply pass exactly their involved ids. Autocomplete never calls this API. If needed entries are already fresh, return reused_fresh immediately: zero calls, zero wait, no job.
