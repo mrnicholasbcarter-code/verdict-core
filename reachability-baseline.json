@@ -1,0 +1,774 @@
+[
+  {
+    "qualified_name": "verdict.adaptive_ranker.RankerInput",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.admission.evidence_from_quota_rows",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.admission_with_subscription.admit_with_subscription",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.advisory.AdvisoryRanker",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.ai_memory_experimental.AiMemoryExperimentalProvider",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.build_messages_url",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.is_messages_qualified",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.anthropic_messages_adapter.messages_request_digest",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.caller_authentication",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.chat_completions",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.execute_guidance",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.guidance_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.list_models",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.list_passports",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.no_store_cache_headers",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.qualify_model",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.route_explain",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.api.route_task_alias",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev.AutoDevWorkflow",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.OpenAICompatibleEvidenceAdapter",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.attest_response",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.discover_concrete_routes",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_routing.normalize_retry_safety",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.compare_execution_topologies",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.context_ablation_payload",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.autodev_run.net_savings_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.availability.CallableOmniRouteTransport",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.availability.MappingOmniRouteTransport",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.availability_cache.build_cache_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.candidate_builder.build_candidates",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.candidate_builder.build_rejections",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_agentshield_stub",
+    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_codebase_memory_stub",
+    "reason": "BOD-316: codebase-memory adapter stub defaults health='unavailable' and no production call site raises it. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_context7_stub",
+    "reason": "BOD-316: Context7 adapter stub defaults health='unavailable' and no production call site raises it. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_gitleaks_stub",
+    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_semgrep_security_stub",
+    "reason": "Security adapter stub defaults health='unavailable'; same pattern as the Serena/Context7/codebase-memory stubs this story investigates. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capability_registry.make_serena_lsp_stub",
+    "reason": "BOD-316: Serena adapter stub defaults health='unavailable' and no production call site raises it; capability_registry.build_default_registry forwards the same default. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_adapters.default_registry",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_direct.codex_direct_adapter_from_fixtures",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_gateway.omniroute_capacity_adapter_from_fixtures",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_live.probe_local_capacity_sources",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.project_execution_path_evidence",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.project_runtime_certification_quota",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_project.scarcest_quota_evidence",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.resolve_capacity_snapshots",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.capacity_resolve.stale_cannot_overwrite",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.claims_ledger.evaluate_claim_freshness",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.claims_ledger.hydrate_claims",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.cockpit_nav.ScriptedKeyReader",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.codiv.codiv_routes",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.compaction.compact_session_state",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.compaction.emit_semantic_event",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.compaction.may_enter_ready",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.compaction.project_compacted_to_handoff",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.compaction.resume_projection",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_envelope.ContextCompiler",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_inject.extract_envelope",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_lift.refuse_secret_write",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_lift.run_context_lift",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_sources.CapabilityProviderProtocol",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_sources.SharedMemoryCapabilityProvider",
+    "reason": "BOD-146: absent from build_native_providers(); registered only by tests/ and tests/test_shared_memory_context.py. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_trust.apply_routing_eligibility",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.context_trust.scan_agent_environment",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.contracts.ProbeClass",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.contracts.contract_from_legacy_dict",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.contracts.dedupe",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.contracts.verify_execution_envelope",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.controller_launch.build_prime_argv",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.controller_launch.fence_owned_root_plan",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.controller_selection.ControllerSelector",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel.verify_decision",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision_with_advisory_promoting_excluded",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.degraded_decision",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.degraded_inputs",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.demo_inputs",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.denied_decision",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.decision_kernel_demo.denied_inputs",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.delivery.DeliveryController",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.delivery.build_pr_body",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.delivery.build_review_packet",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.delivery_ports.GhCliPort",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.delivery_ports.LinearEvidencePort",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.dependency_ingest.build_memory_record",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.design.color_capability",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.dispatcher.SubagentExecutor",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.enforcement.EnforcementVerificationGate",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.enforcement.dispatch_with_enforcement",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.environment_discovery.build_discovery_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.evaluation.EvaluationController",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.evaluation.build_evaluation_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.evidence.check_result_from_junit_xml",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.evidence.memory_boundary_results_from_junit_xml",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.build_execution_preview",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.canonical_preview_digest",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.execution_hosts.validate_adapter_capabilities",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.execution_path.apply_bounded_recovery",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.failover_engine.is_retryable_status_code",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.failover_engine.is_transient_error_class",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.free_tier_admit.why_not_model",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.gateway_conformance.run_gateway_adapter_conformance",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.handoff.write_handoff",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_discover",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_claude.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_discover",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cline.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_codex.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_discover",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_cursor.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_hermes.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_discover",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_opencode.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_certify",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_discover",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.harness_prime.format_status",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.headroom.headroom_is_unknown",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.health_cache.is_transient",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.home.palette_actions",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.home.palette_launches",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.intelligence_adapter.build_intelligence_adapter",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.launch.supervise_run",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.live_routing_run.run_live_routing",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.CanonicalManifestAdapter",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.build_default_adapter_registry",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_adapters.load_context_records",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_gate.MemoryGovernor",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_gate.MemoryNamespace",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.archive_legacy_memory",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.detect_legacy_memory_artifacts",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.ingest_legacy_artifacts",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_migration.purge_legacy_artifacts",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_mirror.MemoryMirrorWorker",
+    "reason": "BOD-146 outbox/mirror: MemoryMirrorWorker.run_once has no production caller (prove_at_rest's daemon.run_once is a different class). Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.import_session",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.normalize_session_record",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.memory_session_adapter.verify_session_manifest",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.models.Route",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.motion.trace_step",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.normalize.findings_from_bandit_json",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.normalize.findings_from_npm_audit_json",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.normalize.findings_from_pip_audit_json",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.normalize.sbom_artifact_from_cyclonedx_json",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.openspec_lifecycle.can_archive_openspec_change",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.execute_optimized_dispatch",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.hydrate_worker_context",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.optimized_dispatch.validate_worker_return",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.passport_eligibility.evaluate_passports",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.policy.compile_policy",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.policy.explain_policy",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.policy.migrate_task_policy",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.prime_settings.resolved_retry_policy",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.proof_receipts.build_proof_receipt",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.proof_receipts.build_receipt_manifest",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.protocol_probes.ProtocolProbeRunner",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.prove_at_rest_legacy.build_legacy_daemon",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.provider_bootstrap.GatewayProbeResult",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.provider_bootstrap.verify_gateway_reachable",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.provider_catalog.is_not_free_overridden",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.provider_catalog.routes_share_pool",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.provider_receipts.build_provider_receipt",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.registry.get_action",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.review.StaticDiffGate",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.routing_receipt.link_recovery_attempt",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.runtime_certification.register_detector",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.runtime_certification.reset_detectors",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.runtime_compatibility.build_runtime_compatibility_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.semantic_capabilities.assert_brand_free_capability_id",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.serve_path.free_tier_feed_identities",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.shared_memory.FakeSharedMemoryProvider",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.shared_memory.normalize_hit_to_memory_record",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.strength_profiles.aggregate_strength",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.structured_qualification.StructuredOutputRunner",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subagent_models.select_model_for_role",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subagent_models.select_models_for_parallel_roles",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subagent_selection.execute_with_worker_failover",
+    "reason": "No production caller; same gap as select_worker_model in this module. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subagent_selection.select_worker_model",
+    "reason": "No production caller; subagent worker-model selection is not wired into run.py/supervisor_admission.py. Pre-existing at the BOD-316 baseline; see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.check_headroom_subscription",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.is_subscription_exhausted",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.subscription_headroom_pct",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.subscription_headroom.subscription_pool_key",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.supervisor_admission.acquire_integration_lock",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.tool_qualification.ToolLifecycleRunner",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.compute_report_digest",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.reproduce_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.trusted_change_report.verify_report",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.tui_verified_controls.ProgressRecorder",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.verified_refresh.VerifiedRow",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (no reference found anywhere in this tree); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  },
+  {
+    "qualified_name": "verdict.workers.WorkerPool",
+    "reason": "Pre-existing at the BOD-316 reachability baseline (referenced only from tests/); not triaged individually in this TRIAGE-scope story -- see docs/quality/REACHABILITY-TRIAGE-2026-10.md."
+  }
+]

@@ -23,6 +23,17 @@ uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
+Run the reachability report locally (BOD-316) the same way CI does:
+
+```bash
+.venv/bin/python scripts/check_reachability.py
+```
+
+It exits 1 only on findings that are NOT already in `reachability-baseline.json`.
+Add `--json` for machine-readable output, or `--skip-vulture` if vulture is not
+installed locally. See `docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the
+triage policy behind each baselined entry.
+
 
 ## Running the tests from a clean clone
 
