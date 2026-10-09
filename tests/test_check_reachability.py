@@ -259,3 +259,30 @@ def test_same_stem_call_and_unrelated_rollback_do_not_hide_functions(tmp_path: P
     )
     names = {f.qualified_name for f in checker.check(root, use_vulture=False).findings}
     assert names == {"verdict.b.m.f", "verdict.x.rollback"}
+
+
+@pytest.mark.parametrize("decorator", ["@app.get('/')", "@router.post('/')", "@register('event')"])
+def test_registration_decorators_are_production_roots(tmp_path: Path, decorator: str) -> None:
+    root = _repository(tmp_path, {"verdict/m.py": f"{decorator}\ndef f(): pass\n"})
+    assert checker.check(root, use_vulture=False).findings == ()
+
+
+def test_script_entry_point_and_literal_getattr_are_roots(tmp_path: Path) -> None:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/m.py": "def main(): pass\ndef f(): pass\n",
+            "pyproject.toml": '[project.scripts]\ncli = "verdict.m:main"\n',
+            "caller.py": 'import verdict.m as mod; getattr(mod, "f")()\n',
+        },
+    )
+    assert checker.check(root, use_vulture=False).findings == ()
+
+
+@pytest.mark.parametrize("prefix", ["def", "async def"])
+@pytest.mark.parametrize(
+    "signature", ['health="disabled"', 'health="off", /', '*, health="unhealthy"']
+)
+def test_stub_positional_and_async_defaults(tmp_path: Path, prefix: str, signature: str) -> None:
+    root = _repository(tmp_path, {"verdict/m.py": f"{prefix} make_stub({signature}): pass\n"})
+    assert any(f.kind == "stub_default" for f in checker.check(root, use_vulture=False).findings)

@@ -42,6 +42,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / "reachability-baseline.json"
 STUB_DEFAULT_HEALTH = {"unavailable", "disabled", "off", "unhealthy"}
@@ -193,6 +198,19 @@ def _referenced_names(tree: ast.Module, relative_path: str, module_symbols: set[
                 elif node.id in local and node.id != self.enclosing:
                     names.add(f"{module}.{node.id}")
 
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and node.args[0].id in imports
+            ):
+                names.add(f"{imports[node.args[0].id]}.{node.args[1].value}")
+            self.generic_visit(node)
+
         def visit_Attribute(self, node: ast.Attribute) -> None:
             parts = [node.attr]
             base = node.value
@@ -214,15 +232,17 @@ def _stub_default_findings(tree: ast.Module, relative_path: str) -> list[Finding
     """Factory functions named ``make_*stub*`` whose ``health`` default is off."""
     findings: list[Finding] = []
     for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         lname = node.name.lower()
         if not (lname.startswith("make_") and "stub" in lname):
             continue
         args = node.args
-        kw_defaults = dict(zip(args.kwonlyargs, args.kw_defaults, strict=True))
-        health_arg = next((a for a in args.kwonlyargs if a.arg == "health"), None)
-        default = kw_defaults.get(health_arg) if health_arg is not None else None
+        positional = [*args.posonlyargs, *args.args]
+        default_args = positional[len(positional) - len(args.defaults) :]
+        defaults = dict(zip((a.arg for a in default_args), args.defaults, strict=True))
+        defaults.update(zip((a.arg for a in args.kwonlyargs), args.kw_defaults, strict=True))
+        default = defaults.get("health")
         if (
             isinstance(default, ast.Constant)
             and isinstance(default.value, str)
@@ -332,6 +352,28 @@ def check(
         for name in _referenced_names(tree, relative_path, module_symbols):
             bucket = referenced_in.setdefault(name, {"prod": False, "test": False})
             bucket["test" if is_test else "prod"] = True
+
+    pyproject = root / "pyproject.toml"
+    if pyproject.exists():
+        scripts = (
+            tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            .get("project", {})
+            .get("scripts", {})
+        )
+        for target in scripts.values():
+            if isinstance(target, str) and ":" in target:
+                referenced_in[target.replace(":", ".")] = {"prod": True, "test": False}
+    for relative_path, tree in trees.items():
+        if _is_test_path(relative_path):
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                isinstance(d, ast.Call) for d in node.decorator_list
+            ):
+                referenced_in[f"{_module_dotted(relative_path)}.{node.name}"] = {
+                    "prod": True,
+                    "test": False,
+                }
 
     findings: list[Finding] = []
     checked = 0
