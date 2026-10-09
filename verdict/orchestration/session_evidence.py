@@ -116,18 +116,32 @@ class SessionLedger:
         payload["at"] = format_datetime(outcome.at)
         line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a+b") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            try:
-                stream.seek(0)
-                items, _ = _read(stream)
-                if any(_identity(item) == _identity(outcome) for item in items):
-                    return
-                stream.write(line)
-                stream.flush()
-                os.fsync(stream.fileno())
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        created = False
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            fd = os.open(self.path, os.O_RDWR | os.O_APPEND)
+        try:
+            with os.fdopen(fd, "a+b") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                try:
+                    stream.seek(0)
+                    items, _ = _read(stream)
+                    if any(_identity(item) == _identity(outcome) for item in items):
+                        return
+                    stream.write(line)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            if created:
+                directory_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
 
     def load(self) -> tuple[SessionOutcome, ...]:
         """Return a locked snapshot, counting malformed lines; absence is empty."""

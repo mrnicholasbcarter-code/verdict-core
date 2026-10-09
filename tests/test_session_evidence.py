@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -240,3 +242,39 @@ def test_pool_summary_combines_aliases_but_not_other_models_or_pools(
     assert ledger.summarize(first, NOW).fails == 0  # exact-route API stays exact
     with pytest.raises(ValueError, match="window_days"):
         ledger.summarize_pool(alias, NOW, window_days=-1)
+
+
+@pytest.mark.parametrize("mask", [0o000, 0o077, 0o777])
+def test_append_creates_private_ledger_and_fsyncs_directory_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mask: int
+) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def track_fsync(fd: int) -> None:
+        synced.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", track_fsync)
+    previous = os.umask(mask)
+    try:
+        ledger.append(evidence())
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(ledger.path.stat().st_mode) == 0o600 & ~mask
+    assert synced == ["file", "directory"]
+    # Make subsequent reads independent of the process's original umask.
+    ledger.path.chmod(0o600)
+    ledger.append(evidence("fail", at=NOW - timedelta(seconds=1)))
+    ledger.append(evidence())
+    assert synced == ["file", "directory", "file"]
+    assert len(ledger.load()) == 2
+
+
+def test_append_preserves_existing_file_permissions(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.path.touch()
+    ledger.path.chmod(0o640)
+    ledger.append(evidence())
+    assert stat.S_IMODE(ledger.path.stat().st_mode) == 0o640
