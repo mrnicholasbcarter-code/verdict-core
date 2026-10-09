@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
+### Added
+- A verified-model view projects per-route VERIFIED/UNVERIFIED/FAILED status from local health-cache evidence, with a bounded refresh that can spend prepaid quota only on exact, consented ids (#791, #792).
+- A Prime picker (`verdict harness prime select|restore`) previews and applies an exact `/enabledModels` scope under digest and proof-deadline guards, with byte-for-byte backup/restore (#793).
+- A Claude Code model-compatibility report, read-only, with no apply path (#793).
+- Context-aware local autocomplete for the command prompt, sanitized against the frozen last-published projection snapshot (#793).
+
+### Fixed
+- TUI eligibility gateway origin and failure exit codes (#789).
+- Real-registry and probe-category data: `agentic_fail` and `http_error` are accepted as known diagnostic categories, and display-unsafe registry rows no longer abort the Prime registry or binding (#796).
+- Prime picker path safety: an absent optional project settings file under a group/other-writable `.prime/` parent (a realistic 0775-umask checkout) no longer refuses `apply`; a present project file still gets full safety checks. Path-safety refusals (`unsafe_directory`, `unsafe_file`, `unsafe_path`) now report a home-relative location and a `chmod go-w` hint instead of a bare, non-actionable message (this branch).
+- Repo-wide `actionlint` findings on `main`; CI gained `actionlint` and `vulture` (#794, #795).
+
+### Dependencies
+- `source-map-js` 1.2.2 for the known 1.2.1 advisory (indirect, via `postcss`) (#783).
+- `http-cache-semantics` stays at 4.2.0 (already the newest published release); no patched version exists yet for its open advisory, so it is tracked, not hacked around.
+
+### Known limitations
+- Certification is not yet attested: the OIDC rehearsal attester step is pending.
+- Worker selection does not read the verified-model health cache yet (BOD-300); verified status is informational, not a routing input.
+- The Prime picker's proof deadline gives roughly 74 seconds from the apply confirmation ("Yes") to the guarded rename; a slower confirm flow needs a fresh preview.
+- A `Retry-After` spec/code mismatch is tracked and not yet fixed in this release.
+
 ## [0.4.2] - 2026-10-01
 
 ### Added
