@@ -385,13 +385,15 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
     # "stale/ambiguous evidence" case the binding exists to catch.
     plan_gen = str(plan.get("evidence_generation") or "")
     current_gen = str(snapshot.generation or "")
-    if (plan_gen or current_gen) and (not plan_gen or not current_gen or plan_gen != current_gen):
+    if not plan_gen.strip() or not current_gen.strip() or plan_gen != current_gen:
         return _refuse("evidence_changed")
 
     plan_gateway = str(plan.get("gateway_origin") or "")
     current_gateway = str(snapshot.gateway_origin or "")
-    if (plan_gateway or current_gateway) and (
-        not plan_gateway or not current_gateway or plan_gateway != current_gateway
+    if (
+        not plan_gateway.strip()
+        or not current_gateway.strip()
+        or plan_gateway != current_gateway
     ):
         return _refuse("gateway_changed")
 

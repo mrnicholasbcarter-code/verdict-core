@@ -813,3 +813,27 @@ def test_execute_route_outcomes_report_blocked_and_missing_without_verified(tmp_
     assert all(o["requests_made"] == 0 for o in outcomes.values())
     assert outcomes["cc/blocked"]["refresh_reason"] == "blocked"
     assert outcomes["cc/missing"]["refresh_reason"] == "not_tested"
+
+
+def test_review3_empty_bindings_refused(tmp_path: Path) -> None:
+    for generation, gateway, reason in (
+        ("", "http://planned", "evidence_changed"),
+        ("gen1", "", "gateway_changed"),
+    ):
+        transport = _Transport()
+        snapshot = RefreshSnapshot(
+            rows=(RowInput("free/a", "free", "STALE", CAPACITY_FREE, True),),
+            generation=generation,
+            gateway_origin=gateway,
+        )
+        result = action_models_refresh_execute(
+            confirmed=True,
+            plan=_plan(gen=generation, gateway=gateway),
+            snapshot=snapshot,
+            now=NOW,
+            transport=transport,
+            cache=HealthCache(tmp_path / "cache.json"),
+        )
+        assert not result.ok
+        assert result.data["reason"] == reason
+        assert transport.calls == []
