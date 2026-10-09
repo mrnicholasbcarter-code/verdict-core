@@ -656,3 +656,79 @@ def test_token_reservations_persist_and_cap_same_provider_spend(tmp_path: Path) 
     assert bucket_rows
     persisted = HealthCache(tmp_path / "health-cache.json", bucket_capacity=10)
     assert persisted.bucket_remaining("cc", NOW) == 0  # the spend was persisted
+
+
+def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None:
+    """Real unit-1 metered/unknown rows need consent despite refreshable=False."""
+    rows = [
+        {"route_id": rid, "provider": rid.split("/")[0], "status": status,
+         "capacity_class": capacity, "refreshable": False,
+         "refresh_reason": "requires_confirmation"}
+        for rid, status, capacity in (
+            ("paid/a", "STALE", CAPACITY_METERED),
+            ("other/b", "UNVERIFIED", CAPACITY_UNKNOWN),
+        )
+    ]
+    snap = RefreshSnapshot(
+        rows=tuple(RowInput(**r) for r in rows), generation="gen1",
+        gateway_origin="http://g",
+    )
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows, needed_ids=[r["route_id"] for r in rows],
+        include_metered=True, now=NOW, gateway_origin="http://g",
+        evidence_generation="gen1",
+    ).data
+    auto_transport = _Transport()
+    auto = _coord(tmp_path, auto_transport).refresh_for_consumer(
+        snap, consumer="picker", needed_ids=[r["route_id"] for r in rows],
+        config=RefreshConfig(),
+    )
+    assert auto.requests_made == 0 and auto_transport.calls == []
+    transport = _Transport()
+    result = action_models_refresh_execute(
+        confirmed=True, plan=plan, snapshot=snap, now=NOW,
+        cache=HealthCache(tmp_path / "consent-cache.json"), transport=transport,
+        clock=lambda: NOW, monotonic=lambda: 0.0, sleep=lambda _s: None,
+        lock_path=tmp_path / "consent.lock", marker_path=tmp_path / "consent.json",
+    )
+    assert result.ok and result.data["probed"] == 2
+    assert result.data["requests_made"] == 2
+    assert transport.calls == [("paid/a", "chat"), ("other/b", "chat")]
+
+
+def test_consented_blocked_row_never_probed(tmp_path: Path) -> None:
+    row = RowInput("paid/a", "paid", "STALE", CAPACITY_METERED, False, "blocked")
+    transport = _Transport()
+    out = _coord(tmp_path, transport).refresh_for_consumer(
+        RefreshSnapshot((row,), generation="gen1"), consumer="manual",
+        needed_ids=[row.route_id], config=RefreshConfig(), authorized=True,
+    )
+    assert out.requests_made == 0 and transport.calls == []
+
+
+def test_changed_confirmation_plan_is_refused_without_probe(tmp_path: Path) -> None:
+    row = {"route_id": "paid/a", "provider": "paid", "status": "STALE",
+           "capacity_class": CAPACITY_METERED, "refreshable": False,
+           "refresh_reason": "requires_confirmation"}
+    plan = action_models_refresh_plan(
+        snapshot_rows=[row], needed_ids=["paid/a"], include_metered=True,
+        now=NOW, gateway_origin="http://g", evidence_generation="gen1",
+    ).data
+    plan["routes"][0]["route_id"] = "paid/changed"
+    transport = _Transport()
+    result = action_models_refresh_execute(
+        confirmed=True, plan=plan,
+        snapshot=RefreshSnapshot((RowInput(**row),), "gen1", "http://g"),
+        now=NOW, transport=transport,
+    )
+    assert not result.ok and result.data["reason"] == "digest_mismatch"
+    assert transport.calls == []
+
+
+def test_probe_model_list_rejects_option_like_ids() -> None:
+    import pytest
+    from verdict.tui_verified_controls import parse_probe_model_list
+
+    for value in ("--probe", "cc/a, -force"):
+        with pytest.raises(ValueError):
+            parse_probe_model_list(value)

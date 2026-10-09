@@ -374,12 +374,15 @@ def _is_refreshable(row: RowInput, *, authorized: bool = False) -> bool:
     A consented manual plan (``authorized`` True) is the digest-bound authority
     for its exact ids, so the prepaid-only capacity gate is lifted: METERED and
     UNKNOWN DO execute (chat-only liveness) under explicit consent. The status
-    and ``refreshable`` gates still apply, so a route that became
-    VERIFIED/FAILED/UNAVAILABLE or picked up a new blocker since planning is
-    narrowed away rather than probed.
+    gate still applies. Rows marked ``requires_confirmation`` by unit 1 become
+    candidates only after consent; blocked/not_refreshable rows never do.
     """
     if row.status not in {STATUS_STALE, STATUS_UNVERIFIED}:
         return False
+    if row.refresh_reason in {"blocked", "not_refreshable"}:
+        return False
+    if authorized and row.refresh_reason == "requires_confirmation":
+        return True
     if not authorized and row.capacity_class not in _PREPAID:
         return False
     return bool(row.refreshable)

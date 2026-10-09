@@ -101,6 +101,8 @@ def parse_probe_model_list(text: str) -> list[str]:
         token = token.strip()
         if not token:
             continue
+        if token.startswith("-"):
+            raise ControlsError(f"option-like model id: {token!r}")
         if token not in seen:
             seen.add(token)
             ids.append(token)
