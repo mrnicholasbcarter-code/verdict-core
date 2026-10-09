@@ -146,6 +146,13 @@ def add_parsers(subparsers: Any) -> None:
     elig.set_defaults(_prefer_explicit=False)
     elig.add_argument("--prefer", default="claude", action=_ExplicitPrefer)
     elig.add_argument("--probe", action="store_true", help="Probe lazily to reach SELECTED")
+    elig.add_argument(
+        "--sync-visibility",
+        action="store_true",
+        help="Write Prime's visibility registry from this live catalog before "
+        "evaluating (default: off, read-only). Prefer the explicit "
+        "'verdict harness prime sync-models [--dry-run]' surface instead.",
+    )
     elig.add_argument("--reasoning", action="store_true")
     elig.add_argument("--frontier", action="store_true")
     elig.add_argument(
@@ -954,6 +961,7 @@ def _eligibility(args: argparse.Namespace) -> int:
             "reasoning": bool(args.reasoning),
             "frontier": bool(args.frontier),
             "probe": bool(args.probe),
+            "sync_visibility": bool(getattr(args, "sync_visibility", False)),
         },
     )
     payload = result.data

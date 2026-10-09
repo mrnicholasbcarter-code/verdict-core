@@ -25,9 +25,14 @@ def _models_json(path: Path, ids: list[str]) -> Path:
 
 class TestLiveHarnessGate:
     def test_live_inventory_admits_route_absent_from_models_json(self, tmp_path: Path) -> None:
+        # sync=True: this exercises the explicit-refresh path (what
+        # 'verdict harness prime sync-models' / '--sync-visibility' use).
+        # Plain selection (sync=False, the default) never writes the registry.
         registry = _models_json(tmp_path / "models.json", ["cc/claude-sonnet-5"])
         gate = prime_visibility(
-            registry, live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}]
+            registry,
+            live_rows=[{"id": "cc/claude-sonnet-5"}, {"id": "cc/claude-new-6"}],
+            sync=True,
         )
         ladder, _ = make_ladder(
             tmp_path,

@@ -103,16 +103,36 @@ class CertifyReport:
 
 
 def resolve_paths(*, prime_home: Path | None = None, home: Path | None = None) -> PrimeHarnessPaths:
+    """Resolve Prime's agent dir -- must agree with ``default_prime_agent_dir``.
+
+    Precedence (highest first):
+
+    1. the explicit ``prime_home`` argument (caller-supplied, e.g. tests);
+    2. ``PRIME_AGENT_CODING_AGENT_DIR`` -- the env var Prime 0.9.6 itself reads
+       (verified against the installed bundle; see
+       ``verdict.orchestration.prime_settings.default_prime_agent_dir``, which
+       this function must resolve identically to). It replaces the *whole*
+       agent dir and is used exactly as given, with no ``/agent`` suffix;
+    3. ``PRIME_AGENT_HOME`` / ``PRIME_HOME`` -- older Verdict-only aliases kept
+       for backward compatibility. Unlike (2), a value that does not already
+       end in ``agent`` gets ``/agent`` appended (their historical shape);
+    4. ``(home or Path.home()) / ".prime" / "agent"`` -- the default, which
+       matches ``default_prime_agent_dir``'s fallback when ``home`` is unset.
+    """
     if prime_home is not None:
         root = Path(prime_home).expanduser()
     else:
-        env_home = os.getenv("PRIME_AGENT_HOME") or os.getenv("PRIME_HOME")
-        if env_home and env_home.strip():
-            root = Path(env_home.strip()).expanduser()
-            if root.name != "agent":
-                root = root / "agent"
+        canonical = os.getenv("PRIME_AGENT_CODING_AGENT_DIR")
+        if canonical and canonical.strip():
+            root = Path(canonical.strip()).expanduser()
         else:
-            root = (home or Path.home()) / ".prime" / "agent"
+            env_home = os.getenv("PRIME_AGENT_HOME") or os.getenv("PRIME_HOME")
+            if env_home and env_home.strip():
+                root = Path(env_home.strip()).expanduser()
+                if root.name != "agent":
+                    root = root / "agent"
+            else:
+                root = (home or Path.home()) / ".prime" / "agent"
     models = root / "models.json"
     return PrimeHarnessPaths(agent_home=root, models=models, backup=models.parent / BACKUP_NAME)
 

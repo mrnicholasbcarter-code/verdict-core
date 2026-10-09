@@ -66,20 +66,30 @@ def prime_visibility_report(live_rows: Any, *, prime_home: Path | None = None) -
     }
 
 
-def prime_visibility(path: Path | None = None, *, live_rows: Any = None) -> Any:
+def prime_visibility(path: Path | None = None, *, live_rows: Any = None, sync: bool = False) -> Any:
     """Return the concrete ids Prime can actually spawn, never gateway authority.
 
-    When the caller has just refreshed ``/v1/models``, it supplies those rows
-    here so the local Prime registry is synchronized before selection. A failed
-    sync leaves an LKG sidecar for audit but does not invent visibility: only
-    the concrete ids read from Prime's registry are returned. Health, capacity,
-    entitlement and launch authority stay in their separate gates.
+    Read-only by default (``sync=False``): this never writes Prime's registry
+    on its own, even when ``live_rows`` is supplied. Per OpenSpec
+    bod-293-295-harness-bootstrap-autocomplete/design.md ("Selection SHALL
+    never implicitly call automatic visibility refresh"), writing Prime's
+    registry from live rows is something only an explicit, operator-invoked
+    surface may request -- today that is ``verdict harness prime sync-models``
+    and the opt-in ``verdict eligibility --sync-visibility`` flag, both of
+    which pass ``sync=True`` deliberately. Everything else (plain
+    ``verdict eligibility``, ``verdict orchestrate``) reads the registry as it
+    currently stands on disk and reports accordingly; a failed/skipped sync
+    leaves whatever LKG sidecar already exists for audit, but never invents
+    visibility. Health, capacity, entitlement and launch authority stay in
+    their separate gates regardless of ``sync``.
     """
-    from verdict.harness_prime import refresh_omniroute_visibility
+    from verdict.harness_prime import resolve_paths
     from verdict.orchestration.eligibility import HarnessVisibility
 
-    registry = path or Path.home() / ".prime" / "agent" / "models.json"
-    if live_rows is not None:
+    registry = path or resolve_paths().models
+    if sync and live_rows is not None:
+        from verdict.harness_prime import refresh_omniroute_visibility
+
         rows = tuple(row for row in live_rows if isinstance(row, Mapping))
         # A successful refresh changes Prime's local registry before selection.
         # On failure its LKG remains auditable, but only registry ids below can
@@ -118,6 +128,7 @@ def build_selector(
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
     refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
+    sync_visibility: bool = False,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -125,6 +136,11 @@ def build_selector(
     selection from this ladder needs. They go into canonical admission so
     CAPABILITY drops appear in the receipt. The ladder still applies each
     request's own requirements later.
+
+    ``sync_visibility`` defaults to False: selection reads Prime's visibility
+    registry as-is and never writes it. Pass True only from a caller that
+    exists to make that write explicit (``--sync-visibility``); see
+    ``prime_visibility``'s docstring for the OpenSpec requirement this keeps.
     """
     from verdict.admission import active_controller_route, admit, default_runtime_evidence
     from verdict.orchestration.eligibility import EligibilityLadder
@@ -160,9 +176,10 @@ def build_selector(
     admitted = admitted.exclude_controller(active_controller_route())
     receipt_path = state_path.parent / "admission-latest.json"
     admitted.write_receipt(receipt_path)
-    # Prime visibility is refreshed from the FULL live catalog. Scope and
-    # provider-family filters only narrow what this ladder evaluates; they
-    # must never shrink the operator's Prime registry to the scoped subset.
+    # Prime visibility reads (and, only when sync_visibility=True, refreshes)
+    # from the FULL live catalog. Scope and provider-family filters only
+    # narrow what this ladder evaluates; they must never shrink the
+    # operator's Prime registry to the scoped subset.
     catalog_rows = list(rows)
     if prefixes:
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
@@ -182,7 +199,7 @@ def build_selector(
         state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
-        harness_visible=prime_visibility(live_rows=catalog_rows),
+        harness_visible=prime_visibility(live_rows=catalog_rows, sync=sync_visibility),
         admitted=admitted,
         admission_receipt=receipt_path,
         refresh_hook=refresh_hook,
