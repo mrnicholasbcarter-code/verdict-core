@@ -1007,8 +1007,8 @@ def test_history_tightens_existing_permissions(tmp_path: Path) -> None:
     import verdict.home as home
 
     d = tmp_path / "shared"
-    d.mkdir(mode=0o755)
-    d.chmod(0o755)
+    d.mkdir(mode=0o777)
+    d.chmod(0o777)
     path = d / "prompt_history"
     path.write_text("/old\n")
     path.chmod(0o644)
