@@ -40,14 +40,11 @@ def test_bare_import_does_not_load_heavy_modules() -> None:
     probe = (
         "import sys\n"
         "import verdict\n"
-        "leaked = [m for m in sys.modules if m in {!r}]\n"
+        f"leaked = [m for m in sys.modules if m in {set(_FORBIDDEN_ON_BARE_IMPORT)!r}]\n"
         "print(','.join(sorted(leaked)))\n"
-    ).format(set(_FORBIDDEN_ON_BARE_IMPORT))
+    )
     result = subprocess.run(
-        (sys.executable, "-c", probe),
-        check=True,
-        capture_output=True,
-        text=True,
+        (sys.executable, "-c", probe), check=True, capture_output=True, text=True
     )
     leaked = [m for m in result.stdout.strip().split(",") if m]
     assert leaked == [], f"bare `import verdict` pulled in: {leaked}"
@@ -83,10 +80,7 @@ def test_from_verdict_import_still_works_for_all_names() -> None:
         "print(','.join(missing))\n"
     )
     result = subprocess.run(
-        (sys.executable, "-c", probe),
-        check=True,
-        capture_output=True,
-        text=True,
+        (sys.executable, "-c", probe), check=True, capture_output=True, text=True
     )
     missing = [m for m in result.stdout.strip().split(",") if m]
     assert missing == [], f"`from verdict import X` failed for: {missing}"
@@ -95,9 +89,6 @@ def test_from_verdict_import_still_works_for_all_names() -> None:
 def test_version_cli_output_unchanged() -> None:
     """`python -m verdict --version` output is unchanged by the lazy-import move."""
     result = subprocess.run(
-        (sys.executable, "-m", "verdict", "--version"),
-        check=True,
-        capture_output=True,
-        text=True,
+        (sys.executable, "-m", "verdict", "--version"), check=True, capture_output=True, text=True
     )
     assert result.stdout.strip() == f"verdict-core __main__.py {verdict.__version__}"
