@@ -16,7 +16,7 @@ you can check yourself afterward. A model that fails a safety check cannot be sc
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Why Verdict](#why-verdict) · [Try it](#try-it-in-60-seconds-no-keys) · [What's new](#whats-new-in-050) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
+[Why Verdict](#why-verdict) · [Try it](#try-it-without-api-keys) · [What's new](#whats-new-in-050) · [How it works](#how-it-works) · [Install](#install) · [Commands](#commands) · [Limits](#limits)
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-poster.svg"><img src="docs/assets/demo.svg" alt="Terminal recording: an offline scenario runs a two-worker-node DAG, an injected rate limit triggers failover, a scripted review records PASS, run-receipt verifies the event-log digest, and a tampered copy fails verification" width="860"></picture>
 
@@ -26,14 +26,14 @@ you can check yourself afterward. A model that fails a safety check cannot be sc
 
 ## Why Verdict
 
-- **Picks models that actually work right now, not just ones that are listed.** Verdict checks live account, health and quota evidence before it trusts a model, and names the reason it dropped anything else.
-- **Saves money by default.** Already-paid subscription capacity and free tiers are tried before metered, pay-per-token models — never the other way round.
-- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or bad answer moves the same work to another admitted model automatically, with a bounded number of tries.
+- **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other.
+- **Uses free and already-paid capacity first.** Workers try free tiers, then subscriptions, before metered pay-per-token models.
+- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries.
 - **Gets an independent second opinion.** A separate model, on a separate route from whoever did the work, has to approve the result before a run can finish.
-- **Hands you a receipt you can verify.** Every run ends with a tamper-evident digest; `verdict run-receipt` recomputes it and tells you if anything changed.
-- **Safe by default.** Spending real money needs your confirmation first, and anything that could change your settings shows you a preview and a one-step undo before it touches a file.
+- **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change.
+- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore.
 
-## Try it in 60 seconds (no keys)
+## Try it without API keys
 
 With `pipx` available, install and run the offline demo. The demo needs no API key,
 gateway or network (the install downloads from PyPI):
@@ -165,17 +165,17 @@ Test: [`tests/test_readme_assets.py`](tests/test_readme_assets.py).
 
 ## What's new in 0.5.0
 
-Verdict 0.5.0 adds four ways to see — and safely act on — what it knows before you commit to a run.
+Verdict 0.5.0 adds new ways to inspect model evidence, refresh it safely, and set up a supported coding agent.
 
-**See which models actually work right now.**
+**See which models are verified, stale or failing.**
 
 ```bash
 verdict eligibility --verified
 ```
 
-Shows every model's real status (verified, stale, unverified, failed, excluded) from evidence
-Verdict already checked, with a reason for every drop. In the TUI prompt, the same view is
-`/eligibility`.
+Shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE,
+UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason. In the TUI prompt, the same
+view is `/eligibility`.
 
 **Refresh that list safely, with a cost cap and your confirmation.**
 
@@ -183,8 +183,9 @@ Verdict already checked, with a reason for every drop. In the TUI prompt, the sa
 /eligibility refresh
 ```
 
-A bounded refresh probe that can spend prepaid quota — Verdict tells you that before it runs,
-and nothing is sent until you say yes.
+For a manual refresh, Verdict shows a bounded request plan and asks you to confirm before
+sending probes; the plan may include metered or unknown routes, which can cost money. Automatic
+refresh only touches free or already-paid routes.
 
 **Pick your Prime Agent models with a preview and a one-step undo.**
 
@@ -193,8 +194,9 @@ verdict harness prime select
 verdict harness prime restore
 ```
 
-`select` shows you the exact change before it touches `~/.prime/agent/models.json`, backs up the
-file first, and `restore` reverses it. In the TUI prompt: `/bootstrap prime`.
+`select` previews the change to `~/.prime/agent/settings.json` (your enabled-model list), asks
+you to confirm, backs the file up, then applies it; `restore` puts the backup back if its safety
+checks pass. In the TUI prompt: `/bootstrap prime`.
 
 **An honest Claude Code compatibility report.**
 
@@ -1072,7 +1074,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | Command | Purpose |
 |---|---|
 | `setup` | Interactive setup wizard |
-| `harness` | Point a coding-agent harness (Prime Agent, Claude Code, Codex, ...) at Verdict, with a preview and undo |
+| `harness` | Discover or configure supported coding-agent integrations; Prime model selection adds preview and guarded restore |
 | `doctor` | Scan and repair config / connectivity |
 | `check` | Validate config file syntax |
 | `quickstart` | Credential-free deterministic demo |
