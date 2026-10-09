@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pytest
 
 from verdict.orchestration.credential_pools import (
@@ -11,6 +14,7 @@ from verdict.orchestration.credential_pools import (
     pool_of,
 )
 from verdict.orchestration.provider_catalog import backend_pool
+from verdict.prove_at_rest import routes_from_evidence
 
 
 @pytest.mark.parametrize(
@@ -133,3 +137,32 @@ def test_base_route_unchanged_for_id_without_effort_suffix() -> None:
 def test_base_route_accepts_any_collection_type() -> None:
     inventory_list = ["kr/model", "kr/model-low"]
     assert base_route("kr/model-low", inventory_list) == "kr/model"
+
+
+def test_routes_from_evidence_sets_pool_from_pool_of(tmp_path: Path) -> None:
+    """routes_from_evidence must not hard-code pool=None; it reuses pool_of."""
+    now = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+    inventory = [
+        {"id": "agy/model-a", "owned_by": "agy", "capabilities": {"tool_calling": True}},
+        {"id": "af/model-b", "owned_by": "api-airforce", "capabilities": {"tool_calling": True}},
+    ]
+    connections = [
+        {
+            "provider": "agy",
+            "authType": "oauth",
+            "isActive": True,
+            "testStatus": "active",
+            "providerSpecificData": {"tier": "free-tier", "plan": "Antigravity starter quota"},
+        },
+        {
+            "provider": "api-airforce",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "active",
+            "providerSpecificData": {"importFreeModelsOnly": True},
+        },
+    ]
+    routes = routes_from_evidence(inventory, connections, now=now, state_dir=tmp_path)
+    by_id = {route.route_id: route for route in routes}
+    assert by_id["agy/model-a"].pool == pool_of("agy/model-a")
+    assert by_id["af/model-b"].pool == pool_of("af/model-b") == "api-airforce"

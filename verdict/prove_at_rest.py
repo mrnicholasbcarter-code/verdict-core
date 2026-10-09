@@ -1153,6 +1153,7 @@ def routes_from_evidence(
     agree on FREE versus SUBSCRIPTION.
     """
     from verdict.admission import admit, default_runtime_evidence
+    from verdict.orchestration.credential_pools import pool_of
 
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
@@ -1175,7 +1176,10 @@ def routes_from_evidence(
                 route_id=record.route_id,
                 provider=provider,
                 capacity=capacity.value,
-                pool=None,
+                # BOD-297: credential-pool identity (alias-collapsed), so
+                # order_cycle can probe one canonical route per pool and the
+                # census report can group by pool.
+                pool=pool_of(record.route_id),
                 capacity_evidence=plan or None,
             )
         )
