@@ -40,6 +40,26 @@ Note: Running `pytest` directly from the system will fail collection due to miss
 3. Ensure the project-environment `pytest`, Ruff, and strict mypy commands all pass.
 4. Write a clear PR description explaining what and why.
 
+## Definition of Done (BOD-316: "done means wired")
+
+A story is not done when the code merges; it is done when something in
+production calls it. Before marking a story Done:
+
+- A production caller exists, or the story is explicitly scoped
+  library-only in its ticket (and the ticket says so).
+- The live path is demonstrated: a test, demo script, or evidence log shows
+  the new code executing on a real call path, not only in an isolated unit
+  test.
+- No new stub is left as the default. A stub/adapter registered with a
+  default-off or default-unavailable health is fine only if an existing
+  ticket owns turning it on; otherwise wire it or do not ship it as default.
+- Reviewers ask: **"who calls this in production?"** An answer naming only
+  `tests/` is not a production caller.
+- `scripts/check_reachability.py` (see the Lint CI job) must not report the
+  new code as unreachable; see `reachability-baseline.json` for pre-existing
+  exceptions and `docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the triage
+  policy.
+
 ## Design Principles
 
 - **Layered dependencies.** Core routing remains lightweight; the HTTP proxy uses the declared `httpx` dependency and the FastAPI server is installed with the `server` extra.
