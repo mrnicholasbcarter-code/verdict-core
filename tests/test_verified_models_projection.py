@@ -970,6 +970,7 @@ _ROW_KEYS = {
     "refreshable",
     "refresh_reason",
     "hints",
+    "availability_evidence",
 }
 _ENVELOPE_KEYS = {
     "schema",

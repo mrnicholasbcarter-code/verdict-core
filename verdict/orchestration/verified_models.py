@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Any
 
 from verdict.admission import canonical_route_id, is_opaque, route_provider_prefix
+from verdict.availability import QuotaEvidence, account_forms
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
@@ -563,6 +564,7 @@ class VerifiedModelRow:
     refreshable: bool = False
     refresh_reason: str | None = None
     hints: tuple[str, ...] = ()
+    availability_evidence: tuple[Mapping[str, Any], ...] = ()
     # Private sort keys (not serialized).
     _sort_checked: datetime | None = None
 
@@ -612,6 +614,7 @@ class VerifiedModelRow:
             "refreshable": self.refreshable,
             "refresh_reason": _display_safe(self.refresh_reason),
             "hints": [_display_safe(hint) for hint in self.hints],
+            "availability_evidence": [dict(item) for item in self.availability_evidence],
         }
 
 
@@ -1271,7 +1274,46 @@ def _classify_row(
     worker = evidence.worker_health.get(route_id)
     ladder = evidence.ladder_health.get(route_id)
     bindings = _route_bindings(route_id, row, active_conns, at_rest)
-    binding_blockers, binding_restrictions = _binding_cooldowns(bindings, now, cd_index)
+    last_success = (
+        at_rest.last_success_at or (at_rest.checked_at if at_rest.healthy else None)
+        if at_rest
+        else None
+    )
+    gateway_cooldowns: list[ScopedCooldown] = []
+    for c in active_conns:
+        quota = QuotaEvidence.from_connection(c)
+        until = quota.blocked_until(now, last_success)
+        if until is not None:
+            gateway_cooldowns.append(
+                ScopedCooldown(
+                    "route"
+                    if quota.scope == "model"
+                    else quota.scope
+                    if quota.scope_id
+                    else "provider",
+                    (quota.scope_id or str(c.get("provider") or "")).lower(),
+                    "rate_limited",
+                    until,
+                    quota.source,
+                    observed_at=quota.observed_at,
+                )
+            )
+    # Reuse account/pool path exhaustion and provider blockers from the cache projection.
+    local_cd_index = _index_cooldowns(
+        [
+            cd
+            for group in (
+                cd_index.by_route,
+                cd_index.by_provider,
+                cd_index.by_pool,
+                cd_index.by_account,
+            )
+            for entries in group.values()
+            for cd in entries
+        ]
+        + gateway_cooldowns
+    )
+    binding_blockers, binding_restrictions = _binding_cooldowns(bindings, now, local_cd_index)
     carried.extend(binding_restrictions)
 
     def base_row(status: VerifiedStatus, **kw: Any) -> VerifiedModelRow:
@@ -1291,6 +1333,10 @@ def _classify_row(
             structured=structured,
             capacity_class=capacity.value,
             hints=tuple(hints),
+            availability_evidence=tuple(
+                QuotaEvidence.from_connection(c).to_dict(now, last_success)
+                for c in _active_connections_for(provider_names, conn_index)
+            ),
             restrictions=tuple(existing),
             **kw,
         )
@@ -1366,7 +1412,7 @@ def _classify_row(
 
     # -- Rule 2: UNAVAILABLE (active scoped blockers beat positives) -------
     blocker = _winning_blocker(
-        route_id, provider_names, now, cd_index, binding_blockers, at_rest, worker, ladder
+        route_id, provider_names, now, local_cd_index, binding_blockers, at_rest, worker, ladder
     )
     if blocker is not None:
         restrictions.append("availability_blocked")
@@ -1608,7 +1654,10 @@ def _route_bindings(
 ) -> _RouteBindings:
     """Associate active paths using both explicit pool and account constraints."""
     pools = _binding_names(row, "subscription_pool_id", "pool_id")
-    accounts = _binding_names(row, "account_id")
+    # Inventory may carry the raw account id; sanitized connections carry the
+    # opaque token. Match either form (same rule as admission).
+    raw_account = str(row.get("account_id") or "")
+    accounts = {form.lower() for form in account_forms(raw_account)}
     parts = route_id.split("/")
     prefix = route_provider_prefix(route_id)
     owned = str(row.get("owned_by", "") or "").lower()
@@ -1619,7 +1668,7 @@ def _route_bindings(
     associated: list[_ConnectionScopes] = []
     for c in active_conns:
         conn_pools = _binding_names(c, "pool_id", "subscription_pool_id")
-        conn_accounts = _binding_names(c, "account_id")
+        conn_accounts = _binding_names(c, "account_id", "id")
         if (not pools or pools & conn_pools) and (not accounts or accounts & conn_accounts):
             associated.append(_ConnectionScopes(frozenset(conn_pools), frozenset(conn_accounts)))
     return _RouteBindings(pools, accounts, tuple(associated))

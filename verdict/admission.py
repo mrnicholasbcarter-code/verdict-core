@@ -42,6 +42,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from verdict.availability import QuotaEvidence
 from verdict.capacity_models import CapacitySnapshot
 from verdict.orchestration.provider_catalog import resolve_provider
 from verdict.subscription_headroom import (
@@ -758,6 +759,8 @@ def _connection_is_rate_limited(
     connection: Mapping[str, Any], *, route_id: str, now: datetime
 ) -> bool:
     """True when this connection carries a live rate-limit window for the route."""
+    if QuotaEvidence.from_connection(connection).blocked_until(now) is not None:
+        return True
     windows = connection.get("rate_limited_until") or {}
     if not isinstance(windows, Mapping):
         return False
@@ -858,11 +861,54 @@ def _judge(
     provider_obs_all = tuple(
         o for name in {owned, prefix} if name for o in runtime.for_key(f"provider:{name}")
     )
+    # Feed observed gateway cooldowns into the existing scoped admission path.
+    # A usable sibling account can suppress an account cooldown, never a provider one.
+    gateway_obs: list[RuntimeObservation] = []
+    for conn in active:
+        quota = QuotaEvidence.from_connection(conn)
+        last_success = max(
+            (
+                success_at
+                for o in route_obs
+                if o.state in {"healthy", "success_hint"}
+                if (success_at := _parse_iso(o.observed_at)) is not None
+            ),
+            default=None,
+        )
+        until = quota.blocked_until(now, last_success)
+        if until is None:
+            continue
+        gateway_obs.append(
+            RuntimeObservation(
+                f"route:{canonical_route_id(quota.scope_id or '')}"
+                if quota.scope == "model"
+                else f"provider:{provider}",
+                "cooldown",
+                "rate_limit",
+                quota.source,
+                _iso(quota.observed_at) if quota.observed_at else None,
+                _iso(until),
+                pool_id=quota.scope_id if quota.scope == "pool" else None,
+                account_id=(str(conn.get("account_id") or conn.get("id") or "") or None)
+                if quota.scope == "account"
+                else None,
+            )
+        )
+    route_obs += tuple(o for o in gateway_obs if o.key == f"route:{route_id}")
+    provider_obs_all += tuple(o for o in gateway_obs if o.key == f"provider:{provider}")
     # Capacity evidence is scoped to the concrete active connection. Provider
     # names alone are never sufficient: acct-a must not govern acct-b.
     markers = {str(row.get("subscription_pool_id") or row.get("pool_id") or "")}
     markers.discard("")
-    active_accounts = {str(c.get("account_id") or "") for c in active}
+    bound_account = str(row.get("account_id") or "")
+    if bound_account:
+        # Sanitized connections carry opaque tokens; inventory rows may carry
+        # the raw id. Match either form, never a provider-only fallback.
+        from verdict.availability import account_forms
+
+        bound_forms = account_forms(bound_account)
+        active = [c for c in active if str(c.get("account_id") or c.get("id") or "") in bound_forms]
+    active_accounts = {str(c.get("account_id") or c.get("id") or "") for c in active}
     active_accounts.discard("")
     # Some legacy inventory rows encode the account in owned_by/route id while
     # the connection payload omits it. Use that concrete marker, never a
@@ -906,7 +952,7 @@ def _judge(
     #   3. The sibling must be positively viable: an active connection whose
     #      testStatus is not bad and which is not itself rate limited. Absence
     #      of bad subscription evidence alone is not viability.
-    route_is_account_bound = bool(markers) or bool(encoded_account)
+    route_is_account_bound = bool(markers) or bool(encoded_account) or bool(bound_account)
     if not route_is_account_bound:
         _suppressible_states = {"exhausted", "cooldown"}
         _accounts_with_bad_evidence = {
@@ -916,7 +962,7 @@ def _judge(
             account
             for account in active_accounts - _accounts_with_bad_evidence
             if any(
-                str(c.get("account_id") or "") == account
+                str(c.get("account_id") or c.get("id") or "") == account
                 and _connection_is_viable(c, route_id=route_id, now=now)
                 for c in active
             )

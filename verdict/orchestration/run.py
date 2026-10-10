@@ -30,6 +30,7 @@ from pathlib import Path
 # SHADOW decision signals (import only for type checking)
 from typing import TYPE_CHECKING, Any
 
+from verdict.availability import opaque_connection_token
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassifier,
@@ -183,6 +184,33 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(row, Mapping):
             continue
         item: dict[str, Any] = {k: row.get(k) for k in _CONNECTION_FIELDS}
+        # Allowlisted evidence only. Never retain provider error free text.
+        for field in (
+            "pool_id",
+            "scope_type",
+            "scope_id",
+            "model",
+            "rateLimitedUntil",
+            "lastErrorAt",
+            "quota_percent",
+            "quotaRemainingPct",
+            "quota_window",
+            "quotaWindow",
+            "updatedAt",
+            "lastTested",
+            "observed_at",
+        ):
+            if field in row:
+                item[field] = row[field]
+        # Connection and account ids are scoping keys only: keep a stable
+        # opaque token (equality is all scoping needs), never the raw id.
+        for field in ("id", "account_id"):
+            if row.get(field):
+                item[field] = opaque_connection_token(str(row[field]))
+        if item.get("id") and not item.get("account_id"):
+            item["account_id"] = item["id"]
+        error = str(row.get("lastError") or "")[:4096]
+        item["lastError"] = "rate_limited" if "429" in error or error == "rate_limited" else None
         psd = row.get("providerSpecificData")
         psd = psd if isinstance(psd, Mapping) else {}
         labels = [str(psd[k]) for k in _PLAN_FIELDS if isinstance(psd.get(k), str) and psd.get(k)]

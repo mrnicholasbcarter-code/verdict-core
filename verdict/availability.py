@@ -8,10 +8,11 @@ transport protocol below.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Protocol
 
@@ -156,6 +157,141 @@ class RuntimeObservation:
     error: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
     token_headroom: int | None = None
+
+
+def opaque_connection_token(value: str) -> str:
+    """Stable, non-reversible token for an OmniRoute connection/account id."""
+    return "conn:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def account_forms(value: str) -> set[str]:
+    """Both forms an account binding may take: raw inventory id and sanitized token."""
+    text = value.strip()
+    if not text:
+        return set()
+    if text.startswith("conn:"):
+        return {text}
+    return {text, opaque_connection_token(text)}
+
+
+@dataclass(frozen=True)
+class QuotaEvidence:
+    """One scoped gateway observation; quota is not launch authority."""
+
+    provider: str
+    scope: str
+    scope_id: str | None
+    configured: bool | None
+    active: bool | None
+    quota_percent: float | None
+    quota_window: str | None
+    observed_cooldown_until: datetime | None
+    source: str
+    observed_at: datetime | None
+    error_category: str | None = None
+
+    @classmethod
+    def from_connection(cls, row: Mapping[str, Any]) -> QuotaEvidence:
+        percent = _as_float(row.get("quota_percent", row.get("quotaRemainingPct")))
+        if percent is not None and not 0 <= percent <= 100:
+            percent = None
+        scope = str(row.get("scope_type") or "account")
+        if scope not in {"model", "account", "provider", "pool"}:
+            scope = "account"
+        scope_field = {"model": "model", "pool": "pool_id", "provider": "provider"}.get(
+            scope, "account_id"
+        )
+        identifier = (
+            row.get("scope_id")
+            or row.get(scope_field)
+            or (row.get("id") if scope == "account" else None)
+        )
+        error = str(row.get("lastError") or "")[:4096]
+        category = "rate_limited" if "429" in error or error == "rate_limited" else None
+        active = row.get("isActive")
+        window = row.get("quota_window", row.get("quotaWindow"))
+        return cls(
+            str(row.get("provider") or "unknown"),
+            scope,
+            str(identifier) if identifier else None,
+            True,
+            active if type(active) is bool else None,
+            percent,
+            window if isinstance(window, str) else None,
+            _timestamp(row.get("rateLimitedUntil")),
+            "omniroute:/api/providers",
+            # Prefer the error's own time: updatedAt/lastTested refresh every
+            # few minutes and would make an old 429 look current.
+            _timestamp(
+                row.get("lastErrorAt")
+                or row.get("observed_at")
+                or row.get("updatedAt")
+                or row.get("lastTested")
+            ),
+            category,
+        )
+
+    def current_cooldown(self, now: datetime) -> bool:
+        return self.observed_cooldown_until is not None and self.observed_cooldown_until > now
+
+    def current_429(self, now: datetime, last_success_at: datetime | None = None) -> bool:
+        # Untimed errors are not current proof. Expired explicit cooldowns stay historical.
+        if self.error_category != "rate_limited" or self.observed_at is None:
+            return False
+        if last_success_at is not None and self.observed_at <= last_success_at:
+            return False
+        if self.observed_cooldown_until is not None:
+            return self.current_cooldown(now)
+        from verdict.orchestration.health_cache import RATE_LIMIT_SECONDS
+
+        return 0 <= (now - self.observed_at).total_seconds() < RATE_LIMIT_SECONDS
+
+    def blocked_until(
+        self, now: datetime, last_success_at: datetime | None = None
+    ) -> datetime | None:
+        if self.current_cooldown(now):
+            return self.observed_cooldown_until
+        if self.current_429(now, last_success_at):
+            from verdict.orchestration.health_cache import RATE_LIMIT_SECONDS
+
+            assert self.observed_at is not None
+            return self.observed_at + timedelta(seconds=RATE_LIMIT_SECONDS)
+        return None
+
+    def to_dict(self, now: datetime, last_success_at: datetime | None = None) -> dict[str, Any]:
+        # Reuse the existing privacy scrubber at the verified-view boundary.
+        from verdict.security import redact_text
+
+        def safe(value: str | None) -> str | None:
+            if value is None:
+                return None
+            from verdict.orchestration.verified_models import _display_safe
+
+            return _display_safe(redact_text(value[:256]))
+
+        blocked = self.current_cooldown(now) or self.current_429(now, last_success_at)
+        return {
+            "provider": safe(self.provider),
+            "scope": self.scope,
+            "scope_id": (
+                hashlib.sha256(self.scope_id.encode()).hexdigest()[:12] if self.scope_id else None
+            ),
+            "configured": self.configured,
+            "active": self.active,
+            "quota_percent": self.quota_percent,
+            "quota_display": "UNKNOWN"
+            if self.quota_percent is None
+            else f"{self.quota_percent:g}%",
+            "quota_window": safe(self.quota_window),
+            "observed_cooldown_until": (
+                self.observed_cooldown_until.isoformat() if self.observed_cooldown_until else None
+            ),
+            "source": self.source,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "age_seconds": (now - self.observed_at).total_seconds() if self.observed_at else None,
+            "availability": "COOLDOWN" if blocked else "UNKNOWN",
+            "error_category": self.error_category,
+        }
 
 
 @dataclass(frozen=True)
