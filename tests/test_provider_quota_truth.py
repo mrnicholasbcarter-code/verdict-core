@@ -250,3 +250,16 @@ def test_admission_record_time_is_now_even_after_an_older_success_hint() -> None
     observed = result.records[0].observed_at
     assert isinstance(observed, str)
     assert observed == _iso(NOW)
+
+
+def test_account_binding_holds_after_sanitizing_connections() -> None:
+    """Re-review R1: raw inventory account ids must match sanitized connection tokens."""
+    from verdict.orchestration.run import sanitize_connections
+
+    row = ROW | {"account_id": "Acct-A"}
+    blocked = connection() | {"id": "Acct-A"}
+    sibling = {"provider": "claude", "isActive": True, "id": "acct-b"}
+    conns = sanitize_connections({"connections": [blocked, sibling]})
+    view = project_verified_models([row], conns, EvidenceSnapshots(), now=NOW)
+    assert view.rows[0].status.value == "UNAVAILABLE"
+    assert not admit([row], conns, None, now=NOW, require_runtime=False).ids

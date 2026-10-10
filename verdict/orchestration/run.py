@@ -16,7 +16,6 @@ Controller survival (minimal demo-safe slice):
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import time
@@ -31,6 +30,7 @@ from pathlib import Path
 # SHADOW decision signals (import only for type checking)
 from typing import TYPE_CHECKING, Any
 
+from verdict.availability import opaque_connection_token
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassifier,
@@ -174,11 +174,6 @@ def fetch_inventory(
     if not isinstance(data, list):
         raise OrchestrationError("OmniRoute /v1/models returned no data array")
     return [row for row in data if isinstance(row, dict)]
-
-
-def opaque_connection_token(value: str) -> str:
-    """Stable, non-reversible token for an OmniRoute connection/account id."""
-    return "conn:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def sanitize_connections(raw: Any) -> list[dict[str, Any]]:

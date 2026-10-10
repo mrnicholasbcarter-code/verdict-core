@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Any
 
 from verdict.admission import canonical_route_id, is_opaque, route_provider_prefix
-from verdict.availability import QuotaEvidence
+from verdict.availability import QuotaEvidence, account_forms
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
@@ -1654,7 +1654,10 @@ def _route_bindings(
 ) -> _RouteBindings:
     """Associate active paths using both explicit pool and account constraints."""
     pools = _binding_names(row, "subscription_pool_id", "pool_id")
-    accounts = _binding_names(row, "account_id")
+    # Inventory may carry the raw account id; sanitized connections carry the
+    # opaque token. Match either form (same rule as admission).
+    raw_account = str(row.get("account_id") or "")
+    accounts = {form.lower() for form in account_forms(raw_account)}
     parts = route_id.split("/")
     prefix = route_provider_prefix(route_id)
     owned = str(row.get("owned_by", "") or "").lower()

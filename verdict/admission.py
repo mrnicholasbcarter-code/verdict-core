@@ -904,9 +904,9 @@ def _judge(
     if bound_account:
         # Sanitized connections carry opaque tokens; inventory rows may carry
         # the raw id. Match either form, never a provider-only fallback.
-        from verdict.orchestration.run import opaque_connection_token
+        from verdict.availability import account_forms
 
-        bound_forms = {bound_account, opaque_connection_token(bound_account)}
+        bound_forms = account_forms(bound_account)
         active = [c for c in active if str(c.get("account_id") or c.get("id") or "") in bound_forms]
     active_accounts = {str(c.get("account_id") or c.get("id") or "") for c in active}
     active_accounts.discard("")

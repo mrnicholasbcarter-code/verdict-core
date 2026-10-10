@@ -159,6 +159,21 @@ class RuntimeObservation:
     token_headroom: int | None = None
 
 
+def opaque_connection_token(value: str) -> str:
+    """Stable, non-reversible token for an OmniRoute connection/account id."""
+    return "conn:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def account_forms(value: str) -> set[str]:
+    """Both forms an account binding may take: raw inventory id and sanitized token."""
+    text = value.strip()
+    if not text:
+        return set()
+    if text.startswith("conn:"):
+        return {text}
+    return {text, opaque_connection_token(text)}
+
+
 @dataclass(frozen=True)
 class QuotaEvidence:
     """One scoped gateway observation; quota is not launch authority."""
