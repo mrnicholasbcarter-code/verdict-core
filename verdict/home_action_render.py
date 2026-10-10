@@ -64,7 +64,7 @@ def _facts(value: Any, *, depth: int = 0) -> list[str]:
 def render_generic(tui: TerminalUI, ok: bool, data: Any, *, action: str = "Action") -> None:
     """Readable fallback with a title, grouped facts and an explicit next step."""
     title = action.replace(".", " / ").replace("_", " ").capitalize()
-    tui.header(title if ok else title + " — needs attention")
+    tui.header(title if ok else "ERROR: " + title + " — needs attention")
     safe = redact_contract_secrets(data)
     if isinstance(safe, Mapping) and isinstance(safe.get("text"), str):
         tui.console.print(Text(clean(safe["text"])))
