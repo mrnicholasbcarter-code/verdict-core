@@ -143,6 +143,7 @@ class NodeRun:
     # appended to every retry, including a retry on another route.
     failure_feedback: str = ""
     rehydrated_routes: set[str] = field(default_factory=set)
+    excluded_pools: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -636,7 +637,7 @@ class DagRuntime:
             requirements = TaskRequirements.for_node(
                 run.node,
                 exclude_routes=frozenset(tried),
-                exclude_pools=frozenset(pool_of(route) for route in tried),
+                exclude_pools=frozenset(run.excluded_pools),
             )
             choice, considered = self.selector.select(requirements, now=self.now())
             counts = _ladder_counts(considered)
@@ -851,6 +852,7 @@ class DagRuntime:
                 )
             else:
                 tried.add(run.route_id)
+                run.excluded_pools.add(pool_of(run.route_id))
             if failures and failures[-1].action == "BLOCK":
                 run.reason = f"non-recoverable: {failures[-1].category}"
                 self._set(run, NodeState.BLOCKED, reason=run.reason)

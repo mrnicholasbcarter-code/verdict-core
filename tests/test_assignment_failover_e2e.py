@@ -144,9 +144,11 @@ def test_provider_quota_failover_to_independent_review(
     failure = events.of("failure", "a")[0]
     assert (failure["category"], failure["action"]) == ("quota_exhausted", "REROUTE")
     cooldown = events.of("cooldown", "a")[0]
-    assert (cooldown["key"], cooldown["scope"]) == ("cc", "provider")
+    assert (cooldown["key"], cooldown["scope"]) == ("claude", "pool")
     # The ladder persists the provider cooldown under the inventory owner.
-    assert "provider:claude" in json.loads(state.read_text())["cooldowns"]
+    cooldowns = json.loads(state.read_text())["cooldowns"]
+    assert "provider:claude" in cooldowns
+    assert "pool:claude" in cooldowns
     reassign = events.of("reassign", "a")[0]
     assert (reassign["from_route"], reassign["to_route"]) == (
         "cc/claude-sonnet-4.6",

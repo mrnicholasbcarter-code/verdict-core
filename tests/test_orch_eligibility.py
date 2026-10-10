@@ -844,3 +844,14 @@ def test_planner_free_first_respects_capability_floor(tmp_path, free_tier, expec
         TaskRequirements(frontier_worthy=True, max_capability_tier=2), now=NOW
     )
     assert choice is not None and choice.route_id == expected
+
+
+def test_probe_account_failure_cools_credential_aliases(tmp_path):
+    routes = ["cc/claude-haiku", "claude/claude-haiku"]
+    ladder, _ = make_ladder(
+        tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
+    )
+    ladder._record_health(
+        routes[0], HealthResult(healthy=False, category="authentication"), NOW, provider="claude"
+    )
+    assert ladder.dispatch_blocker(routes[1], now=NOW) == "pool:claude"
