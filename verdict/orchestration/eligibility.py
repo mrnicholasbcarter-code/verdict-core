@@ -52,6 +52,7 @@ _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
+_WORKER_CAPACITY_ORDER = _CAPACITY_ORDER
 ENV_ALLOW_UNKNOWN = "VERDICT_ALLOW_UNKNOWN_CAPACITY"
 _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "rate_limited": 60.0,
@@ -1025,6 +1026,7 @@ class EligibilityLadder:
             entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
             if provider and category in _PROVIDER_SCOPE_CATEGORIES:
+                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
                 self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
             # Live-evidence not-free override: mark the route and pool so
             # capacity classification reflects the override (design §B, item 3).
@@ -1047,7 +1049,7 @@ class EligibilityLadder:
         retry_after = failure.cooldown_seconds if failure.cooldown_seconds > 0 else None
         seconds = cooldown_seconds_for(failure.category, retry_after)
         entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
-        if failure.scope in {"route", "provider"} and failure.cooldown_seconds > 0:
+        if failure.scope in {"route", "provider"}:
             self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":

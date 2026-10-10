@@ -324,7 +324,8 @@ async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     reassign = ev.of("reassign", "a")
     assert reassign and reassign[0]["from_route"] == "cc/s" and reassign[0]["to_route"] == "cx/g"
-    assert ev.of("cooldown", "a")[0]["scope"] == "provider"
+    assert ev.of("cooldown", "a")[0]["scope"] == "pool"
+    assert ev.of("cooldown", "a")[0]["key"] == "claude"
     assert result.nodes["a"].history[0]["outcome"] == "quota_exhausted"
     # prompt (contract) was identical across attempts
     assert [c for c in ex.calls if c[0] == "a"] == [("a", "cc/s"), ("a", "cx/g")]
@@ -1614,7 +1615,7 @@ async def test_worker_escalation_excludes_failed_credential_pool(repo: Path):
             return super().select(requirements, now=now)
 
     runtime, _, _ = make(
-        repo, WorkGraph("g", (node("a"),)), Executor({"a": ["quota", "ok"]}), ["cc/s", "cx/g"]
+        repo, WorkGraph("g", (node("a"),)), Executor({("a", "cc/s"): "quota"}), ["cc/s", "cx/g"]
     )
     runtime.selector = PoolSelector(["cc/s", "cx/g"])
     result = await runtime.run()

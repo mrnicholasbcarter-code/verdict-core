@@ -226,7 +226,7 @@ class TestAvailable:
         verdicts = by_route(ladder.evaluate(REQ, now=NOW + timedelta(seconds=10)))
         # sibling route of the same provider is also cooled down
         assert verdicts["cc/claude-haiku-5"].failed_stage is EligibilityStage.AVAILABLE
-        assert verdicts["cc/claude-haiku-5"].reason == "cooldown:provider"
+        assert verdicts["cc/claude-haiku-5"].reason == "cooldown:pool"
         # a different provider is unaffected
         assert verdicts["cx/gpt-6-codex"].failed_stage is None
 

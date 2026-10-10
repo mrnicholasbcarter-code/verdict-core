@@ -3,7 +3,7 @@
 Covers AC1-AC7 of free-first Story 3:
 1. Implementation-worker order: FREE > SUBSCRIPTION > METERED; UNKNOWN opt-in.
 2. Agentic gate: FREE route + agentic PASS -> implementation; single-call only -> chat.
-3. Role split: frontier_worthy -> subscription-first; implementation -> free-first.
+3. All roles rank sufficient free capacity first; worker agentic gates stay unchanged.
 4. Determinism: same inputs -> same choice; max 8 probes; read-only cache.
 5. Hard gates keep priority.
 6. Receipts/events: capacity_class, probe_class, checked_at, freshness.
@@ -163,9 +163,9 @@ class TestCapacityOrdering:
         assert _WORKER_CAPACITY_ORDER[CapacityClass.UNKNOWN] == 3
 
     def test_planning_capacity_order(self) -> None:
-        """Subscription-first order for planning/review."""
-        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 0
-        assert _CAPACITY_ORDER[CapacityClass.FREE] == 1
+        """Free-first order for planning/review after sufficiency gates."""
+        assert _CAPACITY_ORDER[CapacityClass.FREE] == 0
+        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 1
         assert _CAPACITY_ORDER[CapacityClass.METERED] == 2
 
     def test_free_ranks_first_for_worker_task(self, tmp_path: Path) -> None:
@@ -188,7 +188,7 @@ class TestCapacityOrdering:
         assert ranked[0].route_id == "gl/model-b"
         assert ranked[0].capacity_class == CapacityClass.FREE
 
-    def test_subscription_ranks_first_for_frontier_task(self, tmp_path: Path) -> None:
+    def test_free_ranks_first_for_frontier_task(self, tmp_path: Path) -> None:
         rows = [
             _row("op/model-a", owned_by="openrouter"),
             _row("gl/model-b", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -202,8 +202,8 @@ class TestCapacityOrdering:
         ladder, _ = _make(tmp_path, rows, conns)
         verdicts = ladder.evaluate(FRONTIER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        assert ranked[0].route_id == "cc/model-c"
-        assert ranked[0].capacity_class == CapacityClass.SUBSCRIPTION
+        assert ranked[0].route_id == "gl/model-b"
+        assert ranked[0].capacity_class == CapacityClass.FREE
 
 
 # ---- AC2: Agentic gate -----
