@@ -183,6 +183,18 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(row, Mapping):
             continue
         item: dict[str, Any] = {k: row.get(k) for k in _CONNECTION_FIELDS}
+        # Allowlisted evidence only. Never retain provider error free text.
+        for field in (
+            "id", "account_id", "pool_id", "scope_type", "scope_id", "rateLimitedUntil",
+            "quota_percent", "quotaRemainingPct", "quota_window", "quotaWindow",
+            "updatedAt", "lastTested", "observed_at",
+        ):
+            if field in row:
+                item[field] = row[field]
+        error = str(row.get("lastError") or "")[:4096]
+        item["lastError"] = (
+            "rate_limited" if "429" in error or error == "rate_limited" else None
+        )
         psd = row.get("providerSpecificData")
         psd = psd if isinstance(psd, Mapping) else {}
         labels = [str(psd[k]) for k in _PLAN_FIELDS if isinstance(psd.get(k), str) and psd.get(k)]

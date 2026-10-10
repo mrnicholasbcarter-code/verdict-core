@@ -159,6 +159,88 @@ class RuntimeObservation:
 
 
 @dataclass(frozen=True)
+class QuotaEvidence:
+    """One scoped gateway observation; quota is not launch authority."""
+
+    provider: str
+    scope: str
+    scope_id: str | None
+    configured: bool | None
+    active: bool | None
+    quota_percent: float | None
+    quota_window: str | None
+    observed_cooldown_until: datetime | None
+    source: str
+    observed_at: datetime | None
+    error_category: str | None = None
+
+    @classmethod
+    def from_connection(cls, row: Mapping[str, Any]) -> QuotaEvidence:
+        percent = _as_float(row.get("quota_percent", row.get("quotaRemainingPct")))
+        if percent is not None and not 0 <= percent <= 100:
+            percent = None
+        scope = str(row.get("scope_type") or "account")
+        if scope not in {"model", "account", "provider", "pool"}:
+            scope = "account"
+        identifier = row.get("scope_id") or row.get("account_id") or row.get("id")
+        error = str(row.get("lastError") or "")[:4096]
+        category = "rate_limited" if "429" in error or error == "rate_limited" else None
+        active = row.get("isActive")
+        window = row.get("quota_window", row.get("quotaWindow"))
+        return cls(
+            str(row.get("provider") or "unknown"), scope,
+            str(identifier) if identifier else None, True,
+            active if type(active) is bool else None, percent,
+            window if isinstance(window, str) else None,
+            _timestamp(row.get("rateLimitedUntil")), "omniroute:/api/providers",
+            _timestamp(row.get("observed_at") or row.get("updatedAt") or row.get("lastTested")),
+            category,
+        )
+
+    def current_cooldown(self, now: datetime) -> bool:
+        return self.observed_cooldown_until is not None and self.observed_cooldown_until > now
+
+    def current_429(self, now: datetime, last_success_at: datetime | None = None) -> bool:
+        # Untimed errors are not current proof. Expired explicit cooldowns stay historical.
+        if self.error_category != "rate_limited" or self.observed_at is None:
+            return False
+        if last_success_at is not None and self.observed_at <= last_success_at:
+            return False
+        if self.observed_cooldown_until is not None:
+            return self.current_cooldown(now)
+        return 0 <= (now - self.observed_at).total_seconds() < 300
+
+    def to_dict(self, now: datetime, last_success_at: datetime | None = None) -> dict[str, Any]:
+        # Reuse the existing privacy scrubber at the verified-view boundary.
+        from verdict.security import redact_text
+
+        def safe(value: str | None) -> str | None:
+            if value is None:
+                return None
+            import re
+
+            text = redact_text(value[:256])
+            return re.sub(r"[^\s@]+@[^\s@]+", "[redacted]", text)
+
+        blocked = self.current_cooldown(now) or self.current_429(now, last_success_at)
+        return {
+            "provider": safe(self.provider), "scope": self.scope,
+            "scope_id": safe(self.scope_id), "configured": self.configured,
+            "active": self.active, "quota_percent": self.quota_percent,
+            "quota_display": "UNKNOWN" if self.quota_percent is None else f"{self.quota_percent:g}%",
+            "quota_window": safe(self.quota_window),
+            "observed_cooldown_until": (
+                self.observed_cooldown_until.isoformat() if self.observed_cooldown_until else None
+            ),
+            "source": self.source,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "age_seconds": (now - self.observed_at).total_seconds() if self.observed_at else None,
+            "availability": "COOLDOWN" if blocked else "UNKNOWN",
+            "error_category": self.error_category,
+        }
+
+
+@dataclass(frozen=True)
 class AvailabilityCandidate:
     model: ModelInfo
     state: AvailabilityState
