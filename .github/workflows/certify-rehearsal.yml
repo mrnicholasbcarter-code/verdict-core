@@ -80,3 +80,11 @@ jobs:
           path: ${{ runner.temp }}/attested-rehearsals/
           if-no-files-found: error
           retention-days: 90
+      - name: Upload safe failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: certify-failure-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/certification-failure.json
+          if-no-files-found: ignore
+          retention-days: 7

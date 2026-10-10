@@ -141,6 +141,7 @@ def build_selector(
     capacity: tuple[str, ...] = (),
     refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
     sync_visibility: bool = False,
+    visibility_executor: str = "prime",
     health_cache: HealthCache | None = None,
     session_ledger: SessionLedger | None = None,
 ) -> Any:
@@ -234,6 +235,17 @@ def build_selector(
             LaunchCandidate(route_id, route_id, frozenset(), 0, 0.0, 0.0, False, False, 0, 0)
         )
 
+    from verdict.orchestration.eligibility import HarnessVisibility
+    from verdict.prime_inventory import concrete_rows
+
+    if visibility_executor == "direct-gateway":
+        live_concrete, _ = concrete_rows(catalog_rows)
+        harness_visible = HarnessVisibility(
+            frozenset(str(r["id"]) for r in live_concrete), source="live-gateway"
+        )
+    else:
+        harness_visible = prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
+
     return EligibilityLadder(
         rows,
         connections,
@@ -241,7 +253,7 @@ def build_selector(
         state_path,
         prefer_providers=tuple(p.strip() for p in prefer.split(",") if p.strip()),
         load=load,
-        harness_visible=prime_visibility(live_rows=catalog_rows, sync=sync_visibility),
+        harness_visible=harness_visible,
         admitted=admitted,
         admission_receipt=receipt_path,
         refresh_hook=refresh_hook,
