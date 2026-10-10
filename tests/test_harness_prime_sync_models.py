@@ -181,3 +181,29 @@ def test_sync_keeps_only_the_newest_backups_and_ignores_other_files(tmp_path: Pa
     assert kept[-1] == "models.json.verdict-sync-20260926T000000Z.bak"
     assert "models.json.verdict-sync-20260901T000000Z.bak" not in kept
     assert unrelated.exists()
+
+
+def test_real_parser_path_accepts_sync_models_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the systemd timer runs `verdict harness prime sync-models` through the
+    real top-level parser. dispatch() reads args.gateway, so the real parser must define it."""
+    import argparse
+
+    from verdict.commands import parsers_harness
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.delenv("VERDICT_GATEWAY", raising=False)
+
+    def build() -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser()
+        parsers_harness.register(parser.add_subparsers(dest="command"))
+        return parser
+
+    args = build().parse_args(["harness", "prime", "sync-models", "--dry-run"])
+    assert args.gateway == "http://127.0.0.1:20128"
+    assert args.dry_run is True
+    custom = build().parse_args(
+        ["harness", "prime", "sync-models", "--gateway", "http://gw.example:1/v1"]
+    )
+    assert custom.gateway == "http://gw.example:1/v1"
