@@ -1450,6 +1450,7 @@ def cmd_autodev_packet_execute(
     delegation: str | None = None,
     undelegable_reason: str | None = None,
     execution_path_decision: Any = None,
+    context_output_policy: bool = False,
 ) -> None:
     """Execute or resume one bounded packet work unit through an admitted route.
 
@@ -1467,6 +1468,7 @@ def cmd_autodev_packet_execute(
         refuse_opaque_family_route,
         run_packet_autodev,
     )
+    from verdict.context_inject import ContextOutputPolicy
     from verdict.execution_packet import (
         ExecutionPacketStore,
         UnsupportedSchemaVersionError,
@@ -1662,6 +1664,10 @@ def cmd_autodev_packet_execute(
         require_red_green=not resume,
         delegation=delegation,
         undelegable_reason=undelegable_reason,
+        **(
+            {"output_policy": ContextOutputPolicy(enabled=True)}
+            if context_output_policy else {}
+        ),
     )
     family_url = str(route.get("base_url") or base_url or DEFAULT_BASE_URL)
     payload = packet_family_run_payload(packet, report, family_url)

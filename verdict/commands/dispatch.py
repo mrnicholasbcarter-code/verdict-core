@@ -289,6 +289,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                     delegation=getattr(args, "delegation", None),
                     undelegable_reason=getattr(args, "undelegable_reason", None),
                     execution_path_decision=decision,
+                    context_output_policy=getattr(args, "context_output_policy", False),
                 )
             else:
                 legacy.cmd_autodev_packet(

@@ -516,7 +516,14 @@ def test_packet_execute_cli_output_policy_opt_in(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli, "_cli_execution_path_decision", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "cmd_autodev_packet_execute", lambda *a, **kw: captured.append(kw))
     argv = ["autodev", "packet", "execute", "--packet", "packet.json", "--repo", "."]
-    cli.main(argv)
+    import argparse
+
+    from verdict.commands.dispatch import dispatch
+    from verdict.commands.parsers_routing import register
+
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    dispatch(parser, parser.parse_args(argv))
     assert not captured[-1]["context_output_policy"]
-    cli.main([*argv, "--context-output-policy"])
+    dispatch(parser, parser.parse_args([*argv, "--context-output-policy"]))
     assert captured[-1]["context_output_policy"] is True

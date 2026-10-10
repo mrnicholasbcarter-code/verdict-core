@@ -92,6 +92,12 @@ _PACKET_RECEIPT_ALLOWLIST = (
     "used_tokens",
     "worker_self_report.outcome",
     "trusted_verification.decided",
+    "context_receipt.output_policy",
+    "context_receipt.output_metrics",
+    "context_receipt.output_metrics.output_bytes",
+    "context_receipt.output_metrics.estimated_tokens",
+    "context_receipt.output_metrics.provider_input_tokens",
+    "context_receipt.output_metrics.provider_output_tokens",
 )
 
 

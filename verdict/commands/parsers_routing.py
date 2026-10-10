@@ -107,6 +107,11 @@ def register(subparsers: Any) -> None:
             )
             action_p.add_argument("--repo", required=True)
             action_p.add_argument(
+                "--context-output-policy",
+                action="store_true",
+                help="opt in to raw compiled-context provenance and byte estimates (no compression)",
+            )
+            action_p.add_argument(
                 "--allow-live",
                 action="store_true",
                 help="consent: executes through the gateway and edits the working tree",
