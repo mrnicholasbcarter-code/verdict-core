@@ -1093,3 +1093,20 @@ def test_key_env_precedence_matches_rest_of_verdict(
 def test_explicit_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "env")
     assert DirectGatewayExecutor(api_key="explicit").api_key == "explicit"
+
+
+def test_cli_executor_builder_honours_verdict_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the orchestrate CLI must not override executor key precedence."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "verdict-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    args = argparse.Namespace(
+        executor="direct-gateway", executor_map="", gateway="http://127.0.0.1:20128", inject=[]
+    )
+    executor = orch_cli._executor(args)
+    inner = getattr(executor, "_inner", executor)
+    assert isinstance(inner, DirectGatewayExecutor)
+    assert inner.api_key == "verdict-key"

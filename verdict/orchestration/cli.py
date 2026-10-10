@@ -411,7 +411,9 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
     from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    # Empty here lets each executor apply Verdict key precedence
+    # (VERDICT_OMNIROUTE_API_KEY > OMNIROUTE_API_KEY > OPENAI_API_KEY).
+    api_key = ""
     raw_map = getattr(args, "executor_map", "") or ""
     node_backend_map = _parse_executor_map(raw_map)
 
