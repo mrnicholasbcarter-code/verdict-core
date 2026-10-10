@@ -642,7 +642,9 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         from verdict.home import run_home
 
         skip = bool(getattr(args, "skip_setup", False)) or os.getenv("VERDICT_SKIP_SETUP") == "1"
-        if skip and not legacy._stdout_is_tty():
+        if not legacy._stdout_is_tty():
+            # Non-TTY (pipes, scripts, CI) keeps the help contract; first-run
+            # setup and doctor routing only apply to an interactive terminal.
             parser.print_help()
         else:
             raise SystemExit(run_home(skip_setup=skip))

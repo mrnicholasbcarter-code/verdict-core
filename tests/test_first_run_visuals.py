@@ -199,10 +199,12 @@ def test_home_motion_only_during_observed_probe(
 
     monkeypatch.setattr("verdict.home.probe_gateway", probe)
     console = Console(file=io.StringIO(), force_terminal=True)
-    run_home(console=console, runs_roots=[tmp_path], interactive=False)
+    run_home(console=console, runs_roots=[tmp_path], interactive=False, skip_setup=True)
     assert events == ["start", "probe", "stop", "stop"]
     events.clear()
-    run_home(console=console, runs_roots=[tmp_path], probe=False, interactive=False)
+    run_home(
+        console=console, runs_roots=[tmp_path], probe=False, interactive=False, skip_setup=True
+    )
     assert events == []
 
 
