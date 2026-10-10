@@ -532,14 +532,19 @@ class TokenBucket:
         stamps.extend(stamp for stamp in (self.ledger_at, other.ledger_at) if stamp is not None)
         self.ledger_at = max(stamps) if stamps else None
         cutoff = self.ledger_at - timedelta(seconds=self.window_seconds) if self.ledger_at else None
-        self._set_tokens({
-            key: stamp for key, stamp in tokens.items()
-            if key not in removed and (cutoff is None or stamp > cutoff)
-        })
-        self.removed = {key: stamp for key, stamp in removed.items()
-                        if cutoff is None or stamp > cutoff}
-        self.released = {key: stamp for key, stamp in released.items()
-                         if cutoff is None or stamp > cutoff}
+        self._set_tokens(
+            {
+                key: stamp
+                for key, stamp in tokens.items()
+                if key not in removed and (cutoff is None or stamp > cutoff)
+            }
+        )
+        self.removed = {
+            key: stamp for key, stamp in removed.items() if cutoff is None or stamp > cutoff
+        }
+        self.released = {
+            key: stamp for key, stamp in released.items() if cutoff is None or stamp > cutoff
+        }
         if other.zeroed_until is not None:
             self.zeroed_until = max(other.zeroed_until, self.zeroed_until or other.zeroed_until)
 
@@ -699,8 +704,9 @@ def _canonicalize_buckets(buckets: Mapping[str, TokenBucket]) -> dict[str, Token
             if bucket.removed or bucket.released:
                 raise HealthCacheError("ID-less legacy bucket with tombstones is ambiguous")
             bucket._tokens()
-            bucket.token_ids = [hashlib.sha256(f"{key}:{token}".encode()).hexdigest()
-                                for token in bucket.token_ids]
+            bucket.token_ids = [
+                hashlib.sha256(f"{key}:{token}".encode()).hexdigest() for token in bucket.token_ids
+            ]
         if (target != key or key in migrating) and (
             len(bucket.token_ids) not in (0, len(bucket.timestamps))
             or len(set(bucket.token_ids)) != len(bucket.token_ids)
@@ -814,13 +820,19 @@ class HealthCache:
                 # quota to 10/window when its explicit bounds are invalid.
                 capacity = value.get("capacity")
                 window = value.get("window_seconds")
-                if (not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 1
-                        or not isinstance(window, (int, float)) or isinstance(window, bool)
-                        or not math.isfinite(window) or window <= 0):
+                if (
+                    not isinstance(capacity, int)
+                    or isinstance(capacity, bool)
+                    or capacity < 1
+                    or not isinstance(window, (int, float))
+                    or isinstance(window, bool)
+                    or not math.isfinite(window)
+                    or window <= 0
+                ):
                     raise HealthCacheError("legacy bucket bounds are missing or invalid")
-        self._buckets = _canonicalize_buckets({
-            key: TokenBucket.from_dict(value) for key, value in buckets.items()
-        })
+        self._buckets = _canonicalize_buckets(
+            {key: TokenBucket.from_dict(value) for key, value in buckets.items()}
+        )
         cursor = payload.get("cursor") or {}
         self._cursor = dict(cursor) if isinstance(cursor, Mapping) else {}
         cooldowns = payload.get("cooldowns") or {}
