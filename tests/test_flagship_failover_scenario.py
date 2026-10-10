@@ -155,11 +155,18 @@ class TestFlagshipFailoverScenario:
         assert failures[0].get("fault_injected") is True
 
     def test_provider_cooldown_recorded_in_events(self) -> None:
-        """A provider-scope cooldown event is emitted after the rate_limit failure."""
+        """A credential-pool cooldown event is emitted after the rate_limit failure.
+
+        BOD-334: rate limits exhaust the shared credential, so the event names
+        the pool (every alias is blocked). The persisted provider-scope entry
+        is still asserted by the ladder-state tests below.
+        """
+        from verdict.orchestration.credential_pools import pool_of
+
         cooldowns = _events_of(self._r.events, "cooldown", "node-1")
         assert len(cooldowns) >= 1
         cd = cooldowns[0]
-        assert cd["scope"] == "provider"
+        assert (cd["scope"], cd["key"]) == ("pool", pool_of(ROUTE_A))
         assert cd["category"] == "rate_limited"
 
     def test_reassign_picks_route_b(self) -> None:
