@@ -199,11 +199,7 @@ def test_discovers_known_provider_jsonl_locations_latest_first(tmp_path: Path) -
 
     assert result.report.status == "ok"
     assert result.report.candidates_found == 3
-    assert [candidate.provider for candidate in result.candidates] == [
-        "pi",
-        "codex",
-        "claude",
-    ]
+    assert [candidate.provider for candidate in result.candidates] == ["pi", "codex", "claude"]
     assert {candidate.format for candidate in result.candidates} == {
         "claude-jsonl",
         "codex-jsonl",

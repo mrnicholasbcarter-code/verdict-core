@@ -9,7 +9,6 @@ from verdict.documentation_preflight import (
     DocumentationPreflightError,
     DocumentationSource,
     _inventory,
-    discover_sources,
     run_documentation_preflight,
 )
 from verdict.memory_bridge import MemoryHookController
@@ -321,7 +320,9 @@ def test_preflight_blocks_missing_remote_provenance_without_fetch(tmp_path: Path
     assert "resolve" in report.errors[0]
 
 
-def test_remote_fixture_fallback_resolves_and_ingests_nested_adr_projections(tmp_path: Path) -> None:
+def test_remote_fixture_fallback_resolves_and_ingests_nested_adr_projections(
+    tmp_path: Path,
+) -> None:
     source = DocumentationSource(
         "fixture",
         "fixture",
@@ -635,7 +636,12 @@ def test_preflight_without_deadline_never_times_out(tmp_path: Path) -> None:
 
 
 def test_preflight_without_removed_roots_never_fetches_network(tmp_path, monkeypatch):
-    for name in ("VERDICT_RUFLO_ROOT", "VERDICT_RUVECTOR_ROOT", "VERDICT_RUFLO_REF", "VERDICT_RUVECTOR_REF"):
+    for name in (
+        "VERDICT_RUFLO_ROOT",
+        "VERDICT_RUVECTOR_ROOT",
+        "VERDICT_RUFLO_REF",
+        "VERDICT_RUVECTOR_REF",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))

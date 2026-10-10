@@ -39,7 +39,7 @@ from verdict.planner import PlanRejectedError, StructuredPlanner
 def adapter():
     """Create a default intelligence adapter for testing."""
     return IntelligenceAdapter(
-        config=IntelligenceAdapterConfig(profile="development", allow_degraded_mode=True),
+        config=IntelligenceAdapterConfig(profile="development", allow_degraded_mode=True)
     )
 
 
@@ -113,9 +113,7 @@ class TestIntelligenceAdapter:
             allow_degraded_mode=True,  # Allow for testing
         )
         return IntelligenceAdapter(
-            config=config,
-            planner=mock_planner,
-            eligibility_gate=mock_eligibility_gate,
+            config=config, planner=mock_planner, eligibility_gate=mock_eligibility_gate
         )
 
     def test_successful_execution(self, adapter, mock_planner):
@@ -155,7 +153,6 @@ class TestIntelligenceAdapter:
         # This is tested internally - valid version should pass
         result = adapter.execute(objective="test")
         assert result.contract_version == "intelligence-adapter/v1"
-
 
 
 class TestCategorizedFailureErrors:

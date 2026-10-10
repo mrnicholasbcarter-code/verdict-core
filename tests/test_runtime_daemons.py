@@ -255,8 +255,11 @@ def test_empty_default_apply_has_no_process_or_signal_activity(tmp_path: Path, m
 
     monkeypatch.setattr("verdict.runtime_daemons.os.kill", forbidden)
     runtime = RuntimeManager(
-        home=tmp_path, state_dir=tmp_path / "runtime", inspector=NoInspector(),
-        port_probe=forbidden, health_probe=forbidden,
+        home=tmp_path,
+        state_dir=tmp_path / "runtime",
+        inspector=NoInspector(),
+        port_probe=forbidden,
+        health_probe=forbidden,
     )
     assert runtime.specs == ()
     report = runtime.reconcile_apply(service_ids=(), consent=False)

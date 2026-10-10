@@ -28,7 +28,6 @@ DOCUMENT_PREFLIGHT_VERSION = "1"
 DEFAULT_FRESHNESS_SECONDS = 86_400
 
 
-
 class DocumentationPreflightError(RuntimeError):
     """Raised when implementation cannot proceed with trusted documentation."""
 

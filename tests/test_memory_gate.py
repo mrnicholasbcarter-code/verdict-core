@@ -180,11 +180,17 @@ def test_removed_authority_records_load_but_cannot_authorize_writes(tmp_path: Pa
 
     path = tmp_path / "memory.db"
     with MemoryPlane(path) as plane:
-        plane.put(MemoryRecord(
-            record_id="legacy", source="historical-export",
-            namespace="patterns", key="legacy", content="historical observation",
-            authority="ruflo", authority_verified=True,
-        ))
+        plane.put(
+            MemoryRecord(
+                record_id="legacy",
+                source="historical-export",
+                namespace="patterns",
+                key="legacy",
+                content="historical observation",
+                authority="ruflo",
+                authority_verified=True,
+            )
+        )
     with MemoryPlane(path) as plane:
         gate = MemoryGate(plane)
         assert plane.get("patterns", "legacy").authority == "ruflo"

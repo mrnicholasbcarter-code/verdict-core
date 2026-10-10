@@ -37,9 +37,7 @@ _GROUP_KINDS = {
     "verification_requirements": "requirement",
 }
 _ITEM_KINDS = frozenset(_GROUP_KINDS.values())
-_SOURCE_KINDS = frozenset(
-    {"repo_file", "adr", "git", "openviking", "memory", "worker", "manual"}
-)
+_SOURCE_KINDS = frozenset({"repo_file", "adr", "git", "openviking", "memory", "worker", "manual"})
 
 # Optional groups fill order under token compression (policy/goal never drop).
 _FILL_ORDER = ("verified_decisions", "relevant_adrs", "verification_requirements", "artifacts")

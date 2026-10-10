@@ -48,12 +48,18 @@ def find_violations(verdict_root: Path = VERDICT) -> list[str]:
         if any(part in FORBIDDEN_DIRS for part in parts):
             violations.append(str(rel))
             continue
-        if not path.is_file() or path.suffix != ".py":
+        if not path.is_file() or "__pycache__" in path.parts:
             continue
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # Binary package assets cannot contain executable text references.
+        for line_number, line in enumerate(content.splitlines(), 1):
             note = (path.relative_to(verdict_root).as_posix(), line.strip())
             if OBSOLETE_CONTENT.search(line) and note not in REMOVED_NOTES:
                 violations.append(f"{rel}:{line_number}: obsolete integration reference")
+        if path.suffix != ".py":
+            continue
         name = path.name
         if name in FORBIDDEN_EXACT:
             violations.append(str(rel))

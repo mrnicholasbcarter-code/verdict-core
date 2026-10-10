@@ -110,3 +110,13 @@ def test_checker_allows_only_exact_removed_note(tmp_path, monkeypatch):
     assert checker.find_violations(package) == []
     source.write_text(note + '\nbackend = "ruflo"\n')
     assert len(checker.find_violations(package)) == 1
+
+
+def test_checker_rejects_obsolete_package_assets(tmp_path, monkeypatch):
+    import scripts.check_no_obsolete_architecture as checker
+
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    package = tmp_path / "verdict"
+    package.mkdir()
+    (package / "metadata.json").write_text('{"integration": "RUFLO"}')
+    assert len(checker.find_violations(package)) == 1
