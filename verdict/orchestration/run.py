@@ -220,13 +220,19 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
             {str(k): str(v) for k, v in limited.items()} if isinstance(limited, Mapping) else None
         )
         item["import_free_only"] = psd.get("importFreeModelsOnly") is True
-        out.append(item)
+        from verdict.orchestration.connections_snapshot import sanitize_evidence
+
+        out.append(sanitize_evidence(item))
     return out
 
 
 def fetch_connections(
     gateway: str, *, api_key: str | None, timeout: float = 30
 ) -> list[dict[str, Any]]:
+    if "VERDICT_CONNECTIONS_SNAPSHOT" in os.environ:
+        from verdict.orchestration.connections_snapshot import read_connections_snapshot
+
+        return read_connections_snapshot(Path(os.environ["VERDICT_CONNECTIONS_SNAPSHOT"]))
     raw = _get_json(gateway.rstrip("/") + "/api/providers", api_key=api_key, timeout=timeout)
     return sanitize_connections(raw)
 

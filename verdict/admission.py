@@ -900,6 +900,10 @@ def _judge(
     # names alone are never sufficient: acct-a must not govern acct-b.
     markers = {str(row.get("subscription_pool_id") or row.get("pool_id") or "")}
     markers.discard("")
+    # Snapshot pool identities are opaque, just like connection/account ids.
+    from verdict.availability import account_forms
+
+    markers = {form for marker in markers for form in account_forms(marker)}
     bound_account = str(row.get("account_id") or "")
     if bound_account:
         # Sanitized connections carry opaque tokens; inventory rows may carry

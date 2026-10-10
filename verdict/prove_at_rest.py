@@ -117,7 +117,9 @@ TOOL_NAME = "verdict_probe_ping"
 # --- Agentic probe: 3-turn tool task (read, edit, confirm) -----------------
 AGENTIC_TOOL_READ = "verdict_probe_read_file"
 AGENTIC_TOOL_EDIT = "verdict_probe_edit_file"
-AGENTIC_PROBE_FILE = "/tmp/verdict_agentic_probe.txt"
+# This is a model-visible identifier for AgenticFileState, not a filesystem
+# path: read/edit only operate on an in-memory string (never open this path).
+AGENTIC_PROBE_FILE = "/tmp/verdict_agentic_probe.txt"  # nosec B108 — in-memory identifier only
 AGENTIC_PROBE_ORIGINAL = "line one\nline two\nline three\n"
 AGENTIC_PROBE_EXPECTED = "line one\nLINE TWO\nline three\n"
 DEFAULT_AGENTIC_INTERVAL_HOURS = 24

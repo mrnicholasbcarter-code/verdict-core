@@ -49,6 +49,7 @@ jobs:
         env:
           VERDICT_CERT_GATEWAY_URL: ${{ secrets.VERDICT_CERT_GATEWAY_URL }}
           VERDICT_OMNIROUTE_API_KEY: ${{ secrets.VERDICT_CERT_GATEWAY_KEY }}
+          VERDICT_CERT_CONNECTIONS: ${{ secrets.VERDICT_CERT_CONNECTIONS }}
         run: |
           test -n "$VERDICT_CERT_GATEWAY_URL"
           test -n "$VERDICT_OMNIROUTE_API_KEY"

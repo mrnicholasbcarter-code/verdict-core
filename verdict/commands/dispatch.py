@@ -207,6 +207,21 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if orchestration_rc is not None:
         raise SystemExit(orchestration_rc)
 
+    if args.command == "gateway":
+        from verdict.actions.registry import run_action
+
+        result = run_action(
+            "gateway.connections-snapshot", {"gateway": args.gateway, "out": args.out}
+        )
+        if not result.ok:
+            if result.exit_code == 2 and "error" in result.data:
+                parser.error(result.data["error"])
+            else:
+                # Use the module-level sys import: a local import would shadow
+                # it throughout dispatch(), breaking other command branches.
+                print(result.data.get("error", "gateway failed"), file=sys.stderr)
+                sys.exit(result.exit_code or 1)
+        return
     if args.command == "setup":
         scope = "all"
         if args.setup_action == "credentials":
