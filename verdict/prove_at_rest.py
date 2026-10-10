@@ -1986,12 +1986,18 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
     current = now or _now()
     by_state = {STATE_FRESH: 0, STATE_STALE: 0, STATE_NEGATIVE: 0, STATE_UNPROBED: 0}
     by_class: dict[str, int] = {}
+    agentic_by_class = dict.fromkeys(("free", "subscription", "metered", "unknown"), 0)
     workers: list[HealthEntry] = []
     providers: dict[str, set[str]] = {}
     for entry in cache.routes().values():
         state = entry.state_at(current)
         by_state[state] = by_state.get(state, 0) + 1
         evidence = entry.capacity_evidence or "unknown"
+        ack = entry.agentic_checked_at
+        if entry.agentic_ok and ack is not None and 0 <= (current - ack).total_seconds() <= 600:
+            capacity = (entry.capacity_evidence or "unknown").lower()
+            agentic_by_class[capacity if capacity in agentic_by_class else "unknown"] += 1
+
         if state in {STATE_FRESH, STATE_STALE}:
             by_class[evidence] = by_class.get(evidence, 0) + 1
         provider = _provider_of(entry.route_id)
@@ -2009,7 +2015,9 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
     return {
         "cache_path": str(cache.path),
         "schema_version": "1",
+        "route_count": len(cache.routes()),
         "counts_by_state": by_state,
+        "agentic_qualified_by_capacity_class": agentic_by_class,
         "healthy_by_capacity_evidence": by_class,
         "top_healthy_coding_workers": [
             {

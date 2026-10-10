@@ -589,7 +589,10 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         "provider_family": list(families),
         "scope": [p.strip() for p in scope.split(",") if p.strip()],
     }
-    payload = eligibility_payload(verdicts, selector.summary(), chosen, filters)
+    payload = eligibility_payload(
+        verdicts, selector.summary(), chosen, filters,
+        health_cache=getattr(selector, "_health_cache", None), now=now,
+    )
     return ActionResult(data=payload)
 
 

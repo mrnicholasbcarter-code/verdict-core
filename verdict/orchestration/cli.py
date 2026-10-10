@@ -851,6 +851,13 @@ def render_eligibility_text(payload: dict[str, Any]) -> str:
         f"filters: {active or 'none'}",
         f"evaluated: {payload['evaluated_count']}  {counts}  SELECTED {summary['selected'] or '-'}",
     ]
+    cache = payload.get("health_cache")
+    if cache is not None:
+        lines.append("health cache (full): " + "  ".join(
+            f"{state}={count}" for state, count in cache["counts_by_state"].items()))
+        lines.append("agentic-qualified by capacity: " + "  ".join(
+            f"{capacity}={count}" for capacity, count in
+            cache["agentic_qualified_by_capacity_class"].items()))
     records = payload["verdicts"]
     selected_id = summary["selected"]
 
