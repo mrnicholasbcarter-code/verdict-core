@@ -173,4 +173,4 @@ def test_snapshot_success_hint_supersedes_429_without_authorizing_launch():
     result = admit([ROW], [conn], runtime, now=NOW)
     assert result.ids == frozenset({"cc/sonnet"})
     assert result.records[0].health == "unknown"
-    assert not result.records[0].proven_healthy
+    assert not result.launchable("cc/sonnet")
