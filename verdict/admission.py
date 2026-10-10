@@ -42,8 +42,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from verdict.capacity_models import CapacitySnapshot
 from verdict.availability import QuotaEvidence
+from verdict.capacity_models import CapacitySnapshot
 from verdict.orchestration.provider_catalog import resolve_provider
 from verdict.subscription_headroom import (
     DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
@@ -869,21 +869,33 @@ def _judge(
         until = quota.blocked_until(now)
         if until is None:
             continue
-        gateway_obs.append(RuntimeObservation(
-            f"provider:{provider}", "cooldown", "rate_limit", quota.source,
-            _iso(quota.observed_at) if quota.observed_at else None, _iso(until),
-            pool_id=str(conn.get("pool_id") or "") or None,
-            account_id=(str(conn.get("account_id") or conn.get("id") or "") or None)
-            if quota.scope == "account" else None,
-        ))
-    provider_obs_all += tuple(gateway_obs)
+        gateway_obs.append(
+            RuntimeObservation(
+                f"route:{canonical_route_id(quota.scope_id or '')}"
+                if quota.scope == "model"
+                else f"provider:{provider}",
+                "cooldown",
+                "rate_limit",
+                quota.source,
+                _iso(quota.observed_at) if quota.observed_at else None,
+                _iso(until),
+                pool_id=quota.scope_id if quota.scope == "pool" else None,
+                account_id=(str(conn.get("account_id") or conn.get("id") or "") or None)
+                if quota.scope == "account"
+                else None,
+            )
+        )
+    route_obs += tuple(o for o in gateway_obs if o.key == f"route:{route_id}")
+    provider_obs_all += tuple(o for o in gateway_obs if o.key == f"provider:{provider}")
     # Capacity evidence is scoped to the concrete active connection. Provider
     # names alone are never sufficient: acct-a must not govern acct-b.
     markers = {str(row.get("subscription_pool_id") or row.get("pool_id") or "")}
     markers.discard("")
     bound_account = str(row.get("account_id") or "")
     if bound_account:
-        active = [c for c in active if str(c.get("account_id") or c.get("id") or "") == bound_account]
+        active = [
+            c for c in active if str(c.get("account_id") or c.get("id") or "") == bound_account
+        ]
     active_accounts = {str(c.get("account_id") or c.get("id") or "") for c in active}
     active_accounts.discard("")
     # Some legacy inventory rows encode the account in owned_by/route id while

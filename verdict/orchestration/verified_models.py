@@ -1279,18 +1279,35 @@ def _classify_row(
         quota = QuotaEvidence.from_connection(c)
         until = quota.blocked_until(now, at_rest.last_success_at if at_rest else None)
         if until is not None:
-            gateway_cooldowns.append(ScopedCooldown(
-                "route" if quota.scope == "model" else quota.scope
-                if quota.scope_id else "provider",
-                (quota.scope_id or str(c.get("provider") or "")).lower(),
-                "rate_limited", until, quota.source, observed_at=quota.observed_at,
-            ))
+            gateway_cooldowns.append(
+                ScopedCooldown(
+                    "route"
+                    if quota.scope == "model"
+                    else quota.scope
+                    if quota.scope_id
+                    else "provider",
+                    (quota.scope_id or str(c.get("provider") or "")).lower(),
+                    "rate_limited",
+                    until,
+                    quota.source,
+                    observed_at=quota.observed_at,
+                )
+            )
     # Reuse account/pool path exhaustion and provider blockers from the cache projection.
-    local_cd_index = _index_cooldowns([
-        cd for group in (
-            cd_index.by_route, cd_index.by_provider, cd_index.by_pool, cd_index.by_account
-        ) for entries in group.values() for cd in entries
-    ] + gateway_cooldowns)
+    local_cd_index = _index_cooldowns(
+        [
+            cd
+            for group in (
+                cd_index.by_route,
+                cd_index.by_provider,
+                cd_index.by_pool,
+                cd_index.by_account,
+            )
+            for entries in group.values()
+            for cd in entries
+        ]
+        + gateway_cooldowns
+    )
     binding_blockers, binding_restrictions = _binding_cooldowns(bindings, now, local_cd_index)
     carried.extend(binding_restrictions)
 

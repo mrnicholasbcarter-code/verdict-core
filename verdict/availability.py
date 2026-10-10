@@ -8,10 +8,11 @@ transport protocol below.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Protocol
 
@@ -182,17 +183,28 @@ class QuotaEvidence:
         scope = str(row.get("scope_type") or "account")
         if scope not in {"model", "account", "provider", "pool"}:
             scope = "account"
-        identifier = row.get("scope_id") or row.get("account_id") or row.get("id")
+        scope_field = {"model": "model", "pool": "pool_id", "provider": "provider"}.get(
+            scope, "account_id"
+        )
+        identifier = (
+            row.get("scope_id")
+            or row.get(scope_field)
+            or (row.get("id") if scope == "account" else None)
+        )
         error = str(row.get("lastError") or "")[:4096]
         category = "rate_limited" if "429" in error or error == "rate_limited" else None
         active = row.get("isActive")
         window = row.get("quota_window", row.get("quotaWindow"))
         return cls(
-            str(row.get("provider") or "unknown"), scope,
-            str(identifier) if identifier else None, True,
-            active if type(active) is bool else None, percent,
+            str(row.get("provider") or "unknown"),
+            scope,
+            str(identifier) if identifier else None,
+            True,
+            active if type(active) is bool else None,
+            percent,
             window if isinstance(window, str) else None,
-            _timestamp(row.get("rateLimitedUntil")), "omniroute:/api/providers",
+            _timestamp(row.get("rateLimitedUntil")),
+            "omniroute:/api/providers",
             _timestamp(row.get("observed_at") or row.get("updatedAt") or row.get("lastTested")),
             category,
         )
@@ -218,8 +230,6 @@ class QuotaEvidence:
         if self.current_cooldown(now):
             return self.observed_cooldown_until
         if self.current_429(now, last_success_at):
-            from datetime import timedelta
-
             from verdict.orchestration.health_cache import RATE_LIMIT_SECONDS
 
             assert self.observed_at is not None
@@ -239,13 +249,17 @@ class QuotaEvidence:
 
         blocked = self.current_cooldown(now) or self.current_429(now, last_success_at)
         return {
-            "provider": safe(self.provider), "scope": self.scope,
+            "provider": safe(self.provider),
+            "scope": self.scope,
             "scope_id": (
-                __import__("hashlib").sha256(self.scope_id.encode()).hexdigest()[:12]
-                if self.scope_id else None
-            ), "configured": self.configured,
-            "active": self.active, "quota_percent": self.quota_percent,
-            "quota_display": "UNKNOWN" if self.quota_percent is None else f"{self.quota_percent:g}%",
+                hashlib.sha256(self.scope_id.encode()).hexdigest()[:12] if self.scope_id else None
+            ),
+            "configured": self.configured,
+            "active": self.active,
+            "quota_percent": self.quota_percent,
+            "quota_display": "UNKNOWN"
+            if self.quota_percent is None
+            else f"{self.quota_percent:g}%",
             "quota_window": safe(self.quota_window),
             "observed_cooldown_until": (
                 self.observed_cooldown_until.isoformat() if self.observed_cooldown_until else None
