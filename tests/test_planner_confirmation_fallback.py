@@ -202,3 +202,25 @@ def test_refresh_failed_candidate_is_never_upgraded_by_the_health_reread(tmp_pat
     assert sub.reason == "failed"
     # The candidate's own health must stay as assessed (not upgraded to healthy).
     assert selector._last_refresh_upgrades == ()
+
+
+def test_build_selector_reads_the_cache_the_refresh_hook_writes_with_a_state_file(
+    tmp_path, monkeypatch
+) -> None:
+    """--state-file / --inject: the refresh hook writes <state_dir>/health-cache.json,
+    so the ladder must read that file too (found by the chaos certification rehearsal)."""
+    from verdict.actions.verified_models import StorePaths
+    from verdict.orchestration import eligibility_report
+
+    monkeypatch.delenv("VERDICT_HEALTH_CACHE", raising=False)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    state_file = tmp_path / ".runs-chaos" / "chaos" / "chaos-health.json"
+    import verdict.orchestration.run as run_mod
+
+    monkeypatch.setattr(run_mod, "fetch_inventory", lambda *a, **k: [])
+    monkeypatch.setattr(run_mod, "fetch_connections", lambda *a, **k: [])
+    selector = eligibility_report.build_selector(
+        "http://127.0.0.1:9", scope="", prefer="", state_file=state_file
+    )
+    expected = StorePaths.defaults(state_file.parent).health_cache
+    assert selector._health_cache.path == expected

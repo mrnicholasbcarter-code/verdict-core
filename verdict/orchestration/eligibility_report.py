@@ -208,6 +208,14 @@ def build_selector(
     if provider_families:
         rows = [r for r in rows if route_prefix(str(r.get("id", ""))) in provider_families]
     raw_probe = openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
+    # Read the same health cache the selection refresh hook writes. With an
+    # explicit --state-file (or --inject chaos state) that hook writes beside
+    # the state file (StorePaths.defaults(state_dir)); otherwise both use
+    # default_cache_path(). VERDICT_HEALTH_CACHE still wins everywhere.
+    if state_file is not None and not (os.getenv("VERDICT_HEALTH_CACHE") or "").strip():
+        cache_path = state_path.parent / "health-cache.json"
+    else:
+        cache_path = default_cache_path()
 
     def probe(route_id: str) -> Any:
         return raw_probe(
@@ -225,9 +233,7 @@ def build_selector(
         admitted=admitted,
         admission_receipt=receipt_path,
         refresh_hook=refresh_hook,
-        health_cache=health_cache
-        if health_cache is not None
-        else HealthCache(default_cache_path()),
+        health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
     )
 
