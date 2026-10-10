@@ -506,3 +506,47 @@ def test_worker_prompt_blocks_host_changes_and_out_of_scope_files(tmp_path: Path
     assert "naming that file" in prompt
     assert "If VERIFICATION_COMMAND cannot run as given, stop" in prompt
     assert "Do not change the host to make it run" in prompt
+
+
+@pytest.mark.asyncio
+async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path, monkeypatch):
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    requirements = []
+    rows = []
+
+    class Selector:
+        def select(self, req, *, now):
+            requirements.append(req)
+            route = "cc/claude-haiku" if len(requirements) == 1 else "kr/claude-sonnet"
+            return RouteVerdict(
+                route, "claude", EligibilityStage.SELECTED, None, "ok",
+                CapacityClass.SUBSCRIPTION,
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            pass
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    async def plan(self, *args, **kwargs):
+        if kwargs["route_id"].startswith("cc/"):
+            raise OrchestrationError("concurrent nodes a and b both own ['shared.py']")
+        graph = WorkGraph("g", (_impl_node("a"),))
+        return graph, WorkerTerminal(ok=True)
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+    monkeypatch.setattr(FrontierPlanner, "plan", plan)
+    await plan_with_failover(
+        "g", repo=tmp_path, selector=Selector(), executor=None,
+        classifier=FailureIntelligence(), events=Events(),
+    )
+    assert requirements[0].max_capability_tier == 2
+    assert requirements[1].exclude_pools == frozenset({"claude"})
+    assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
+    cooldown = next(r for r in rows if r["type"] == "cooldown")
+    assert (cooldown["scope"], cooldown["key"]) == ("pool", "claude")

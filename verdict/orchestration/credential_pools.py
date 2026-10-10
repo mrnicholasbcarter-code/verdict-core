@@ -73,7 +73,6 @@ ALIAS_FAMILIES: Mapping[str, str] = {
     "github": "github",  # equal model sets, owned_by resolves
     "cc": "claude",
     "claude": "claude",  # equal model sets, owned_by resolves
-    "no-think": "claude",  # Claude subscription alias (BOD-334 self-hosting)
     "cx": "codex",
     "codex": "codex",  # equal model sets, owned_by resolves
     "oc": "opencode",
@@ -104,6 +103,8 @@ def pool_of(route_id: str) -> str:
     Unaliased prefixes are their own pool either way.
     """
     prefix = route_id.split("/", 1)[0].lower()
+    if prefix == "no-think" and "/" in route_id:
+        return pool_of(route_id.split("/", 1)[1])
     delegated = backend_pool(route_id)
     if delegated != prefix:
         return delegated

@@ -795,7 +795,7 @@ class TestSelectionRefreshHook:
 @pytest.mark.parametrize("frontier", [False, True])
 @pytest.mark.parametrize("scope", ["route", "provider"])
 def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, scope):
-    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/claude-haiku"]
+    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/cc/claude-haiku"]
     ladder, probe = make_ladder(
         tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
     )
@@ -813,7 +813,7 @@ def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, scope):
 
 
 def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
-    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/claude-haiku", "kr/claude-haiku"]
+    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/cc/claude-haiku", "kr/claude-haiku"]
     ladder, _ = make_ladder(
         tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
     )
@@ -823,7 +823,7 @@ def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
     assert verdicts[routes[3]].failed_stage is None
 
 
-@pytest.mark.parametrize("free_tier, expected", [(1, "gl/glm-5"), (3, "cc/claude-sonnet-5")])
+@pytest.mark.parametrize("free_tier, expected", [(2, "gl/glm-5"), (3, "cc/claude-sonnet-5")])
 def test_planner_free_first_respects_capability_floor(tmp_path, free_tier, expected):
     ladder, _ = make_ladder(
         tmp_path,
@@ -834,6 +834,6 @@ def test_planner_free_first_respects_capability_floor(tmp_path, free_tier, expec
         [conn("glm", plan="free"), conn("claude")],
     )
     choice, _ = ladder.select(
-        TaskRequirements(frontier_worthy=True, max_capability_tier=1), now=NOW
+        TaskRequirements(frontier_worthy=True, max_capability_tier=2), now=NOW
     )
     assert choice is not None and choice.route_id == expected
