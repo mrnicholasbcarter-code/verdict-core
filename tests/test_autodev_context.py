@@ -421,3 +421,76 @@ def test_prior_verified_outcomes_included_when_caller_supplies_it(tmp_path: Path
         d.unit_id == "autodev:limitation:prior_verified_outcomes" and d.action == "exclude"
         for d in pack.decisions
     )
+
+
+def test_output_policy_default_off_keeps_pack_and_receipt_identity(monkeypatch: Any) -> None:
+    from verdict.context_inject import ContextOutputPolicy
+
+    monkeypatch.setattr("verdict.context_pack._now_iso", lambda: "1970-01-01T00:00:00Z")
+    legacy = _compile_context()
+    disabled = _compile_context(output_policy=ContextOutputPolicy())
+    assert disabled.canonical_json() == legacy.canonical_json()
+    assert disabled.digest == legacy.digest
+    assert disabled.receipt.to_dict() == legacy.receipt.to_dict()
+    assert "raw_artifact_pointer" not in disabled.receipt.to_dict()
+
+
+def test_output_policy_receipts_exact_raw_worker_bytes_and_fidelity() -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+
+    facts = (
+        "Never change system constraints.",
+        'edit(path="src/café.py", old_str="return 1", new_str="return 2")',
+        "sha256:" + "a" * 64,
+        "I cannot comply with that request.",
+        "Tests: 17 passed, 2 failed.",
+    )
+    baseline = _compile_context(repository_instructions=facts, token_budget=4096)
+    active = _compile_context(
+        repository_instructions=facts, token_budget=4096,
+        output_policy=ContextOutputPolicy(enabled=True),
+    )
+    assert active.compiled_prompt == baseline.compiled_prompt
+    for fact in facts:
+        assert fact in active.compiled_prompt
+    receipt = active.receipt.to_dict()
+    assert receipt["raw_artifact_pointer"] == {
+        "digest": envelope_digest(active.compiled_prompt),
+        "bytes": len(active.compiled_prompt.encode("utf-8")),
+    }
+    assert receipt["output_policy"]["transform"] == "raw_passthrough"
+    metrics = receipt["output_metrics"]
+    assert metrics["input_bytes"] == metrics["output_bytes"] == receipt["raw_artifact_pointer"]["bytes"]
+    assert metrics["estimate_method"] == "utf8_bytes_div_4"
+    assert metrics["estimated_tokens"] == metrics["output_bytes"] / 4
+    assert metrics["provider_input_tokens"] is None
+    assert metrics["provider_output_tokens"] is None
+    assert active.receipt.verify(active)
+    assert type(active.receipt).from_dict(receipt).to_dict() == receipt
+
+
+def test_packet_output_policy_persists_separate_receipt_without_home_writes(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+
+    (tmp_path / "repo").mkdir()
+    repo = _context_repo(tmp_path / "repo")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    store = ReceiptStore(":memory:")
+    packet = _packet(repo)
+    legacy = autodev_run.compile_packet_context(packet, repo, store=store)
+    active = autodev_run.compile_packet_context(
+        packet, repo, store=store, output_policy=ContextOutputPolicy(enabled=True),
+    )
+    assert active.compiled_prompt == legacy.compiled_prompt
+    rows = store.query_receipts(scope="operational-loop")
+    assert len(rows) == 2
+    observed = next(row.payload["context_receipt"] for row in rows
+                    if "raw_artifact_pointer" in row.payload["context_receipt"])
+    unit = autodev_run._packet_work_unit(packet, active.compiled_prompt)
+    assert observed["raw_artifact_pointer"]["digest"] == envelope_digest(unit.context)
+    assert observed["output_metrics"]["provider_input_tokens"] is None
+    assert list(home.iterdir()) == []
