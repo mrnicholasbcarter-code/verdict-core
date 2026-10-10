@@ -247,7 +247,10 @@ def _clean_workdir() -> str:
 
 def _norm_route(stdout: str) -> str:
     """Normalise volatile latency and timestamp fields in route output."""
-    stdout = re.sub(r"(Latency\s+)[\d.]+ms", r"\g<1>0.0ms", stdout)
+    # Rich pads the original latency cell before we replace its value. A
+    # two-digit reading leaves one fewer trailing space than a one-digit
+    # reading; that padding is volatile too. Normalize only this row.
+    stdout = re.sub(r"(Latency[ \t]+)[\d.]+ms[ \t]*", r"\g<1>0.0ms", stdout)
     stdout = re.sub(r'"timestamp": "[^"]*"', '"timestamp": "NORMALIZED"', stdout)
     return stdout
 
@@ -383,7 +386,7 @@ def test_route_default_offline_golden() -> None:
         f"stderr: {result.stderr[-200:]}"
     )
     normalised = _norm_route(result.stdout)
-    assert normalised == fixture["stdout"], (
+    assert normalised == _norm_route(fixture["stdout"]), (
         f"stdout mismatch (after normalisation):\n"
         f"got:  {normalised[:400]!r}\n"
         f"want: {fixture['stdout'][:400]!r}"
@@ -787,3 +790,11 @@ def test_replay_valid_json_golden() -> None:
     assert [s["name"] for s in parsed["steps"]] == [s["name"] for s in expected["steps"]]
     assert "[" not in result.stdout
     assert "[" not in result.stdout
+
+
+def test_route_latency_normalization_removes_only_volatile_row_padding() -> None:
+    one_digit = "  Task    keep spacing  \n  Latency    1.0ms    \n  Strategy    DIRECT  \n"
+    two_digits = "  Task    keep spacing  \n  Latency    12.0ms   \n  Strategy    DIRECT  \n"
+    assert _norm_route(one_digit) == _norm_route(two_digits)
+    assert "  Task    keep spacing  \n" in _norm_route(one_digit)
+    assert "  Strategy    DIRECT  \n" in _norm_route(one_digit)

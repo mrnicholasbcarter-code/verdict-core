@@ -13,7 +13,7 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
     0: [
         r"opus",
         r"fable",
-        r"gpt-6-sol",
+        r"^gpt-6(?:\.1)?-sol(?:-(?:low|medium|high|xhigh|max|thinking))?$",
         r"gpt-6-astra",
         r"gpt-5\.6(?!-luna)",
         r"gpt-5\.5",
@@ -30,6 +30,7 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"claude-3\.5-sonnet",
         r"deepseek-r1(?!.*distill)",
         r"qwen.*235b",
+        r"^gemini-(?:2\.5|3(?:\.1)?)-pro(?:-(?:preview|low|medium|high|xhigh|thinking|latest))*$",
     ],
     2: [
         r"sonnet-3",
@@ -44,7 +45,7 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
     3: [
         r"haiku",
         r"flash",
-        r"mini(?!max)",  # "minimax" is a model family, not a mini variant
+        r"(?:^|[-_])mini(?:$|[-_])",  # "minimax" is a model family, not a mini variant
         r"8b",
         r"7b",
         r"nano",
