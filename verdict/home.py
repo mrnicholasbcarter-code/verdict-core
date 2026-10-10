@@ -501,8 +501,13 @@ def _call_launch_entry(entry: str, params: dict[str, Any]) -> tuple[bool, Any]:
 
 
 def _render_action_result(
-    tui: TerminalUI, ok: bool, data: Any, *, width: int = 100,
-    action: str = "Action", output_json: bool = False,
+    tui: TerminalUI,
+    ok: bool,
+    data: Any,
+    *,
+    width: int = 100,
+    action: str = "Action",
+    output_json: bool = False,
 ) -> None:
     """Keep human reports separate from the explicit machine output boundary."""
     from verdict.home_action_render import render_doctor, render_generic, render_setup_plan
@@ -787,8 +792,11 @@ def _run_command(
                 ok, data = run_palette_action(ref)
                 if ok:
                     run_setup_wizard(
-                        tui, gateway=state.gateway, plan=data,
-                        state_dir=history_file().parent / "bootstrap", reader=line_reader,
+                        tui,
+                        gateway=state.gateway,
+                        plan=data,
+                        state_dir=history_file().parent / "bootstrap",
+                        reader=line_reader,
                     )
                 else:
                     _render_action_result(tui, ok, data, action=ref)
@@ -1399,6 +1407,7 @@ def _interactive_palette(
 
 def _startup_line_reader(key_reader: Callable[[], str]) -> Callable[[], str | None]:
     """Adapt the existing injected character reader for wizard/startup questions."""
+
     def read() -> str | None:
         chars: list[str] = []
         while True:
@@ -1411,6 +1420,7 @@ def _startup_line_reader(key_reader: Callable[[], str]) -> Callable[[], str | No
             if char in {"\r", "\n"}:
                 return "".join(chars)
             chars.append(char)
+
     return read
 
 
@@ -1437,7 +1447,10 @@ def run_home(
         from verdict.home_startup_render import route_startup
 
         outcome = route_startup(
-            ui, home=history_file().parent, gateway=state.gateway, run=run_palette_action,
+            ui,
+            home=history_file().parent,
+            gateway=state.gateway,
+            run=run_palette_action,
             reader=_startup_line_reader(_key_reader) if _key_reader is not None else None,
         )
         if outcome is not None:

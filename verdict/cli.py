@@ -3185,7 +3185,11 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"verdict-core %(prog)s {__version__}"
     )
-    parser.add_argument("--skip-setup", action="store_true", help="Bypass startup setup and health routing (also VERDICT_SKIP_SETUP=1)")
+    parser.add_argument(
+        "--skip-setup",
+        action="store_true",
+        help="Bypass startup setup and health routing (also VERDICT_SKIP_SETUP=1)",
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,

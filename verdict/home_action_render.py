@@ -1,4 +1,5 @@
 """Human action reports for the home prompt; payloads stay at the JSON boundary."""
+
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,7 +29,9 @@ def render_doctor(tui: TerminalUI, data: Mapping[str, Any]) -> None:
         tui.doctor_finding("WARNING", "warning", warning)
     tui.doctor_summary(data.get("issues", []), data.get("repaired", []))
     if data.get("issues"):
-        tui.panel("Next step", "Follow the repair hints above, then run verdict doctor.", tone="WARNING")
+        tui.panel(
+            "Next step", "Follow the repair hints above, then run verdict doctor.", tone="WARNING"
+        )
 
 
 def _facts(value: Any, *, depth: int = 0) -> list[str]:
@@ -70,7 +73,11 @@ def render_generic(tui: TerminalUI, ok: bool, data: Any, *, action: str = "Actio
         tui.console.print(Text("\n".join(_facts(safe))))
     next_step = safe.get("next") if isinstance(safe, Mapping) else None
     if not isinstance(next_step, str):
-        next_step = "Use /help for another action or --json for full details." if ok else "Review the finding above. Run /doctor for repair hints."
+        next_step = (
+            "Use /help for another action or --json for full details."
+            if ok
+            else "Review the finding above. Run /doctor for repair hints."
+        )
     tui.section("Next step")
     tui.console.print(Text(clean(next_step)))
 
@@ -78,8 +85,14 @@ def render_generic(tui: TerminalUI, ok: bool, data: Any, *, action: str = "Actio
 def render_setup_plan(tui: TerminalUI, data: Mapping[str, Any]) -> None:
     tui.header("Setup plan")
     config = data.get("config", {})
-    tui.status("Configuration", "found" if config.get("exists") else "missing", str(config.get("path", "")))
+    tui.status(
+        "Configuration", "found" if config.get("exists") else "missing", str(config.get("path", ""))
+    )
     for action in data.get("actions", []):
-        tui.status(str(action.get("target", "Setup")), "planned", str(action.get("description", "")))
+        tui.status(
+            str(action.get("target", "Setup")), "planned", str(action.get("description", ""))
+        )
     tui.section("Next step")
-    tui.console.print(Text("Run /setup for guided choices. Changes require confirmation and backups."))
+    tui.console.print(
+        Text("Run /setup for guided choices. Changes require confirmation and backups.")
+    )

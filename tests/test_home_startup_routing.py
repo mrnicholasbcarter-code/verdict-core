@@ -1,4 +1,5 @@
 """Isolated launch routing; the only health checker is the canonical doctor action."""
+
 import io
 
 import pytest
@@ -65,9 +66,14 @@ def test_completed_setup_runs_canonical_preflight(isolated, monkeypatch):
 def test_startup_errors_non_tty_render_report_and_exit(isolated, monkeypatch):
     ui, root = isolated
     home = complete(monkeypatch, root)
-    report = {"issues": ["fixture failed"], "sections": [{"label": "Gateway", "state": "failed"}],
-              "capability_bootstrap": {"capabilities": []}}
-    assert route_startup(ui, home=home, gateway="http://fixture", run=lambda *a: (False, report)) == 1
+    report = {
+        "issues": ["fixture failed"],
+        "sections": [{"label": "Gateway", "state": "failed"}],
+        "capability_bootstrap": {"capabilities": []},
+    }
+    assert (
+        route_startup(ui, home=home, gateway="http://fixture", run=lambda *a: (False, report)) == 1
+    )
     output = ui.console.file.getvalue()
     assert "FAILED" in output and "Repair:" in output
     assert "capability_bootstrap" not in output
@@ -83,7 +89,9 @@ def test_startup_unknown_goes_home_with_banner(isolated, monkeypatch):
 
 def test_shared_setup_writer_preserves_and_backs_up(isolated):
     import os
+
     import yaml
+
     from verdict.setup_config import save_setup_config
 
     _ui, _root = isolated

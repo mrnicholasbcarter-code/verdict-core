@@ -1,4 +1,5 @@
 """Shared setup configuration writer; preserve existing fields and backup first."""
+
 import os
 import tempfile
 from pathlib import Path
@@ -8,7 +9,11 @@ import yaml
 
 
 def config_path() -> Path:
-    return Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "verdict" / "verdict.yaml"
+    return (
+        Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "verdict"
+        / "verdict.yaml"
+    )
 
 
 def save_setup_config(values: dict[str, Any]) -> Path:
@@ -19,10 +24,14 @@ def save_setup_config(values: dict[str, Any]) -> Path:
         raise ValueError("Existing configuration is not a mapping; refusing to overwrite.")
     merged = {**(existing or {}), **values}
     if path.exists():
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix="verdict.yaml.backup-", delete=False) as backup:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix="verdict.yaml.backup-", delete=False
+        ) as backup:
             os.fchmod(backup.fileno(), 0o600)
             backup.write(path.read_bytes())
-    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".verdict-", delete=False) as pending:
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=path.parent, prefix=".verdict-", delete=False
+    ) as pending:
         temporary = Path(pending.name)
         os.fchmod(pending.fileno(), 0o600)
         yaml.safe_dump(merged, pending, default_flow_style=False)

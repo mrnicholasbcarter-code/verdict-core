@@ -54,7 +54,12 @@ def test_palette_commands_are_registered_subcommands() -> None:
 
 def test_plain_home_has_no_escape_codes_and_lists_commands(tmp_path: Path) -> None:
     console = _console()
-    assert run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False, skip_setup=True) == 0
+    assert (
+        run_home(
+            console=console, runs_roots=[tmp_path], probe=False, animate=False, skip_setup=True
+        )
+        == 0
+    )
     text = console.file.getvalue()
     assert "\x1b[" not in text
     assert "VERDICT" in text and "verdict orchestrate" in text and "none yet" in text
