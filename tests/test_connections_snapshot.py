@@ -3,6 +3,7 @@
 import hashlib
 import json
 import stat
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -24,10 +25,18 @@ def snapshot(connections, *, age=0):
 
 
 def safe_rows():
-    return run.sanitize_connections([{
-        "provider": "claude", "authType": "oauth", "isActive": True,
-        "testStatus": "success", "id": "private-account", "backoffLevel": 0,
-    }])
+    return run.sanitize_connections(
+        [
+            {
+                "provider": "claude",
+                "authType": "oauth",
+                "isActive": True,
+                "testStatus": "success",
+                "id": "private-account",
+                "backoffLevel": 0,
+            }
+        ]
+    )
 
 
 def test_snapshot_command_is_private_and_sanitized(tmp_path, monkeypatch):
@@ -36,30 +45,63 @@ def test_snapshot_command_is_private_and_sanitized(tmp_path, monkeypatch):
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "local-admin")
     monkeypatch.setenv("VERDICT_CONNECTIONS_SNAPSHOT", str(tmp_path / "unused"))
-    raw = [{
-        "provider": "claude", "authType": "oauth", "isActive": True,
-        "testStatus": "success", "backoffLevel": 0, "id": "raw-connection",
-        "account_id": "raw-account", "pool_id": "raw-pool",
-        "scope_type": "account", "scope_id": "raw-scope",
-        "name": "Personal Name", "email": "person@example.com", "apiKey": "sk-secret",
-        "lastError": "429 private error person@example.com", "quota_window": "private window",
-        "providerSpecificData": {"plan": "Personal Name person@example.com"},
-    }]
+    raw = [
+        {
+            "provider": "claude",
+            "authType": "oauth",
+            "isActive": True,
+            "testStatus": "success",
+            "backoffLevel": 0,
+            "id": "raw-connection",
+            "account_id": "raw-account",
+            "pool_id": "raw-pool",
+            "scope_type": "account",
+            "scope_id": "raw-scope",
+            "name": "Personal Name",
+            "email": "person@example.com",
+            "apiKey": "sk-secret",
+            "lastError": "429 private error person@example.com",
+            "quota_window": "private window",
+            "providerSpecificData": {"plan": "Personal Name person@example.com"},
+        }
+    ]
     calls = []
+
     def get(url, **kwargs):
         calls.append((url, kwargs))
         return {"connections": raw}
+
     monkeypatch.setattr(run, "_get_json", get)
     out = tmp_path / "connections.json"
-    main(["gateway", "connections-snapshot", "--out", str(out)])
-    assert calls == [("http://127.0.0.1:20128/api/providers", {"api_key": "local-admin", "timeout": 30})]
+    monkeypatch.setattr(
+        sys, "argv", ["verdict", "gateway", "connections-snapshot", "--out", str(out)]
+    )
+    main()
+    assert calls == [
+        ("http://127.0.0.1:20128/api/providers", {"api_key": "local-admin", "timeout": 30})
+    ]
     data = json.loads(out.read_text())
     assert data["connections"] == run.sanitize_connections(raw)
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
     assert data["captured_at"]
     digest = data.pop("sha256")
-    assert digest == hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    for private in ("raw-connection", "raw-account", "raw-pool", "raw-scope", "Personal Name", "person@example.com", "sk-secret", "private error", "private window"):
+    assert (
+        digest
+        == hashlib.sha256(
+            json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    for private in (
+        "raw-connection",
+        "raw-account",
+        "raw-pool",
+        "raw-scope",
+        "Personal Name",
+        "person@example.com",
+        "sk-secret",
+        "private error",
+        "private window",
+    ):
         assert private not in out.read_text()
 
 
@@ -72,7 +114,9 @@ def test_snapshot_bypasses_http(tmp_path, monkeypatch):
     assert run.fetch_connections("https://restricted.invalid", api_key="inference") == rows
 
 
-@pytest.mark.parametrize("kind", ["stale", "future", "json", "digest", "schema", "row", "extra", "timestamp", "missing"])
+@pytest.mark.parametrize(
+    "kind", ["stale", "future", "json", "digest", "schema", "row", "extra", "timestamp", "missing"]
+)
 def test_snapshot_rejected_without_http(kind, tmp_path, monkeypatch):
     data = snapshot(safe_rows(), age=7 if kind == "stale" else -1 if kind == "future" else 0)
     if kind in {"row", "extra"}:

@@ -207,6 +207,29 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if orchestration_rc is not None:
         raise SystemExit(orchestration_rc)
 
+    if args.command == "gateway":
+        from urllib.parse import urlsplit
+
+        from verdict.orchestration.connections_snapshot import write_connections_snapshot
+        from verdict.orchestration.run import _get_json, resolve_api_key, sanitize_connections
+
+        parsed = urlsplit(args.gateway)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username
+            or parsed.password
+        ):
+            parser.error(
+                "connections-snapshot requires a loopback gateway; never use an admin key through a tunnel"
+            )
+        key = resolve_api_key()
+        if not key:
+            parser.error("connections-snapshot requires the local admin VERDICT_OMNIROUTE_API_KEY")
+        # Deliberately bypass the snapshot override: capture live local admin evidence.
+        raw = _get_json(args.gateway.rstrip("/") + "/api/providers", api_key=key, timeout=30)
+        write_connections_snapshot(Path(args.out), sanitize_connections(raw))
+        return
     if args.command == "setup":
         scope = "all"
         if args.setup_action == "credentials":

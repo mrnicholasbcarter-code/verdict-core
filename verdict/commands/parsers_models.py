@@ -6,6 +6,16 @@ from typing import Any
 
 
 def register(subparsers: Any) -> None:
+    gateway_p = subparsers.add_parser("gateway", help="Local gateway administration")
+    gateway_sub = gateway_p.add_subparsers(dest="gateway_action", required=True)
+    snapshot_p = gateway_sub.add_parser(
+        "connections-snapshot", help="Capture private sanitized connections using a local admin key"
+    )
+    snapshot_p.add_argument("--out", required=True, help="Snapshot JSON destination (mode 0600)")
+    snapshot_p.add_argument(
+        "--gateway", default="http://127.0.0.1:20128", help="Loopback OmniRoute admin URL only"
+    )
+
     run_p = subparsers.add_parser("run", help="Route a task or control an orchestration run")
     run_p.add_argument("task", help="Task description, or cancel/retry for orchestration")
     run_p.add_argument("control_run_id", nargs="?", help="Run id for cancel/retry")
