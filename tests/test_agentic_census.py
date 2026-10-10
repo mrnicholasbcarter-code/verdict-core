@@ -134,3 +134,27 @@ def test_service_cli_dry_run_json(tmp_path, monkeypatch, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["dry_run"] and report["files"]
     assert not (tmp_path / "systemd").exists()
+
+
+def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
+    from verdict.orchestration.eligibility_report import eligibility_payload
+    from verdict.prove_at_rest import status_report
+
+    cache = HealthCache(tmp_path / "health.json")
+    for i in range(45):
+        cache.record(f"free/m{i}", ProbeResult("ok", True, True,
+                     capacity_evidence="free", probe_class="agentic", agentic_ok=True), NOW)
+    cache.record("sub/m", ProbeResult("ok", True, True,
+                 capacity_evidence="subscription", probe_class="agentic", agentic_ok=True), NOW)
+    cache.record("stale/m", ProbeResult("ok", True, True, capacity_evidence="free",
+                 probe_class="agentic", agentic_ok=True), NOW - timedelta(minutes=11))
+    cache.record("bad/m", ProbeResult("timeout", False, False), NOW)
+    report = status_report(cache, now=NOW)
+    assert report["counts_by_state"] == {"fresh": 46, "stale": 1, "negative": 1, "unprobed": 0}
+    assert report["agentic_qualified_by_capacity_class"] == {
+        "free": 45, "subscription": 1, "metered": 0, "unknown": 0}
+    payload = eligibility_payload([], {}, None, {}, health_cache=cache, now=NOW)
+    assert payload["health_cache"]["route_count"] == 48
+    assert payload["health_cache"]["counts_by_state"] == report["counts_by_state"]
+    from verdict.orchestration.cli import render_eligibility_text
+    assert "free=45" in render_eligibility_text(payload)
