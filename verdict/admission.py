@@ -868,10 +868,10 @@ def _judge(
         quota = QuotaEvidence.from_connection(conn)
         last_success = max(
             (
-                stamp
+                success_at
                 for o in route_obs
                 if o.state in {"healthy", "success_hint"}
-                if (stamp := _parse_iso(o.observed_at)) is not None
+                if (success_at := _parse_iso(o.observed_at)) is not None
             ),
             default=None,
         )
