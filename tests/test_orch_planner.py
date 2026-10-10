@@ -742,3 +742,21 @@ def test_invalid_output_write_failure_does_not_hide_the_error(tmp_path: Path) ->
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("file")
     assert _persist_invalid_plan_output("x", blocker, attempt=1, phase="initial") is None
+
+
+def test_invalid_output_file_is_owner_only_and_never_follows_symlinks(tmp_path: Path) -> None:
+    """Model output may hold secrets no pattern knows: keep the file 0600, no symlink writes."""
+    import os
+    import stat
+
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    path = _persist_invalid_plan_output("plan text", tmp_path, attempt=1, phase="initial")
+    assert path is not None
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("keep")
+    link = tmp_path / "planner-2-initial-invalid.txt"
+    link.symlink_to(target)
+    assert _persist_invalid_plan_output("x", tmp_path, attempt=2, phase="initial") is None
+    assert target.read_text() == "keep"

@@ -10,6 +10,7 @@ and replayable from the same nodes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -417,10 +418,20 @@ def _persist_invalid_plan_output(
     if run_dir is None:
         return None
     path = run_dir / f"planner-{attempt}-{phase}-invalid.txt"
+    # Redact first, then bound. Model output can still hold secrets no pattern
+    # knows, so the file is owner-only (0600) and never follows a symlink.
     data = redact_text(output).encode("utf-8")[: 64 * 1024]
+    body = data.decode("utf-8", errors="ignore").encode("utf-8")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(data.decode("utf-8", errors="ignore"), encoding="utf-8")
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, body)
+        finally:
+            os.close(fd)
     except OSError:
         # Diagnostics must never hide the real validation error.
         return None
