@@ -70,7 +70,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
-    FRESH_SECONDS,
+    agentic_capability,
     STATE_FRESH,
     STATE_NEGATIVE,
     STATE_STALE,
@@ -1997,8 +1997,8 @@ def status_report(
         state = entry.state_at(current)
         by_state[state] = by_state.get(state, 0) + 1
         evidence = entry.capacity_evidence or "unknown"
-        ack = entry.agentic_checked_at
-        if entry.agentic_ok and ack is not None and 0 <= (current - ack).total_seconds() <= FRESH_SECONDS:
+        proof = agentic_capability(entry, current)
+        if proof["qualified"]:
             capacity = (capacity_class(entry.route_id) if capacity_class is not None
                         else (entry.capacity_evidence or "unknown").lower())
             agentic_by_class[capacity if capacity in agentic_by_class else "unknown"] += 1
@@ -2023,6 +2023,11 @@ def status_report(
         "route_count": len(cache.routes()),
         "counts_by_state": by_state,
         "agentic_qualified_by_capacity_class": agentic_by_class,
+        "agentic_capability_evidence": {
+            entry.route_id: agentic_capability(entry, current)
+            for entry in cache.routes().values()
+            if entry.session_agentic_at is not None or entry.agentic_checked_at is not None
+        },
         "healthy_by_capacity_evidence": by_class,
         "top_healthy_coding_workers": [
             {

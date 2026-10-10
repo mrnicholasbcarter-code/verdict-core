@@ -654,12 +654,8 @@ class EligibilityLadder:
                 if lookup.entry is None or (proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok):
                     return "no_agentic_probe"
                 return "session_capability_expired_or_revoked" if proof["source"] == "session_evidence" else "agentic_probe_stale"
-            # Session capability still requires current liveness. Stale proof
-            # can be refreshed by the existing cheap bounded selection probe.
-            if proof["source"] == "session_evidence":
-                health, _ = self._health_status(route_id, gate_now)
-                if lookup.state != "fresh" and health != "healthy":
-                    return "session_liveness_stale"
+            # Current liveness remains the separate HEALTHY stage. Unknown
+            # or stale health may use the existing bounded cheap probe.
             # Real session outcomes can narrow, never replace, probe qualification.
             stats = self._session_summary(route_id, gate_now)
             if stats is not None and stats.passes + stats.fails:

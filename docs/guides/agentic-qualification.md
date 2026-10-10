@@ -15,7 +15,13 @@ Passes qualify the exact route. Failures revoke qualification.
 The cache retains the evidence timestamp, source path, and child id.
 Imports are idempotent. Older evidence cannot replace newer evidence.
 Imports do not refresh liveness, identity, capacity, or entitlement.
-Existing agentic freshness and session-score gates still apply.
+Session capability lasts 7 days by default. Set
+`VERDICT_AGENTIC_CAPABILITY_TTL_S` to a positive finite number of seconds to
+change it. Invalid settings fail closed. Newer exact-route session failures
+revoke capability immediately. Liveness keeps the existing short health gate
+and cheap bounded probe. Selection requires capability and current liveness.
+Without imported session evidence, the existing 600-second agentic probe TTL
+still applies. Session-score narrowing also remains active.
 
 ## Install the user service
 
@@ -51,6 +57,6 @@ It does not delete the health cache or session ledger.
 
 The legacy `verdict eligibility` view reports state counts across the full
 health cache, separate from evaluated routes or a bounded refresh sample.
-It also reports fresh agentic qualification counts by the selector's capacity
+It also reports current agentic capability counts by the selector's capacity
 class. Unknown capacity stays unknown. These counts are diagnostic; they do
 not bypass admission or grant launch authority.

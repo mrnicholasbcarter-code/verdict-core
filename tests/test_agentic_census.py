@@ -222,3 +222,16 @@ def test_session_capability_ttl_is_configurable(tmp_path, monkeypatch):
     assert agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"]
     monkeypatch.setenv("VERDICT_AGENTIC_CAPABILITY_TTL_S", "86400")
     assert not agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"]
+
+
+def test_session_capability_survives_failed_liveness_but_does_not_authorize_health(tmp_path):
+    from verdict.prove_at_rest import import_sessions
+    from verdict.orchestration.health_cache import agentic_capability
+
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(worker_file(tmp_path, [row()]), cache, now=NOW)
+    cache.record("kc/model:free", ProbeResult("timeout", False, False), NOW + timedelta(seconds=1))
+    cache.save()
+    entry = HealthCache(cache.path).entry("kc/model:free")
+    assert not entry.healthy
+    assert agentic_capability(entry, NOW + timedelta(seconds=1))["qualified"]
