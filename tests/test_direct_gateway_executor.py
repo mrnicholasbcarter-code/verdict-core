@@ -1110,3 +1110,16 @@ def test_cli_executor_builder_honours_verdict_key(monkeypatch: pytest.MonkeyPatc
     inner = getattr(executor, "_inner", executor)
     assert isinstance(inner, DirectGatewayExecutor)
     assert inner.api_key == "verdict-key"
+
+
+def test_empty_existing_owned_file_is_labelled_not_new(tmp_path: Path) -> None:
+    """Live certification rehearsal: an empty textkit/__init__.py was shown as blank
+    content, so every model produced a 'new file' diff that git refused."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "TASK", ["pkg/__init__.py", "pkg/new.py"], tmp_path
+    )
+    assert "pkg/__init__.py (EXISTS and is EMPTY" in prompt
+    assert "do NOT use 'new file mode'" in prompt
+    assert "pkg/new.py (does not exist yet" in prompt

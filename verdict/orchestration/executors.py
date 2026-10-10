@@ -953,6 +953,14 @@ class DirectGatewayExecutor:
             except OSError as exc:
                 parts.append(f"--- {rel} (unreadable: {exc}) ---")
                 continue
+            if not data:
+                # An empty existing file looked like "omitted"/no file to models, which
+                # then emitted a "new file mode" diff that git refuses. Say it plainly.
+                parts.append(
+                    f"--- {rel} (EXISTS and is EMPTY — edit it with a normal diff "
+                    f"from a/{rel}; do NOT use 'new file mode' or /dev/null) ---"
+                )
+                continue
             keep = min(len(data), remaining)
             if keep <= 0:
                 parts.append(f"--- {rel} (omitted: budget exhausted) ---")
