@@ -1,0 +1,14 @@
+{
+  "provider": "claude",
+  "authType": "oauth",
+  "isActive": true,
+  "testStatus": "active",
+  "backoffLevel": 1,
+  "rateLimitedUntil": "2026-10-09T04:07:32.416Z",
+  "lastError": "429 account rate limit",
+  "updatedAt": "2026-10-09T03:44:00Z",
+  "lastTested": "2026-10-09T03:44:00Z",
+  "quotaWindowThresholds": {
+    "five_hour": 10
+  }
+}
