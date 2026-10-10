@@ -1,5 +1,6 @@
 """Test environment isolation - remove operator env leaks."""
 
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,25 @@ def _isolate_subscription_ledger():
     yield
     subscription_budgets.clear()
     _subscription_reserved.clear()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _repo_instructions_untouched() -> Any:
+    """Fail the run if tests change repository-root agent instructions."""
+    root = Path(__file__).resolve().parents[1]
+    paths = [root / name for name in ("CLAUDE.md", "AGENTS.md")]
+
+    def hashes() -> dict[Path, bytes | None]:
+        return {
+            path: hashlib.sha256(path.read_bytes()).digest() if path.exists() else None
+            for path in paths
+        }
+
+    before = hashes()
+    yield
+    after = hashes()
+    changed = [path.name for path in paths if before[path] != after[path]]
+    assert not changed, f"tests modified repository instructions: {', '.join(changed)}"
 
 
 _REAL_PRIME_MODELS = Path(os.path.expanduser("~")) / ".prime" / "agent" / "models.json"
