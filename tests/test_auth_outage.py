@@ -41,6 +41,10 @@ def test_dead_pools_do_not_stop_healthy_pools(tmp_path: Path, gateway_status: in
     assert stats.stopped_reason == "complete"
     assert stats.fresh == 4
     assert all(cache.entry(f"healthy{i}/a").healthy for i in range(4))
+    if gateway_status == 200:
+        # Review N1: once af/bm are cooled in this cycle, their second routes
+        # are not probed in the same cycle.
+        assert "af/b" not in calls and "bm/b" not in calls
     # A later cycle does not probe an alias of a cooled provider, even if it is new.
     calls.clear()
     sibling = AdmittedRoute("api-airforce/new", "api-airforce", "subscription")
@@ -91,16 +95,21 @@ def test_evidenced_pool_orders_before_cold_pool(tmp_path: Path, evidence: str) -
     assert cache.entry("warm/new") is None
 
 
-@pytest.mark.parametrize("status", [None, 500, 200])
+@pytest.mark.parametrize("status", [None, "protocol", 500, 200])
 def test_gateway_check_once_and_non_auth_errors_continue(
-    tmp_path: Path, status: int | None
+    tmp_path: Path, status: int | str | None
 ) -> None:
+    import http.client
+
     calls: list[float] = []
 
     def check(timeout: float) -> ProbeExchange:
         calls.append(timeout)
         if status is None:
             raise OSError("offline network error")
+        if status == "protocol":
+            raise http.client.BadStatusLine("garbage")
+        assert isinstance(status, int)
         return ProbeExchange(http_status=status, ok=status == 200)
 
     cache = HealthCache(tmp_path / "cache.json")

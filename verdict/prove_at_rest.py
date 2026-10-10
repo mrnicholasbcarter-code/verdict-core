@@ -48,6 +48,7 @@ One bucket per provider/pool, shared with real calls through
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import threading
@@ -941,7 +942,8 @@ class Prober:
                     self._gateway_auth_result = self.gateway_auth_check(
                         min(self.probe_timeout_seconds, remaining)
                     )
-                except (TimeoutError, OSError):
+                except (TimeoutError, OSError, http.client.HTTPException):
+                    # Transport or protocol errors never prove an auth outage.
                     self._gateway_auth_result = ProbeExchange(http_status=None, ok=False)
             outage = self._gateway_auth_result.http_status in (401, 403)
             if not outage:
@@ -1522,7 +1524,7 @@ def live_gateway_auth_check(
                 return ProbeExchange(http_status=response.status, ok=response.status == 200)
         except urllib.error.HTTPError as exc:
             return ProbeExchange(http_status=exc.code, ok=False)
-        except OSError:
+        except (OSError, http.client.HTTPException):
             return ProbeExchange(http_status=None, ok=False)
 
     return check
