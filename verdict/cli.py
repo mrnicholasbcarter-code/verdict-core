@@ -4213,6 +4213,7 @@ def cmd_prove_at_rest(
     max_requests: int = 300,
     max_wall_seconds: float = 600.0,
     inventory_path: str | None = None,
+    ledger: str | None = None,
 ) -> None:
     """Run or inspect the health-cache prober.
 
@@ -4223,6 +4224,21 @@ def cmd_prove_at_rest(
     ``census`` nor ``status`` writes the ladder's orchestration-health file.
     The legacy prove-at-rest cycle document is ignored.
     """
+    if prove_command == "import-sessions":
+        from verdict.orchestration.health_cache import HealthCache, default_cache_path
+        from verdict.prove_at_rest import import_sessions
+
+        try:
+            if ledger is None:
+                raise ValueError("trusted controller ledger is required")
+            data = import_sessions(ledger, HealthCache(state_path or default_cache_path()))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            raise SystemExit(2) from exc
+        print(json.dumps(data, indent=2, sort_keys=True) if output_json else
+              f"Imported {data['updated']} agentic results from {data['ledger']}")
+        return
+
     if prove_command == "census":
         from verdict.actions.registry import run_action
 

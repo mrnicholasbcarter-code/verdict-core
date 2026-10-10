@@ -1953,6 +1953,34 @@ def build_live_daemon(
 # ---------------------------------------------------------------------------
 
 
+def import_sessions(
+    ledger: str | Path, cache: HealthCache, *, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Import trusted controller outcomes as exact-route agentic evidence.
+
+    Reuses BOD-299's importer. Session evidence does not refresh chat health,
+    capacity, entitlement or identity. Future timestamps are never accepted.
+    """
+    from verdict.orchestration.session_evidence import import_worker_outcomes
+
+    current = now or _now()
+    outcomes = import_worker_outcomes(ledger)
+    updated = 0
+
+    def mutate(store: HealthCache) -> None:
+        nonlocal updated
+        for item in sorted(outcomes, key=lambda item: (item.at, item.outcome == "fail")):
+            if item.verified_by_controller and item.at <= current:
+                updated += store.record_agentic_evidence(
+                    item.route_id, passed=item.outcome == "pass", at=item.at,
+                    source=item.source, child_id=item.child_id,
+                )
+
+    cache.merge_and_save(mutate)
+    return {"cache_path": str(cache.path), "ledger": str(ledger),
+            "read": len(outcomes), "updated": updated}
+
+
 def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[str, Any]:
     """Counts by state and class, top healthy coding workers, cold providers."""
     current = now or _now()

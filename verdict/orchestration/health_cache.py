@@ -301,6 +301,8 @@ class HealthEntry:
     # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
     # tell a route-local diagnostic failure from a provider-scoped blocker.
     failure_scope: str | None = None
+    agentic_source: str | None = None
+    agentic_child_id: str | None = None
     write_revision: int = 0  # allocated only under the shared writer lock
 
     def __post_init__(self) -> None:
@@ -344,6 +346,10 @@ class HealthEntry:
             payload["identity"] = self.identity
         payload["probe_class"] = self.probe_class
         payload["agentic_ok"] = self.agentic_ok
+        if self.agentic_source is not None:
+            payload["agentic_source"] = self.agentic_source
+        if self.agentic_child_id is not None:
+            payload["agentic_child_id"] = self.agentic_child_id
         if self.agentic_checked_at is not None:
             payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
         if self.last_success_at is not None:
@@ -382,6 +388,8 @@ class HealthEntry:
             identity=str(value.get("identity") or ""),
             probe_class=str(value.get("probe_class") or "single_call"),
             agentic_ok=value.get("agentic_ok") is True,
+            agentic_source=value.get("agentic_source"),
+            agentic_child_id=value.get("agentic_child_id"),
             agentic_checked_at=(
                 parse_datetime(value["agentic_checked_at"], "agentic_checked_at")
                 if value.get("agentic_checked_at")
@@ -1007,6 +1015,32 @@ class HealthCache:
 
     # -- write API ---------------------------------------------------------
 
+    def record_agentic_evidence(
+        self, route: str, *, passed: bool, at: datetime, source: str,
+        child_id: str | None = None,
+    ) -> bool:
+        """Update exact-route qualification, never invent or refresh liveness.
+
+        Called under ``merge_and_save``. Older evidence cannot replace newer
+        agentic results; a failure wins conflicting evidence at the same time.
+        """
+        current = _aware(at, "agentic_checked_at")
+        previous = self._routes.get(route)
+        if previous is not None and previous.agentic_checked_at is not None:
+            if current < previous.agentic_checked_at:
+                return False
+            if current == previous.agentic_checked_at and (passed or not previous.agentic_ok):
+                return False
+        base = previous or HealthEntry(
+            route_id=route, category="session_evidence", checked_at=current,
+            until=current, consecutive_failures=0, chat_ok=False, tool_ok=False,
+        )
+        self._routes[route] = replace(
+            base, probe_class="agentic", agentic_ok=passed,
+            agentic_checked_at=current, agentic_source=source, agentic_child_id=child_id,
+        )
+        return True
+
     def record(self, route: str, result: ProbeResult, now: datetime) -> HealthEntry:
         """Record one probe and return the stored entry. Does not save."""
         if not isinstance(route, str) or not route.strip():
@@ -1103,7 +1137,13 @@ class HealthCache:
                 ),
                 failure_scope=result.failure_scope,
             )
-        entry = replace(entry, write_revision=previous.write_revision if previous else 0)
+        entry = replace(
+            entry, write_revision=previous.write_revision if previous else 0,
+            agentic_source=(previous.agentic_source if previous is not None
+                            and agentic_checked_at == previous.agentic_checked_at else None),
+            agentic_child_id=(previous.agentic_child_id if previous is not None
+                              and agentic_checked_at == previous.agentic_checked_at else None),
+        )
         self._routes[route] = entry
         return entry
 

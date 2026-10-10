@@ -46,6 +46,12 @@ def register(subparsers: Any) -> None:
         "daemon", help="Continuously probe admitted routes into the health cache"
     )
     prove_status_p = prove_sub.add_parser("status", help="Show the health cache")
+    prove_import_p = prove_sub.add_parser(
+        "import-sessions", help="Import trusted controller session outcomes as agentic evidence"
+    )
+    prove_import_p.add_argument("ledger", help="Trusted controller worker-outcomes JSONL")
+    prove_import_p.add_argument("--state-path", default=None, help="Health cache JSON path")
+    prove_import_p.add_argument("--json", action="store_true", help="Output JSON")
     prove_census_p = prove_sub.add_parser(
         "census",
         help=(
