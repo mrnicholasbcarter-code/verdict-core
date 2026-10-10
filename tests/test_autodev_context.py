@@ -527,3 +527,30 @@ def test_packet_execute_cli_output_policy_opt_in(monkeypatch: Any) -> None:
     assert not captured[-1]["context_output_policy"]
     dispatch(parser, parser.parse_args([*argv, "--context-output-policy"]))
     assert captured[-1]["context_output_policy"] is True
+
+
+def test_output_policy_pointer_matches_context_in_forwarded_patch_request(tmp_path: Path) -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+    from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
+    from verdict.work_unit import WorkUnit
+
+    pack = _compile_context(output_policy=ContextOutputPolicy(enabled=True))
+    unit = WorkUnit(
+        unit_id="test", objective="test", owned_files=(),
+        verification_command=("pytest",), context=pack.compiled_prompt,
+    )
+    sent: list[dict[str, Any]] = []
+
+    def transport(model: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        sent.append(payload)
+        return {"status_code": 200, "body": {"choices": [{"message": {"content": "refused"}}]}}
+
+    executor = PatchExecutor(tmp_path, PatchExecutorConfig(model="fixture"), transport=transport)
+    executor.execute_unit(unit)
+    prompt = sent[0]["messages"][1]["content"]
+    forwarded_context = prompt.split("Additional context:\n", 1)[1].rsplit(
+        "\n\nReply with the unified diff only.", 1
+    )[0]
+    pointer = pack.receipt.to_dict()["raw_artifact_pointer"]
+    assert pointer["digest"] == envelope_digest(forwarded_context)
+    assert pointer["bytes"] == len(forwarded_context.encode("utf-8"))

@@ -58,6 +58,10 @@ class ContextOutputPolicy:
     enabled: bool = False
     estimate_method: str = "utf8_bytes_div_4"
 
+    def __post_init__(self) -> None:
+        if self.estimate_method != "utf8_bytes_div_4":
+            raise ValueError("only utf8_bytes_div_4 estimates are supported")
+
     def receipt_fields(self, raw_prompt: str | None) -> dict[str, Any]:
         """Describe post-compilation raw bytes; no transform or billed usage claim."""
         if not self.enabled:
