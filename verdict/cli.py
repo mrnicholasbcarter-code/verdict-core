@@ -4225,43 +4225,28 @@ def cmd_prove_at_rest(
     ``census`` nor ``status`` writes the ladder's orchestration-health file.
     The legacy prove-at-rest cycle document is ignored.
     """
-    if prove_command in {"install-service", "uninstall-service"}:
-        import subprocess
+    if prove_command in {"install-service", "uninstall-service", "import-sessions"}:
+        from verdict.actions.registry import run_action
 
-        from verdict.prove_at_rest_service import manage_service
-
-        try:
-            data = manage_service(
-                interval=interval,
-                max_requests=max_requests,
-                dry_run=dry_run,
-                uninstall=prove_command == "uninstall-service",
-            )
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(json.dumps({"error": str(exc)}))
-            raise SystemExit(2) from exc
-        # Dry-run includes the exact rendered files, for both plain and JSON.
-        print(json.dumps(data, indent=2, sort_keys=True))
-        return
-
-    if prove_command == "import-sessions":
-        from verdict.orchestration.health_cache import HealthCache, default_cache_path
-        from verdict.prove_at_rest import import_sessions
-
-        try:
-            if ledger is None:
-                raise ValueError("trusted controller ledger is required")
-            data = import_sessions(
-                ledger, HealthCache(Path(state_path) if state_path else default_cache_path())
-            )
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            print(json.dumps({"error": str(exc)}))
-            raise SystemExit(2) from exc
-        print(
-            json.dumps(data, indent=2, sort_keys=True)
-            if output_json
-            else f"Imported {data['updated']} agentic results from {data['ledger']}"
+        result = run_action(
+            f"prove-at-rest.{prove_command}",
+            {
+                "interval": interval,
+                "max_requests": max_requests,
+                "dry_run": dry_run,
+                "ledger": ledger,
+                "state_path": state_path,
+            },
         )
+        data = result.data
+        if not result.ok:
+            print(json.dumps({"error": data.get("error", "prove-at-rest failed")}))
+            raise SystemExit(result.exit_code or 2)
+        if prove_command == "import-sessions" and not output_json:
+            print(f"Imported {data['updated']} agentic results from {data['ledger']}")
+        else:
+            # Dry-run includes the exact rendered files, for both plain and JSON.
+            print(json.dumps(data, indent=2, sort_keys=True))
         return
 
     if prove_command == "census":

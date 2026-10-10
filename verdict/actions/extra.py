@@ -755,6 +755,54 @@ def _action_prove_at_rest_census(**kwargs: Any) -> ActionResult:
     return ActionResult(data=data)
 
 
+def _action_prove_at_rest_import_sessions(**kwargs: Any) -> ActionResult:
+    """Import trusted controller session outcomes as exact-route agentic evidence."""
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.prove_at_rest import import_sessions
+
+    ledger = kwargs.get("ledger")
+    if not ledger:
+        return ActionResult(
+            data={"error": "trusted controller ledger is required"}, ok=False, exit_code=2
+        )
+    state_path = kwargs.get("state_path")
+    try:
+        data = import_sessions(
+            ledger,
+            HealthCache(Path(state_path).expanduser() if state_path else default_cache_path()),
+        )
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+    return ActionResult(data=data)
+
+
+def _manage_prove_service(*, uninstall: bool, **kwargs: Any) -> ActionResult:
+    import subprocess
+
+    from verdict.prove_at_rest_service import manage_service
+
+    try:
+        data = manage_service(
+            interval=float(kwargs.get("interval", 300)),
+            max_requests=int(kwargs.get("max_requests", 300)),
+            dry_run=bool(kwargs.get("dry_run", False)),
+            uninstall=uninstall,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+    return ActionResult(data=data)
+
+
+def _action_prove_at_rest_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install the bounded systemd user prober."""
+    return _manage_prove_service(uninstall=False, **kwargs)
+
+
+def _action_prove_at_rest_uninstall_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or remove the systemd user prober."""
+    return _manage_prove_service(uninstall=True, **kwargs)
+
+
 def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
     """Run one bounded prove-at-rest cycle into the health cache."""
     from verdict.prove_at_rest import ProveError, build_live_daemon

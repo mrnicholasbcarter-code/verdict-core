@@ -1327,8 +1327,11 @@ def _register_builtins() -> None:
         _action_metadata_show,
         _action_openspec_admit,
         _action_prove_at_rest_census,
+        _action_prove_at_rest_import_sessions,
+        _action_prove_at_rest_install_service,
         _action_prove_at_rest_once,
         _action_prove_at_rest_status,
+        _action_prove_at_rest_uninstall_service,
         _action_receipt_export,
         _action_receipt_list,
         _action_resume,
@@ -1854,6 +1857,36 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_prove_at_rest_census,
+        ),
+        (
+            ActionSpec(
+                "prove-at-rest.import-sessions",
+                "health",
+                "mutation",
+                "Import trusted session outcomes as agentic evidence",
+                "Health",
+            ),
+            _action_prove_at_rest_import_sessions,
+        ),
+        (
+            ActionSpec(
+                "prove-at-rest.install-service",
+                "health",
+                "mutation",
+                "Install the bounded systemd user prober (--dry-run shows it)",
+                "Health",
+            ),
+            _action_prove_at_rest_install_service,
+        ),
+        (
+            ActionSpec(
+                "prove-at-rest.uninstall-service",
+                "health",
+                "mutation",
+                "Remove the systemd user prober",
+                "Health",
+            ),
+            _action_prove_at_rest_uninstall_service,
         ),
         # metadata family (per subcommand)
         (
