@@ -191,6 +191,8 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
         ):
             if field in row:
                 item[field] = row[field]
+        if row.get("id") and not item.get("account_id"):
+            item["account_id"] = str(row["id"])
         error = str(row.get("lastError") or "")[:4096]
         item["lastError"] = (
             "rate_limited" if "429" in error or error == "rate_limited" else None

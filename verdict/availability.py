@@ -208,7 +208,23 @@ class QuotaEvidence:
             return False
         if self.observed_cooldown_until is not None:
             return self.current_cooldown(now)
-        return 0 <= (now - self.observed_at).total_seconds() < 300
+        from verdict.orchestration.health_cache import RATE_LIMIT_SECONDS
+
+        return 0 <= (now - self.observed_at).total_seconds() < RATE_LIMIT_SECONDS
+
+    def blocked_until(
+        self, now: datetime, last_success_at: datetime | None = None
+    ) -> datetime | None:
+        if self.current_cooldown(now):
+            return self.observed_cooldown_until
+        if self.current_429(now, last_success_at):
+            from datetime import timedelta
+
+            from verdict.orchestration.health_cache import RATE_LIMIT_SECONDS
+
+            assert self.observed_at is not None
+            return self.observed_at + timedelta(seconds=RATE_LIMIT_SECONDS)
+        return None
 
     def to_dict(self, now: datetime, last_success_at: datetime | None = None) -> dict[str, Any]:
         # Reuse the existing privacy scrubber at the verified-view boundary.
@@ -217,15 +233,17 @@ class QuotaEvidence:
         def safe(value: str | None) -> str | None:
             if value is None:
                 return None
-            import re
+            from verdict.orchestration.verified_models import _display_safe
 
-            text = redact_text(value[:256])
-            return re.sub(r"[^\s@]+@[^\s@]+", "[redacted]", text)
+            return _display_safe(redact_text(value[:256]))
 
         blocked = self.current_cooldown(now) or self.current_429(now, last_success_at)
         return {
             "provider": safe(self.provider), "scope": self.scope,
-            "scope_id": safe(self.scope_id), "configured": self.configured,
+            "scope_id": (
+                __import__("hashlib").sha256(self.scope_id.encode()).hexdigest()[:12]
+                if self.scope_id else None
+            ), "configured": self.configured,
             "active": self.active, "quota_percent": self.quota_percent,
             "quota_display": "UNKNOWN" if self.quota_percent is None else f"{self.quota_percent:g}%",
             "quota_window": safe(self.quota_window),
