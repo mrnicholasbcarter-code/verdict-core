@@ -205,7 +205,14 @@ class QuotaEvidence:
             window if isinstance(window, str) else None,
             _timestamp(row.get("rateLimitedUntil")),
             "omniroute:/api/providers",
-            _timestamp(row.get("observed_at") or row.get("updatedAt") or row.get("lastTested")),
+            # Prefer the error's own time: updatedAt/lastTested refresh every
+            # few minutes and would make an old 429 look current.
+            _timestamp(
+                row.get("lastErrorAt")
+                or row.get("observed_at")
+                or row.get("updatedAt")
+                or row.get("lastTested")
+            ),
             category,
         )
 

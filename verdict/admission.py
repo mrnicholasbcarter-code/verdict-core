@@ -902,9 +902,12 @@ def _judge(
     markers.discard("")
     bound_account = str(row.get("account_id") or "")
     if bound_account:
-        active = [
-            c for c in active if str(c.get("account_id") or c.get("id") or "") == bound_account
-        ]
+        # Sanitized connections carry opaque tokens; inventory rows may carry
+        # the raw id. Match either form, never a provider-only fallback.
+        from verdict.orchestration.run import opaque_connection_token
+
+        bound_forms = {bound_account, opaque_connection_token(bound_account)}
+        active = [c for c in active if str(c.get("account_id") or c.get("id") or "") in bound_forms]
     active_accounts = {str(c.get("account_id") or c.get("id") or "") for c in active}
     active_accounts.discard("")
     # Some legacy inventory rows encode the account in owned_by/route id while

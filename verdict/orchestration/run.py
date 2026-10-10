@@ -16,6 +16,7 @@ Controller survival (minimal demo-safe slice):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -175,6 +176,11 @@ def fetch_inventory(
     return [row for row in data if isinstance(row, dict)]
 
 
+def opaque_connection_token(value: str) -> str:
+    """Stable, non-reversible token for an OmniRoute connection/account id."""
+    return "conn:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
 def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
     """ENTITLED evidence: allowlisted, credential-free projection of /api/providers."""
     rows = raw.get("connections") if isinstance(raw, Mapping) else raw
@@ -185,13 +191,12 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
         item: dict[str, Any] = {k: row.get(k) for k in _CONNECTION_FIELDS}
         # Allowlisted evidence only. Never retain provider error free text.
         for field in (
-            "id",
-            "account_id",
             "pool_id",
             "scope_type",
             "scope_id",
             "model",
             "rateLimitedUntil",
+            "lastErrorAt",
             "quota_percent",
             "quotaRemainingPct",
             "quota_window",
@@ -202,8 +207,13 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
         ):
             if field in row:
                 item[field] = row[field]
-        if row.get("id") and not item.get("account_id"):
-            item["account_id"] = str(row["id"])
+        # Connection and account ids are scoping keys only: keep a stable
+        # opaque token (equality is all scoping needs), never the raw id.
+        for field in ("id", "account_id"):
+            if row.get(field):
+                item[field] = opaque_connection_token(str(row[field]))
+        if item.get("id") and not item.get("account_id"):
+            item["account_id"] = item["id"]
         error = str(row.get("lastError") or "")[:4096]
         item["lastError"] = "rate_limited" if "429" in error or error == "rate_limited" else None
         psd = row.get("providerSpecificData")

@@ -174,3 +174,79 @@ def test_snapshot_success_hint_supersedes_429_without_authorizing_launch():
     assert result.ids == frozenset({"cc/sonnet"})
     assert result.records[0].health == "unknown"
     assert not result.launchable("cc/sonnet")
+
+
+def test_sanitizer_drops_raw_ids_and_free_text_but_keeps_scoping_tokens() -> None:
+    """Review F1: no raw connection/account ids, emails or names leave the sanitizer."""
+    from verdict.orchestration.run import opaque_connection_token, sanitize_connections
+
+    raw = {
+        "connections": [
+            {
+                "id": "4f3c-raw-connection-id",
+                "provider": "claude",
+                "isActive": True,
+                "email": "person@example.com",
+                "name": "Personal Max",
+                "displayName": "Person",
+                "lastError": "429 account rate limit for person@example.com Bearer sk-secret",
+                "lastErrorAt": "2026-10-01T00:00:00Z",
+                "rateLimitedUntil": "2026-10-10T09:00:00Z",
+            }
+        ]
+    }
+    [item] = sanitize_connections(raw)
+    dumped = repr(item)
+    for secret in ("4f3c-raw-connection-id", "person@example.com", "Personal Max", "sk-secret"):
+        assert secret not in dumped
+    token = opaque_connection_token("4f3c-raw-connection-id")
+    assert item["id"] == token and item["account_id"] == token
+    assert item["lastError"] == "rate_limited"
+    assert item["lastErrorAt"] == "2026-10-01T00:00:00Z"
+
+
+def test_old_429_uses_its_own_error_time_not_the_refresh_time() -> None:
+    """Review F3: a refreshed updatedAt must not make an old 429 current."""
+    from datetime import datetime, timezone
+
+    from verdict.availability import QuotaEvidence
+
+    now = datetime(2026, 10, 10, 9, tzinfo=timezone.utc)
+    evidence = QuotaEvidence.from_connection(
+        {
+            "provider": "claude",
+            "isActive": True,
+            "lastError": "rate_limited",
+            "lastErrorAt": "2026-10-01T00:00:00Z",
+            "updatedAt": "2026-10-10T08:59:30Z",
+        }
+    )
+    assert evidence.current_429(now) is False
+
+
+def test_admission_record_time_is_now_even_after_an_older_success_hint() -> None:
+    """A success hint older than now must not leak into other records' observed_at.
+
+    Regression: a walrus inside a generator bound ``stamp`` in admit's scope
+    (PEP 572), replacing the ``_iso(now)`` default with the hint's datetime.
+    """
+    from datetime import timedelta
+
+    from verdict.admission import RuntimeEvidence, RuntimeObservation, _iso
+
+    conn = connection()
+    conn.pop("rateLimitedUntil", None)
+    conn.pop("lastError", None)
+    earlier = (NOW - timedelta(hours=1)).isoformat()
+    runtime = RuntimeEvidence(
+        (
+            RuntimeObservation(
+                "route:cc/sonnet", "success_hint", "ok", "health_cache", observed_at=earlier
+            ),
+        ),
+        ("health_cache",),
+    )
+    result = admit([ROW], [conn], runtime, now=NOW)
+    observed = result.records[0].observed_at
+    assert isinstance(observed, str)
+    assert observed == _iso(NOW)
