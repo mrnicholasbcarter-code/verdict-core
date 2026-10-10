@@ -81,7 +81,7 @@ def test_prompt_digest_mismatch_refuses_injection() -> None:
 def test_default_off_policy_is_byte_identical_to_legacy_to_dict() -> None:
     """BOD-333 phase 1: no policy argument -> identical dict shape/keys as before."""
     payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    forwarded, record = _inject(payload)
+    _forwarded, record = _inject(payload)
     legacy_keys = {
         "injected",
         "pack_state",
@@ -101,7 +101,7 @@ def test_disabled_policy_object_is_also_byte_identical() -> None:
     from verdict.context_inject import ContextOutputPolicy
 
     payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-    forwarded, record = inject_context_pack(
+    _forwarded, record = inject_context_pack(
         payload,
         surface="chat",
         compiled_prompt=PROMPT,

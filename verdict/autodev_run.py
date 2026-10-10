@@ -206,7 +206,7 @@ def compile_worker_context(
         created_at=_STABLE_CONTEXT_OBSERVED_AT,
     )
     pack = ContextPackCompiler(default_token_budget=token_budget).compile_units(units, plan)
-    observation = (output_policy.receipt_fields(pack.compiled_prompt) if output_policy else {})
+    observation = output_policy.receipt_fields(pack.compiled_prompt) if output_policy else {}
     return replace(pack, created_at=0.0, output_observation=observation or None)
 
 
@@ -425,10 +425,12 @@ def compile_packet_context(
     if store is not None:
         # Distinguish opt-in observations without changing legacy receipt keys.
         policy_key = (
-            ":output-policy:" + hashlib.sha256(
+            ":output-policy:"
+            + hashlib.sha256(
                 json.dumps(pack.output_observation, sort_keys=True).encode("utf-8")
             ).hexdigest()
-            if pack.output_observation else ""
+            if pack.output_observation
+            else ""
         )
         with suppress(ReceiptConflictError):
             store.put_receipt(
