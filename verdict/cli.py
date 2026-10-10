@@ -4214,6 +4214,7 @@ def cmd_prove_at_rest(
     max_wall_seconds: float = 600.0,
     inventory_path: str | None = None,
     ledger: str | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Run or inspect the health-cache prober.
 
@@ -4224,6 +4225,21 @@ def cmd_prove_at_rest(
     ``census`` nor ``status`` writes the ladder's orchestration-health file.
     The legacy prove-at-rest cycle document is ignored.
     """
+    if prove_command in {"install-service", "uninstall-service"}:
+        import subprocess
+
+        from verdict.prove_at_rest_service import manage_service
+
+        try:
+            data = manage_service(interval=interval, max_requests=max_requests, dry_run=dry_run,
+                                  uninstall=prove_command == "uninstall-service")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            raise SystemExit(2) from exc
+        # Dry-run includes the exact rendered files, for both plain and JSON.
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+
     if prove_command == "import-sessions":
         from verdict.orchestration.health_cache import HealthCache, default_cache_path
         from verdict.prove_at_rest import import_sessions

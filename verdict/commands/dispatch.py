@@ -533,6 +533,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             max_wall_seconds=getattr(args, "max_wall_seconds", 600.0),
             inventory_path=getattr(args, "inventory_path", None),
             ledger=getattr(args, "ledger", None),
+            dry_run=getattr(args, "dry_run", False),
         )
     elif args.command == "uninstall":
         legacy.cmd_uninstall(purge_data=getattr(args, "purge_data", False))

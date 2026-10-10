@@ -82,7 +82,9 @@ def test_import_sessions_cli(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     source = worker_file(tmp_path, [row()])
     path = tmp_path / "cache.json"
-    main(["prove-at-rest", "import-sessions", str(source), "--state-path", str(path), "--json"])
+    monkeypatch.setattr("sys.argv", ["verdict", "prove-at-rest", "import-sessions", str(source),
+                                     "--state-path", str(path), "--json"])
+    main()
     assert json.loads(capsys.readouterr().out)["updated"] == 1
     assert HealthCache(path).entry("kc/model:free").agentic_ok
 
@@ -126,8 +128,9 @@ def test_service_cli_dry_run_json(tmp_path, monkeypatch, capsys):
     from verdict.cli import main
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    main(["prove-at-rest", "install-service", "--interval", "45",
-          "--max-requests", "8", "--dry-run", "--json"])
+    monkeypatch.setattr("sys.argv", ["verdict", "prove-at-rest", "install-service", "--interval", "45",
+                                     "--max-requests", "8", "--dry-run", "--json"])
+    main()
     report = json.loads(capsys.readouterr().out)
     assert report["dry_run"] and report["files"]
     assert not (tmp_path / "systemd").exists()
