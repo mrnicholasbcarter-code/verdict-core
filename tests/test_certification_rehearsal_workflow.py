@@ -87,3 +87,28 @@ def test_certification_download_and_release_compatible_upload():
         "certification-evidence-${{ steps.verify.outputs.artifact_kind }}-"
         "${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
     )
+
+
+def test_rehearsal_requires_protected_connections_snapshot():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/certify-rehearsal.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    live = next(s for s in workflow["jobs"]["rehearse"]["steps"] if s.get("name") == "Build fixtures and run bounded live rehearsals")
+    assert live["env"]["VERDICT_CERT_CONNECTIONS"] == "${{ secrets.VERDICT_CERT_CONNECTIONS }}"
+    script = (ROOT / "scripts/run_certification_rehearsals.py").read_text()
+    assert "VERDICT_CONNECTIONS_SNAPSHOT" in script
+    assert "VERDICT_CERT_CONNECTIONS" in script
+    assert "::add-mask::" in script
+    assert "0o600" in script
+
+
+def test_rehearsal_missing_snapshot_fails_before_work(tmp_path, monkeypatch):
+    from scripts import run_certification_rehearsals as script
+    import pytest
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("VERDICT_CERT_CONNECTIONS", raising=False)
+    with pytest.raises(ValueError, match="Missing protected VERDICT_CERT_CONNECTIONS"):
+        script.run()
+    assert not (tmp_path / "attested-rehearsals").exists()
