@@ -362,6 +362,7 @@ async def plan_with_failover(
             provider=choice.provider,
             capacity_class=choice.capacity_class.value,
             max_capability_tier=requirements.max_capability_tier,
+            selection_reason=choice.reason,
             attempt=attempt,
         )
         try:

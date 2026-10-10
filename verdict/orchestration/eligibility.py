@@ -890,7 +890,30 @@ class EligibilityLadder:
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
-        for a in self._probe_order(candidates):
+        probe_order = self._probe_order(candidates)
+        # Keep one exact-confirmation slot for a fresh prepaid fallback. Cold
+        # FREE catalog aliases must not starve a known-live subscription route.
+        # Earlier FREE successes still win; neither ranking nor admission widens.
+        fallback = next(
+            (
+                a
+                for a in candidates
+                if a.capacity is CapacityClass.SUBSCRIPTION
+                and a.health == "healthy"
+                and a.failed_stage is None
+            ),
+            None,
+        )
+        reserved_route = ""
+        if (
+            fallback is not None
+            and self._max_probes > 0
+            and probe_order.index(fallback) >= self._max_probes
+        ):
+            probe_order.remove(fallback)
+            probe_order.insert(self._max_probes - 1, fallback)
+            reserved_route = fallback.route_id
+        for a in probe_order:
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:
@@ -944,7 +967,9 @@ class EligibilityLadder:
                     provider=a.provider,
                     reached=EligibilityStage.SELECTED,
                     failed_stage=None,
-                    reason="selected",
+                    reason=(
+                        "reserved_fallback_slot" if a.route_id == reserved_route else "selected"
+                    ),
                     capacity_class=a.capacity,
                     plan_label=a.plan_label,
                     cooldown_until=None,
@@ -1012,10 +1037,16 @@ class EligibilityLadder:
         for a in candidates:  # already rank-sorted; dicts keep first-seen order
             tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
         for by_provider in tiers.values():
-            queues = list(by_provider.values())
-            depth = max(len(q) for q in queues)
-            for i in range(depth):
-                order.extend(q[i] for q in queues if i < len(q))
+            # Fresh cache evidence changes confirmation scheduling, never
+            # launch authority. These routes still pass the exact live probe.
+            for fresh in (True, False):
+                queues = [
+                    [a for a in queue if (a.health == "healthy") == fresh]
+                    for queue in by_provider.values()
+                ]
+                depth = max((len(q) for q in queues), default=0)
+                for i in range(depth):
+                    order.extend(q[i] for q in queues if i < len(q))
         return order
 
     def _record_health(

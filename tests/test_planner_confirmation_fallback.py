@@ -29,8 +29,13 @@ def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
         probe.results[FREE] = HealthResult(True, "ok")
     admitted = admit(rows, connections, RuntimeEvidence(), now=NOW)
     selector = EligibilityLadder(
-        rows, connections, probe, tmp_path / "state.json", health_cache=cache,
-        admitted=admitted, max_probes_per_select=8,
+        rows,
+        connections,
+        probe,
+        tmp_path / "state.json",
+        health_cache=cache,
+        admitted=admitted,
+        max_probes_per_select=8,
     )
     return selector, probe, cold
 
@@ -82,7 +87,39 @@ def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
     elif block == "refresh":
         selector._refresh_hook = lambda ids, now: {SUB: "failed"}
     else:
-        selector.record_failure(SUB, FailureClassification("no_final_answer", "REROUTE", 300, "route"), now=NOW)
+        selector.record_failure(
+            SUB, FailureClassification("no_final_answer", "REROUTE", 300, "route"), now=NOW
+        )
     choice, _ = selector.select(req, now=NOW)
     assert choice is None and SUB not in probe.calls
     assert len(probe.calls) == 8
+
+
+@pytest.mark.asyncio
+async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from verdict.orchestration.contracts import WorkerTerminal
+    from verdict.orchestration.receipt import EventLog
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    selector, _, _ = ladder(tmp_path)
+    monkeypatch.setattr("verdict.orchestration.planner.repo_map", lambda repo: "offline map")
+
+    async def run(*args, **kwargs):
+        return WorkerTerminal(
+            ok=True, output='{"nodes":[{"node_id":"r","objective":"research","kind":"research"}]}'
+        )
+
+    events = EventLog(tmp_path / "run" / "events.jsonl")
+    await plan_with_failover(
+        "goal",
+        repo=tmp_path,
+        selector=selector,
+        executor=SimpleNamespace(run=run),
+        classifier=FailureIntelligence(),
+        events=events,
+        now=lambda: NOW,
+    )
+    event = next(e for e in events.read() if e.type == "plan_started")
+    assert event.data["selection_reason"] == "reserved_fallback_slot"
