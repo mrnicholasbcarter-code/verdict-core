@@ -26,6 +26,9 @@ Cycle order
 4. SUBSCRIPTION, METERED and UNKNOWN, liveness (chat) only;
 5. a small epsilon slice of cold providers (providers with no fresh entry).
 
+Within each pass, prefer pools with recent success or qualified session evidence.
+Active credential failures cool only their canonical pool through cache negatives.
+
 Each cycle stops at ``max_requests`` (default 300) or ``max_wall_seconds``
 (default 10 min), with concurrency 4. Every completed probe is persisted, so
 a crash keeps partial progress. The cursor records which ordering pass the
@@ -334,8 +337,8 @@ class CycleStats:
     negative: int = 0
     skipped_bucket: int = 0
     stopped_reason: str = ""
-    # BOD-297: True when the systemic-auth-outage breaker stopped the cycle
-    # (see ``Prober._note_auth_signal``). ``stopped_reason`` is also set to
+    # True when the gateway-auth-outage breaker stopped the cycle
+    # (see ``Prober._buffer_auth_failure``). ``stopped_reason`` is also set to
     # ``"auth_outage"`` in that case; this flag lets a caller branch on it by
     # name instead of matching the reason string.
     auth_outage: bool = False
@@ -634,7 +637,8 @@ def order_cycle(
     kept_id_set = set(kept_ids)
     cooled = _cooled_pools(cache, now)
     candidates = [
-        route for route in chat_routes
+        route
+        for route in chat_routes
         if route.route_id in kept_id_set and _pool_of(route) not in cooled
     ]
     candidate_ids = {route.route_id for route in candidates}
@@ -642,8 +646,10 @@ def order_cycle(
     warm = {
         entry.pool or pool_of(entry.route_id)
         for entry in cache.routes().values()
-        if (entry.last_success_at is not None
-            and timedelta(0) <= now - entry.last_success_at <= timedelta(hours=24))
+        if (
+            entry.last_success_at is not None
+            and timedelta(0) <= now - entry.last_success_at <= timedelta(hours=24)
+        )
         or agentic_capability(entry, now)["qualified"]
     }
     candidates.sort(key=lambda route: _pool_of(route) not in warm)
@@ -1272,7 +1278,7 @@ class Prober:
                 capacity_evidence=route.capacity_evidence,
             )
             if self._buffer_auth_failure(route, result, now, stats):
-                if stats.auth_outage:
+                if stats.auth_outage or stats.stopped_reason in {"request_cap", "wall_cap"}:
                     return
                 self._save_for_cycle(wall_start)
                 continue
