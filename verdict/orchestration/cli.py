@@ -853,11 +853,17 @@ def render_eligibility_text(payload: dict[str, Any]) -> str:
     ]
     cache = payload.get("health_cache")
     if cache is not None:
-        lines.append("health cache (full): " + "  ".join(
-            f"{state}={count}" for state, count in cache["counts_by_state"].items()))
-        lines.append("agentic-qualified by capacity: " + "  ".join(
-            f"{capacity}={count}" for capacity, count in
-            cache["agentic_qualified_by_capacity_class"].items()))
+        lines.append(
+            "health cache (full): "
+            + "  ".join(f"{state}={count}" for state, count in cache["counts_by_state"].items())
+        )
+        lines.append(
+            "agentic-qualified by capacity: "
+            + "  ".join(
+                f"{capacity}={count}"
+                for capacity, count in cache["agentic_qualified_by_capacity_class"].items()
+            )
+        )
     records = payload["verdicts"]
     selected_id = summary["selected"]
 
@@ -868,10 +874,16 @@ def render_eligibility_text(payload: dict[str, Any]) -> str:
             f"{r['capacity_class']:<13} reached={r['reached'] or '-':<13} "
             f"failed={r['failed_stage'] or '-':<13} reason={r['reason']}"
             + (f" cooldown_until={r['cooldown_until']}" if r["cooldown_until"] else "")
-            + (" capability=" + str(r["agentic_capability"]["source"])
-               + " child=" + str(r["agentic_capability"]["child_id"])
-               + " at=" + str(r["agentic_capability"]["checked_at"])
-               if r.get("agentic_capability") else "")
+            + (
+                " capability="
+                + str(r["agentic_capability"]["source"])
+                + " child="
+                + str(r["agentic_capability"]["child_id"])
+                + " at="
+                + str(r["agentic_capability"]["checked_at"])
+                if r.get("agentic_capability")
+                else ""
+            )
         )
 
     chosen = [r for r in records if r["route_id"] == selected_id]

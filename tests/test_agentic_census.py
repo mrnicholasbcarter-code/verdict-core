@@ -1,4 +1,5 @@
 """Offline regressions for trusted agentic evidence and user service setup."""
+
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -25,8 +26,14 @@ def worker_file(tmp_path, rows):
 
 
 def row(outcome="SESSION_CANARY_PASS", **extra):
-    return dict(route="kc/model:free", kind="session_canary_v1", child="sub-123",
-                ts=NOW.isoformat(), outcome=outcome, **extra)
+    return dict(
+        route="kc/model:free",
+        kind="session_canary_v1",
+        child="sub-123",
+        ts=NOW.isoformat(),
+        outcome=outcome,
+        **extra,
+    )
 
 
 def test_import_sessions_exact_route_provenance_and_idempotence(tmp_path):
@@ -50,8 +57,11 @@ def test_session_failure_revokes_qualification_without_rewriting_health(tmp_path
     from verdict.prove_at_rest import import_sessions
 
     cache = HealthCache(tmp_path / "health.json")
-    cache.record("kc/model:free", ProbeResult("ok", True, True,
-                 probe_class="agentic", agentic_ok=True), NOW - timedelta(seconds=1))
+    cache.record(
+        "kc/model:free",
+        ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True),
+        NOW - timedelta(seconds=1),
+    )
     cache.save()
     original = cache.entry("kc/model:free")
     import_sessions(worker_file(tmp_path, [row(failure)]), cache, now=NOW)
@@ -65,19 +75,32 @@ def test_import_does_not_replace_newer_evidence_or_accept_future(tmp_path):
     from verdict.prove_at_rest import import_sessions
 
     cache = HealthCache(tmp_path / "health.json")
-    cache.record("kc/model:free", ProbeResult("ok", True, True,
-                 probe_class="agentic", agentic_ok=True), NOW + timedelta(seconds=1))
+    cache.record(
+        "kc/model:free",
+        ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True),
+        NOW + timedelta(seconds=1),
+    )
     cache.save()
-    source = worker_file(tmp_path, [row("SESSION_FAIL"),
-        {**row(), "route": "future/model", "ts": (NOW + timedelta(days=1)).isoformat()}])
+    source = worker_file(
+        tmp_path,
+        [
+            row("SESSION_FAIL"),
+            {**row(), "route": "future/model", "ts": (NOW + timedelta(days=1)).isoformat()},
+        ],
+    )
     assert import_sessions(source, cache, now=NOW)["updated"] == 0
     assert cache.entry("kc/model:free").agentic_ok
     assert cache.entry("future/model") is None
 
 
 def test_importer_keeps_child_and_recognizes_failures(tmp_path):
-    source = worker_file(tmp_path, [row("SESSION_FAIL"),
-        {**row("REAL_TASK_PASS"), "kind": "free_real_task", "route": "free/model"}])
+    source = worker_file(
+        tmp_path,
+        [
+            row("SESSION_FAIL"),
+            {**row("REAL_TASK_PASS"), "kind": "free_real_task", "route": "free/model"},
+        ],
+    )
     items = import_worker_outcomes(source)
     assert [item.outcome for item in items] == ["fail", "pass"]
     assert all(item.child_id == "sub-123" for item in items)
@@ -89,8 +112,18 @@ def test_import_sessions_cli(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     source = worker_file(tmp_path, [row()])
     path = tmp_path / "cache.json"
-    monkeypatch.setattr("sys.argv", ["verdict", "prove-at-rest", "import-sessions", str(source),
-                                     "--state-path", str(path), "--json"])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "prove-at-rest",
+            "import-sessions",
+            str(source),
+            "--state-path",
+            str(path),
+            "--json",
+        ],
+    )
     main()
     assert json.loads(capsys.readouterr().out)["updated"] == 1
     assert HealthCache(path).entry("kc/model:free").agentic_ok
@@ -101,10 +134,11 @@ def test_service_dry_run_idempotence_and_uninstall(tmp_path):
 
     units = tmp_path / "units"
     calls = []
+
     def run(args):
         calls.append(args)
-    report = manage_service(unit_dir=units, interval=90, max_requests=12,
-                            dry_run=True, run=run)
+
+    report = manage_service(unit_dir=units, interval=90, max_requests=12, dry_run=True, run=run)
     assert not units.exists() and not calls
     service = report["files"]["verdict-prove-at-rest.service"]
     assert "prove-at-rest daemon --allow-live-probe" in service
@@ -121,8 +155,9 @@ def test_service_dry_run_idempotence_and_uninstall(tmp_path):
     manage_service(unit_dir=units, uninstall=True, run=run)
 
 
-@pytest.mark.parametrize("options", [{"interval": 0}, {"max_requests": 0},
-                                     {"interval": float("nan")}])
+@pytest.mark.parametrize(
+    "options", [{"interval": 0}, {"max_requests": 0}, {"interval": float("nan")}]
+)
 def test_service_rejects_unbounded_options_before_writes(tmp_path, options):
     from verdict.prove_at_rest_service import manage_service
 
@@ -135,8 +170,20 @@ def test_service_cli_dry_run_json(tmp_path, monkeypatch, capsys):
     from verdict.cli import main
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("sys.argv", ["verdict", "prove-at-rest", "install-service", "--interval", "45",
-                                     "--max-requests", "8", "--dry-run", "--json"])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "prove-at-rest",
+            "install-service",
+            "--interval",
+            "45",
+            "--max-requests",
+            "8",
+            "--dry-run",
+            "--json",
+        ],
+    )
     main()
     report = json.loads(capsys.readouterr().out)
     assert report["dry_run"] and report["files"]
@@ -149,21 +196,46 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
 
     cache = HealthCache(tmp_path / "health.json")
     for i in range(45):
-        cache.record(f"free/m{i}", ProbeResult("ok", True, True,
-                     capacity_evidence="free", probe_class="agentic", agentic_ok=True), NOW)
-    cache.record("sub/m", ProbeResult("ok", True, True,
-                 capacity_evidence="subscription", probe_class="agentic", agentic_ok=True), NOW)
-    cache.record("stale/m", ProbeResult("ok", True, True, capacity_evidence="free",
-                 probe_class="agentic", agentic_ok=True), NOW - timedelta(minutes=11))
+        cache.record(
+            f"free/m{i}",
+            ProbeResult(
+                "ok", True, True, capacity_evidence="free", probe_class="agentic", agentic_ok=True
+            ),
+            NOW,
+        )
+    cache.record(
+        "sub/m",
+        ProbeResult(
+            "ok",
+            True,
+            True,
+            capacity_evidence="subscription",
+            probe_class="agentic",
+            agentic_ok=True,
+        ),
+        NOW,
+    )
+    cache.record(
+        "stale/m",
+        ProbeResult(
+            "ok", True, True, capacity_evidence="free", probe_class="agentic", agentic_ok=True
+        ),
+        NOW - timedelta(minutes=11),
+    )
     cache.record("bad/m", ProbeResult("timeout", False, False), NOW)
     report = status_report(cache, now=NOW)
     assert report["counts_by_state"] == {"fresh": 46, "stale": 1, "negative": 1, "unprobed": 0}
     assert report["agentic_qualified_by_capacity_class"] == {
-        "free": 45, "subscription": 1, "metered": 0, "unknown": 0}
+        "free": 45,
+        "subscription": 1,
+        "metered": 0,
+        "unknown": 0,
+    }
     payload = eligibility_payload([], {}, None, {}, health_cache=cache, now=NOW)
     assert payload["health_cache"]["route_count"] == 48
     assert payload["health_cache"]["counts_by_state"] == report["counts_by_state"]
     from verdict.orchestration.cli import render_eligibility_text
+
     assert "free=45" in render_eligibility_text(payload)
 
 
@@ -172,34 +244,44 @@ def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):
 
     cache = HealthCache(tmp_path / "health.json")
     import_sessions(worker_file(tmp_path, [row()]), cache, now=NOW)
-    cache.record_liveness("kc/model:free", latency_ms=3, pool="kc",
-                          capacity_evidence="free", now=NOW + timedelta(seconds=10))
+    cache.record_liveness(
+        "kc/model:free",
+        latency_ms=3,
+        pool="kc",
+        capacity_evidence="free",
+        now=NOW + timedelta(seconds=10),
+    )
     cache.save()
     entry = HealthCache(cache.path).entry("kc/model:free")
     assert entry.agentic_checked_at == NOW
     assert entry.agentic_source and entry.agentic_child_id == "sub-123"
 
 
-@pytest.mark.parametrize("age,live_age,failure,eligible", [
-    (2, 0, False, True), (2, 11, False, False),
-    (2, 0, True, False), (8, 0, False, False),
-])
+@pytest.mark.parametrize(
+    "age,live_age,failure,eligible",
+    [(2, 0, False, True), (2, 11, False, False), (2, 0, True, False), (8, 0, False, False)],
+)
 def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, failure, eligible):
-    from tests.test_orch_eligibility import REQ, conn, make_ladder, row as model_row
+    from tests.test_orch_eligibility import REQ, conn, make_ladder
+    from tests.test_orch_eligibility import row as model_row
     from verdict.prove_at_rest import import_sessions
 
     route = "gl/glm-5"
-    source = worker_file(tmp_path, [{**row(), "route": route,
-                         "ts": (NOW - timedelta(days=age)).isoformat()}])
+    source = worker_file(
+        tmp_path, [{**row(), "route": route, "ts": (NOW - timedelta(days=age)).isoformat()}]
+    )
     cache = HealthCache(tmp_path / "health.json")
     import_sessions(source, cache, now=NOW)
     if failure:
         source.write_text(json.dumps({**row("FALSE_CLAIM"), "route": route}) + "\n")
         import_sessions(source, cache, now=NOW)
     cache.record(route, ProbeResult("ok", True, True), NOW - timedelta(minutes=live_age))
-    ladder, probe = make_ladder(tmp_path, [model_row(route, owned_by="glm")],
-                               [conn("glm", auth="apikey", plan="free", free_only=True)],
-                               health_cache=cache)
+    ladder, probe = make_ladder(
+        tmp_path,
+        [model_row(route, owned_by="glm")],
+        [conn("glm", auth="apikey", plan="free", free_only=True)],
+        health_cache=cache,
+    )
     # Read-only evaluation cannot silently refresh stale liveness.
     verdict = ladder.evaluate(REQ, now=NOW)[0]
     assert (verdict.reached is not None and verdict.reached.value == "TASK_ELIGIBLE") == eligible
@@ -213,8 +295,8 @@ def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, f
 
 
 def test_session_capability_ttl_is_configurable(tmp_path, monkeypatch):
-    from verdict.prove_at_rest import import_sessions
     from verdict.orchestration.health_cache import agentic_capability
+    from verdict.prove_at_rest import import_sessions
 
     source = worker_file(tmp_path, [{**row(), "ts": (NOW - timedelta(days=2)).isoformat()}])
     cache = HealthCache(tmp_path / "health.json")
@@ -225,8 +307,8 @@ def test_session_capability_ttl_is_configurable(tmp_path, monkeypatch):
 
 
 def test_session_capability_survives_failed_liveness_but_does_not_authorize_health(tmp_path):
-    from verdict.prove_at_rest import import_sessions
     from verdict.orchestration.health_cache import agentic_capability
+    from verdict.prove_at_rest import import_sessions
 
     cache = HealthCache(tmp_path / "health.json")
     import_sessions(worker_file(tmp_path, [row()]), cache, now=NOW)

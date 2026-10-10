@@ -590,8 +590,12 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         "scope": [p.strip() for p in scope.split(",") if p.strip()],
     }
     payload = eligibility_payload(
-        verdicts, selector.summary(), chosen, filters,
-        health_cache=getattr(selector, "_health_cache", None), now=now,
+        verdicts,
+        selector.summary(),
+        chosen,
+        filters,
+        health_cache=getattr(selector, "_health_cache", None),
+        now=now,
         capacity_class=lambda route_id: selector.capacity_class(route_id).value,
     )
     return ActionResult(data=payload)

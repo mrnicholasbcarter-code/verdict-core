@@ -651,9 +651,15 @@ class EligibilityLadder:
             lookup = cache.lookup(route_id, gate_now)
             proof = agentic_capability(lookup.entry, gate_now)
             if not proof["qualified"]:
-                if lookup.entry is None or (proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok):
+                if lookup.entry is None or (
+                    proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok
+                ):
                     return "no_agentic_probe"
-                return "session_capability_expired_or_revoked" if proof["source"] == "session_evidence" else "agentic_probe_stale"
+                return (
+                    "session_capability_expired_or_revoked"
+                    if proof["source"] == "session_evidence"
+                    else "agentic_probe_stale"
+                )
             # Current liveness remains the separate HEALTHY stage. Unknown
             # or stale health may use the existing bounded cheap probe.
             # Real session outcomes can narrow, never replace, probe qualification.

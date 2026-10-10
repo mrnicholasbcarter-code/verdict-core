@@ -1,4 +1,5 @@
 """Explicit, idempotent systemd user setup for the existing bounded prober."""
+
 from __future__ import annotations
 
 import math
@@ -23,8 +24,12 @@ def _systemctl(args: list[str]) -> None:
 
 
 def manage_service(
-    *, unit_dir: Path | None = None, interval: float = 300, max_requests: int = 300,
-    dry_run: bool = False, uninstall: bool = False,
+    *,
+    unit_dir: Path | None = None,
+    interval: float = 300,
+    max_requests: int = 300,
+    dry_run: bool = False,
+    uninstall: bool = False,
     run: Callable[[list[str]], None] = _systemctl,
 ) -> dict[str, Any]:
     """Render or apply user units. Dry-run never writes or invokes systemctl.
@@ -34,25 +39,44 @@ def manage_service(
     """
     if not math.isfinite(interval) or interval <= 0 or max_requests < 1:
         raise ValueError("interval and max-requests must be positive finite budgets")
-    directory = unit_dir or (Path(os.environ.get(
-        "XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user")
-    command = (f"{_quote(str(Path(sys.executable).absolute()))} -m verdict prove-at-rest daemon --allow-live-probe "
-               f"--interval {interval:g} --max-requests {max_requests} --max-wall-seconds 600")
-    files = {} if uninstall else {
-        SERVICE: ("[Unit]\nDescription=Verdict bounded background route proof\n"
-                  "[Service]\nType=simple\n"
-                  f"WorkingDirectory={_quote(str(Path(__file__).resolve().parent.parent))}\n"
-                  f"ExecStart={command}\nRestart=on-failure\nRestartSec=30\n"),
-        TIMER: ("[Unit]\nDescription=Start Verdict background route proof\n"
+    directory = unit_dir or (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user"
+    )
+    command = (
+        f"{_quote(str(Path(sys.executable).absolute()))} -m verdict prove-at-rest daemon --allow-live-probe "
+        f"--interval {interval:g} --max-requests {max_requests} --max-wall-seconds 600"
+    )
+    files = (
+        {}
+        if uninstall
+        else {
+            SERVICE: (
+                "[Unit]\nDescription=Verdict bounded background route proof\n"
+                "[Service]\nType=simple\n"
+                f"WorkingDirectory={_quote(str(Path(__file__).resolve().parent.parent))}\n"
+                f"ExecStart={command}\nRestart=on-failure\nRestartSec=30\n"
+            ),
+            TIMER: (
+                "[Unit]\nDescription=Start Verdict background route proof\n"
                 "[Timer]\nOnStartupSec=30\n"
                 f"OnUnitInactiveSec={interval:g}\nUnit={SERVICE}\n"
-                "[Install]\nWantedBy=timers.target\n"),
-    }
-    changed = (any((directory / name).exists() for name in (SERVICE, TIMER))
-               if uninstall else any(not (directory / name).exists() or
-                   (directory / name).read_text() != body for name, body in files.items()))
-    commands = ([["systemctl", "--user", "disable", "--now", TIMER, SERVICE]] if uninstall
-                and changed else [])
+                "[Install]\nWantedBy=timers.target\n"
+            ),
+        }
+    )
+    changed = (
+        any((directory / name).exists() for name in (SERVICE, TIMER))
+        if uninstall
+        else any(
+            not (directory / name).exists() or (directory / name).read_text() != body
+            for name, body in files.items()
+        )
+    )
+    commands = (
+        [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]]
+        if uninstall and changed
+        else []
+    )
     if not uninstall:
         commands.append(["systemctl", "--user", "enable", "--now", TIMER])
     if not dry_run:
@@ -74,5 +98,11 @@ def manage_service(
                 run(command_args)
             if changed:
                 run(["systemctl", "--user", "try-restart", SERVICE])
-    return {"unit_dir": str(directory), "files": files, "changed": changed,
-            "dry_run": dry_run, "uninstall": uninstall, "commands": commands}
+    return {
+        "unit_dir": str(directory),
+        "files": files,
+        "changed": changed,
+        "dry_run": dry_run,
+        "uninstall": uninstall,
+        "commands": commands,
+    }

@@ -236,8 +236,13 @@ _STAGE_ORDER = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE", "TASK_ELIGIBLE
 
 
 def eligibility_payload(
-    verdicts: Any, summary: dict[str, int], chosen: Any, filters: dict[str, list[str]],
-    *, health_cache: HealthCache | None = None, now: datetime | None = None,
+    verdicts: Any,
+    summary: dict[str, int],
+    chosen: Any,
+    filters: dict[str, list[str]],
+    *,
+    health_cache: HealthCache | None = None,
+    now: datetime | None = None,
     capacity_class: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Complete, self-reconciling eligibility record set (never truncated).
@@ -257,8 +262,11 @@ def eligibility_payload(
     full_summary["selected"] = chosen.route_id if chosen else None
     full_summary["by_reached_stage"] = buckets
     return {
-        "health_cache": (status_report(health_cache, now=now, capacity_class=capacity_class)
-                         if health_cache is not None else None),
+        "health_cache": (
+            status_report(health_cache, now=now, capacity_class=capacity_class)
+            if health_cache is not None
+            else None
+        ),
         "filters": filters,
         "evaluated_count": len(records),
         "summary": full_summary,

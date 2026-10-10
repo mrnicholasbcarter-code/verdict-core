@@ -4,4 +4,5 @@
 - [x] Add exact-route timestamp/source/child provenance.
 - [x] Add isolated service install/uninstall and dry-run JSON.
 - [x] Add full-cache eligibility counts and capacity classification.
-- [ ] Run focused pytest and ruff after host load1 drops below 6.
+- [x] Run focused pytest (64 passed), touched-file ruff check/format, and mypy
+  under the explicit operator load-gate override.

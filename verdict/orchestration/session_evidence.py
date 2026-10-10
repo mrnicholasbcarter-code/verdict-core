@@ -236,18 +236,28 @@ def import_worker_outcomes(jsonl_path: str | Path) -> list[SessionOutcome]:
             failure: str | None = None
             if kind == "session_canary_v1" and message.startswith("SESSION_CANARY_PASS"):
                 outcome = "pass"
-            elif kind == "session_canary_v1" and message.startswith(("SESSION_CANARY_FAIL", "SESSION_FAIL", "FALSE_CLAIM")):
+            elif kind == "session_canary_v1" and message.startswith(
+                ("SESSION_CANARY_FAIL", "SESSION_FAIL", "FALSE_CLAIM")
+            ):
                 outcome = "fail"
-                failure = ("false_success_claim" if message.startswith("FALSE_CLAIM")
-                           else _failure_class(str(raw.get("error") or ""), message))
+                failure = (
+                    "false_success_claim"
+                    if message.startswith("FALSE_CLAIM")
+                    else _failure_class(str(raw.get("error") or ""), message)
+                )
             elif kind == "free_real_task" and message.startswith(
                 ("REAL_TASK_PASS", "REAL_TASK_FIX_PASS")
             ):
                 outcome = "pass"
-            elif kind == "free_real_task" and message.startswith(("FALSE_CLAIM", "SESSION_FAIL", "SESSION_CANARY_FAIL")):
+            elif kind == "free_real_task" and message.startswith(
+                ("FALSE_CLAIM", "SESSION_FAIL", "SESSION_CANARY_FAIL")
+            ):
                 outcome = "fail"
-                failure = ("false_success_claim" if message.startswith("FALSE_CLAIM")
-                           else _failure_class(str(raw.get("error") or ""), message))
+                failure = (
+                    "false_success_claim"
+                    if message.startswith("FALSE_CLAIM")
+                    else _failure_class(str(raw.get("error") or ""), message)
+                )
             else:
                 continue
             item = SessionOutcome(

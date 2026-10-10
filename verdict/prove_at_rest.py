@@ -70,7 +70,6 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
-    agentic_capability,
     STATE_FRESH,
     STATE_NEGATIVE,
     STATE_STALE,
@@ -80,6 +79,7 @@ from verdict.orchestration.health_cache import (
     HealthCacheLockTimeoutError,
     HealthEntry,
     ProbeResult,
+    agentic_capability,
     default_cache_path,
 )
 
@@ -1955,7 +1955,7 @@ def build_live_daemon(
 
 
 def import_sessions(
-    ledger: str | Path, cache: HealthCache, *, now: datetime | None = None,
+    ledger: str | Path, cache: HealthCache, *, now: datetime | None = None
 ) -> dict[str, Any]:
     """Import trusted controller outcomes as exact-route agentic evidence.
 
@@ -1973,17 +1973,26 @@ def import_sessions(
         for item in sorted(outcomes, key=lambda item: (item.at, item.outcome == "fail")):
             if item.verified_by_controller and item.at <= current:
                 updated += store.record_agentic_evidence(
-                    item.route_id, passed=item.outcome == "pass", at=item.at,
-                    source=item.source, child_id=item.child_id,
+                    item.route_id,
+                    passed=item.outcome == "pass",
+                    at=item.at,
+                    source=item.source,
+                    child_id=item.child_id,
                 )
 
     cache.merge_and_save(mutate)
-    return {"cache_path": str(cache.path), "ledger": str(ledger),
-            "read": len(outcomes), "updated": updated}
+    return {
+        "cache_path": str(cache.path),
+        "ledger": str(ledger),
+        "read": len(outcomes),
+        "updated": updated,
+    }
 
 
 def status_report(
-    cache: HealthCache, *, now: datetime | None = None,
+    cache: HealthCache,
+    *,
+    now: datetime | None = None,
     capacity_class: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Counts by state and class, top healthy coding workers, cold providers."""
@@ -1999,8 +2008,11 @@ def status_report(
         evidence = entry.capacity_evidence or "unknown"
         proof = agentic_capability(entry, current)
         if proof["qualified"]:
-            capacity = (capacity_class(entry.route_id) if capacity_class is not None
-                        else (entry.capacity_evidence or "unknown").lower())
+            capacity = (
+                capacity_class(entry.route_id)
+                if capacity_class is not None
+                else (entry.capacity_evidence or "unknown").lower()
+            )
             agentic_by_class[capacity if capacity in agentic_by_class else "unknown"] += 1
 
         if state in {STATE_FRESH, STATE_STALE}:

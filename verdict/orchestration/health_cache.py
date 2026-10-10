@@ -394,8 +394,11 @@ class HealthEntry:
             probe_class=str(value.get("probe_class") or "single_call"),
             agentic_ok=value.get("agentic_ok") is True,
             session_agentic_ok=value.get("session_agentic_ok"),
-            session_agentic_at=(parse_datetime(value["session_agentic_at"], "session_agentic_at")
-                                if value.get("session_agentic_at") else None),
+            session_agentic_at=(
+                parse_datetime(value["session_agentic_at"], "session_agentic_at")
+                if value.get("session_agentic_at")
+                else None
+            ),
             agentic_source=value.get("agentic_source"),
             agentic_child_id=value.get("agentic_child_id"),
             agentic_checked_at=(
@@ -430,11 +433,14 @@ def agentic_capability(entry: HealthEntry | None, now: datetime) -> dict[str, An
             ttl = 0.0
     passed = (entry.session_agentic_ok if session else entry.agentic_ok) if entry else False
     qualified = bool(passed and checked is not None and 0 <= (now - checked).total_seconds() <= ttl)
-    return {"source": "session_evidence" if session else "agentic_probe",
-            "child_id": entry.agentic_child_id if session else None,
-            "checked_at": format_datetime(checked) if checked else None,
-            "qualified": qualified, "ttl_seconds": ttl,
-            "ledger": entry.agentic_source if session else None}
+    return {
+        "source": "session_evidence" if session else "agentic_probe",
+        "child_id": entry.agentic_child_id if session and entry is not None else None,
+        "checked_at": format_datetime(checked) if checked else None,
+        "qualified": qualified,
+        "ttl_seconds": ttl,
+        "ledger": entry.agentic_source if session and entry is not None else None,
+    }
 
 
 @dataclass(frozen=True)
@@ -1045,8 +1051,7 @@ class HealthCache:
     # -- write API ---------------------------------------------------------
 
     def record_agentic_evidence(
-        self, route: str, *, passed: bool, at: datetime, source: str,
-        child_id: str | None = None,
+        self, route: str, *, passed: bool, at: datetime, source: str, child_id: str | None = None
     ) -> bool:
         """Update exact-route qualification, never invent or refresh liveness.
 
@@ -1055,21 +1060,37 @@ class HealthCache:
         """
         current = _aware(at, "agentic_checked_at")
         previous = self._routes.get(route)
-        prior_at = (previous.session_agentic_at or previous.agentic_checked_at) if previous else None
-        prior_ok = (previous.session_agentic_ok if previous.session_agentic_at else previous.agentic_ok) if previous else None
+        prior_at = (
+            (previous.session_agentic_at or previous.agentic_checked_at) if previous else None
+        )
+        prior_ok = (
+            (previous.session_agentic_ok if previous.session_agentic_at else previous.agentic_ok)
+            if previous
+            else None
+        )
         if prior_at is not None:
             if current < prior_at:
                 return False
             if current == prior_at and (passed or not prior_ok):
                 return False
         base = previous or HealthEntry(
-            route_id=route, category="session_evidence", checked_at=current,
-            until=current, consecutive_failures=0, chat_ok=False, tool_ok=False,
+            route_id=route,
+            category="session_evidence",
+            checked_at=current,
+            until=current,
+            consecutive_failures=0,
+            chat_ok=False,
+            tool_ok=False,
         )
         self._routes[route] = replace(
-            base, probe_class="agentic", agentic_ok=passed,
-            agentic_checked_at=current, agentic_source=source, agentic_child_id=child_id,
-            session_agentic_ok=passed, session_agentic_at=current,
+            base,
+            probe_class="agentic",
+            agentic_ok=passed,
+            agentic_checked_at=current,
+            agentic_source=source,
+            agentic_child_id=child_id,
+            session_agentic_ok=passed,
+            session_agentic_at=current,
         )
         return True
 
@@ -1170,7 +1191,8 @@ class HealthCache:
                 failure_scope=result.failure_scope,
             )
         entry = replace(
-            entry, write_revision=previous.write_revision if previous else 0,
+            entry,
+            write_revision=previous.write_revision if previous else 0,
             agentic_source=previous.agentic_source if previous else None,
             agentic_child_id=previous.agentic_child_id if previous else None,
             session_agentic_ok=previous.session_agentic_ok if previous else None,
@@ -1213,13 +1235,23 @@ class HealthCache:
             healthy=True,
             identity=identity,
             last_success_at=current,
-            session_agentic_ok=(self._routes[route].session_agentic_ok if route in self._routes else None),
-            session_agentic_at=(self._routes[route].session_agentic_at if route in self._routes else None),
-            probe_class=(self._routes[route].probe_class if route in self._routes else "single_call"),
+            session_agentic_ok=(
+                self._routes[route].session_agentic_ok if route in self._routes else None
+            ),
+            session_agentic_at=(
+                self._routes[route].session_agentic_at if route in self._routes else None
+            ),
+            probe_class=(
+                self._routes[route].probe_class if route in self._routes else "single_call"
+            ),
             agentic_ok=(self._routes[route].agentic_ok if route in self._routes else False),
-            agentic_checked_at=(self._routes[route].agentic_checked_at if route in self._routes else None),
+            agentic_checked_at=(
+                self._routes[route].agentic_checked_at if route in self._routes else None
+            ),
             agentic_source=(self._routes[route].agentic_source if route in self._routes else None),
-            agentic_child_id=(self._routes[route].agentic_child_id if route in self._routes else None),
+            agentic_child_id=(
+                self._routes[route].agentic_child_id if route in self._routes else None
+            ),
             write_revision=(self._routes[route].write_revision if route in self._routes else 0),
         )
         self._routes[route] = entry

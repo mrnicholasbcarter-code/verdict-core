@@ -4231,8 +4231,12 @@ def cmd_prove_at_rest(
         from verdict.prove_at_rest_service import manage_service
 
         try:
-            data = manage_service(interval=interval, max_requests=max_requests, dry_run=dry_run,
-                                  uninstall=prove_command == "uninstall-service")
+            data = manage_service(
+                interval=interval,
+                max_requests=max_requests,
+                dry_run=dry_run,
+                uninstall=prove_command == "uninstall-service",
+            )
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(json.dumps({"error": str(exc)}))
             raise SystemExit(2) from exc
@@ -4247,12 +4251,17 @@ def cmd_prove_at_rest(
         try:
             if ledger is None:
                 raise ValueError("trusted controller ledger is required")
-            data = import_sessions(ledger, HealthCache(state_path or default_cache_path()))
+            data = import_sessions(
+                ledger, HealthCache(Path(state_path) if state_path else default_cache_path())
+            )
         except (OSError, ValueError, TypeError, KeyError) as exc:
             print(json.dumps({"error": str(exc)}))
             raise SystemExit(2) from exc
-        print(json.dumps(data, indent=2, sort_keys=True) if output_json else
-              f"Imported {data['updated']} agentic results from {data['ledger']}")
+        print(
+            json.dumps(data, indent=2, sort_keys=True)
+            if output_json
+            else f"Imported {data['updated']} agentic results from {data['ledger']}"
+        )
         return
 
     if prove_command == "census":
