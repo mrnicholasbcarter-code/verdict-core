@@ -657,3 +657,16 @@ def test_catalog_chat_capabilities_override_non_chat_markers(
 def test_explicit_non_chat_type_and_silent_marker_fallback() -> None:
     assert is_non_chat_route("x/vision", {"type": "image"})
     assert is_non_chat_route("x/bge-reranker", {"capabilities": {}})
+
+
+@pytest.mark.parametrize(
+    "wrapped, inner",
+    [
+        ("no-think/cc/claude-haiku", "cc/claude-haiku"),
+        ("no-think/claude/claude-haiku", "claude/claude-haiku"),
+        ("no-think/kr/claude-haiku", "kr/claude-haiku"),
+        ("no-think/agy/claude-haiku", "agy/claude-haiku"),
+    ],
+)
+def test_no_think_wrapper_uses_inner_credential_pool(wrapped, inner):
+    assert pool_of(wrapped) == pool_of(inner)

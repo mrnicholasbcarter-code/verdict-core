@@ -808,12 +808,19 @@ def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, scope):
         verdict = by_route(ladder.evaluate(req, now=NOW))[alias]
         assert verdict.reason == "cooldown:pool"
         assert verdict.cooldown_scope == "pool:claude"
-        assert ladder.dispatch_blocker(alias, now=NOW + timedelta(seconds=61)) is None
+        expired = NOW + timedelta(seconds=61)
+        assert ladder.dispatch_blocker(alias, now=expired) is None
+        assert by_route(ladder.evaluate(req, now=expired))[alias].failed_stage is None
     assert not probe.calls
 
 
 def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
-    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/cc/claude-haiku", "kr/claude-haiku"]
+    routes = [
+        "cc/claude-haiku",
+        "claude/claude-haiku",
+        "no-think/cc/claude-haiku",
+        "kr/claude-haiku",
+    ]
     ladder, _ = make_ladder(
         tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
     )

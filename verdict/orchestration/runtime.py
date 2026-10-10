@@ -33,7 +33,6 @@ from verdict.orchestration.candidate_builder import (
 )
 from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
-from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.contracts import (
     TRANSITIONS,
     CapacityClass,
@@ -59,6 +58,7 @@ from verdict.orchestration.contracts import (
     route_provider,
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv

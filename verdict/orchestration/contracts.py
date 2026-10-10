@@ -369,7 +369,7 @@ class RouteVerdict:
     # "plan_label", "zero_pricing", "positive_pricing") or "unknown:<reason>".
     capacity_evidence: str = ""
     # cooldown_scope: the key under which the cooldown was recorded
-    # ("route:<canonical_id>" or "provider:<name>"), never an email or token.
+    # ("route:<id>", "provider:<name>", or "pool:<name>"), never an email or token.
     cooldown_scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:

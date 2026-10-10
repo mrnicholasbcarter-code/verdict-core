@@ -563,13 +563,14 @@ def test_worker_prompt_forbids_summary_files(tmp_path, kind):
 async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
     import json
 
-    left, right = _impl_node("left", owned=("shared.py",)), _impl_node("right", owned=("shared.py",))
+    left = _impl_node("left", owned=("shared.py",))
+    right = _impl_node("right", owned=("shared.py",))
     bad = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
     right = _impl_node("right", owned=("shared.py",), depends_on=("left",))
     good = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
-    executor = _ScriptedExecutor([
-        WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)
-    ])
+    executor = _ScriptedExecutor(
+        [WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)]
+    )
     await FrontierPlanner().plan("g", repo=tmp_path, executor=executor, route_id="cc/s")
     prompt = executor.calls[1]
     assert "concurrent nodes left and right both own ['shared.py']" in prompt

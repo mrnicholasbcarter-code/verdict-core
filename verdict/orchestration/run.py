@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.http_safety import open_no_redirect
-from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.contracts import (
     FailureClassifier,
     ModelSelector,
@@ -45,6 +44,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
     route_provider,
 )
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
 
 if TYPE_CHECKING:
