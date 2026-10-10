@@ -56,6 +56,12 @@ def planted_environment(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+
+    # Bridge configuration writes instructions into cwd, not only HOME.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
 
     verdict_dir = home / ".verdict"
     verdict_dir.mkdir()
@@ -207,6 +213,8 @@ def test_hook_configure_no_leak(planted_environment):
     """hook.configure: writes config, doesn't leak existing secrets."""
     # Run with a dummy hook to avoid network
     result = run_action("hook.configure", {"hook_name": "test-hook", "enabled": False})
+    assert result.ok
+    assert (planted_environment["home"].parent / "repo" / "CLAUDE.md").is_file()
     assert_no_secret_leak(result, "hook.configure")
     # VACUOUS: configure writes, does not read and return secrets
 

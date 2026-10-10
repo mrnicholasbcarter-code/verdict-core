@@ -26,6 +26,9 @@ Cycle order
 4. SUBSCRIPTION, METERED and UNKNOWN, liveness (chat) only;
 5. a small epsilon slice of cold providers (providers with no fresh entry).
 
+Within each pass, prefer pools with recent success or qualified session evidence.
+Active credential failures cool only their canonical pool through cache negatives.
+
 Each cycle stops at ``max_requests`` (default 300) or ``max_wall_seconds``
 (default 10 min), with concurrency 4. Every completed probe is persisted, so
 a crash keeps partial progress. The cursor records which ordering pass the
@@ -45,6 +48,7 @@ One bucket per provider/pool, shared with real calls through
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import threading
@@ -57,6 +61,7 @@ from typing import Any
 
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import CapacityClass
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
@@ -333,8 +338,8 @@ class CycleStats:
     negative: int = 0
     skipped_bucket: int = 0
     stopped_reason: str = ""
-    # BOD-297: True when the systemic-auth-outage breaker stopped the cycle
-    # (see ``Prober._note_auth_signal``). ``stopped_reason`` is also set to
+    # True when the gateway-auth-outage breaker stopped the cycle
+    # (see ``Prober._buffer_auth_failure``). ``stopped_reason`` is also set to
     # ``"auth_outage"`` in that case; this flag lets a caller branch on it by
     # name instead of matching the reason string.
     auth_outage: bool = False
@@ -582,8 +587,19 @@ def model_identity_matches(route_id: str, reported: str) -> bool:
     return reported in (route_id, route_suffix)
 
 
-def _pool_of(route: AdmittedRoute) -> str | None:
-    return route.pool
+def _pool_of(route: AdmittedRoute) -> str:
+    return route.pool or pool_of(route.route_id)
+
+
+def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
+    """Derive pool cooldowns from existing active negatives, never a second store."""
+    return {
+        entry.pool or pool_of(entry.route_id)
+        for entry in cache.routes().values()
+        if entry.state_at(now) == STATE_NEGATIVE
+        and entry.category in POOL_COOLDOWN_CATEGORIES
+        and entry.failure_scope != "route"
+    }
 
 
 def order_cycle(
@@ -620,8 +636,24 @@ def order_cycle(
     chat_routes = [route for route in routes if not route.non_chat]
     kept_ids, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
     kept_id_set = set(kept_ids)
-    candidates = [route for route in chat_routes if route.route_id in kept_id_set]
+    cooled = _cooled_pools(cache, now)
+    candidates = [
+        route
+        for route in chat_routes
+        if route.route_id in kept_id_set and _pool_of(route) not in cooled
+    ]
     candidate_ids = {route.route_id for route in candidates}
+    # Evidence is advisory: prefer warm pools within each existing ordering pass.
+    warm = {
+        entry.pool or pool_of(entry.route_id)
+        for entry in cache.routes().values()
+        if (
+            entry.last_success_at is not None
+            and timedelta(0) <= now - entry.last_success_at <= timedelta(hours=24)
+        )
+        or agentic_capability(entry, now)["qualified"]
+    }
+    candidates.sort(key=lambda route: _pool_of(route) not in warm)
 
     by_id = {route.route_id: route for route in candidates}
     half_open: list[AdmittedRoute] = []
@@ -699,7 +731,7 @@ def _round_robin(routes: Sequence[AdmittedRoute]) -> list[AdmittedRoute]:
     """Spread never-probed FREE routes across canonical credential buckets."""
     groups: dict[str, list[AdmittedRoute]] = {}
     for route in routes:
-        key = route.pool or route.provider
+        key = _pool_of(route)
         groups.setdefault(key, []).append(route)
     queues = list(groups.values())
     if not queues:
@@ -777,10 +809,12 @@ class Prober:
     on_cycle_error: Callable[[Exception], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
-    # BOD-297 systemic-auth-outage breaker: a burst of 401/403 across many
-    # pools in one cycle means the gateway key itself is broken, not the
-    # routes (the 2026-10-09 controller census lesson). Thresholds are
-    # tunable for tests; the defaults match the story's acceptance numbers.
+    # BOD-338: confirm the gateway key independently of provider credentials.
+    # Offline/injected transports without a checker use a majority-pool fallback.
+    gateway_auth_check: Callable[[float], ProbeExchange] | None = None
+    _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
+    _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
+    _cycle_started: float = field(default=0.0, init=False, repr=False)
     auth_outage_consecutive: int = 5
     auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -813,6 +847,8 @@ class Prober:
         stats = CycleStats()
         self._auth_fail_pools = []  # fresh auth-outage window per cycle
         self._auth_fail_buffer = []
+        self._gateway_auth_result = None
+        self._cycle_started = started
         try:
             return self._run_once(started, stats)
         except HealthCacheLockTimeoutError:
@@ -823,6 +859,7 @@ class Prober:
         now = self.clock()
         routes = list(self.routes_loader())
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
+        self._cycle_pools = {_pool_of(route) for route, _kind in ordered}
         # Defect 2 fix: resume by route_id set, not by index.
         # If routes reorder or disappear between cycles the index-based cursor
         # would skip unprobed routes; a probed-ids set is order-independent.
@@ -869,7 +906,8 @@ class Prober:
         if not stats.auth_outage and stats.requests < self.max_requests:
             self.run_agentic_probes(stats, started=started, planned_routes=[r for r, _ in ordered])
         if not stats.auth_outage:
-            self._flush_auth_fail_buffer(stats)
+            if self.gateway_auth_check is None or self._gateway_auth_result is not None:
+                self._flush_auth_fail_buffer(stats)
             self._save_for_cycle(started)
         return stats
 
@@ -891,11 +929,32 @@ class Prober:
                 self._flush_auth_fail_buffer(stats)
             return False
         self._auth_fail_buffer.append((route.route_id, result, now))
-        self._auth_fail_pools.append(route.pool or route.provider)
-        if (
-            len(self._auth_fail_pools) >= self.auth_outage_consecutive
-            and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
-        ):
+        self._auth_fail_pools.append(_pool_of(route))
+        if self.gateway_auth_check is not None:
+            if self._gateway_auth_result is None:
+                remaining = self.max_wall_seconds - (self.monotonic() - self._cycle_started)
+                if stats.requests >= self.max_requests or remaining <= 0:
+                    # Confirmation cannot run within budget. Keep the buffer unwritten.
+                    stats.stopped_reason = "request_cap" if remaining > 0 else "wall_cap"
+                    return True
+                stats.requests += 1
+                try:
+                    self._gateway_auth_result = self.gateway_auth_check(
+                        min(self.probe_timeout_seconds, remaining)
+                    )
+                except (TimeoutError, OSError, http.client.HTTPException):
+                    # Transport or protocol errors never prove an auth outage.
+                    self._gateway_auth_result = ProbeExchange(http_status=None, ok=False)
+            outage = self._gateway_auth_result.http_status in (401, 403)
+            if not outage:
+                self._flush_auth_fail_buffer(stats)
+        else:
+            outage = (
+                len(self._auth_fail_pools) >= self.auth_outage_consecutive
+                and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
+                and len(set(self._auth_fail_pools)) > len(self._cycle_pools) / 2
+            )
+        if outage:
             self._auth_fail_buffer = []
             self._auth_fail_pools = []
             stats.auth_outage = True
@@ -954,6 +1013,8 @@ class Prober:
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
     ) -> bool:
         now = self.clock()
+        if _pool_of(route) in _cooled_pools(self.cache, now):
+            return True
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1
             return True  # no token: skipped this cycle, entry unchanged
@@ -1047,7 +1108,7 @@ class Prober:
             identity=_identity,
         )
         if self._buffer_auth_failure(route, result, now, stats):
-            return not stats.auth_outage
+            return not stats.auth_outage and stats.stopped_reason not in {"request_cap", "wall_cap"}
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
         # tool_ok, so record it as a successful liveness entry directly.
@@ -1126,6 +1187,9 @@ class Prober:
                     self.routes_loader(), self.cache, now, epsilon=self.epsilon
                 )
             ]
+        self._cycle_started = wall_start
+        if not self._cycle_pools:
+            self._cycle_pools = {_pool_of(route) for route in planned_routes}
         routes = [r for r in planned_routes if self._needs_agentic(r, now)]
         probed = 0
         max_agentic = min(8, self.max_requests - stats.requests)
@@ -1139,6 +1203,8 @@ class Prober:
             if stats.requests + 3 > self.max_requests:
                 break
             now = self.clock()
+            if _pool_of(route) in _cooled_pools(self.cache, now):
+                continue
             # Consume one bucket token before each turn, stop when empty.
             if not self.cache.consume(route.provider, now, pool=route.pool):
                 continue
@@ -1214,7 +1280,7 @@ class Prober:
                 capacity_evidence=route.capacity_evidence,
             )
             if self._buffer_auth_failure(route, result, now, stats):
-                if stats.auth_outage:
+                if stats.auth_outage or stats.stopped_reason in {"request_cap", "wall_cap"}:
                     return
                 self._save_for_cycle(wall_start)
                 continue
@@ -1234,7 +1300,9 @@ class Prober:
                 stats.fresh += 1
             else:
                 stats.negative += 1
-        if self._auth_fail_buffer:
+        if self._auth_fail_buffer and (
+            self.gateway_auth_check is None or self._gateway_auth_result is not None
+        ):
             self._flush_auth_fail_buffer(stats)
             self._save_for_cycle(wall_start)
 
@@ -1432,6 +1500,34 @@ def live_agentic_transport(
             return ProbeExchange(http_status=None, ok=False, error_category="timeout")
 
     return transport
+
+
+def live_gateway_auth_check(
+    base_url: str, *, api_key: str | None
+) -> Callable[[float], ProbeExchange]:
+    """Check gateway credentials without contacting a model or following redirects."""
+    import urllib.error
+    import urllib.request
+
+    endpoint = base_url.rstrip("/")
+    if not endpoint.endswith("/v1"):
+        endpoint += "/v1"
+    endpoint += "/models"
+
+    def check(timeout_seconds: float) -> ProbeExchange:
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(endpoint, headers=headers, method="GET")
+        try:
+            with open_no_redirect(request, timeout=timeout_seconds) as response:
+                return ProbeExchange(http_status=response.status, ok=response.status == 200)
+        except urllib.error.HTTPError as exc:
+            return ProbeExchange(http_status=exc.code, ok=False)
+        except (OSError, http.client.HTTPException):
+            return ProbeExchange(http_status=None, ok=False)
+
+    return check
 
 
 def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
@@ -1924,11 +2020,13 @@ def build_live_daemon(
         origin = normalize_omniroute_origin(found[0])
         key = api_key if api_key is not None else found[1]
 
-    def loader() -> tuple[AdmittedRoute, ...]:
+    if key is None:
         from verdict.orchestration.run import resolve_api_key
 
-        resolved = key if key is not None else resolve_api_key()
-        return load_admitted_routes(origin, api_key=resolved)
+        key = resolve_api_key()
+
+    def loader() -> tuple[AdmittedRoute, ...]:
+        return load_admitted_routes(origin, api_key=key)
 
     cache = HealthCache(cache_path or default_cache_path())
     chosen = transport if transport is not None else live_transport(origin, api_key=key)
@@ -1945,6 +2043,9 @@ def build_live_daemon(
         probe_timeout_seconds=probe_timeout_seconds,
         interval_seconds=interval_seconds,
         agentic_transport=agentic,
+        gateway_auth_check=(
+            live_gateway_auth_check(origin, api_key=key) if transport is None else None
+        ),
     )
     return ProverDaemon(prober=prober, consented=allow_live_probe)
 
