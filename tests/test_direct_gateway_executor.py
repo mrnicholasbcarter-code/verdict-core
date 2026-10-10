@@ -1123,3 +1123,95 @@ def test_empty_existing_owned_file_is_labelled_not_new(tmp_path: Path) -> None:
     assert "pkg/__init__.py (EXISTS and is EMPTY" in prompt
     assert "do NOT use 'new file mode'" in prompt
     assert "pkg/new.py (does not exist yet" in prompt
+
+
+@pytest.mark.asyncio
+async def test_file_blocks_apply_complete_contents(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    (tmp_path / "empty.py").write_text("old\n")
+    (tmp_path / "unowned.py").write_text("untouched\n")
+    output = (
+        "FILE: owned.py\n```python\ndef f():\n    return 1\n```\n"
+        "FILE: pkg/new.py\n```python\nvalue = 2\n```\n"
+        "FILE: empty.py\n```\n```\nRESULT: DONE"
+    )
+    exe = DirectGatewayExecutor()
+    result = await _run_with_transport(
+        exe, FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py", "pkg/new.py", "empty.py"]), "cc/test", tmp_path,
+    )
+    assert result.ok, result.error
+    assert (tmp_path / "owned.py").read_text() == "def f():\n    return 1\n"
+    assert (tmp_path / "pkg/new.py").read_text() == "value = 2\n"
+    assert (tmp_path / "empty.py").read_text() == ""
+    assert (tmp_path / "unowned.py").read_text() == "untouched\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "owned", "error"),
+    [
+        ("secret.py", ["owned.py"], "outside owned_files"),
+        ("../escape.py", ["../escape.py"], "invalid path"),
+        ("sub/../owned.py", ["sub/../owned.py"], "invalid path"),
+        ("/tmp/escape.py", ["/tmp/escape.py"], "invalid path"),
+        (".git/config", [".git/config"], "invalid path"),
+    ],
+)
+async def test_file_blocks_unsafe_path_rejected(
+    tmp_path: Path, path: str, owned: list[str], error: str,
+) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    output = f"FILE: owned.py\n```\nnew\n```\nFILE: {path}\n```\npwned\n```"
+    result = await _run_with_transport(
+        DirectGatewayExecutor(), FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py", *owned]), "cc/test", tmp_path,
+    )
+    assert not result.ok
+    assert "diff_rejected:" in result.error
+    assert error in result.error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_link", [False, True])
+async def test_file_blocks_symlink_escape_rejected(tmp_path: Path, parent_link: bool) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "owned.py").write_text("safe\n")
+    rel = "link/owned.py" if parent_link else "owned.py"
+    (worktree / ("link" if parent_link else "owned.py")).symlink_to(
+        outside if parent_link else outside / "owned.py", target_is_directory=parent_link,
+    )
+    output = f"FILE: {rel}\n```python\npwned\n```"
+    result = await _run_with_transport(
+        DirectGatewayExecutor(), FakeTransport(200, _ok_response(output)),
+        _implement_prompt([rel]), "cc/test", worktree,
+    )
+    assert not result.ok
+    assert "diff_rejected:" in result.error
+    assert "symlink" in result.error
+    assert (outside / "owned.py").read_text() == "safe\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block", ["FILE: owned.py\nx = 1", "FILE: owned.py\n```python\nx = 1"])
+async def test_file_blocks_missing_fence_rejected(tmp_path: Path, block: str) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    result = await _run_with_transport(
+        DirectGatewayExecutor(), FakeTransport(200, _ok_response(block)),
+        _implement_prompt(["owned.py"]), "cc/test", tmp_path,
+    )
+    assert not result.ok
+    assert "diff_rejected: malformed FILE block" in result.error
+    assert "fence" in result.error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+
+
+def test_file_prompt_requests_complete_contents(tmp_path: Path) -> None:
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff("TASK", ["new.py"], tmp_path)
+    assert "FILE: <relative path>" in prompt
+    assert "COMPLETE" in prompt
+    assert "no diffs" in prompt
