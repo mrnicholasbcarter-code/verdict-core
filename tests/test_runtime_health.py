@@ -109,5 +109,8 @@ def test_cli_runtime_explain_is_machine_readable(
     cli.main()
     report = json.loads(capsys.readouterr().out)
     assert report["schema_version"] == "1"
-    assert report["status"] in {"unknown", "degraded", "ready", "blocked"}
-    assert report["observations"]
+    # No managed services are configured by default since the Ruflo/RuVector
+    # removal, so nothing is observed and the status is honestly "unknown".
+    assert report["status"] == "unknown"
+    assert report["observations"] == []
+    assert report["errors"] == []
