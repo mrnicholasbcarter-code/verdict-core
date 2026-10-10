@@ -152,3 +152,25 @@ def test_account_binding_does_not_use_a_healthy_sibling():
     view = project_verified_models([row], [blocked, sibling], EvidenceSnapshots(), now=NOW)
     assert view.rows[0].status.value == "UNAVAILABLE"
     assert not admit([row], [blocked, sibling], None, now=NOW, require_runtime=False).ids
+
+
+def test_snapshot_success_hint_supersedes_429_without_authorizing_launch():
+    from datetime import timedelta
+
+    from verdict.admission import RuntimeEvidence, RuntimeObservation
+
+    conn = connection()
+    conn.pop("rateLimitedUntil")
+    conn["updatedAt"] = (NOW - timedelta(seconds=10)).isoformat()
+    runtime = RuntimeEvidence(
+        (
+            RuntimeObservation(
+                "route:cc/sonnet", "success_hint", "ok", "health_cache", observed_at=NOW.isoformat()
+            ),
+        ),
+        ("health_cache",),
+    )
+    result = admit([ROW], [conn], runtime, now=NOW)
+    assert result.ids == frozenset({"cc/sonnet"})
+    assert result.records[0].health == "unknown"
+    assert not result.records[0].proven_healthy

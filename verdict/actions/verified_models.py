@@ -101,6 +101,17 @@ def _runtime_negatives(evidence: EvidenceSnapshots, now: datetime) -> RuntimeEvi
         )
 
     for row in evidence.at_rest.values():
+        if row.healthy:
+            # Timestamp-only supersession hint: never a healthy admission state.
+            observations.append(
+                RuntimeObservation(
+                    f"route:{row.route_id}",
+                    "success_hint",
+                    "ok",
+                    "health_cache",
+                    observed_at=(row.last_success_at or row.checked_at).isoformat(),
+                )
+            )
         if not row.healthy:
             add(f"route:{row.route_id}", row.category, "health_cache", row.until)
     for ladder_row in evidence.ladder_health.values():

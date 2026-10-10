@@ -870,7 +870,7 @@ def _judge(
             (
                 stamp
                 for o in route_obs
-                if o.state == "healthy"
+                if o.state in {"healthy", "success_hint"}
                 if (stamp := _parse_iso(o.observed_at)) is not None
             ),
             default=None,
