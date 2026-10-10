@@ -61,7 +61,7 @@ body:
         - API server (FastAPI)
         - CLI
         - Contracts
-        - Intelligence/RuVector
+        - Intelligence
         - Swarm/Dispatcher
         - Tests/CI
     validations:

@@ -975,6 +975,10 @@ def test_cli_documentation_json_surfaces_blocked_state(
 ) -> None:
     import sys
 
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("# Decision requiring ingestion")
+
     monkeypatch.setattr(dd, "_omniroute_api_request", lambda *args, **kwargs: None)
     monkeypatch.setattr(dd, "_read_omniroute_token", lambda: None)
     monkeypatch.setattr(cli, "console", cli.Console(quiet=True))
@@ -1032,22 +1036,17 @@ def test_cli_runtime_plan_is_json_and_read_only(
     assert not any(state_dir.glob("*.ownership.json"))
 
 
-def test_cli_runtime_apply_requires_explicit_consent(
+def test_cli_runtime_default_apply_is_documented_noop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import sys
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["verdict", "runtime", "reconcile", "--apply", "--service", "ruflo-mcp", "--json"],
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 2
-    assert "explicit consent" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["verdict", "runtime", "reconcile", "--apply", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["services"] == []
+    assert "no managed services configured" in report["message"]
+    assert "deprecated" in report["message"]
 
 
 def test_cli_memory_docs_json_reports_repaired_state(
@@ -2646,3 +2645,39 @@ def test_cli_doctor_fix_leaves_gateway_issue_when_not_uniquely_detectable(
     assert saved["schema_version"] == 1
     assert "gateway_url" not in saved
     assert not (cfg_dir / "credentials.env").exists()
+
+
+def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    import verdict.documentation_preflight as preflight
+
+    discover = preflight.discover_sources
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(preflight, "discover_sources", discover)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    for name in (
+        "VERDICT_RUFLO_ROOT",
+        "VERDICT_RUVECTOR_ROOT",
+        "VERDICT_RUFLO_REF",
+        "VERDICT_RUVECTOR_REF",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("# Local decision")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("documentation preflight must not fetch removed products")
+
+    monkeypatch.setattr(preflight, "_download", forbidden)
+    assert preflight.run_documentation_preflight(fix=True).passed
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["documentation_preflight"]["status"] == "ready"
+    assert report["documentation_preflight"]["sources"] == 1
+    assert "authoritative documentation preflight did not pass" not in report["issues"]

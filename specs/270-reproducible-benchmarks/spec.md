@@ -1,5 +1,7 @@
 # Feature Specification: Reproducible direct-vs-Verdict benchmarks
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 ## Issue
 
 GitHub issue #270, V1-007 / BENCH-001 minimal.

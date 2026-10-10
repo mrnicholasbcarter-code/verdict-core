@@ -88,6 +88,7 @@ docs/proof/private_*
 
 # Generated local runtime state (see CLAUDE.md "Generated Artifacts")
 .pi/
+# Removed integration output; preserve users' existing files.
 .ruvector/
 .verdict-memory-mission/
 scripts/demo-results.json

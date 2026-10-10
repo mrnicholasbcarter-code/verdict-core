@@ -1,5 +1,7 @@
 # ADR-035: Authorized selected-route dispatch (post-swarm)
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** Accepted — successor to ADR-023
 - **Lifecycle:** PARTIALLY_TRUE (cross-repo ADR lifecycle audit evidence bar: source/test present; withholding CURRENT until ecosystem re-audit)
 - **Date:** 2026-09-24

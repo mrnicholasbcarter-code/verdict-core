@@ -1,5 +1,7 @@
 > **Status: SUPERSEDED** (see [ADR-035](ADR-035-authorized-selected-route-dispatch.md)) — Ruflo swarm dispatch and neural/SONA selection are obsolete Core architecture and were deleted. Canonical serve path is execution-path strategy authority → optimized dispatch → `verdict.dispatcher` authorized `selected_route` only. Docs hygiene continues under the ongoing documentation-hygiene pass.
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 # ADR-ORCHESTRATOR-ROUTING: Orchestrator-Driven Model Selection with Deterministic Enforcement
 
 - **Status**: SUPERSEDED

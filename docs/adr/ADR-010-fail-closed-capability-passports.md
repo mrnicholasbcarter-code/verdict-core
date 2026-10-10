@@ -1,5 +1,7 @@
 # ADR-010: Fail-closed capability passports for exact executable routes
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** Accepted — v1 contract implemented in #167
 - **Date:** 2026-07-29
 - **Related:** [ADR-001](ADR-001-evidence-ledger.md), [ADR-007](ADR-007-omniroute-catalog-qualification.md), [#106](https://github.com/mrnicholasbcarter-code/verdict-core/issues/106), [#167](https://github.com/mrnicholasbcarter-code/verdict-core/issues/167)

@@ -315,12 +315,12 @@ class TestMemoryDocs:
 
     def test_structure(self, tmp_path: Path) -> None:
         stdout, _, ec = _run_verdict(["memory", "docs"], _home(tmp_path))
-        assert ec == 1
+        assert ec == 0
         assert "Memory / docs" in stdout or "documentation" in stdout.lower()
 
     def test_json_structure(self, tmp_path: Path) -> None:
         stdout, _, ec = _run_verdict(["memory", "docs", "--json"], _home(tmp_path))
-        assert ec == 1
+        assert ec == 0
         data = json.loads(stdout)
         assert "errors" in data or "operation" in data
 

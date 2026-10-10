@@ -1,5 +1,7 @@
 # CLI Setup DX Research — Feature 339
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 _Research agent: core-cli-research. Updated: 2026-09-05._
 
 ---

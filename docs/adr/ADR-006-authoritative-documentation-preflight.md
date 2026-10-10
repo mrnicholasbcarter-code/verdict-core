@@ -1,5 +1,7 @@
 # ADR-006: Authoritative documentation preflight before implementation
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** Accepted — implemented in #152/PR #154 and reconciled by #156; integrity hardening tracked by #158
 - **Date:** 2026-07-28
 - **Decision owners:** Verdict Core maintainers

@@ -708,3 +708,24 @@ Verdict admission, launches it, and restarts within the retry budget on failure.
 The CLI raises `SystemExit(1|2|3)` only. There is no shipped exit code `4` or `5`.
 Empty eligibility is reported in the receipt / command output and typically exits
 non-zero via the general error path rather than a dedicated code.
+
+
+### Removed integrations and runtime compatibility
+
+Ruflo and RuVector integrations are removed. Documentation preflight inventories
+only the current project's authoritative docs. It does not require external
+checkouts, root/ref settings, or network access for those removed products.
+Use `verdict memory docs --fix` or `verdict doctor --fix` to ingest local docs.
+A fresh memory database still needs ingestion; real missing/stale docs fail closed.
+
+The public `runtime status`, `runtime explain`, and `runtime reconcile` commands
+remain available. Default service specifications are empty. With no managed
+services, `runtime reconcile --apply` is a deprecated no-op: it prints
+`no managed services configured`, exits 0, and does not inspect or signal
+processes. Existing `--plan`, `--apply`, `--yes`, `--service`, and `--json` flags
+remain accepted. Explicitly supplied service contracts retain identity, scope,
+locking, and consent checks.
+
+`memory setup --tools` and `hook configure --tools` remain accepted. A removed tool selection is
+a deprecated no-op and is not auto-detected. Existing `.claude-flow` files are
+not read, changed, or deleted by Verdict.

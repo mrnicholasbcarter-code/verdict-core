@@ -1,5 +1,7 @@
 # ADR-003: Platform-Neutral Guidance Boundary
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** proposed for issue #107
 - **Date:** 2026-07-27
 - **Deciders:** Verdict Core maintainers

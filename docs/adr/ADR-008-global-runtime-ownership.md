@@ -1,5 +1,7 @@
 # ADR-008: Explicit Global Runtime Ownership
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** proposed for issue #129
 - **Date:** 2026-07-29
 - **Deciders:** Verdict Core maintainers
