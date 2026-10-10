@@ -220,6 +220,22 @@ def test_live_gateway_check_uses_same_key_and_models_endpoint(
     assert seen == [("https://gateway.invalid/v1/models", "GET", "Bearer fixture-key", 4.0)]
 
 
+def test_live_gateway_check_protocol_error_is_not_an_auth_status(
+    monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
+) -> None:
+    import http.client
+
+    from verdict.prove_at_rest import live_gateway_auth_check
+
+    def open_fake(request, *, timeout):
+        raise http.client.BadStatusLine("garbage")  # HTTPException, not OSError
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", open_fake)
+    result = live_gateway_auth_check("https://gateway.invalid", api_key="fixture-key")(4.0)
+    assert result.http_status is None
+    assert result.ok is False
+
+
 def test_gateway_confirmation_timeout_is_bounded_by_wall_budget(tmp_path: Path) -> None:
     calls: list[float] = []
     ticks = [0.0]
