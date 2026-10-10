@@ -143,7 +143,10 @@ class TestProviderSpreadProbing:
         alpha = [v for v in verdicts if v.provider == "alpha"]
         assert alpha and all(v.failed_stage is not None for v in alpha)
         untouched = [v for v in alpha if v.route_id not in probe.calls]
-        assert untouched and all(v.reason == "cooldown:provider" for v in untouched)
+        # BOD-334: payment_required exhausts the shared credential, so the
+        # credential-pool cooldown (checked first) blocks the untouched
+        # aliases; the provider:alpha entry above is still persisted.
+        assert untouched and all(v.reason == "cooldown:pool" for v in untouched)
 
 
 class TestUnservable:
