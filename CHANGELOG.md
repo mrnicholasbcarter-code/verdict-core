@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first, one slot is reserved for a fresh healthy subscription fallback, and routes refreshed during selection are used in the same selection. Found by live certification rehearsals.
 - The health cache default path follows `VERDICT_HOME` like every other store. **Behaviour change:** with `VERDICT_HOME` set, an older `~/.verdict/health-cache.json` is no longer read; route health rebuilds on the next refresh or prove cycle, and session evidence can be re-imported with `verdict prove-at-rest import-sessions`.
+- With `--state-file` or `--inject`, `verdict orchestrate` reads `health-cache.json` next to the state file (the file its refresh job writes), not the default cache. Isolated and chaos runs therefore start from their own evidence.
 - Invalid planner output is saved (redacted, at most 64 KiB) in the run directory; redaction now also covers bare `Bearer` tokens and unlabelled provider key prefixes.
 
 ## [0.5.0] - 2026-10-09

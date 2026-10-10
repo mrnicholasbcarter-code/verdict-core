@@ -54,7 +54,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--scope SCOPE` | Comma-separated allowed route prefixes; empty means all |
 | `--no-review` | Skip OCR review; run ends BLOCKED |
 | `--inject ROUTE=FAULT[,FAULT]` | Inject a named chaos fault (`route`, `cc/*`, `@node`, `#N`, `worker#N`, `*`) |
-| `--state-file STATE_FILE` | Health/cooldown state file (default `~/.verdict/orchestration-health.json`) |
+| `--state-file STATE_FILE` | Health/cooldown state file (default `$VERDICT_HOME/orchestration-health.json`). When set, the run also uses `health-cache.json` in the same directory |
 | `--plain` | ASCII narrative instead of live view |
 | `--json` | Print final receipt JSON |
 | `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
