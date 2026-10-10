@@ -1,6 +1,8 @@
 # Privacy Policy
 
-**Scope:** `verdict-core` alpha proxy and decision engine.
+**Scope:** self-hosted `verdict-core` control plane and API relay. The storage
+claims below describe the default routing decision log and routing receipt
+ledger, not every orchestration, memory, harness or provider artifact.
 **Effective date:** 2025.
 **Contact:** See `SECURITY.md` for contact and vulnerability reporting details.
 
@@ -28,9 +30,22 @@ currently offered.
 | Caller IP / identity | HTTP peer address | No — not logged by default |
 | Provider tokens | Upstream provider API keys | No — read from environment variables; never logged |
 
-`verdict` does not collect, transmit, or store personal information by design.
-The default receipt and log formats contain no prompts, completions, credentials,
-or identifiable user content.
+Local execution does not mean that all data stays local. Tasks, messages and
+repository context can contain personal information. The default routing log
+and receipt formats redact raw content, but redaction is not a guarantee that
+all identifying information is removed. Inspect artifacts before sharing them.
+
+| Path | Data flow | Operator responsibility |
+|---|---|---|
+| API relay | Messages, tool arguments and request fields go to the configured upstream through `UpstreamProxy` | Review upstream retention and privacy terms |
+| Orchestration | Goals and per-node repository context go to the planner and worker harness; review uses the external `ocr` CLI | Review gateway, harness and reviewer data handling; inspect run artifacts |
+| Local logs, receipts and memory | Routing metadata and redacted routing receipts are stored locally; other stores have their own formats | Control filesystem access, retention and artifact sharing |
+| Opt-in OpenJev signals | A scrubbed task summary goes to the configured Codiv endpoint in SHADOW or ADVISORY mode | Keep OFF unless this transfer is authorized; see the data-flow section below |
+
+Consumers: [`verdict/proxy.py`](verdict/proxy.py),
+[`verdict/orchestration/executors.py`](verdict/orchestration/executors.py),
+[`verdict/orchestration/review.py`](verdict/orchestration/review.py), and
+[`verdict/decision_signals/openjev.py`](verdict/decision_signals/openjev.py).
 
 ---
 
