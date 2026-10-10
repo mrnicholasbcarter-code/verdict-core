@@ -1,15 +1,15 @@
 """Single-source-of-truth eligibility gate for pre-ranking filtering.
 
 This module implements the issue #57 / #72 invariant: candidate filtering
-happens *before* any adaptive or cost ranking, and no ranker, Ruflo plan, or
-RuVector result can reintroduce a candidate that the gate excluded.
+happens *before* any adaptive or cost ranking, and no downstream ranker or
+advisory signal can reintroduce a candidate that the gate excluded.
 
 The gate consults the already-merged :class:`AvailabilityCache` (issue #56),
 which wraps the :class:`OmniRouteAvailabilityAdapter`.  It is deliberately
 protocol-based: it takes a ``Callable[[str], AvailabilityReport]`` so the live
 routing path and the explain endpoint share identical truth.
 
-Fail-closed semantics (per ROUTING_POLICY + #57 AC): when a request is
+Fail-closed semantics (ADR-010 and issue #57): when a request is
 *protected* and the live availability truth is absent (``unknown`` / ``error``
 / missing), the candidate is excluded rather than optimistically admitted.
 """

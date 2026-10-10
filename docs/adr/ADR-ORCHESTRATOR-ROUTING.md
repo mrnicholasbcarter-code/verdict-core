@@ -6,7 +6,7 @@
 - **Date**: 2026-07-31
 - **Deciders**: Verdict Core maintainers
 - **Tags**: routing, architecture, orchestrator, neural-learning, eligibility-gate
-- **Amends**: ADR-006-authoritative-documentation-preflight.md, ROUTING_POLICY.md, ENFORCEMENT_AND_LEARNING.md
+- **Amends**: ADR-006-authoritative-documentation-preflight.md, [archived routing policy](../archive/routing-policy-legacy.md), ENFORCEMENT_AND_LEARNING.md
 - **Related**: Ruflo ADR-103, ADR-131, ADR-144, ADR-150, ADR-171, ADR-176
 
 ## Context
@@ -54,7 +54,7 @@ Verdict splits routing into two distinct layers:
 
 ### Deprecated
 - `classifier.py` static tier regex — **retired for non-protected path**
-- `ROUTING_POLICY.md` / `ENFORCEMENT_AND_LEARNING.md` provisions forbidding Ruflo coupling — **superseded for selection layer**
+- `routing-policy-legacy.md` / `ENFORCEMENT_AND_LEARNING.md` provisions forbidding Ruflo coupling — **superseded for selection layer**
 
 ## Consequences
 
@@ -75,7 +75,7 @@ Verdict splits routing into two distinct layers:
 
 ### Pre-merge Requirements
 1. **ADR landed**: This ADR merged and ingested into OpenViking
-2. **Policy docs updated**: `ROUTING_POLICY.md` and `ENFORCEMENT_AND_LEARNING.md` amended to reference this ADR
+2. **Policy docs updated**: `routing-policy-legacy.md` and `ENFORCEMENT_AND_LEARNING.md` amended to reference this ADR
 3. **Tests passing**:
    - `GET /v1/models` returns pricing + capabilities
    - `GET /v1/route/explain?model_id=...` returns `exclusions` with reasons
@@ -103,7 +103,7 @@ Verdict splits routing into two distinct layers:
 
 ## Links
 
-- **Supersedes**: `ROUTING_POLICY.md` (selector coupling prohibitions), `ENFORCEMENT_AND_LEARNING.md` (Ruflo coupling prohibitions for selection)
+- **Supersedes**: `routing-policy-legacy.md` (selector coupling prohibitions), `ENFORCEMENT_AND_LEARNING.md` (Ruflo coupling prohibitions for selection)
 - **Amended by**: None (this is the reconciling ADR)
 - **Related**:
   - `docs/adr/ADR-001-evidence-ledger.md` (evidence envelope)
