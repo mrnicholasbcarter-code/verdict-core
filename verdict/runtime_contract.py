@@ -219,49 +219,9 @@ class RuntimePlan:
 
 
 def default_service_specs(home: Path | None = None) -> tuple[RuntimeServiceSpec, ...]:
-    """Return the canonical global service contract."""
-    root = (home or Path.home()).expanduser().resolve()
-    return (
-        RuntimeServiceSpec(
-            "ruflo-daemon",
-            "Ruflo/claude-flow global daemon",
-            "daemon",
-            None,
-            None,
-            "VERDICT_RUFLO_DAEMON_COMMAND",
-            ("ruflo-daemon",),
-            "ruflo-daemon.ownership.json",
-            "ruflo-daemon.pid",
-            "ruflo-daemon.lock",
-            str(root / ".claude-flow"),
-        ),
-        RuntimeServiceSpec(
-            "ruflo-mcp",
-            "Ruflo global MCP bridge",
-            "mcp",
-            "http://127.0.0.1:20133/mcp",
-            "http://127.0.0.1:20133/healthz",
-            "VERDICT_RUFLO_MCP_COMMAND",
-            ("ruflo-global-mcp", "20133"),
-            "ruflo-mcp.ownership.json",
-            "ruflo-mcp.pid",
-            "ruflo-mcp.lock",
-            str(root / ".claude-flow"),
-        ),
-        RuntimeServiceSpec(
-            "ruvector-mcp",
-            "RuVector global MCP bridge",
-            "mcp",
-            "http://127.0.0.1:20130/mcp",
-            "http://127.0.0.1:20130/healthz",
-            "VERDICT_RUVECTOR_MCP_COMMAND",
-            ("ruvector-global-mcp", "20130"),
-            "ruvector-mcp.ownership.json",
-            "ruvector-mcp.pid",
-            "ruvector-mcp.lock",
-            str(root / ".ruvector"),
-        ),
-    )
+    """Return default services; removed integrations have no managed services."""
+    del home  # Public signature retained for callers.
+    return ()
 
 
 __all__ = [

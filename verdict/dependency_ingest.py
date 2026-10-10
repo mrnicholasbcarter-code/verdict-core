@@ -35,8 +35,6 @@ _INTERACT_WITH = frozenset(
     {
         "anthropic",
         "openai",
-        "ruflo",
-        "ruvector",
         "omniroute",
         "openviking",
         "langgraph",
@@ -118,7 +116,7 @@ def discover_dependencies(
 
     ``pyproject.toml`` and ``package.json`` are parsed when supplied; the
     ``verdict/`` and ``scripts/`` trees are scanned for import statements.
-    Provider frameworks referenced by name (anthropic, openai, ruflo, ...)
+    Provider frameworks referenced by name (anthropic, openai, ...)
     are also detected so the list includes packages Verdict "interacts
     with" even when they are not hard dependencies.
     """

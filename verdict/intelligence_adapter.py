@@ -1,29 +1,13 @@
-"""
-Intelligence Adapter v1 - Versioned, Fail-Closed Intelligence Boundary
+"""Versioned planner and eligibility-requirements boundary.
 
-Implements #16: versioned, fail-closed planner/intelligence adapter
-(intelligence-adapter/v1 contract) for Ruflo/RuVector-backed planning,
-readiness, route recommendation, workflow selection, outcome submission.
-
-This wraps existing StructuredPlanner and EligibilityGate with:
-- Versioned JSON envelopes
-- Argument-vector execution
-- Strict schema validation
-- Redaction
-- Categorized failures
-- Bounded Ruflo/RuVector readiness checks
-- Fail-closed semantics (protected work fails closed when planning/managed intelligence unavailable)
-- Adapter output cannot authorize denied/unsafe/privacy-incompatible/stale/unavailable/capability-mismatched candidates
-- End-to-end request/plan/route/workflow/outcome ID correlation
-- Transport success ≠ verified quality
+This adapter has no production callers. It cannot authorize model routes.
 """
 
 from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -44,7 +28,7 @@ class IntelligenceAdapterError(Exception):
 
 
 class ReadinessError(IntelligenceAdapterError):
-    """Managed backend (Ruflo/RuVector) not ready."""
+    """Deprecated readiness error retained for Python import compatibility."""
 
     category = "readiness_error"
 
@@ -88,13 +72,7 @@ class IntelligenceAdapterConfig:
 
     # Timeouts (milliseconds)
     planner_timeout_ms: int = 5000
-    ruflo_readiness_timeout_ms: int = 2000
-    ruvector_readiness_timeout_ms: int = 2000
     total_adapter_timeout_ms: int = 10000
-
-    # Readiness thresholds
-    min_rufl_health: str = "healthy"  # healthy, degraded, unhealthy
-    min_ruvector_health: str = "healthy"
 
     # Profile
     profile: str = "production"  # production, degraded, development
@@ -124,21 +102,6 @@ class IntelligenceAdapterConfig:
 
 
 @dataclass(frozen=True)
-class ReadinessReport:
-    """Managed backend readiness status."""
-
-    status: str  # ready, degraded, unavailable
-    production_ready: bool
-    profile: str
-    ruflo_status: str  # healthy, degraded, unhealthy, unavailable
-    ruvector_status: str
-    policy_version: str
-    reason: str
-    adapter_versions: dict[str, str]
-    checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-@dataclass(frozen=True)
 class IntelligenceRequest:
     """Versioned request envelope for the intelligence adapter."""
 
@@ -161,7 +124,6 @@ class IntelligenceResponse:
     task_spec: dict[str, Any]
     workflow_plan: dict[str, Any] | None
     eligibility_result: dict[str, Any] | None
-    readiness: ReadinessReport
     status: str  # success, degraded, failed
     failure: dict[str, Any] | None = None
     contract_version: str = "intelligence-adapter/v1"
@@ -187,17 +149,12 @@ class IntelligenceAdapter:
         config: IntelligenceAdapterConfig | None = None,
         planner: StructuredPlanner | None = None,
         eligibility_gate: EligibilityGate | None = None,
-        ruflo_health_check: Callable[[], str] | None = None,
-        ruvector_health_check: Callable[[], str] | None = None,
     ) -> None:
         self.config = config or IntelligenceAdapterConfig()
         self.planner = planner or StructuredPlanner()
         self.eligibility_gate = eligibility_gate or EligibilityGate(
             availability_source=None  # No availability cache: explain-only mode
         )
-        self._rufl_health_check = ruflo_health_check
-        self._ruvector_health_check = ruvector_health_check
-        self._policy_version = "policy-2026-07-24.1"
 
     def _generate_correlation_id(self) -> str:
         return str(uuid.uuid4())
@@ -229,85 +186,6 @@ class IntelligenceAdapter:
                 f"Contract version mismatch: expected {self.config.contract_version}, "
                 f"got {request.contract_version}",
                 details={"expected": self.config.contract_version, "got": request.contract_version},
-            )
-
-    def _check_readiness(self) -> ReadinessReport:
-        """Check managed backend readiness with bounded timeouts."""
-        ruflo_status = "unavailable"
-        ruvector_status = "unavailable"
-
-        # Check Ruflo readiness
-        if self._rufl_health_check:
-            try:
-                ruflo_status = self._rufl_health_check()
-            except Exception:
-                ruflo_status = "unhealthy"
-
-        # Check RuVector readiness
-        if self._ruvector_health_check:
-            try:
-                ruvector_status = self._ruvector_health_check()
-            except Exception:
-                ruvector_status = "unhealthy"
-
-        # Determine overall status
-        healthy_statuses = {"healthy"}
-
-        ruflo_ok = ruflo_status in (
-            healthy_statuses if self.config.profile == "production" else {"healthy", "degraded"}
-        )
-        ruvector_ok = ruvector_status in (
-            healthy_statuses if self.config.profile == "production" else {"healthy", "degraded"}
-        )
-
-        production_ready = ruflo_ok and ruvector_ok
-
-        if production_ready:
-            # Check if any backend is degraded but acceptable
-            if (ruflo_status == "degraded" or ruvector_status == "degraded") and (
-                ruflo_status in {"healthy", "degraded"}
-                and ruvector_status in {"healthy", "degraded"}
-            ):
-                status = "degraded"
-                reason = "Some managed backends degraded but acceptable"
-            else:
-                status = "ready"
-                reason = "All managed backends healthy"
-        elif ruflo_status == "degraded" or ruvector_status == "degraded":
-            status = "degraded"
-            reason = "Some managed backends degraded"
-        else:
-            status = "unavailable"
-            reason = "Critical managed backends unavailable"
-
-        return ReadinessReport(
-            status=status,
-            production_ready=production_ready,
-            profile=self.config.profile,
-            ruflo_status=ruflo_status,
-            ruvector_status=ruvector_status,
-            policy_version=self._policy_version,
-            reason=reason,
-            adapter_versions={
-                "intelligence_adapter": self.config.contract_version,
-                "planner": "structured-planner/v1",
-                "eligibility_gate": "eligibility-gate/v1",
-            },
-        )
-
-    def _fail_closed_check(self, readiness: ReadinessReport, protected: bool) -> None:
-        """Enforce fail-closed semantics for protected work."""
-        if protected and not readiness.production_ready:
-            if self.config.allow_degraded_mode and readiness.status == "degraded":
-                return  # Degraded mode explicitly allowed
-            raise DegradedModeError(
-                f"Protected work requires healthy managed backends; "
-                f"current status: {readiness.status} ({readiness.reason})",
-                details={
-                    "readiness": asdict(readiness),
-                    "protected": protected,
-                    "profile": self.config.profile,
-                },
             )
 
     def _build_eligibility_requirements(
@@ -377,14 +255,8 @@ class IntelligenceAdapter:
         # Validate contract version
         self._validate_contract_version(request)
 
-        # Check readiness
-        readiness = self._check_readiness()
-
         # Build eligibility requirements
         eligibility_reqs = self._build_eligibility_requirements(task_spec, custom_eligibility)
-
-        # Fail-closed check for protected work
-        self._fail_closed_check(readiness, eligibility_reqs.get("protected", False))
 
         try:
             # Execute planner
@@ -412,7 +284,6 @@ class IntelligenceAdapter:
                 if plan_result.workflow_plan
                 else None,
                 eligibility_result=self._redact(eligibility_result) if eligibility_result else None,
-                readiness=readiness,
                 status="success",
             )
 
@@ -440,10 +311,6 @@ class IntelligenceAdapter:
     async def execute_async(self, *args: Any, **kwargs: Any) -> IntelligenceResponse:
         """Async version of execute."""
         return self.execute(*args, **kwargs)
-
-    def get_readiness(self) -> ReadinessReport:
-        """Get current readiness without executing a task."""
-        return self._check_readiness()
 
 
 def build_intelligence_adapter(

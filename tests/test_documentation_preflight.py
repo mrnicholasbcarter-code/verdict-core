@@ -9,7 +9,6 @@ from verdict.documentation_preflight import (
     DocumentationPreflightError,
     DocumentationSource,
     _inventory,
-    discover_sources,
     run_documentation_preflight,
 )
 from verdict.memory_bridge import MemoryHookController
@@ -321,43 +320,15 @@ def test_preflight_blocks_missing_remote_provenance_without_fetch(tmp_path: Path
     assert "resolve" in report.errors[0]
 
 
-def test_discover_sources_uses_explicit_remote_default_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("VERDICT_RUVECTOR_ROOT", raising=False)
-    monkeypatch.delenv("VERDICT_RUVECTOR_REF", raising=False)
-    source = next(item for item in discover_sources(Path.cwd()) if item.source_id == "ruvector")
-    assert source.ref == "main"
-    assert source.api_base
-
-
-def test_discover_sources_falls_back_to_remote_when_local_ruvector_is_unresolved(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_remote_fixture_fallback_resolves_and_ingests_nested_adr_projections(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("VERDICT_RUVECTOR_ROOT", str(tmp_path / "missing-ruvector"))
-    monkeypatch.setenv("VERDICT_RUVECTOR_REF", "main")
-    source = next(item for item in discover_sources(tmp_path) if item.source_id == "ruvector")
-    assert source.repository == "https://github.com/ruvnet/RuVector"
-    assert source.ref == "main"
-
-
-def test_discover_sources_falls_back_to_remote_ruflo_without_local_checkout(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("VERDICT_RUFLO_REF", "main")
-    monkeypatch.setenv("VERDICT_RUFLO_ROOT", str(tmp_path / "missing-ruflo"))
-    source = next(item for item in discover_sources(tmp_path) if item.source_id == "ruflo")
-    assert source.repository == "https://github.com/ruvnet/ruflo"
-    assert source.api_base == "https://api.github.com/repos/ruvnet/ruflo"
-    assert source.root is None
-    assert source.ref == "main"
-
-
-def test_remote_ruflo_fallback_resolves_and_ingests_nested_adr_projections(tmp_path: Path) -> None:
     source = DocumentationSource(
-        "ruflo",
-        "ruflo",
-        "https://github.com/ruvnet/ruflo",
+        "fixture",
+        "fixture",
+        "https://github.com/ruvnet/fixture",
         "main",
-        api_base="https://api.example.test/repos/ruvnet/ruflo",
+        api_base="https://api.example.test/repos/ruvnet/fixture",
     )
     first = b"# Plugin ADR\n\nUse the plugin contract.\n"
     second = b"# V3 ADR\n\nUse the v3 contract.\n"
@@ -372,7 +343,7 @@ def test_remote_ruflo_fallback_resolves_and_ingests_nested_adr_projections(tmp_p
         "tree": [
             {
                 "type": "blob",
-                "path": "plugins/ruflo-adr/docs/adrs/0001-contract.md",
+                "path": "plugins/fixture-adr/docs/adrs/0001-contract.md",
                 "sha": blob_sha(first),
             },
             {"type": "blob", "path": "v3/docs/adr/ADR-001-contract.md", "sha": blob_sha(second)},
@@ -394,10 +365,10 @@ def test_remote_ruflo_fallback_resolves_and_ingests_nested_adr_projections(tmp_p
         sources=[source], memory_path=tmp_path / "memory.db", fix=True, fetch=fetch, now=100
     )
     assert report.passed
-    assert report.source_commits == {"ruflo": commit}
+    assert report.source_commits == {"fixture": commit}
     assert report.inventory == 2
-    assert {item["path"] for item in report.inventory_details["ruflo"]} == {
-        "plugins/ruflo-adr/docs/adrs/0001-contract.md",
+    assert {item["path"] for item in report.inventory_details["fixture"]} == {
+        "plugins/fixture-adr/docs/adrs/0001-contract.md",
         "v3/docs/adr/ADR-001-contract.md",
     }
     with MemoryPlane(tmp_path / "memory.db") as plane:
@@ -411,10 +382,10 @@ def test_remote_ruflo_fallback_resolves_and_ingests_nested_adr_projections(tmp_p
 def test_preflight_resolves_remote_ref_and_verifies_blob_sha(tmp_path: Path) -> None:
     source = DocumentationSource(
         "remote",
-        "ruvector",
-        "https://github.com/ruvnet/RuVector",
+        "fixture",
+        "https://github.com/ruvnet/Fixture",
         "main",
-        api_base="https://api.example.test/repos/ruvnet/RuVector",
+        api_base="https://api.example.test/repos/ruvnet/Fixture",
     )
     payload = b"# Decision\n"
     import hashlib
@@ -443,10 +414,10 @@ def test_preflight_resolves_remote_ref_and_verifies_blob_sha(tmp_path: Path) -> 
 def test_preflight_rejects_truncated_remote_tree(tmp_path: Path) -> None:
     source = DocumentationSource(
         "truncated",
-        "ruvector",
-        "https://github.com/ruvnet/RuVector",
+        "fixture",
+        "https://github.com/ruvnet/Fixture",
         "a" * 40,
-        api_base="https://api.example.test/repos/ruvnet/RuVector",
+        api_base="https://api.example.test/repos/ruvnet/Fixture",
     )
 
     def fetch(url: str) -> bytes:
@@ -464,10 +435,10 @@ def test_preflight_rejects_truncated_remote_tree(tmp_path: Path) -> None:
 def test_preflight_reports_partial_remote_ingestion(tmp_path: Path) -> None:
     source = DocumentationSource(
         "partial",
-        "ruvector",
-        "https://github.com/ruvnet/RuVector",
+        "fixture",
+        "https://github.com/ruvnet/Fixture",
         "a" * 40,
-        api_base="https://api.example.test/repos/ruvnet/RuVector",
+        api_base="https://api.example.test/repos/ruvnet/Fixture",
     )
     tree = {
         "truncated": False,
@@ -503,10 +474,10 @@ def test_empty_sources_are_respected_for_diagnostics(tmp_path: Path) -> None:
 def test_preflight_rejects_remote_content_with_wrong_git_blob_sha(tmp_path: Path) -> None:
     source = DocumentationSource(
         "remote-sha",
-        "ruvector",
-        "https://github.com/ruvnet/RuVector",
+        "fixture",
+        "https://github.com/ruvnet/Fixture",
         "a" * 40,
-        api_base="https://api.github.com/repos/ruvnet/RuVector",
+        api_base="https://api.github.com/repos/ruvnet/Fixture",
     )
     tree = {
         "truncated": False,
@@ -662,3 +633,28 @@ def test_preflight_without_deadline_never_times_out(tmp_path: Path) -> None:
     )
     assert report.timed_out is False
     assert report.passed is True
+
+
+def test_preflight_without_removed_roots_never_fetches_network(tmp_path, monkeypatch):
+    for name in (
+        "VERDICT_RUFLO_ROOT",
+        "VERDICT_RUVECTOR_ROOT",
+        "VERDICT_RUFLO_REF",
+        "VERDICT_RUVECTOR_REF",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("# Local decision")
+
+    def no_network(url):
+        pytest.fail(f"unexpected network request: {url}")
+
+    report = run_documentation_preflight(
+        repo_root=tmp_path, memory_path=tmp_path / "memory.db", fix=True, fetch=no_network
+    )
+    assert report.passed
+    assert report.sources == 1
+    assert report.ingested == 1

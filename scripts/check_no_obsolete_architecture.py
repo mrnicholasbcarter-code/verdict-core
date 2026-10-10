@@ -7,6 +7,7 @@ canonical docs hygiene. This structural gate must fail closed on reintroduction.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,9 @@ FORBIDDEN_EXACT = frozenset(
 )
 FORBIDDEN_PREFIXES = ("ruflo_", "swarm_", "ruvector_")
 FORBIDDEN_DIRS = frozenset({"experimental"})
+OBSOLETE_CONTENT = re.compile(r"ruflo|ruvector", re.IGNORECASE)
+# Exact (package-relative path, stripped line) removal notes only. No active code.
+REMOVED_NOTES: frozenset[tuple[str, str]] = frozenset()
 
 
 def find_violations(verdict_root: Path = VERDICT) -> list[str]:
@@ -44,7 +48,17 @@ def find_violations(verdict_root: Path = VERDICT) -> list[str]:
         if any(part in FORBIDDEN_DIRS for part in parts):
             violations.append(str(rel))
             continue
-        if not path.is_file() or path.suffix != ".py":
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # Binary package assets cannot contain executable text references.
+        for line_number, line in enumerate(content.splitlines(), 1):
+            note = (path.relative_to(verdict_root).as_posix(), line.strip())
+            if OBSOLETE_CONTENT.search(line) and note not in REMOVED_NOTES:
+                violations.append(f"{rel}:{line_number}: obsolete integration reference")
+        if path.suffix != ".py":
             continue
         name = path.name
         if name in FORBIDDEN_EXACT:

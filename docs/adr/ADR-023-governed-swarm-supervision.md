@@ -1,4 +1,6 @@
 > **Status: SUPERSEDED** — Governed-swarm / Ruflo supervision is obsolete architecture and has been **deleted** from Core.
+
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
 > **Successor ADR:** [ADR-035 — Authorized selected-route dispatch](ADR-035-authorized-selected-route-dispatch.md)
 > (closes the cross-repo ADR lifecycle audit `MISSING_SUCCESSOR` finding). Implementation trail: execution-path strategy authority (`verdict/serve_path.py`) → optimized dispatch/`verdict.dispatcher`
 > (authorized `selected_route` only). Documentation hygiene continues under the ongoing documentation-hygiene pass.

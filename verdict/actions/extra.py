@@ -653,9 +653,10 @@ def _action_runtime_reconcile(**kwargs: Any) -> ActionResult:
             report = manager.reconcile_plan()
     except RuntimeManagerError as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
-    return ActionResult(
-        data=report.to_dict(), ok=report.passed, exit_code=0 if report.passed else 1
-    )
+    data = report.to_dict()
+    if apply_it and not manager.specs:
+        data["message"] = "no managed services configured; deprecated default apply is a no-op"
+    return ActionResult(data=data, ok=report.passed, exit_code=0 if report.passed else 1)
 
 
 # ---------------------------------------------------------------------------

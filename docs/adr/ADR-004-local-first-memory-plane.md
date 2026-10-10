@@ -1,5 +1,7 @@
 # ADR-004: Local-First Memory Plane
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** accepted; implementation incrementally delivered under #130
 - **Date:** 2026-07-27
 - **Deciders:** Verdict Core maintainers

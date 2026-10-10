@@ -37,9 +37,7 @@ _GROUP_KINDS = {
     "verification_requirements": "requirement",
 }
 _ITEM_KINDS = frozenset(_GROUP_KINDS.values())
-_SOURCE_KINDS = frozenset(
-    {"repo_file", "adr", "git", "openviking", "ruvector", "memory", "worker", "manual"}
-)
+_SOURCE_KINDS = frozenset({"repo_file", "adr", "git", "openviking", "memory", "worker", "manual"})
 
 # Optional groups fill order under token compression (policy/goal never drop).
 _FILL_ORDER = ("verified_decisions", "relevant_adrs", "verification_requirements", "artifacts")
@@ -101,7 +99,7 @@ class SourceRef:
     """Provenance metadata for one envelope item.
 
     ``ref`` carries the exact source pointer: a URL, a repository file path, a
-    commit hash, or an OpenViking / RuVector URI.  ``revision`` is optional
+    commit hash, or an OpenViking URI.  ``revision`` is optional
     secondary versioning (commit hash, ADR revision, content version).
     """
 
@@ -469,10 +467,6 @@ class ContextCompiler:
     @staticmethod
     def source_openviking(uri: str) -> SourceRef:
         return SourceRef(kind="openviking", ref=uri)
-
-    @staticmethod
-    def source_ruvector(uri: str) -> SourceRef:
-        return SourceRef(kind="ruvector", ref=uri)
 
 
 __all__ = [

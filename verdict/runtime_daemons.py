@@ -3,8 +3,8 @@
 The runtime manager is deliberately conservative.  It discovers processes from
 ``/proc`` (or an injected inspector in tests), classifies them only when the
 versioned service contract matches multiple identity signals, and never sends
-signals during a planning operation.  Verdict does not require Ruflo or
-RuVector to be installed; an absent service is reported as unavailable.
+signals during a planning operation. No managed services are configured by
+default; explicit service contracts remain supported.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class RuntimeManager:
     ) -> None:
         self.state_dir = (state_dir or _default_state_dir()).expanduser().resolve()
         self.home = (home or Path.home()).expanduser().resolve()
-        self.specs = tuple(specs or default_service_specs(self.home))
+        self.specs = tuple(default_service_specs(self.home) if specs is None else specs)
         self.inspector = inspector or ProcfsInspector()
         self.uid = os.getuid() if uid is None else uid
         self.clock = clock or time.time
@@ -118,6 +118,8 @@ class RuntimeManager:
 
     def reconcile_apply(self, *, service_ids: Sequence[str], consent: bool) -> RuntimePlan:
         """Apply only explicitly scoped, proven duplicate-stop actions."""
+        if not self.specs:
+            return self.status()  # Deprecated default apply: no services, no signals.
         if not consent:
             raise RuntimeManagerError("reconcile --apply requires explicit consent")
         selected = tuple(sorted(set(service_ids)))
@@ -219,7 +221,7 @@ class RuntimeManager:
 
     def _plan(self, *, apply: bool) -> RuntimePlan:
         del apply  # Kept in the private API so plan/apply cannot accidentally share semantics.
-        process_snapshots = tuple(self.inspector.snapshots())
+        process_snapshots = tuple(self.inspector.snapshots()) if self.specs else ()
         classified: list[RuntimeProcess] = []
         actions: list[dict[str, Any]] = []
         errors: list[str] = []

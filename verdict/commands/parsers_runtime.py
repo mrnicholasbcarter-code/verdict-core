@@ -25,7 +25,11 @@ def register(subparsers: Any) -> None:
         action="store_true",
         help="Perform a read-only deterministic plan (the default when --apply is absent)",
     )
-    runtime_reconcile_p.add_argument("--apply", action="store_true", help="Apply planned stops")
+    runtime_reconcile_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply planned stops (deprecated no-op when no managed services are configured)",
+    )
     runtime_reconcile_p.add_argument(
         "--yes", action="store_true", help="Explicit consent required with --apply"
     )
@@ -192,8 +196,7 @@ def register(subparsers: Any) -> None:
     )
 
     docs_p = memory_sub.add_parser(
-        "docs",
-        help="Verify or ingest authoritative project and optional external runtime documentation",
+        "docs", help="Verify or ingest authoritative project documentation"
     )
     docs_p.add_argument(
         "--fix", action="store_true", help="Fetch and ingest missing/stale documents"

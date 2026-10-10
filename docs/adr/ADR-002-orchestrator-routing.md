@@ -1,5 +1,7 @@
 # ADR-002: Orchestrator-Driven Routing Architecture
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status**: accepted
 - **Date**: 2026-07-21
 - **Deciders**: Verdict Core maintainers

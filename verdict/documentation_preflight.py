@@ -26,12 +26,6 @@ from verdict.memory_plane import SCHEMA_VERSION, MemoryPlane, MemoryRecord
 
 DOCUMENT_PREFLIGHT_VERSION = "1"
 DEFAULT_FRESHNESS_SECONDS = 86_400
-DEFAULT_RUFLO_REPOSITORY = "https://github.com/ruvnet/ruflo"
-DEFAULT_RUFLO_API = "https://api.github.com/repos/ruvnet/ruflo"
-DEFAULT_RUFLO_REF = "main"
-DEFAULT_RUVECTOR_REPOSITORY = "https://github.com/ruvnet/RuVector"
-DEFAULT_RUVECTOR_API = "https://api.github.com/repos/ruvnet/RuVector"
-DEFAULT_RUVECTOR_REF = "main"
 
 
 class DocumentationPreflightError(RuntimeError):
@@ -144,11 +138,7 @@ def shared_memory_path(home: Path | None = None) -> Path:
 
 
 def discover_sources(repo_root: Path | None = None) -> tuple[DocumentationSource, ...]:
-    """Discover project, Ruflo, and RuVector authoritative sources.
-
-    Environment variables make the lookup portable while the sibling/global
-    checkout fallbacks support the documented local development layout.
-    """
+    """Discover authoritative documentation for the current project only."""
 
     root = (repo_root or Path.cwd()).resolve()
     sources: list[DocumentationSource] = []
@@ -167,57 +157,6 @@ def discover_sources(repo_root: Path | None = None) -> tuple[DocumentationSource
             )
         )
 
-    ruflo_value = os.getenv("VERDICT_RUFLO_ROOT")
-    candidates = [Path(ruflo_value).expanduser()] if ruflo_value else []
-    candidates.extend(root.parents[index] / "ruflo" for index in range(min(3, len(root.parents))))
-    ruflo_root = next((candidate.resolve() for candidate in candidates if candidate.is_dir()), None)
-    if ruflo_root:
-        sources.append(
-            DocumentationSource(
-                "ruflo", "ruflo", DEFAULT_RUFLO_REPOSITORY, _git_commit(ruflo_root), ruflo_root
-            )
-        )
-    else:
-        sources.append(
-            DocumentationSource(
-                "ruflo",
-                "ruflo",
-                DEFAULT_RUFLO_REPOSITORY,
-                os.getenv("VERDICT_RUFLO_REF", DEFAULT_RUFLO_REF),
-                api_base=DEFAULT_RUFLO_API,
-            )
-        )
-
-    ruvector_value = os.getenv("VERDICT_RUVECTOR_ROOT")
-    ruvector_root = Path(ruvector_value).expanduser().resolve() if ruvector_value else None
-    if ruvector_root and ruvector_root.is_dir():
-        ruvector_commit = _git_commit(ruvector_root)
-        if ruvector_commit == "unknown":
-            sources.append(
-                DocumentationSource(
-                    "ruvector",
-                    "ruvector",
-                    DEFAULT_RUVECTOR_REPOSITORY,
-                    os.getenv("VERDICT_RUVECTOR_REF", DEFAULT_RUVECTOR_REF),
-                    api_base=DEFAULT_RUVECTOR_API,
-                )
-            )
-            return tuple(sources)
-        sources.append(
-            DocumentationSource(
-                "ruvector", "ruvector", DEFAULT_RUVECTOR_REPOSITORY, ruvector_commit, ruvector_root
-            )
-        )
-    else:
-        sources.append(
-            DocumentationSource(
-                "ruvector",
-                "ruvector",
-                DEFAULT_RUVECTOR_REPOSITORY,
-                os.getenv("VERDICT_RUVECTOR_REF", DEFAULT_RUVECTOR_REF),
-                api_base=DEFAULT_RUVECTOR_API,
-            )
-        )
     return tuple(sources)
 
 
@@ -497,24 +436,12 @@ def _is_git_sha(value: str) -> bool:
 
 
 def _is_adr_path(path: Path, ecosystem: str = "") -> bool:
-    """Return whether a Markdown path is an authoritative ADR projection.
-
-    Ruflo's canonical ADR roots are explicit so nearby references in reports,
-    READMEs, and examples are not silently ingested. RuVector has additional
-    component ADR projections whose filenames carry the ADR identifier; those
-    are authoritative when they are not generic agent/tool names.
-    """
+    """Return whether a Markdown path is an authoritative ADR projection."""
+    del ecosystem  # Retained for generic source inventory compatibility.
     parts = {part.lower() for part in path.parts[:-1]}
     if path.name.lower() == "readme.md":
         return False
-    if bool(parts & {"adr", "adrs"}) or "implementation/adrs" in path.as_posix().lower():
-        return True
-    if ecosystem != "ruvector":
-        return False
-    name = path.name.lower()
-    if name == "adr-architect.md":
-        return False
-    return name.startswith("adr-") or name.startswith("adr_")
+    return bool(parts & {"adr", "adrs"}) or "implementation/adrs" in path.as_posix().lower()
 
 
 def _read_entry(entry: DocumentationEntry, *, fetch: Callable[[str], bytes] | None) -> bytes:

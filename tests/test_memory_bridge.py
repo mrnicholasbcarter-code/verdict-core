@@ -170,3 +170,15 @@ def test_doctor_missing_memory_db_is_warning_and_fix_repairs(tmp_path: Path) -> 
     after = run_doctor_diagnostics(home_dir=home_dir, cwd=cwd_dir, fix=False)
     assert "missing_memory_db" not in after["warnings"]
     assert "missing_memory_db_file" not in after["warnings"]
+
+
+def test_removed_bridge_selection_preserves_existing_files(tmp_path: Path) -> None:
+    legacy = tmp_path / ".claude-flow"
+    legacy.mkdir()
+    config = legacy / "memory.json"
+    config.write_text("user-owned configuration")
+    report = detect_available_tools(home_dir=tmp_path, cwd=tmp_path)
+    assert "ruflo" not in report.detected_tools
+    result = configure_memory_bridge(["ruflo"], home_dir=tmp_path, cwd=tmp_path)
+    assert result["configured_tools"] == []
+    assert config.read_text() == "user-owned configuration"

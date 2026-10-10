@@ -1,5 +1,7 @@
 # ADR-001: Versioned, Privacy-Safe Execution Evidence
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status**: accepted
 - **Date**: 2026-07-22
 - **Deciders**: Verdict Core maintainers

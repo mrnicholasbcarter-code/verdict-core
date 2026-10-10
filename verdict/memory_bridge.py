@@ -1,6 +1,6 @@
 """Unified Memory Bridge, Tool Integration Autopilot, and 13-Hook Lifecycle Controller.
 
-Detects available AI tool environments (Codex, Claude Code, Pi, Ruflo, Hermes,
+Detects available AI tool environments (Codex, Claude Code, Pi, Hermes,
 JCode/Cursor, OmniRoute, GitHub CLI, MCP servers), preselects them by default,
 configures shared memory bridge hooks, updates .mcp.json, and manages the full
 6-category lifecycle hook matrix across prompt, task, file, command, session,
@@ -77,16 +77,6 @@ def detect_available_tools(
         installed=pi_dir.exists() or bool(os.getenv("PI_API_KEY")),
         config_path=str(pi_dir if pi_dir.exists() else root / "pi.yaml"),
         session_dir=str(pi_dir / "sessions" if pi_dir.exists() else ""),
-    )
-
-    # 4. Ruflo / Claude Flow
-    ruflo_dir = root / ".claude-flow"
-    ruflo_home = home / ".claude-flow"
-    tools["ruflo"] = ToolInfo(
-        name="Ruflo / Claude Flow",
-        installed=ruflo_dir.exists() or ruflo_home.exists(),
-        config_path=str(ruflo_dir if ruflo_dir.exists() else ruflo_home),
-        session_dir=str(ruflo_home / "sessions" if ruflo_home.exists() else ""),
     )
 
     # 5. Hermes
@@ -500,23 +490,6 @@ def configure_memory_bridge(
                 encoding="utf-8",
             )
             configured.append("pi")
-
-        elif tool == "ruflo":
-            ruflo_dir = root / ".claude-flow"
-            ruflo_dir.mkdir(parents=True, exist_ok=True)
-            ruflo_cfg = ruflo_dir / "memory.json"
-            ruflo_cfg.write_text(
-                json.dumps(
-                    {
-                        "backend": "verdict_memory_plane",
-                        "database": str(shared_db),
-                        "shared_context": True,
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            configured.append("ruflo")
 
         elif tool == "hermes":
             hermes_dir = home / ".hermes"

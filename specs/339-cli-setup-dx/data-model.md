@@ -1,5 +1,7 @@
 # Data Model: CLI Setup DX
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 **Feature**: 339-cli-setup-dx | **Date**: 2026-09-05
 
 ---

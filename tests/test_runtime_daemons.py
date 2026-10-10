@@ -243,3 +243,26 @@ def test_ownership_record_is_private_and_versioned(tmp_path: Path) -> None:
     assert payload["contract_version"] == "1"
     assert "fixture-service" not in json.dumps(payload)
     assert not payload.get("environment")
+
+
+def test_empty_default_apply_has_no_process_or_signal_activity(tmp_path: Path, monkeypatch) -> None:
+    class NoInspector:
+        def snapshots(self):
+            pytest.fail("empty defaults must not inspect processes")
+
+    def forbidden(*args):
+        pytest.fail("empty defaults must not probe, launch or signal")
+
+    monkeypatch.setattr("verdict.runtime_daemons.os.kill", forbidden)
+    runtime = RuntimeManager(
+        home=tmp_path,
+        state_dir=tmp_path / "runtime",
+        inspector=NoInspector(),
+        port_probe=forbidden,
+        health_probe=forbidden,
+    )
+    assert runtime.specs == ()
+    report = runtime.reconcile_apply(service_ids=(), consent=False)
+    assert report.passed
+    assert not report.services
+    assert not runtime.state_dir.exists()

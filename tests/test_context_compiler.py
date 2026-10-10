@@ -94,7 +94,6 @@ class TestContextEnvelopeContract:
                 "adr",
                 "git",
                 "openviking",
-                "ruvector",
                 "memory",
                 "worker",
                 "manual",

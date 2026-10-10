@@ -1,5 +1,7 @@
 # ADR-031: Project-owned Prime workflow and bounded recovery
 
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
+
 - **Status:** Accepted for implementation by user
 - **Date:** 2026-09-13
 - **Deciders:** Nick (repo owner)

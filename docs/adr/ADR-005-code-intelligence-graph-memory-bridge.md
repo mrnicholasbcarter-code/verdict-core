@@ -1,4 +1,6 @@
 # ADR-005: Code Intelligence Graph and Memory Bridge Design
+
+> Removed integration notice: Ruflo and RuVector are removed; references below are historical, not current setup requirements.
 - **Status:** Approved
 - **Date:** 2026-07-28
 - **Deciders:** Verdict Core maintainers

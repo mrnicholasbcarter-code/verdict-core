@@ -664,7 +664,6 @@ def build_default_adapter_registry() -> AdapterRegistry:
         ("codex-session", "provider-specific Codex state requires an explicit JSONL export"),
         ("claude-session", "provider-specific Claude state requires an explicit JSONL export"),
         ("pi-session", "provider-specific Pi state requires an explicit JSONL export"),
-        ("ruflo-session", "provider-specific Ruflo state requires an explicit JSONL export"),
         ("masterdocs-sqlite", "private database boundary unsupported; use masterdocs-manifest"),
         ("code-graph-sqlite", "private database boundary unsupported; use code-graph-manifest"),
     )
