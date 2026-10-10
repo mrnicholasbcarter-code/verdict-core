@@ -72,7 +72,7 @@ def test_evidenced_pool_orders_before_cold_pool(tmp_path: Path, evidence: str) -
     if evidence == "recent_success":
         cache.record("warm/old", ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
     else:
-        cache.record_session_agentic("warm/old", passed=True, at=NOW, source="test", child_id="c")
+        cache.record_agentic_evidence("warm/old", passed=True, at=NOW, source="test", child_id="c")
     routes = [
         AdmittedRoute("cold/a", "cold", "free"),
         AdmittedRoute("warm/new", "warm", "free"),
