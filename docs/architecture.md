@@ -170,53 +170,40 @@ These are the live replacements for the retired architecture-page links:
 
 ## Data flow
 
-### Request routing
+### Request routing: decision and execution are separate
 
+The HTTP decision API does not forward a completion. The relay surfaces do.
+The CLI's synchronous `Gate` is a third entry point, not an alias for either.
+
+```text
+POST /v1/route
+  -> validate execution_path_request; reject client execution_path_decision
+  -> IntelligenceService.route (execution-path authority required by default)
+  -> authorized RoutingDecision -> JSON response (no completion forwarding)
+  Missing execution-path authority -> HTTP 400
+
+POST /v1/chat/completions or /v1/responses
+  -> validate request and authority context
+  -> IntelligenceService.route
+     -> execution-path authority, when supplied or required by server policy
+     -> legacy selector only when allowed by server policy
+  -> build_attempts -> UpstreamProxy -> configured upstream completion
+
+CLI Gate.route
+  -> synchronous wrapper around IntelligenceService.route
+  -> no attached EligibilityGate on the CLI Gate path
+  -> catalog decision is not API admission or completion proof
 ```
-Client Request
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ POST /v1/route  (or OpenAI-compatible /v1/chat/completions)     │
-└─────────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ GATE.route / route_with_strategy                                │
-│ - Build TaskSpec                                                │
-│ - Compose eligibility + intelligence                            │
-└─────────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ ELIGIBILITY.evaluate                                            │
-│ - AvailabilityCache report                                      │
-│ - Partition: eligible / unknown / ineligible (+ named reasons)  │
-│ - Protected work: unknown/error fail closed                     │
-└─────────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ INTELLIGENCE.rank (advisory)                                    │
-│ - Orders kept candidates only                                   │
-│ - Cannot restore hard-excluded models                           │
-└─────────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ SERVE PATH / EXECUTION PATH (BOD-104) → DISPATCHER              │
-│ - Authorize selected_route                                      │
-│ - Hydrate ContextPack / tools plan                              │
-│ - Empty eligible set → blocked (no silent frontier fallback)    │
-└─────────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ PROXY: forward to upstream (OpenAI-compatible)                  │
-│ - Bind concrete identity                                        │
-│ - Stream / return response                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+For the legacy selector path with an attached gate, `EligibilityGate.evaluate`
+filters candidates before `select_best_eligible_model` ranks them. Execution-path
+selection follows its own authority contract; a downstream consumer may not
+replace the authorized selected route.
+
+See [`api.py`](../verdict/api.py), [`intelligence.py`](../verdict/intelligence.py),
+[`gate.py`](../verdict/gate.py), [`relay.py`](../verdict/relay.py), and
+[ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md). Server policy and
+configuration are documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 
