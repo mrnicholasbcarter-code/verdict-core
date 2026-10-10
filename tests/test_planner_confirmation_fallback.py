@@ -1,0 +1,88 @@
+"""Offline regressions for bounded planner confirmation fallback."""
+
+from pathlib import Path
+
+import pytest
+
+from tests.test_orch_eligibility import NOW, FakeProbe, conn, row
+from verdict.admission import RuntimeEvidence, admit
+from verdict.orchestration.contracts import TaskRequirements
+from verdict.orchestration.eligibility import EligibilityLadder
+from verdict.orchestration.health_cache import HealthCache, ProbeResult
+from verdict.subagent_selection import HealthResult
+
+FREE = "fmd/gpt-6-astra"
+SUB = "codex/gpt-5.5"
+REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=2)
+
+
+def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
+    cold = [f"ghost/deepseek-v3-{i}" for i in range(10)]
+    rows = [row(r) for r in cold] + [row(FREE, "freemodel-dev"), row(SUB)]
+    connections = [conn("ghost", plan="free"), conn("freemodel-dev", plan="free"), conn("codex")]
+    cache = HealthCache(tmp_path / "health-cache.json")
+    for route in [SUB] + ([FREE] if fresh_free else []):
+        cache.record(route, ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
+    probe = FakeProbe({r: HealthResult(False, "unservable") for r in cold + [FREE]})
+    probe.results[SUB] = HealthResult(sub_ok, "ok" if sub_ok else "unservable")
+    if fresh_free:
+        probe.results[FREE] = HealthResult(True, "ok")
+    admitted = admit(rows, connections, RuntimeEvidence(), now=NOW)
+    selector = EligibilityLadder(
+        rows, connections, probe, tmp_path / "state.json", health_cache=cache,
+        admitted=admitted, max_probes_per_select=8,
+    )
+    return selector, probe, cold
+
+
+def test_fresh_free_confirms_before_cold_aliases(tmp_path: Path) -> None:
+    selector, probe, _ = ladder(tmp_path, fresh_free=True)
+    ranked = selector.evaluate(REQ, now=NOW)
+    assert next(v for v in ranked if v.route_id == FREE).rank != 0
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == FREE
+    assert probe.calls == [FREE]
+    assert selector.admitted.launchable(FREE)
+
+
+def test_last_slot_confirms_fresh_subscription_fallback(tmp_path: Path) -> None:
+    selector, probe, _ = ladder(tmp_path)
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == SUB
+    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert choice.reason == "reserved_fallback_slot"
+    assert selector.admitted.launchable(SUB)
+
+
+def test_failed_fallback_never_launches_or_readmits(tmp_path: Path) -> None:
+    selector, probe, _ = ladder(tmp_path, sub_ok=False)
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is None
+    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert SUB not in selector.admitted
+
+
+def test_confirmed_cold_free_still_wins(tmp_path: Path) -> None:
+    selector, probe, cold = ladder(tmp_path)
+    probe.results[cold[0]] = HealthResult(True, "ok")
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == cold[0]
+    assert probe.calls == [cold[0]]
+
+
+@pytest.mark.parametrize("block", ["excluded", "refresh", "cooldown"])
+def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
+    from dataclasses import replace
+    from verdict.orchestration.contracts import FailureClassification
+
+    selector, probe, _ = ladder(tmp_path)
+    req = REQ
+    if block == "excluded":
+        req = replace(req, exclude_routes=frozenset({SUB}))
+    elif block == "refresh":
+        selector._refresh_hook = lambda ids, now: {SUB: "failed"}
+    else:
+        selector.record_failure(SUB, FailureClassification("no_final_answer", "REROUTE", 300, "route"), now=NOW)
+    choice, _ = selector.select(req, now=NOW)
+    assert choice is None and SUB not in probe.calls
+    assert len(probe.calls) == 8
