@@ -138,7 +138,8 @@ def run_setup_wizard(
             non_interactive=True,
         )
         tui.status("Bootstrap apply", stage.status, stage.summary)
-        for item in payload.get("actions", []):
+        raw_actions = payload.get("actions", [])
+        for item in raw_actions if isinstance(raw_actions, list) else []:
             result = item.get("result", {})
             notes.append(
                 str(item["action_id"])
