@@ -1296,3 +1296,18 @@ def test_merge_and_save_serializes_a_read_modify_write(tmp_path: Path) -> None:
     final = HealthCache(path)
     assert final.entry("free/a") is not None  # A's write was not clobbered
     assert final.entry("free/b") is not None  # B's merge landed
+
+
+def test_default_cache_path_follows_verdict_home(tmp_path, monkeypatch) -> None:
+    """The ladder must read the same file the refresh job writes in an isolated home."""
+    from verdict.orchestration.health_cache import default_cache_path
+
+    monkeypatch.delenv("VERDICT_HEALTH_CACHE", raising=False)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    assert default_cache_path() == (tmp_path / "home" / "health-cache.json").resolve()
+    monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(tmp_path / "explicit.json"))
+    assert default_cache_path() == (tmp_path / "explicit.json").resolve()
+    monkeypatch.delenv("VERDICT_HEALTH_CACHE")
+    monkeypatch.delenv("VERDICT_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    assert default_cache_path() == (tmp_path / "user" / ".verdict" / "health-cache.json").resolve()

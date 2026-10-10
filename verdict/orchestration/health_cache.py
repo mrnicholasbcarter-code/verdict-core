@@ -145,11 +145,18 @@ def _acquire_cache_lock(
 
 
 def default_cache_path() -> Path:
-    """Configured cache path, else ``~/.verdict/health-cache.json``."""
+    """``VERDICT_HEALTH_CACHE``, else ``$VERDICT_HOME/health-cache.json``, else ``~/.verdict``.
+
+    Every writer and reader must resolve the same file: the verified-refresh
+    job and admission already honour ``VERDICT_HOME``, so the ladder must too
+    (an isolated home, as in CI certification, otherwise reads ``~/.verdict``).
+    """
     configured = os.getenv(ENV_CACHE_PATH)
     if configured and configured.strip():
         return Path(configured).expanduser().resolve()
-    return (Path.home() / ".verdict" / "health-cache.json").resolve()
+    home = (os.getenv("VERDICT_HOME") or "").strip()
+    base = Path(home).expanduser() if home else Path.home() / ".verdict"
+    return (base / "health-cache.json").resolve()
 
 
 def _aware(value: datetime, field_name: str) -> datetime:
