@@ -251,21 +251,18 @@ def _dependencies(
 def _warm_cache(
     tui: TerminalUI, reader: Callable[[], str | None] | None, gateway: str, notes: list[str]
 ) -> None:
-    try:
-        from verdict.prove_at_rest_service import install_service
-    except ImportError:
-        install_service = None
+    del gateway
     choice = _choice(tui, reader, "5 / Warm-cache daemon", "not checked", "off", ["off", "on"])
     tui.console.print(
-        Text("Enables: background health cache. Install: verdict prove-at-rest install-service")
+        Text("Enables: background health cache. Service installer: not available yet.")
     )
-    if choice == "on" and install_service is not None:
-        result = install_service(gateway=gateway, consent=True)
-        from verdict.home_action_render import render_generic
-
-        render_generic(tui, bool(result.get("ok", False)), result, action="Warm-cache service")
-        notes.append("Warm-cache: installation requested; see verified result above.")
-    elif choice == "on":
-        notes.append("Warm-cache: not available yet; no service installed.")
-    else:
-        notes.append("Warm-cache: unchanged; no enable/disable operation requested.")
+    tui.console.print(Text("Manual command: verdict prove-at-rest daemon --allow-live-probe"))
+    tui.console.print(
+        Text("User-service templates: deploy/systemd/verdict-health-cache.{service,timer}")
+    )
+    tui.console.print(Text("Live probes may spend credits. No daemon is started by this wizard."))
+    notes.append(
+        "Warm-cache: not available yet; use the manual command/templates above. No service installed."
+        if choice == "on"
+        else "Warm-cache: unchanged; no enable/disable operation requested."
+    )
