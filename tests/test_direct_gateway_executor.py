@@ -1288,3 +1288,21 @@ def test_file_blocks_atomic_replace_failure_keeps_original(tmp_path: Path) -> No
     assert error and "diff_rejected:" in error
     assert (tmp_path / "owned.py").read_text() == "old\n"
     assert not list(tmp_path.glob(".verdict-file-*"))
+
+
+def test_chaos_state_is_kept_outside_the_runs_dir(tmp_path: Path) -> None:
+    """Live certification: a 'chaos' folder inside --runs-dir looked like a second run."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    runs = tmp_path / "runs-chaos"
+    args = argparse.Namespace(state_file=None, inject=["#1=quota"], resume=None)
+    state = orch_cli._chaos_state(args, runs)
+    assert state is not None
+    assert runs not in state.parents
+    assert state.name == "chaos-health.json"
+    resumed = orch_cli._chaos_state(
+        argparse.Namespace(state_file=None, inject=["x"], resume="r1"), runs
+    )
+    assert resumed is not None and resumed.parent.name == "r1" and runs not in resumed.parents

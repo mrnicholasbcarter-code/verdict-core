@@ -449,8 +449,11 @@ def _chaos_state(args: argparse.Namespace, runs_root: Path) -> Path | None:
     if args.state_file:
         return Path(args.state_file)
     if args.inject:
+        # Keep injected-fault health state beside, not inside, the runs dir:
+        # a "chaos" folder under runs_root looked like a second run to every
+        # consumer that lists runs (certification rehearsal, trace, watch).
         run_id = args.resume or "chaos"
-        return runs_root / run_id / "chaos-health.json"
+        return runs_root.parent / f".{runs_root.name}-chaos" / run_id / "chaos-health.json"
     return None
 
 
