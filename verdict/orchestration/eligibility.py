@@ -19,7 +19,7 @@ from verdict.orchestration.contracts import (
     TaskRequirements,
     route_family,
 )
-from verdict.orchestration.credential_pools import pool_of
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
     aliased_pools_for,
@@ -1050,7 +1050,11 @@ class EligibilityLadder:
         seconds = cooldown_seconds_for(failure.category, retry_after)
         entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
         if failure.scope in {"route", "provider"}:
-            self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
+            # Only credential-pool exhaustion or account failures cool the whole
+            # pool (SH-1). A bad model id, a 400 or a timeout is about this route
+            # and must not block healthy sibling models on the same credential.
+            if failure.category in POOL_COOLDOWN_CATEGORIES:
+                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()

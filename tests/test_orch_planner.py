@@ -549,10 +549,13 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
         events=Events(),
     )
     assert requirements[0].max_capability_tier == 2
-    assert requirements[1].exclude_pools == frozenset({"claude"})
+    # A planner validation error is a model-quality failure, not a credential
+    # failure: only the route is excluded; same-pool siblings stay eligible.
+    assert requirements[1].exclude_pools == frozenset()
+    assert "cc/claude-haiku" in requirements[1].exclude_routes
     assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
-    cooldown = next(r for r in rows if r["type"] == "cooldown")
-    assert (cooldown["scope"], cooldown["key"]) == ("pool", "claude")
+    cooldown = next((r for r in rows if r["type"] == "cooldown"), None)
+    assert cooldown is None or cooldown["scope"] == "route"
 
 
 @pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])

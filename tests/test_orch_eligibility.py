@@ -820,6 +820,22 @@ def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, category,
     assert not probe.calls
 
 
+@pytest.mark.parametrize(
+    "category", ["model_unavailable", "bad_request", "timeout", "malformed_response", "unknown"]
+)
+def test_route_scoped_quality_failure_does_not_cool_pool(tmp_path, category):
+    """Review B1: one bad model id or 400 must not block healthy same-pool siblings."""
+    routes = ["cc/claude-haiku", "claude/claude-haiku", "cc/claude-opus"]
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
+    ladder.record_failure(
+        routes[0], FailureClassification(category, "REASSIGN", 60, "route"), now=NOW
+    )
+    assert ladder.dispatch_blocker(routes[0], now=NOW) is not None
+    for sibling in routes[1:]:
+        assert ladder.dispatch_blocker(sibling, now=NOW) is None
+        assert by_route(ladder.evaluate(REQ, now=NOW))[sibling].failed_stage is None
+
+
 def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
     routes = [
         "cc/claude-haiku",

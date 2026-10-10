@@ -58,7 +58,7 @@ from verdict.orchestration.contracts import (
     route_provider,
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
-from verdict.orchestration.credential_pools import pool_of
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
@@ -852,7 +852,8 @@ class DagRuntime:
                 )
             else:
                 tried.add(run.route_id)
-                run.excluded_pools.add(pool_of(run.route_id))
+                if failures and failures[-1].category in POOL_COOLDOWN_CATEGORIES:
+                    run.excluded_pools.add(pool_of(run.route_id))
             if failures and failures[-1].action == "BLOCK":
                 run.reason = f"non-recoverable: {failures[-1].category}"
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
@@ -1243,7 +1244,8 @@ class DagRuntime:
         )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
-            key = pool_of(run.route_id)
+            pooled = failure.category in POOL_COOLDOWN_CATEGORIES
+            key = pool_of(run.route_id) if pooled else run.route_id
             until = datetime.fromtimestamp(
                 self.now().timestamp() + failure.cooldown_seconds, timezone.utc
             )
@@ -1251,7 +1253,7 @@ class DagRuntime:
                 "cooldown",
                 run.node.node_id,
                 key=key,
-                scope="pool",
+                scope="pool" if pooled else "route",
                 category=failure.category,
                 until=until.isoformat(timespec="seconds"),
             )

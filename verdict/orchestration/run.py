@@ -43,7 +43,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
 )
-from verdict.orchestration.credential_pools import pool_of
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
 
 if TYPE_CHECKING:
@@ -374,15 +374,17 @@ async def plan_with_failover(
                 until = datetime.fromtimestamp(
                     now().timestamp() + failure.cooldown_seconds, timezone.utc
                 )
+                pooled = failure.category in POOL_COOLDOWN_CATEGORIES
                 events.emit(
                     "cooldown",
-                    key=pool_of(choice.route_id),
-                    scope="pool",
+                    key=pool_of(choice.route_id) if pooled else choice.route_id,
+                    scope="pool" if pooled else "route",
                     category=failure.category,
                     until=until.isoformat(timespec="seconds"),
                 )
             tried.add(choice.route_id)
-            tried_pools.add(pool_of(choice.route_id))
+            if failure.category in POOL_COOLDOWN_CATEGORIES:
+                tried_pools.add(pool_of(choice.route_id))
             events.emit(
                 "controller",
                 state="REPLACING",
