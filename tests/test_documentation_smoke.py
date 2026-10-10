@@ -101,12 +101,17 @@ def test_documented_commands_are_present_and_maturity_is_truthful() -> None:
     for command in JOURNEY_COMMANDS:
         assert command in readme or command in journey
     for status in (
-        "production functional",
+        "implemented; covered by offline tests",
+        "offline fixture",
+        "offline proof",
+        "one retained live run",
         "functional but incomplete",
         "simulated only",
         "missing",
     ):
         assert status in journey
+    assert "production functional" not in journey
+    assert "raw OCR output and coverage are not retained" in journey
     assert "3500+ models" not in readme
     assert "OMNIROUTE (Intelligent Model Router)" not in readme
     benchmarks = Path("docs/benchmarks/README.md").read_text(encoding="utf-8")

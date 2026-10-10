@@ -98,12 +98,12 @@ Each path emits bounded, privacy-safe evidence.
 
 | Capability | Status | Evidence | Limitation |
 |---|---|---|---|
-| Contracts and eligibility gates | production functional | contract, security, and eligibility tests | provider behavior remains external |
-| Credential-free quickstart | production functional | `quickstart` CLI and fixture tests | demo candidates are not real providers |
-| Autonomous-dev golden path | production functional | `autodev-golden-path` tests | no claim of LLM generation |
-| Goal-to-receipt orchestration | production functional (live, faults injected) | GOLDEN_PATH_CERTIFICATION.md, scenarios A–J, 2907 tests | requires OmniRoute gateway; reviewer requires `ocr` on PATH |
-| Forced failover and replay | production functional | `failover-proof` CLI | simulated provider failure |
-| Live provider routing | production path, externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
+| Contracts and eligibility gates | implemented; covered by offline tests | contract, security, and eligibility tests | provider behavior remains external |
+| Credential-free quickstart | offline fixture | `quickstart` CLI and fixture tests | demo candidates are not real providers |
+| Autonomous-dev golden path | offline proof | `autodev-golden-path` tests | no claim of LLM generation |
+| Goal-to-receipt orchestration | one retained live run; bounded recovery and receipt verification | [BOD-225 live bundle](proof/dogfood-bod-225-live-2026-09-29/README.md) | includes an injected fault; raw OCR output and coverage are not retained; not production certification |
+| Forced failover and replay | offline proof | `failover-proof` CLI | simulated provider failure |
+| Live provider routing | implemented; externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
 | Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee |
 | Dashboard and ecosystem adapters | functional but incomplete | package/import and focused adapter tests | deployment and cross-repo operation are not proven here |
 | External provider health/quota | missing | not tested in CI | requires live credentials and network |
