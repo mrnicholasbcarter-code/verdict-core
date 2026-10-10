@@ -1061,3 +1061,35 @@ async def test_security_legitimate_diff_still_applies(tmp_path: Path) -> None:
     )
     assert result.ok, f"legitimate diff must succeed, got error: {result.error}"
     assert (tmp_path / "owned.py").read_text() == "new\n"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"VERDICT_OMNIROUTE_API_KEY": "v", "OMNIROUTE_API_KEY": "o", "OPENAI_API_KEY": "a"}, "v"),
+        ({"OMNIROUTE_API_KEY": "o", "OPENAI_API_KEY": "a"}, "o"),
+        ({"OPENAI_API_KEY": "a"}, "a"),
+        ({"VERDICT_OMNIROUTE_API_KEY": "  ", "OPENAI_API_KEY": "a"}, "a"),
+        ({}, ""),
+    ],
+)
+def test_key_env_precedence_matches_rest_of_verdict(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: str
+) -> None:
+    """Regression: certify sets VERDICT_OMNIROUTE_API_KEY; the executor must send it."""
+    for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    executor = DirectGatewayExecutor()
+    assert executor.api_key == expected
+    headers = executor._headers()
+    if expected:
+        assert headers["authorization"] == f"Bearer {expected}"
+    else:
+        assert "authorization" not in headers
+
+
+def test_explicit_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "env")
+    assert DirectGatewayExecutor(api_key="explicit").api_key == "explicit"
