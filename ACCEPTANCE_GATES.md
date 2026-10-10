@@ -1,4 +1,4 @@
-# Verdict 20K+ Flagship Acceptance Gates
+# Public launch acceptance gates
 
 This document defines measurable, auditable acceptance criteria for the Verdict flagship release.
 Each gate MUST have evidence linked in the evidence bundle.
