@@ -691,10 +691,10 @@ class DirectGatewayExecutor:
     """Run one prompt on one exact OmniRoute route via direct HTTP — no Prime harness.
 
     Text-only nodes (research/review/plan) return the model's text content.
-    Implement-type nodes request a unified diff for owned files, apply it with
-    ``git apply --check`` then ``git apply`` inside the node worktree, and fail
-    closed with a named error if it does not apply or touches files outside
-    ``owned_files``.
+    Implement-type nodes request fenced complete contents for owned files and
+    replace them atomically inside the node worktree. Unified diffs remain a
+    legacy fallback, checked by ``git apply --check`` before applying. Both modes
+    fail closed with named errors for unsafe operations or unowned paths.
 
     Failures (4xx/5xx/timeout/empty) are mapped to :class:`WorkerTerminal`
     fields compatible with the recovery classifier so that failover works
@@ -1052,20 +1052,28 @@ class DirectGatewayExecutor:
     def _augment_prompt_for_diff(
         prompt: str, owned_files: list[str], cwd: Path, budget_bytes: int = 60_000
     ) -> str:
-        """Append diff-mode instructions and current file contents to the prompt."""
+        """Append whole-file instructions and current contents (legacy method name)."""
         parts: list[str] = [prompt]
-        # Replace the generic RULES block's edit instruction with diff-specific one
         parts.append("")
-        parts.append("OUTPUT_FORMAT: unified diff")
-        parts.append("You MUST output your changes as a single unified diff (git diff format).")
-        parts.append("Wrap the diff in a ```diff fenced code block.")
-        parts.append("The diff must use a/ and b/ prefixes (standard git diff format).")
+        parts.append("OUTPUT_FORMAT: complete files (no diffs)")
+        parts.append("For each changed owned file, output a header FILE: <relative path>.")
+        parts.append("Immediately follow the header with a fenced block of COMPLETE new contents.")
+        parts.append("Example: FILE: src/example.py\n```python\nvalue = 1\n```")
+        parts.append(
+            "Preserve indentation and include the whole file, not snippets or unified diffs."
+        )
+        parts.append("Use longer fences if the contents contain triple backticks.")
+        parts.append("Empty content is allowed: FILE header, opening fence, then closing fence.")
         parts.append("Only modify files listed in OWNED_FILES. Never include paths outside them.")
-        parts.append("Do NOT output any other file contents or edits outside the diff block.")
+        parts.append("Do not delete files, rename files, change modes, or create symlinks.")
         parts.append("")
         parts.append("CURRENT FILE CONTENTS (for reference):")
         remaining = budget_bytes
         for rel in owned_files:
+            error = DirectGatewayExecutor._validate_file_paths({rel: ""}, owned_files, cwd)
+            if error:
+                parts.append(f"--- {rel} (unsafe target: {error}) ---")
+                continue
             path = cwd / rel
             if not path.exists():
                 parts.append(f"--- {rel} (does not exist yet — new file) ---")
@@ -1076,12 +1084,7 @@ class DirectGatewayExecutor:
                 parts.append(f"--- {rel} (unreadable: {exc}) ---")
                 continue
             if not data:
-                # An empty existing file looked like "omitted"/no file to models, which
-                # then emitted a "new file mode" diff that git refuses. Say it plainly.
-                parts.append(
-                    f"--- {rel} (EXISTS and is EMPTY — edit it with a normal diff "
-                    f"from a/{rel}; do NOT use 'new file mode' or /dev/null) ---"
-                )
+                parts.append(f"--- {rel} (EXISTS and is EMPTY — output COMPLETE contents) ---")
                 continue
             keep = min(len(data), remaining)
             if keep <= 0:
@@ -1157,7 +1160,7 @@ class DirectGatewayExecutor:
         owned_files = self._parse_owned_files(prompt)
         is_implement = bool(owned_files)
 
-        # For implement nodes, augment the prompt to request a unified diff
+        # For implement nodes, request complete contents of changed owned files.
         effective_prompt = prompt
         if is_implement:
             effective_prompt = self._augment_prompt_for_diff(prompt, owned_files, cwd)
@@ -1196,7 +1199,16 @@ class DirectGatewayExecutor:
         if not is_implement or not terminal.ok:
             return terminal
 
-        # --- Implement node: extract, validate, and apply the diff ---
+        # Prefer complete FILE blocks; only legacy output may use diff fallback.
+        try:
+            files = self._extract_files(terminal.output)
+        except ValueError as exc:
+            return replace(terminal, ok=False, error=str(exc))
+        if files is not None:
+            error = self._apply_files(files, owned_files, cwd)
+            return replace(terminal, ok=False, error=error) if error else terminal
+
+        # --- Legacy implement node: extract, validate, and apply the diff ---
         diff_text = self._extract_diff(terminal.output)
         if diff_text is None:
             return WorkerTerminal(
