@@ -792,15 +792,16 @@ class TestSelectionRefreshHook:
         assert by_id[ids[1]].reason == "unavailable"
 
 
-@pytest.mark.parametrize("frontier", [False, True])
+@pytest.mark.parametrize("frontier", [False, True], ids=["worker", "planner"])
+@pytest.mark.parametrize("category", ["quota_exhausted", "rate_limited"])
 @pytest.mark.parametrize("scope", ["route", "provider"])
-def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, scope):
+def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, category, scope):
     routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/cc/claude-haiku"]
     ladder, probe = make_ladder(
         tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
     )
     ladder.record_failure(
-        routes[0], FailureClassification("rate_limited", "REASSIGN", 60, scope), now=NOW
+        routes[0], FailureClassification(category, "REASSIGN", 60, scope), now=NOW
     )
     req = TaskRequirements(frontier_worthy=frontier)
     for alias in routes[1:]:
