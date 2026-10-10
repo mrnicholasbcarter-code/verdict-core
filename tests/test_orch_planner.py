@@ -717,7 +717,8 @@ def test_invalid_output_secret_across_the_byte_cut_never_leaks(tmp_path: Path, c
     [
         "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
         "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv",
-        "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx",
+        "sk-proj-AbCd3fGh1jKlMnOpQrStUvWx",
+        "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh",
         "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
         "AKIAABCDEFGHIJKLMNOP",
     ],

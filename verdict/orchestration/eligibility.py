@@ -910,6 +910,8 @@ class EligibilityLadder:
             and self._max_probes > 0
             and probe_order.index(fallback) >= self._max_probes
         ):
+            # With max_probes == 1 the single probe goes to this fallback, even
+            # when a fresh FREE route exists: the reserved slot is the last one.
             # Reserve by probes actually spent, not list position: skipped
             # entries (refresh-failed, provider-blocked, already launchable)
             # use no probe, so the fallback waits until exactly one probe is

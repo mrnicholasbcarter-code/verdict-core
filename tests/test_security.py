@@ -274,11 +274,11 @@ def test_authenticated_mode_requires_receipts_db(monkeypatch) -> None:
 
 def test_redaction_removes_bare_bearer_and_prefixed_keys() -> None:
     message = api.redact_text(
-        "echo Bearer abcdefghijklmnopqrstuv then sk-ant-api03-ABCDEFGHIJKLMNOPQR "
+        "echo Bearer abc123defghijklmnopqrstuv then sk-ant-api03-ABCDEFGHIJKLMNOPQR "
         "and ghp_ABCDEFGHIJKLMNOPQRSTUVWX and AKIAABCDEFGHIJKLMNOP"
     )
     for secret in (
-        "abcdefghijklmnopqrstuv",
+        "abc123defghijklmnopqrstuv",
         "sk-ant-api03-ABCDEFGHIJKLMNOPQR",
         "ghp_ABCDEFGHIJKLMNOPQRSTUVWX",
         "AKIAABCDEFGHIJKLMNOP",
@@ -289,3 +289,20 @@ def test_redaction_removes_bare_bearer_and_prefixed_keys() -> None:
         api.redact_text("the bearer of news; task-1 sk-short")
         == "the bearer of news; task-1 sk-short"
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use Bearer authentication for the API",
+        "bearer authentication-middleware.py",
+        "tests/sk-utils-helpers_module_test.py",
+        "install sk-learn-compatible-estimators",
+        "docs/sk-proj-overview-and-roadmap.md",
+        "xoxb-slack-bot-token-here",
+        "cc/claude-sonnet-5 kr/claude-sonnet-4.5 fmd/gpt-6-astra openrouter/sk-model",
+        "FAILED tests/test_sk-utils-helpers_module_v2.py::test_x - AssertionError",
+    ],
+)
+def test_redaction_leaves_prose_paths_and_route_ids_alone(text: str) -> None:
+    assert api.redact_text(text) == text
