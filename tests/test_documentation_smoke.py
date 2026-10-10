@@ -27,15 +27,15 @@ JOURNEY_COMMANDS = (
 # before any setup instructions. This intentionally changes the prior
 # ordering (which put Install before Quick start); the new order matches the
 # repository's actual reading path and is asserted just as strictly.
+# Docs Train A: the cost comparison moved to docs/benchmarks/README.md (no saving is
+# claimed), so the README order now ends with the Limits line that links it.
 README_REQUIRED_ORDER = (
-    "A model that fails a safety check cannot be scored back in.",
+    "A model that fails\nan admission check cannot be ranked back in.",
     "## Quick start",
     "Receipt: fixture:issue-35 (deterministic_fixture)",
     "## Install",
-    "## Cost comparison",
-    "Baseline list-price cost",
-    "Verdict list-price cost",
     "## Architecture",
+    "- **No cost saving is claimed yet.**",
 )
 
 
@@ -109,13 +109,13 @@ def test_documented_commands_are_present_and_maturity_is_truthful() -> None:
         assert status in journey
     assert "3500+ models" not in readme
     assert "OMNIROUTE (Intelligent Model Router)" not in readme
-    assert "Deterministic mock — no provider spend." in readme
-    assert "not billed amounts" in readme
-    assert "Context packing — dated live observation, not offline proof." in readme
-    assert "A blocked or skipped live run makes no lift claim." in readme
-    assert "Deterministic mock — no provider spend." in readme
-    assert "not billed amounts" in readme
-    assert "Context packing — dated live observation, not offline proof." in readme
+    benchmarks = Path("docs/benchmarks/README.md").read_text(encoding="utf-8")
+    offline = Path("docs/guides/offline-demo.md").read_text(encoding="utf-8")
+    assert "Deterministic mock — no provider spend." in offline
+    assert "not billed amounts" in benchmarks
+    assert "**No cost saving is claimed yet.**" in benchmarks
+    assert "## Cost comparison" not in readme
+    assert "Context packing: one dated live observation, not offline proof." in readme
     assert "A blocked or skipped live run makes no lift claim." in readme
 
 

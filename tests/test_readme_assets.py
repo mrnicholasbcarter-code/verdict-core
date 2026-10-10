@@ -1,4 +1,7 @@
-"""README assets: links resolve, chart sources exist, the demo cast and run are valid.
+"""Demo assets: links resolve, chart sources exist, the demo cast and run are valid.
+
+Fixture media lives in docs/guides/offline-demo.md (labelled "offline fixture"), never in
+README.md. The README may only embed live media from a committed docs/proof/*live* bundle.
 
 No network and no matplotlib: this reads committed files and runs the receipt
 verifier on the committed demo run.
@@ -16,6 +19,16 @@ from verdict.orchestration.receipt import completion_verdict, verify_run_receipt
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
+OFFLINE_GUIDE = ROOT / "docs" / "guides" / "offline-demo.md"
+FIXTURE_MEDIA = (
+    "demo.svg",
+    "demo-tui.svg",
+    "verified-models.svg",
+    "chart-admission-funnel.svg",
+    "chart-recovery.svg",
+    "chart-paired-fixture.svg",
+    "chart-live-savings.svg",
+)
 ASSETS = ROOT / "docs" / "assets"
 DEMO_RUN = ROOT / "docs" / "proof" / "demo-run"
 MAX_ASSET_BYTES = 2 * 1024 * 1024
@@ -25,10 +38,14 @@ def _readme() -> str:
     return README.read_text(encoding="utf-8")
 
 
-def _local(target: str) -> Path | None:
+def _guide() -> str:
+    return OFFLINE_GUIDE.read_text(encoding="utf-8")
+
+
+def _local(target: str, base: Path = ROOT) -> Path | None:
     if target.startswith(("http://", "https://", "mailto:", "#")):
         return None
-    return ROOT / unquote(target.split("#", 1)[0])
+    return (base / unquote(target.split("#", 1)[0])).resolve()
 
 
 def _image_targets(text: str) -> list[str]:
@@ -50,47 +67,66 @@ def _chart_sources() -> dict[str, tuple[str, ...]]:
     raise AssertionError("scripts/render_charts.py defines no CHART_SOURCES")
 
 
-def test_every_readme_image_exists_and_is_small() -> None:
-    # Remote status badges (shields.io, GitHub Actions) are not repository assets.
-    images = [t for t in _image_targets(_readme()) if _local(t) is not None]
-    assert len(images) >= 4, images  # demo + three charts
+def test_readme_embeds_no_fixture_media() -> None:
+    """Operator rule: no fixture or replayed media on the product page."""
+    text = _readme()
+    for name in FIXTURE_MEDIA:
+        assert f"docs/assets/{name}" not in text, f"README embeds fixture media: {name}"
+    assert "CLAIMS VERIFIED" not in text
+    assert "alpha/claude-a" not in text
+    for target in _image_targets(text):
+        if _local(target) is not None:
+            assert target.startswith("docs/proof/") and "live" in target, (
+                f"README image is not from a live proof bundle: {target}"
+            )
+
+
+def test_offline_guide_is_labelled_and_its_images_exist() -> None:
+    text = _guide()
+    assert "**Offline fixture.**" in text.split("\n## ", 1)[0]
+    images = [t for t in _image_targets(text) if _local(t, OFFLINE_GUIDE.parent) is not None]
+    assert len(images) >= 6, images  # 3 recordings + 3 fixture charts
     for target in images:
-        path = _local(target)
+        path = _local(target, OFFLINE_GUIDE.parent)
         assert path is not None
-        assert path.is_file(), f"README image missing: {target}"
+        assert path.is_file(), f"offline guide image missing: {target}"
         assert path.stat().st_size <= MAX_ASSET_BYTES, f"asset over 2 MB: {target}"
 
 
-def test_every_readme_asset_link_exists() -> None:
-    text = _readme()
+def test_every_offline_guide_asset_link_exists() -> None:
+    text = _guide()
     links = re.findall(r"(?<!!)\]\(([^)\s]+)\)", text) + re.findall(r"href=\"([^\"]+)\"", text)
-    asset_links = [t for t in links if t.startswith(("docs/assets/", "docs/proof/demo-run"))]
-    assert asset_links, "README links no demo assets"
+    asset_links = [t for t in links if "/assets/" in t or "/proof/demo-run" in t]
+    assert asset_links, "offline guide links no demo assets"
     for target in asset_links:
-        path = _local(target)
-        assert path is not None and path.exists(), f"README asset link missing: {target}"
+        path = _local(target, OFFLINE_GUIDE.parent)
+        assert path is not None and path.exists(), f"offline guide asset link missing: {target}"
 
 
 def test_each_chart_has_existing_source_data_and_a_labelled_caption() -> None:
-    text = _readme()
     sources = _chart_sources()
     assert len(sources) >= 2
-    for chart, data_files in sources.items():
-        assert (ASSETS / chart).is_file(), f"chart not rendered: {chart}"
-        assert data_files, f"{chart} lists no source data"
-        for rel in data_files:
-            assert (ROOT / rel).is_file(), f"{chart} source data missing: {rel}"
-        if f"docs/assets/{chart}" in text:
-            caption = text.split(f"docs/assets/{chart})", 1)[1].split("</sub>", 1)[0]
-            assert any(rel in caption for rel in data_files), f"{chart} caption omits its data"
-            assert (
-                "Fixture" in caption
-                or "fixture" in caption
-                or "Observed" in caption
-                or "observed" in caption
-            ), f"{chart} caption not labelled"
-    embedded = set(re.findall(r"docs/assets/(chart-[\w-]+\.svg)", text))
-    assert embedded <= set(sources), f"README embeds charts with no declared source: {embedded}"
+    for doc_path in (OFFLINE_GUIDE, ROOT / "docs" / "benchmarks" / "README.md"):
+        text = doc_path.read_text(encoding="utf-8")
+        for chart, data_files in sources.items():
+            assert (ASSETS / chart).is_file(), f"chart not rendered: {chart}"
+            assert data_files, f"{chart} lists no source data"
+            for rel in data_files:
+                assert (ROOT / rel).is_file(), f"{chart} source data missing: {rel}"
+            marker = f"assets/{chart})"
+            if marker in text:
+                caption = text.split(marker, 1)[1].split("</sub>", 1)[0]
+                assert any(rel.removeprefix("docs/") in caption for rel in data_files), (
+                    f"{chart} caption omits its data"
+                )
+                assert (
+                    "Fixture" in caption
+                    or "fixture" in caption
+                    or "Observed" in caption
+                    or "observed" in caption
+                ), f"{chart} caption not labelled"
+        embedded = set(re.findall(r"assets/(chart-[\w-]+\.svg)", text))
+        assert embedded <= set(sources), f"{doc_path.name} embeds undeclared charts: {embedded}"
 
 
 def test_demo_cast_is_valid_asciinema_v2() -> None:
@@ -151,9 +187,9 @@ def _visible_svg_text(svg: str) -> str:
     return "".join(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
 
 
-def test_posters_are_static_and_readme_prefers_reduced_motion() -> None:
+def test_posters_are_static_and_offline_guide_prefers_reduced_motion() -> None:
     """Posters have no animation, and reduced-motion viewers get them."""
-    readme = _readme()
+    readme = _guide()
     for animated_name, poster_name in (
         ("demo.svg", "demo-poster.svg"),
         ("demo-tui.svg", "demo-tui-poster.svg"),
@@ -165,8 +201,8 @@ def test_posters_are_static_and_readme_prefers_reduced_motion() -> None:
         assert _visible_svg_text(poster).strip()
         first = re.search(r"@keyframes\s*\w+\{0%\{[^}]*\}", animated)
         assert first is not None
-        assert f'(prefers-reduced-motion: reduce)" srcset="docs/assets/{poster_name}"' in readme
-        assert f'src="docs/assets/{animated_name}"' in readme
+        assert f'(prefers-reduced-motion: reduce)" srcset="../assets/{poster_name}"' in readme
+        assert f'src="../assets/{animated_name}"' in readme
 
 
 def test_posters_show_complete_cockpit_state() -> None:
@@ -243,8 +279,8 @@ def test_committed_demo_run_verifies_and_shows_recovery() -> None:
     assert receipt["review"]["route_id"] not in implementers
 
 
-def test_readme_demo_block_matches_committed_run_receipt() -> None:
-    text = _readme()
+def test_offline_guide_demo_block_matches_committed_run_receipt() -> None:
+    text = _guide()
     receipt = json.loads((DEMO_RUN / "receipt.json").read_text(encoding="utf-8"))
     for node in receipt["nodes"]:
         chain = " -> ".join(
