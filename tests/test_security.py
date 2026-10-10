@@ -302,7 +302,25 @@ def test_redaction_removes_bare_bearer_and_prefixed_keys() -> None:
         "xoxb-slack-bot-token-here",
         "cc/claude-sonnet-5 kr/claude-sonnet-4.5 fmd/gpt-6-astra openrouter/sk-model",
         "FAILED tests/test_sk-utils-helpers_module_v2.py::test_x - AssertionError",
+        "tests/sk-utils-v2-helpers_module.py",
+        "FAILED tests/sk_utils/sk-helpers-v12345678901.py::t",
+        "pkg/sk-abcdefghij1234567/mod.py",
     ],
 )
 def test_redaction_leaves_prose_paths_and_route_ids_alone(text: str) -> None:
     assert api.redact_text(text) == text
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["my key is {key}.", "see {key}/", "https://api.example.com/{key}", "value-{key}", "_{key}"],
+)
+def test_redaction_catches_keys_at_sentence_and_path_boundaries(template: str) -> None:
+    key = "sk-ant-api03-Ab3dEfGh1jKlMn0pQrStUvWx"
+    assert key not in api.redact_text(template.format(key=key))
+
+
+@pytest.mark.parametrize("prefix", ["repo/", "token.", "x-"])
+def test_redaction_catches_other_prefixed_tokens_after_punctuation(prefix: str) -> None:
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    assert token not in api.redact_text(prefix + token)
