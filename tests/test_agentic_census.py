@@ -178,3 +178,47 @@ def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):
     entry = HealthCache(cache.path).entry("kc/model:free")
     assert entry.agentic_checked_at == NOW
     assert entry.agentic_source and entry.agentic_child_id == "sub-123"
+
+
+@pytest.mark.parametrize("age,live_age,failure,eligible", [
+    (2, 0, False, True), (2, 11, False, False),
+    (2, 0, True, False), (8, 0, False, False),
+])
+def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, failure, eligible):
+    from tests.test_orch_eligibility import REQ, conn, make_ladder, row as model_row
+    from verdict.prove_at_rest import import_sessions
+
+    route = "gl/glm-5"
+    source = worker_file(tmp_path, [{**row(), "route": route,
+                         "ts": (NOW - timedelta(days=age)).isoformat()}])
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(source, cache, now=NOW)
+    if failure:
+        source.write_text(json.dumps({**row("FALSE_CLAIM"), "route": route}) + "\n")
+        import_sessions(source, cache, now=NOW)
+    cache.record(route, ProbeResult("ok", True, True), NOW - timedelta(minutes=live_age))
+    ladder, probe = make_ladder(tmp_path, [model_row(route, owned_by="glm")],
+                               [conn("glm", auth="apikey", plan="free", free_only=True)],
+                               health_cache=cache)
+    # Read-only evaluation cannot silently refresh stale liveness.
+    verdict = ladder.evaluate(REQ, now=NOW)[0]
+    assert (verdict.reached is not None and verdict.reached.value == "TASK_ELIGIBLE") == eligible
+    assert not probe.calls
+    evidence = verdict.to_dict()["agentic_capability"]
+    assert evidence["source"] == "session_evidence"
+    assert evidence["child_id"] == "sub-123"
+    assert evidence["checked_at"]
+    if eligible:
+        assert ladder.select(REQ, now=NOW)[0] is not None
+
+
+def test_session_capability_ttl_is_configurable(tmp_path, monkeypatch):
+    from verdict.prove_at_rest import import_sessions
+    from verdict.orchestration.health_cache import agentic_capability
+
+    source = worker_file(tmp_path, [{**row(), "ts": (NOW - timedelta(days=2)).isoformat()}])
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(source, cache, now=NOW)
+    assert agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"]
+    monkeypatch.setenv("VERDICT_AGENTIC_CAPABILITY_TTL_S", "86400")
+    assert not agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"]
