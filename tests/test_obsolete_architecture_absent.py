@@ -85,3 +85,13 @@ def test_canonical_memory_and_dispatcher_remain() -> None:
     from verdict.dispatcher import SwarmDispatcher
 
     assert SwarmDispatcher.__name__ == "SwarmDispatcher"
+
+
+def test_checker_rejects_obsolete_content(tmp_path, monkeypatch):
+    import scripts.check_no_obsolete_architecture as checker
+
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    package = tmp_path / "verdict"
+    package.mkdir()
+    (package / "innocent.py").write_text('backend = "RuVector"\n')
+    assert checker.find_violations(package)

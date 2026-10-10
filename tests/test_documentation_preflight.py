@@ -662,3 +662,23 @@ def test_preflight_without_deadline_never_times_out(tmp_path: Path) -> None:
     )
     assert report.timed_out is False
     assert report.passed is True
+
+
+def test_preflight_without_removed_roots_never_fetches_network(tmp_path, monkeypatch):
+    for name in ("VERDICT_RUFLO_ROOT", "VERDICT_RUVECTOR_ROOT", "VERDICT_RUFLO_REF", "VERDICT_RUVECTOR_REF"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text("# Local decision")
+
+    def no_network(url):
+        pytest.fail(f"unexpected network request: {url}")
+
+    report = run_documentation_preflight(
+        repo_root=tmp_path, memory_path=tmp_path / "memory.db", fix=True, fetch=no_network
+    )
+    assert report.passed
+    assert report.sources == 1
+    assert report.ingested == 1
