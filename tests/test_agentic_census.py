@@ -1,7 +1,6 @@
 """Offline regressions for trusted agentic evidence and user service setup."""
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -9,6 +8,14 @@ from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.orchestration.session_evidence import import_worker_outcomes
 
 NOW = datetime(2026, 10, 9, 18, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def isolate_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("VERDICT_SKIP_SETUP", "1")
 
 
 def worker_file(tmp_path, rows):

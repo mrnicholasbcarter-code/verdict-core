@@ -36,7 +36,7 @@ def manage_service(
         raise ValueError("interval and max-requests must be positive finite budgets")
     directory = unit_dir or (Path(os.environ.get(
         "XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user")
-    command = (f"{_quote(sys.executable)} -m verdict prove-at-rest daemon --allow-live-probe "
+    command = (f"{_quote(str(Path(sys.executable).absolute()))} -m verdict prove-at-rest daemon --allow-live-probe "
                f"--interval {interval:g} --max-requests {max_requests} --max-wall-seconds 600")
     files = {} if uninstall else {
         SERVICE: ("[Unit]\nDescription=Verdict bounded background route proof\n"

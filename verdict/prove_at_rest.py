@@ -70,6 +70,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
+    FRESH_SECONDS,
     STATE_FRESH,
     STATE_NEGATIVE,
     STATE_STALE,
@@ -1981,7 +1982,10 @@ def import_sessions(
             "read": len(outcomes), "updated": updated}
 
 
-def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[str, Any]:
+def status_report(
+    cache: HealthCache, *, now: datetime | None = None,
+    capacity_class: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
     """Counts by state and class, top healthy coding workers, cold providers."""
     current = now or _now()
     by_state = {STATE_FRESH: 0, STATE_STALE: 0, STATE_NEGATIVE: 0, STATE_UNPROBED: 0}
@@ -1994,8 +1998,9 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
         by_state[state] = by_state.get(state, 0) + 1
         evidence = entry.capacity_evidence or "unknown"
         ack = entry.agentic_checked_at
-        if entry.agentic_ok and ack is not None and 0 <= (current - ack).total_seconds() <= 600:
-            capacity = (entry.capacity_evidence or "unknown").lower()
+        if entry.agentic_ok and ack is not None and 0 <= (current - ack).total_seconds() <= FRESH_SECONDS:
+            capacity = (capacity_class(entry.route_id) if capacity_class is not None
+                        else (entry.capacity_evidence or "unknown").lower())
             agentic_by_class[capacity if capacity in agentic_by_class else "unknown"] += 1
 
         if state in {STATE_FRESH, STATE_STALE}:
