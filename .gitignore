@@ -58,7 +58,6 @@ coverage.xml
 .cursorrules
 .hermes.md
 .serena/
-CLAUDE.md
 skills-lock.json
 
 # .prime/agent/** is tracked source (ADR-031: skills, extensions, prompts,

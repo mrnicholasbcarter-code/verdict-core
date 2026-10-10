@@ -500,114 +500,39 @@ def _call_launch_entry(entry: str, params: dict[str, Any]) -> tuple[bool, Any]:
     return True, result
 
 
-def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 100) -> None:
-    """Render an ActionResult payload through TerminalUI.
+def _render_action_result(
+    tui: TerminalUI,
+    ok: bool,
+    data: Any,
+    *,
+    width: int = 100,
+    action: str = "Action",
+    output_json: bool = False,
+) -> None:
+    """Keep human reports separate from the explicit machine output boundary."""
+    from verdict.home_action_render import render_doctor, render_generic, render_setup_plan
 
-    - list[dict]: table
-    - dict: key/value panel
-    - ok=False: error panel
-    - narrow (width<70): truncate table columns to fit
-    """
-    console = tui.console
-    effective_width = max(40, min(width, console.width or width))
-    if ok and isinstance(data, dict) and data.get("schema") == "verdict.verified-models/v1":
-        from verdict.orchestration.verified_models_render import (
-            render_verified_plain,
-            render_verified_table,
-        )
-
-        console.print(
-            Text(render_verified_plain(data)) if tui.plain else render_verified_table(data)
-        )
+    if output_json:
+        tui.console.print(Text(json.dumps(data, default=str, indent=2)), soft_wrap=True)
         return
-
-    if not ok:
-        # Error panel
-        err_msg = ""
-        if isinstance(data, dict):
-            err_msg = str(data.get("error") or json.dumps(data, default=str))
-        elif data is not None:
-            err_msg = clean(str(data))[:500]
-        else:
-            err_msg = "action failed with no error detail"
-        if tui.plain:
-            console.print(Text(f"ERROR: {err_msg}"))
-        else:
-            console.print(
-                panel(
-                    Text(clean(err_msg), style=TOKENS["ERROR"]),
-                    title="Error",
-                    tone="ERROR",
-                    mode=tui.mode,
-                )
+    if isinstance(data, dict):
+        if action == "doctor" or {"capability_bootstrap", "sections", "issues"} <= data.keys():
+            render_doctor(tui, data)
+            return
+        if data.get("kind") == "setup_plan":
+            render_setup_plan(tui, data)
+            return
+        if data.get("schema") == "verdict.verified-models/v1":
+            from verdict.orchestration.verified_models_render import (
+                render_verified_plain,
+                render_verified_table,
             )
-        return
 
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        _render_table(console, data, plain=tui.plain, width=effective_width)
-    elif isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
-        # Text-bearing result (e.g. demo output): print text directly
-        console.print(clean(data["text"]))
-    elif isinstance(data, dict):
-        _render_kv_panel(console, data, plain=tui.plain, width=effective_width)
-    elif isinstance(data, list):
-        # list of non-dicts
-        if tui.plain:
-            for item in data[:50]:
-                console.print(f"  {clean(str(item))}")
-        else:
-            lines = "\n".join(clean(str(item)) for item in data[:50])
-            console.print(panel(Text(lines), mode=tui.mode))
-    elif data is None:
-        if tui.plain:
-            console.print("ok (no data)")
-        else:
-            console.print(Text("✓ ok", style=TOKENS["SUCCESS"]))
-    else:
-        console.print(clean(str(data))[:2000])
-
-
-def _render_table(console: Console, data: list[dict[str, Any]], *, plain: bool, width: int) -> None:
-    keys = list(data[0].keys())
-    narrow = width < 70
-    if narrow:
-        keys = keys[:3]
-    table = Table(
-        box=None if plain else box.SIMPLE,
-        pad_edge=False,
-        show_edge=False,
-        header_style="" if plain else TOKENS["MUTED"],
-        width=min(width, 96),
-    )
-    for k in keys:
-        table.add_column(clean(k), overflow="fold" if not narrow else "ellipsis")
-    for row_dict in data[:50]:
-        table.add_row(*(clean(str(row_dict.get(k, "")))[: 120 if not narrow else 30] for k in keys))
-    console.print(table)
-
-
-def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, width: int) -> None:
-    kv = Table.grid(padding=(0, 2))
-    kv.add_column(style="" if plain else TOKENS["MUTED"])
-    kv.add_column()
-    for k, v in data.items():
-        if isinstance(v, dict):
-            # Nested dict: render as indented lines
-            kv.add_row(Text(clean(str(k))), Text(""))
-            for sk, sv in v.items():
-                if isinstance(sv, dict):
-                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(""))
-                    for ssk, ssv in sv.items():
-                        kv.add_row(Text(f"    {clean(str(ssk))}"), Text(clean(str(ssv))[:200]))
-                else:
-                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(clean(str(sv))[:200]))
-        else:
-            kv.add_row(Text(clean(str(k))), Text(clean(str(v))[:200]))
-    if plain:
-        console.print(kv)
-    else:
-        mode = PresentationMode(True, True, False, width)
-        console.print(panel(kv, mode=mode))
+            tui.console.print(
+                Text(render_verified_plain(data)) if tui.plain else render_verified_table(data)
+            )
+            return
+    render_generic(tui, ok, data, action=action)
 
 
 # ---------------------------------------------------------------------------
@@ -806,13 +731,16 @@ def _run_command(
         if cmd_args == "--help":
             _show_help(console, palette_cmd, state.completion_snapshot)
             return None
+        output_json = cmd_args == "--json" or cmd_args.endswith(" --json")
+        if output_json:
+            cmd_args = cmd_args.removesuffix("--json").strip()
         if palette_cmd == "probe" and any(
             token.startswith("-") for token in cmd_args.replace(",", " ").split()
         ):
             console.print(Text("ERROR: Invalid /probe model field: options are not model ids."))
             _show_help(console, "probe", state.completion_snapshot)
             return None
-        if palette_cmd == "bootstrap":
+        if palette_cmd == "bootstrap" and not output_json:
             from verdict.actions.registry import run_action
             from verdict.tui_bootstrap_controls import consume_prime, parse_bootstrap_args
 
@@ -840,7 +768,7 @@ def _run_command(
                 console.print(Text("Invalid bootstrap input or cancelled; no apply."))
                 _show_help(console, "bootstrap", state.completion_snapshot)
             return None
-        if ref == "models.verified":
+        if ref == "models.verified" and not output_json:
             try:
                 ok, data = _run_verified_command(
                     cmd_args, tui=tui, state=state, line_reader=line_reader
@@ -855,6 +783,25 @@ def _run_command(
             _render_action_result(tui, ok, data, width=width)
             if ok:
                 _publish_completion(state, console)
+            return None
+
+        if ref == "setup.plan" and not output_json:
+            from verdict.home_setup_render import run_setup_wizard
+
+            try:
+                ok, data = run_palette_action(ref)
+                if ok:
+                    run_setup_wizard(
+                        tui,
+                        gateway=state.gateway,
+                        plan=data,
+                        state_dir=history_file().parent / "bootstrap",
+                        reader=line_reader,
+                    )
+                else:
+                    _render_action_result(tui, ok, data, action=ref)
+            except (KeyboardInterrupt, ValueError, OSError) as exc:
+                console.print(Text(f"Setup cancelled or blocked: {clean(str(exc))}"))
             return None
 
         # Resolve params: if args on the line, use them for the first required param
@@ -950,7 +897,7 @@ def _run_command(
             # A failing command reports its error and returns to the prompt.
             ok, data = False, {"error": f"{type(exc).__name__}: {clean(str(exc))[:200]}"}
 
-        _render_action_result(tui, ok, data, width=width)
+        _render_action_result(tui, ok, data, width=width, action=ref, output_json=output_json)
         return None
 
     # Not a known command. Is it a goal (free text)?
@@ -1458,6 +1405,25 @@ def _interactive_palette(
     return _command_prompt(target, state)
 
 
+def _startup_line_reader(key_reader: Callable[[], str]) -> Callable[[], str | None]:
+    """Adapt the existing injected character reader for wizard/startup questions."""
+
+    def read() -> str | None:
+        chars: list[str] = []
+        while True:
+            try:
+                char = key_reader()
+            except EOFError:
+                return None
+            if char in {"\x04", "\x03"}:
+                return None
+            if char in {"\r", "\n"}:
+                return "".join(chars)
+            chars.append(char)
+
+    return read
+
+
 def run_home(
     *,
     console: Console | None = None,
@@ -1466,6 +1432,7 @@ def run_home(
     animate: bool | None = None,
     probe: bool = True,
     interactive: bool | None = None,
+    skip_setup: bool = False,
     _key_reader: Callable[[], str] | None = None,
 ) -> int:
     target = console or Console()
@@ -1476,6 +1443,18 @@ def run_home(
     roots = list(runs_roots) if runs_roots is not None else [Path.cwd() / ".verdict" / "runs"]
     state.runs = recent_runs(roots)
     ui = TerminalUI(target)
+    if not skip_setup and os.getenv("VERDICT_SKIP_SETUP") != "1":
+        from verdict.home_startup_render import route_startup
+
+        outcome = route_startup(
+            ui,
+            home=history_file().parent,
+            gateway=state.gateway,
+            run=run_palette_action,
+            reader=_startup_line_reader(_key_reader) if _key_reader is not None else None,
+        )
+        if outcome is not None:
+            return outcome
     # An explicit True never overrides accessibility or terminal policy.
     ui.animate = ui.animate and animate is not False
     mode = presentation_mode(target.file if hasattr(target, "file") else None)

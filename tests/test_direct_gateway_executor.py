@@ -1061,3 +1061,52 @@ async def test_security_legitimate_diff_still_applies(tmp_path: Path) -> None:
     )
     assert result.ok, f"legitimate diff must succeed, got error: {result.error}"
     assert (tmp_path / "owned.py").read_text() == "new\n"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"VERDICT_OMNIROUTE_API_KEY": "v", "OMNIROUTE_API_KEY": "o", "OPENAI_API_KEY": "a"}, "v"),
+        ({"OMNIROUTE_API_KEY": "o", "OPENAI_API_KEY": "a"}, "o"),
+        ({"OPENAI_API_KEY": "a"}, "a"),
+        ({"VERDICT_OMNIROUTE_API_KEY": "  ", "OPENAI_API_KEY": "a"}, "a"),
+        ({}, ""),
+    ],
+)
+def test_key_env_precedence_matches_rest_of_verdict(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: str
+) -> None:
+    """Regression: certify sets VERDICT_OMNIROUTE_API_KEY; the executor must send it."""
+    for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    executor = DirectGatewayExecutor()
+    assert executor.api_key == expected
+    headers = executor._headers()
+    if expected:
+        assert headers["authorization"] == f"Bearer {expected}"
+    else:
+        assert "authorization" not in headers
+
+
+def test_explicit_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "env")
+    assert DirectGatewayExecutor(api_key="explicit").api_key == "explicit"
+
+
+def test_cli_executor_builder_honours_verdict_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the orchestrate CLI must not override executor key precedence."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "verdict-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    args = argparse.Namespace(
+        executor="direct-gateway", executor_map="", gateway="http://127.0.0.1:20128", inject=[]
+    )
+    executor = orch_cli._executor(args)
+    inner = getattr(executor, "_inner", executor)
+    assert isinstance(inner, DirectGatewayExecutor)
+    assert inner.api_key == "verdict-key"

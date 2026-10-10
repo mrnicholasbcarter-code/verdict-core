@@ -63,14 +63,60 @@ For parallel agent workloads, apply the admission settings in
 ### 5. Run Verdict Core Server
 
 ```bash
-# With OmniRoute integration
-export OMNIROUTE_BASE_URL=http://127.0.0.1:20128   # loopback IP literal required for plain HTTP
-verdict serve --host 0.0.0.0 --port 8000
+# Deliberately anonymous development server: loopback only.
+export OMNIROUTE_BASE_URL=http://127.0.0.1:20128
+export LLMGATE_ALLOW_ANONYMOUS=true
+verdict serve --host 127.0.0.1 --port 8000
+```
 
-# Test
-curl -X POST http://localhost:8000/v1/route \
+For a non-loopback bind, configure `LLMGATE_AUTH_TOKEN` and a durable
+`VERDICT_RECEIPTS_DB` first. Send the bearer token on each request. Do not expose
+anonymous mode; startup rejects it on non-loopback interfaces.
+See [SECURITY.md](../../SECURITY.md).
+
+`POST /v1/route` is a decision endpoint, not a completion endpoint. It requires
+an `execution_path_request`; a task-only body returns HTTP 400. The following
+shows the public contract shape. Replace `provider/model` and the candidate
+fields, prices and observation date with real, current evidence for your route.
+Non-free candidates require a `price` evidence object. These example fields are
+not admission proof and do not guarantee selection. This call can trigger
+configured discovery or confirmation probes; run it only with consent and a
+budget for that upstream.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/route \
   -H "Content-Type: application/json" \
-  -d '{"task": "Write a Python function", "criticality": "medium"}'
+  -d '{
+    "task": "Write a Python function",
+    "criticality": "medium",
+    "execution_path_request": {
+      "schema_version": "1",
+      "trajectory_id": "local-development",
+      "slice_id": "function",
+      "acceptance_criteria": ["function passes its tests"],
+      "proof_criteria": ["selected and served identities match"],
+      "candidates": [{
+        "strategy": "direct_cheap",
+        "route_id": "provider/model",
+        "gateway": "verdict-upstream",
+        "provider": "omniroute",
+        "model": "provider/model",
+        "capability_tier": 2,
+        "eligible": true,
+        "is_free": false,
+        "price": {
+          "input_usd_per_mtok": "1",
+          "output_usd_per_mtok": "1",
+          "observed_at": "2026-09-29T00:00:00Z",
+          "evidence_id": "replace-with-current-price-evidence"
+        },
+        "execution_tokens": 256,
+        "verification_tokens": 64,
+        "certification_state": "ready",
+        "certification_freshness": "fresh"
+      }]
+    }
+  }'
 ```
 
 ---

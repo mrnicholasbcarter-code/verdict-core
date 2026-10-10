@@ -643,6 +643,8 @@ class ContextPack:
     schema_version: str = CONTEXT_SCHEMA_VERSION
     # Tokens of repeated/near-duplicate units that were not packed (BOD-272).
     duplicate_tokens_suppressed: int = 0
+    # Output observability is receipt metadata, not context artifact identity.
+    output_observation: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -729,6 +731,9 @@ class ContextReceipt:
     schema_version: str = CONTEXT_SCHEMA_VERSION
     # Context Intelligence additive: capability coverage (requested/available/used/omitted).
     capability_coverage: Mapping[str, Any] | None = None
+    raw_artifact_pointer: Mapping[str, Any] | None = None
+    output_policy: Mapping[str, Any] | None = None
+    output_metrics: Mapping[str, Any] | None = None
 
     @classmethod
     def from_pack(cls, pack: ContextPack) -> ContextReceipt:
@@ -741,6 +746,7 @@ class ContextReceipt:
             unresolved_uncertainties=tuple(
                 f"conflict:{item.get('key', 'unknown')}" for item in pack.conflicts
             ),
+            **dict(pack.output_observation or {}),
         )
 
     def __post_init__(self) -> None:
@@ -768,6 +774,14 @@ class ContextReceipt:
         }
         if self.capability_coverage is not None:
             payload["capability_coverage"] = dict(self.capability_coverage)
+        if self.output_policy is not None:
+            payload["raw_artifact_pointer"] = (
+                dict(self.raw_artifact_pointer) if self.raw_artifact_pointer is not None else None
+            )
+            payload["output_policy"] = dict(self.output_policy)
+            payload["output_metrics"] = (
+                dict(self.output_metrics) if self.output_metrics is not None else None
+            )
         return payload
 
     @property
@@ -794,7 +808,7 @@ class ContextReceipt:
                 "unresolved_uncertainties",
                 "created_at",
             },
-            {"capability_coverage"},
+            {"capability_coverage", "raw_artifact_pointer", "output_policy", "output_metrics"},
             "context_receipt",
         )
         return cls(

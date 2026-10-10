@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
@@ -210,6 +211,12 @@ def register(subparsers: Any) -> None:
     restore_p.add_argument("--json", action="store_true")
     sync_p = harness_prime_sub.add_parser(
         "sync-models", help="Separate inventory/visibility sync, not health proof"
+    )
+    sync_p.add_argument(
+        "--gateway",
+        default=os.environ.get("OMNIROUTE_BASE_URL")
+        or os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128"),
+        help="OmniRoute gateway base URL (default: $OMNIROUTE_BASE_URL or :20128)",
     )
     sync_p.add_argument("--dry-run", action="store_true")
     sync_p.add_argument("--json", action="store_true")

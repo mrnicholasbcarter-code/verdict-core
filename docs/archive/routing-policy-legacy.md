@@ -1,8 +1,10 @@
-# Routing Policy
+# Routing Policy (legacy archive)
 
-**Status:** Active
-**Authority:** This policy governs the Verdict Core routing surface. Changes to
-its safety invariants require an ADR.
+> **Historical, not current authority.** Superseded by
+> [ADR-002](../adr/ADR-002-orchestrator-routing.md) and
+> [ADR-035](../adr/ADR-035-authorized-selected-route-dispatch.md).
+> The text below records the legacy policy; its routing and freshness claims
+> must not be used as current behavior. See [current architecture](../architecture.md).
 **Related:** [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) defines
 the current goal-to-receipt orchestration path.
 

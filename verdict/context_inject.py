@@ -15,16 +15,86 @@ Rules:
 * The client's own messages are never rewritten or dropped.
 * Verdict never claims injection it did not perform: the returned
   :class:`InjectionRecord` is the single source of truth for receipts/headers.
+
+BOD-333 phase 1 (opt-in, product-owned seam only):
+
+* :class:`ContextOutputPolicy` is OFF by default. When ``enabled`` is
+  ``False`` (the default), :func:`inject_context_pack` behaviour and
+  :meth:`InjectionRecord.to_dict` output are byte-identical to the
+  pre-BOD-333 shape -- no new keys, no altered envelope bytes.
+* When a caller opts in, this phase-1 seam does not run a new compression
+  engine (none exists yet; see PRODUCT-SCOPE phase 2). It only attaches a
+  raw-artifact pointer (digest + byte count of the exact envelope that was
+  sent) and records whether any ``cache_control`` mark on the envelope
+  content survived verbatim. A lossy/rejected transform is not implemented
+  here, so the observed behaviour is a raw fallback by construction.
+* Verdict's Prime adapter cannot intercept tool calls/results inside a
+  Prime-owned worker loop (``verdict/harness_prime.py`` certify():
+  ``tool_interception`` / ``tool_pre_post`` are both ``"unsupported"``).
+  This seam only ever governs the envelope Verdict itself injects, never a
+  Prime-owned tool loop.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
 
 INJECTABLE_PACK_STATES = frozenset({"hydrated", "partial"})
 ENVELOPE_ROLE = "system"
+
+
+@dataclass(frozen=True)
+class ContextOutputPolicy:
+    """Opt-in context-output policy. Default ``enabled=False`` is a no-op.
+
+    Phase 1 carries no compression engine (PRODUCT-SCOPE phase 2 gap G1).
+    ``enabled=True`` only attaches observability fields (raw-artifact
+    pointer, cache_control preservation flag); it never mutates the
+    envelope bytes that are forwarded upstream.
+    """
+
+    enabled: bool = False
+    estimate_method: str = "utf8_bytes_div_4"
+
+    def __post_init__(self) -> None:
+        if self.estimate_method != "utf8_bytes_div_4":
+            raise ValueError("only utf8_bytes_div_4 estimates are supported")
+
+    def receipt_fields(self, raw_prompt: str | None) -> dict[str, Any]:
+        """Describe post-compilation raw bytes; no transform or billed usage claim."""
+        if not self.enabled:
+            return {}
+        size = len(raw_prompt.encode("utf-8")) if raw_prompt is not None else None
+        pointer = (
+            RawArtifactPointer(envelope_digest(raw_prompt), size).to_dict()
+            if raw_prompt is not None and size is not None
+            else None
+        )
+        return {
+            "raw_artifact_pointer": pointer,
+            "output_policy": {"enabled": True, "transform": "raw_passthrough"},
+            "output_metrics": {
+                "input_bytes": size,
+                "output_bytes": size,
+                "estimate_method": self.estimate_method if size is not None else None,
+                "estimated_tokens": size / 4 if size is not None else None,
+                "provider_input_tokens": None,
+                "provider_output_tokens": None,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class RawArtifactPointer:
+    """Digest + byte count of the exact raw envelope, retrievable by digest."""
+
+    digest: str
+    bytes: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"digest": self.digest, "bytes": self.bytes}
 
 
 @dataclass(frozen=True)
@@ -37,6 +107,10 @@ class InjectionRecord:
     prompt_digest: str | None
     envelope_digest: str | None
     reason: str
+    # BOD-333 phase 1 (opt-in): None unless a caller passes a ContextOutputPolicy
+    # with enabled=True. None keeps to_dict() byte-identical to pre-BOD-333 output.
+    raw_artifact_pointer: RawArtifactPointer | None = field(default=None)
+    cache_control_preserved: bool | None = field(default=None)
 
     @property
     def digest_match(self) -> bool:
@@ -47,7 +121,7 @@ class InjectionRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "injected": self.injected,
             "pack_state": self.pack_state,
             "pack_digest": self.pack_digest,
@@ -56,6 +130,14 @@ class InjectionRecord:
             "digest_match": self.digest_match,
             "reason": self.reason,
         }
+        # Omitted entirely (not even as null) when the opt-in policy never ran,
+        # so default-off receipts/headers are byte-identical to pre-BOD-333.
+        if self.raw_artifact_pointer is not None or self.cache_control_preserved is not None:
+            out["raw_artifact_pointer"] = (
+                self.raw_artifact_pointer.to_dict() if self.raw_artifact_pointer else None
+            )
+            out["cache_control_preserved"] = self.cache_control_preserved
+        return out
 
 
 def envelope_digest(compiled_prompt: str) -> str:
@@ -85,8 +167,19 @@ def inject_context_pack(
     pack_digest: str | None,
     prompt_digest: str | None,
     task_complete: bool,
+    policy: ContextOutputPolicy | None = None,
 ) -> tuple[dict[str, Any], InjectionRecord]:
-    """Return ``(forwarded_payload, record)``; ``payload`` is never mutated."""
+    """Return ``(forwarded_payload, record)``; ``payload`` is never mutated.
+
+    ``policy`` is opt-in and defaults to ``None`` (equivalent to
+    ``ContextOutputPolicy(enabled=False)``): the forwarded payload bytes and
+    the shape of ``InjectionRecord.to_dict()`` are unchanged from pre-BOD-333
+    behaviour. When ``policy.enabled`` is ``True`` this phase-1 seam attaches
+    a raw-artifact pointer (digest + bytes of the exact envelope sent) and a
+    cache_control preservation flag; it never alters the envelope content
+    (no compression engine exists yet -- PRODUCT-SCOPE phase 2).
+    """
+    active = policy is not None and policy.enabled
 
     def skip(reason: str) -> tuple[dict[str, Any], InjectionRecord]:
         return payload, _skip(pack_state, pack_digest, prompt_digest, reason)
@@ -120,6 +213,19 @@ def inject_context_pack(
             return skip("unsupported_messages_shape")
         forwarded["messages"] = [envelope, *current]
 
+    pointer: RawArtifactPointer | None = None
+    cache_control_preserved: bool | None = None
+    if active:
+        # Phase 1: no transform runs on compiled_prompt, so the "raw artifact"
+        # is exactly the envelope content already assembled above -- this is
+        # the lossy/rejected-transform fallback-to-raw path by construction.
+        raw_bytes = compiled_prompt.encode("utf-8")
+        pointer = RawArtifactPointer(digest=digest, bytes=len(raw_bytes))
+        # The envelope is a plain {"role": ..., "content": str} dict; a plain
+        # string body carries no cache_control block to strip, so "preserved"
+        # is vacuously true for this phase-1 (no-transform) path.
+        cache_control_preserved = True
+
     return forwarded, InjectionRecord(
         injected=True,
         pack_state=pack_state,
@@ -127,6 +233,8 @@ def inject_context_pack(
         prompt_digest=prompt_digest or digest,
         envelope_digest=digest,
         reason="injected_leading_system_envelope",
+        raw_artifact_pointer=pointer,
+        cache_control_preserved=cache_control_preserved,
     )
 
 
@@ -145,7 +253,9 @@ def extract_envelope(payload: dict[str, Any], *, surface: str) -> str | None:
 __all__ = [
     "ENVELOPE_ROLE",
     "INJECTABLE_PACK_STATES",
+    "ContextOutputPolicy",
     "InjectionRecord",
+    "RawArtifactPointer",
     "envelope_digest",
     "extract_envelope",
     "inject_context_pack",

@@ -421,3 +421,152 @@ def test_prior_verified_outcomes_included_when_caller_supplies_it(tmp_path: Path
         d.unit_id == "autodev:limitation:prior_verified_outcomes" and d.action == "exclude"
         for d in pack.decisions
     )
+
+
+def test_output_policy_default_off_keeps_pack_and_receipt_identity(monkeypatch: Any) -> None:
+    from dataclasses import replace
+
+    from verdict.context_inject import ContextOutputPolicy
+
+    def receipt(pack: Any) -> dict[str, Any]:
+        # Legacy receipts use wall-clock observation time; freeze only that metadata.
+        return replace(pack.receipt, created_at="1970-01-01T00:00:00Z").to_dict()
+
+    legacy = _compile_context()
+    disabled = _compile_context(output_policy=ContextOutputPolicy())
+    assert disabled.canonical_json() == legacy.canonical_json()
+    assert disabled.digest == legacy.digest
+    assert receipt(disabled) == receipt(legacy)
+    assert "raw_artifact_pointer" not in disabled.receipt.to_dict()
+
+
+def test_output_policy_receipts_exact_raw_worker_bytes_and_fidelity() -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+
+    facts = (
+        "Never change system constraints.",
+        'edit(path="src/café.py", old_str="return 1", new_str="return 2")',
+        "sha256:" + "a" * 64,
+        "I cannot comply with that request.",
+        "Tests: 17 passed, 2 failed.",
+    )
+    baseline = _compile_context(repository_instructions=facts, token_budget=4096)
+    active = _compile_context(
+        repository_instructions=facts,
+        token_budget=4096,
+        output_policy=ContextOutputPolicy(enabled=True),
+    )
+    assert active.compiled_prompt == baseline.compiled_prompt
+    for fact in facts:
+        assert fact in active.compiled_prompt
+    receipt = active.receipt.to_dict()
+    assert receipt["raw_artifact_pointer"] == {
+        "digest": envelope_digest(active.compiled_prompt),
+        "bytes": len(active.compiled_prompt.encode("utf-8")),
+    }
+    assert receipt["output_policy"]["transform"] == "raw_passthrough"
+    metrics = receipt["output_metrics"]
+    assert (
+        metrics["input_bytes"]
+        == metrics["output_bytes"]
+        == receipt["raw_artifact_pointer"]["bytes"]
+    )
+    assert metrics["estimate_method"] == "utf8_bytes_div_4"
+    assert metrics["estimated_tokens"] == metrics["output_bytes"] / 4
+    assert metrics["provider_input_tokens"] is None
+    assert metrics["provider_output_tokens"] is None
+    assert active.receipt.verify(active)
+    assert type(active.receipt).from_dict(receipt).to_dict() == receipt
+
+
+def test_packet_output_policy_persists_separate_receipt_without_home_writes(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+
+    (tmp_path / "repo").mkdir()
+    repo = _context_repo(tmp_path / "repo")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    store = ReceiptStore(":memory:")
+    packet = _packet(repo)
+    legacy = autodev_run.compile_packet_context(packet, repo, store=store)
+    active = autodev_run.compile_packet_context(
+        packet, repo, store=store, output_policy=ContextOutputPolicy(enabled=True)
+    )
+    assert active.compiled_prompt == legacy.compiled_prompt
+    rows = store.query_receipts(scope="operational-loop")
+    assert len(rows) == 2
+    observed = next(
+        row.payload["context_receipt"]
+        for row in rows
+        if "raw_artifact_pointer" in row.payload["context_receipt"]
+    )
+    unit = autodev_run._packet_work_unit(packet, active.compiled_prompt)
+    assert observed["raw_artifact_pointer"]["digest"] == envelope_digest(unit.context)
+    assert observed["output_metrics"]["provider_input_tokens"] is None
+    assert list(home.iterdir()) == []
+
+
+def test_output_policy_unknown_metrics_are_not_fabricated() -> None:
+    from verdict.context_inject import ContextOutputPolicy
+
+    unknown = ContextOutputPolicy(enabled=True).receipt_fields(None)
+    assert unknown["raw_artifact_pointer"] is None
+    assert all(value is None for value in unknown["output_metrics"].values())
+    assert ContextOutputPolicy().receipt_fields(None) == {}
+
+
+def test_packet_execute_cli_output_policy_opt_in(monkeypatch: Any) -> None:
+    import verdict.cli as cli
+
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "_cli_execution_path_decision", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "cmd_autodev_packet_execute", lambda *a, **kw: captured.append(kw))
+    argv = ["autodev", "packet", "execute", "--packet", "packet.json", "--repo", "."]
+    import argparse
+
+    from verdict.commands.dispatch import dispatch
+    from verdict.commands.parsers_routing import register
+
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    dispatch(parser, parser.parse_args(argv))
+    assert not captured[-1]["context_output_policy"]
+    dispatch(parser, parser.parse_args([*argv, "--context-output-policy"]))
+    assert captured[-1]["context_output_policy"] is True
+
+
+def test_output_policy_pointer_matches_context_in_forwarded_patch_request(tmp_path: Path) -> None:
+    from verdict.context_inject import ContextOutputPolicy, envelope_digest
+    from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
+    from verdict.work_unit import WorkUnit
+
+    pack = _compile_context(output_policy=ContextOutputPolicy(enabled=True))
+    unit = WorkUnit(
+        unit_id="test",
+        objective="test",
+        owned_files=("README.md",),
+        verification_command=("pytest",),
+        context=pack.compiled_prompt,
+    )
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("seed\n")
+    sent: list[dict[str, Any]] = []
+
+    def transport(model: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+        sent.append(payload)
+        return {"status_code": 200, "body": {"choices": [{"message": {"content": "refused"}}]}}
+
+    executor = PatchExecutor(tmp_path, PatchExecutorConfig(model="fixture"), transport=transport)
+    executor.execute_unit(unit)
+    prompt = sent[0]["messages"][1]["content"]
+    after = prompt.split("Additional context:\n", 1)[1]
+    # PatchExecutor appends owned-file contents after the context block.
+    forwarded_context = after.split("\n\n--- current contents of ", 1)[0]
+    pointer = pack.receipt.to_dict()["raw_artifact_pointer"]
+    assert pointer["digest"] == envelope_digest(forwarded_context)
+    assert pointer["bytes"] == len(forwarded_context.encode("utf-8"))

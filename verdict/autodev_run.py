@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from verdict.context_inject import ContextOutputPolicy
 from verdict.context_pack import (
     ContextDecision,
     ContextPack,
@@ -91,6 +92,12 @@ _PACKET_RECEIPT_ALLOWLIST = (
     "used_tokens",
     "worker_self_report.outcome",
     "trusted_verification.decided",
+    "context_receipt.output_policy",
+    "context_receipt.output_metrics",
+    "context_receipt.output_metrics.output_bytes",
+    "context_receipt.output_metrics.estimated_tokens",
+    "context_receipt.output_metrics.provider_input_tokens",
+    "context_receipt.output_metrics.provider_output_tokens",
 )
 
 
@@ -139,6 +146,7 @@ def compile_worker_context(
     symbol_relationship: str | None = None,
     prior_verified_outcomes: Sequence[str] = (),
     token_budget: int = 4096,
+    output_policy: ContextOutputPolicy | None = None,
 ) -> ContextPack:
     """Compile the bounded deterministic context package for one worker.
 
@@ -198,7 +206,8 @@ def compile_worker_context(
         created_at=_STABLE_CONTEXT_OBSERVED_AT,
     )
     pack = ContextPackCompiler(default_token_budget=token_budget).compile_units(units, plan)
-    return replace(pack, created_at=0.0)
+    observation = output_policy.receipt_fields(pack.compiled_prompt) if output_policy else {}
+    return replace(pack, created_at=0.0, output_observation=observation or None)
 
 
 def _enforce_delegation_floor(
@@ -303,6 +312,7 @@ def compile_packet_context(
     token_budget: int = 4096,
     store: ReceiptStore | None = None,
     family_id: str | None = None,
+    output_policy: ContextOutputPolicy | None = None,
 ) -> ContextPack:
     """Compile and optionally receipt the deterministic worker input for a packet.
 
@@ -371,6 +381,7 @@ def compile_packet_context(
         symbol_relationship=symbol_relationship,
         prior_verified_outcomes=tuple(prior_verified_outcomes),
         token_budget=token_budget,
+        output_policy=output_policy,
     )
     if not prior_verified_outcomes:
         # FR-032 (2026-08-27 clarification): this category has no deterministic
@@ -412,6 +423,15 @@ def compile_packet_context(
             ),
         )
     if store is not None:
+        # Distinguish opt-in observations without changing legacy receipt keys.
+        policy_key = (
+            ":output-policy:"
+            + hashlib.sha256(
+                json.dumps(pack.output_observation, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            if pack.output_observation
+            else ""
+        )
         with suppress(ReceiptConflictError):
             store.put_receipt(
                 "context",
@@ -431,7 +451,9 @@ def compile_packet_context(
                     ],
                 },
                 provenance={"source": "verdict.autodev_run", "authority": "compiled"},
-                idempotency_key=f"packet-context:{packet.packet_id}:{family_id or '-'}:{pack.digest}",
+                idempotency_key=(
+                    f"packet-context:{packet.packet_id}:{family_id or '-'}:{pack.digest}{policy_key}"
+                ),
                 allowlist=_PACKET_RECEIPT_ALLOWLIST,
             )
     return pack
@@ -1058,6 +1080,7 @@ def run_packet_autodev(
     delegation: str | None = None,
     undelegable_reason: str | None = None,
     frontier_review: Callable[[PacketAttempt], str | None] | None = None,
+    output_policy: ContextOutputPolicy | None = None,
 ) -> PacketAutodevReport:
     """Run one packet task only on the concrete execution-path authority-authorized route."""
     decision = _require_launch_decision(execution_path_decision, surface="packet autodev")
@@ -1270,6 +1293,7 @@ def run_packet_autodev(
         family_id=family_id,
         token_budget=token_budget,
         symbol_relationship=symbol_relationship,
+        output_policy=output_policy,
     )
     unit = _packet_work_unit(packet, context.compiled_prompt)
 

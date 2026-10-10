@@ -3,7 +3,7 @@
 - **Status**: accepted
 - **Date**: 2026-07-21
 - **Deciders**: Verdict Core maintainers
-- **Supersedes**: `docs/specs/ROUTING_POLICY.md`, `docs/specs/ENFORCEMENT_AND_LEARNING.md` (partial)
+- **Supersedes**: [legacy routing policy](../archive/routing-policy-legacy.md), `docs/specs/ENFORCEMENT_AND_LEARNING.md` (partial)
 - **Amended by**: [ADR-001 — Versioned, Privacy-Safe Execution Evidence](ADR-001-evidence-ledger.md)
 
 ## Context

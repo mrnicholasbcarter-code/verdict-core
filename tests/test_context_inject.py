@@ -76,3 +76,100 @@ def test_prompt_digest_mismatch_refuses_injection() -> None:
     assert record.reason == "prompt_digest_mismatch"
     assert record.digest_match is False
     assert forwarded is payload
+
+
+def test_default_off_policy_is_byte_identical_to_legacy_to_dict() -> None:
+    """BOD-333 phase 1: no policy argument -> identical dict shape/keys as before."""
+    payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    _forwarded, record = _inject(payload)
+    legacy_keys = {
+        "injected",
+        "pack_state",
+        "pack_digest",
+        "prompt_digest",
+        "envelope_digest",
+        "digest_match",
+        "reason",
+    }
+    assert set(record.to_dict().keys()) == legacy_keys
+    assert record.raw_artifact_pointer is None
+    assert record.cache_control_preserved is None
+
+
+def test_disabled_policy_object_is_also_byte_identical() -> None:
+    """An explicit but disabled ContextOutputPolicy is still a no-op."""
+    from verdict.context_inject import ContextOutputPolicy
+
+    payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    _forwarded, record = inject_context_pack(
+        payload,
+        surface="chat",
+        compiled_prompt=PROMPT,
+        pack_state="hydrated",
+        pack_digest="sha256:" + "a" * 64,
+        prompt_digest=DIGEST,
+        task_complete=True,
+        policy=ContextOutputPolicy(enabled=False),
+    )
+    assert record.raw_artifact_pointer is None
+    assert record.cache_control_preserved is None
+    assert set(record.to_dict().keys()) == {
+        "injected",
+        "pack_state",
+        "pack_digest",
+        "prompt_digest",
+        "envelope_digest",
+        "digest_match",
+        "reason",
+    }
+
+
+def test_opt_in_policy_attaches_raw_artifact_pointer_and_cache_flag() -> None:
+    """Opting in surfaces a retrievable raw-artifact pointer; never mutates bytes."""
+    from verdict.context_inject import ContextOutputPolicy
+
+    payload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    forwarded, record = inject_context_pack(
+        payload,
+        surface="chat",
+        compiled_prompt=PROMPT,
+        pack_state="hydrated",
+        pack_digest="sha256:" + "a" * 64,
+        prompt_digest=DIGEST,
+        task_complete=True,
+        policy=ContextOutputPolicy(enabled=True),
+    )
+    assert record.injected is True
+    # Opt-in never changes what is actually sent upstream.
+    assert forwarded["messages"][0] == {"role": "system", "content": PROMPT}
+    assert record.raw_artifact_pointer is not None
+    assert record.raw_artifact_pointer.digest == envelope_digest(PROMPT)
+    assert record.raw_artifact_pointer.bytes == len(PROMPT.encode("utf-8"))
+    assert record.cache_control_preserved is True
+    as_dict = record.to_dict()
+    assert as_dict["raw_artifact_pointer"] == {
+        "digest": envelope_digest(PROMPT),
+        "bytes": len(PROMPT.encode("utf-8")),
+    }
+    assert as_dict["cache_control_preserved"] is True
+
+
+def test_opt_in_policy_does_not_claim_injection_for_skipped_packs() -> None:
+    """A skip reason still wins over the opt-in policy; no fabricated pointer."""
+    from verdict.context_inject import ContextOutputPolicy
+
+    payload = {"messages": [{"role": "user", "content": "hi"}]}
+    forwarded, record = inject_context_pack(
+        payload,
+        surface="chat",
+        compiled_prompt=PROMPT,
+        pack_state="empty",
+        pack_digest="sha256:" + "a" * 64,
+        prompt_digest=DIGEST,
+        task_complete=True,
+        policy=ContextOutputPolicy(enabled=True),
+    )
+    assert record.injected is False
+    assert record.raw_artifact_pointer is None
+    assert record.cache_control_preserved is None
+    assert forwarded is payload

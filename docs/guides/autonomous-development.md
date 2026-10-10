@@ -73,7 +73,8 @@ it can be launched.
 
 Do not add static provider allowlists, credentials, or private gateway database
 access to Verdict. See [OmniRoute workers](omniroute-workers.md) and the
-[routing policy](../specs/ROUTING_POLICY.md).
+[archived routing policy](../archive/routing-policy-legacy.md); current dispatch
+authority is defined by [ADR-035](../adr/ADR-035-authorized-selected-route-dispatch.md).
 
 ## 5. Verify in layers
 

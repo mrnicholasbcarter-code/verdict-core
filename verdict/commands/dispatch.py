@@ -289,6 +289,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                     delegation=getattr(args, "delegation", None),
                     undelegable_reason=getattr(args, "undelegable_reason", None),
                     execution_path_decision=decision,
+                    context_output_policy=getattr(args, "context_output_policy", False),
                 )
             else:
                 legacy.cmd_autodev_packet(
@@ -637,11 +638,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             args.func(args)
         else:
             parser.print_help()
-    elif args.command is None and legacy._stdout_is_tty() and os.getenv("VERDICT_PLAIN") != "1":
-        # Interactive terminals get the Verdict home screen; pipes, CI and tests
-        # keep the historical argparse help contract.
+    elif args.command is None:
         from verdict.home import run_home
 
-        raise SystemExit(run_home())
+        skip = bool(getattr(args, "skip_setup", False)) or os.getenv("VERDICT_SKIP_SETUP") == "1"
+        if not legacy._stdout_is_tty():
+            # Non-TTY (pipes, scripts, CI) keeps the help contract; first-run
+            # setup and doctor routing only apply to an interactive terminal.
+            parser.print_help()
+        else:
+            raise SystemExit(run_home(skip_setup=skip))
     else:
         parser.print_help()
