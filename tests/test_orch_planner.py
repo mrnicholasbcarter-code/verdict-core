@@ -223,6 +223,51 @@ def test_parse_plan_single_node_default_topology_is_worker_critic() -> None:
     assert graph.max_parallel == 1
 
 
+@pytest.mark.parametrize("acceptance", ["  criterion\nunchanged  ", ["first", " second "]])
+def test_parse_plan_preserves_acceptance_text(acceptance: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = acceptance
+    graph = parse_plan(json.dumps(payload), goal="g")
+    expected = (acceptance,) if isinstance(acceptance, str) else tuple(acceptance)
+    assert graph.node("impl-a").acceptance == expected
+
+
+@pytest.mark.parametrize("acceptance", ["", "   ", {}, 7, False, None])
+def test_parse_plan_rejects_malformed_acceptance(acceptance: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = acceptance
+    with pytest.raises(OrchestrationError, match="acceptance must be a list"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
+@pytest.mark.parametrize(
+    "field", ["depends_on", "owned_files", "required_context", "verification_command"]
+)
+@pytest.mark.parametrize("value", ["text", {}, 7])
+def test_parse_plan_does_not_coerce_other_list_fields(field: str, value: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = "criterion"
+    payload["nodes"][0][field] = value
+    with pytest.raises(OrchestrationError, match=f"{field} must be a list"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
+def test_parse_plan_singleton_acceptance_still_validates_structure() -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = "criterion"
+    payload["nodes"][0]["depends_on"] = ["ghost"]
+    with pytest.raises(OrchestrationError, match="unknown dependencies"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
 # ---------------------------------------------------------------- repo_map
 
 

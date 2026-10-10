@@ -333,8 +333,12 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
     for i, item in enumerate(raw_nodes):
         if not isinstance(item, Mapping):
             raise OrchestrationError(f"parse_plan: node[{i}] must be an object")
+        data = normalize_node_requirements(item)
+        acceptance = data.get("acceptance")
+        if isinstance(acceptance, str) and acceptance.strip():
+            data["acceptance"] = [acceptance]
         try:
-            nodes.append(WorkNode.from_dict(normalize_node_requirements(item)))
+            nodes.append(WorkNode.from_dict(data))
         except (OrchestrationError, TypeError) as exc:
             raise OrchestrationError(f"parse_plan: node[{i}]: {exc}") from exc
 
