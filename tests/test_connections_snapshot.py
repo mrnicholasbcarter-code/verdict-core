@@ -224,3 +224,8 @@ def test_snapshot_schema_rejects_untyped_or_raw_evidence(field, value, tmp_path,
 def test_sanitizer_preserves_negative_admission_status(status):
     raw = {"provider": "claude", "authType": "oauth", "isActive": True, "testStatus": status}
     assert run.sanitize_connections([raw])[0]["testStatus"] == status
+
+
+@pytest.mark.parametrize("status", ["FAILED", " expired "])
+def test_sanitizer_keeps_case_insensitive_negative_status(status):
+    assert run.sanitize_connections([{"provider": "claude", "testStatus": status}])[0]["testStatus"] == status.strip().lower()
