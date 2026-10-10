@@ -281,6 +281,9 @@ class AdmittedRoute:
 
     ``capacity`` is the evidence-backed class (``free``, ``subscription``,
     ``metered``, ``unknown``). ``pool`` is an optional shared-quota pool.
+    ``non_chat`` (BOD-297) marks a route ``order_cycle`` must never probe
+    (embedding/image/audio/rerank/tts): default ``False`` so every existing
+    caller that builds an ``AdmittedRoute`` without naming it is unaffected.
     """
 
     route_id: str
@@ -288,6 +291,7 @@ class AdmittedRoute:
     capacity: str
     pool: str | None = None
     capacity_evidence: str | None = None
+    non_chat: bool = False
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or not self.provider.strip():
@@ -328,6 +332,11 @@ class CycleStats:
     negative: int = 0
     skipped_bucket: int = 0
     stopped_reason: str = ""
+    # BOD-297: True when the systemic-auth-outage breaker stopped the cycle
+    # (see ``Prober._note_auth_signal``). ``stopped_reason`` is also set to
+    # ``"auth_outage"`` in that case; this flag lets a caller branch on it by
+    # name instead of matching the reason string.
+    auth_outage: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -337,6 +346,7 @@ class CycleStats:
             "negative": self.negative,
             "skipped_bucket": self.skipped_bucket,
             "stopped_reason": self.stopped_reason,
+            "auth_outage": self.auth_outage,
         }
 
 
@@ -585,12 +595,38 @@ def order_cycle(
     """Order one cycle. Each item is ``(route, kind)``.
 
     ``kind`` is ``full`` (chat then tool) or ``liveness`` (chat only).
+
+    BOD-297 pool-aware planning, applied before the existing ordering:
+
+    1. A ``non_chat`` route (embedding/image/audio/rerank/tts) is dropped
+       entirely; it is never probed here (the census report records it
+       with reason ``"non_chat"``).
+    2. Alias-family duplicates (``agy``/``antigravity``, ``af``/
+       ``api-airforce``, ...) collapse onto one canonical member per
+       cycle; the others are not ordered at all. This function never
+       writes a synthetic cache entry for the dropped members -- a report
+       reads ``credential_pools.collapse_alias_duplicates`` separately to
+       record which routes inherited whose evidence.
+    3. A never-probed effort variant (``-low``/``-medium``/.../``-high``,
+       or ``-thinking-<effort>``) is skipped this cycle unless its base
+       route is already healthy in the cache, so a cycle never spends
+       budget proving a stronger variant before its cheaper base passed.
+       A variant with an already-probed history (half-open or stale) is
+       exempt: once known, refreshing it does not wait on the base again.
     """
-    by_id = {route.route_id: route for route in routes}
+    from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
+
+    chat_routes = [route for route in routes if not route.non_chat]
+    kept_ids, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    kept_id_set = set(kept_ids)
+    candidates = [route for route in chat_routes if route.route_id in kept_id_set]
+    candidate_ids = {route.route_id for route in candidates}
+
+    by_id = {route.route_id: route for route in candidates}
     half_open: list[AdmittedRoute] = []
     stale: list[AdmittedRoute] = []
     seen: set[str] = set()
-    for route in routes:
+    for route in candidates:
         lookup = cache.lookup(route.route_id, now)
         entry = lookup.entry
         if entry is None:
@@ -608,19 +644,25 @@ def order_cycle(
             stale.append(route)
             seen.add(route.route_id)
 
+    def _base_is_ready(route: AdmittedRoute) -> bool:
+        base_id = base_route(route.route_id, candidate_ids)
+        return base_id == route.route_id or cache.lookup(base_id, now).healthy
+
     free_new = [
         route
-        for route in routes
+        for route in candidates
         if route.capacity == CapacityClass.FREE.value
         and route.route_id not in seen
         and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+        and _base_is_ready(route)
     ]
     other_new = [
         route
-        for route in routes
+        for route in candidates
         if route.capacity != CapacityClass.FREE.value
         and route.route_id not in seen
         and cache.lookup(route.route_id, now).state == STATE_UNPROBED
+        and _base_is_ready(route)
     ]
 
     ordered: list[tuple[AdmittedRoute, str]] = []
@@ -641,7 +683,7 @@ def order_cycle(
     ordered.extend((route, "liveness") for route in other_new)
     ordered.extend(
         _epsilon_slice(
-            routes,
+            candidates,
             cache,
             now,
             seen=set(item[0].route_id for item in ordered),
@@ -653,10 +695,10 @@ def order_cycle(
 
 
 def _round_robin(routes: Sequence[AdmittedRoute]) -> list[AdmittedRoute]:
-    """Spread never-probed FREE routes across provider/pool buckets."""
+    """Spread never-probed FREE routes across canonical credential buckets."""
     groups: dict[str, list[AdmittedRoute]] = {}
     for route in routes:
-        key = route.provider if not route.pool else f"{route.provider}/{route.pool}"
+        key = route.pool or route.provider
         groups.setdefault(key, []).append(route)
     queues = list(groups.values())
     if not queues:
@@ -685,6 +727,11 @@ def _epsilon_slice(
     cached entries is fresh. Routes already ordered in this cycle are skipped,
     so the slice never repeats work the earlier passes already cover.
     """
+    from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
+
+    chat_routes = [route for route in routes if not route.non_chat]
+    kept_ids, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    candidate_ids = set(kept_ids)
     fresh_providers: set[str] = set()
     for entry in cache.routes().values():
         if entry.state_at(now) == STATE_FRESH and entry.healthy:
@@ -696,7 +743,10 @@ def _epsilon_slice(
             break
         if route.provider in fresh_providers or route.provider in taken:
             continue
-        if route.route_id in seen:
+        if route.route_id in seen or route.route_id not in candidate_ids:
+            continue
+        base_id = base_route(route.route_id, candidate_ids)
+        if base_id != route.route_id and not cache.lookup(base_id, now).healthy:
             continue
         taken.add(route.provider)
         out.append((by_id[route.route_id], "liveness"))
@@ -726,7 +776,17 @@ class Prober:
     on_cycle_error: Callable[[Exception], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
+    # BOD-297 systemic-auth-outage breaker: a burst of 401/403 across many
+    # pools in one cycle means the gateway key itself is broken, not the
+    # routes (the 2026-10-09 controller census lesson). Thresholds are
+    # tunable for tests; the defaults match the story's acceptance numbers.
+    auth_outage_consecutive: int = 5
+    auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _auth_fail_pools: list[str] = field(default_factory=list, init=False, repr=False)
+    _auth_fail_buffer: list[tuple[str, ProbeResult, datetime]] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.max_requests < 1:
@@ -750,6 +810,8 @@ class Prober:
         """Probe until request/wall/lock bounds, returning a typed stop reason."""
         started = self.monotonic()
         stats = CycleStats()
+        self._auth_fail_pools = []  # fresh auth-outage window per cycle
+        self._auth_fail_buffer = []
         try:
             return self._run_once(started, stats)
         except HealthCacheLockTimeoutError:
@@ -801,10 +863,43 @@ class Prober:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self._save_for_cycle(started)
-        # Run agentic probes for FREE routes after the main cycle.
-        if stats.requests < self.max_requests:
-            self.run_agentic_probes(stats, started=started)
+        # Keep the outage window across both phases; a broken gateway key
+        # must not poison routes through agentic probes after chat probing stops.
+        if not stats.auth_outage and stats.requests < self.max_requests:
+            self.run_agentic_probes(stats, started=started, planned_routes=[r for r, _ in ordered])
+        if not stats.auth_outage:
+            self._flush_auth_fail_buffer(stats)
+            self._save_for_cycle(started)
         return stats
+
+    def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
+        """Write every buffered auth-outage-window negative as a real failure."""
+        for buffered_id, buffered_result, buffered_now in self._auth_fail_buffer:
+            self.cache.record(buffered_id, buffered_result, buffered_now)
+            stats.probed += 1
+            stats.negative += 1
+        self._auth_fail_buffer = []
+        self._auth_fail_pools = []
+
+    def _buffer_auth_failure(
+        self, route: AdmittedRoute, result: ProbeResult, now: datetime, stats: CycleStats
+    ) -> bool:
+        """Buffer auth failures in either phase, discarding a systemic outage."""
+        if result.http_status not in (401, 403):
+            if self._auth_fail_buffer:
+                self._flush_auth_fail_buffer(stats)
+            return False
+        self._auth_fail_buffer.append((route.route_id, result, now))
+        self._auth_fail_pools.append(route.pool or route.provider)
+        if (
+            len(self._auth_fail_pools) >= self.auth_outage_consecutive
+            and len(set(self._auth_fail_pools)) >= self.auth_outage_distinct_pools
+        ):
+            self._auth_fail_buffer = []
+            self._auth_fail_pools = []
+            stats.auth_outage = True
+            stats.stopped_reason = "auth_outage"
+        return True
 
     def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
         self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
@@ -950,6 +1045,8 @@ class Prober:
             capacity_evidence=route.capacity_evidence,
             identity=_identity,
         )
+        if self._buffer_auth_failure(route, result, now, stats):
+            return not stats.auth_outage
         # Liveness success is healthy for the cache state machine but not a
         # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
         # tool_ok, so record it as a successful liveness entry directly.
@@ -1005,17 +1102,30 @@ class Prober:
         age = now - ref
         return age.total_seconds() > self.agentic_interval_hours * 3600
 
-    def run_agentic_probes(self, stats: CycleStats, started: float | None = None) -> None:
+    def run_agentic_probes(
+        self,
+        stats: CycleStats,
+        started: float | None = None,
+        *,
+        planned_routes: Sequence[AdmittedRoute] | None = None,
+    ) -> None:
         """Run agentic probes for FREE routes that need them. Bounded.
 
         Enforces the cycle's wall-time budget and the stop signal before
         each probe and each turn.
         """
-        if self.agentic_transport is None:
+        if self.agentic_transport is None or stats.auth_outage:
             return
         wall_start = started if started is not None else self.monotonic()
         now = self.clock()
-        routes = [r for r in self.routes_loader() if self._needs_agentic(r, now)]
+        if planned_routes is None:
+            planned_routes = [
+                route
+                for route, _kind in order_cycle(
+                    self.routes_loader(), self.cache, now, epsilon=self.epsilon
+                )
+            ]
+        routes = [r for r in planned_routes if self._needs_agentic(r, now)]
         probed = 0
         max_agentic = min(8, self.max_requests - stats.requests)
         for route in routes[:max_agentic]:
@@ -1089,8 +1199,12 @@ class Prober:
             ):
                 passed = False
                 category = CATEGORY_MODEL_MISMATCH
+            status = exchanges[-1].http_status if exchanges else None
+            if status in (401, 403):
+                category = category_for(exchanges[-1])
             result = ProbeResult(
                 category=category,
+                http_status=status,
                 chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
                 tool_ok=passed,
                 probe_class="agentic",
@@ -1098,6 +1212,11 @@ class Prober:
                 pool=route.pool,
                 capacity_evidence=route.capacity_evidence,
             )
+            if self._buffer_auth_failure(route, result, now, stats):
+                if stats.auth_outage:
+                    return
+                self._save_for_cycle(wall_start)
+                continue
             self.cache.record(route.route_id, result, now)
             try:
                 self._save_for_cycle(wall_start)
@@ -1114,6 +1233,9 @@ class Prober:
                 stats.fresh += 1
             else:
                 stats.negative += 1
+        if self._auth_fail_buffer:
+            self._flush_auth_fail_buffer(stats)
+            self._save_for_cycle(wall_start)
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""
@@ -1153,6 +1275,7 @@ def routes_from_evidence(
     agree on FREE versus SUBSCRIPTION.
     """
     from verdict.admission import admit, default_runtime_evidence
+    from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
 
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
@@ -1175,8 +1298,12 @@ def routes_from_evidence(
                 route_id=record.route_id,
                 provider=provider,
                 capacity=capacity.value,
-                pool=None,
+                # BOD-297: credential-pool identity (alias-collapsed), so
+                # order_cycle can probe one canonical route per pool and the
+                # census report can group by pool.
+                pool=pool_of(record.route_id),
                 capacity_evidence=plan or None,
+                non_chat=is_non_chat_route(record.route_id, row),
             )
         )
     return tuple(out)
@@ -1874,6 +2001,88 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
     }
 
 
+# ---------------------------------------------------------------------------
+# Census (BOD-297: pool-aware, read-only; no live calls)
+# ---------------------------------------------------------------------------
+
+
+def census_report(
+    routes: Sequence[AdmittedRoute], cache: HealthCache, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Per-canonical-pool rollup over an admitted-route inventory and the cache.
+
+    Read-only: reads ``cache`` and the given ``routes`` (a fixture inventory
+    in tests, ``routes_from_evidence`` output otherwise). Never probes and
+    never writes. Non-chat routes are tallied under ``non_chat_skipped`` and
+    excluded from every pool's counts. Alias duplicates (BOD-297 collapse)
+    are tallied under their pool's ``inherited_from_alias``: an inherited
+    route borrows its canonical member's *reported* status for this report
+    only -- nothing is written to the cache on its behalf.
+    """
+    from verdict.orchestration.credential_pools import collapse_alias_duplicates
+
+    current = now or _now()
+    chat_routes = [route for route in routes if not route.non_chat]
+    non_chat_skipped = len(routes) - len(chat_routes)
+    kept_ids, inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    kept_id_set = set(kept_ids)
+
+    def _status_of(route_id: str) -> tuple[str, str]:
+        """Return ``(bucket, category)`` for one canonical route_id's cache state."""
+        lookup = cache.lookup(route_id, current)
+        entry = lookup.entry
+        if entry is None or lookup.state == STATE_UNPROBED:
+            return "unknown_unprobed", ""
+        if lookup.healthy and entry.tool_ok:
+            return "usable", CATEGORY_OK
+        if lookup.healthy:
+            return "usable_liveness_only", CATEGORY_OK
+        return "unusable", entry.category or "unknown"
+
+    pools: dict[str, dict[str, Any]] = {}
+
+    def _pool_bucket(pool: str) -> dict[str, Any]:
+        return pools.setdefault(
+            pool,
+            {
+                "routes": 0,
+                "canonical_probed": 0,
+                "usable": 0,
+                "agentic_ok": 0,
+                "unusable": {},
+                "unknown_unprobed": 0,
+                "inherited_from_alias": 0,
+            },
+        )
+
+    for route in chat_routes:
+        pool = route.pool or route.provider
+        bucket = _pool_bucket(pool)
+        bucket["routes"] += 1
+        if route.route_id not in kept_id_set:
+            bucket["inherited_from_alias"] += 1
+            continue
+        status, category = _status_of(route.route_id)
+        bucket["canonical_probed"] += 1
+        if status in {"usable", "usable_liveness_only"}:
+            bucket["usable"] += 1
+        elif status == "unusable":
+            bucket["unusable"][category] = bucket["unusable"].get(category, 0) + 1
+        else:
+            bucket["unknown_unprobed"] += 1
+        entry = cache.entry(route.route_id)
+        if entry is not None and entry.agentic_ok:
+            bucket["agentic_ok"] += 1
+
+    return {
+        "schema_version": "1",
+        "cache_path": str(cache.path),
+        "non_chat_skipped": non_chat_skipped,
+        "pools": dict(sorted(pools.items())),
+        "inherited": dict(sorted(inherited.items())),
+    }
+
+
 __all__ = [
     "CHAT_PROBE_MESSAGE",
     "DEFAULT_CONCURRENCY",
@@ -1905,6 +2114,7 @@ __all__ = [
     "ProverDaemon",
     "build_live_daemon",
     "category_for",
+    "census_report",
     "chat_payload",
     "default_state_path",
     "load_admitted_routes",

@@ -4209,13 +4209,77 @@ def cmd_prove_at_rest(
     output_json: bool = False,
     max_requests: int = 300,
     max_wall_seconds: float = 600.0,
+    inventory_path: str | None = None,
 ) -> None:
     """Run or inspect the health-cache prober.
 
     ``status`` reads the cache. ``once`` and ``daemon`` probe admitted routes
-    and write the cache. Neither writes the ladder's orchestration-health
-    file. The legacy prove-at-rest cycle document is ignored.
+    and write the cache. ``census`` (BOD-297) is read-only: it reads the
+    cache plus an admitted-route inventory file named by ``inventory_path``
+    and prints a per-pool rollup; it never probes and never writes. Neither
+    ``census`` nor ``status`` writes the ladder's orchestration-health file.
+    The legacy prove-at-rest cycle document is ignored.
     """
+    if prove_command == "census":
+        from verdict.actions.registry import run_action
+
+        result = run_action(
+            "prove-at-rest.census", {"inventory_path": inventory_path, "state_path": state_path}
+        )
+        data = result.data
+        if not result.ok:
+            err = data.get("error", "prove-at-rest census failed")
+            if output_json:
+                print(json.dumps({"error": err}, sort_keys=True))
+            else:
+                from verdict import present
+
+                present.header("Prove at rest  /  census")
+                present.fail("prove-at-rest census", err)
+            raise SystemExit(result.exit_code or 2)
+        if output_json:
+            print(json.dumps(data, indent=2, sort_keys=True))
+            return
+        from verdict import present
+
+        present.header("Prove at rest  /  census")
+        present.note(f"non_chat_skipped: {data.get('non_chat_skipped', 0)}")
+        present.table(
+            [
+                "Pool",
+                "Routes",
+                "Probed",
+                "Usable",
+                "Unusable",
+                "Agentic OK",
+                "Unprobed",
+                "Inherited",
+            ],
+            [
+                (
+                    pool,
+                    counts.get("routes", 0),
+                    counts.get("canonical_probed", 0),
+                    counts.get("usable", 0),
+                    sum(counts.get("unusable", {}).values()),
+                    counts.get("agentic_ok", 0),
+                    counts.get("unknown_unprobed", 0),
+                    counts.get("inherited_from_alias", 0),
+                )
+                for pool, counts in data.get("pools", {}).items()
+            ],
+        )
+        reasons: dict[str, int] = {}
+        for counts in data.get("pools", {}).values():
+            for reason, count in counts.get("unusable", {}).items():
+                reasons[reason] = reasons.get(reason, 0) + count
+        top_reasons = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:3]
+        present.note(
+            "Top unusable reasons: "
+            + (", ".join(f"{reason}: {count}" for reason, count in top_reasons) or "none")
+        )
+        return
+
     if prove_command == "status":
         from verdict.actions.registry import run_action
 

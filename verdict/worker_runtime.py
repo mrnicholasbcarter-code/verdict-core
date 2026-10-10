@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import json
 import os
+import stat
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -28,6 +30,8 @@ from verdict.availability import (
     StaticOmniRouteTransport,
 )
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.orchestration.effort import PRIME_THINKING_LEVELS, choose_effort, effort_reason
+from verdict.repository_files import hold_repository_dirs
 from verdict.subagent_selection import (
     CONTEXT_LENGTH_CATEGORY,
     DEFAULT_OMNIROUTE_URL,
@@ -84,9 +88,15 @@ class WorkerOutcome:
 
 
 class WorkerAdapter(Protocol):
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]: ...
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]: ...
     async def collect(self, handle: Mapping[str, Any]) -> WorkerTerminal | None: ...
     async def delete(self, handle: Mapping[str, Any]) -> None: ...
+
+
+class ReceiptPersistenceError(RuntimeError):
+    """Local durable receipt failure, never evidence of route/provider ill-health."""
 
 
 class AttemptFailureError(RuntimeError):
@@ -236,6 +246,60 @@ def validate_terminal(value: object) -> str:
     return value.output.strip()
 
 
+def _append_spawn_receipt(directory: Path, row: Mapping[str, Any]) -> None:
+    """Append to an owner-controlled run directory without following any links.
+
+    Held directory descriptors reuse the repository path walk. The run directory
+    follows Prime's private-parent policy; shared ancestors such as /tmp are OK.
+    Advisory locks serialize cooperating writers across the complete durable line.
+    """
+    if not directory.is_absolute() or ".." in directory.parts:
+        raise ValueError("unsafe receipt directory")
+    relative = str(directory / "spawn-receipts.jsonl").removeprefix("/")
+    with hold_repository_dirs("/", relative) as (parent_fd, leaf, _):
+        info = os.fstat(parent_fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError("unsafe receipt directory")
+        # The held O_PATH directory cannot fsync; open that exact directory inode.
+        sync_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+            created = False
+            try:
+                fd = os.open(leaf, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                fd = os.open(leaf, flags, dir_fd=parent_fd)
+            try:
+
+                def validate() -> None:
+                    info = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != os.getuid()
+                        or info.st_nlink != 1
+                    ):
+                        raise ValueError("unsafe receipt file")
+
+                validate()  # Refuse special files before attempting any lock.
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    validate()
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as stream:
+                        stream.write(json.dumps(row) + "\n")
+                        stream.flush()
+                        os.fsync(fd)
+                    if created:
+                        os.fsync(sync_fd)
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(sync_fd)
+
+
 class WorkerController:
     """One immutable task, one owned child at a time, exactly one final outcome."""
 
@@ -254,10 +318,15 @@ class WorkerController:
         validator: Callable[[str], bool] | None = None,
         admitted: AdmittedSet | None = None,
         require_admission: bool = False,
+        run_dir: Path | None = None,
     ) -> None:
         # The canonical admitted set is applied before Prime visibility, ranking
         # and probing; replacements iterate this same narrowed list only.
         self.admitted = admitted
+        self.task_kind = task.task_kind
+        self.run_dir = run_dir
+        inventory_rows = tuple(inventory_rows)
+        self.model_rows = {str(row.get("id", "")): row for row in inventory_rows}
         self.candidates = eligible_worker_candidates(
             task,
             inventory_rows,
@@ -271,6 +340,7 @@ class WorkerController:
         self.validator = validator or (lambda output: bool(output.strip()))
         self.attempts: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
+        self.spawn_receipts: list[dict[str, Any]] = []
         self.outcome: WorkerOutcome | None = None
         self.operation_id = uuid.uuid4().hex
 
@@ -278,6 +348,34 @@ class WorkerController:
         row = {"event": event, "operation_id": self.operation_id, **fields}
         self.events.append(row)
         self.emit(row)
+
+    def spawn_receipt(
+        self,
+        attempt: int,
+        candidate: LaunchCandidate,
+        thinking: str | None,
+        reason: Mapping[str, Any],
+        handle: Mapping[str, Any] | None,
+    ) -> None:
+        """One admission-time record per spawn attempt, including failed admissions."""
+        executed_effort = handle.get("thinking") if handle is not None else None
+        row = {
+            "schema": "verdict.spawn-receipt/v1",
+            "operation_id": self.operation_id,
+            "attempt": attempt,
+            "at": self.now().isoformat(),
+            "chosen_model": candidate.selector,
+            "chosen_effort": thinking,
+            "reason": dict(reason),
+            "executed_model": handle.get("model") if handle is not None else None,
+            "executed_effort": executed_effort
+            if executed_effort in PRIME_THINKING_LEVELS
+            else "unverified",
+            "spawn_id": handle.get("rlm_child_id") if handle is not None else None,
+        }
+        self.spawn_receipts.append(row)
+        if self.run_dir is not None:
+            _append_spawn_receipt(self.run_dir, row)
 
     def finish(
         self,
@@ -434,6 +532,9 @@ class WorkerController:
                 # Asserted precondition: admitted AND (proven healthy OR confirmed).
                 self.admitted.require_launchable(candidate.route_id, surface="worker_runtime.spawn")
             number = len(self.attempts) + 1
+            model_row = self.model_rows.get(candidate.route_id, {})
+            thinking = choose_effort(self.task_kind, model_row)
+            reason = effort_reason(self.task_kind, thinking, model_row)
             self.event(
                 "selection",
                 attempt=number,
@@ -441,18 +542,35 @@ class WorkerController:
                 provider=provider,
                 previous_model=previous,
                 replacement_model=candidate.selector if previous else None,
+                chosen_model=candidate.selector,
+                chosen_effort=thinking,
+                reason=reason,
             )
             handle: Mapping[str, Any] | None = None
             spawn_id: str | None = None
             name = f"verdict-{self.operation_id[:10]}-{number}"
             admission_pending = True
+            spawn_timed_out = False
             try:
                 attempt_deadline = min(deadline, time.monotonic() + self.budget.attempt_seconds)
-                handle = await asyncio.wait_for(
-                    self.adapter.spawn(prompt, name=name, model=candidate.selector),
-                    max(0.001, attempt_deadline - time.monotonic()),
-                )
-                admission_pending = False
+                try:
+                    handle = await asyncio.wait_for(
+                        self.adapter.spawn(
+                            prompt, name=name, model=candidate.selector, thinking=thinking
+                        ),
+                        max(0.001, attempt_deadline - time.monotonic()),
+                    )
+                    admission_pending = False
+                except TimeoutError:
+                    spawn_timed_out = True
+                    raise
+                finally:
+                    try:
+                        self.spawn_receipt(number, candidate, thinking, reason, handle)
+                    except Exception as receipt_error:
+                        raise ReceiptPersistenceError(
+                            "local_persistence_failure"
+                        ) from receipt_error
                 spawn_id = handle.get("rlm_child_id")
                 if (
                     not isinstance(spawn_id, str)
@@ -466,6 +584,8 @@ class WorkerController:
                     model=candidate.selector,
                     spawn_id=spawn_id,
                     admitted=True,
+                    executed_model=handle.get("model"),
+                    executed_effort=self.spawn_receipts[-1]["executed_effort"],
                 )
                 while True:
                     remaining = attempt_deadline - time.monotonic()
@@ -487,11 +607,19 @@ class WorkerController:
                         break
                     await asyncio.sleep(min(0.1, remaining))
             except Exception as exc:
-                if admission_pending and isinstance(exc, TimeoutError):
+                if admission_pending and spawn_timed_out:
                     # Spawn may have been admitted after the RPC deadline. Reap by
                     # our unique name before permitting another writer.
                     handle = {"rlm_child_id": name, "model": candidate.selector}
-                health = self.failure(exc)
+                local_persistence = isinstance(exc, ReceiptPersistenceError)
+                health = (
+                    HealthResult(False, "local_persistence_failure")
+                    if local_persistence
+                    else self.failure(exc)
+                )
+                if handle is not None:
+                    reported_id = handle.get("rlm_child_id")
+                    spawn_id = reported_id if isinstance(reported_id, str) else None
                 provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
                 if provider_wide:
                     blocked_providers[provider] = health.category
@@ -499,7 +627,8 @@ class WorkerController:
                     window = candidate.context_tokens
                     overflowed_at = window if overflowed_at is None else max(overflowed_at, window)
                 self.attempts.append((candidate.selector, health.category))
-                self.cache.record_failure(candidate, health, now=self.now())
+                if not local_persistence:
+                    self.cache.record_failure(candidate, health, now=self.now())
                 self.event(
                     "failure",
                     attempt=number,
@@ -507,10 +636,10 @@ class WorkerController:
                     provider=provider,
                     spawn_id=spawn_id,
                     classification=health.category,
-                    cooldown_seconds=_failure_cooldown(health),
+                    cooldown_seconds=0 if local_persistence else _failure_cooldown(health),
                     provider_wide=provider_wide,
-                    excluded=True,
-                    replacement=True,
+                    excluded=not local_persistence,
+                    replacement=not local_persistence,
                 )
                 if handle is not None:
                     # A timed-out writer must be reaped before a replacement can write.
@@ -524,6 +653,12 @@ class WorkerController:
                             f"cleanup_unconfirmed spawn={spawn_id}: "
                             f"{cleanup}; stop this owned child before retrying",
                         )
+                if local_persistence:
+                    return self.finish(
+                        "FAIL_CLOSED",
+                        "local_persistence_failure: owned child reaped; "
+                        "restore safe receipt storage before retrying (no route cooldown)",
+                    )
                 previous = candidate.selector
                 continue
             self.attempts.append((candidate.selector, "completed"))
@@ -549,7 +684,9 @@ class CallbackAdapter:
     def __init__(self, execute: Callable[[str], Awaitable[WorkerTerminal]]) -> None:
         self.execute = execute
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]:
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]:
         return {"rlm_child_id": name, "model": model}
 
     async def collect(self, handle: Mapping[str, Any]) -> WorkerTerminal:
@@ -592,8 +729,10 @@ class PrimeFileAdapter:
                     return response.get("value")
             await asyncio.sleep(0.05)
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> Mapping[str, Any]:
-        value = await self.rpc("spawn", prompt=prompt, name=name, model=model)
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> Mapping[str, Any]:
+        value = await self.rpc("spawn", prompt=prompt, name=name, model=model, thinking=thinking)
         if not isinstance(value, dict):
             raise AttemptFailureError("malformed_admission")
         return value
@@ -831,6 +970,7 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             emit=emit,
             admitted=admitted,
             require_admission=True,
+            run_dir=directory,
         )
         try:
             outcome = await controller.run(config["prompt"])

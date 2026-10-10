@@ -46,6 +46,25 @@ def register(subparsers: Any) -> None:
         "daemon", help="Continuously probe admitted routes into the health cache"
     )
     prove_status_p = prove_sub.add_parser("status", help="Show the health cache")
+    prove_census_p = prove_sub.add_parser(
+        "census",
+        help=(
+            "Read-only per-pool census (BOD-297): usable/unusable/unknown counts "
+            "and alias inheritance, from the cache plus an admitted-route inventory"
+        ),
+    )
+    prove_census_p.add_argument(
+        "--inventory-path",
+        default=None,
+        required=True,
+        help="JSON file: either a list of admitted-route rows, or {inventory, connections}",
+    )
+    prove_census_p.add_argument("--json", action="store_true", help="Output JSON")
+    prove_census_p.add_argument(
+        "--state-path",
+        default=None,
+        help="Health cache JSON path (default: ~/.verdict/health-cache.json)",
+    )
     for _prove_p in (prove_once_p, prove_daemon_p, prove_status_p):
         _prove_p.add_argument(
             "--state-path",

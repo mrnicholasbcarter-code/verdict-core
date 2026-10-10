@@ -17,6 +17,8 @@ from typing import Any
 
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.orchestration.contracts import OrchestrationError
+from verdict.orchestration.health_cache import HealthCache, default_cache_path
+from verdict.orchestration.session_evidence import SessionLedger
 
 
 def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -130,6 +132,8 @@ def build_selector(
     capacity: tuple[str, ...] = (),
     refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
     sync_visibility: bool = False,
+    health_cache: HealthCache | None = None,
+    session_ledger: SessionLedger | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -221,6 +225,10 @@ def build_selector(
         admitted=admitted,
         admission_receipt=receipt_path,
         refresh_hook=refresh_hook,
+        health_cache=health_cache
+        if health_cache is not None
+        else HealthCache(default_cache_path()),
+        session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
     )
 
 

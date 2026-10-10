@@ -54,6 +54,7 @@ class WorkerTask:
     # small). Routes above it, or of unknown capability when it is < 3, are
     # hard-dropped before ranking. 3 (default) accepts any tier.
     max_capability_tier: int = 3
+    task_kind: str = "implement"
 
     @property
     def allow_frontier(self) -> bool:

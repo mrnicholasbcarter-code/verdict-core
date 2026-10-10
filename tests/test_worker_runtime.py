@@ -45,7 +45,9 @@ class Adapter:
         self.cleanup_failure = cleanup_failure
         self.index = -1
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> dict[str, Any]:
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> dict[str, Any]:
         self.index += 1
         self.calls.append(("spawn", model))
         self.prompts.append(prompt)

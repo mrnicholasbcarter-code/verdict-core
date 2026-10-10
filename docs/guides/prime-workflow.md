@@ -215,6 +215,40 @@ outcome after the process exits; exit code zero or a child reply alone is insuff
 The terminal extension makes empty assistant messages explicit failures, without
 changing provider errors into successful responses.
 
+### Worker effort and durable spawn receipts
+
+Worker task defaults are `implement=medium`, `review=high`, `plan=high`, and
+`trivial=low`. `reasoning=false` omits the override. A known `thinkingLevelMap`
+permits only keys with non-null values. Missing keys do not imply support.
+The runtime picks the default or the highest explicitly supported lower Prime
+level; it never steps up. An empty map or no supported lower level omits the
+override. This is Verdict's conservative metadata policy. Prime 0.9.8 documents
+omitted map keys as provider-default mappings; Verdict does not infer support
+from that omission. With no map, the default is only an unverified request:
+Prime still validates it for the resolved model at admission and may refuse it.
+Catalog metadata is not execution proof and cannot bypass canonical admission.
+
+`spawn-receipts.jsonl` records chosen and handle-reported model/effort separately.
+Only a handle-reported documented Prime thinking level is recorded as executed;
+a missing/invalid value stays `unverified`. No requested level is fabricated as
+executed. The receipt contains no prompt, raw inventory, gateway URL, credentials,
+or raw provider error. It does not change the read-only registry/cache policy or
+the existing ledger attachment path.
+
+The run directory must be absolute, current-user-owned, not group/other writable,
+and have no symlink components. Held no-follow directory descriptors confine the
+receipt open. The file must be regular, current-user-owned, and single-link before
+any chmod/write. Symlinks, hardlinks and FIFOs are refused without blocking or
+changing their targets. Cooperating appenders hold an exclusive advisory lock
+through write, flush and fsync. Receipts are mode 0600; first creation also syncs
+the held parent directory. This is a local POSIX filesystem policy, not a lock
+against writers that deliberately ignore advisory locking.
+
+A local receipt-persistence failure after admission reaps the actual owned handle
+and ends `FAIL_CLOSED`, with no replacement or route/provider cooldown. Failed or
+unconfirmed deletion also stops replacement. Restore safe receipt storage before
+retrying; a partial final line after a real disk failure is not a durable success.
+
 ## Proof and transitions
 
 ```text

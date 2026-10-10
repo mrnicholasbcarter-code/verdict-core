@@ -43,6 +43,8 @@ import hashlib
 import json
 import math
 import os
+import stat
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -516,6 +518,36 @@ class TokenBucket:
         self.removed.update(self._tokens())
         self._set_tokens({})
 
+    def merge_from(self, other: TokenBucket) -> None:
+        """Conservative owned-token merge, also used for legacy pool migration."""
+        self.capacity = min(self.capacity, other.capacity)
+        self.window_seconds = max(self.window_seconds, other.window_seconds)
+        tokens = other._tokens() | self._tokens()
+        removed = dict(self.removed)
+        released = dict(self.released)
+        for target, source in ((removed, other.removed), (released, other.released)):
+            for key, stamp in source.items():
+                target[key] = max(stamp, target.get(key, stamp))
+        stamps = [*tokens.values(), *removed.values(), *released.values()]
+        stamps.extend(stamp for stamp in (self.ledger_at, other.ledger_at) if stamp is not None)
+        self.ledger_at = max(stamps) if stamps else None
+        cutoff = self.ledger_at - timedelta(seconds=self.window_seconds) if self.ledger_at else None
+        self._set_tokens(
+            {
+                key: stamp
+                for key, stamp in tokens.items()
+                if key not in removed and (cutoff is None or stamp > cutoff)
+            }
+        )
+        self.removed = {
+            key: stamp for key, stamp in removed.items() if cutoff is None or stamp > cutoff
+        }
+        self.released = {
+            key: stamp for key, stamp in released.items() if cutoff is None or stamp > cutoff
+        }
+        if other.zeroed_until is not None:
+            self.zeroed_until = max(other.zeroed_until, self.zeroed_until or other.zeroed_until)
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "capacity": self.capacity,
@@ -633,17 +665,104 @@ class ScopedCooldown:
 
 
 def bucket_key(provider: str, pool: str | None = None) -> str:
-    """Provider key, or ``provider/pool`` when a pool is named."""
+    """Canonical pool key when named, otherwise the provider key.
+
+    Pools supplied by ``credential_pools.pool_of`` already identify the shared
+    credential; adding an alias provider would split its request budget.
+    """
     if not isinstance(provider, str) or not provider.strip():
         raise HealthCacheError("provider must be non-empty")
-    if pool:
-        return f"{provider}/{pool}"
-    return provider
+    return pool or provider
+
+
+def _legacy_pool_key(key: str) -> str:
+    """Recognize only exact provider/known-pool pairs, never model/user pools."""
+    from verdict.orchestration.credential_pools import ALIAS_FAMILIES, pool_of
+    from verdict.orchestration.provider_catalog import backend_pool
+
+    provider, sep, pool = key.partition("/")
+    if not sep or not pool or "/" in pool:
+        return key
+    regular = pool_of(f"{provider}/_bucket_identity_")
+    free = backend_pool(f"{provider}/_bucket_identity_:free")
+    if pool == regular and (regular != provider or provider in ALIAS_FAMILIES):
+        return pool
+    if pool == free and free != provider:
+        return pool
+    return key
+
+
+def _canonicalize_buckets(buckets: Mapping[str, TokenBucket]) -> dict[str, TokenBucket]:
+    """Fold recognized legacy keys using the same owned-token/tombstone merge."""
+    canonical: dict[str, TokenBucket] = {}
+    migrating = {_legacy_pool_key(key) for key in buckets if _legacy_pool_key(key) != key}
+    for key, bucket in buckets.items():
+        target = _legacy_pool_key(key)
+        if target != key and not bucket.token_ids and bucket.timestamps:
+            # Old ID-less records had no cross-bucket identity. Namespace each
+            # timestamp occurrence by its source key; preserve existing IDs.
+            if bucket.removed or bucket.released:
+                raise HealthCacheError("ID-less legacy bucket with tombstones is ambiguous")
+            bucket._tokens()
+            bucket.token_ids = [
+                hashlib.sha256(f"{key}:{token}".encode()).hexdigest() for token in bucket.token_ids
+            ]
+        if (target != key or key in migrating) and (
+            len(bucket.token_ids) not in (0, len(bucket.timestamps))
+            or len(set(bucket.token_ids)) != len(bucket.token_ids)
+        ):
+            raise HealthCacheError("partial or duplicate bucket token identity is ambiguous")
+        if target in canonical:
+            canonical[target].merge_from(bucket)
+        else:
+            canonical[target] = bucket
+    return canonical
 
 
 # ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
+
+
+def _private_cache_mode(path: Path) -> int:
+    """New caches are private; replacements never widen owner permissions."""
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        return 0o600
+    except OSError as exc:
+        raise HealthCacheError(f"cannot read health cache: {exc}") from exc
+    if not stat.S_ISREG(existing.st_mode):
+        raise HealthCacheError("health cache must be a regular file")
+    return stat.S_IMODE(existing.st_mode) & 0o600
+
+
+def _private_atomic_write(path: Path, body: str) -> None:
+    """Publish UTF-8 from a private same-directory file; caller holds the lock."""
+    mode = _private_cache_mode(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    temporary: Path | None = None
+    fd: int | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary = Path(name)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(fd)
+        os.close(fd)
+        fd = None
+        # Fail closed if a non-cooperating writer changed the destination.
+        _private_cache_mode(path)
+        os.replace(temporary, path)
+        os.fsync(directory_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        os.close(directory_fd)
 
 
 class HealthCache:
@@ -673,6 +792,8 @@ class HealthCache:
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
+        # Reject links/FIFOs before any read can dereference or block.
+        _private_cache_mode(self.path)
         if not self.path.exists():
             self._routes = {}
             self._buckets = {}
@@ -690,7 +811,28 @@ class HealthCache:
         if not isinstance(routes, Mapping) or not isinstance(buckets, Mapping):
             raise HealthCacheError("routes and buckets must be objects")
         self._routes = {key: HealthEntry.from_dict(value) for key, value in routes.items()}
-        self._buckets = {key: TokenBucket.from_dict(value) for key, value in buckets.items()}
+        migrating = {_legacy_pool_key(key) for key in buckets if _legacy_pool_key(key) != key}
+        for key, value in buckets.items():
+            if not isinstance(value, Mapping):
+                raise HealthCacheError("bucket must be a mapping")
+            if _legacy_pool_key(key) != key or key in migrating:
+                # Never let permissive legacy defaults silently reset a named
+                # quota to 10/window when its explicit bounds are invalid.
+                capacity = value.get("capacity")
+                window = value.get("window_seconds")
+                if (
+                    not isinstance(capacity, int)
+                    or isinstance(capacity, bool)
+                    or capacity < 1
+                    or not isinstance(window, (int, float))
+                    or isinstance(window, bool)
+                    or not math.isfinite(window)
+                    or window <= 0
+                ):
+                    raise HealthCacheError("legacy bucket bounds are missing or invalid")
+        self._buckets = _canonicalize_buckets(
+            {key: TokenBucket.from_dict(value) for key, value in buckets.items()}
+        )
         cursor = payload.get("cursor") or {}
         self._cursor = dict(cursor) if isinstance(cursor, Mapping) else {}
         cooldowns = payload.get("cooldowns") or {}
@@ -740,7 +882,6 @@ class HealthCache:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
             _acquire_cache_lock(
                 handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
@@ -748,8 +889,7 @@ class HealthCache:
             try:
                 self._merge_in_memory_over_disk()
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
-                temporary.write_text(body, encoding="utf-8")
-                os.replace(temporary, self.path)
+                _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -762,7 +902,7 @@ class HealthCache:
         saver's own partial-progress intent).
         """
         mine_routes = dict(self._routes)
-        mine_buckets = dict(self._buckets)
+        mine_buckets = _canonicalize_buckets(self._buckets)
         mine_cooldowns = dict(self._cooldowns)
         mine_cursor = dict(self._cursor)
         # Overwrite self with the authoritative on-disk view, then merge mine in.
@@ -782,34 +922,7 @@ class HealthCache:
             if disk_bucket is None:
                 self._buckets[key] = bucket
                 continue
-            # Owned-token union, minus release/zero tombstones. Length is not
-            # ordering: ten expired stamps must never replace two live tokens.
-            tokens = bucket._tokens() | disk_bucket._tokens()
-            removed = bucket.removed | disk_bucket.removed
-            released = bucket.released | disk_bucket.released
-            stamps = [*tokens.values(), *removed.values(), *released.values()]
-            stamps.extend(
-                stamp for stamp in (bucket.ledger_at, disk_bucket.ledger_at) if stamp is not None
-            )
-            disk_bucket.ledger_at = max(stamps) if stamps else None
-            cutoff = max(stamps) - timedelta(seconds=disk_bucket.window_seconds) if stamps else None
-            disk_bucket._set_tokens(
-                {
-                    key: stamp
-                    for key, stamp in tokens.items()
-                    if key not in removed and (cutoff is None or stamp > cutoff)
-                }
-            )
-            disk_bucket.removed = {
-                key: stamp for key, stamp in removed.items() if cutoff is None or stamp > cutoff
-            }
-            disk_bucket.released = {
-                key: stamp for key, stamp in released.items() if cutoff is None or stamp > cutoff
-            }
-            disk_zero = disk_bucket.zeroed_until
-            mine_zero = bucket.zeroed_until
-            if mine_zero is not None and (disk_zero is None or mine_zero > disk_zero):
-                disk_bucket.zeroed_until = mine_zero
+            disk_bucket.merge_from(bucket)
         self._cursor = mine_cursor
 
     def merge_and_save(
@@ -832,7 +945,6 @@ class HealthCache:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         with lock_path.open("a+", encoding="utf-8") as handle:
             _acquire_cache_lock(
                 handle.fileno(), deadline=deadline, monotonic=monotonic, sleep=sleep
@@ -850,8 +962,7 @@ class HealthCache:
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
                 body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
-                temporary.write_text(body, encoding="utf-8")
-                os.replace(temporary, self.path)
+                _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 

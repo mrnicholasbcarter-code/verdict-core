@@ -7,6 +7,7 @@ call ``run_action`` for the byte-identical ``--json`` surface where required.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -688,6 +689,69 @@ def _action_prove_at_rest_status(**kwargs: Any) -> ActionResult:
     data = status_report(cache, now=datetime.now(timezone.utc))
     data["state_path"] = str(resolved)
     data["status"] = "ok"
+    return ActionResult(data=data)
+
+
+def _action_prove_at_rest_census(**kwargs: Any) -> ActionResult:
+    """Read-only BOD-297 per-pool census: cache + a fixture/offline inventory.
+
+    ``inventory_path`` names a JSON file in one of two shapes:
+    1. ``{"inventory": [...], "connections": [...]}`` -- raw OmniRoute rows,
+       run through ``routes_from_evidence`` the same way ``load_admitted_routes``
+       would (admission decides what is in scope; no live call is made).
+    2. A bare list of admitted-route dicts (``route_id``/``provider``/
+       ``capacity``/optional ``pool``/``capacity_evidence``/``non_chat``) --
+       for tests and offline snapshots that already ran admission elsewhere.
+    Never probes the network and never writes the cache.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.prove_at_rest import AdmittedRoute, census_report, routes_from_evidence
+
+    inventory_path = kwargs.get("inventory_path")
+    if not inventory_path:
+        return ActionResult(
+            data={"error": "inventory_path is required for prove-at-rest census"},
+            ok=False,
+            exit_code=2,
+        )
+    resolved_inventory = Path(inventory_path).expanduser()
+    try:
+        raw = json.loads(resolved_inventory.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return ActionResult(
+            data={"error": f"cannot read inventory file: {exc}"}, ok=False, exit_code=2
+        )
+    now = datetime.now(timezone.utc)
+    if isinstance(raw, Mapping) and "inventory" in raw:
+        routes = routes_from_evidence(
+            raw.get("inventory") or [], raw.get("connections") or [], now=now
+        )
+    elif isinstance(raw, list):
+        routes = tuple(
+            AdmittedRoute(
+                route_id=str(row["route_id"]),
+                provider=str(row.get("provider") or str(row["route_id"]).split("/", 1)[0]),
+                capacity=str(row.get("capacity", "unknown")),
+                pool=row.get("pool"),
+                capacity_evidence=row.get("capacity_evidence"),
+                non_chat=bool(row.get("non_chat", False)),
+            )
+            for row in raw
+            if isinstance(row, Mapping) and row.get("route_id")
+        )
+    else:
+        return ActionResult(
+            data={"error": "inventory file must be a list or {inventory, connections}"},
+            ok=False,
+            exit_code=2,
+        )
+    state_path = kwargs.get("state_path")
+    resolved_cache = Path(state_path).expanduser() if state_path else default_cache_path()
+    cache = HealthCache(resolved_cache)
+    data = census_report(routes, cache, now=now)
+    data["inventory_path"] = str(resolved_inventory)
     return ActionResult(data=data)
 
 

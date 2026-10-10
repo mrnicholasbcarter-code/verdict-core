@@ -64,7 +64,9 @@ class _Adapter:
         self.prompts: list[str] = []
         self.deleted: list[str] = []
 
-    async def spawn(self, prompt: str, *, name: str, model: str) -> dict[str, Any]:
+    async def spawn(
+        self, prompt: str, *, name: str, model: str, thinking: str | None = None
+    ) -> dict[str, Any]:
         self.spawned.append(model)
         self.prompts.append(prompt)
         return {"rlm_child_id": name, "model": model}
