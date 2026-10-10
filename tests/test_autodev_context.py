@@ -426,12 +426,16 @@ def test_prior_verified_outcomes_included_when_caller_supplies_it(tmp_path: Path
 def test_output_policy_default_off_keeps_pack_and_receipt_identity(monkeypatch: Any) -> None:
     from verdict.context_inject import ContextOutputPolicy
 
-    monkeypatch.setattr("verdict.context_pack._now_iso", lambda: "1970-01-01T00:00:00Z")
+    from dataclasses import replace
+
+    def receipt(pack: Any) -> dict[str, Any]:
+        # Legacy receipts use wall-clock observation time; freeze only that metadata.
+        return replace(pack.receipt, created_at="1970-01-01T00:00:00Z").to_dict()
     legacy = _compile_context()
     disabled = _compile_context(output_policy=ContextOutputPolicy())
     assert disabled.canonical_json() == legacy.canonical_json()
     assert disabled.digest == legacy.digest
-    assert disabled.receipt.to_dict() == legacy.receipt.to_dict()
+    assert receipt(disabled) == receipt(legacy)
     assert "raw_artifact_pointer" not in disabled.receipt.to_dict()
 
 
@@ -494,3 +498,25 @@ def test_packet_output_policy_persists_separate_receipt_without_home_writes(
     assert observed["raw_artifact_pointer"]["digest"] == envelope_digest(unit.context)
     assert observed["output_metrics"]["provider_input_tokens"] is None
     assert list(home.iterdir()) == []
+
+
+def test_output_policy_unknown_metrics_are_not_fabricated() -> None:
+    from verdict.context_inject import ContextOutputPolicy
+
+    unknown = ContextOutputPolicy(enabled=True).receipt_fields(None)
+    assert unknown["raw_artifact_pointer"] is None
+    assert all(value is None for value in unknown["output_metrics"].values())
+    assert ContextOutputPolicy().receipt_fields(None) == {}
+
+
+def test_packet_execute_cli_output_policy_opt_in(monkeypatch: Any) -> None:
+    import verdict.cli as cli
+
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "_cli_execution_path_decision", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "cmd_autodev_packet_execute", lambda *a, **kw: captured.append(kw))
+    argv = ["autodev", "packet", "execute", "--packet", "packet.json", "--repo", "."]
+    cli.main(argv)
+    assert not captured[-1]["context_output_policy"]
+    cli.main([*argv, "--context-output-policy"])
+    assert captured[-1]["context_output_policy"] is True
