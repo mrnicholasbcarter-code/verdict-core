@@ -56,7 +56,30 @@ class ContextOutputPolicy:
     """
 
     enabled: bool = False
-    estimate_method: str = "raw_passthrough"
+    estimate_method: str = "utf8_bytes_div_4"
+
+    def receipt_fields(self, raw_prompt: str | None) -> dict[str, Any]:
+        """Describe post-compilation raw bytes; no transform or billed usage claim."""
+        if not self.enabled:
+            return {}
+        size = len(raw_prompt.encode("utf-8")) if raw_prompt is not None else None
+        pointer = (
+            RawArtifactPointer(envelope_digest(raw_prompt), size).to_dict()
+            if raw_prompt is not None and size is not None
+            else None
+        )
+        return {
+            "raw_artifact_pointer": pointer,
+            "output_policy": {"enabled": True, "transform": "raw_passthrough"},
+            "output_metrics": {
+                "input_bytes": size,
+                "output_bytes": size,
+                "estimate_method": self.estimate_method if size is not None else None,
+                "estimated_tokens": size / 4 if size is not None else None,
+                "provider_input_tokens": None,
+                "provider_output_tokens": None,
+            },
+        }
 
 
 @dataclass(frozen=True)
