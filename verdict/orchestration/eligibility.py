@@ -19,6 +19,7 @@ from verdict.orchestration.contracts import (
     TaskRequirements,
     route_family,
 )
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
     aliased_pools_for,
@@ -44,15 +45,8 @@ _PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
-# Planning / controller / review: subscription first (frontier for orchestration).
+# All roles rank free capacity first after the capability/admission gates.
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
-    CapacityClass.SUBSCRIPTION: 0,
-    CapacityClass.FREE: 1,
-    CapacityClass.METERED: 2,
-    CapacityClass.UNKNOWN: 3,
-}
-# Implementation workers: free first (free-first story 3).
-_WORKER_CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.FREE: 0,
     CapacityClass.SUBSCRIPTION: 1,
     CapacityClass.METERED: 2,
@@ -450,7 +444,7 @@ class EligibilityLadder:
         raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
         provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
-        for key in (f"route:{route_id}", f"provider:{provider}"):
+        for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
                 return key
         return None
@@ -494,7 +488,7 @@ class EligibilityLadder:
             if conn is not None:
                 provider = raw_provider
         capacity, plan_label, capacity_evidence = self._capacity_class(conn, row, route_id=route_id)
-        pool = backend_pool(route_id)
+        pool = pool_of(route_id)
         a = _Assessment(
             route_id=route_id,
             provider=provider,
@@ -534,6 +528,7 @@ class EligibilityLadder:
             return a
 
         for key, label in (
+            (f"pool:{pool}", "cooldown:pool"),
             (f"route:{route_id}", "cooldown:route"),
             (f"provider:{provider}", "cooldown:provider"),
         ):
@@ -596,6 +591,8 @@ class EligibilityLadder:
         context = int(row.get("max_input_tokens") or row.get("context_length") or 0)
         if context < req.min_context_tokens:
             return "insufficient_context"
+        if pool_of(route_id) in req.exclude_pools:
+            return "excluded_pool"
         if route_id in req.exclude_routes:
             return "excluded_route"
         if route_family(route_id) in req.exclude_families:
@@ -716,12 +713,7 @@ class EligibilityLadder:
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
-        # Role-aware capacity ordering: implementation workers use free-first;
-        # planning/controller/review (frontier_worthy) use subscription-first.
-        req = getattr(self, "_current_requirements", None)
-        is_worker = req is not None and not req.frontier_worthy
-        order_map = _WORKER_CAPACITY_ORDER if is_worker else _CAPACITY_ORDER
-        cap_order = order_map.get(a.capacity, 3)
+        cap_order = _CAPACITY_ORDER.get(a.capacity, 3)
         # Health cache freshness for the receipt (read-only, never written).
         cache = getattr(self, "_health_cache", None)
         probe_class = "none"
@@ -1055,7 +1047,8 @@ class EligibilityLadder:
         retry_after = failure.cooldown_seconds if failure.cooldown_seconds > 0 else None
         seconds = cooldown_seconds_for(failure.category, retry_after)
         entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
-        if failure.scope in {"route", "provider"}:
+        if failure.scope in {"route", "provider"} and failure.cooldown_seconds > 0:
+            self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()

@@ -73,6 +73,7 @@ ALIAS_FAMILIES: Mapping[str, str] = {
     "github": "github",  # equal model sets, owned_by resolves
     "cc": "claude",
     "claude": "claude",  # equal model sets, owned_by resolves
+    "no-think": "claude",  # Claude subscription alias (BOD-334 self-hosting)
     "cx": "codex",
     "codex": "codex",  # equal model sets, owned_by resolves
     "oc": "opencode",

@@ -417,6 +417,7 @@ class TaskRequirements:
     frontier_worthy: bool = False
     exclude_routes: frozenset[str] = frozenset()  # e.g. implementer ids for an independent reviewer
     exclude_families: frozenset[str] = frozenset()  # e.g. {"claude"} to force a different family
+    exclude_pools: frozenset[str] = frozenset()  # failed credential pools, not model families
     # BOD-271 sufficiency floor. Capability tiers: 0 = frontier ... 3 = small/fast.
     # A route whose tier number is ABOVE this is insufficient for the work and is
     # hard-dropped before ranking. Among sufficient routes the least-capable
