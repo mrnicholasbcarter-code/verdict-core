@@ -463,6 +463,67 @@ async def test_frontier_planner_raises_when_repair_executor_fails(tmp_path: Path
     assert len(executor.calls) == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["not json", '{"nodes": []}'])
+async def test_frontier_planner_persists_redacted_bounded_invalid_output(
+    tmp_path: Path, invalid: str
+) -> None:
+    from verdict.orchestration.receipt import EventLog
+
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    repo = _init_git_repo(repo_path)
+    run_dir = tmp_path / "run"
+    events = EventLog(run_dir / "events.jsonl")
+    secret = "fake-planner-secret-canary"
+    output = f'{invalid}\n"api_key": "{secret}"\n' + "é" * 70_000
+    executor = _ScriptedExecutor(
+        [WorkerTerminal(ok=True, output=output), WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]
+    )
+    graph, _ = await FrontierPlanner().plan(
+        "ship it",
+        repo=repo,
+        executor=executor,
+        route_id="cc/claude-sonnet-5",
+        events=events,
+        run_dir=run_dir,
+    )
+    assert len(graph.nodes) == 3
+    repair = next(event for event in events.read() if event.type == "plan_repair_started")
+    artifact = Path(repair.data["planner_output_path"])
+    assert artifact.parent == run_dir
+    assert artifact.is_file()
+    data = artifact.read_bytes()
+    assert 0 < len(data) <= 64 * 1024
+    text = data.decode("utf-8")
+    assert text.startswith(invalid)
+    assert secret not in text
+    assert "[redacted]" in text
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_retains_invalid_repair_output(tmp_path: Path) -> None:
+    from verdict.orchestration.receipt import EventLog
+
+    repo = _init_git_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    events = EventLog(run_dir / "events.jsonl")
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json"),
+            WorkerTerminal(ok=True, output="still invalid password=fake-repair-canary"),
+        ]
+    )
+    with pytest.raises(OrchestrationError, match="after one repair round"):
+        await FrontierPlanner().plan(
+            "g", repo=repo, executor=executor, route_id="cc/s", events=events, run_dir=run_dir
+        )
+    artifact = run_dir / "planner-1-repair-invalid.txt"
+    assert artifact.parent == run_dir
+    assert artifact.read_text() == "still invalid password=[redacted]"
+    assert len(list(run_dir.glob("planner-*-invalid.txt"))) == 2
+
+
 def test_planner_free_text_capabilities_are_normalized_to_model_vocabulary() -> None:
     import json
 
@@ -578,6 +639,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
             rows.append({"type": kind, **data})
 
     async def plan(self, *args, **kwargs):
+        assert kwargs["run_dir"] == tmp_path / "run"
         if kwargs["route_id"].startswith("cc/"):
             raise OrchestrationError("concurrent nodes a and b both own ['shared.py']")
         graph = WorkGraph("g", (_impl_node("a"),))
@@ -592,6 +654,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
         executor=None,
         classifier=FailureIntelligence(),
         events=Events(),
+        run_dir=tmp_path / "run",
     )
     assert requirements[0].max_capability_tier == 2
     # A planner validation error is a model-quality failure, not a credential

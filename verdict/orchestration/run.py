@@ -288,6 +288,7 @@ async def plan_with_failover(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     events: Any,
+    run_dir: Path | None = None,
     max_attempts: int = 6,
     timeout_seconds: float = 600,
     constraints: str = "",
@@ -374,6 +375,7 @@ async def plan_with_failover(
                 timeout_seconds=timeout_seconds,
                 constraints=constraints,
                 events=events,
+                run_dir=run_dir,
                 attempt=attempt,
                 max_attempts=max_attempts,
             )
@@ -884,6 +886,7 @@ async def run_golden_path(
                 executor=executor,
                 classifier=classifier,
                 events=events,
+                run_dir=run_dir,
                 constraints=constraints,
                 max_parallel=policy.max_parallel,
                 decision_signal_provider=decision_signal_provider,

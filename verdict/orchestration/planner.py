@@ -28,6 +28,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.verification import resolve_verify_argv
+from verdict.security import redact_text
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -409,6 +410,19 @@ class PlanningExecutorError(OrchestrationError):
         self.terminal = terminal
 
 
+def _persist_invalid_plan_output(
+    output: str, run_dir: Path | None, *, attempt: int, phase: str
+) -> str | None:
+    """Retain bounded diagnostic evidence, redacting before byte truncation."""
+    if run_dir is None:
+        return None
+    path = run_dir / f"planner-{attempt}-{phase}-invalid.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = redact_text(output).encode("utf-8")[: 64 * 1024]
+    path.write_text(data.decode("utf-8", errors="ignore"), encoding="utf-8")
+    return str(path)
+
+
 class FrontierPlanner:
     """Runs one frontier planning pass (with one repair round) into a validated WorkGraph."""
 
@@ -422,6 +436,7 @@ class FrontierPlanner:
         timeout_seconds: float = 600,
         constraints: str = "",
         events: Any | None = None,
+        run_dir: Path | None = None,
         attempt: int = 1,
         max_attempts: int = 1,
     ) -> tuple[WorkGraph, WorkerTerminal]:
@@ -439,6 +454,9 @@ class FrontierPlanner:
         try:
             return parse_plan(terminal.output, goal), terminal
         except OrchestrationError as first_error:
+            output_path = _persist_invalid_plan_output(
+                terminal.output, run_dir, attempt=attempt, phase="initial"
+            )
             repair_prompt = (
                 f"{prompt}\n\nYour previous response failed validation with this error:\n"
                 f"{first_error}\n\n"
@@ -453,6 +471,7 @@ class FrontierPlanner:
                     attempt=attempt + 1,
                     budget=max_attempts + 1,
                     reason=str(first_error)[:300],
+                    planner_output_path=output_path,
                 )
             repaired = await executor.run(
                 repair_prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
@@ -475,6 +494,9 @@ class FrontierPlanner:
             try:
                 graph = parse_plan(repaired.output, goal)
             except OrchestrationError as second_error:
+                _persist_invalid_plan_output(
+                    repaired.output, run_dir, attempt=attempt, phase="repair"
+                )
                 raise OrchestrationError(
                     f"FrontierPlanner: plan invalid after one repair round: {second_error}"
                 ) from second_error
