@@ -298,8 +298,7 @@ class IntelligenceService:
         self._admit_snapshot_endpoint: tuple[str, str | None] | None = None
         self._admit_snapshot_loaded_at: float = 0.0
         self._admit_snapshot_refresh_error: str | None = None
-        # Cheap path does not require Ruflo/RuVector. Those remain optional
-        # swarm/workflow adapters and must not mark routing degraded.
+        # Catalog routing does not depend on managed intelligence backends.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
 

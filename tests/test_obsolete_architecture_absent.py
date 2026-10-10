@@ -95,3 +95,18 @@ def test_checker_rejects_obsolete_content(tmp_path, monkeypatch):
     package.mkdir()
     (package / "innocent.py").write_text('backend = "RuVector"\n')
     assert checker.find_violations(package)
+
+
+def test_checker_allows_only_exact_removed_note(tmp_path, monkeypatch):
+    import scripts.check_no_obsolete_architecture as checker
+
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    package = tmp_path / "verdict"
+    package.mkdir()
+    note = "# Ruflo and RuVector integrations are removed."
+    monkeypatch.setattr(checker, "REMOVED_NOTES", frozenset({("notes.py", note)}))
+    source = package / "notes.py"
+    source.write_text(note + "\n")
+    assert checker.find_violations(package) == []
+    source.write_text(note + '\nbackend = "ruflo"\n')
+    assert len(checker.find_violations(package)) == 1

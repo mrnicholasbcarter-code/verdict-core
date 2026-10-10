@@ -78,7 +78,6 @@ _KNOWN_SESSION_GLOBS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ".pi-subagents/artifacts/*transcript.jsonl",
         ),
     ),
-    ("ruflo", "ruflo-jsonl", (".ruflo/sessions/**/*.jsonl", ".claude-flow/sessions/**/*.jsonl")),
 )
 
 
@@ -107,7 +106,7 @@ class SessionDiscoveryPolicy:
     """Bounds for read-only automatic session JSONL discovery."""
 
     roots: tuple[str | Path, ...] = ()
-    providers: tuple[str, ...] = ("claude", "codex", "pi", "ruflo")
+    providers: tuple[str, ...] = ("claude", "codex", "pi")
     max_files: int = DEFAULT_MAX_DISCOVERY_FILES
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
 
@@ -299,7 +298,6 @@ class SessionAdapter:
         SessionFormatDescriptor("claude-jsonl", "claude", "Claude Code exported JSONL"),
         SessionFormatDescriptor("codex-jsonl", "codex", "Codex exported JSONL"),
         SessionFormatDescriptor("pi-jsonl", "pi", "Pi exported JSONL"),
-        SessionFormatDescriptor("ruflo-jsonl", "ruflo", "Ruflo exported JSONL"),
     )
 
     def import_file(

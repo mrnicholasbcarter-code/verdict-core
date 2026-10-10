@@ -101,7 +101,7 @@ _UNHEALTHY_CERT = frozenset(
 
 # Sole strategy-selection authority for execution-path authority / legacy selector demotion. Legacy
 # IntelligenceService.route / choose_route / live_routing.select_route /
-# free-tier / AdaptiveRanker / FailoverEngine / Ruflo-swarm may feed evidence or
+# free-tier / AdaptiveRanker / FailoverEngine may feed evidence or
 # dispatch only — they must not invent strategy outside optimize_execution_path.
 # Production serve fails closed without an ExecutionPathDecision (see serve_path).
 STRATEGY_AUTHORITY = "execution_path.optimize_execution_path"

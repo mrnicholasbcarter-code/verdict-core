@@ -2,7 +2,7 @@
 
 Legacy selectors (IntelligenceService.route free-tier/chooser path,
 ``choose_route``, ``live_routing.select_route``, AdaptiveRanker,
-decision_kernel, FailoverEngine, Ruflo/swarm assignment) may feed evidence or
+decision_kernel, FailoverEngine) may feed evidence or
 dispatch a concrete route — they must not invent strategy outside
 ``optimize_execution_path``.
 

@@ -1,7 +1,7 @@
 """Optional, platform-neutral project guidance boundary.
 
 The guidance boundary is deliberately independent of Codex, Claude Code, Pi,
-Ruflo, and provider CLIs.  It loads a bounded Markdown policy document only
+and provider CLIs.  It loads a bounded Markdown policy document only
 when explicitly enabled and never treats guidance as an authorization grant.
 """
 

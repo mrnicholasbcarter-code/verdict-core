@@ -48,7 +48,6 @@ class AuthorityLevel(str, Enum):
 
     SYSTEM = "system"
     VERDICT_CORE = "verdict-core"
-    RUFLO = "ruflo"
     OMNIROUTE = "omniroute"
     HUMAN = "human"
     AGENT = "agent"
@@ -158,7 +157,6 @@ _AUTHORITY_RANK = {
     AuthorityLevel.AGENT: 1,
     AuthorityLevel.HUMAN: 2,
     AuthorityLevel.OMNIROUTE: 3,
-    AuthorityLevel.RUFLO: 4,
     AuthorityLevel.VERDICT_CORE: 5,
     AuthorityLevel.SYSTEM: 6,
 }
@@ -624,7 +622,6 @@ def _default_authorities() -> dict[str, AuthorityLevel]:
     return {
         "system": AuthorityLevel.SYSTEM,
         "verdict-core": AuthorityLevel.VERDICT_CORE,
-        "ruflo": AuthorityLevel.RUFLO,
         "omniroute": AuthorityLevel.OMNIROUTE,
         "human": AuthorityLevel.HUMAN,
         "agent": AuthorityLevel.AGENT,

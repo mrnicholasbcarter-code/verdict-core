@@ -198,9 +198,8 @@ def test_discovers_known_provider_jsonl_locations_latest_first(tmp_path: Path) -
     result = SessionAdapter().discover_sessions(SessionDiscoveryPolicy(roots=(tmp_path,)))
 
     assert result.report.status == "ok"
-    assert result.report.candidates_found == 4
+    assert result.report.candidates_found == 3
     assert [candidate.provider for candidate in result.candidates] == [
-        "ruflo",
         "pi",
         "codex",
         "claude",
@@ -209,9 +208,9 @@ def test_discovers_known_provider_jsonl_locations_latest_first(tmp_path: Path) -
         "claude-jsonl",
         "codex-jsonl",
         "pi-jsonl",
-        "ruflo-jsonl",
     }
     assert all(candidate.file_sha256 for candidate in result.candidates)
+    assert files["ruflo"] not in {candidate.path for candidate in result.candidates}
 
 
 def test_discovery_skips_symlinks_and_oversized_files(tmp_path: Path) -> None:

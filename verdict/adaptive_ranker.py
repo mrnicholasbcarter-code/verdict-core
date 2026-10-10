@@ -31,7 +31,7 @@ class RankerMode(str, Enum):
     """Ranker operational mode."""
 
     STATIC = "static"  # No learning, deterministic baseline
-    SEMANTIC = "semantic"  # Advisory semantic ranking (RuVector/SONA)
+    SEMANTIC = "semantic"  # Advisory capability matching
     SHADOW_ADAPTIVE = "shadow_adaptive"  # Observe-only adaptive (this slice)
 
 
@@ -131,9 +131,8 @@ class AdaptiveRanker:
     def _semantic_rank(
         self, candidates: tuple[RankingCandidate, ...], task_spec: Any
     ) -> list[ModelInfo]:
-        """Semantic ranking using RuVector/SONA embeddings (advisory only)."""
+        """Capability matching bonus over static ranking (advisory only)."""
         # For now, fall back to static with capability matching bonus
-        # Full RuVector/SONA integration is a follow-up
         base = self._static_rank(candidates)
 
         # Boost candidates with relevant capabilities for the task
@@ -161,7 +160,7 @@ class AdaptiveRanker:
         # Combine static + semantic as baseline
         baseline = self._semantic_rank(candidates, task_spec)
 
-        # Apply learned patterns from history (SONA/RuVector)
+        # Observe decisions in local history
         # For now, log the decision for future learning
         task_text = str(getattr(task_spec, "prompt", ""))
         self._history.append(
@@ -247,7 +246,7 @@ class AdaptiveRanker:
     def record_outcome(
         self, task_spec: Any, selected_model: str, success: bool, latency_ms: float, cost_usd: float
     ) -> None:
-        """Record outcome for learning (SONA/ReasoningBank)."""
+        """Record outcome in local advisory history."""
         self._history.append(
             {
                 "timestamp": time.time(),
