@@ -994,6 +994,60 @@ class DirectGatewayExecutor:
 
         return None
 
+    def _apply_files(self, files: dict[str, str], owned_files: list[str], cwd: Path) -> str | None:
+        """Validate every target before writing; replace each file atomically.
+
+        Parent directory descriptors and O_NOFOLLOW prevent symlink swaps from
+        redirecting writes outside the worktree. Replacements never follow links.
+        """
+        error = self._validate_file_paths(files, owned_files, cwd)
+        if error:
+            return error
+        try:
+            for rel, content in files.items():
+                with contextlib.ExitStack() as stack:
+                    directory = os.open(cwd.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+                    stack.callback(os.close, directory)
+                    components = Path(rel).parts
+                    for component in components[:-1]:
+                        with contextlib.suppress(FileExistsError):
+                            os.mkdir(component, dir_fd=directory)
+                        directory = os.open(
+                            component,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory,
+                        )
+                        stack.callback(os.close, directory)
+                    name = components[-1]
+                    mode = 0o644
+                    try:
+                        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode):
+                            return f"diff_rejected: non-regular file target: {rel}"
+                        mode = stat.S_IMODE(info.st_mode)
+                    except FileNotFoundError:
+                        pass
+                    temporary = f".verdict-file-{secrets.token_hex(16)}"
+                    fd = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        mode,
+                        dir_fd=directory,
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                            stream.write(content)
+                            stream.flush()
+                            os.fchmod(stream.fileno(), mode)
+                            os.fsync(stream.fileno())
+                        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    finally:
+                        with contextlib.suppress(FileNotFoundError):
+                            os.unlink(temporary, dir_fd=directory)
+        except (OSError, ValueError) as exc:
+            return f"diff_rejected: cannot write FILE contents: {exc}"
+        return None
+
     @staticmethod
     def _augment_prompt_for_diff(
         prompt: str, owned_files: list[str], cwd: Path, budget_bytes: int = 60_000
