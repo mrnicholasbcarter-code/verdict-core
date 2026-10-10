@@ -23,7 +23,7 @@ def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
     cache = HealthCache(tmp_path / "health-cache.json")
     for route in [SUB] + ([FREE] if fresh_free else []):
         cache.record(route, ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
-    probe = FakeProbe({r: HealthResult(False, "unservable") for r in cold + [FREE]})
+    probe = FakeProbe({r: HealthResult(False, "unservable") for r in [*cold, FREE]})
     probe.results[SUB] = HealthResult(sub_ok, "ok" if sub_ok else "unservable")
     if fresh_free:
         probe.results[FREE] = HealthResult(True, "ok")
@@ -78,6 +78,7 @@ def test_confirmed_cold_free_still_wins(tmp_path: Path) -> None:
 @pytest.mark.parametrize("block", ["excluded", "refresh", "cooldown"])
 def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
     from dataclasses import replace
+
     from verdict.orchestration.contracts import FailureClassification
 
     selector, probe, _ = ladder(tmp_path)
@@ -98,6 +99,7 @@ def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
 @pytest.mark.asyncio
 async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monkeypatch) -> None:
     from types import SimpleNamespace
+
     from verdict.orchestration.contracts import WorkerTerminal
     from verdict.orchestration.receipt import EventLog
     from verdict.orchestration.recovery import FailureIntelligence
