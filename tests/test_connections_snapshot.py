@@ -136,3 +136,74 @@ def test_snapshot_rejected_without_http(kind, tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_get_json", lambda *_a, **_k: pytest.fail("HTTP forbidden"))
     with pytest.raises(OrchestrationError, match="connections snapshot"):
         run.fetch_connections("https://restricted.invalid", api_key="inference")
+
+
+@pytest.mark.parametrize(
+    "gateway",
+    ["https://public-tunnel.invalid", "http://localhost@public.invalid", "ftp://127.0.0.1"],
+)
+def test_capture_never_sends_admin_key_to_tunnel(gateway, tmp_path, monkeypatch):
+    from verdict.cli import main
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "local-admin")
+    monkeypatch.setattr(run, "_get_json", lambda *_a, **_k: pytest.fail("HTTP forbidden"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "gateway",
+            "connections-snapshot",
+            "--gateway",
+            gateway,
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+
+
+def test_without_snapshot_fetches_local_providers(monkeypatch):
+    monkeypatch.delenv("VERDICT_CONNECTIONS_SNAPSHOT", raising=False)
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return [{"provider": "claude", "authType": "oauth", "isActive": True}]
+
+    monkeypatch.setattr(run, "_get_json", get)
+    assert run.fetch_connections(
+        "http://localhost:20128/", api_key="local-admin"
+    ) == run.sanitize_connections(get("ignored"))
+    assert calls[0] == (
+        "http://localhost:20128/api/providers",
+        {"api_key": "local-admin", "timeout": 30},
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", "raw-id"),
+        ("scope_id", "raw-account"),
+        ("isActive", "true"),
+        ("backoffLevel", -1),
+        ("quota_percent", 101),
+        ("authType", "private plan"),
+        ("rateLimitedUntil", "2026-01-01"),
+        ("plan_label", "Personal Max"),
+        ("rate_limited_until", {"model email@example.com": "2026-10-10T00:00:00Z"}),
+    ],
+)
+def test_snapshot_schema_rejects_untyped_or_raw_evidence(field, value, tmp_path, monkeypatch):
+    rows = safe_rows()
+    rows[0][field] = value
+    path = tmp_path / "connections.json"
+    path.write_text(json.dumps(snapshot(rows)))
+    monkeypatch.setenv("VERDICT_CONNECTIONS_SNAPSHOT", str(path))
+    monkeypatch.setattr(run, "_get_json", lambda *_a, **_k: pytest.fail("HTTP forbidden"))
+    with pytest.raises(OrchestrationError):
+        run.fetch_connections("https://restricted.invalid", api_key="inference")

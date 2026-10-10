@@ -6,8 +6,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+from verdict.orchestration.connections_snapshot import read_connections_snapshot
+from verdict.orchestration.contracts import OrchestrationError
 from verdict.orchestration.receipt import verify_run_receipt
 
 GOALS = {
@@ -22,8 +25,35 @@ GOALS = {
 }
 
 
+class RehearsalConfigurationError(ValueError):
+    """Fixed, credential-free configuration messages that may be printed."""
+
+
+def _connections_snapshot(root: Path) -> Path:
+    raw = os.environ.get("VERDICT_CERT_CONNECTIONS", "")
+    if not raw.strip():
+        raise RehearsalConfigurationError("Missing protected VERDICT_CERT_CONNECTIONS snapshot")
+    # Escape multiline JSON for the GitHub workflow command protocol.
+    masked = raw.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::add-mask::{masked}", flush=True)
+    fd, name = tempfile.mkstemp(prefix="verdict-connections-", suffix=".json", dir=root)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(raw)
+        read_connections_snapshot(path)
+    except (OSError, OrchestrationError) as exc:
+        path.unlink(missing_ok=True)
+        raise RehearsalConfigurationError(
+            "Invalid protected VERDICT_CERT_CONNECTIONS snapshot (requires sanitized evidence captured within 6 hours)"
+        ) from exc
+    return path
+
+
 def run() -> None:
     root = Path(os.environ["RUNNER_TEMP"])
+    snapshot_path = _connections_snapshot(root)
     evidence = root / "attested-rehearsals"
     evidence.mkdir(exist_ok=False)
     gateway = os.environ["VERDICT_CERT_GATEWAY_URL"]
@@ -31,6 +61,8 @@ def run() -> None:
     if not gateway or not key:
         raise ValueError("Missing protected gateway configuration")
     env = os.environ.copy()
+    env.pop("VERDICT_CERT_CONNECTIONS", None)
+    env["VERDICT_CONNECTIONS_SNAPSHOT"] = str(snapshot_path)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
     for name, goal in GOALS.items():
         fixture = root / f"fixture-{name}"
@@ -124,6 +156,8 @@ def run() -> None:
 if __name__ == "__main__":
     try:
         run()
+    except RehearsalConfigurationError as exc:
+        sys.exit(str(exc))
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Exception text can include provider output, argv or a credentialed URL.
         sys.exit(f"Rehearsal production failed closed ({type(exc).__name__})")

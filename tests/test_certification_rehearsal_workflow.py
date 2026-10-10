@@ -93,7 +93,11 @@ def test_rehearsal_requires_protected_connections_snapshot():
     workflow = yaml.load(
         (ROOT / ".github/workflows/certify-rehearsal.yml").read_text(), Loader=yaml.BaseLoader
     )
-    live = next(s for s in workflow["jobs"]["rehearse"]["steps"] if s.get("name") == "Build fixtures and run bounded live rehearsals")
+    live = next(
+        s
+        for s in workflow["jobs"]["rehearse"]["steps"]
+        if s.get("name") == "Build fixtures and run bounded live rehearsals"
+    )
     assert live["env"]["VERDICT_CERT_CONNECTIONS"] == "${{ secrets.VERDICT_CERT_CONNECTIONS }}"
     script = (ROOT / "scripts/run_certification_rehearsals.py").read_text()
     assert "VERDICT_CONNECTIONS_SNAPSHOT" in script
@@ -103,8 +107,9 @@ def test_rehearsal_requires_protected_connections_snapshot():
 
 
 def test_rehearsal_missing_snapshot_fails_before_work(tmp_path, monkeypatch):
-    from scripts import run_certification_rehearsals as script
     import pytest
+
+    from scripts import run_certification_rehearsals as script
 
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
@@ -112,3 +117,50 @@ def test_rehearsal_missing_snapshot_fails_before_work(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Missing protected VERDICT_CERT_CONNECTIONS"):
         script.run()
     assert not (tmp_path / "attested-rehearsals").exists()
+
+
+def test_rehearsal_secret_materializes_privately_and_masks(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import json
+    import stat
+    from datetime import datetime, timezone
+
+    from scripts import run_certification_rehearsals as script
+    from verdict.orchestration.run import sanitize_connections
+
+    payload = {
+        "schema_version": 1,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "connections": sanitize_connections(
+            [{"provider": "claude", "authType": "oauth", "isActive": True}]
+        ),
+    }
+    payload["sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    raw = json.dumps(payload, indent=2)
+    monkeypatch.setenv("VERDICT_CERT_CONNECTIONS", raw)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    path = script._connections_snapshot(tmp_path)
+    assert path.parent == tmp_path
+    assert path.read_text() == raw
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert (
+        capsys.readouterr().out
+        == "::add-mask::" + raw.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A") + "\n"
+    )
+
+
+def test_rehearsal_invalid_snapshot_fails_before_work(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_CONNECTIONS", "not-json")
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    with pytest.raises(
+        script.RehearsalConfigurationError, match="Invalid protected VERDICT_CERT_CONNECTIONS"
+    ):
+        script.run()
+    assert list(tmp_path.iterdir()) == []
