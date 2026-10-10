@@ -686,3 +686,14 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
         assert components["load"] == key[4]
         assert -components["fit"] == key[5]  # fit is negated in the key
         assert components["route_id"] == key[6]
+
+
+def test_capacity_order_label_matches_free_first_ranking() -> None:
+    """Review F1: order 0 is free, not subscription (labels follow the ladder)."""
+    from verdict.orchestration.explain import _format_capacity_order
+
+    assert _format_capacity_order(0) == "free"
+    assert _format_capacity_order(1) == "subscription"
+    assert _format_capacity_order(2) == "metered"
+    assert _format_capacity_order(3) == "unknown"
+    assert _format_capacity_order(9) == "9"

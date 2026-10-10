@@ -96,10 +96,13 @@ def _runner_up(verdicts: Sequence[RouteVerdict], *, exclude: str) -> RouteVerdic
 def _format_capacity_order(value: Any) -> str:
     """Return a short human name for a capacity_order integer.
 
-    Mirrors ``EligibilityLadder._CAPACITY_ORDER`` (subscription=0, free=1,
-    metered=2, unknown=3). Falls back to the raw integer if it does not match.
+    Derived from ``eligibility._CAPACITY_ORDER`` (free-first for every role),
+    so the label can never drift from the ranking. Falls back to the raw
+    integer if it does not match.
     """
-    mapping = {0: "subscription", 1: "free", 2: "metered", 3: "unknown"}
+    from verdict.orchestration.eligibility import _CAPACITY_ORDER
+
+    mapping = {order: capacity.value for capacity, order in _CAPACITY_ORDER.items()}
     if isinstance(value, int) and value in mapping:
         return mapping[value]
     return str(value)
