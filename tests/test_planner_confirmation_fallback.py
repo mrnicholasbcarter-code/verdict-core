@@ -152,6 +152,7 @@ def test_refresh_written_positive_is_used_in_the_same_select(tmp_path: Path) -> 
 
     def hook(routes, now):
         cache.record(SUB, ProbeResult(category="ok", chat_ok=True, tool_ok=True), now)
+        cache.save()  # the real refresh job persists before returning
         return {SUB: "ok"}
 
     selector._refresh_hook = hook
@@ -159,3 +160,22 @@ def test_refresh_written_positive_is_used_in_the_same_select(tmp_path: Path) -> 
     assert choice is not None and choice.route_id == SUB
     assert choice.reason == "reserved_fallback_slot"
     assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+
+
+def test_refresh_written_by_another_cache_object_is_seen(tmp_path: Path) -> None:
+    """The real refresh job writes through its own HealthCache object to disk."""
+    selector, _probe, _cold = ladder(tmp_path)
+    cache = selector._health_cache
+    cache._routes.pop(SUB, None)
+    cache.save()
+
+    def hook(routes, now):
+        writer = HealthCache(cache.path)
+        writer.record(SUB, ProbeResult(category="ok", chat_ok=True, tool_ok=True), now)
+        writer.save()
+        return {SUB: "ok"}
+
+    selector._refresh_hook = hook
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == SUB
+    assert choice.reason == "reserved_fallback_slot"

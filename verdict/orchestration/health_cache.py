@@ -841,6 +841,10 @@ class HealthCache:
 
     # -- persistence -------------------------------------------------------
 
+    def reload(self) -> None:
+        """Re-read the cache file (another HealthCache object may have written it)."""
+        self._load()
+
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
         _private_cache_mode(self.path)

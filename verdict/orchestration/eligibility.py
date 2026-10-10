@@ -887,9 +887,15 @@ class EligibilityLadder:
                     candidate.reason = status.lower()
         if refresh_hook is not None and candidates:
             # The refresh job may just have written fresh positives into the
-            # health cache (a cold VERDICT_HOME, as in CI, starts empty).
-            # Re-read health so probe ordering and the reserved fallback see
-            # them; never upgrade a candidate the refresh marked failed.
+            # health cache (a cold VERDICT_HOME, as in CI, starts empty). It
+            # writes through its own HealthCache object, so reload this one
+            # from disk first, then re-read health so probe ordering and the
+            # reserved fallback see them. Never upgrade a candidate the
+            # refresh marked failed.
+            cache = getattr(self, "_health_cache", None)
+            if cache is not None:
+                with contextlib.suppress(Exception):
+                    cache.reload()
             for candidate in candidates:
                 if candidate.failed_stage is None and candidate.health != "healthy":
                     health, category = self._health_status(candidate.route_id, now)
