@@ -550,3 +550,28 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
     assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
     cooldown = next(r for r in rows if r["type"] == "cooldown")
     assert (cooldown["scope"], cooldown["key"]) == ("pool", "claude")
+
+
+@pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])
+def test_worker_prompt_forbids_summary_files(tmp_path, kind):
+    node = WorkNode("a", "do work", kind=kind, owned_files=("a.py",))
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="g")
+    assert "Do not create summary/notes files; report in your final message." in prompt
+
+
+@pytest.mark.asyncio
+async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
+    import json
+
+    left, right = _impl_node("left", owned=("shared.py",)), _impl_node("right", owned=("shared.py",))
+    bad = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
+    right = _impl_node("right", owned=("shared.py",), depends_on=("left",))
+    good = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
+    executor = _ScriptedExecutor([
+        WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)
+    ])
+    await FrontierPlanner().plan("g", repo=tmp_path, executor=executor, route_id="cc/s")
+    prompt = executor.calls[1]
+    assert "concurrent nodes left and right both own ['shared.py']" in prompt
+    assert "Serialize" in prompt and "depends_on" in prompt
+    assert "merge" in prompt.lower() and "one node" in prompt

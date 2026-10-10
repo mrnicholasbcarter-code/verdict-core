@@ -1201,6 +1201,7 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
             assert not (cwd / "pkg/__init__.py").exists()
             (cwd / "a.txt").write_text("ok\n")
             if len(prompts) < correct_on:
+                (cwd / "IMPLEMENTATION_SUMMARY.md").write_text("unrequested summary\n")
                 for path in ("pkg/__init__.py", "tests/__init__.py"):
                     marker = cwd / path
                     marker.parent.mkdir(exist_ok=True)
@@ -1229,6 +1230,7 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
         assert "PREVIOUS_ATTEMPT_FAILED_OWNERSHIP" in prompt
         assert "pkg/__init__.py" in prompt
         assert "tests/__init__.py" in prompt
+        assert "IMPLEMENTATION_SUMMARY.md" in prompt
         assert "must not be created or modified" in prompt
         assert "Only OWNED_FILES may change" in prompt
         assert "RESULT: BLOCKED naming the file" in prompt
@@ -1236,6 +1238,9 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
     assert events.of("rehydrate", "a")[0]["reason"] == "ownership_violation"
     barriers = [b for b in events.of("barrier", "a") if b["name"] == "ownership"]
     assert [b["ok"] for b in barriers] == [False] * (correct_on - 1) + [True]
+    assert barriers[0]["stray_paths"] == [
+        "IMPLEMENTATION_SUMMARY.md", "pkg/__init__.py", "tests/__init__.py"
+    ]
 
 
 async def test_real_skipped_ocr_result_blocks_runtime_completion(repo: Path) -> None:
@@ -1598,3 +1603,20 @@ def test_new_executed_command_is_bound_by_receipt_events_digest(tmp_path: Path) 
     verify_event["data"]["executed_command"] = "/different/python -m pytest"
     events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     assert any("events_digest" in problem for problem in verify_run_receipt(run_dir))
+
+
+async def test_worker_escalation_excludes_failed_credential_pool(repo: Path):
+    seen = []
+
+    class PoolSelector(Selector):
+        def select(self, requirements, *, now):
+            seen.append(requirements)
+            return super().select(requirements, now=now)
+
+    runtime, _, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Executor({"a": ["quota", "ok"]}), ["cc/s", "cx/g"]
+    )
+    runtime.selector = PoolSelector(["cc/s", "cx/g"])
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert seen[1].exclude_pools == frozenset({"claude"})
