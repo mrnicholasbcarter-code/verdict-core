@@ -313,7 +313,7 @@ echo secret material:
 | `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
 | `VERDICT_OMNIROUTE_API_KEY` | Gateway key for `verdict orchestrate` and the OCR reviewer; usually the same value as `OMNIROUTE_API_KEY` |
 | `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane access token (`oma_…`, Settings → Access Tokens). A `read` scope is enough for Verdict. An `sk-` inference key does not work here |
-| `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Allow private/internal hosts (SSRF guard; default off) |
+| `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Comma-separated exact private-host allowlist, not a boolean; merged with the API upstream allowlist and loopback defaults |
 | `OMNIROUTE_USAGE_API_KEY_ID` | Id (not secret) of the inference key whose usage/budget Verdict reads; from `/api/keys` |
 | `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
 | `VERDICT_GATEWAY_READY_TIMEOUT_S` | Readiness budget in seconds for the bounded gateway wait (default `30`; must be finite, positive and at most `600`) |
@@ -331,7 +331,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_UPSTREAM_BASE_URL` | Upstream base URL (defaults may derive from OmniRoute) |
 | `LLMGATE_UPSTREAM_API_KEY` | Upstream API key |
 | `LLMGATE_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
-| `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` | Allow private upstream hosts |
+| `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` | Comma-separated exact private-host allowlist, not a boolean. API loopback defaults: `127.0.0.1`, `::1`, `localhost` |
 | `LLMGATE_MODEL_ALLOWLIST` | Comma-separated allowed model ids |
 | `LLMGATE_MODEL_DENYLIST` | Comma-separated denied model ids |
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require an execution-path authority `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and `/v1/route` forces execution-path authority in every profile (the OpenAI-compatible relay surfaces do not; see [Admission boundary](#admission-boundary)) |

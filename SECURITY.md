@@ -65,7 +65,10 @@ are rejected unless explicitly listed in `LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS`.
 Hostnames are resolved immediately before transport use and fail closed if they
 resolve to private, loopback, or link-local addresses. Redirects are disabled.
 
-Only operators should set the private-host allowlist, and only for an intentional
+`LLMGATE_UPSTREAM_ALLOW_PRIVATE_HOSTS` and `OMNIROUTE_ALLOW_PRIVATE_HOSTS`
+are comma-separated lists of exact hostnames or IPs, not boolean switches. The
+API includes `127.0.0.1`, `::1`, and `localhost` in its default allowlist.
+Only operators should extend the allowlists, and only for an intentional
 local/private upstream. Never put an API key in a URL; use
 `LLMGATE_UPSTREAM_API_KEY` or a provider environment variable.
 
