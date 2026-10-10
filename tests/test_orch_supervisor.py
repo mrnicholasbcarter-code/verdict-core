@@ -310,14 +310,21 @@ def test_process_group_is_killed_including_grandchild(tmp_path: Path) -> None:
         "with_child.py",
         f"""
 import subprocess
-emit("run_started", run_id=run_dir.name)
+# Spawn and record the grandchild BEFORE the first event: the stall clock
+# (0.4 s here) must not be able to kill the controller between spawn and
+# pid write on a loaded host, which made this test flaky.
 kid = subprocess.Popen([sys.executable, {str(child)!r}, {str(marker)!r}])
 (run_dir / "kid.pid").write_text(str(kid.pid))
+emit("run_started", run_id=run_dir.name)
 time.sleep(120)
 """,
     )
+    # A longer stall window than FAST: interpreter start-up plus a Popen on a
+    # loaded host can exceed 0.4 s, and this test is about kill semantics,
+    # not stall timing.
+    timing = {**FAST, "stall_seconds": 3.0}
     supervisor = ControllerSupervisor(
-        lambda gen: argv_for(script, run_dir), run_dir, max_restarts=0, **FAST
+        lambda gen: argv_for(script, run_dir), run_dir, max_restarts=0, **timing
     )
     outcome = run_supervisor(supervisor)
     assert outcome.state == "BLOCKED"
