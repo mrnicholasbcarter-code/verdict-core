@@ -61,9 +61,9 @@ an admission check cannot be ranked back in.
 ## Why Verdict
 
 - **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other.
-- **Uses free and already-paid capacity first.** Workers try free tiers, then subscriptions, before metered pay-per-token models.
+- **Uses eligible free and already-paid capacity first.** This is a selection policy, not a savings claim. The first live self-hosted orchestration run admitted no free worker; free capacity still needs fresh admission evidence. See the [live run bundle](docs/proof/dogfood-bod-225-live-2026-09-29/README.md).
 - **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries.
-- **Gets an independent second opinion.** A separate model, on a separate route from whoever did the work, has to approve the result before a run can finish.
+- **Gets a separate review route.** A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence ([runtime policy](verdict/orchestration/runtime.py), [review tests](tests/test_orch_runtime.py)).
 - **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change.
 - **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore.
 
@@ -771,7 +771,6 @@ under `phase:alpha-gate`.
 | Historical operator-reported scenario A–J observations; no retained public certification packet | [`docs/proof/GOLDEN_PATH_CERTIFICATION.md`](docs/proof/GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](docs/proof/CLAIMS_AUDIT_2026-09-06.md) |
-| v0.3.0 boundary | [`docs/proof/RELEASE_BOUNDARY_0.3.0.md`](docs/proof/RELEASE_BOUNDARY_0.3.0.md) |
 
 **Test and gate status.** CI runs the repository's test, lint, format, type, security,
 CodeQL, OSV, install, build and contract-parity checks. The current claim boundary and
@@ -891,7 +890,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | `receipt` | Inspect durable `RoutingReceiptV1` records |
 | `stats` | Routing analytics |
 | `benchmark` | Reproducible local benchmark harness |
-| `certify` | Emit runtime certification passport JSON |
+| `certify` | Emit a runtime capability passport JSON; not release certification |
 
 **Models**
 
@@ -946,8 +945,6 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
   control — it recovers from them, but cannot prevent them.
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary.
   `--no-review` skips it and ends the run `BLOCKED`.
-- **ADR-023 (governed swarm supervision) is superseded** by ADR-036. References to Ruflo,
-  RuVector, SONA, hivemind, or swarm dispatch describe architecture that is no longer in Core.
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log
   changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage.
   Neither the receipt nor the log is signed or externally anchored against replacing both files.
