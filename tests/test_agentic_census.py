@@ -165,3 +165,16 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
     assert payload["health_cache"]["counts_by_state"] == report["counts_by_state"]
     from verdict.orchestration.cli import render_eligibility_text
     assert "free=45" in render_eligibility_text(payload)
+
+
+def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):
+    from verdict.prove_at_rest import import_sessions
+
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(worker_file(tmp_path, [row()]), cache, now=NOW)
+    cache.record_liveness("kc/model:free", latency_ms=3, pool="kc",
+                          capacity_evidence="free", now=NOW + timedelta(seconds=10))
+    cache.save()
+    entry = HealthCache(cache.path).entry("kc/model:free")
+    assert entry.agentic_checked_at == NOW
+    assert entry.agentic_source and entry.agentic_child_id == "sub-123"

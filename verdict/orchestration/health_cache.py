@@ -1181,6 +1181,11 @@ class HealthCache:
             healthy=True,
             identity=identity,
             last_success_at=current,
+            probe_class=(self._routes[route].probe_class if route in self._routes else "single_call"),
+            agentic_ok=(self._routes[route].agentic_ok if route in self._routes else False),
+            agentic_checked_at=(self._routes[route].agentic_checked_at if route in self._routes else None),
+            agentic_source=(self._routes[route].agentic_source if route in self._routes else None),
+            agentic_child_id=(self._routes[route].agentic_child_id if route in self._routes else None),
             write_revision=(self._routes[route].write_revision if route in self._routes else 0),
         )
         self._routes[route] = entry
