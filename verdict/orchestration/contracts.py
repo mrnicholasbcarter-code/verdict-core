@@ -371,6 +371,7 @@ class RouteVerdict:
     # cooldown_scope: the key under which the cooldown was recorded
     # ("route:<id>", "provider:<name>", or "pool:<name>"), never an email or token.
     cooldown_scope: str = ""
+    agentic_capability: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -391,6 +392,8 @@ class RouteVerdict:
         # BOD-277 additive keys: emitted only when a value is known, so
         # existing consumers see the pre-BOD-277 shape when the ladder did
         # not compute rank components (e.g. failed before ranking).
+        if self.agentic_capability is not None:
+            data["agentic_capability"] = dict(self.agentic_capability)
         if self.rank_components is not None:
             data["rank_components"] = dict(self.rank_components)
         if self.capability_tier is not None:

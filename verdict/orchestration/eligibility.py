@@ -154,6 +154,7 @@ class _Assessment:
     # AC6: the cooldown key under which this route is currently blocked
     # (never an email, token, or account id).
     cooldown_scope: str = ""
+    agentic_capability: Mapping[str, Any] | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -207,6 +208,7 @@ class _Assessment:
             pool=self.pool,
             capacity_evidence=self.capacity_evidence,
             cooldown_scope=self.cooldown_scope,
+            agentic_capability=self.agentic_capability,
         )
 
 
@@ -415,6 +417,11 @@ class EligibilityLadder:
         return CapacityClass.UNKNOWN, plan_label, reason
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None:
+            lookup = cache.lookup(route_id, now)
+            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.chat_ok:
+                return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):
             return "unprobed", ""
@@ -498,6 +505,11 @@ class EligibilityLadder:
             pool=pool,
             capacity_evidence=capacity_evidence,
         )
+
+        from verdict.orchestration.health_cache import agentic_capability
+
+        cache = getattr(self, "_health_cache", None)
+        a.agentic_capability = agentic_capability(cache.entry(route_id) if cache else None, now)
 
         if self._admitted is not None and route_id not in self._admitted:
             record = self._admitted.first_failure(route_id)
@@ -633,21 +645,21 @@ class EligibilityLadder:
             cache = getattr(self, "_health_cache", None)
             if cache is None:
                 return "no_health_cache"
-            from verdict.orchestration.health_cache import FRESH_SECONDS
+            from verdict.orchestration.health_cache import agentic_capability
 
             gate_now = now or datetime.now(timezone.utc)
             lookup = cache.lookup(route_id, gate_now)
-            if lookup.entry is None or not lookup.entry.agentic_ok:
-                return "no_agentic_probe"
-            # The agentic gate uses agentic_checked_at (not the general
-            # checked_at that single-call probes refresh). Only FRESH is
-            # accepted: stale means the agentic qualification expired.
-            ack = lookup.entry.agentic_checked_at
-            if ack is None:
-                return "agentic_probe_stale"
-            age = (gate_now - ack).total_seconds()
-            if age > FRESH_SECONDS:
-                return "agentic_probe_stale"
+            proof = agentic_capability(lookup.entry, gate_now)
+            if not proof["qualified"]:
+                if lookup.entry is None or (proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok):
+                    return "no_agentic_probe"
+                return "session_capability_expired_or_revoked" if proof["source"] == "session_evidence" else "agentic_probe_stale"
+            # Session capability still requires current liveness. Stale proof
+            # can be refreshed by the existing cheap bounded selection probe.
+            if proof["source"] == "session_evidence":
+                health, _ = self._health_status(route_id, gate_now)
+                if lookup.state != "fresh" and health != "healthy":
+                    return "session_liveness_stale"
             # Real session outcomes can narrow, never replace, probe qualification.
             stats = self._session_summary(route_id, gate_now)
             if stats is not None and stats.passes + stats.fails:
