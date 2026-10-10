@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 
-ALLOWED = {".env.memory.example", ".env.example"}
+ALLOWED = {".env.example"}
 PATTERN = re.compile(
     r"(^|/)"
     r"("
