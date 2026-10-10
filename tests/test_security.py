@@ -270,3 +270,22 @@ def test_authenticated_mode_requires_receipts_db(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="VERDICT_RECEIPTS_DB"), TestClient(api.app):
         pass
+
+
+def test_redaction_removes_bare_bearer_and_prefixed_keys() -> None:
+    message = api.redact_text(
+        "echo Bearer abcdefghijklmnopqrstuv then sk-ant-api03-ABCDEFGHIJKLMNOPQR "
+        "and ghp_ABCDEFGHIJKLMNOPQRSTUVWX and AKIAABCDEFGHIJKLMNOP"
+    )
+    for secret in (
+        "abcdefghijklmnopqrstuv",
+        "sk-ant-api03-ABCDEFGHIJKLMNOPQR",
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWX",
+        "AKIAABCDEFGHIJKLMNOP",
+    ):
+        assert secret not in message
+    # Ordinary words are not redacted.
+    assert (
+        api.redact_text("the bearer of news; task-1 sk-short")
+        == "the bearer of news; task-1 sk-short"
+    )

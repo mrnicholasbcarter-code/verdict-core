@@ -125,3 +125,17 @@ async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monke
     )
     event = next(e for e in events.read() if e.type == "plan_started")
     assert event.data["selection_reason"] == "reserved_fallback_slot"
+
+
+def test_reserved_slot_counts_probes_spent_not_list_position(tmp_path: Path) -> None:
+    """Review: skipped (refresh-failed) entries must not move the fallback ahead of cold probes.
+
+    Two cold routes are already marked failed by the refresh hook, so they use no
+    probe. The fallback must still wait until 7 real probes were spent.
+    """
+    selector, probe, cold = ladder(tmp_path)
+    selector._refresh_hook = lambda routes, now: {cold[0]: "failed", cold[1]: "failed"}
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == SUB
+    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert cold[0] not in probe.calls and cold[1] not in probe.calls

@@ -12,6 +12,18 @@ from urllib.parse import urlsplit, urlunsplit
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
+    # A bare "Bearer <token>" (no Authorization: label), as models often echo it.
+    re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
+    # Common provider key prefixes that appear without any key=/key: label.
+    re.compile(
+        r"(?<![A-Za-z0-9])()"
+        r"(?:sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{16,}"
+        r"|gh[pousr]_[A-Za-z0-9]{20,}"
+        r"|github_pat_[A-Za-z0-9_]{20,}"
+        r"|xox[abprs]-[A-Za-z0-9-]{10,}"
+        r"|AKIA[0-9A-Z]{16}"
+        r"|AIza[0-9A-Za-z_-]{30,})"
+    ),
     re.compile(
         r"""(?ix)
         ((?:["']?)(?:api[_-]?key|token|password|secret)(?:["']?)\s*[=:]\s*)

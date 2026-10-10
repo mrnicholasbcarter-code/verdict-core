@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -910,10 +910,31 @@ class EligibilityLadder:
             and self._max_probes > 0
             and probe_order.index(fallback) >= self._max_probes
         ):
+            # Reserve by probes actually spent, not list position: skipped
+            # entries (refresh-failed, provider-blocked, already launchable)
+            # use no probe, so the fallback waits until exactly one probe is
+            # left and earlier cold routes have had every other slot.
             probe_order.remove(fallback)
-            probe_order.insert(self._max_probes - 1, fallback)
             reserved_route = fallback.route_id
-        for a in probe_order:
+        fallback_tried = False
+
+        def _ordered() -> Iterator[_Assessment]:
+            nonlocal fallback_tried
+            for item in probe_order:
+                if (
+                    reserved_route
+                    and not fallback_tried
+                    and fallback is not None
+                    and probes_used >= self._max_probes - 1
+                ):
+                    fallback_tried = True
+                    yield fallback
+                yield item
+            if reserved_route and not fallback_tried and fallback is not None:
+                fallback_tried = True
+                yield fallback
+
+        for a in _ordered():
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:

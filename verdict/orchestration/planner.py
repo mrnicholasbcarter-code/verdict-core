@@ -417,9 +417,13 @@ def _persist_invalid_plan_output(
     if run_dir is None:
         return None
     path = run_dir / f"planner-{attempt}-{phase}-invalid.txt"
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = redact_text(output).encode("utf-8")[: 64 * 1024]
-    path.write_text(data.decode("utf-8", errors="ignore"), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(data.decode("utf-8", errors="ignore"), encoding="utf-8")
+    except OSError:
+        # Diagnostics must never hide the real validation error.
+        return None
     return str(path)
 
 
@@ -494,11 +498,12 @@ class FrontierPlanner:
             try:
                 graph = parse_plan(repaired.output, goal)
             except OrchestrationError as second_error:
-                _persist_invalid_plan_output(
+                repair_path = _persist_invalid_plan_output(
                     repaired.output, run_dir, attempt=attempt, phase="repair"
                 )
                 raise OrchestrationError(
                     f"FrontierPlanner: plan invalid after one repair round: {second_error}"
+                    + (f" (raw output: {repair_path})" if repair_path else "")
                 ) from second_error
             return graph, repaired
 

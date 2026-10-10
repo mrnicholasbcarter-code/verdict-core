@@ -693,3 +693,51 @@ async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
     assert "concurrent nodes left and right both own ['shared.py']" in prompt
     assert "Serialize" in prompt and "depends_on" in prompt
     assert "merge" in prompt.lower() and "one node" in prompt
+
+
+@pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])
+def test_invalid_output_secret_across_the_byte_cut_never_leaks(tmp_path: Path, cut: int) -> None:
+    """Redaction runs before truncation: no fragment of a secret survives the 64 KiB cut."""
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    secret = "https://user:hunter2pw@gateway.invalid/v1"
+    prefix = "x" * (64 * 1024 - cut)
+    path = _persist_invalid_plan_output(
+        prefix + secret + " tail", tmp_path, attempt=1, phase="initial"
+    )
+    assert path is not None
+    data = Path(path).read_bytes()
+    assert len(data) <= 64 * 1024
+    for fragment in ("hunter2", "unter2pw", "2pw@", "user:h"):
+        assert fragment.encode() not in data
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv",
+        "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx",
+        "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "AKIAABCDEFGHIJKLMNOP",
+    ],
+)
+def test_invalid_output_redacts_bare_tokens(tmp_path: Path, secret: str) -> None:
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    path = _persist_invalid_plan_output(
+        f"plan text {secret} more", tmp_path, attempt=1, phase="initial"
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    token = secret.split()[-1]
+    assert token not in text and token[6:] not in text
+    assert "[redacted]" in text
+
+
+def test_invalid_output_write_failure_does_not_hide_the_error(tmp_path: Path) -> None:
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file")
+    assert _persist_invalid_plan_output("x", blocker, attempt=1, phase="initial") is None
