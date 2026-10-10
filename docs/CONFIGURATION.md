@@ -477,3 +477,35 @@ a frontier model when eligibility returns nothing.
 - [CLI Reference](CLI_REFERENCE.md)
 - [Architecture](architecture.md)
 - [`.env.example`](../.env.example) — commented inventory of supported env keys
+
+
+## Restricted gateway connections snapshots
+
+An inference-scoped OmniRoute key cannot read `/api/providers`.
+Never send a manage/admin key through a public tunnel.
+Capture connection evidence locally, using the local admin key:
+
+```bash
+# Supply VERDICT_OMNIROUTE_API_KEY securely in this local process.
+verdict gateway connections-snapshot --out /tmp/connections.json
+```
+
+The command accepts only loopback gateways and disables redirects. It writes
+sanitized connection facts, opaque identifiers, a capture time and a SHA-256
+digest at mode `0600`. Plan labels become a fixed free-tier category; account
+names, emails, keys and provider error text are not retained.
+
+Set `VERDICT_CONNECTIONS_SNAPSHOT` to this file when using an inference key.
+The orchestration connections fetch then makes no `/api/providers` request.
+The snapshot must use schema version 1, match its digest, and be at most six
+hours old. Future-dated or malformed evidence fails closed without HTTP fallback.
+The digest covers canonical JSON of all fields except `sha256`, using sorted
+keys and separators `(',', ':')`. It detects corruption, not malicious forgery.
+The capture timestamp does not refresh individual quota or health evidence.
+
+For the protected `certification` environment, set `VERDICT_CERT_CONNECTIONS`
+to the complete fresh snapshot JSON. The rehearsal script requires this secret,
+masks its JSON, writes it privately under `RUNNER_TEMP`, and passes the snapshot
+path to child processes. Missing or invalid snapshots stop before fixture work.
+Use an inference-only, allowlisted, expiring and rate-limited tunnel key for
+`VERDICT_CERT_GATEWAY_KEY`. The snapshot does not contain gateway credentials.

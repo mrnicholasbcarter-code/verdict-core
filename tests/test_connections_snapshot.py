@@ -228,4 +228,29 @@ def test_sanitizer_preserves_negative_admission_status(status):
 
 @pytest.mark.parametrize("status", ["FAILED", " expired "])
 def test_sanitizer_keeps_case_insensitive_negative_status(status):
-    assert run.sanitize_connections([{"provider": "claude", "testStatus": status}])[0]["testStatus"] == status.strip().lower()
+    assert (
+        run.sanitize_connections([{"provider": "claude", "testStatus": status}])[0]["testStatus"]
+        == status.strip().lower()
+    )
+
+
+def test_opaque_pool_cooldown_matches_raw_inventory_marker():
+    from verdict.admission import admit
+
+    now = datetime.now(timezone.utc)
+    row = {"id": "cc/sonnet", "owned_by": "claude", "pool_id": "private-pool"}
+    connections = run.sanitize_connections(
+        [
+            {
+                "provider": "claude",
+                "isActive": True,
+                "authType": "oauth",
+                "testStatus": "active",
+                "pool_id": "private-pool",
+                "scope_type": "pool",
+                "scope_id": "private-pool",
+                "rateLimitedUntil": (now + timedelta(hours=1)).isoformat(),
+            }
+        ]
+    )
+    assert not admit([row], connections, None, now=now, require_runtime=False).ids

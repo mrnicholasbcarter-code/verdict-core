@@ -119,6 +119,9 @@ def sanitize_evidence(item: dict[str, Any]) -> dict[str, Any]:
             field == "pool_id" or item.get("scope_type", "account") in {"account", "pool"}
         ):
             item[field] = opaque_connection_token(str(item[field]))
+    for field in ("authType", "testStatus", "scope_type"):
+        if isinstance(item.get(field), str):
+            item[field] = item[field].strip().lower()
     item["plan_label"] = "free" if "free" in item.get("plan_label", "").lower() else ""
     return {field: value if _valid(field, value) else None for field, value in item.items()}
 
