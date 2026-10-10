@@ -1300,6 +1300,7 @@ def _register_builtins() -> None:
         _action_compat_manifest,
         _action_credentials_test,
         _action_failover_proof,
+        _action_gateway_connections_snapshot,
         _action_harness_certify,
         _action_harness_disable,
         _action_harness_discover,
@@ -1675,6 +1676,16 @@ def _register_builtins() -> None:
                 "Setup",
             ),
             _action_setup_plan_scoped,
+        ),
+        (
+            ActionSpec(
+                "gateway.connections-snapshot",
+                "gateway/runtime",
+                "mutation",
+                "loopback-only sanitized snapshot",
+                "Runtime",
+            ),
+            _action_gateway_connections_snapshot,
         ),
         # compat family
         (

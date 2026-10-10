@@ -1279,3 +1279,66 @@ def _action_harness_prime_visibility(**kwargs: Any) -> ActionResult:
     except Exception as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
     return ActionResult(data=prime_visibility_report(rows))
+
+
+def _action_gateway_connections_snapshot(**kwargs: Any) -> ActionResult:
+    """Capture a loopback-only sanitized snapshot."""
+    import os
+    from pathlib import Path
+    from urllib.parse import urlsplit
+
+    from verdict.orchestration.connections_snapshot import write_connections_snapshot
+    from verdict.orchestration.run import _get_json, resolve_api_key, sanitize_connections
+
+    gateway: str = kwargs["gateway"]
+    out: str = kwargs["out"]
+
+    parsed = urlsplit(gateway)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username
+        or parsed.password
+    ):
+        return ActionResult(
+            data={
+                "error": "connections-snapshot requires a loopback gateway; never use an admin key through a tunnel"
+            },
+            ok=False,
+            exit_code=2,
+        )
+    key = resolve_api_key()
+    if not key:
+        return ActionResult(
+            data={
+                "error": "connections-snapshot requires the local admin VERDICT_OMNIROUTE_API_KEY"
+            },
+            ok=False,
+            exit_code=2,
+        )
+    proxy_vars = [
+        name
+        for name in (
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+        )
+        if os.environ.get(name, "").strip()
+    ]
+    if proxy_vars:
+        return ActionResult(
+            data={
+                "error": "connections-snapshot refuses to run with a proxy set ("
+                + ", ".join(sorted(set(n.lower() for n in proxy_vars)))
+                + "); unset it for this command"
+            },
+            ok=False,
+            exit_code=2,
+        )
+
+    raw = _get_json(gateway.rstrip("/") + "/api/providers", api_key=key, timeout=30)
+    write_connections_snapshot(Path(out), sanitize_connections(raw))
+    return ActionResult(data={"status": "snapshot_written", "out": out})

@@ -337,3 +337,48 @@ def test_admin_capture_never_sends_key_to_a_proxy(tmp_path, monkeypatch, proxy):
         main()
     assert error.value.code == 2
     assert not (tmp_path / "out").exists()
+
+
+def test_snapshot_action_registration_kind() -> None:
+    """Verify the gateway.connections-snapshot action is registered correctly as mutation."""
+    from verdict.actions.registry import get_action
+
+    action = get_action("gateway.connections-snapshot")
+    assert action is not None, "Action must be registered"
+    spec, _fn = action
+    assert spec.kind == "mutation", "Action kind must be mutation"
+    assert spec.family == "gateway/runtime"
+
+
+def test_snapshot_cli_dispatches_to_action(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """CLI uses the mutation action and retains argparse's error/exit-2 contract."""
+    from verdict.actions.base import ActionResult
+    from verdict.cli import main
+
+    called = []
+
+    def fake_run_action(name, params, sink=None):
+        called.append((name, params))
+        return ActionResult(data={"error": "mock error"}, ok=False, exit_code=2)
+
+    monkeypatch.setattr("verdict.actions.registry.run_action", fake_run_action)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verdict",
+            "gateway",
+            "connections-snapshot",
+            "--gateway",
+            "http://bad.invalid",
+            "--out",
+            "foo.json",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert called == [
+        ("gateway.connections-snapshot", {"gateway": "http://bad.invalid", "out": "foo.json"})
+    ]
+    assert "error: mock error" in capsys.readouterr().err
