@@ -19,7 +19,9 @@ import math
 import os
 import posixpath
 import re
+import secrets
 import signal
+import stat
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -739,6 +741,72 @@ class DirectGatewayExecutor:
         if raw == "(none)":
             return []
         return [f.strip() for f in raw.split(",") if f.strip()]
+
+    @staticmethod
+    def _extract_files(text: str) -> dict[str, str] | None:
+        """Parse FILE headers and fenced complete contents, without stripping content.
+
+        None means legacy output; malformed FILE output must never fall back to diffs.
+        Longer fences allow file contents containing Markdown code fences.
+        """
+        lines = text.splitlines(keepends=True)
+        files: dict[str, str] = {}
+        index = 0
+        while index < len(lines):
+            line = lines[index].rstrip("\r\n")
+            index += 1
+            if not line.startswith("FILE:"):
+                continue
+            path = line[5:].strip()
+            if not path or path in files:
+                raise ValueError("diff_rejected: malformed FILE block: empty or duplicate path")
+            if index >= len(lines):
+                raise ValueError(f"diff_rejected: malformed FILE block for {path}: missing fence")
+            opening = re.fullmatch(r"(`{3,}|~{3,})[^`~]*", lines[index].rstrip("\r\n"))
+            if opening is None:
+                raise ValueError(f"diff_rejected: malformed FILE block for {path}: missing fence")
+            fence = opening.group(1)
+            index += 1
+            content: list[str] = []
+            while index < len(lines) and lines[index].rstrip("\r\n") != fence:
+                content.append(lines[index])
+                index += 1
+            if index == len(lines):
+                raise ValueError(
+                    f"diff_rejected: malformed FILE block for {path}: missing closing fence"
+                )
+            files[path] = "".join(content)
+            index += 1
+        return files or None
+
+    @staticmethod
+    def _validate_file_paths(
+        files: dict[str, str], owned_files: list[str], cwd: Path
+    ) -> str | None:
+        """Reuse diff ownership checks, then reject symlinks and worktree escapes."""
+        root = cwd.resolve()
+        for rel in files:
+            # Prefix once so _normalize_path does not strip a real a/ or b/ directory.
+            if (
+                any(ord(char) < 32 or ord(char) == 127 for char in rel)
+                or ".." in rel.split("/")
+                or DirectGatewayExecutor._normalize_path("a/" + rel) is None
+            ):
+                return f"diff_rejected: invalid path: {rel!r}"
+            error = DirectGatewayExecutor._validate_diff_paths(f"+++ b/{rel}", owned_files)
+            if error:
+                return f"diff_rejected: {error}"
+            target = root / rel
+            try:
+                if any(p.is_symlink() for p in [target, *target.parents] if p != root):
+                    return f"diff_rejected: symlink target not allowed: {rel}"
+                if not target.resolve().is_relative_to(root):
+                    return f"diff_rejected: path outside worktree: {rel}"
+                if target.exists() and not target.is_file():
+                    return f"diff_rejected: non-regular file target: {rel}"
+            except (OSError, RuntimeError) as exc:
+                return f"diff_rejected: cannot validate file path {rel}: {exc}"
+        return None
 
     @staticmethod
     def _extract_diff(text: str) -> str | None:
