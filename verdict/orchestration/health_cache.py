@@ -1203,13 +1203,19 @@ class HealthCache:
             and result.chat_ok
             and not result.agentic_ok
             and entry.session_agentic_at is not None
-            and entry.session_agentic_at < current
+            and entry.session_agentic_at <= current
         ):
             # The route answered but failed a newer exact-route agentic probe:
             # durably revoke older session proof. Later single-call or
             # liveness probes must not resurrect it. Quota/transport failures
             # (chat_ok False) say nothing about capability and do not revoke.
-            entry = replace(entry, session_agentic_ok=False, session_agentic_at=current)
+            entry = replace(
+                entry,
+                session_agentic_ok=False,
+                session_agentic_at=current,
+                agentic_source="agentic_probe",
+                agentic_child_id=None,
+            )
         self._routes[route] = entry
         return entry
 

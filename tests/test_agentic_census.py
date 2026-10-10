@@ -340,6 +340,9 @@ def test_newer_agentic_probe_failure_revokes_session_capability(tmp_path):
     cache.save()
     reloaded = HealthCache(cache.path).entry(route)
     assert agentic_capability(reloaded, NOW)["qualified"] is False
+    # Provenance names the revoking probe, not the old session child.
+    assert reloaded.agentic_source == "agentic_probe"
+    assert reloaded.agentic_child_id is None
 
 
 def test_agentic_transport_failure_does_not_revoke_session_capability(tmp_path):
