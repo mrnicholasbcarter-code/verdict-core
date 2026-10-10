@@ -1045,12 +1045,13 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     assert len(cc_dispatches) == 1
     revoked = [e for e in events.of("eligibility") if e.get("revoked")]
     assert revoked and revoked[0]["revoked"].startswith("cc/")
-    # The waiting node was bound to the same cooled route; either key blocks it.
-    assert any(k in revoked[0]["reason"] for k in ("route:cc/", "provider:cc"))
+    # The waiting node was bound to the same cooled credential pool.
+    assert "pool:claude" in revoked[0]["reason"]
     # Provider scope: the sibling route cc/b was never dispatched either.
     assert not [e for e in events.of("dispatch") if e["route_id"] == "cc/b"]
     state = json.loads((repo.parent / "ladder-state.json").read_text())
     assert "provider:cc" in state["cooldowns"]
+    assert "pool:claude" in state["cooldowns"]
     assert revoked[0]["node_id"] != cc_dispatches[0]["node_id"]
     # Both nodes complete on the other provider with the same node contract.
     assert {n: r.route_id for n, r in result.nodes.items()} == {"a": "kr/c", "b": "kr/c"}
@@ -1240,7 +1241,9 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
     barriers = [b for b in events.of("barrier", "a") if b["name"] == "ownership"]
     assert [b["ok"] for b in barriers] == [False] * (correct_on - 1) + [True]
     assert barriers[0]["stray_paths"] == [
-        "IMPLEMENTATION_SUMMARY.md", "pkg/__init__.py", "tests/__init__.py"
+        "IMPLEMENTATION_SUMMARY.md",
+        "pkg/__init__.py",
+        "tests/__init__.py",
     ]
 
 

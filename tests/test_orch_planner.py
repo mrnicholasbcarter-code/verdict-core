@@ -522,8 +522,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
             requirements.append(req)
             route = "cc/claude-haiku" if len(requirements) == 1 else "kr/claude-sonnet"
             return RouteVerdict(
-                route, "claude", EligibilityStage.SELECTED, None, "ok",
-                CapacityClass.SUBSCRIPTION,
+                route, "claude", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
             ), ()
 
         def record_failure(self, route, failure, *, now):
@@ -542,8 +541,12 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
     monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
     monkeypatch.setattr(FrontierPlanner, "plan", plan)
     await plan_with_failover(
-        "g", repo=tmp_path, selector=Selector(), executor=None,
-        classifier=FailureIntelligence(), events=Events(),
+        "g",
+        repo=tmp_path,
+        selector=Selector(),
+        executor=None,
+        classifier=FailureIntelligence(),
+        events=Events(),
     )
     assert requirements[0].max_capability_tier == 2
     assert requirements[1].exclude_pools == frozenset({"claude"})
@@ -554,7 +557,9 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
 
 @pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])
 def test_worker_prompt_forbids_summary_files(tmp_path, kind):
-    node = WorkNode("a", "do work", kind=kind, owned_files=("a.py",))
+    node = WorkNode(
+        "a", "do work", kind=kind, owned_files=("a.py",), verification_command=("true",)
+    )
     prompt = hydrate_node_prompt(node, repo=tmp_path, goal="g")
     assert "Do not create summary/notes files; report in your final message." in prompt
 
@@ -571,7 +576,8 @@ async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
     executor = _ScriptedExecutor(
         [WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)]
     )
-    await FrontierPlanner().plan("g", repo=tmp_path, executor=executor, route_id="cc/s")
+    repo = _init_git_repo(tmp_path)
+    await FrontierPlanner().plan("g", repo=repo, executor=executor, route_id="cc/s")
     prompt = executor.calls[1]
     assert "concurrent nodes left and right both own ['shared.py']" in prompt
     assert "Serialize" in prompt and "depends_on" in prompt

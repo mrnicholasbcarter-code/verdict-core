@@ -42,7 +42,6 @@ from verdict.orchestration.contracts import (
     WorkerExecutor,
     WorkGraph,
     WorkNode,
-    route_provider,
 )
 from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt

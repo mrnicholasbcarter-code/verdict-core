@@ -1061,6 +1061,7 @@ class EligibilityLadder:
         self._persist()
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
+        self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)
         self._state["cooldowns"].pop(f"route:{route_id}", None)
         self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
         self._persist()

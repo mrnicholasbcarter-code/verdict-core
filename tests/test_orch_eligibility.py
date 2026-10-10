@@ -534,13 +534,18 @@ class TestPersistence:
         assert not (tmp_path / "state.json.tmp").exists()
 
     def test_record_success_clears_cooldown(self, tmp_path: Path) -> None:
-        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        rows = [
+            row("cc/claude-sonnet-5", owned_by="claude"),
+            row("claude/claude-sonnet-5", owned_by="claude"),
+        ]
         ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
         failure = FailureClassification(
             category="rate_limited", action="REROUTE", cooldown_seconds=300.0, scope="route"
         )
         ladder.record_failure("cc/claude-sonnet-5", failure, now=NOW)
+        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) == "pool:claude"
         ladder.record_success("cc/claude-sonnet-5", now=NOW + timedelta(seconds=5))
+        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) is None
         selected, _ = ladder.select(REQ, now=NOW + timedelta(seconds=6))
         assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
 
@@ -822,9 +827,7 @@ def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
         "no-think/cc/claude-haiku",
         "kr/claude-haiku",
     ]
-    ladder, _ = make_ladder(
-        tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
-    )
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
     req = TaskRequirements(exclude_pools=frozenset({"claude"}))
     verdicts = by_route(ladder.evaluate(req, now=NOW))
     assert all(verdicts[r].reason == "excluded_pool" for r in routes[:3])
@@ -849,9 +852,7 @@ def test_planner_free_first_respects_capability_floor(tmp_path, free_tier, expec
 
 def test_probe_account_failure_cools_credential_aliases(tmp_path):
     routes = ["cc/claude-haiku", "claude/claude-haiku"]
-    ladder, _ = make_ladder(
-        tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
-    )
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
     ladder._record_health(
         routes[0], HealthResult(healthy=False, category="authentication"), NOW, provider="claude"
     )
