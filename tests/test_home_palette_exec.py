@@ -751,7 +751,7 @@ def test_no_color_has_no_ansi(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None
     console = _plain_console(width=110)
     from verdict.home import run_home
 
-    run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False)
+    run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False, skip_setup=True)
     output = console.file.getvalue()
     assert "\x1b[" not in output
 
@@ -915,7 +915,7 @@ def _no_fallback(*args, **kwargs):
 # The test is about the prompt_toolkit session: fail loudly if the plain
 # input() fallback is used instead.
 home._fallback_input_loop = _no_fallback
-sys.exit(home.run_home(probe=False))
+sys.exit(home.run_home(probe=False, skip_setup=True))
 """
 
 

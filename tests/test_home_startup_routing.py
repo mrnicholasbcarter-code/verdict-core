@@ -1,6 +1,5 @@
 """Isolated launch routing; the only health checker is the canonical doctor action."""
 import io
-from pathlib import Path
 
 import pytest
 from rich.console import Console

@@ -106,6 +106,7 @@ def run_setup_wizard(tui: TerminalUI, *, gateway: str, plan: dict[str, Any],
     if not selected:
         tui.console.print(Text("No changes to provider configuration."))
     tui.console.print(Text("Next step: run verdict doctor. Unsupported installs stay blocked; never reported as success."))
+    tui.console.print(Text("Harness/memory/docs preferences record review choices only; existing integrations remain unchanged."))
     if _ask(tui, reader, "Confirm save configuration and finish setup review? [y/N]").lower() in {"y", "yes"}:
         from verdict.setup_config import save_setup_config
 
@@ -139,7 +140,7 @@ def _dependencies(tui: TerminalUI, reader: Callable[[], str | None] | None,
         else:
             notes.append(provider.provider_id + (": manual — use upstream command above." if answer.lower() in {"y", "yes"} else ": skipped; unchanged."))
     for name, binary, capability, command in (
-        ("context-mode", "context-mode", "context compression", "npm install -g context-mode"),
+        ("context-mode", "context-mode", "context compression", "See https://context-mode.com installation docs (command not verified)"),
         ("open-code-review", "ocr", "independent code review", "See open-code-review upstream installation docs (command not verified)"),
         ("ai-memory (BOD-336)", "ai-memory", "shared agent memory", "Not available yet; BOD-336 integration pending"),
     ):

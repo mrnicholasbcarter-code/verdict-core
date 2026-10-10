@@ -65,3 +65,28 @@ def test_home_setup_plain_defaults_do_not_apply(home_ui):
     assert "Confirm" in output and "Summary" in output
     assert "No changes" in output
     assert "plan_digest" not in output
+
+
+def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
+    from verdict.setup_config import save_setup_config
+    save_setup_config({"primary_model": "fixture"})
+    monkeypatch.setattr("verdict.home.probe_gateway", lambda *a, **k: (True, 2, None))
+    # gateway + check; three choices/confirms; five catalog reviews; three manual;
+    # warm-cache choice/confirm; final save.
+    answers = ["http://fixture", "y", "keep", "n", "keep", "n", "keep", "n",
+               *(["n"] * 8), "off", "n", "y"]
+    output = run_command(home_ui, "/setup", answers)
+    assert "saved" in output.lower()
+    assert (tmp_path / ".verdict" / "setup-complete").is_file()
+    assert list((tmp_path / "config" / "verdict").glob("verdict.yaml.backup-*"))
+    assert "plan_digest" not in output
+
+
+def test_setup_dependencies_show_manual_and_skips(home_ui):
+    output = run_command(home_ui, "/setup")
+    for term in ("gateway.omniroute", "harness.prime", "adapter.codebase_memory",
+                 "adapter.serena_lsp", "adapter.context7", "context-mode",
+                 "open-code-review", "ai-memory"):
+        assert term in output
+    assert "Install:" in output and "Version" in output
+    assert "manual" in output and "skipped" in output

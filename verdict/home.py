@@ -530,49 +530,6 @@ def _render_action_result(
     render_generic(tui, ok, data, action=action)
 
 
-def _render_table(console: Console, data: list[dict[str, Any]], *, plain: bool, width: int) -> None:
-    keys = list(data[0].keys())
-    narrow = width < 70
-    if narrow:
-        keys = keys[:3]
-    table = Table(
-        box=None if plain else box.SIMPLE,
-        pad_edge=False,
-        show_edge=False,
-        header_style="" if plain else TOKENS["MUTED"],
-        width=min(width, 96),
-    )
-    for k in keys:
-        table.add_column(clean(k), overflow="fold" if not narrow else "ellipsis")
-    for row_dict in data[:50]:
-        table.add_row(*(clean(str(row_dict.get(k, "")))[: 120 if not narrow else 30] for k in keys))
-    console.print(table)
-
-
-def _render_kv_panel(console: Console, data: dict[str, Any], *, plain: bool, width: int) -> None:
-    kv = Table.grid(padding=(0, 2))
-    kv.add_column(style="" if plain else TOKENS["MUTED"])
-    kv.add_column()
-    for k, v in data.items():
-        if isinstance(v, dict):
-            # Nested dict: render as indented lines
-            kv.add_row(Text(clean(str(k))), Text(""))
-            for sk, sv in v.items():
-                if isinstance(sv, dict):
-                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(""))
-                    for ssk, ssv in sv.items():
-                        kv.add_row(Text(f"    {clean(str(ssk))}"), Text(clean(str(ssv))[:200]))
-                else:
-                    kv.add_row(Text(f"  {clean(str(sk))}"), Text(clean(str(sv))[:200]))
-        else:
-            kv.add_row(Text(clean(str(k))), Text(clean(str(v))[:200]))
-    if plain:
-        console.print(kv)
-    else:
-        mode = PresentationMode(True, True, False, width)
-        console.print(panel(kv, mode=mode))
-
-
 # ---------------------------------------------------------------------------
 # Command prompt (replaces the old _interactive_palette selector)
 # ---------------------------------------------------------------------------
@@ -769,13 +726,16 @@ def _run_command(
         if cmd_args == "--help":
             _show_help(console, palette_cmd, state.completion_snapshot)
             return None
+        output_json = cmd_args == "--json" or cmd_args.endswith(" --json")
+        if output_json:
+            cmd_args = cmd_args.removesuffix("--json").strip()
         if palette_cmd == "probe" and any(
             token.startswith("-") for token in cmd_args.replace(",", " ").split()
         ):
             console.print(Text("ERROR: Invalid /probe model field: options are not model ids."))
             _show_help(console, "probe", state.completion_snapshot)
             return None
-        if palette_cmd == "bootstrap":
+        if palette_cmd == "bootstrap" and not output_json:
             from verdict.actions.registry import run_action
             from verdict.tui_bootstrap_controls import consume_prime, parse_bootstrap_args
 
@@ -803,7 +763,7 @@ def _run_command(
                 console.print(Text("Invalid bootstrap input or cancelled; no apply."))
                 _show_help(console, "bootstrap", state.completion_snapshot)
             return None
-        if ref == "models.verified":
+        if ref == "models.verified" and not output_json:
             try:
                 ok, data = _run_verified_command(
                     cmd_args, tui=tui, state=state, line_reader=line_reader
@@ -819,10 +779,6 @@ def _run_command(
             if ok:
                 _publish_completion(state, console)
             return None
-
-        output_json = cmd_args == "--json" or cmd_args.endswith(" --json")
-        if output_json:
-            cmd_args = cmd_args.removesuffix("--json").strip()
 
         if ref == "setup.plan" and not output_json:
             from verdict.home_setup_render import run_setup_wizard
@@ -1441,6 +1397,23 @@ def _interactive_palette(
     return _command_prompt(target, state)
 
 
+def _startup_line_reader(key_reader: Callable[[], str]) -> Callable[[], str | None]:
+    """Adapt the existing injected character reader for wizard/startup questions."""
+    def read() -> str | None:
+        chars: list[str] = []
+        while True:
+            try:
+                char = key_reader()
+            except EOFError:
+                return None
+            if char in {"\x04", "\x03"}:
+                return None
+            if char in {"\r", "\n"}:
+                return "".join(chars)
+            chars.append(char)
+    return read
+
+
 def run_home(
     *,
     console: Console | None = None,
@@ -1465,6 +1438,7 @@ def run_home(
 
         outcome = route_startup(
             ui, home=history_file().parent, gateway=state.gateway, run=run_palette_action,
+            reader=_startup_line_reader(_key_reader) if _key_reader is not None else None,
         )
         if outcome is not None:
             return outcome
