@@ -139,3 +139,23 @@ def test_reserved_slot_counts_probes_spent_not_list_position(tmp_path: Path) -> 
     assert choice is not None and choice.route_id == SUB
     assert len(probe.calls) == 8 and probe.calls[-1] == SUB
     assert cold[0] not in probe.calls and cold[1] not in probe.calls
+
+
+def test_refresh_written_positive_is_used_in_the_same_select(tmp_path: Path) -> None:
+    """Cold home (CI): health is empty at assessment; the refresh job writes a
+    fresh positive for the subscription route; that same select must use it as
+    the reserved fallback instead of ending with no planner."""
+    selector, probe, _cold = ladder(tmp_path)
+    cache = selector._health_cache
+    # Start cold: drop the pre-seeded subscription positive.
+    cache._routes.pop(SUB, None)
+
+    def hook(routes, now):
+        cache.record(SUB, ProbeResult(category="ok", chat_ok=True, tool_ok=True), now)
+        return {SUB: "ok"}
+
+    selector._refresh_hook = hook
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == SUB
+    assert choice.reason == "reserved_fallback_slot"
+    assert len(probe.calls) == 8 and probe.calls[-1] == SUB

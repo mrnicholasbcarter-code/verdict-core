@@ -885,6 +885,16 @@ class EligibilityLadder:
                 if isinstance(status, str) and status.lower() in {"failed", "unavailable"}:
                     candidate.failed_stage = EligibilityStage.HEALTHY
                     candidate.reason = status.lower()
+        if refresh_hook is not None and candidates:
+            # The refresh job may just have written fresh positives into the
+            # health cache (a cold VERDICT_HOME, as in CI, starts empty).
+            # Re-read health so probe ordering and the reserved fallback see
+            # them; never upgrade a candidate the refresh marked failed.
+            for candidate in candidates:
+                if candidate.failed_stage is None and candidate.health != "healthy":
+                    health, category = self._health_status(candidate.route_id, now)
+                    if health == "healthy":
+                        candidate.health, candidate.health_category = health, category
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
