@@ -7,7 +7,6 @@ These tests prove the acceptance criteria:
 - Strict schema validation
 - Redaction of sensitive content
 - Categorized failures with failure classes
-- Bounded Ruflo/RuVector readiness checks
 - Fail-closed semantics for protected work
 - Adapter output cannot authorize denied/unsafe candidates
 - End-to-end correlation IDs
@@ -30,7 +29,6 @@ from verdict.intelligence_adapter import (
     IntelligenceRequest,
     IntelligenceResponse,
     ReadinessError,
-    ReadinessReport,
     ValidationError,
     build_intelligence_adapter,
 )
@@ -42,8 +40,6 @@ def adapter():
     """Create a default intelligence adapter for testing."""
     return IntelligenceAdapter(
         config=IntelligenceAdapterConfig(profile="development", allow_degraded_mode=True),
-        ruflo_health_check=lambda: "healthy",
-        ruvector_health_check=lambda: "healthy",
     )
 
 
@@ -68,38 +64,6 @@ class TestIntelligenceAdapterConfig:
         assert config.planner_timeout_ms == 10000
 
 
-class TestReadinessReport:
-    """Test readiness report structure."""
-
-    def test_healthy_readiness(self):
-        report = ReadinessReport(
-            status="ready",
-            production_ready=True,
-            profile="production",
-            ruflo_status="healthy",
-            ruvector_status="healthy",
-            policy_version="policy-2026-07-24.1",
-            reason="All managed backends healthy",
-            adapter_versions={},
-        )
-        assert report.production_ready is True
-        assert report.status == "ready"
-
-    def test_degraded_readiness(self):
-        report = ReadinessReport(
-            status="degraded",
-            production_ready=False,
-            profile="production",
-            ruflo_status="degraded",
-            ruvector_status="healthy",
-            policy_version="policy-2026-07-24.1",
-            reason="Some managed backends degraded",
-            adapter_versions={},
-        )
-        assert report.production_ready is False
-        assert report.status == "degraded"
-
-
 class TestIntelligenceRequestResponse:
     """Test versioned request/response envelopes."""
 
@@ -114,28 +78,16 @@ class TestIntelligenceRequestResponse:
         assert request.correlation_id == "test-corr-1"
 
     def test_response_envelope_creation(self):
-        readiness = ReadinessReport(
-            status="ready",
-            production_ready=True,
-            profile="production",
-            ruflo_status="healthy",
-            ruvector_status="healthy",
-            policy_version="policy-2026-07-24.1",
-            reason="All managed backends healthy",
-            adapter_versions={},
-        )
         response = IntelligenceResponse(
             request_id="test-req-1",
             correlation_id="test-corr-1",
             task_spec={"objective": "test"},
             workflow_plan=None,
             eligibility_result=None,
-            readiness=readiness,
             status="success",
         )
         assert response.contract_version == "intelligence-adapter/v1"
         assert response.status == "success"
-        assert response.readiness.production_ready is True
 
 
 class TestIntelligenceAdapter:
@@ -164,8 +116,6 @@ class TestIntelligenceAdapter:
             config=config,
             planner=mock_planner,
             eligibility_gate=mock_eligibility_gate,
-            ruflo_health_check=lambda: "healthy",
-            ruvector_health_check=lambda: "healthy",
         )
 
     def test_successful_execution(self, adapter, mock_planner):
@@ -178,7 +128,6 @@ class TestIntelligenceAdapter:
         assert result.status == "success"
         assert result.request_id is not None
         assert result.correlation_id is not None
-        assert result.readiness.production_ready is True
         assert result.task_spec is not None
         assert "objective" in result.task_spec
 
@@ -207,78 +156,6 @@ class TestIntelligenceAdapter:
         result = adapter.execute(objective="test")
         assert result.contract_version == "intelligence-adapter/v1"
 
-    def test_readiness_check_healthy(self, adapter):
-        """Test readiness check with healthy backends."""
-        readiness = adapter.get_readiness()
-        assert readiness.production_ready is True
-        assert readiness.ruflo_status == "healthy"
-        assert readiness.ruvector_status == "healthy"
-
-    def test_readiness_check_unhealthy_rufl(self):
-        """Test readiness with unhealthy Ruflo."""
-        adapter = IntelligenceAdapter(
-            config=IntelligenceAdapterConfig(profile="production"),
-            ruflo_health_check=lambda: "unhealthy",
-            ruvector_health_check=lambda: "healthy",
-        )
-        readiness = adapter.get_readiness()
-        assert readiness.production_ready is False
-        assert readiness.ruflo_status == "unhealthy"
-
-    def test_readiness_check_unhealthy_ruvector(self):
-        """Test readiness with unhealthy RuVector."""
-        adapter = IntelligenceAdapter(
-            config=IntelligenceAdapterConfig(profile="production"),
-            ruflo_health_check=lambda: "healthy",
-            ruvector_health_check=lambda: "unhealthy",
-        )
-        readiness = adapter.get_readiness()
-        assert readiness.production_ready is False
-        assert readiness.ruvector_status == "unhealthy"
-
-
-class TestFailClosedSemantics:
-    """Test fail-closed semantics for protected work."""
-
-    @pytest.fixture
-    def production_adapter(self):
-        return IntelligenceAdapter(
-            config=IntelligenceAdapterConfig(profile="production", allow_degraded_mode=False),
-            ruflo_health_check=lambda: "unhealthy",
-            ruvector_health_check=lambda: "healthy",
-        )
-
-    def test_protected_work_fails_closed_when_unhealthy(self, production_adapter):
-        """Protected work should fail when managed backends unhealthy."""
-        with pytest.raises(DegradedModeError) as exc_info:
-            production_adapter.execute(
-                objective="Deploy to production",
-                context={"metadata": {"protected": True, "production_impact": True}},
-            )
-
-        assert "Protected work requires healthy managed backends" in str(exc_info.value)
-        assert exc_info.value.details["protected"] is True
-
-    def test_unprotected_work_allows_degraded(self, production_adapter):
-        """Unprotected work should succeed even with degraded readiness."""
-        # This should not raise even with unhealthy Ruflo
-        result = production_adapter.execute(objective="Write a test", criticality="low")
-        assert result.status == "success"
-
-    def test_degraded_mode_explicitly_allowed(self):
-        """Test degraded mode when explicitly allowed."""
-        adapter = IntelligenceAdapter(
-            config=IntelligenceAdapterConfig(profile="degraded", allow_degraded_mode=True),
-            ruflo_health_check=lambda: "degraded",
-            ruvector_health_check=lambda: "healthy",
-        )
-
-        result = adapter.execute(
-            objective="Deploy to production",
-            context={"metadata": {"protected": True, "production_impact": True}},
-        )
-        assert result.status == "success"
-        assert result.readiness.status == "degraded"
 
 
 class TestCategorizedFailureErrors:
