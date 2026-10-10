@@ -80,6 +80,24 @@ def _date(value: object) -> datetime:
     return stamp
 
 
+def _normalize_stamp(value: object) -> object:
+    """Keep evidence timestamps: naive values are UTC (as admission reads them)."""
+    if not isinstance(value, str):
+        return value
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=timezone.utc).isoformat()
+    return value  # preserve valid gateway evidence byte-for-byte
+
+
+# A cooldown we could not parse must not disappear (that would admit a rate
+# limited route). Keep it as an explicit far-future block instead.
+_UNPARSABLE_UNTIL = "9999-12-31T00:00:00+00:00"
+
+
 def _valid(field: str, value: Any) -> bool:
     if value is None:
         return field != "provider" and field in _REQUIRED | _DATES | set(_ENUMS) | {
@@ -112,16 +130,44 @@ def _valid(field: str, value: Any) -> bool:
     return False
 
 
+def _scope_is_named(scope_type: object) -> bool:
+    """Only model/provider scope ids are public names; every other scope is opaque."""
+    return isinstance(scope_type, str) and scope_type.strip().lower() in {"model", "provider"}
+
+
 def sanitize_evidence(item: dict[str, Any]) -> dict[str, Any]:
     """Constrain retained evidence to tokens, typed facts and fixed categories."""
-    for field in ("pool_id", "scope_id"):
-        if item.get(field) and (
-            field == "pool_id" or item.get("scope_type", "account") in {"account", "pool"}
-        ):
-            item[field] = opaque_connection_token(str(item[field]))
     for field in ("authType", "testStatus", "scope_type"):
         if isinstance(item.get(field), str):
             item[field] = item[field].strip().lower()
+    for field in ("pool_id", "scope_id"):
+        value = item.get(field)
+        # Account/pool/unknown/missing scope: never keep the raw name.
+        if (
+            value
+            and not (field == "scope_id" and _scope_is_named(item.get("scope_type")))
+            and not (isinstance(value, str) and _OPAQUE.fullmatch(value))
+        ):
+            item[field] = opaque_connection_token(str(value))
+    for field in _DATES & set(item):
+        item[field] = _normalize_stamp(item[field])
+    limited = item.get("rate_limited_until")
+    if isinstance(limited, dict):
+        kept: dict[str, str] = {}
+        for model, until in limited.items():
+            if not _valid("model", model):
+                continue
+            stamp = _normalize_stamp(until) if until is not None else None
+            kept[model] = (
+                stamp
+                if isinstance(stamp, str) and _valid("observed_at", stamp)
+                else _UNPARSABLE_UNTIL
+            )
+        item["rate_limited_until"] = kept or None
+    if item.get("rateLimitedUntil") is not None and not _valid(
+        "rateLimitedUntil", item["rateLimitedUntil"]
+    ):
+        item["rateLimitedUntil"] = _UNPARSABLE_UNTIL
     item["plan_label"] = "free" if "free" in item.get("plan_label", "").lower() else ""
     return {field: value if _valid(field, value) else None for field, value in item.items()}
 
@@ -165,10 +211,9 @@ def read_connections_snapshot(path: Path) -> list[dict[str, Any]]:
                 or not all(_valid(k, v) for k, v in row.items())
             ):
                 raise ValueError("invalid connection evidence")
-            scope = row.get("scope_type", "account")
             if (
-                scope in {"account", "pool"}
-                and row.get("scope_id") is not None
+                row.get("scope_id") is not None
+                and not _scope_is_named(row.get("scope_type"))
                 and not _valid("id", row["scope_id"])
             ):
                 raise ValueError("nonopaque scope id")

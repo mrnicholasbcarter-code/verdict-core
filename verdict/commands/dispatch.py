@@ -226,6 +226,25 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         key = resolve_api_key()
         if not key:
             parser.error("connections-snapshot requires the local admin VERDICT_OMNIROUTE_API_KEY")
+        proxy_vars = [
+            name
+            for name in (
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+            )
+            if os.environ.get(name, "").strip()
+        ]
+        if proxy_vars:
+            # urllib would send the admin Bearer key to the proxy, not to loopback.
+            parser.error(
+                "connections-snapshot refuses to run with a proxy set ("
+                + ", ".join(sorted(set(n.lower() for n in proxy_vars)))
+                + "); unset it for this command"
+            )
         # Deliberately bypass the snapshot override: capture live local admin evidence.
         raw = _get_json(args.gateway.rstrip("/") + "/api/providers", api_key=key, timeout=30)
         write_connections_snapshot(Path(args.out), sanitize_connections(raw))

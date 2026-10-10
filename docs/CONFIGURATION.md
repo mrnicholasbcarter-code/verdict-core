@@ -502,6 +502,10 @@ hours old. Future-dated or malformed evidence fails closed without HTTP fallback
 The digest covers canonical JSON of all fields except `sha256`, using sorted
 keys and separators `(',', ':')`. It detects corruption, not malicious forgery.
 The capture timestamp does not refresh individual quota or health evidence.
+The file is trusted local input, not signed evidence. It feeds entitlement only:
+exact live confirmation and the gateway key's model allowlist still gate launches.
+Capture refuses proxy environment variables, so the admin key cannot leave loopback.
+Unparseable cooldowns stay blocked until an operator corrects their source evidence.
 
 For the protected `certification` environment, set `VERDICT_CERT_CONNECTIONS`
 to the complete fresh snapshot JSON. The rehearsal script requires this secret,

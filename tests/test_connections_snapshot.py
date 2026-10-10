@@ -254,3 +254,86 @@ def test_opaque_pool_cooldown_matches_raw_inventory_marker():
         ]
     )
     assert not admit([row], connections, None, now=now, require_runtime=False).ids
+
+
+@pytest.mark.parametrize("scope", [None, "user", "", "account", "pool"])
+def test_unknown_scope_id_is_opaque_in_writer_and_reader(tmp_path, scope):
+    from verdict.orchestration.connections_snapshot import read_connections_snapshot
+
+    rows = run.sanitize_connections(
+        [
+            {
+                "provider": "claude",
+                "authType": "oauth",
+                "isActive": True,
+                "testStatus": "active",
+                "scope_type": scope,
+                "scope_id": "nick.smith-acct",
+            }
+        ]
+    )
+    assert rows[0]["scope_id"].startswith("conn:")
+    assert "nick.smith-acct" not in json.dumps(rows)
+    rows[0]["scope_id"] = "nick.smith-acct"
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps(snapshot(rows)))
+    with pytest.raises(OrchestrationError):
+        read_connections_snapshot(path)
+
+
+def test_mixed_and_naive_cooldowns_do_not_disappear():
+    rows = run.sanitize_connections(
+        [
+            {
+                "provider": "codex",
+                "authType": "oauth",
+                "isActive": True,
+                "testStatus": "active",
+                "rateLimitedUntil": "2099-01-01T00:00:00",
+                "providerSpecificData": {
+                    "codexScopeRateLimitedUntil": {
+                        "gpt-5": "2099-01-01T00:00:00Z",
+                        "other": None,
+                        "gpt-6": "2099-01-01T00:00:00",
+                        "bad": "unparseable",
+                    }
+                },
+            }
+        ]
+    )
+    row = rows[0]
+    assert row["rateLimitedUntil"] == "2099-01-01T00:00:00+00:00"
+    assert row["rate_limited_until"]["gpt-5"] == "2099-01-01T00:00:00Z"
+    assert row["rate_limited_until"]["gpt-6"] == "2099-01-01T00:00:00+00:00"
+    assert row["rate_limited_until"]["bad"].startswith("9999-")
+    assert row["rate_limited_until"]["other"].startswith("9999-")
+
+
+@pytest.mark.parametrize(
+    "field", ["email", "apiKey", "accessToken", "refreshToken", "name", "providerSpecificData"]
+)
+def test_reader_rejects_forbidden_fields_even_with_a_valid_digest(tmp_path, field):
+    from verdict.orchestration.connections_snapshot import read_connections_snapshot
+
+    rows = safe_rows()
+    rows[0][field] = "sensitive-canary"
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps(snapshot(rows)))
+    with pytest.raises(OrchestrationError):
+        read_connections_snapshot(path)
+
+
+@pytest.mark.parametrize("proxy", ["http_proxy", "HTTPS_PROXY", "ALL_PROXY"])
+def test_admin_capture_never_sends_key_to_a_proxy(tmp_path, monkeypatch, proxy):
+    from verdict.cli import main
+
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "admin-canary")
+    monkeypatch.setenv(proxy, "http://proxy.invalid:8080")
+    monkeypatch.setattr(run, "_get_json", lambda *_a, **_k: pytest.fail("HTTP forbidden"))
+    monkeypatch.setattr(
+        sys, "argv", ["verdict", "gateway", "connections-snapshot", "--out", str(tmp_path / "out")]
+    )
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert not (tmp_path / "out").exists()
