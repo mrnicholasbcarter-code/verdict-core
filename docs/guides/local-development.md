@@ -77,7 +77,8 @@ See [SECURITY.md](../../SECURITY.md).
 `POST /v1/route` is a decision endpoint, not a completion endpoint. It requires
 an `execution_path_request`; a task-only body returns HTTP 400. The following
 shows the public contract shape. Replace `provider/model` and the candidate
-fields with real, current evidence for your route. These example fields are
+fields, prices and observation date with real, current evidence for your route.
+Non-free candidates require a `price` evidence object. These example fields are
 not admission proof and do not guarantee selection. This call can trigger
 configured discovery or confirmation probes; run it only with consent and a
 budget for that upstream.
@@ -103,6 +104,12 @@ curl -X POST http://127.0.0.1:8000/v1/route \
         "capability_tier": 2,
         "eligible": true,
         "is_free": false,
+        "price": {
+          "input_usd_per_mtok": "1",
+          "output_usd_per_mtok": "1",
+          "observed_at": "2026-09-29T00:00:00Z",
+          "evidence_id": "replace-with-current-price-evidence"
+        },
         "execution_tokens": 256,
         "verification_tokens": 64,
         "certification_state": "ready",

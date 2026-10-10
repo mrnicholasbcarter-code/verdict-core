@@ -61,7 +61,7 @@ an admission check cannot be ranked back in.
 ## Why Verdict
 
 - **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other.
-- **Uses eligible free and already-paid capacity first.** This is a selection policy, not a savings claim. The first live self-hosted orchestration run admitted no free worker; free capacity still needs fresh admission evidence. See the [live run bundle](docs/proof/dogfood-bod-225-live-2026-09-29/README.md).
+- **Uses eligible free and already-paid capacity first.** This is a selection policy, not a savings claim. The [retained live run](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) used subscription workers, not free workers; free capacity still needs fresh admission evidence. See the [live run bundle](docs/proof/dogfood-bod-225-live-2026-09-29/README.md).
 - **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries.
 - **Gets a separate review route.** A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence ([runtime policy](verdict/orchestration/runtime.py), [review tests](tests/test_orch_runtime.py)).
 - **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change.
