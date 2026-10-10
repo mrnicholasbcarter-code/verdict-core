@@ -1,8 +1,10 @@
 # Coding-agent gate (Claude Code, Codex, Cursor, Cline, Hermes, …)
 
-Paste this in under two minutes. Verdict is not a coding agent. It sits in front of
-the one you already use, **admits free-tier ∩ active-provider identities**, and
-**blocks spend** when the catalog is not qualified or the intersection is empty.
+Verdict is not a coding agent. Its OpenAI-compatible relay can sit in front of
+supported agent traffic and apply admission checks before forwarding. A denied
+relay request makes no completion call. This is **not a global spend block**:
+probes, direct harness/provider traffic and other routes can use quota. Free-only
+behavior depends on the configured policy and the eligible routes.
 
 Need: `pip install verdict-core` (or a checkout) and **`verdict serve`** as the
 harness base URL. OmniRoute on `http://127.0.0.1:20128` is an **optional
@@ -30,10 +32,12 @@ export LLMGATE_ALLOW_ANONYMOUS=true   # local loopback only
 verdict serve --host 127.0.0.1 --port 8000
 ```
 
-`verdict serve` exposes OpenAI-compatible `POST /v1/chat/completions`. On each
-request it runs free∩active admit (named drops on the receipt), then forwards
-the chosen **concrete** identity through OmniRoute. Empty intersection → HTTP
-503, no upstream call.
+`verdict serve` exposes OpenAI-compatible `POST /v1/chat/completions` and
+`POST /v1/responses`. It routes under the configured authority and admission
+policy, then forwards the selected identity through the configured upstream.
+A denied routing decision returns HTTP 503 without a completion call. Catalog
+membership alone is not live execution proof. See
+[CONFIGURATION.md](../CONFIGURATION.md) for execution-path authority policy.
 
 Optional explicit upstream override: `LLMGATE_UPSTREAM_BASE_URL`
 (defaults to `$OMNIROUTE_BASE_URL/v1` when OmniRoute is configured).

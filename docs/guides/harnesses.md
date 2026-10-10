@@ -5,14 +5,18 @@ that edits its config in place (with a byte-for-byte reversible backup)
 instead of hand-editing tool config files. The default target is always
 Verdict on **`:8000`**, not OmniRoute on `:20128`.
 
-Topology (all harnesses):
+Topology for supported OpenAI-compatible traffic (not all harness traffic):
 
 ```
 harness  →  Verdict (:8000)  →  OmniRoute (:20128)
              admit + receipt      execute chosen model
 ```
 
-See [coding-agent-gate.md](coding-agent-gate.md) for the end-to-end fail-closed
+Claude Code's default Anthropic Messages traffic is not proxied by Verdict.
+The Claude adapter below covers a side-path and a SessionStart gate only.
+Direct provider traffic remains outside this relay boundary.
+
+See [coding-agent-gate.md](coding-agent-gate.md) for the relay's fail-closed
 setup, and [controller-routing.md](controller-routing.md) /
 [prime-workflow.md](prime-workflow.md) for the Prime Agent supervisor and
 autonomous-workflow contracts (Prime's harness adapter is covered here; its
