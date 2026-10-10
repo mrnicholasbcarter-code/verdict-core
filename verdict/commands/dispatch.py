@@ -217,8 +217,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             if result.exit_code == 2 and "error" in result.data:
                 parser.error(result.data["error"])
             else:
-                import sys
-
+                # Use the module-level sys import: a local import would shadow
+                # it throughout dispatch(), breaking other command branches.
                 print(result.data.get("error", "gateway failed"), file=sys.stderr)
                 sys.exit(result.exit_code or 1)
         return

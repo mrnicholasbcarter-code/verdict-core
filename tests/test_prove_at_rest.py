@@ -417,3 +417,20 @@ def test_module_level_model_identity_matches() -> None:
     assert model_identity_matches("cc/x", "x") is True  # stripped prefix
     assert model_identity_matches("cc/x", "cc/x") is True
     assert model_identity_matches("cc/x", "kr/x") is False  # different provider, same suffix
+
+
+def test_agentic_probe_file_is_an_in_memory_identifier(monkeypatch) -> None:
+    """The B108 exception is narrow: probe read/edit must never touch disk."""
+    import builtins
+
+    from verdict.prove_at_rest import AGENTIC_PROBE_FILE, AGENTIC_PROBE_ORIGINAL, AgenticFakeFile
+
+    def forbid_open(*args, **kwargs):
+        raise AssertionError("AgenticFakeFile must not open filesystem paths")
+
+    monkeypatch.setattr(builtins, "open", forbid_open)
+    state = AgenticFakeFile()
+    assert state.read(AGENTIC_PROBE_FILE) == AGENTIC_PROBE_ORIGINAL
+    assert state.edit(AGENTIC_PROBE_FILE, "line two", "changed") is True
+    assert "changed" in state.read(AGENTIC_PROBE_FILE)
+    assert state.read("/tmp/another-file") is None
