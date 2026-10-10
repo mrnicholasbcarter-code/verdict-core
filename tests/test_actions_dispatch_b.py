@@ -80,6 +80,19 @@ class TestRegistryClassification:
         spec, _ = entry
         assert spec.kind == "mutation"
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "prove-at-rest.import-sessions",
+            "prove-at-rest.install-service",
+            "prove-at-rest.uninstall-service",
+        ],
+    )
+    def test_prove_at_rest_writers_are_mutation_actions(self, name: str) -> None:
+        entry = get_action(name)
+        assert entry is not None, f"{name} must be a registered action"
+        assert entry[0].kind == "mutation"
+
     def test_harness_actions_registered(self) -> None:
         names = {s.name for s in list_actions()}
         harnesses = ["codex", "hermes", "claude", "cursor", "prime", "opencode", "cline"]

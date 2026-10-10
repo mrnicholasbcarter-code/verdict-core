@@ -506,3 +506,82 @@ def test_worker_prompt_blocks_host_changes_and_out_of_scope_files(tmp_path: Path
     assert "naming that file" in prompt
     assert "If VERIFICATION_COMMAND cannot run as given, stop" in prompt
     assert "Do not change the host to make it run" in prompt
+
+
+@pytest.mark.asyncio
+async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path, monkeypatch):
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    requirements = []
+    rows = []
+
+    class Selector:
+        def select(self, req, *, now):
+            requirements.append(req)
+            route = "cc/claude-haiku" if len(requirements) == 1 else "kr/claude-sonnet"
+            return RouteVerdict(
+                route, "claude", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            pass
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    async def plan(self, *args, **kwargs):
+        if kwargs["route_id"].startswith("cc/"):
+            raise OrchestrationError("concurrent nodes a and b both own ['shared.py']")
+        graph = WorkGraph("g", (_impl_node("a"),))
+        return graph, WorkerTerminal(ok=True)
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+    monkeypatch.setattr(FrontierPlanner, "plan", plan)
+    await plan_with_failover(
+        "g",
+        repo=tmp_path,
+        selector=Selector(),
+        executor=None,
+        classifier=FailureIntelligence(),
+        events=Events(),
+    )
+    assert requirements[0].max_capability_tier == 2
+    # A planner validation error is a model-quality failure, not a credential
+    # failure: only the route is excluded; same-pool siblings stay eligible.
+    assert requirements[1].exclude_pools == frozenset()
+    assert "cc/claude-haiku" in requirements[1].exclude_routes
+    assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
+    cooldown = next(r for r in rows if r["type"] == "cooldown")
+    assert (cooldown["scope"], cooldown["key"]) == ("route", "cc/claude-haiku")
+
+
+@pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])
+def test_worker_prompt_forbids_summary_files(tmp_path, kind):
+    node = WorkNode(
+        "a", "do work", kind=kind, owned_files=("a.py",), verification_command=("true",)
+    )
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="g")
+    assert "Do not create summary/notes files; report in your final message." in prompt
+
+
+@pytest.mark.asyncio
+async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
+    import json
+
+    left = _impl_node("left", owned=("shared.py",))
+    right = _impl_node("right", owned=("shared.py",))
+    bad = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
+    right = _impl_node("right", owned=("shared.py",), depends_on=("left",))
+    good = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
+    executor = _ScriptedExecutor(
+        [WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)]
+    )
+    repo = _init_git_repo(tmp_path)
+    await FrontierPlanner().plan("g", repo=repo, executor=executor, route_id="cc/s")
+    prompt = executor.calls[1]
+    assert "concurrent nodes left and right both own ['shared.py']" in prompt
+    assert "Serialize" in prompt and "depends_on" in prompt
+    assert "merge" in prompt.lower() and "one node" in prompt

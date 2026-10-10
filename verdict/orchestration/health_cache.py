@@ -301,6 +301,10 @@ class HealthEntry:
     # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
     # tell a route-local diagnostic failure from a provider-scoped blocker.
     failure_scope: str | None = None
+    session_agentic_ok: bool | None = None
+    session_agentic_at: datetime | None = None
+    agentic_source: str | None = None
+    agentic_child_id: str | None = None
     write_revision: int = 0  # allocated only under the shared writer lock
 
     def __post_init__(self) -> None:
@@ -344,6 +348,13 @@ class HealthEntry:
             payload["identity"] = self.identity
         payload["probe_class"] = self.probe_class
         payload["agentic_ok"] = self.agentic_ok
+        if self.session_agentic_at is not None:
+            payload["session_agentic_at"] = format_datetime(self.session_agentic_at)
+            payload["session_agentic_ok"] = self.session_agentic_ok
+        if self.agentic_source is not None:
+            payload["agentic_source"] = self.agentic_source
+        if self.agentic_child_id is not None:
+            payload["agentic_child_id"] = self.agentic_child_id
         if self.agentic_checked_at is not None:
             payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
         if self.last_success_at is not None:
@@ -382,6 +393,14 @@ class HealthEntry:
             identity=str(value.get("identity") or ""),
             probe_class=str(value.get("probe_class") or "single_call"),
             agentic_ok=value.get("agentic_ok") is True,
+            session_agentic_ok=value.get("session_agentic_ok"),
+            session_agentic_at=(
+                parse_datetime(value["session_agentic_at"], "session_agentic_at")
+                if value.get("session_agentic_at")
+                else None
+            ),
+            agentic_source=value.get("agentic_source"),
+            agentic_child_id=value.get("agentic_child_id"),
             agentic_checked_at=(
                 parse_datetime(value["agentic_checked_at"], "agentic_checked_at")
                 if value.get("agentic_checked_at")
@@ -398,6 +417,30 @@ class HealthEntry:
                 else None
             ),
         )
+
+
+def agentic_capability(entry: HealthEntry | None, now: datetime) -> dict[str, Any]:
+    """Capability is longer-lived session proof or the legacy short probe proof."""
+    session = entry is not None and entry.session_agentic_at is not None
+    checked = (entry.session_agentic_at if session else entry.agentic_checked_at) if entry else None
+    ttl = FRESH_SECONDS
+    if session:
+        try:
+            ttl = float(os.getenv("VERDICT_AGENTIC_CAPABILITY_TTL_S", str(7 * 86400)))
+        except ValueError:
+            ttl = 0.0
+        if not math.isfinite(ttl) or ttl <= 0:
+            ttl = 0.0
+    passed = (entry.session_agentic_ok if session else entry.agentic_ok) if entry else False
+    qualified = bool(passed and checked is not None and 0 <= (now - checked).total_seconds() <= ttl)
+    return {
+        "source": "session_evidence" if session else "agentic_probe",
+        "child_id": entry.agentic_child_id if session and entry is not None else None,
+        "checked_at": format_datetime(checked) if checked else None,
+        "qualified": qualified,
+        "ttl_seconds": ttl,
+        "ledger": entry.agentic_source if session and entry is not None else None,
+    }
 
 
 @dataclass(frozen=True)
@@ -1007,6 +1050,50 @@ class HealthCache:
 
     # -- write API ---------------------------------------------------------
 
+    def record_agentic_evidence(
+        self, route: str, *, passed: bool, at: datetime, source: str, child_id: str | None = None
+    ) -> bool:
+        """Update exact-route qualification, never invent or refresh liveness.
+
+        Called under ``merge_and_save``. Older evidence cannot replace newer
+        agentic results; a failure wins conflicting evidence at the same time.
+        """
+        current = _aware(at, "agentic_checked_at")
+        previous = self._routes.get(route)
+        prior_at = (
+            (previous.session_agentic_at or previous.agentic_checked_at) if previous else None
+        )
+        prior_ok = (
+            (previous.session_agentic_ok if previous.session_agentic_at else previous.agentic_ok)
+            if previous
+            else None
+        )
+        if prior_at is not None:
+            if current < prior_at:
+                return False
+            if current == prior_at and (passed or not prior_ok):
+                return False
+        base = previous or HealthEntry(
+            route_id=route,
+            category="session_evidence",
+            checked_at=current,
+            until=current,
+            consecutive_failures=0,
+            chat_ok=False,
+            tool_ok=False,
+        )
+        self._routes[route] = replace(
+            base,
+            probe_class="agentic",
+            agentic_ok=passed,
+            agentic_checked_at=current,
+            agentic_source=source,
+            agentic_child_id=child_id,
+            session_agentic_ok=passed,
+            session_agentic_at=current,
+        )
+        return True
+
     def record(self, route: str, result: ProbeResult, now: datetime) -> HealthEntry:
         """Record one probe and return the stored entry. Does not save."""
         if not isinstance(route, str) or not route.strip():
@@ -1103,7 +1190,32 @@ class HealthCache:
                 ),
                 failure_scope=result.failure_scope,
             )
-        entry = replace(entry, write_revision=previous.write_revision if previous else 0)
+        entry = replace(
+            entry,
+            write_revision=previous.write_revision if previous else 0,
+            agentic_source=previous.agentic_source if previous else None,
+            agentic_child_id=previous.agentic_child_id if previous else None,
+            session_agentic_ok=previous.session_agentic_ok if previous else None,
+            session_agentic_at=previous.session_agentic_at if previous else None,
+        )
+        if (
+            result.probe_class == "agentic"
+            and result.chat_ok
+            and not result.agentic_ok
+            and entry.session_agentic_at is not None
+            and entry.session_agentic_at <= current
+        ):
+            # The route answered but failed a newer exact-route agentic probe:
+            # durably revoke older session proof. Later single-call or
+            # liveness probes must not resurrect it. Quota/transport failures
+            # (chat_ok False) say nothing about capability and do not revoke.
+            entry = replace(
+                entry,
+                session_agentic_ok=False,
+                session_agentic_at=current,
+                agentic_source="agentic_probe",
+                agentic_child_id=None,
+            )
         self._routes[route] = entry
         return entry
 
@@ -1141,6 +1253,23 @@ class HealthCache:
             healthy=True,
             identity=identity,
             last_success_at=current,
+            session_agentic_ok=(
+                self._routes[route].session_agentic_ok if route in self._routes else None
+            ),
+            session_agentic_at=(
+                self._routes[route].session_agentic_at if route in self._routes else None
+            ),
+            probe_class=(
+                self._routes[route].probe_class if route in self._routes else "single_call"
+            ),
+            agentic_ok=(self._routes[route].agentic_ok if route in self._routes else False),
+            agentic_checked_at=(
+                self._routes[route].agentic_checked_at if route in self._routes else None
+            ),
+            agentic_source=(self._routes[route].agentic_source if route in self._routes else None),
+            agentic_child_id=(
+                self._routes[route].agentic_child_id if route in self._routes else None
+            ),
             write_revision=(self._routes[route].write_revision if route in self._routes else 0),
         )
         self._routes[route] = entry

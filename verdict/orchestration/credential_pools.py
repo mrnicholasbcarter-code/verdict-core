@@ -103,6 +103,8 @@ def pool_of(route_id: str) -> str:
     Unaliased prefixes are their own pool either way.
     """
     prefix = route_id.split("/", 1)[0].lower()
+    if prefix == "no-think" and "/" in route_id:
+        return pool_of(route_id.split("/", 1)[1])
     delegated = backend_pool(route_id)
     if delegated != prefix:
         return delegated
@@ -234,3 +236,11 @@ def collapse_alias_duplicates(route_ids: Sequence[str]) -> tuple[list[str], dict
             if member != probed:
                 inherited[member] = probed
     return kept, inherited
+
+
+# Failure categories that mean a shared credential or quota is exhausted for
+# every alias of the backend (SH-1). Other failures (bad model id, 400,
+# timeout, invalid output) concern one route and must not cool its siblings.
+POOL_COOLDOWN_CATEGORIES = frozenset(
+    {"quota_exhausted", "rate_limited", "payment_required", "permission", "authentication"}
+)

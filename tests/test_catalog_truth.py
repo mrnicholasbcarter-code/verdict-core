@@ -444,10 +444,11 @@ class TestNotFreeOverride:
 class TestSelectionOrderUnchanged:
     """The _CAPACITY_ORDER mapping must be unchanged (Story 3 holds this)."""
 
-    def test_capacity_order_unchanged_in_story_1(self) -> None:
-        # Story 3 changes this order (free-first). Story 1 must not.
-        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 0
-        assert _CAPACITY_ORDER[CapacityClass.FREE] == 1
+    def test_capacity_order_is_free_first_for_every_role(self) -> None:
+        # BOD-334: planners and workers share one free-first order after the
+        # capability/admission gates (the planner keeps a tier-2 floor).
+        assert _CAPACITY_ORDER[CapacityClass.FREE] == 0
+        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 1
         assert _CAPACITY_ORDER[CapacityClass.METERED] == 2
         assert _CAPACITY_ORDER[CapacityClass.UNKNOWN] == 3
 

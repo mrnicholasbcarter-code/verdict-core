@@ -324,7 +324,8 @@ async def test_quota_failure_reassigns_same_node_to_other_provider(repo: Path) -
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     reassign = ev.of("reassign", "a")
     assert reassign and reassign[0]["from_route"] == "cc/s" and reassign[0]["to_route"] == "cx/g"
-    assert ev.of("cooldown", "a")[0]["scope"] == "provider"
+    assert ev.of("cooldown", "a")[0]["scope"] == "pool"
+    assert ev.of("cooldown", "a")[0]["key"] == "claude"
     assert result.nodes["a"].history[0]["outcome"] == "quota_exhausted"
     # prompt (contract) was identical across attempts
     assert [c for c in ex.calls if c[0] == "a"] == [("a", "cc/s"), ("a", "cx/g")]
@@ -1044,12 +1045,13 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     assert len(cc_dispatches) == 1
     revoked = [e for e in events.of("eligibility") if e.get("revoked")]
     assert revoked and revoked[0]["revoked"].startswith("cc/")
-    # The waiting node was bound to the same cooled route; either key blocks it.
-    assert any(k in revoked[0]["reason"] for k in ("route:cc/", "provider:cc"))
+    # The waiting node was bound to the same cooled credential pool.
+    assert "pool:claude" in revoked[0]["reason"]
     # Provider scope: the sibling route cc/b was never dispatched either.
     assert not [e for e in events.of("dispatch") if e["route_id"] == "cc/b"]
     state = json.loads((repo.parent / "ladder-state.json").read_text())
     assert "provider:cc" in state["cooldowns"]
+    assert "pool:claude" in state["cooldowns"]
     assert revoked[0]["node_id"] != cc_dispatches[0]["node_id"]
     # Both nodes complete on the other provider with the same node contract.
     assert {n: r.route_id for n, r in result.nodes.items()} == {"a": "kr/c", "b": "kr/c"}
@@ -1201,6 +1203,7 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
             assert not (cwd / "pkg/__init__.py").exists()
             (cwd / "a.txt").write_text("ok\n")
             if len(prompts) < correct_on:
+                (cwd / "IMPLEMENTATION_SUMMARY.md").write_text("unrequested summary\n")
                 for path in ("pkg/__init__.py", "tests/__init__.py"):
                     marker = cwd / path
                     marker.parent.mkdir(exist_ok=True)
@@ -1229,6 +1232,7 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
         assert "PREVIOUS_ATTEMPT_FAILED_OWNERSHIP" in prompt
         assert "pkg/__init__.py" in prompt
         assert "tests/__init__.py" in prompt
+        assert "IMPLEMENTATION_SUMMARY.md" in prompt
         assert "must not be created or modified" in prompt
         assert "Only OWNED_FILES may change" in prompt
         assert "RESULT: BLOCKED naming the file" in prompt
@@ -1236,6 +1240,11 @@ async def test_ownership_feedback_rehydrates_then_follows_route_escalation(
     assert events.of("rehydrate", "a")[0]["reason"] == "ownership_violation"
     barriers = [b for b in events.of("barrier", "a") if b["name"] == "ownership"]
     assert [b["ok"] for b in barriers] == [False] * (correct_on - 1) + [True]
+    assert barriers[0]["stray_paths"] == [
+        "IMPLEMENTATION_SUMMARY.md",
+        "pkg/__init__.py",
+        "tests/__init__.py",
+    ]
 
 
 async def test_real_skipped_ocr_result_blocks_runtime_completion(repo: Path) -> None:
@@ -1598,3 +1607,20 @@ def test_new_executed_command_is_bound_by_receipt_events_digest(tmp_path: Path) 
     verify_event["data"]["executed_command"] = "/different/python -m pytest"
     events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     assert any("events_digest" in problem for problem in verify_run_receipt(run_dir))
+
+
+async def test_worker_escalation_excludes_failed_credential_pool(repo: Path):
+    seen = []
+
+    class PoolSelector(Selector):
+        def select(self, requirements, *, now):
+            seen.append(requirements)
+            return super().select(requirements, now=now)
+
+    runtime, _, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Executor({("a", "cc/s"): "quota"}), ["cc/s", "cx/g"]
+    )
+    runtime.selector = PoolSelector(["cc/s", "cx/g"])
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert seen[1].exclude_pools == frozenset({"claude"})

@@ -41,6 +41,7 @@ class SessionOutcome:
     verified_by_controller: bool
     at: datetime
     source: str
+    child_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or self.outcome not in ("pass", "fail"):
@@ -90,6 +91,7 @@ def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
                 verified_by_controller=raw["verified_by_controller"],
                 at=parse_datetime(raw["at"], "at"),
                 source=raw["source"],
+                child_id=raw.get("child_id"),
             )
             items.setdefault(_identity(item), item)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -234,15 +236,28 @@ def import_worker_outcomes(jsonl_path: str | Path) -> list[SessionOutcome]:
             failure: str | None = None
             if kind == "session_canary_v1" and message.startswith("SESSION_CANARY_PASS"):
                 outcome = "pass"
-            elif kind == "session_canary_v1" and message.startswith("SESSION_CANARY_FAIL"):
+            elif kind == "session_canary_v1" and message.startswith(
+                ("SESSION_CANARY_FAIL", "SESSION_FAIL", "FALSE_CLAIM")
+            ):
                 outcome = "fail"
-                failure = _failure_class(str(raw.get("error") or ""), message)
+                failure = (
+                    "false_success_claim"
+                    if message.startswith("FALSE_CLAIM")
+                    else _failure_class(str(raw.get("error") or ""), message)
+                )
             elif kind == "free_real_task" and message.startswith(
                 ("REAL_TASK_PASS", "REAL_TASK_FIX_PASS")
             ):
                 outcome = "pass"
-            elif kind == "free_real_task" and message.startswith("FALSE_CLAIM"):
-                outcome, failure = "fail", "false_success_claim"
+            elif kind == "free_real_task" and message.startswith(
+                ("FALSE_CLAIM", "SESSION_FAIL", "SESSION_CANARY_FAIL")
+            ):
+                outcome = "fail"
+                failure = (
+                    "false_success_claim"
+                    if message.startswith("FALSE_CLAIM")
+                    else _failure_class(str(raw.get("error") or ""), message)
+                )
             else:
                 continue
             item = SessionOutcome(
@@ -253,6 +268,7 @@ def import_worker_outcomes(jsonl_path: str | Path) -> list[SessionOutcome]:
                 verified_by_controller=True,
                 at=parse_datetime(raw["ts"], "ts"),
                 source=str(source),
+                child_id=str(raw["child"]) if raw.get("child") else None,
             )
             items.setdefault(_identity(item), item)
     return list(items.values())

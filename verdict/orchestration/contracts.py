@@ -369,8 +369,9 @@ class RouteVerdict:
     # "plan_label", "zero_pricing", "positive_pricing") or "unknown:<reason>".
     capacity_evidence: str = ""
     # cooldown_scope: the key under which the cooldown was recorded
-    # ("route:<canonical_id>" or "provider:<name>"), never an email or token.
+    # ("route:<id>", "provider:<name>", or "pool:<name>"), never an email or token.
     cooldown_scope: str = ""
+    agentic_capability: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -391,6 +392,8 @@ class RouteVerdict:
         # BOD-277 additive keys: emitted only when a value is known, so
         # existing consumers see the pre-BOD-277 shape when the ladder did
         # not compute rank components (e.g. failed before ranking).
+        if self.agentic_capability is not None:
+            data["agentic_capability"] = dict(self.agentic_capability)
         if self.rank_components is not None:
             data["rank_components"] = dict(self.rank_components)
         if self.capability_tier is not None:
@@ -417,6 +420,7 @@ class TaskRequirements:
     frontier_worthy: bool = False
     exclude_routes: frozenset[str] = frozenset()  # e.g. implementer ids for an independent reviewer
     exclude_families: frozenset[str] = frozenset()  # e.g. {"claude"} to force a different family
+    exclude_pools: frozenset[str] = frozenset()  # failed credential pools, not model families
     # BOD-271 sufficiency floor. Capability tiers: 0 = frontier ... 3 = small/fast.
     # A route whose tier number is ABOVE this is insufficient for the work and is
     # hard-dropped before ranking. Among sufficient routes the least-capable

@@ -46,6 +46,25 @@ def register(subparsers: Any) -> None:
         "daemon", help="Continuously probe admitted routes into the health cache"
     )
     prove_status_p = prove_sub.add_parser("status", help="Show the health cache")
+    prove_install_p = prove_sub.add_parser(
+        "install-service", help="Install the systemd user prober"
+    )
+    prove_uninstall_p = prove_sub.add_parser(
+        "uninstall-service", help="Remove the systemd user prober"
+    )
+    prove_install_p.add_argument("--interval", type=float, default=300.0)
+    prove_install_p.add_argument("--max-requests", type=int, default=300)
+    for service_p in (prove_install_p, prove_uninstall_p):
+        service_p.add_argument(
+            "--dry-run", action="store_true", help="Print without changing anything"
+        )
+        service_p.add_argument("--json", action="store_true", help="Output JSON")
+    prove_import_p = prove_sub.add_parser(
+        "import-sessions", help="Import trusted controller session outcomes as agentic evidence"
+    )
+    prove_import_p.add_argument("ledger", help="Trusted controller worker-outcomes JSONL")
+    prove_import_p.add_argument("--state-path", default=None, help="Health cache JSON path")
+    prove_import_p.add_argument("--json", action="store_true", help="Output JSON")
     prove_census_p = prove_sub.add_parser(
         "census",
         help=(

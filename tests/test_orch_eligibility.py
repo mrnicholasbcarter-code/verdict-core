@@ -226,7 +226,7 @@ class TestAvailable:
         verdicts = by_route(ladder.evaluate(REQ, now=NOW + timedelta(seconds=10)))
         # sibling route of the same provider is also cooled down
         assert verdicts["cc/claude-haiku-5"].failed_stage is EligibilityStage.AVAILABLE
-        assert verdicts["cc/claude-haiku-5"].reason == "cooldown:provider"
+        assert verdicts["cc/claude-haiku-5"].reason == "cooldown:pool"
         # a different provider is unaffected
         assert verdicts["cx/gpt-6-codex"].failed_stage is None
 
@@ -421,8 +421,8 @@ class TestCapacityAndRanking:
         # Free-first: gl/glm-5 (FREE) before cc/claude-sonnet-5 (SUBSCRIPTION)
         assert [v.route_id for v in ranked] == ["gl/glm-5", "cc/claude-sonnet-5", "op/qwen3-coder"]
 
-    def test_subscription_first_for_frontier_worthy(self, tmp_path: Path) -> None:
-        """Planning/controller/review (frontier_worthy) ranks SUBSCRIPTION first."""
+    def test_free_first_for_frontier_worthy(self, tmp_path: Path) -> None:
+        """Planning/controller/review ranks sufficient FREE capacity first."""
         rows = [
             row("op/qwen3-coder", owned_by="openrouter"),
             row("gl/glm-5", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -437,8 +437,8 @@ class TestCapacityAndRanking:
         frontier_req = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
         verdicts = ladder.evaluate(frontier_req, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        # Subscription first for frontier work
-        assert [v.route_id for v in ranked] == ["cc/claude-sonnet-5", "gl/glm-5", "op/qwen3-coder"]
+        # Free first for frontier work
+        assert [v.route_id for v in ranked] == ["gl/glm-5", "cc/claude-sonnet-5", "op/qwen3-coder"]
 
     def test_prefer_providers_is_configurable(self, tmp_path: Path) -> None:
         # Preference orders routes of equal capability; declare both tiers.
@@ -534,13 +534,18 @@ class TestPersistence:
         assert not (tmp_path / "state.json.tmp").exists()
 
     def test_record_success_clears_cooldown(self, tmp_path: Path) -> None:
-        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        rows = [
+            row("cc/claude-sonnet-5", owned_by="claude"),
+            row("claude/claude-sonnet-5", owned_by="claude"),
+        ]
         ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
         failure = FailureClassification(
             category="rate_limited", action="REROUTE", cooldown_seconds=300.0, scope="route"
         )
         ladder.record_failure("cc/claude-sonnet-5", failure, now=NOW)
+        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) == "pool:claude"
         ladder.record_success("cc/claude-sonnet-5", now=NOW + timedelta(seconds=5))
+        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) is None
         selected, _ = ladder.select(REQ, now=NOW + timedelta(seconds=6))
         assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
 
@@ -790,3 +795,81 @@ class TestSelectionRefreshHook:
         by_id = by_route(verdicts)
         assert by_id[ids[0]].reason == "failed"
         assert by_id[ids[1]].reason == "unavailable"
+
+
+@pytest.mark.parametrize("frontier", [False, True], ids=["worker", "planner"])
+@pytest.mark.parametrize("category", ["quota_exhausted", "rate_limited"])
+@pytest.mark.parametrize("scope", ["route", "provider"])
+def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, category, scope):
+    routes = ["cc/claude-haiku", "claude/claude-haiku", "no-think/cc/claude-haiku"]
+    ladder, probe = make_ladder(
+        tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")]
+    )
+    ladder.record_failure(
+        routes[0], FailureClassification(category, "REASSIGN", 60, scope), now=NOW
+    )
+    req = TaskRequirements(frontier_worthy=frontier)
+    for alias in routes[1:]:
+        assert ladder.dispatch_blocker(alias, now=NOW) == "pool:claude"
+        verdict = by_route(ladder.evaluate(req, now=NOW))[alias]
+        assert verdict.reason == "cooldown:pool"
+        assert verdict.cooldown_scope == "pool:claude"
+        expired = NOW + timedelta(seconds=61)
+        assert ladder.dispatch_blocker(alias, now=expired) is None
+        assert by_route(ladder.evaluate(req, now=expired))[alias].failed_stage is None
+    assert not probe.calls
+
+
+@pytest.mark.parametrize(
+    "category", ["model_unavailable", "bad_request", "timeout", "malformed_response", "unknown"]
+)
+def test_route_scoped_quality_failure_does_not_cool_pool(tmp_path, category):
+    """Review B1: one bad model id or 400 must not block healthy same-pool siblings."""
+    routes = ["cc/claude-haiku", "claude/claude-haiku", "cc/claude-opus"]
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
+    ladder.record_failure(
+        routes[0], FailureClassification(category, "REASSIGN", 60, "route"), now=NOW
+    )
+    assert ladder.dispatch_blocker(routes[0], now=NOW) is not None
+    for sibling in routes[1:]:
+        assert ladder.dispatch_blocker(sibling, now=NOW) is None
+        assert by_route(ladder.evaluate(REQ, now=NOW))[sibling].failed_stage is None
+
+
+def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
+    routes = [
+        "cc/claude-haiku",
+        "claude/claude-haiku",
+        "no-think/cc/claude-haiku",
+        "kr/claude-haiku",
+    ]
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
+    req = TaskRequirements(exclude_pools=frozenset({"claude"}))
+    verdicts = by_route(ladder.evaluate(req, now=NOW))
+    assert all(verdicts[r].reason == "excluded_pool" for r in routes[:3])
+    assert verdicts[routes[3]].failed_stage is None
+
+
+@pytest.mark.parametrize("free_tier, expected", [(2, "gl/glm-5"), (3, "cc/claude-sonnet-5")])
+def test_planner_free_first_respects_capability_floor(tmp_path, free_tier, expected):
+    ladder, _ = make_ladder(
+        tmp_path,
+        [
+            {**row("gl/glm-5", owned_by="glm"), "capability_tier": free_tier},
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
+        ],
+        [conn("glm", plan="free"), conn("claude")],
+    )
+    choice, _ = ladder.select(
+        TaskRequirements(frontier_worthy=True, max_capability_tier=2), now=NOW
+    )
+    assert choice is not None and choice.route_id == expected
+
+
+def test_probe_account_failure_cools_credential_aliases(tmp_path):
+    routes = ["cc/claude-haiku", "claude/claude-haiku"]
+    ladder, _ = make_ladder(tmp_path, [row(r, owned_by="claude") for r in routes], [conn("claude")])
+    ladder._record_health(
+        routes[0], HealthResult(healthy=False, category="authentication"), NOW, provider="claude"
+    )
+    assert ladder.dispatch_blocker(routes[1], now=NOW) == "pool:claude"

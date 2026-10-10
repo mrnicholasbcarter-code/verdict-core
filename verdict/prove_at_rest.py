@@ -79,6 +79,7 @@ from verdict.orchestration.health_cache import (
     HealthCacheLockTimeoutError,
     HealthEntry,
     ProbeResult,
+    agentic_capability,
     default_cache_path,
 )
 
@@ -1953,17 +1954,67 @@ def build_live_daemon(
 # ---------------------------------------------------------------------------
 
 
-def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[str, Any]:
+def import_sessions(
+    ledger: str | Path, cache: HealthCache, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Import trusted controller outcomes as exact-route agentic evidence.
+
+    Reuses BOD-299's importer. Session evidence does not refresh chat health,
+    capacity, entitlement or identity. Future timestamps are never accepted.
+    """
+    from verdict.orchestration.session_evidence import import_worker_outcomes
+
+    current = now or _now()
+    outcomes = import_worker_outcomes(ledger)
+    updated = 0
+
+    def mutate(store: HealthCache) -> None:
+        nonlocal updated
+        for item in sorted(outcomes, key=lambda item: (item.at, item.outcome == "fail")):
+            if item.verified_by_controller and item.at <= current:
+                updated += store.record_agentic_evidence(
+                    item.route_id,
+                    passed=item.outcome == "pass",
+                    at=item.at,
+                    source=item.source,
+                    child_id=item.child_id,
+                )
+
+    cache.merge_and_save(mutate)
+    return {
+        "cache_path": str(cache.path),
+        "ledger": str(ledger),
+        "read": len(outcomes),
+        "updated": updated,
+    }
+
+
+def status_report(
+    cache: HealthCache,
+    *,
+    now: datetime | None = None,
+    capacity_class: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
     """Counts by state and class, top healthy coding workers, cold providers."""
     current = now or _now()
     by_state = {STATE_FRESH: 0, STATE_STALE: 0, STATE_NEGATIVE: 0, STATE_UNPROBED: 0}
     by_class: dict[str, int] = {}
+    agentic_by_class = dict.fromkeys(("free", "subscription", "metered", "unknown"), 0)
     workers: list[HealthEntry] = []
     providers: dict[str, set[str]] = {}
     for entry in cache.routes().values():
         state = entry.state_at(current)
         by_state[state] = by_state.get(state, 0) + 1
         evidence = entry.capacity_evidence or "unknown"
+        proof = agentic_capability(entry, current)
+        if proof["qualified"]:
+            capacity = (
+                capacity_class(entry.route_id)
+                if capacity_class is not None
+                else (entry.capacity_evidence or "unknown").lower()
+            )
+            agentic_by_class[capacity if capacity in agentic_by_class else "unknown"] += 1
+
         if state in {STATE_FRESH, STATE_STALE}:
             by_class[evidence] = by_class.get(evidence, 0) + 1
         provider = _provider_of(entry.route_id)
@@ -1981,7 +2032,14 @@ def status_report(cache: HealthCache, *, now: datetime | None = None) -> dict[st
     return {
         "cache_path": str(cache.path),
         "schema_version": "1",
+        "route_count": len(cache.routes()),
         "counts_by_state": by_state,
+        "agentic_qualified_by_capacity_class": agentic_by_class,
+        "agentic_capability_evidence": {
+            entry.route_id: agentic_capability(entry, current)
+            for entry in cache.routes().values()
+            if entry.session_agentic_at is not None or entry.agentic_checked_at is not None
+        },
         "healthy_by_capacity_evidence": by_class,
         "top_healthy_coding_workers": [
             {

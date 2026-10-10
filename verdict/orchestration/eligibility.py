@@ -19,6 +19,7 @@ from verdict.orchestration.contracts import (
     TaskRequirements,
     route_family,
 )
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
     aliased_pools_for,
@@ -44,20 +45,14 @@ _PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
-# Planning / controller / review: subscription first (frontier for orchestration).
+# All roles rank free capacity first after the capability/admission gates.
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
-    CapacityClass.SUBSCRIPTION: 0,
-    CapacityClass.FREE: 1,
-    CapacityClass.METERED: 2,
-    CapacityClass.UNKNOWN: 3,
-}
-# Implementation workers: free first (free-first story 3).
-_WORKER_CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.FREE: 0,
     CapacityClass.SUBSCRIPTION: 1,
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
+_WORKER_CAPACITY_ORDER = _CAPACITY_ORDER
 ENV_ALLOW_UNKNOWN = "VERDICT_ALLOW_UNKNOWN_CAPACITY"
 _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "rate_limited": 60.0,
@@ -159,6 +154,7 @@ class _Assessment:
     # AC6: the cooldown key under which this route is currently blocked
     # (never an email, token, or account id).
     cooldown_scope: str = ""
+    agentic_capability: Mapping[str, Any] | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -212,6 +208,7 @@ class _Assessment:
             pool=self.pool,
             capacity_evidence=self.capacity_evidence,
             cooldown_scope=self.cooldown_scope,
+            agentic_capability=self.agentic_capability,
         )
 
 
@@ -420,6 +417,11 @@ class EligibilityLadder:
         return CapacityClass.UNKNOWN, plan_label, reason
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None:
+            lookup = cache.lookup(route_id, now)
+            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
+                return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):
             return "unprobed", ""
@@ -450,7 +452,7 @@ class EligibilityLadder:
         raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
         provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
-        for key in (f"route:{route_id}", f"provider:{provider}"):
+        for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
                 return key
         return None
@@ -494,7 +496,7 @@ class EligibilityLadder:
             if conn is not None:
                 provider = raw_provider
         capacity, plan_label, capacity_evidence = self._capacity_class(conn, row, route_id=route_id)
-        pool = backend_pool(route_id)
+        pool = pool_of(route_id)
         a = _Assessment(
             route_id=route_id,
             provider=provider,
@@ -503,6 +505,11 @@ class EligibilityLadder:
             pool=pool,
             capacity_evidence=capacity_evidence,
         )
+
+        from verdict.orchestration.health_cache import agentic_capability
+
+        cache = getattr(self, "_health_cache", None)
+        a.agentic_capability = agentic_capability(cache.entry(route_id) if cache else None, now)
 
         if self._admitted is not None and route_id not in self._admitted:
             record = self._admitted.first_failure(route_id)
@@ -534,6 +541,7 @@ class EligibilityLadder:
             return a
 
         for key, label in (
+            (f"pool:{pool}", "cooldown:pool"),
             (f"route:{route_id}", "cooldown:route"),
             (f"provider:{provider}", "cooldown:provider"),
         ):
@@ -596,6 +604,8 @@ class EligibilityLadder:
         context = int(row.get("max_input_tokens") or row.get("context_length") or 0)
         if context < req.min_context_tokens:
             return "insufficient_context"
+        if pool_of(route_id) in req.exclude_pools:
+            return "excluded_pool"
         if route_id in req.exclude_routes:
             return "excluded_route"
         if route_family(route_id) in req.exclude_families:
@@ -635,21 +645,23 @@ class EligibilityLadder:
             cache = getattr(self, "_health_cache", None)
             if cache is None:
                 return "no_health_cache"
-            from verdict.orchestration.health_cache import FRESH_SECONDS
+            from verdict.orchestration.health_cache import agentic_capability
 
             gate_now = now or datetime.now(timezone.utc)
             lookup = cache.lookup(route_id, gate_now)
-            if lookup.entry is None or not lookup.entry.agentic_ok:
-                return "no_agentic_probe"
-            # The agentic gate uses agentic_checked_at (not the general
-            # checked_at that single-call probes refresh). Only FRESH is
-            # accepted: stale means the agentic qualification expired.
-            ack = lookup.entry.agentic_checked_at
-            if ack is None:
-                return "agentic_probe_stale"
-            age = (gate_now - ack).total_seconds()
-            if age > FRESH_SECONDS:
-                return "agentic_probe_stale"
+            proof = agentic_capability(lookup.entry, gate_now)
+            if not proof["qualified"]:
+                if lookup.entry is None or (
+                    proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok
+                ):
+                    return "no_agentic_probe"
+                return (
+                    "session_capability_expired_or_revoked"
+                    if proof["source"] == "session_evidence"
+                    else "agentic_probe_stale"
+                )
+            # Current liveness remains the separate HEALTHY stage. Unknown
+            # or stale health may use the existing bounded cheap probe.
             # Real session outcomes can narrow, never replace, probe qualification.
             stats = self._session_summary(route_id, gate_now)
             if stats is not None and stats.passes + stats.fails:
@@ -716,12 +728,7 @@ class EligibilityLadder:
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
-        # Role-aware capacity ordering: implementation workers use free-first;
-        # planning/controller/review (frontier_worthy) use subscription-first.
-        req = getattr(self, "_current_requirements", None)
-        is_worker = req is not None and not req.frontier_worthy
-        order_map = _WORKER_CAPACITY_ORDER if is_worker else _CAPACITY_ORDER
-        cap_order = order_map.get(a.capacity, 3)
+        cap_order = _CAPACITY_ORDER.get(a.capacity, 3)
         # Health cache freshness for the receipt (read-only, never written).
         cache = getattr(self, "_health_cache", None)
         probe_class = "none"
@@ -1033,6 +1040,7 @@ class EligibilityLadder:
             entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
             if provider and category in _PROVIDER_SCOPE_CATEGORIES:
+                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
                 self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
             # Live-evidence not-free override: mark the route and pool so
             # capacity classification reflects the override (design §B, item 3).
@@ -1056,6 +1064,11 @@ class EligibilityLadder:
         seconds = cooldown_seconds_for(failure.category, retry_after)
         entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
         if failure.scope in {"route", "provider"}:
+            # Only credential-pool exhaustion or account failures cool the whole
+            # pool (SH-1). A bad model id, a 400 or a timeout is about this route
+            # and must not block healthy sibling models on the same credential.
+            if failure.category in POOL_COOLDOWN_CATEGORIES:
+                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
@@ -1066,6 +1079,7 @@ class EligibilityLadder:
         self._persist()
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
+        self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)
         self._state["cooldowns"].pop(f"route:{route_id}", None)
         self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
         self._persist()

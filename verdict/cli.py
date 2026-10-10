@@ -4213,6 +4213,8 @@ def cmd_prove_at_rest(
     max_requests: int = 300,
     max_wall_seconds: float = 600.0,
     inventory_path: str | None = None,
+    ledger: str | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Run or inspect the health-cache prober.
 
@@ -4223,6 +4225,30 @@ def cmd_prove_at_rest(
     ``census`` nor ``status`` writes the ladder's orchestration-health file.
     The legacy prove-at-rest cycle document is ignored.
     """
+    if prove_command in {"install-service", "uninstall-service", "import-sessions"}:
+        from verdict.actions.registry import run_action
+
+        result = run_action(
+            f"prove-at-rest.{prove_command}",
+            {
+                "interval": interval,
+                "max_requests": max_requests,
+                "dry_run": dry_run,
+                "ledger": ledger,
+                "state_path": state_path,
+            },
+        )
+        data = result.data
+        if not result.ok:
+            print(json.dumps({"error": data.get("error", "prove-at-rest failed")}))
+            raise SystemExit(result.exit_code or 2)
+        if prove_command == "import-sessions" and not output_json:
+            print(f"Imported {data['updated']} agentic results from {data['ledger']}")
+        else:
+            # Dry-run includes the exact rendered files, for both plain and JSON.
+            print(json.dumps(data, indent=2, sort_keys=True))
+        return
+
     if prove_command == "census":
         from verdict.actions.registry import run_action
 
