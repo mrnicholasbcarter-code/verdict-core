@@ -824,6 +824,22 @@ def _run_command(
         if output_json:
             cmd_args = cmd_args.removesuffix("--json").strip()
 
+        if ref == "setup.plan" and not output_json:
+            from verdict.home_setup_render import run_setup_wizard
+
+            try:
+                ok, data = run_palette_action(ref)
+                if ok:
+                    run_setup_wizard(
+                        tui, gateway=state.gateway, plan=data,
+                        state_dir=history_file().parent / "bootstrap", reader=line_reader,
+                    )
+                else:
+                    _render_action_result(tui, ok, data, action=ref)
+            except (KeyboardInterrupt, ValueError, OSError) as exc:
+                console.print(Text(f"Setup cancelled or blocked: {clean(str(exc))}"))
+            return None
+
         # Resolve params: if args on the line, use them for the first required param
         params: dict[str, Any] | None = {}
         param_specs = _ACTION_PARAMS.get(ref, [])

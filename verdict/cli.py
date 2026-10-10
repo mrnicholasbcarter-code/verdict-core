@@ -657,15 +657,10 @@ def cmd_setup(
         ui.status("Configuration", "skipped", "No configuration file written.")
         return
 
-    # Save configuration
-    config_dir = os.path.join(
-        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "verdict"
-    )
-    os.makedirs(config_dir, exist_ok=True)
-    config_path = os.path.join(config_dir, "verdict.yaml")
+    # Shared writer preserves fields and makes a private backup before replacement.
+    from verdict.setup_config import save_setup_config
 
-    with open(config_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
+    config_path = save_setup_config(config)
 
     ui.status("Configuration", "saved", f"Written to {config_path}")
     ui.section("Configuration contents")
