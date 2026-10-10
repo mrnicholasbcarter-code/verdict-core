@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -271,6 +271,8 @@ class EligibilityLadder:
         # Default None keeps behaviour identical; the existing exact ladder
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
+        # Route ids whose health the last select() re-read upgraded after refresh.
+        self._last_refresh_upgrades: tuple[str, ...] = ()
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -885,12 +887,77 @@ class EligibilityLadder:
                 if isinstance(status, str) and status.lower() in {"failed", "unavailable"}:
                     candidate.failed_stage = EligibilityStage.HEALTHY
                     candidate.reason = status.lower()
+        if refresh_hook is not None and candidates:
+            # The refresh job may just have written fresh positives into the
+            # health cache (a cold VERDICT_HOME, as in CI, starts empty). It
+            # writes through its own HealthCache object, so reload this one
+            # from disk first, then re-read health so probe ordering and the
+            # reserved fallback see them. Never upgrade a candidate the
+            # refresh marked failed.
+            cache = getattr(self, "_health_cache", None)
+            if cache is not None:
+                with contextlib.suppress(Exception):
+                    cache.reload()
+            upgraded: list[str] = []
+            for candidate in candidates:
+                if candidate.failed_stage is None and candidate.health != "healthy":
+                    health, category = self._health_status(candidate.route_id, now)
+                    if health == "healthy":
+                        candidate.health, candidate.health_category = health, category
+                        upgraded.append(candidate.route_id)
+            self._last_refresh_upgrades = tuple(upgraded)
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
-        for a in self._probe_order(candidates):
+        probe_order = self._probe_order(candidates)
+        # Keep one exact-confirmation slot for a fresh prepaid fallback. Cold
+        # FREE catalog aliases must not starve a known-live subscription route.
+        # Earlier FREE successes still win; neither ranking nor admission widens.
+        fallback = next(
+            (
+                a
+                for a in candidates
+                if a.capacity is CapacityClass.SUBSCRIPTION
+                and a.health == "healthy"
+                and a.failed_stage is None
+            ),
+            None,
+        )
+        reserved_route = ""
+        if (
+            fallback is not None
+            and self._max_probes > 0
+            and probe_order.index(fallback) >= self._max_probes
+        ):
+            # With max_probes == 1 the single probe goes to this fallback, even
+            # when a fresh FREE route exists: the reserved slot is the last one.
+            # Reserve by probes actually spent, not list position: skipped
+            # entries (refresh-failed, provider-blocked, already launchable)
+            # use no probe, so the fallback waits until exactly one probe is
+            # left and earlier cold routes have had every other slot.
+            probe_order.remove(fallback)
+            reserved_route = fallback.route_id
+        fallback_tried = False
+
+        def _ordered() -> Iterator[_Assessment]:
+            nonlocal fallback_tried
+            for item in probe_order:
+                if (
+                    reserved_route
+                    and not fallback_tried
+                    and fallback is not None
+                    and probes_used >= self._max_probes - 1
+                ):
+                    fallback_tried = True
+                    yield fallback
+                yield item
+            if reserved_route and not fallback_tried and fallback is not None:
+                fallback_tried = True
+                yield fallback
+
+        for a in _ordered():
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:
@@ -944,7 +1011,9 @@ class EligibilityLadder:
                     provider=a.provider,
                     reached=EligibilityStage.SELECTED,
                     failed_stage=None,
-                    reason="selected",
+                    reason=(
+                        "reserved_fallback_slot" if a.route_id == reserved_route else "selected"
+                    ),
                     capacity_class=a.capacity,
                     plan_label=a.plan_label,
                     cooldown_until=None,
@@ -1012,10 +1081,16 @@ class EligibilityLadder:
         for a in candidates:  # already rank-sorted; dicts keep first-seen order
             tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
         for by_provider in tiers.values():
-            queues = list(by_provider.values())
-            depth = max(len(q) for q in queues)
-            for i in range(depth):
-                order.extend(q[i] for q in queues if i < len(q))
+            # Fresh cache evidence changes confirmation scheduling, never
+            # launch authority. These routes still pass the exact live probe.
+            for fresh in (True, False):
+                queues = [
+                    [a for a in queue if (a.health == "healthy") == fresh]
+                    for queue in by_provider.values()
+                ]
+                depth = max((len(q) for q in queues), default=0)
+                for i in range(depth):
+                    order.extend(q[i] for q in queues if i < len(q))
         return order
 
     def _record_health(

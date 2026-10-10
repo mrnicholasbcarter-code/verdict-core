@@ -12,6 +12,25 @@ from urllib.parse import urlsplit, urlunsplit
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
+    # A bare "Bearer <token>" (no Authorization: label), as models often echo
+    # it. Real tokens contain a digit; English words and file names do not
+    # need to ("Bearer authentication"), so require one.
+    re.compile(r"(?i)(\bbearer\s+)(?=[A-Za-z._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}"),
+    # Common provider key prefixes that appear without any key=/key: label.
+    # Keys contain a digit, or are long (32+) random runs. An sk- run followed
+    # by "." or "/" plus an alphanumeric is a file name or path segment, not a
+    # key; a sentence-final "." or a trailing "/" still ends a key.
+    re.compile(
+        r"(?<![A-Za-z0-9])()"
+        r"(?:sk-(?:ant-|proj-|or-v1-)?"
+        r"(?:(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]{16,}|[A-Za-z0-9_-]{32,})"
+        r"(?![A-Za-z0-9_-]|[./][A-Za-z0-9])"
+        r"|gh[pousr]_[A-Za-z0-9]{20,}"
+        r"|github_pat_[A-Za-z0-9_]{20,}"
+        r"|xox[abprs]-(?=[A-Za-z-]*\d)[A-Za-z0-9-]{10,}"
+        r"|AKIA[0-9A-Z]{16}"
+        r"|AIza[0-9A-Za-z_-]{30,})"
+    ),
     re.compile(
         r"""(?ix)
         ((?:["']?)(?:api[_-]?key|token|password|secret)(?:["']?)\s*[=:]\s*)

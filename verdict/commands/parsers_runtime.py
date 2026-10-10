@@ -86,13 +86,13 @@ def register(subparsers: Any) -> None:
     prove_census_p.add_argument(
         "--state-path",
         default=None,
-        help="Health cache JSON path (default: ~/.verdict/health-cache.json)",
+        help="Health cache JSON path (default: $VERDICT_HOME/health-cache.json, else ~/.verdict)",
     )
     for _prove_p in (prove_once_p, prove_daemon_p, prove_status_p):
         _prove_p.add_argument(
             "--state-path",
             default=None,
-            help="Health cache JSON path (default: ~/.verdict/health-cache.json)",
+            help="Health cache JSON path (default: $VERDICT_HOME/health-cache.json, else ~/.verdict)",
         )
         _prove_p.add_argument("--json", action="store_true", help="Output JSON")
     for _prove_live_p in (prove_once_p, prove_daemon_p):

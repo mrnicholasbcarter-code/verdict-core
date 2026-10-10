@@ -10,6 +10,7 @@ and replayable from the same nodes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -28,6 +29,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.verification import resolve_verify_argv
+from verdict.security import redact_text
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -333,8 +335,12 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
     for i, item in enumerate(raw_nodes):
         if not isinstance(item, Mapping):
             raise OrchestrationError(f"parse_plan: node[{i}] must be an object")
+        data = normalize_node_requirements(item)
+        acceptance = data.get("acceptance")
+        if isinstance(acceptance, str) and acceptance.strip():
+            data["acceptance"] = [acceptance]
         try:
-            nodes.append(WorkNode.from_dict(normalize_node_requirements(item)))
+            nodes.append(WorkNode.from_dict(data))
         except (OrchestrationError, TypeError) as exc:
             raise OrchestrationError(f"parse_plan: node[{i}]: {exc}") from exc
 
@@ -405,6 +411,33 @@ class PlanningExecutorError(OrchestrationError):
         self.terminal = terminal
 
 
+def _persist_invalid_plan_output(
+    output: str, run_dir: Path | None, *, attempt: int, phase: str
+) -> str | None:
+    """Retain bounded diagnostic evidence, redacting before byte truncation."""
+    if run_dir is None:
+        return None
+    path = run_dir / f"planner-{attempt}-{phase}-invalid.txt"
+    # Redact first, then bound. Model output can still hold secrets no pattern
+    # knows, so the file is owner-only (0600) and never follows a symlink.
+    data = redact_text(output).encode("utf-8")[: 64 * 1024]
+    body = data.decode("utf-8", errors="ignore").encode("utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, body)
+        finally:
+            os.close(fd)
+    except OSError:
+        # Diagnostics must never hide the real validation error.
+        return None
+    return str(path)
+
+
 class FrontierPlanner:
     """Runs one frontier planning pass (with one repair round) into a validated WorkGraph."""
 
@@ -418,6 +451,7 @@ class FrontierPlanner:
         timeout_seconds: float = 600,
         constraints: str = "",
         events: Any | None = None,
+        run_dir: Path | None = None,
         attempt: int = 1,
         max_attempts: int = 1,
     ) -> tuple[WorkGraph, WorkerTerminal]:
@@ -435,6 +469,9 @@ class FrontierPlanner:
         try:
             return parse_plan(terminal.output, goal), terminal
         except OrchestrationError as first_error:
+            output_path = _persist_invalid_plan_output(
+                terminal.output, run_dir, attempt=attempt, phase="initial"
+            )
             repair_prompt = (
                 f"{prompt}\n\nYour previous response failed validation with this error:\n"
                 f"{first_error}\n\n"
@@ -449,6 +486,7 @@ class FrontierPlanner:
                     attempt=attempt + 1,
                     budget=max_attempts + 1,
                     reason=str(first_error)[:300],
+                    planner_output_path=output_path,
                 )
             repaired = await executor.run(
                 repair_prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
@@ -471,8 +509,12 @@ class FrontierPlanner:
             try:
                 graph = parse_plan(repaired.output, goal)
             except OrchestrationError as second_error:
+                repair_path = _persist_invalid_plan_output(
+                    repaired.output, run_dir, attempt=attempt, phase="repair"
+                )
                 raise OrchestrationError(
                     f"FrontierPlanner: plan invalid after one repair round: {second_error}"
+                    + (f" (raw output: {repair_path})" if repair_path else "")
                 ) from second_error
             return graph, repaired
 

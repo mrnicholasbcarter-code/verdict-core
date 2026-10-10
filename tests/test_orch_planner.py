@@ -223,6 +223,51 @@ def test_parse_plan_single_node_default_topology_is_worker_critic() -> None:
     assert graph.max_parallel == 1
 
 
+@pytest.mark.parametrize("acceptance", ["  criterion\nunchanged  ", ["first", " second "]])
+def test_parse_plan_preserves_acceptance_text(acceptance: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = acceptance
+    graph = parse_plan(json.dumps(payload), goal="g")
+    expected = (acceptance,) if isinstance(acceptance, str) else tuple(acceptance)
+    assert graph.node("impl-a").acceptance == expected
+
+
+@pytest.mark.parametrize("acceptance", ["", "   ", {}, 7, False, None])
+def test_parse_plan_rejects_malformed_acceptance(acceptance: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = acceptance
+    with pytest.raises(OrchestrationError, match="acceptance must be a list"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
+@pytest.mark.parametrize(
+    "field", ["depends_on", "owned_files", "required_context", "verification_command"]
+)
+@pytest.mark.parametrize("value", ["text", {}, 7])
+def test_parse_plan_does_not_coerce_other_list_fields(field: str, value: object) -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = "criterion"
+    payload["nodes"][0][field] = value
+    with pytest.raises(OrchestrationError, match=f"{field} must be a list"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
+def test_parse_plan_singleton_acceptance_still_validates_structure() -> None:
+    import json
+
+    payload = json.loads(_VALID_NODES_JSON)
+    payload["nodes"][0]["acceptance"] = "criterion"
+    payload["nodes"][0]["depends_on"] = ["ghost"]
+    with pytest.raises(OrchestrationError, match="unknown dependencies"):
+        parse_plan(json.dumps(payload), goal="g")
+
+
 # ---------------------------------------------------------------- repo_map
 
 
@@ -418,6 +463,67 @@ async def test_frontier_planner_raises_when_repair_executor_fails(tmp_path: Path
     assert len(executor.calls) == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["not json", '{"nodes": []}'])
+async def test_frontier_planner_persists_redacted_bounded_invalid_output(
+    tmp_path: Path, invalid: str
+) -> None:
+    from verdict.orchestration.receipt import EventLog
+
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    repo = _init_git_repo(repo_path)
+    run_dir = tmp_path / "run"
+    events = EventLog(run_dir / "events.jsonl")
+    secret = "fake-planner-secret-canary"
+    output = f'{invalid}\n"api_key": "{secret}"\n' + "é" * 70_000
+    executor = _ScriptedExecutor(
+        [WorkerTerminal(ok=True, output=output), WorkerTerminal(ok=True, output=_VALID_NODES_JSON)]
+    )
+    graph, _ = await FrontierPlanner().plan(
+        "ship it",
+        repo=repo,
+        executor=executor,
+        route_id="cc/claude-sonnet-5",
+        events=events,
+        run_dir=run_dir,
+    )
+    assert len(graph.nodes) == 3
+    repair = next(event for event in events.read() if event.type == "plan_repair_started")
+    artifact = Path(repair.data["planner_output_path"])
+    assert artifact.parent == run_dir
+    assert artifact.is_file()
+    data = artifact.read_bytes()
+    assert 0 < len(data) <= 64 * 1024
+    text = data.decode("utf-8")
+    assert text.startswith(invalid)
+    assert secret not in text
+    assert "[redacted]" in text
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_retains_invalid_repair_output(tmp_path: Path) -> None:
+    from verdict.orchestration.receipt import EventLog
+
+    repo = _init_git_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    events = EventLog(run_dir / "events.jsonl")
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json"),
+            WorkerTerminal(ok=True, output="still invalid password=fake-repair-canary"),
+        ]
+    )
+    with pytest.raises(OrchestrationError, match="after one repair round"):
+        await FrontierPlanner().plan(
+            "g", repo=repo, executor=executor, route_id="cc/s", events=events, run_dir=run_dir
+        )
+    artifact = run_dir / "planner-1-repair-invalid.txt"
+    assert artifact.parent == run_dir
+    assert artifact.read_text() == "still invalid password=[redacted]"
+    assert len(list(run_dir.glob("planner-*-invalid.txt"))) == 2
+
+
 def test_planner_free_text_capabilities_are_normalized_to_model_vocabulary() -> None:
     import json
 
@@ -533,6 +639,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
             rows.append({"type": kind, **data})
 
     async def plan(self, *args, **kwargs):
+        assert kwargs["run_dir"] == tmp_path / "run"
         if kwargs["route_id"].startswith("cc/"):
             raise OrchestrationError("concurrent nodes a and b both own ['shared.py']")
         graph = WorkGraph("g", (_impl_node("a"),))
@@ -547,6 +654,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
         executor=None,
         classifier=FailureIntelligence(),
         events=Events(),
+        run_dir=tmp_path / "run",
     )
     assert requirements[0].max_capability_tier == 2
     # A planner validation error is a model-quality failure, not a credential
@@ -585,3 +693,70 @@ async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
     assert "concurrent nodes left and right both own ['shared.py']" in prompt
     assert "Serialize" in prompt and "depends_on" in prompt
     assert "merge" in prompt.lower() and "one node" in prompt
+
+
+@pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])
+def test_invalid_output_secret_across_the_byte_cut_never_leaks(tmp_path: Path, cut: int) -> None:
+    """Redaction runs before truncation: no fragment of a secret survives the 64 KiB cut."""
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    secret = "https://user:hunter2pw@gateway.invalid/v1"
+    prefix = "x" * (64 * 1024 - cut)
+    path = _persist_invalid_plan_output(
+        prefix + secret + " tail", tmp_path, attempt=1, phase="initial"
+    )
+    assert path is not None
+    data = Path(path).read_bytes()
+    assert len(data) <= 64 * 1024
+    for fragment in ("hunter2", "unter2pw", "2pw@", "user:h"):
+        assert fragment.encode() not in data
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv",
+        "sk-proj-AbCd3fGh1jKlMnOpQrStUvWx",
+        "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh",
+        "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "AKIAABCDEFGHIJKLMNOP",
+    ],
+)
+def test_invalid_output_redacts_bare_tokens(tmp_path: Path, secret: str) -> None:
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    path = _persist_invalid_plan_output(
+        f"plan text {secret} more", tmp_path, attempt=1, phase="initial"
+    )
+    assert path is not None
+    text = Path(path).read_text()
+    token = secret.split()[-1]
+    assert token not in text and token[6:] not in text
+    assert "[redacted]" in text
+
+
+def test_invalid_output_write_failure_does_not_hide_the_error(tmp_path: Path) -> None:
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file")
+    assert _persist_invalid_plan_output("x", blocker, attempt=1, phase="initial") is None
+
+
+def test_invalid_output_file_is_owner_only_and_never_follows_symlinks(tmp_path: Path) -> None:
+    """Model output may hold secrets no pattern knows: keep the file 0600, no symlink writes."""
+    import os
+    import stat
+
+    from verdict.orchestration.planner import _persist_invalid_plan_output
+
+    path = _persist_invalid_plan_output("plan text", tmp_path, attempt=1, phase="initial")
+    assert path is not None
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("keep")
+    link = tmp_path / "planner-2-initial-invalid.txt"
+    link.symlink_to(target)
+    assert _persist_invalid_plan_output("x", tmp_path, attempt=2, phase="initial") is None
+    assert target.read_text() == "keep"

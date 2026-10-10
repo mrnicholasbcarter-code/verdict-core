@@ -388,7 +388,8 @@ Check the last run with `journalctl --user -u verdict-prime-sync`.
 
 `verdict prove-at-rest daemon` is the single prober. It probes every admitted
 route, spends most of its budget on FREE routes, and writes
-`~/.verdict/health-cache.json`. It does not write
+the health cache (`$VERDICT_HOME/health-cache.json`, default
+`~/.verdict/health-cache.json`). It does not write
 `~/.verdict/orchestration-health.json` (the selection ladder still owns that
 file). The older `~/.verdict/prove-at-rest/state.json` cycle document is
 ignored and left in place.
