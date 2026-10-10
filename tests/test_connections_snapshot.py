@@ -207,3 +207,20 @@ def test_snapshot_schema_rejects_untyped_or_raw_evidence(field, value, tmp_path,
     monkeypatch.setattr(run, "_get_json", lambda *_a, **_k: pytest.fail("HTTP forbidden"))
     with pytest.raises(OrchestrationError):
         run.fetch_connections("https://restricted.invalid", api_key="inference")
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "expired",
+        "unauthorized",
+        "unavailable",
+        "disabled",
+        "exhausted",
+        "quota_exhausted",
+        "banned",
+    ],
+)
+def test_sanitizer_preserves_negative_admission_status(status):
+    raw = {"provider": "claude", "authType": "oauth", "isActive": True, "testStatus": status}
+    assert run.sanitize_connections([raw])[0]["testStatus"] == status
