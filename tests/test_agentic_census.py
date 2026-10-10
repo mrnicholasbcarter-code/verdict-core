@@ -335,7 +335,27 @@ def test_newer_agentic_probe_failure_revokes_session_capability(tmp_path):
     )
     capability = agentic_capability(cache.entry(route), NOW)
     assert capability["qualified"] is False
-    assert capability["source"] == "agentic_probe"
+    # Durable: a later single-call healthy probe must not resurrect it (review).
+    cache.record(route, ProbeResult("ok", True, True), NOW - timedelta(seconds=30))
+    cache.save()
+    reloaded = HealthCache(cache.path).entry(route)
+    assert agentic_capability(reloaded, NOW)["qualified"] is False
+
+
+def test_agentic_transport_failure_does_not_revoke_session_capability(tmp_path):
+    from verdict.orchestration.health_cache import agentic_capability
+    from verdict.prove_at_rest import import_sessions
+
+    route = "kc/model:free"
+    source = worker_file(tmp_path, [{**row(), "ts": (NOW - timedelta(days=2)).isoformat()}])
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(source, cache, now=NOW)
+    cache.record(
+        route,
+        ProbeResult("rate_limited", False, False, probe_class="agentic", agentic_ok=False),
+        NOW - timedelta(minutes=1),
+    )
+    assert agentic_capability(cache.entry(route), NOW)["qualified"] is True
 
 
 @pytest.mark.parametrize("value", ["0", "-5", "nan", "not-a-number"])
