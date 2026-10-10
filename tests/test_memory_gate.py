@@ -173,3 +173,22 @@ def test_gate_enforcement_denial_is_audited(tmp_path: Path) -> None:
         assert events[0].result["allowed"] is False
         assert events[0].result["enforcement_reason"] == "decision_denied_provider"
         assert events[0].result["decision_id"] == record.decision_id
+
+
+def test_removed_authority_records_load_but_cannot_authorize_writes(tmp_path: Path) -> None:
+    from verdict.memory_plane import MemoryRecord
+
+    path = tmp_path / "memory.db"
+    with MemoryPlane(path) as plane:
+        plane.put(MemoryRecord(
+            record_id="legacy", source="historical-export",
+            namespace="patterns", key="legacy", content="historical observation",
+            authority="ruflo", authority_verified=True,
+        ))
+    with MemoryPlane(path) as plane:
+        gate = MemoryGate(plane)
+        assert plane.get("patterns", "legacy").authority == "ruflo"
+        assert "ruflo" not in gate.list_authorities()
+        denied = gate.write(request(authority="ruflo", namespace="decisions"))
+        assert not denied.allowed
+        assert denied.reason == "authority_insufficient:ruflo:verdict-core"
