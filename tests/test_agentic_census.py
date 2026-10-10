@@ -317,3 +317,34 @@ def test_session_capability_survives_failed_liveness_but_does_not_authorize_heal
     entry = HealthCache(cache.path).entry("kc/model:free")
     assert not entry.healthy
     assert agentic_capability(entry, NOW + timedelta(seconds=1))["qualified"]
+
+
+def test_newer_agentic_probe_failure_revokes_session_capability(tmp_path):
+    from verdict.orchestration.health_cache import agentic_capability
+    from verdict.prove_at_rest import import_sessions
+
+    route = "kc/model:free"
+    source = worker_file(tmp_path, [{**row(), "ts": (NOW - timedelta(days=2)).isoformat()}])
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(source, cache, now=NOW)
+    assert agentic_capability(cache.entry(route), NOW)["qualified"] is True
+    cache.record(
+        route,
+        ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=False),
+        NOW - timedelta(minutes=1),
+    )
+    capability = agentic_capability(cache.entry(route), NOW)
+    assert capability["qualified"] is False
+    assert capability["source"] == "agentic_probe"
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "not-a-number"])
+def test_invalid_capability_ttl_fails_closed(tmp_path, monkeypatch, value):
+    from verdict.orchestration.health_cache import agentic_capability
+    from verdict.prove_at_rest import import_sessions
+
+    monkeypatch.setenv("VERDICT_AGENTIC_CAPABILITY_TTL_S", value)
+    source = worker_file(tmp_path, [{**row(), "ts": (NOW - timedelta(seconds=30)).isoformat()}])
+    cache = HealthCache(tmp_path / "health.json")
+    import_sessions(source, cache, now=NOW)
+    assert agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"] is False

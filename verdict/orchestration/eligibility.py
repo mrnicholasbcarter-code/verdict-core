@@ -420,7 +420,7 @@ class EligibilityLadder:
         cache = getattr(self, "_health_cache", None)
         if cache is not None:
             lookup = cache.lookup(route_id, now)
-            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.chat_ok:
+            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):

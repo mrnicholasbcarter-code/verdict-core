@@ -432,6 +432,16 @@ def agentic_capability(entry: HealthEntry | None, now: datetime) -> dict[str, An
         if not math.isfinite(ttl) or ttl <= 0:
             ttl = 0.0
     passed = (entry.session_agentic_ok if session else entry.agentic_ok) if entry else False
+    if (
+        session
+        and entry is not None
+        and entry.agentic_checked_at is not None
+        and checked is not None
+        and entry.agentic_checked_at > checked
+        and entry.agentic_ok is False
+    ):
+        # A newer exact-route agentic probe failure revokes older session proof.
+        session, checked, passed = False, entry.agentic_checked_at, False
     qualified = bool(passed and checked is not None and 0 <= (now - checked).total_seconds() <= ttl)
     return {
         "source": "session_evidence" if session else "agentic_probe",
