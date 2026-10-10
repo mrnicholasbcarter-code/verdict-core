@@ -500,71 +500,34 @@ def _call_launch_entry(entry: str, params: dict[str, Any]) -> tuple[bool, Any]:
     return True, result
 
 
-def _render_action_result(tui: TerminalUI, ok: bool, data: Any, *, width: int = 100) -> None:
-    """Render an ActionResult payload through TerminalUI.
+def _render_action_result(
+    tui: TerminalUI, ok: bool, data: Any, *, width: int = 100,
+    action: str = "Action", output_json: bool = False,
+) -> None:
+    """Keep human reports separate from the explicit machine output boundary."""
+    from verdict.home_action_render import render_doctor, render_generic, render_setup_plan
 
-    - list[dict]: table
-    - dict: key/value panel
-    - ok=False: error panel
-    - narrow (width<70): truncate table columns to fit
-    """
-    console = tui.console
-    effective_width = max(40, min(width, console.width or width))
-    if ok and isinstance(data, dict) and data.get("schema") == "verdict.verified-models/v1":
-        from verdict.orchestration.verified_models_render import (
-            render_verified_plain,
-            render_verified_table,
-        )
-
-        console.print(
-            Text(render_verified_plain(data)) if tui.plain else render_verified_table(data)
-        )
+    if output_json:
+        tui.console.print(Text(json.dumps(data, default=str, indent=2)), soft_wrap=True)
         return
-
-    if not ok:
-        # Error panel
-        err_msg = ""
-        if isinstance(data, dict):
-            err_msg = str(data.get("error") or json.dumps(data, default=str))
-        elif data is not None:
-            err_msg = clean(str(data))[:500]
-        else:
-            err_msg = "action failed with no error detail"
-        if tui.plain:
-            console.print(Text(f"ERROR: {err_msg}"))
-        else:
-            console.print(
-                panel(
-                    Text(clean(err_msg), style=TOKENS["ERROR"]),
-                    title="Error",
-                    tone="ERROR",
-                    mode=tui.mode,
-                )
+    if isinstance(data, dict):
+        if action == "doctor" or {"capability_bootstrap", "sections", "issues"} <= data.keys():
+            render_doctor(tui, data)
+            return
+        if data.get("kind") == "setup_plan":
+            render_setup_plan(tui, data)
+            return
+        if data.get("schema") == "verdict.verified-models/v1":
+            from verdict.orchestration.verified_models_render import (
+                render_verified_plain,
+                render_verified_table,
             )
-        return
 
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        _render_table(console, data, plain=tui.plain, width=effective_width)
-    elif isinstance(data, dict) and "text" in data and isinstance(data["text"], str):
-        # Text-bearing result (e.g. demo output): print text directly
-        console.print(clean(data["text"]))
-    elif isinstance(data, dict):
-        _render_kv_panel(console, data, plain=tui.plain, width=effective_width)
-    elif isinstance(data, list):
-        # list of non-dicts
-        if tui.plain:
-            for item in data[:50]:
-                console.print(f"  {clean(str(item))}")
-        else:
-            lines = "\n".join(clean(str(item)) for item in data[:50])
-            console.print(panel(Text(lines), mode=tui.mode))
-    elif data is None:
-        if tui.plain:
-            console.print("ok (no data)")
-        else:
-            console.print(Text("✓ ok", style=TOKENS["SUCCESS"]))
-    else:
-        console.print(clean(str(data))[:2000])
+            tui.console.print(
+                Text(render_verified_plain(data)) if tui.plain else render_verified_table(data)
+            )
+            return
+    render_generic(tui, ok, data, action=action)
 
 
 def _render_table(console: Console, data: list[dict[str, Any]], *, plain: bool, width: int) -> None:
@@ -857,6 +820,10 @@ def _run_command(
                 _publish_completion(state, console)
             return None
 
+        output_json = cmd_args == "--json" or cmd_args.endswith(" --json")
+        if output_json:
+            cmd_args = cmd_args.removesuffix("--json").strip()
+
         # Resolve params: if args on the line, use them for the first required param
         params: dict[str, Any] | None = {}
         param_specs = _ACTION_PARAMS.get(ref, [])
@@ -950,7 +917,7 @@ def _run_command(
             # A failing command reports its error and returns to the prompt.
             ok, data = False, {"error": f"{type(exc).__name__}: {clean(str(exc))[:200]}"}
 
-        _render_action_result(tui, ok, data, width=width)
+        _render_action_result(tui, ok, data, width=width, action=ref, output_json=output_json)
         return None
 
     # Not a known command. Is it a goal (free text)?
