@@ -554,8 +554,8 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
     assert requirements[1].exclude_pools == frozenset()
     assert "cc/claude-haiku" in requirements[1].exclude_routes
     assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
-    cooldown = next((r for r in rows if r["type"] == "cooldown"), None)
-    assert cooldown is None or cooldown["scope"] == "route"
+    cooldown = next(r for r in rows if r["type"] == "cooldown")
+    assert (cooldown["scope"], cooldown["key"]) == ("route", "cc/claude-haiku")
 
 
 @pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])
