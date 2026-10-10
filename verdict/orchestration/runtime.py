@@ -33,6 +33,7 @@ from verdict.orchestration.candidate_builder import (
 )
 from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.contracts import (
     TRANSITIONS,
     CapacityClass,
@@ -632,7 +633,11 @@ class DagRuntime:
                     evidence=run.reason,
                 )
                 return
-            requirements = TaskRequirements.for_node(run.node, exclude_routes=frozenset(tried))
+            requirements = TaskRequirements.for_node(
+                run.node,
+                exclude_routes=frozenset(tried),
+                exclude_pools=frozenset(pool_of(route) for route in tried),
+            )
             choice, considered = self.selector.select(requirements, now=self.now())
             counts = _ladder_counts(considered)
             # Post-probe statistics for eligibility events (BOD-203).
@@ -1236,7 +1241,7 @@ class DagRuntime:
         )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
-            key = route_provider(run.route_id) if failure.scope == "provider" else run.route_id
+            key = pool_of(run.route_id)
             until = datetime.fromtimestamp(
                 self.now().timestamp() + failure.cooldown_seconds, timezone.utc
             )
@@ -1244,7 +1249,7 @@ class DagRuntime:
                 "cooldown",
                 run.node.node_id,
                 key=key,
-                scope=failure.scope,
+                scope="pool",
                 category=failure.category,
                 until=until.isoformat(timespec="seconds"),
             )
@@ -1311,6 +1316,7 @@ class DagRuntime:
                 node.node_id,
                 name="ownership",
                 ok=not outside,
+                stray_paths=outside,
                 detail=("outside owned: " + ", ".join(outside[:8]))
                 if outside
                 else f"{len(changed)} file(s) within ownership",
@@ -1335,6 +1341,7 @@ class DagRuntime:
                 node.node_id,
                 name="ownership",
                 ok=False,
+                stray_paths=changed,
                 detail="no owned_files but changed: " + ", ".join(changed[:8]),
             )
             return "ownership_violation: node has no owned_files but changed: " + ", ".join(

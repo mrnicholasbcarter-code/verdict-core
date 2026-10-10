@@ -437,7 +437,10 @@ class FrontierPlanner:
         except OrchestrationError as first_error:
             repair_prompt = (
                 f"{prompt}\n\nYour previous response failed validation with this error:\n"
-                f"{first_error}\n\nEmit ONLY the corrected JSON object. No prose, no fences."
+                f"{first_error}\n\n"
+                "For an ownership conflict above, keep the named file with one writer. "
+                "Serialize the conflicting nodes with depends_on, or merge them into one node.\n"
+                "Emit ONLY the corrected JSON object. No prose, no fences."
             )
             if events is not None:
                 events.emit(
@@ -538,6 +541,7 @@ def hydrate_node_prompt(
         lines.append("")
 
     lines.append("RULES:")
+    lines.append("  - Do not create summary/notes files; report in your final message.")
     if node.owned_files:
         lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
     else:
