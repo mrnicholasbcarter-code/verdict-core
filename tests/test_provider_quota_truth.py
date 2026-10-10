@@ -102,3 +102,53 @@ def test_pool_provider_model_records_remain_distinct():
         )
         assert ev.scope == scope
         assert ev.quota_percent is None
+
+
+def test_verified_newer_success_beats_recent_429():
+    from datetime import timedelta
+
+    from verdict.orchestration.verified_models import snapshots_from_documents
+
+    conn = connection()
+    conn.pop("rateLimitedUntil")
+    conn["updatedAt"] = (NOW - timedelta(seconds=10)).isoformat()
+    snapshots = snapshots_from_documents(
+        health_cache_doc={
+            "schema_version": "1",
+            "routes": {
+                "cc/sonnet": {
+                    "route_id": "cc/sonnet",
+                    "healthy": True,
+                    "category": "ok",
+                    "checked_at": NOW.isoformat(),
+                    "until": NOW.isoformat(),
+                    "chat_ok": True,
+                    "tool_ok": True,
+                    "identity": "verified",
+                    "consecutive_failures": 0,
+                }
+            },
+        },
+        now=NOW,
+    )
+    row = project_verified_models([ROW], [conn], snapshots, now=NOW).rows[0]
+    assert row.status.value == "VERIFIED"
+    assert row.to_dict()["availability_evidence"][0]["availability"] == "UNKNOWN"
+
+
+def test_model_scoped_cooldown_does_not_block_another_model():
+    conn = connection() | {"scope_type": "model", "scope_id": "cc/other"}
+    row = projected(conn)
+    assert row.status.value != "UNAVAILABLE"
+    assert admit([ROW], [conn], None, now=NOW, require_runtime=False).ids == frozenset(
+        {"cc/sonnet"}
+    )
+
+
+def test_account_binding_does_not_use_a_healthy_sibling():
+    row = ROW | {"account_id": "acct-a"}
+    blocked = connection() | {"account_id": "acct-a"}
+    sibling = {"provider": "claude", "isActive": True, "account_id": "acct-b"}
+    view = project_verified_models([row], [blocked, sibling], EvidenceSnapshots(), now=NOW)
+    assert view.rows[0].status.value == "UNAVAILABLE"
+    assert not admit([row], [blocked, sibling], None, now=NOW, require_runtime=False).ids

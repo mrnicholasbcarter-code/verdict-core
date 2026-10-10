@@ -190,6 +190,7 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
             "pool_id",
             "scope_type",
             "scope_id",
+            "model",
             "rateLimitedUntil",
             "quota_percent",
             "quotaRemainingPct",

@@ -866,7 +866,16 @@ def _judge(
     gateway_obs: list[RuntimeObservation] = []
     for conn in active:
         quota = QuotaEvidence.from_connection(conn)
-        until = quota.blocked_until(now)
+        last_success = max(
+            (
+                stamp
+                for o in route_obs
+                if o.state == "healthy"
+                if (stamp := _parse_iso(o.observed_at)) is not None
+            ),
+            default=None,
+        )
+        until = quota.blocked_until(now, last_success)
         if until is None:
             continue
         gateway_obs.append(

@@ -1274,10 +1274,15 @@ def _classify_row(
     worker = evidence.worker_health.get(route_id)
     ladder = evidence.ladder_health.get(route_id)
     bindings = _route_bindings(route_id, row, active_conns, at_rest)
+    last_success = (
+        at_rest.last_success_at or (at_rest.checked_at if at_rest.healthy else None)
+        if at_rest
+        else None
+    )
     gateway_cooldowns: list[ScopedCooldown] = []
     for c in active_conns:
         quota = QuotaEvidence.from_connection(c)
-        until = quota.blocked_until(now, at_rest.last_success_at if at_rest else None)
+        until = quota.blocked_until(now, last_success)
         if until is not None:
             gateway_cooldowns.append(
                 ScopedCooldown(
@@ -1329,9 +1334,7 @@ def _classify_row(
             capacity_class=capacity.value,
             hints=tuple(hints),
             availability_evidence=tuple(
-                QuotaEvidence.from_connection(c).to_dict(
-                    now, at_rest.last_success_at if at_rest else None
-                )
+                QuotaEvidence.from_connection(c).to_dict(now, last_success)
                 for c in _active_connections_for(provider_names, conn_index)
             ),
             restrictions=tuple(existing),
