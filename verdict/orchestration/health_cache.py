@@ -842,7 +842,11 @@ class HealthCache:
     # -- persistence -------------------------------------------------------
 
     def reload(self) -> None:
-        """Re-read the cache file (another HealthCache object may have written it)."""
+        """Read-only refresh from disk (another HealthCache object may have written it).
+
+        Unsaved in-memory mutations are discarded; callers that mutate must
+        ``save()`` (which merges over disk under the lock) before reloading.
+        """
         self._load()
 
     def _load(self) -> None:

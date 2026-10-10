@@ -2003,7 +2003,8 @@ def build_live_daemon(
 
     The legacy cycle file (``state_path`` / ``VERDICT_PROVE_AT_REST_STATE``)
     is not read and not written. The daemon writes ``cache_path`` or
-    ``VERDICT_HEALTH_CACHE`` or ``~/.verdict/health-cache.json``.
+    ``VERDICT_HEALTH_CACHE`` or ``$VERDICT_HOME/health-cache.json`` (default
+    ``~/.verdict``); see ``health_cache.default_cache_path``.
     """
     del state_path  # legacy document: ignored, see module docstring
     from verdict.free_tier_admit import normalize_omniroute_origin, omniroute_endpoint_from_env

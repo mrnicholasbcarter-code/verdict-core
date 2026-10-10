@@ -179,3 +179,26 @@ def test_refresh_written_by_another_cache_object_is_seen(tmp_path: Path) -> None
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is not None and choice.route_id == SUB
     assert choice.reason == "reserved_fallback_slot"
+
+
+def test_refresh_failed_candidate_is_never_upgraded_by_the_health_reread(tmp_path: Path) -> None:
+    """Review M4: a refresh-marked-failed route stays failed even if a positive was written."""
+    selector, probe, _cold = ladder(tmp_path)
+    cache = selector._health_cache
+    cache._routes.pop(SUB, None)
+    cache.save()
+
+    def hook(routes, now):
+        writer = HealthCache(cache.path)
+        writer.record(SUB, ProbeResult(category="ok", chat_ok=True, tool_ok=True), now)
+        writer.save()
+        return {SUB: "failed"}
+
+    selector._refresh_hook = hook
+    choice, verdicts = selector.select(REQ, now=NOW)
+    assert choice is None or choice.route_id != SUB
+    assert SUB not in probe.calls
+    sub = next(v for v in verdicts if v.route_id == SUB)
+    assert sub.reason == "failed"
+    # The candidate's own health must stay as assessed (not upgraded to healthy).
+    assert selector._last_refresh_upgrades == ()

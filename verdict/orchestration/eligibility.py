@@ -271,6 +271,8 @@ class EligibilityLadder:
         # Default None keeps behaviour identical; the existing exact ladder
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
+        # Route ids whose health the last select() re-read upgraded after refresh.
+        self._last_refresh_upgrades: tuple[str, ...] = ()
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -896,11 +898,14 @@ class EligibilityLadder:
             if cache is not None:
                 with contextlib.suppress(Exception):
                     cache.reload()
+            upgraded: list[str] = []
             for candidate in candidates:
                 if candidate.failed_stage is None and candidate.health != "healthy":
                     health, category = self._health_status(candidate.route_id, now)
                     if health == "healthy":
                         candidate.health, candidate.health_category = health, category
+                        upgraded.append(candidate.route_id)
+            self._last_refresh_upgrades = tuple(upgraded)
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None

@@ -36,8 +36,14 @@ the live proof will land in a follow-up.
 
 ## Cache
 
-Default path: `~/.verdict/health-cache.json`. Override with `--state-path`
-or `VERDICT_HEALTH_CACHE`.
+Default path: `$VERDICT_HOME/health-cache.json`, or
+`~/.verdict/health-cache.json` when `VERDICT_HOME` is not set. Override with
+`--state-path` or `VERDICT_HEALTH_CACHE`. Every reader and writer (prober,
+refresh job, admission and the selection ladder) resolves the same file.
+
+If you set `VERDICT_HOME`, an older cache at `~/.verdict/health-cache.json`
+is not read. Route health rebuilds on the next refresh or prove cycle; re-run
+`verdict prove-at-rest import-sessions` to restore session evidence.
 
 One JSON file, one `fcntl` lock, atomic replace. Each route entry has:
 
