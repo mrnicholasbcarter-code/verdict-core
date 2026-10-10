@@ -1449,6 +1449,7 @@ def run_home(
     animate: bool | None = None,
     probe: bool = True,
     interactive: bool | None = None,
+    skip_setup: bool = False,
     _key_reader: Callable[[], str] | None = None,
 ) -> int:
     target = console or Console()
@@ -1459,6 +1460,14 @@ def run_home(
     roots = list(runs_roots) if runs_roots is not None else [Path.cwd() / ".verdict" / "runs"]
     state.runs = recent_runs(roots)
     ui = TerminalUI(target)
+    if not skip_setup and os.getenv("VERDICT_SKIP_SETUP") != "1":
+        from verdict.home_startup_render import route_startup
+
+        outcome = route_startup(
+            ui, home=history_file().parent, gateway=state.gateway, run=run_palette_action,
+        )
+        if outcome is not None:
+            return outcome
     # An explicit True never overrides accessibility or terminal policy.
     ui.animate = ui.animate and animate is not False
     mode = presentation_mode(target.file if hasattr(target, "file") else None)

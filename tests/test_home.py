@@ -54,7 +54,7 @@ def test_palette_commands_are_registered_subcommands() -> None:
 
 def test_plain_home_has_no_escape_codes_and_lists_commands(tmp_path: Path) -> None:
     console = _console()
-    assert run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False) == 0
+    assert run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False, skip_setup=True) == 0
     text = console.file.getvalue()
     assert "\x1b[" not in text
     assert "VERDICT" in text and "verdict orchestrate" in text and "none yet" in text
@@ -82,7 +82,7 @@ def test_hostile_run_names_are_sanitized(tmp_path: Path) -> None:
     run.mkdir()
     (run / "events.jsonl").write_text("{}\n")
     console = _console()
-    run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False)
+    run_home(console=console, runs_roots=[tmp_path], probe=False, animate=False, skip_setup=True)
     assert "\x1b[31m" not in console.file.getvalue()
 
 
@@ -91,6 +91,7 @@ def test_bare_verdict_without_tty_keeps_help_contract(
 ) -> None:
     import verdict.cli as cli
 
+    monkeypatch.setenv("VERDICT_SKIP_SETUP", "1")
     monkeypatch.setattr(cli.sys, "argv", ["verdict"])
     cli.main()
     assert "Available commands" in capsys.readouterr().out

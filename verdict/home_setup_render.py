@@ -84,7 +84,7 @@ def run_setup_wizard(tui: TerminalUI, *, gateway: str, plan: dict[str, Any],
             values.setdefault("setup_preferences", {})[kind] = choice
         else:
             notes.append(title + ": unchanged.")
-    _dependencies(tui, reader, report, notes)
+    _dependencies(tui, reader, report, notes, selected)
     _warm_cache(tui, reader, gateway, notes)
     actions = tuple(a for a in report.plan.actions if a.provider_id in selected)
     if actions:
@@ -121,7 +121,7 @@ def run_setup_wizard(tui: TerminalUI, *, gateway: str, plan: dict[str, Any],
 
 
 def _dependencies(tui: TerminalUI, reader: Callable[[], str | None] | None,
-                  report: Any, notes: list[str]) -> None:
+                  report: Any, notes: list[str], selected: list[str]) -> None:
     import shutil
 
     tui.section("Dependency review — optional installs are never silent")
@@ -133,7 +133,11 @@ def _dependencies(tui: TerminalUI, reader: Callable[[], str | None] | None,
         tui.console.print(Text("Version: " + (provider.version or "not observed; outdated status unknown")))
         tui.console.print(Text("Install: " + provider.install_command))
         answer = _ask(tui, reader, "Confirm dependency recommendation? [y/N]")
-        notes.append(provider.provider_id + (": manual — use install command above; not installed by this review." if answer.lower() in {"y", "yes"} else ": skipped; unchanged."))
+        if answer.lower() in {"y", "yes"} and provider.provider_id == "gateway.omniroute":
+            selected.append(provider.provider_id)
+            notes.append("OmniRoute install confirmed; canonical apply verifies binary presence.")
+        else:
+            notes.append(provider.provider_id + (": manual — use upstream command above." if answer.lower() in {"y", "yes"} else ": skipped; unchanged."))
     for name, binary, capability, command in (
         ("context-mode", "context-mode", "context compression", "npm install -g context-mode"),
         ("open-code-review", "ocr", "independent code review", "See open-code-review upstream installation docs (command not verified)"),
