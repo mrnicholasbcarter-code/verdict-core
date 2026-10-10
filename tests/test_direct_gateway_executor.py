@@ -1110,3 +1110,199 @@ def test_cli_executor_builder_honours_verdict_key(monkeypatch: pytest.MonkeyPatc
     inner = getattr(executor, "_inner", executor)
     assert isinstance(inner, DirectGatewayExecutor)
     assert inner.api_key == "verdict-key"
+
+
+def test_empty_existing_owned_file_is_labelled_not_new(tmp_path: Path) -> None:
+    """Live certification rehearsal: an empty textkit/__init__.py was shown as blank
+    content, so every model produced a 'new file' diff that git refused."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "TASK", ["pkg/__init__.py", "pkg/new.py"], tmp_path
+    )
+    assert "pkg/__init__.py (EXISTS and is EMPTY" in prompt
+    assert "output COMPLETE contents" in prompt
+    assert "pkg/new.py (does not exist yet" in prompt
+
+
+@pytest.mark.asyncio
+async def test_file_blocks_apply_complete_contents(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    (tmp_path / "empty.py").write_text("old\n")
+    (tmp_path / "unowned.py").write_text("untouched\n")
+    output = (
+        "FILE: owned.py\n```python\ndef f():\n    return 1\n```\n"
+        "FILE: pkg/new.py\n```python\nvalue = 2\n```\n"
+        "FILE: empty.py\n```\n```\nRESULT: DONE"
+    )
+    exe = DirectGatewayExecutor()
+    result = await _run_with_transport(
+        exe,
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py", "pkg/new.py", "empty.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert result.ok, result.error
+    assert (tmp_path / "owned.py").read_text() == "def f():\n    return 1\n"
+    assert (tmp_path / "pkg/new.py").read_text() == "value = 2\n"
+    assert (tmp_path / "empty.py").read_text() == ""
+    assert (tmp_path / "unowned.py").read_text() == "untouched\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "owned", "error"),
+    [
+        ("secret.py", ["owned.py"], "outside owned_files"),
+        ("../escape.py", ["../escape.py"], "invalid path"),
+        ("sub/../owned.py", ["sub/../owned.py"], "invalid path"),
+        ("/tmp/escape.py", ["/tmp/escape.py"], "invalid path"),
+        (".git/config", [".git/config"], "invalid path"),
+    ],
+)
+async def test_file_blocks_unsafe_path_rejected(
+    tmp_path: Path, path: str, owned: list[str], error: str
+) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    output = f"FILE: owned.py\n```\nnew\n```\nFILE: {path}\n```\npwned\n```"
+    result = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py", *owned]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not result.ok
+    assert "diff_rejected:" in result.error
+    assert error in result.error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_link", [False, True])
+async def test_file_blocks_symlink_escape_rejected(tmp_path: Path, parent_link: bool) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "owned.py").write_text("safe\n")
+    rel = "link/owned.py" if parent_link else "owned.py"
+    (worktree / ("link" if parent_link else "owned.py")).symlink_to(
+        outside if parent_link else outside / "owned.py", target_is_directory=parent_link
+    )
+    output = f"FILE: {rel}\n```python\npwned\n```"
+    result = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt([rel]),
+        "cc/test",
+        worktree,
+    )
+    assert not result.ok
+    assert "diff_rejected:" in result.error
+    assert "symlink" in result.error
+    assert (outside / "owned.py").read_text() == "safe\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block", ["FILE: owned.py\nx = 1", "FILE: owned.py\n```python\nx = 1"])
+async def test_file_blocks_missing_fence_rejected(tmp_path: Path, block: str) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    result = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(block)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not result.ok
+    assert "diff_rejected: malformed FILE block" in result.error
+    assert "fence" in result.error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+
+
+def test_file_prompt_requests_complete_contents(tmp_path: Path) -> None:
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff("TASK", ["new.py"], tmp_path)
+    assert "FILE: <relative path>" in prompt
+    assert "COMPLETE" in prompt
+    assert "no diffs" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "output",
+    [
+        "FILE: owned.py\n```\nnew\n```\nFILE: owned.py\n```\nother\n```",
+        "FILE: owned.py\nmissing opening fence\n```diff\n--- a/owned.py\n+++ b/owned.py\n```",
+        "FILE: bad\x00.py\n```\nnew\n```",
+    ],
+)
+async def test_file_blocks_invalid_output_never_falls_back(tmp_path: Path, output: str) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    result = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py", "bad\x00.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not result.ok
+    assert "diff_rejected:" in result.error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+
+
+def test_file_blocks_preserve_content_and_real_a_directory() -> None:
+    output = "FILE: a/readme.md\n````markdown\n\n```python\nFILE: example.py\n```\n\n````"
+    assert DirectGatewayExecutor._extract_files(output) == {
+        "a/readme.md": "\n```python\nFILE: example.py\n```\n\n"
+    }
+
+
+@pytest.mark.asyncio
+async def test_file_blocks_preserve_mode_and_replace_hardlink(tmp_path: Path) -> None:
+    unowned = tmp_path / "unowned.py"
+    unowned.write_text("old\n")
+    owned = tmp_path / "owned.py"
+    owned.hardlink_to(unowned)
+    owned.chmod(0o755)
+    output = "FILE: owned.py\n```python\nnew\n```"
+    result = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert result.ok, result.error
+    assert owned.read_text() == "new\n"
+    assert owned.stat().st_mode & 0o777 == 0o755
+    assert unowned.read_text() == "old\n"
+    assert not list(tmp_path.glob(".verdict-file-*"))
+
+
+def test_file_blocks_atomic_replace_failure_keeps_original(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("old\n")
+    with patch("verdict.orchestration.executors.os.replace", side_effect=OSError("disk failure")):
+        error = DirectGatewayExecutor()._apply_files({"owned.py": "new\n"}, ["owned.py"], tmp_path)
+    assert error and "diff_rejected:" in error
+    assert (tmp_path / "owned.py").read_text() == "old\n"
+    assert not list(tmp_path.glob(".verdict-file-*"))
+
+
+def test_chaos_state_is_kept_outside_the_runs_dir(tmp_path: Path) -> None:
+    """Live certification: a 'chaos' folder inside --runs-dir looked like a second run."""
+    import argparse
+
+    from verdict.orchestration import cli as orch_cli
+
+    runs = tmp_path / "runs-chaos"
+    args = argparse.Namespace(state_file=None, inject=["#1=quota"], resume=None)
+    state = orch_cli._chaos_state(args, runs)
+    assert state is not None
+    assert runs not in state.parents
+    assert state.name == "chaos-health.json"
+    resumed = orch_cli._chaos_state(
+        argparse.Namespace(state_file=None, inject=["x"], resume="r1"), runs
+    )
+    assert resumed is not None and resumed.parent.name == "r1" and runs not in resumed.parents
