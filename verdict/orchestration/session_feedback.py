@@ -49,6 +49,7 @@ _NON_AVAILABILITY_ERRORS = (
     "ownership_violation",
     "review_failed",
     "task_feedback",
+    "worker_blocked",
 )
 
 

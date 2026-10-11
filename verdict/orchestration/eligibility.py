@@ -423,8 +423,12 @@ class EligibilityLadder:
         cache = getattr(self, "_health_cache", None)
         if cache is not None:
             lookup = cache.lookup(route_id, now)
-            if lookup.state == "negative" and lookup.entry is not None:
-                return "unhealthy", lookup.entry.category
+            if lookup.entry is not None and not lookup.entry.healthy:
+                if lookup.state == "negative":
+                    return "unhealthy", lookup.entry.category
+                # Expired negative is half-open: an older ladder positive must
+                # not revive it without a new exact-route probe.
+                return "unprobed", lookup.entry.category
             if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
         entry = self._state["health"].get(route_id)
@@ -448,7 +452,7 @@ class EligibilityLadder:
         the caller reselects from this refreshed evidence.
         """
         cache = getattr(self, "_health_cache", None)
-        if cache is not None:
+        if cache is not None and cache.path.exists():
             cache.reload()
         fresh = self._load_state()["cooldowns"]
         for key, entry in fresh.items():
@@ -822,7 +826,7 @@ class EligibilityLadder:
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
         cache = getattr(self, "_health_cache", None)
-        if cache is not None:
+        if cache is not None and cache.path.exists():
             cache.reload()
         self._current_requirements = requirements
         self._current_now = now
@@ -906,19 +910,21 @@ class EligibilityLadder:
             # reserved fallback see them. Never upgrade a candidate the
             # refresh marked failed.
             cache = getattr(self, "_health_cache", None)
-            if cache is not None:
+            if cache is not None and cache.path.exists():
                 with contextlib.suppress(Exception):
                     cache.reload()
             upgraded: list[str] = []
             for candidate in candidates:
                 if candidate.failed_stage is None:
-                    health, category = self._health_status(candidate.route_id, now)
-                    if health == "unhealthy":
-                        candidate.health, candidate.health_category = health, category
-                        candidate.failed_stage = EligibilityStage.HEALTHY
-                        candidate.reason = category
-                    elif health == "healthy" and candidate.health != "healthy":
-                        candidate.health, candidate.health_category = health, category
+                    refreshed = self._assess(candidate.route_id, requirements, now)
+                    candidate.health = refreshed.health
+                    candidate.health_category = refreshed.health_category
+                    if refreshed.failed_stage is not None:
+                        candidate.failed_stage = refreshed.failed_stage
+                        candidate.reason = refreshed.reason
+                        candidate.cooldown_until = refreshed.cooldown_until
+                        candidate.cooldown_scope = refreshed.cooldown_scope
+                    elif candidate.health == "healthy":
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}

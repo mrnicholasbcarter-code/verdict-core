@@ -208,3 +208,69 @@ def test_refresh_negative_cannot_be_overridden_by_cached_positive(tmp_path: Path
     selected._refresh_hook = refresh
     choice, _ = selected.select(TaskRequirements(), now=NOW + timedelta(seconds=1))
     assert choice is not None and choice.route_id != A
+
+
+def test_expired_negative_does_not_revive_older_ladder_positive(tmp_path: Path) -> None:
+    selected = ladder(tmp_path)
+    selected.record_success(A, now=NOW - timedelta(seconds=1))
+    record_runtime_failure(
+        tmp_path,
+        selected,
+        WorkerTerminal(
+            ok=False, model=A, status_code=503, error="upstream unavailable", executor_kind="live"
+        ),
+    )
+    later = NOW + timedelta(seconds=61)
+    assert selected._health_status(A, later)[0] == "unprobed"
+    probes: list[str] = []
+
+    def probe(route_id: str) -> HealthResult:
+        probes.append(route_id)
+        return HealthResult(True, "")
+
+    selected._probe = probe
+    choice, _ = selected.select(TaskRequirements(exclude_routes=frozenset({B, C})), now=later)
+    assert choice is not None and choice.route_id == A
+    assert probes == [A]
+
+
+def test_refresh_pool_failure_blocks_sibling_before_selection(tmp_path: Path) -> None:
+    selected = ladder(tmp_path)
+
+    def refresh(ids: list[str], now: datetime) -> dict[str, str]:
+        writer = ladder(tmp_path, "writer.json")
+        record_runtime_failure(
+            tmp_path,
+            writer,
+            WorkerTerminal(
+                ok=False,
+                model=A,
+                status_code=429,
+                error="account quota exhausted",
+                executor_kind="live",
+            ),
+        )
+        return {}
+
+    selected._refresh_hook = refresh
+    choice, _ = selected.select(TaskRequirements(), now=NOW + timedelta(seconds=1))
+    assert choice is not None and choice.route_id == C
+
+
+@pytest.mark.parametrize(
+    "detail",
+    ["test timeout needs investigation", "model not found in fixture", "malformed test data"],
+)
+def test_worker_blocked_task_explanation_never_poisons_health(tmp_path: Path, detail: str) -> None:
+    selected = ladder(tmp_path)
+    record_runtime_failure(
+        tmp_path,
+        selected,
+        WorkerTerminal(
+            ok=False,
+            model=A,
+            error=f"worker_blocked: RESULT: BLOCKED\n{detail}",
+            executor_kind="live",
+        ),
+    )
+    assert HealthCache(tmp_path / "health.json").entry(A) is None
