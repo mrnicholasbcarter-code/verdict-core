@@ -164,3 +164,37 @@ def test_rehearsal_invalid_snapshot_fails_before_work(tmp_path, monkeypatch):
     ):
         script.run()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_path, monkeypatch):
+    """Policy invariant: every rehearsal subprocess is constrained FREE-only.
+
+    This proves the Verdict dispatch filter, not OmniRoute's upstream boundary;
+    BOD-332's final-target tests remain a separate release prerequisite.
+    """
+    import subprocess
+
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    captures = []
+
+    def record_child(argv, **kwargs):
+        if "orchestrate" in argv:
+            captures.append(argv)
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", record_child)
+    with pytest.raises(ValueError):
+        script.run()
+    assert len(captures) == 1
+    argv = captures[0]
+    assert argv[argv.index("--capacity") + 1] == "free"
+    assert not any(value in argv for value in ("free,subscription", "metered", "unknown"))
