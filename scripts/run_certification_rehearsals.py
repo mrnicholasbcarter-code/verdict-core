@@ -135,7 +135,12 @@ def run() -> None:
                             try:
                                 event = json.loads(line.strip())
                                 if event.get("type") == "run_finished":
-                                    run_finished_outcome = event.get("data", {}).get("outcome")
+                                    outcome = event.get("data", {}).get("outcome")
+                                    run_finished_outcome = (
+                                        outcome
+                                        if outcome in {"COMPLETE", "BLOCKED", "CANCELLED"}
+                                        else None
+                                    )
                                     raw_reason = event.get("data", {}).get("reason", "")
                                     if raw_reason and "harness_inventory_unavailable" in raw_reason:
                                         run_finished_reason = "harness_inventory_unavailable"
