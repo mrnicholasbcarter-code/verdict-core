@@ -1,4 +1,5 @@
 """Failure evidence is a closed vocabulary, never a provider-output upload."""
+
 import json
 import subprocess
 
@@ -9,7 +10,13 @@ from scripts import run_certification_rehearsals as script
 from tests.test_certification_rehearsal_workflow import ROOT
 
 
-@pytest.mark.parametrize("reason,expected", [("no eligible model: harness_inventory_unavailable", "harness_inventory_unavailable"), ("provider-secret https://private.invalid snapshot-secret", "unclassified")])
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        ("no eligible model: harness_inventory_unavailable", "harness_inventory_unavailable"),
+        ("provider-secret https://private.invalid snapshot-secret", "unclassified"),
+    ],
+)
 def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reason, expected):
     secret = "provider-secret"
     url = "https://private.invalid"
@@ -18,16 +25,29 @@ def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reaso
     monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", url)
     monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", secret)
     monkeypatch.setenv("VERDICT_CERT_CONNECTIONS", snapshot)
-    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "private-snapshot.json")
+    monkeypatch.setattr(
+        script, "_connections_snapshot", lambda root: root / "private-snapshot.json"
+    )
 
     def child(command, **kwargs):
         if "orchestrate" not in command:
             return subprocess.CompletedProcess(command, 0, b"", b"")
         runs = tmp_path / "runs-clean" / "run"
         runs.mkdir(parents=True)
-        event = {"type": "run_finished", "data": {"outcome": "BLOCKED", "reason": reason, "secret": secret, "url": url, "snapshot": snapshot}}
+        event = {
+            "type": "run_finished",
+            "data": {
+                "outcome": "BLOCKED",
+                "reason": reason,
+                "secret": secret,
+                "url": url,
+                "snapshot": snapshot,
+            },
+        }
         (runs / "events.jsonl").write_text(json.dumps(event) + "\n")
-        return subprocess.CompletedProcess(command, 1, secret.encode(), ("ValueError: " + url + snapshot).encode())
+        return subprocess.CompletedProcess(
+            command, 1, secret.encode(), ("ValueError: " + url + snapshot).encode()
+        )
 
     monkeypatch.setattr(script.subprocess, "run", child)
     with pytest.raises(ValueError, match="orchestration") as error:
@@ -48,7 +68,9 @@ def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reaso
 
 
 def test_workflow_always_uploads_only_safe_failure_report():
-    workflow = yaml.load((ROOT / ".github/workflows/certify-rehearsal.yml").read_text(), Loader=yaml.BaseLoader)
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/certify-rehearsal.yml").read_text(), Loader=yaml.BaseLoader
+    )
     steps = workflow["jobs"]["rehearse"]["steps"]
     upload = next(s for s in steps if s.get("name") == "Upload safe failure diagnostics")
     assert upload["if"] == "always()"
