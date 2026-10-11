@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.orchestration.contracts import (
     NodeKind,
     OrchestrationError,
@@ -29,6 +30,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.verification import resolve_verify_argv
+from verdict.orchestration.worker_context import build_worker_context
 from verdict.security import redact_text
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -523,9 +525,18 @@ class FrontierPlanner:
 
 
 def hydrate_node_prompt(
-    node: WorkNode, *, repo: Path, goal: str, max_context_bytes: int = 60_000
+    node: WorkNode,
+    *,
+    repo: Path,
+    goal: str,
+    max_context_bytes: int = 60_000,
+    context_plan: ContextPlan | None = None,
 ) -> str:
-    """Minimal, bounded hydration for one node's worker prompt. Never leaks sibling nodes."""
+    """Hydrate one node with an advisory native pack; never authorize a route.
+
+    Candidate windows remain unknown unless the caller supplies context_plan.
+    The byte allowance still shrinks on the runtime's context-overflow retry.
+    """
     lines: list[str] = [
         f"GOAL: {goal.strip()}",
         "",
@@ -541,46 +552,7 @@ def hydrate_node_prompt(
         lines.append(f"VERIFICATION_COMMAND: {shlex.join(resolved)}")
     lines.append("")
 
-    budget = max_context_bytes
-    context_blocks: list[str] = []
-    truncation_notes: list[str] = []
-    seen_canonical: dict[str, str] = {}  # canonical path -> first rel
-    for rel in node.required_context:
-        # Normalise: strip leading "./" so "./a.py" and "a.py" are the same file.
-        canonical = rel[2:] if rel.startswith("./") else rel
-        if canonical in seen_canonical:
-            truncation_notes.append(
-                f"{rel}: deduplicated (same file as {seen_canonical[canonical]})"
-            )
-            continue
-        seen_canonical[canonical] = rel
-        path = repo / canonical
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            context_blocks.append(f"--- {rel} (unreadable: {exc}) ---")
-            continue
-        if budget <= 0:
-            truncation_notes.append(f"{rel}: omitted (context budget exhausted)")
-            continue
-        keep = min(len(data), budget)
-        chunk = data[:keep]
-        text = chunk.decode("utf-8", errors="replace")
-        block = f"--- {rel} ---\n{text}"
-        if keep < len(data):
-            block += f"\n[TRUNCATED: {len(data) - keep} bytes omitted]"
-            truncation_notes.append(f"{rel}: truncated to {keep} of {len(data)} bytes")
-        context_blocks.append(block)
-        budget -= keep
-
-    if context_blocks:
-        lines.append("REQUIRED_CONTEXT:")
-        lines.extend(context_blocks)
-        lines.append("")
-    if truncation_notes:
-        lines.append("TRUNCATION_NOTES:")
-        lines.extend(f"  - {note}" for note in truncation_notes)
-        lines.append("")
+    context_index = len(lines)
 
     lines.append("RULES:")
     lines.append("  - Do not create summary/notes files; report in your final message.")
@@ -607,4 +579,14 @@ def hydrate_node_prompt(
         "  - Finish your final message with exactly 'RESULT: DONE' on success, "
         "or 'RESULT: BLOCKED <reason>' if you cannot complete the objective."
     )
+    mandatory_prompt = "\n".join(lines)
+    context = build_worker_context(
+        node,
+        repo=repo,
+        max_context_bytes=max_context_bytes,
+        context_plan=context_plan,
+        mandatory_prompt_tokens=estimate_tokens(mandatory_prompt) + 1,
+    )
+    if context.text:
+        lines.insert(context_index, context.text)
     return "\n".join(lines)
