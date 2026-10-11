@@ -17,6 +17,7 @@ from verdict.orchestration.contracts import (
     FailureClassification,
     RouteVerdict,
     TaskRequirements,
+    WorkerTerminal,
     route_family,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
@@ -422,6 +423,8 @@ class EligibilityLadder:
         cache = getattr(self, "_health_cache", None)
         if cache is not None:
             lookup = cache.lookup(route_id, now)
+            if lookup.state == "negative" and lookup.entry is not None:
+                return "unhealthy", lookup.entry.category
             if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
         entry = self._state["health"].get(route_id)
@@ -444,6 +447,9 @@ class EligibilityLadder:
         when the route may still launch. A blocked route must not be launched;
         the caller reselects from this refreshed evidence.
         """
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None:
+            cache.reload()
         fresh = self._load_state()["cooldowns"]
         for key, entry in fresh.items():
             current = self._state["cooldowns"].get(key)
@@ -457,16 +463,18 @@ class EligibilityLadder:
         for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
                 return key
+        if cache is not None and cache.lookup(route_id, now).state == "negative":
+            return f"route:{route_id}"
         return None
 
     def _active_cooldown(self, key: str, now: datetime) -> datetime | None:
         entry = self._state["cooldowns"].get(key)
-        if not isinstance(entry, dict):
-            return None
-        until = _parse_iso(str(entry.get("until", "")))
-        if until is not None and until > now:
-            return until
-        return None
+        until = _parse_iso(str(entry.get("until", ""))) if isinstance(entry, dict) else None
+        cache = getattr(self, "_health_cache", None)
+        cooldown = cache.cooldown_for(key, now) if cache is not None else None
+        if cooldown is not None and (until is None or cooldown.until > until):
+            until = cooldown.until
+        return until if until is not None and until > now else None
 
     def _rate_limited_until(
         self, conn: Mapping[str, Any] | None, route_id: str, now: datetime
@@ -813,6 +821,9 @@ class EligibilityLadder:
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None:
+            cache.reload()
         self._current_requirements = requirements
         self._current_now = now
         self._session_evidence_error = None
@@ -900,9 +911,13 @@ class EligibilityLadder:
                     cache.reload()
             upgraded: list[str] = []
             for candidate in candidates:
-                if candidate.failed_stage is None and candidate.health != "healthy":
+                if candidate.failed_stage is None:
                     health, category = self._health_status(candidate.route_id, now)
-                    if health == "healthy":
+                    if health == "unhealthy":
+                        candidate.health, candidate.health_category = health, category
+                        candidate.failed_stage = EligibilityStage.HEALTHY
+                        candidate.reason = category
+                    elif health == "healthy" and candidate.health != "healthy":
                         candidate.health, candidate.health_category = health, category
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
@@ -1142,7 +1157,7 @@ class EligibilityLadder:
             # Only credential-pool exhaustion or account failures cool the whole
             # pool (SH-1). A bad model id, a 400 or a timeout is about this route
             # and must not block healthy sibling models on the same credential.
-            if failure.category in POOL_COOLDOWN_CATEGORIES:
+            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
                 self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
         if failure.scope == "provider":
@@ -1152,6 +1167,34 @@ class EligibilityLadder:
                 provider = route_id.split("/", 1)[0].lower()
             self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
         self._persist()
+
+    def record_session_failure(
+        self,
+        route_id: str,
+        failure: FailureClassification,
+        terminal: WorkerTerminal,
+        *,
+        now: datetime,
+        provenance: str,
+    ) -> Any:
+        """Project real session failure into the same cache subsequent runs read."""
+        from verdict.orchestration.session_feedback import record_worker_failure
+
+        cache = getattr(self, "_health_cache", None)
+        if cache is None:
+            return None
+        raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
+        provider = resolve_provider(raw_provider) if raw_provider else route_id.split("/", 1)[0]
+        return record_worker_failure(
+            cache,
+            failure=failure,
+            terminal=terminal,
+            route_id=route_id,
+            provider_id=provider,
+            pool=pool_of(route_id),
+            now=now,
+            provenance=provenance,
+        )
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
         self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)

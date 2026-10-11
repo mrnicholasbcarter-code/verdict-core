@@ -543,9 +543,9 @@ class TestPersistence:
             category="rate_limited", action="REROUTE", cooldown_seconds=300.0, scope="route"
         )
         ladder.record_failure("cc/claude-sonnet-5", failure, now=NOW)
-        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) == "pool:claude"
+        assert ladder.dispatch_blocker("cc/claude-sonnet-5", now=NOW) == "route:cc/claude-sonnet-5"
         ladder.record_success("cc/claude-sonnet-5", now=NOW + timedelta(seconds=5))
-        assert ladder.dispatch_blocker("claude/claude-sonnet-5", now=NOW) is None
+        assert ladder.dispatch_blocker("cc/claude-sonnet-5", now=NOW) is None
         selected, _ = ladder.select(REQ, now=NOW + timedelta(seconds=6))
         assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
 
@@ -810,10 +810,16 @@ def test_pool_cooldown_blocks_aliases_until_expiry(tmp_path, frontier, category,
     )
     req = TaskRequirements(frontier_worthy=frontier)
     for alias in routes[1:]:
-        assert ladder.dispatch_blocker(alias, now=NOW) == "pool:claude"
         verdict = by_route(ladder.evaluate(req, now=NOW))[alias]
-        assert verdict.reason == "cooldown:pool"
-        assert verdict.cooldown_scope == "pool:claude"
+        if scope == "provider":
+            assert ladder.dispatch_blocker(alias, now=NOW) == "pool:claude"
+            assert verdict.reason == "cooldown:pool"
+            assert verdict.cooldown_scope == "pool:claude"
+        else:
+            # The classifier can identify a model-specific quota. It must not
+            # escalate that explicit route scope into credential-pool failure.
+            assert ladder.dispatch_blocker(alias, now=NOW) is None
+            assert verdict.failed_stage is None
         expired = NOW + timedelta(seconds=61)
         assert ladder.dispatch_blocker(alias, now=expired) is None
         assert by_route(ladder.evaluate(req, now=expired))[alias].failed_stage is None

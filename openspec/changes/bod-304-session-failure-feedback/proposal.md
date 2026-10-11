@@ -11,8 +11,9 @@ turning task-quality failures into route-health failures.
 ## Scope
 
 Add a reusable `record_worker_failure` helper and additive schema-1 negative
-feedback metadata. Runtime and planner callers are supplied by the integration
-owner. Only adapter-attested live terminal failures qualify. This helper does not
+feedback metadata. Runtime and planner callers project real failures through the
+ladder hook; the ladder reads active negatives and scoped cooldowns before
+selection and dispatch. Only adapter-attested live terminal failures qualify. This helper does not
 record positive health, capability passes, task quality or review judgements.
 
 Expiry follows the classified cooldown, capped at 24 hours. Route-local failures
@@ -26,5 +27,5 @@ Focused offline pytest fixtures cover persistence, half-open expiry, scoped
 cooldowns, independent writers, injected/scripted exclusion, and unknown turns.
 These are bootstrap implementation checks. No authenticated live orchestration,
 self-hosting proof, paid calls, savings claim or production health proof is implied.
-The runtime/planner wiring and integrated admission checks require integration
-validation. Existing admission remains fail-closed; expiry is not positive proof.
+Focused runtime/planner checks and cross-run selection regressions pass. Full
+release-train validation and independent cross-family review remain required. Existing admission remains fail-closed; expiry is not positive proof.

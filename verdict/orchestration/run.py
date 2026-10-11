@@ -406,12 +406,39 @@ async def plan_with_failover(
                 detail=str(exc)[:300],
                 fault_injected=source.session_ref.startswith("fault-injected"),
             )
+            feedback = getattr(selector, "record_session_failure", None)
+            if callable(feedback):
+                try:
+                    recorded = feedback(
+                        choice.route_id,
+                        failure,
+                        source,
+                        now=now(),
+                        provenance=f"{run_dir.name if run_dir else 'planner'}:plan:a{attempt}",
+                    )
+                    events.emit(
+                        "controller",
+                        route_id=choice.route_id,
+                        phase="session_feedback",
+                        recorded=bool(recorded and recorded.recorded),
+                        reason=recorded.reason if recorded is not None else "no_health_cache",
+                    )
+                except Exception as feedback_error:
+                    events.emit(
+                        "controller",
+                        route_id=choice.route_id,
+                        recorded=False,
+                        phase="session_feedback",
+                        reason=f"persistence_error:{type(feedback_error).__name__}",
+                    )
             if failure.scope != "none" and failure.cooldown_seconds > 0:
                 selector.record_failure(choice.route_id, failure, now=now())
                 until = datetime.fromtimestamp(
                     now().timestamp() + failure.cooldown_seconds, timezone.utc
                 )
-                pooled = failure.category in POOL_COOLDOWN_CATEGORIES
+                pooled = (
+                    failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
+                )
                 events.emit(
                     "cooldown",
                     key=pool_of(choice.route_id) if pooled else choice.route_id,
@@ -420,7 +447,7 @@ async def plan_with_failover(
                     until=until.isoformat(timespec="seconds"),
                 )
             tried.add(choice.route_id)
-            if failure.category in POOL_COOLDOWN_CATEGORIES:
+            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
                 tried_pools.add(pool_of(choice.route_id))
             events.emit(
                 "controller",
