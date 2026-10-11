@@ -1,7 +1,11 @@
 # Tasks
 
-- [x] Reproduce rejected-key startup crash with focused offline regressions.
-- [x] Wire explicit startup BLOCKED events into the real CLI discovery boundary.
-- [x] Keep unexpected implementation exceptions visible to crash recovery.
-- [x] Run focused supervisor checks (21 passed) and integrated startup tests (24 passed).
-- [ ] Independent review and release-train integration.
+## 1. Implementation and focused verification
+
+Ownership: story branch owner; verify with the focused tests named below.
+
+- [x] 1.1 Reproduce rejected-key startup crash with focused offline regressions.
+- [x] 1.2 Wire explicit startup BLOCKED events into the real CLI discovery boundary.
+- [x] 1.3 Keep unexpected implementation exceptions visible to crash recovery.
+- [x] 1.4 Run focused supervisor checks (21 passed) and integrated startup tests (24 passed).
+- [ ] 1.5 Independent review and release-train integration.
