@@ -313,6 +313,13 @@ class HealthEntry:
     agentic_source: str | None = None
     agentic_child_id: str | None = None
     write_revision: int = 0  # allocated only under the shared writer lock
+    # BOD-304: negative availability evidence from a real worker terminal.
+    # Missing turns stay explicit unknown; provenance contains only an opaque digest.
+    feedback_source: str | None = None
+    feedback_category: str | None = None
+    feedback_turn_count: int | None = None
+    feedback_turns_source: str | None = None
+    feedback_provenance: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -368,6 +375,12 @@ class HealthEntry:
             payload["last_success_at"] = format_datetime(self.last_success_at)
         if self.failure_scope is not None:
             payload["failure_scope"] = self.failure_scope
+        if self.feedback_source is not None:
+            payload["feedback_source"] = self.feedback_source
+            payload["feedback_category"] = self.feedback_category
+            payload["feedback_turn_count"] = self.feedback_turn_count
+            payload["feedback_turns_source"] = self.feedback_turns_source or "unknown"
+            payload["feedback_provenance"] = self.feedback_provenance
         return payload
 
     @classmethod
@@ -423,6 +436,11 @@ class HealthEntry:
                 if isinstance(value.get("failure_scope"), str) and value["failure_scope"].strip()
                 else None
             ),
+            feedback_source=value.get("feedback_source"),
+            feedback_category=value.get("feedback_category"),
+            feedback_turn_count=value.get("feedback_turn_count"),
+            feedback_turns_source=value.get("feedback_turns_source"),
+            feedback_provenance=value.get("feedback_provenance"),
         )
 
 
@@ -485,6 +503,13 @@ class ProbeResult:
     # forward onto a failure entry, and the canonical failure scope.
     last_success_at: datetime | None = None
     failure_scope: str | None = None
+    # Classified runtime cooldowns override probe backoff, bounded to 24 h.
+    negative_ttl_seconds: float | None = None
+    feedback_source: str | None = None
+    feedback_category: str | None = None
+    feedback_turn_count: int | None = None
+    feedback_turns_source: str | None = None
+    feedback_provenance: str | None = None
 
     @property
     def healthy(self) -> bool:
@@ -1158,12 +1183,18 @@ class HealthCache:
         else:
             prior = previous.consecutive_failures if previous is not None else 0
             failures = prior + 1
-            seconds = negative_seconds(
-                result.category,
-                http_status=result.http_status,
-                retry_after_seconds=result.retry_after_seconds,
-                consecutive_failures=failures,
-            )
+            if result.negative_ttl_seconds is not None:
+                seconds = result.negative_ttl_seconds
+                if not math.isfinite(seconds) or seconds <= 0:
+                    raise HealthCacheError("negative_ttl_seconds must be finite and positive")
+                seconds = min(seconds, LONG_CAP_SECONDS)
+            else:
+                seconds = negative_seconds(
+                    result.category,
+                    http_status=result.http_status,
+                    retry_after_seconds=result.retry_after_seconds,
+                    consecutive_failures=failures,
+                )
             if (
                 previous is not None
                 and not previous.healthy
@@ -1204,6 +1235,11 @@ class HealthCache:
                     else (previous.last_success_at if previous is not None else None)
                 ),
                 failure_scope=result.failure_scope,
+                feedback_source=result.feedback_source,
+                feedback_category=result.feedback_category,
+                feedback_turn_count=result.feedback_turn_count,
+                feedback_turns_source=result.feedback_turns_source,
+                feedback_provenance=result.feedback_provenance,
             )
         entry = replace(
             entry,

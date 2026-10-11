@@ -1050,7 +1050,7 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     # Provider scope: the sibling route cc/b was never dispatched either.
     assert not [e for e in events.of("dispatch") if e["route_id"] == "cc/b"]
     state = json.loads((repo.parent / "ladder-state.json").read_text())
-    assert "provider:cc" in state["cooldowns"]
+    assert "provider:cc" not in state["cooldowns"]
     assert "pool:claude" in state["cooldowns"]
     assert revoked[0]["node_id"] != cc_dispatches[0]["node_id"]
     # Both nodes complete on the other provider with the same node contract.

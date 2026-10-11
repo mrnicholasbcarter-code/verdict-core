@@ -1242,9 +1242,36 @@ class DagRuntime:
             fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
         )
+        feedback = getattr(self.selector, "record_session_failure", None)
+        if callable(feedback):
+            try:
+                recorded = feedback(
+                    run.route_id,
+                    failure,
+                    terminal,
+                    now=self.now(),
+                    provenance=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
+                )
+                self.events.emit(
+                    "controller",
+                    run.node.node_id,
+                    route_id=run.route_id,
+                    phase="session_feedback",
+                    recorded=bool(recorded and recorded.recorded),
+                    reason=recorded.reason if recorded is not None else "no_health_cache",
+                )
+            except Exception as exc:
+                self.events.emit(
+                    "controller",
+                    run.node.node_id,
+                    route_id=run.route_id,
+                    recorded=False,
+                    phase="session_feedback",
+                    reason=f"persistence_error:{type(exc).__name__}",
+                )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
-            pooled = failure.category in POOL_COOLDOWN_CATEGORIES
+            pooled = failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
             key = pool_of(run.route_id) if pooled else run.route_id
             until = datetime.fromtimestamp(
                 self.now().timestamp() + failure.cooldown_seconds, timezone.utc
