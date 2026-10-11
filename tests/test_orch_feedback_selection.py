@@ -58,7 +58,7 @@ def ladder(tmp_path: Path, state_name: str = "ladder.json") -> EligibilityLadder
 
 
 def record_runtime_failure(
-    tmp_path: Path, selected: EligibilityLadder, terminal: WorkerTerminal
+    tmp_path: Path, selected: EligibilityLadder, terminal: WorkerTerminal, route_id: str = A
 ) -> None:
     # Exercise the production handler without unrelated Git/worker execution.
     runtime = object.__new__(DagRuntime)
@@ -70,7 +70,7 @@ def record_runtime_failure(
     run = NodeRun(
         WorkNode("n1", "build functionality", kind=NodeKind.RESEARCH),
         state=NodeState.RUNNING,
-        route_id=A,
+        route_id=route_id,
         attempt=1,
     )
     runtime._record_failure(run, terminal, [])
@@ -274,3 +274,59 @@ def test_worker_blocked_task_explanation_never_poisons_health(tmp_path: Path, de
         ),
     )
     assert HealthCache(tmp_path / "health.json").entry(A) is None
+    assert selected.dispatch_blocker(A, now=NOW) is None
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 429])
+def test_credential_failure_does_not_cross_known_pool_boundary(tmp_path: Path, status: int) -> None:
+    free = "openrouter/model:free"
+    other = "openrouter/paid-model"
+    rows = [
+        {
+            "id": rid,
+            "owned_by": "openrouter",
+            "context_length": 200000,
+            "capabilities": {"tool_calling": True},
+            "pricing": {"input": 0, "output": 0},
+        }
+        for rid in [free, other]
+    ]
+    connections = [
+        {
+            "provider": "openrouter",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "free",
+        }
+    ]
+    selected = EligibilityLadder(
+        rows,
+        connections,
+        lambda _: HealthResult(True, ""),
+        tmp_path / "state.json",
+        health_cache=HealthCache(tmp_path / "health.json"),
+    )
+    record_runtime_failure(
+        tmp_path,
+        selected,
+        WorkerTerminal(
+            ok=False,
+            model=free,
+            status_code=status,
+            error="credential failure",
+            executor_kind="live",
+        ),
+        route_id=free,
+    )
+    assert selected.dispatch_blocker(free, now=NOW) == "pool:openrouter-free"
+    assert selected.dispatch_blocker(other, now=NOW) is None
+    reloaded = EligibilityLadder(
+        rows,
+        connections,
+        lambda _: HealthResult(True, ""),
+        tmp_path / "state.json",
+        health_cache=HealthCache(tmp_path / "health.json"),
+    )
+    assert reloaded.dispatch_blocker(other, now=NOW) is None
+    assert "provider:openrouter" not in reloaded._state["cooldowns"]

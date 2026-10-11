@@ -1166,7 +1166,10 @@ class EligibilityLadder:
             if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
                 self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-        if failure.scope == "provider":
+        if failure.scope == "provider" and failure.category not in POOL_COOLDOWN_CATEGORIES:
+            # Credential failures already have a canonical pool blocker above.
+            # A second provider blocker would spread a FREE-pool failure onto
+            # unrelated pools owned by the same provider (e.g. OpenRouter).
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
             provider = resolve_provider(raw_provider) if raw_provider else raw_provider
             if not provider:
