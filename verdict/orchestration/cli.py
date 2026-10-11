@@ -537,18 +537,34 @@ def _orchestrate(args: argparse.Namespace) -> int:
     refresh_kwargs: dict[str, Any] = (
         {"refresh_hook": refresh_hook} if refresh_hook is not None else {}
     )
-    selector = build_selector(
-        args.gateway,
-        scope=args.scope,
-        prefer=args.prefer,
-        load=lambda route: sum(1 for r in inflight.values() if r == route),
-        state_file=state_path,
-        **refresh_kwargs,
-        **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
-    )
+    from verdict.orchestration.eligibility_report import GatewayDiscoveryError
+    from verdict.orchestration.receipt import EventLog
+
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        selector = build_selector(
+            args.gateway,
+            scope=args.scope,
+            prefer=args.prefer,
+            load=lambda route: sum(1 for r in inflight.values() if r == route),
+            state_file=state_path,
+            **refresh_kwargs,
+            **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
+        )
+    except GatewayDiscoveryError as exc:
+        if exc.retryable:
+            raise
+        # Expected discovery blockers cannot be repaired by restarting the
+        # same controller with unchanged credentials. Settle the run so the
+        # external supervisor preserves the cause and does not burn retries.
+        reason = str(exc)[:500]
+        EventLog(run_dir / "events.jsonl").emit(
+            "run_finished", outcome="BLOCKED", reason=reason, phase="startup"
+        )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 2
     reviewer = (
         None
         if args.no_review
