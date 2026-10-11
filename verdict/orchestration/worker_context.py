@@ -60,6 +60,56 @@ class WorkerContext:
     omissions: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class WorkerPrompt:
+    """Full prompt and its actual selected pack. Counts are offline estimates."""
+
+    text: str
+    context: WorkerContext
+    mandatory_prompt_tokens: int
+    mandatory_prompt_bytes: int
+
+    def evidence(self) -> dict[str, Any]:
+        pack = self.context.pack
+        sources = []
+        if pack is not None:
+            decisions = {d.unit_id: d for d in pack.decisions}
+            for unit, slot in zip(pack.units, pack.slots, strict=True):
+                sources.append(
+                    {
+                        "path": unit.source_uri,
+                        "unit_id": unit.unit_id,
+                        "included": True,
+                        "excerpt_digest": unit.source_digest,
+                        "span": dict(unit.span) if unit.span is not None else None,
+                        "revision": unit.revision,
+                        "observed_at": unit.observed_at,
+                        "trust": unit.trust,
+                        "authority": unit.authority,
+                        "rendered_content_digest": "sha256:"
+                        + hashlib.sha256(slot.content.encode()).hexdigest(),
+                        "rendered_content_bytes": len(slot.content.encode()),
+                        "estimated_tokens": estimate_tokens(slot.content),
+                        "transform_lineage": list(unit.transform_lineage),
+                        "compiler_action": decisions[unit.unit_id].action,
+                        "compiler_reason": decisions[unit.unit_id].reason,
+                    }
+                )
+        return {
+            "sources": sources,
+            "sources_status": "actual_selected_pack",
+            "pack_id": pack.pack_id if pack is not None else None,
+            "budget_source": self.context.budget_source,
+            "omissions": list(self.context.omissions),
+            "mandatory_prompt_tokens_estimated": self.mandatory_prompt_tokens,
+            "mandatory_prompt_bytes": self.mandatory_prompt_bytes,
+            "context_bytes": len(self.context.text.encode()),
+            "context_tokens_estimated": estimate_tokens(self.context.text)
+            if self.context.text
+            else 0,
+        }
+
+
 class _SafeNativeProvider(CapabilityProvider):
     """One provider failure is a named gap, never an empty healthy result."""
 
@@ -285,7 +335,9 @@ def build_worker_context(
     it the selected window is unknown. We cap context at 4096 estimated tokens.
     """
     budget_source = (
-        "candidate_plan" if context_plan is not None else "conservative_unknown_candidate"
+        "candidate_plan"
+        if context_plan is not None and context_plan.candidate_context_window is not None
+        else "conservative_unknown_candidate"
     )
     budget = min(4096, max(0, max_context_bytes // 4))
     if context_plan is not None:
@@ -398,7 +450,16 @@ def build_worker_context(
         )
         text = summary + pack.compiled_prompt
         if len(text.encode()) <= max_context_bytes and estimate_tokens(text) <= budget:
-            return WorkerContext(text, pack, budget_source, tuple(omissions))
+            return WorkerContext(
+                text,
+                pack,
+                budget_source,
+                tuple(
+                    dict.fromkeys(
+                        (*omissions, *(d.reason for d in pack.decisions if d.action == "exclude"))
+                    )
+                ),
+            )
         if not pack.units:
             return WorkerContext("", pack, budget_source, (*omissions, "budget_exhausted"))
         last = pack.units[-1].unit_id

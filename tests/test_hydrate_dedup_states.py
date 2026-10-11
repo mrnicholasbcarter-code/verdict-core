@@ -242,10 +242,7 @@ class TestRoundTrip:
         assert view.nodes[0].compression == "not_performed"
 
     def test_prompt_and_evidence_agree_on_dedup(self, tmp_path: Path) -> None:
-        """Prompt skips duplicate; evidence also marks it deduplicated.
-        The set of paths in evidence that are NOT deduplicated matches
-        the set of paths that appear in the prompt content.
-        """
+        """Actual selected-pack evidence agrees with native path deduplication."""
         fa = tmp_path / "a.py"
         fa.write_bytes(b"a = 1\n" * 10)
         fb = tmp_path / "b.py"
@@ -261,21 +258,27 @@ class TestRoundTrip:
             acceptance=[],
             verification_command=["true"],
         )
-        prompt = hydrate_node_prompt(node, repo=tmp_path, goal="G", max_context_bytes=60_000)
-        evidence = _hydrate_sources(["a.py", "./a.py", "b.py"], tmp_path, 60_000)
-
-        # Evidence: a.py included, ./a.py deduplicated, b.py included
-        assert evidence[0]["included"] is True
-        assert evidence[1]["included"] is False
-        assert evidence[1]["reason"] == "deduplicated"
-        assert evidence[2]["included"] is True
-
-        # Prompt: a.py content appears exactly once, b.py appears once
-        # (deduplicated paths produce a note in TRUNCATION_NOTES, not a content block)
-        assert prompt.count("--- a.py ---") == 1
-        assert prompt.count("--- b.py ---") == 1
-        # The deduplicated entry leaves a note (not a content block)
-        assert "deduplicated" in prompt
+        hydrated = hydrate_node_prompt(
+            node, repo=tmp_path, goal="G", max_context_bytes=60_000, structured=True
+        )
+        evidence = hydrated.evidence()
+        required = [
+            unit for unit in hydrated.context.pack.units if unit.key.startswith("required:")
+        ]
+        assert [unit.source_uri for unit in required] == ["a.py", "b.py"]
+        assert {entry["unit_id"] for entry in evidence["sources"]} == {
+            unit.unit_id for unit in hydrated.context.pack.units
+        }
+        # WorkNode normalizes ./ aliases, and the adapter's dict.fromkeys
+        # removes exact duplicates before extraction. No false omission needed.
+        assert node.required_context == ("a.py", "a.py", "b.py")
+        assert hydrated.text.count("[EVIDENCE:required:a.py ") == 1
+        assert hydrated.text.count("[EVIDENCE:required:b.py ") == 1
+        for unit, slot in zip(
+            hydrated.context.pack.units, hydrated.context.pack.slots, strict=True
+        ):
+            assert slot.content in hydrated.text
+            assert any(entry["unit_id"] == unit.unit_id for entry in evidence["sources"])
 
     def test_legacy_event_no_compression_still_renders(self) -> None:
         """Old events without compression field must not crash."""

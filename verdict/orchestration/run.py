@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.availability import opaque_connection_token
+from verdict.context_pack import ContextPlan
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassifier,
@@ -46,6 +47,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
+from verdict.orchestration.worker_context import WorkerPrompt
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalProvider
@@ -962,9 +964,23 @@ async def run_golden_path(
             )
             events.emit("executor_map_unmatched", unmatched_keys=unmatched)
 
-    def prompt_for(node: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
+    def prompt_for(
+        node: WorkNode,
+        cwd: Path,
+        *,
+        context_budget_bytes: int = 60_000,
+        context_plan: ContextPlan | None = None,
+        mandatory_suffix: str = "",
+    ) -> WorkerPrompt:
         return hydrate_node_prompt(
-            node, repo=cwd, goal=goal, max_context_bytes=context_budget_bytes
+            node,
+            repo=cwd,
+            goal=goal,
+            max_context_bytes=context_budget_bytes,
+            max_prompt_bytes=context_budget_bytes,
+            context_plan=context_plan,
+            mandatory_suffix=mandatory_suffix,
+            structured=True,
         )
 
     runtime = DagRuntime(
