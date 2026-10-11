@@ -138,7 +138,8 @@ def run() -> None:
                                     outcome = event.get("data", {}).get("outcome")
                                     run_finished_outcome = (
                                         outcome
-                                        if outcome in {"COMPLETE", "BLOCKED", "CANCELLED"}
+                                        if isinstance(outcome, str)
+                                        and outcome in {"COMPLETE", "BLOCKED", "CANCELLED"}
                                         else None
                                     )
                                     raw_reason = event.get("data", {}).get("reason", "")
