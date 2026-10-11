@@ -135,6 +135,36 @@ verified public proof:
 | live9 | route quota, then no-final, then 429 rate limit; same node moved sonnet-4-6 -> sonnet-5 -> haiku; sibling moved to `cx/gpt-5.5`; review independence fell back to route level (review coverage not retained here) | COMPLETE; 28 integration tests reported, report not retained |
 | live10 | `verdict supervise`: generation 0 hung -> STALLED -> process group killed -> generation 1 `--resume` reused the validated node | COMPLETE reported |
 
+## Controller bounded operations and Prime ownership
+
+Supervision distinguishes real event progress from `WAITING_BOUNDED`. Initial and
+repair planning each publish a fixed, owner/generation-bound operation deadline.
+The supported cap is 600 seconds per call. An active valid call can outlast the
+ordinary stall window; its deadline and the absolute supervisor deadline still
+terminate it. Invalid, stale, extended or reopened leases do not defer stalls.
+Selection refresh, DAG operations and review subprocesses do not gain this lease
+exemption in this increment. Admission and completion proof gates are unchanged.
+
+Supervised Prime requires an explicit process environment variable
+`VERDICT_CONTROLLER_CGROUP_ROOT` pointing at an operator-selected writable delegated
+cgroup-v2 subtree. It must expose writable `cgroup.procs` and `cgroup.kill`, and
+readable `cgroup.events`. The runtime creates only its unique generation child leaf.
+Never point at the cgroup mount root. Never migrate or kill the supervising process's
+current scope. No systemd/global permissions or resource-controller settings are
+changed automatically. Missing delegation blocks Prime before payload execution.
+Unsupervised Prime keeps its existing execution behavior.
+
+The worker launcher records pending intent before spawn, joins the generation leaf
+and registers exact process identity before exec. Cleanup uses kernel `cgroup.kill`
+and requires `populated 0` before restart. Ordinary fork/clone/setsid descendants are
+contained. Pending registration, unverified revocation, ownership mismatch or cleanup
+errors block restart even after known containment is stopped. Deliberate same-UID
+cgroup escape or state tampering is outside this cooperative-controller trust model.
+Older run artifacts cannot prove the absence of workers detached before this fix.
+
+Offline fake clocks, local children and fixture cgroup files validate the mechanism;
+they do not establish live provider or self-hosting COMPLETE evidence.
+
 ## Known limits
 
 See ADR-036 "Known limits". Merge to `main`, Linear status changes and PR updates are separate

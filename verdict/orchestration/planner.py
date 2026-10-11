@@ -28,6 +28,7 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
 )
+from verdict.orchestration.controller_operations import bounded_executor_call
 from verdict.orchestration.verification import resolve_verify_argv
 from verdict.security import redact_text
 
@@ -457,8 +458,15 @@ class FrontierPlanner:
     ) -> tuple[WorkGraph, WorkerTerminal]:
         repo_map_text = repo_map(repo)
         prompt = build_planning_prompt(goal, repo_map_text, constraints)
-        terminal = await executor.run(
-            prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
+        terminal = await bounded_executor_call(
+            executor,
+            prompt,
+            route_id=route_id,
+            cwd=repo,
+            timeout_seconds=timeout_seconds,
+            run_dir=run_dir,
+            phase="planner",
+            attempt_id=f"plan-{attempt}",
         )
         if not terminal.ok:
             raise PlanningExecutorError(
@@ -488,8 +496,15 @@ class FrontierPlanner:
                     reason=str(first_error)[:300],
                     planner_output_path=output_path,
                 )
-            repaired = await executor.run(
-                repair_prompt, route_id=route_id, cwd=repo, timeout_seconds=timeout_seconds
+            repaired = await bounded_executor_call(
+                executor,
+                repair_prompt,
+                route_id=route_id,
+                cwd=repo,
+                timeout_seconds=timeout_seconds,
+                run_dir=run_dir,
+                phase="plan_repair",
+                attempt_id=f"plan-{attempt}-repair",
             )
             if events is not None:
                 events.emit(
