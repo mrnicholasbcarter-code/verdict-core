@@ -32,6 +32,7 @@ from typing import Any, ClassVar
 import httpx
 
 from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
+from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
 from verdict.orchestration.prime_settings import (
     PRIME_AGENT_DIR_ENV,
     PROJECT_SETTINGS_RELPATH,
@@ -307,14 +308,14 @@ class PrimeHeadlessExecutor:
             )
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self._command(prompt, route_id, cwd),
+                *owned_worker_command(self._command(prompt, route_id, cwd), child_env),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
                 env=child_env,
                 start_new_session=True,
             )
-        except OSError as exc:
+        except (OSError, OwnershipError) as exc:
             launch_config.cleanup()
             return WorkerTerminal(
                 executor_kind="live",
