@@ -1,7 +1,7 @@
 """Demo assets: links resolve, chart sources exist, the demo cast and run are valid.
 
-Fixture media lives in docs/guides/offline-demo.md (labelled "offline fixture"), never in
-README.md. The README may only embed live media from a committed docs/proof/*live* bundle.
+The README includes one explicitly labelled offline UI walkthrough. Fixture charts
+stay in the offline guide; live media must link a committed docs/proof/*live* bundle.
 
 No network and no matplotlib: this reads committed files and runs the receipt
 verifier on the committed demo run.
@@ -67,18 +67,36 @@ def _chart_sources() -> dict[str, tuple[str, ...]]:
     raise AssertionError("scripts/render_charts.py defines no CHART_SOURCES")
 
 
-def test_readme_embeds_no_fixture_media() -> None:
-    """Operator rule: no fixture or replayed media on the product page."""
+def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
     text = _readme()
+    title = "### Watch the interface in action"
+    assert title in text
+    block = text.split(title, 1)[1].split("<!-- A future live-model", 1)[0]
+    assert 'src="docs/assets/demo-tui.svg"' in block
+    assert '(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"' in block
+    assert (
+        "**Offline UI walkthrough — scripted workers and injected failures; no live model calls.**"
+        in block
+    )
+    assert "not model performance, savings or release certification" in block
+    assert "idle gaps over 1.5 seconds are capped" in block
+    assert "docs/guides/offline-demo.md#offline-tui-walkthrough" in block
+    assert "[Live-run evidence](#proof-from-a-live-run)" in block
+    assert text.index(title) < text.index("## Why Verdict")
     for name in FIXTURE_MEDIA:
-        assert f"docs/assets/{name}" not in text, f"README embeds fixture media: {name}"
+        if name != "demo-tui.svg":
+            assert f"docs/assets/{name}" not in text, f"README embeds other fixture media: {name}"
     assert "CLAIMS VERIFIED" not in text
     assert "alpha/claude-a" not in text
     for target in _image_targets(text):
-        if _local(target) is not None:
-            assert target.startswith("docs/proof/") and "live" in target, (
-                f"README image is not from a live proof bundle: {target}"
-            )
+        local = _local(target)
+        if local is None:
+            continue
+        assert local.is_file(), f"README image missing: {target}"
+        if target == "docs/assets/demo-tui.svg":
+            assert local.stat().st_size <= MAX_ASSET_BYTES
+        else:
+            assert target.startswith("docs/proof/") and "live" in target
 
 
 def test_offline_guide_is_labelled_and_its_images_exist() -> None:
