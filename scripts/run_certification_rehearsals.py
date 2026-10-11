@@ -99,7 +99,7 @@ def run() -> None:
             "--executor",
             "direct-gateway",
             "--capacity",
-            "free,subscription",
+            "free",
             "--max-attempts-per-node",
             "4",
             "--max-parallel",

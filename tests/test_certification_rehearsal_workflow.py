@@ -55,7 +55,7 @@ def test_rehearsal_main_only_oidc_permissions_and_protected_environment():
     script = (ROOT / "scripts/run_certification_rehearsals.py").read_text()
     for flag in (
         "--capacity",
-        "free,subscription",
+        '"free"',
         "--max-attempts-per-node",
         "--attempt-timeout",
         "--run-deadline",
