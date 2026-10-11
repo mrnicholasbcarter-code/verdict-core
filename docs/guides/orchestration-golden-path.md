@@ -78,6 +78,12 @@ verdict run-receipt <run-dir>
 
 Exit code is `0` only for `COMPLETE`.
 
+Rejected gateway credentials or permissions during selector discovery
+write a `run_finished` BLOCKED event with `phase=startup` before planning. The
+supervisor reports that cause without restarting unchanged credentials. These
+early blocked runs have events but no completion receipt. Unexpected controller
+implementation errors still use bounded crash recovery.
+
 Keep the planner's `verification_command` test-focused: the runtime runs declared
 repo quality gates at integration, after the combined tests pass. Discovery reads
 Ruff/Mypy declarations from Python configuration and `typecheck`, `lint`, and
