@@ -11,13 +11,31 @@ from tests.test_certification_rehearsal_workflow import ROOT
 
 
 @pytest.mark.parametrize(
-    "reason,expected",
+    "reason,expected,outcome,expected_outcome",
     [
-        ("no eligible model: harness_inventory_unavailable", "harness_inventory_unavailable"),
-        ("provider-secret https://private.invalid snapshot-secret", "unclassified"),
+        (
+            "no eligible model: harness_inventory_unavailable",
+            "harness_inventory_unavailable",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "provider-secret https://private.invalid snapshot-secret",
+            "unclassified",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "no eligible model",
+            "unclassified",
+            "provider-secret https://private.invalid snapshot-secret",
+            None,
+        ),
     ],
 )
-def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reason, expected):
+def test_failed_child_retains_only_safe_diagnostics(
+    tmp_path, monkeypatch, reason, expected, outcome, expected_outcome
+):
     secret = "provider-secret"
     url = "https://private.invalid"
     snapshot = "snapshot-secret"
@@ -37,7 +55,7 @@ def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reaso
         event = {
             "type": "run_finished",
             "data": {
-                "outcome": "BLOCKED",
+                "outcome": outcome,
                 "reason": reason,
                 "secret": secret,
                 "url": url,
@@ -62,7 +80,7 @@ def test_failed_child_retains_only_safe_diagnostics(tmp_path, monkeypatch, reaso
     assert data["rehearsal"] == "clean"
     assert data["error_category"] == "child_exit"
     assert data["run_finished_reason"] == expected
-    assert data["run_finished_outcome"] == "BLOCKED"
+    assert data["run_finished_outcome"] == expected_outcome
     assert len(raw) < 2048
     assert not list((tmp_path / "attested-rehearsals").iterdir())
 
