@@ -298,3 +298,198 @@ async def test_runtime_dispatches_planner_native_pack_to_scripted_worker(tmp_pat
     assert "WORKER_CONTEXT" in prompts[0]
     assert "must preserve integer input" in prompts[0]
     assert "def compute_widget" in prompts[0]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "private",
+        "private_directory",
+        "transcript_file",
+        "transcript_directory",
+        "symlink",
+        "secret",
+    ],
+)
+def test_native_aggregate_members_are_filtered_before_graph_and_symbols(
+    tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.code_graph import CodeGraphEngine
+    from verdict.context_sources import _extract_definitions
+
+    node = _repo(tmp_path)
+    marker = "UNSAFE_AGGREGATE_CANARY"
+    content = f"def compute_widget():\n    return 9\ndef test_compute_widget_{marker}():\n    return compute_widget()\n"
+    if kind == "private":
+        unsafe = tmp_path / ".private/test_hidden.py"
+    elif kind == "private_directory":
+        unsafe = tmp_path / "private/test_hidden.py"
+    elif kind == "transcript_file":
+        unsafe = tmp_path / "docs/transcript.py"
+    elif kind == "transcript_directory":
+        unsafe = tmp_path / "transcripts/raw.py"
+    elif kind == "symlink":
+        unsafe = tmp_path / "pkg/outside_link.py"
+    else:
+        unsafe = tmp_path / "pkg/sensitive.py"
+        # Full-source policy must reject even credentials beyond all excerpt caps.
+        content += "# harmless\n" * 1500 + "# api_key = 'fixture-credential-canary'\n"
+    unsafe.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "symlink":
+        outside = tmp_path.parent / "outside.py"
+        outside.write_text(content)
+        unsafe.symlink_to(outside)
+    else:
+        unsafe.write_text(content)
+    parsed = []
+    original_parse = CodeGraphEngine.parse_file
+
+    def parse(self, path, root):
+        parsed.append(path)
+        return original_parse(self, path, root)
+
+    monkeypatch.setattr(CodeGraphEngine, "parse_file", parse)
+    definition_sources = []
+
+    def definitions(path, root, symbols):
+        definition_sources.append(path)
+        return _extract_definitions(path, root, symbols)
+
+    from verdict import context_sources
+
+    monkeypatch.setattr(context_sources, "_extract_definitions", definitions)
+    context = build_worker_context(node, repo=tmp_path)
+    assert marker not in context.text
+    assert unsafe not in parsed and unsafe not in definition_sources
+    assert any("excluded_before_aggregation" in reason for reason in context.omissions)
+    assert "def compute_widget" in context.text
+    assert "test_compute_widget" in context.text
+    # Aggregates are assembled only after source policy ran, not output masking.
+    aggregates = [unit for unit in context.pack.units if unit.source_uri.startswith("code://")]
+    assert aggregates
+    assert all("source-filtered" in unit.transform_lineage for unit in aggregates)
+
+
+def test_all_transcript_and_private_path_components_are_rejected(tmp_path: Path) -> None:
+    node = _repo(tmp_path)
+    (tmp_path / "transcripts").mkdir()
+    (tmp_path / "transcripts/raw.md").write_text("compute_widget RAW_TRANSCRIPT_DIRECTORY_CANARY")
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions/raw.md").write_text("compute_widget RAW_SESSION_DIRECTORY_CANARY")
+    # Lexical aliases cannot hide forbidden source identity.
+    (tmp_path / "docs/safe_alias.md").symlink_to(tmp_path / "transcripts/raw.md")
+    node = WorkNode(
+        "widget",
+        node.objective,
+        owned_files=node.owned_files,
+        required_context=("transcripts/raw.md", "sessions/raw.md", "docs/safe_alias.md"),
+        verification_command=("true",),
+    )
+    context = build_worker_context(node, repo=tmp_path)
+    assert "RAW_TRANSCRIPT_DIRECTORY_CANARY" not in context.text
+    assert "RAW_SESSION_DIRECTORY_CANARY" not in context.text
+    assert "unsafe_or_unsupported_source" in context.omissions
+
+
+def test_unfiltered_aggregate_is_rejected_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from verdict import context_sources
+
+    node = _repo(tmp_path)
+    original = context_sources.NativeCodeProvider.provide
+
+    def unfiltered(self, **kwargs):
+        result = original(self, **kwargs)
+        if kwargs["capability_id"] == "code.symbols":
+            return replace(
+                result,
+                units=tuple(replace(unit, transform_lineage=("raw",)) for unit in result.units),
+            )
+        return result
+
+    monkeypatch.setattr(context_sources.NativeCodeProvider, "provide", unfiltered)
+    context = build_worker_context(node, repo=tmp_path)
+    assert not any(unit.source_uri == "code://symbols" for unit in context.pack.units)
+    assert "unsafe_or_sensitive_retrieval_excluded" in context.omissions
+
+
+@pytest.mark.parametrize("provider_kind", ["symbols", "graph", "docs"])
+def test_native_provider_source_filter_precedes_discovery_reads_and_aggregation(
+    tmp_path: Path, provider_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.context_sources import NativeCodeProvider, NativeDocsProvider, NativeGraphProvider
+
+    node = _repo(tmp_path)
+    bad = tmp_path / "pkg/blocked.py"
+    bad.write_text("def test_compute_widget_BLOCKED_CANARY():\n    return compute_widget()\n")
+    bad_doc = tmp_path / "docs/blocked.md"
+    bad_doc.write_text("compute_widget BLOCKED_DOC_CANARY")
+    checked = []
+
+    def source_filter(path):
+        checked.append(path)
+        return path not in {bad, bad_doc}
+
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path in {bad, bad_doc}:
+            raise AssertionError("provider read source before source filter")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    provider = {
+        "symbols": NativeCodeProvider,
+        "graph": NativeGraphProvider,
+        "docs": NativeDocsProvider,
+    }[provider_kind]()
+    capability = {"symbols": "code.symbols", "graph": "tests.impact", "docs": "docs.project"}[
+        provider_kind
+    ]
+    result = provider.provide(
+        capability_id=capability,
+        query=node.objective,
+        repo_root=tmp_path,
+        hints={"symbols": ("compute_widget",), "source_filter": source_filter},
+    )
+    assert result.units
+    assert all(
+        "BLOCKED_CANARY" not in unit.content and "BLOCKED_DOC_CANARY" not in unit.content
+        for unit in result.units
+    )
+    assert (bad_doc if provider_kind == "docs" else bad) in checked
+
+
+def test_arbitrary_provider_cannot_claim_filtered_aggregate_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.context_intelligence import NativeCapabilityResolver
+    from verdict.context_sources import CapabilityProvider, ProviderResult, make_unit
+
+    node = _repo(tmp_path)
+
+    class PretendProvider(CapabilityProvider):
+        def provide(self, **kwargs):
+            unit = make_unit(
+                slot_type="evidence",
+                key="pretend",
+                content="UNTRUSTED_AGGREGATE_CANARY",
+                source_uri="code://symbols",
+                authority="pretend",
+                transform_lineage=("raw", "source-filtered"),
+            )
+            return ProviderResult(kwargs["capability_id"], self.provider_id, (unit,))
+
+    original = NativeCapabilityResolver.resolve_all
+
+    def resolve(self, capability):
+        if capability == "code.symbols":
+            return (PretendProvider("pretend", frozenset({"code.symbols"})),)
+        return original(self, capability)
+
+    monkeypatch.setattr(NativeCapabilityResolver, "resolve_all", resolve)
+    context = build_worker_context(node, repo=tmp_path)
+    assert "UNTRUSTED_AGGREGATE_CANARY" not in context.text

@@ -28,7 +28,13 @@ from verdict.context_pack import (
     ContextUnit,
     estimate_tokens,
 )
-from verdict.context_sources import CapabilityProvider, ProviderResult, make_unit
+from verdict.context_sources import (
+    CapabilityProvider,
+    NativeCodeProvider,
+    NativeGraphProvider,
+    ProviderResult,
+    make_unit,
+)
 from verdict.orchestration.contracts import WorkNode
 from verdict.security import redact_text
 
@@ -58,16 +64,33 @@ class _SafeNativeProvider(CapabilityProvider):
     """One provider failure is a named gap, never an empty healthy result."""
 
     wrapped: CapabilityProvider
+    filtered_aggregates: dict[int, ContextUnit]
 
-    def __init__(self, wrapped: CapabilityProvider) -> None:
+    def __init__(
+        self, wrapped: CapabilityProvider, filtered_aggregates: dict[int, ContextUnit]
+    ) -> None:
         super().__init__(
             wrapped.provider_id, wrapped.capabilities, wrapped.authority, wrapped.health
         )
         object.__setattr__(self, "wrapped", wrapped)
+        object.__setattr__(self, "filtered_aggregates", filtered_aggregates)
 
     def provide(self, **kwargs: Any) -> ProviderResult:
         try:
-            return self.wrapped.provide(**kwargs)
+            result = self.wrapped.provide(**kwargs)
+            hints = kwargs.get("hints") or {}
+            # Identity provenance is recorded by this trusted adapter boundary,
+            # not accepted from arbitrary provider metadata. Only these exact
+            # native implementations apply the callback before aggregation.
+            if type(self.wrapped) in {NativeCodeProvider, NativeGraphProvider} and callable(
+                hints.get("source_filter")
+            ):
+                self.filtered_aggregates.update(
+                    (id(unit), unit)
+                    for unit in result.units
+                    if "source-filtered" in unit.transform_lineage
+                )
+            return result
         except Exception:
             # An optional graph/parser failure must not remove definitions or docs.
             # Exception messages can contain content or credentials; do not render them.
@@ -77,21 +100,26 @@ class _SafeNativeProvider(CapabilityProvider):
 
 
 def _safe_path(repo: Path, rel: str) -> Path | None:
-    path = (repo / rel).resolve()
+    root = repo.resolve()
+    lexical = repo / rel
     try:
-        relative = path.relative_to(repo.resolve())
-    except ValueError:
+        # Check both the named path and symlink target. A safe target must not
+        # make a transcript/private alias acceptable (or vice versa).
+        named = lexical.absolute().relative_to(root)
+        path = lexical.resolve()
+        relative = path.relative_to(root)
+    except (OSError, ValueError):
         return None
-    if any(
-        part.startswith(".") or part in {"node_modules", "__pycache__"} for part in relative.parts
-    ):
-        return None
+    forbidden = ("private", "transcript", "conversation", "session", "credentials")
+    for candidate in (named, relative):
+        if any(
+            part.startswith(".")
+            or part in {"node_modules", "__pycache__"}
+            or any(word in part.lower() for word in forbidden)
+            for part in candidate.parts
+        ):
+            return None
     if path.suffix.lower() not in {".py", ".md", ".rst", ".txt", ".toml", ".yaml", ".yml"}:
-        return None
-    if any(
-        word in path.name.lower()
-        for word in ("transcript", "conversation", "session", "credentials")
-    ):
         return None
     return path
 
@@ -187,9 +215,13 @@ def _required_units(
     return units, omissions
 
 
-def _cited(unit: ContextUnit, repo: Path) -> ContextUnit | None:
+def _cited(
+    unit: ContextUnit, repo: Path, filtered_aggregates: dict[int, ContextUnit]
+) -> ContextUnit | None:
     if unit.slot_type in {"history", "memory"} or redact_text(unit.content) != unit.content:
         return None
+    if unit.source_uri.startswith("code://") and filtered_aggregates.get(id(unit)) is not unit:
+        return None  # aggregate provenance must prove filtering before assembly
     if not unit.source_uri.startswith("code://") and _safe_path(repo, unit.source_uri) is None:
         return None
     if redact_text(unit.source_uri + unit.key) != unit.source_uri + unit.key:
@@ -288,7 +320,32 @@ def build_worker_context(
     # Reuse Core planning, but prioritize the node's definitions, callers,
     # tests and design instead of generic task/git/memory units. No transcripts.
     requests = {r.capability_id: r for r in query.requests}
-    query = replace(query, requests=tuple(replace(requests[c], max_units=2) for c in _CAPABILITIES))
+    source_checks: dict[str, bool] = {}
+
+    def source_filter(path: Path) -> bool:
+        key = str(path.absolute())
+        if key not in source_checks:
+            try:
+                rel = str(path.absolute().relative_to(repo.resolve()))
+            except ValueError:
+                source_checks[key] = False
+            else:
+                source_checks[key] = _read(repo, rel) is not None
+            if not source_checks[key]:
+                omissions.append("unsafe_or_sensitive_source_excluded_before_aggregation")
+        return source_checks[key]
+
+    query = replace(
+        query,
+        requests=tuple(
+            replace(
+                requests[c],
+                max_units=2,
+                hints={**requests[c].hints, "source_filter": source_filter},
+            )
+            for c in _CAPABILITIES
+        ),
+    )
     registry = build_default_registry()
     for capability in _CAPABILITIES:
         decision = registry.resolve(capability)
@@ -300,8 +357,9 @@ def build_worker_context(
         for capability in _CAPABILITIES
         for provider in native.resolve_all(capability)
     }
+    filtered_aggregates: dict[int, ContextUnit] = {}
     safe = NativeCapabilityResolver(
-        tuple(_SafeNativeProvider(provider) for provider in providers.values())
+        tuple(_SafeNativeProvider(provider, filtered_aggregates) for provider in providers.values())
     )
     try:
         retrieval = execute_context_query(query, repo_root=repo, resolver=safe)
@@ -311,7 +369,9 @@ def build_worker_context(
     if retrieval is not None:
         units.extend(retrieval.units)
         omissions.extend(f"{gap.capability_id}:{gap.reason}" for gap in retrieval.coverage.omitted)
-    cited = [item for unit in units if (item := _cited(unit, repo)) is not None]
+    cited = [
+        item for unit in units if (item := _cited(unit, repo, filtered_aggregates)) is not None
+    ]
     if len(cited) < len(units):
         omissions.append("unsafe_or_sensitive_retrieval_excluded")
     plan = ContextPlan(

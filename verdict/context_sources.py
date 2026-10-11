@@ -11,11 +11,11 @@ import hashlib
 import re
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from verdict.context_pack import ContextUnit
 from verdict.memory_plane import MemoryPlane
@@ -192,7 +192,23 @@ class _SymbolHit:
     is_definition: bool
 
 
-def _iter_py_files(root: Path) -> list[Path]:
+def _source_filter(hints: Mapping[str, Any] | None) -> Callable[[Path], bool] | None:
+    """Optional source policy contract carried in existing provider hints."""
+    policy = hints.get("source_filter") if hints else None
+    return cast(Callable[[Path], bool], policy) if callable(policy) else None
+
+
+def _source_allowed(path: Path, hints: Mapping[str, Any] | None) -> bool:
+    """Optional caller policy runs before source reads and aggregate assembly.
+
+    Worker callers use this to validate full source and resolved containment.
+    Other callers retain the native baseline's existing discovery behavior.
+    """
+    source_filter = _source_filter(hints)
+    return source_filter(path) if source_filter is not None else True
+
+
+def _iter_py_files(root: Path, hints: Mapping[str, Any] | None = None) -> list[Path]:
     if not root.is_dir():
         return []
     files: list[Path] = []
@@ -205,7 +221,8 @@ def _iter_py_files(root: Path) -> list[Path]:
             rel = path
         if _skip_path(rel):
             continue
-        files.append(path)
+        if _source_allowed(path, hints):
+            files.append(path)
     return sorted(files)
 
 
@@ -326,7 +343,7 @@ class NativeCodeProvider(CapabilityProvider):
         if not symbols:
             return ProviderResult(capability_id, self.provider_id, gap_reason="no_symbol_seed")
         units: list[ContextUnit] = []
-        files = _iter_py_files(root)
+        files = _iter_py_files(root, hints)
         if capability_id == "code.definitions":
             for path in files:
                 for hit in _extract_definitions(path, root, symbols):
@@ -384,7 +401,8 @@ class NativeCodeProvider(CapabilityProvider):
                     content="\n".join(lines_out),
                     source_uri="code://symbols",
                     authority="native-code",
-                    transform_lineage=("raw", "ast-symbol-index"),
+                    transform_lineage=("raw", "ast-symbol-index")
+                    + (("source-filtered",) if _source_filter(hints) is not None else ()),
                 )
                 if unit is not None:
                     units.append(unit)
@@ -435,6 +453,8 @@ class NativeDocsProvider(CapabilityProvider):
                 continue
             rel = _rel(path, root)
             if rel in seen:
+                continue
+            if not _source_allowed(path, hints):
                 continue
             try:
                 payload = path.read_text(encoding="utf-8", errors="replace")[:max_file_bytes]
@@ -711,7 +731,11 @@ class NativeGraphProvider(CapabilityProvider):
 
         root = repo_root.resolve()
         engine = CodeGraphEngine()
-        engine.parse_directory(root)
+        if _source_filter(hints) is not None:
+            for path in _iter_py_files(root, hints):
+                engine.parse_file(path, root)
+        else:
+            engine.parse_directory(root)
         symbols = _symbols_from_hints(hints, query)
         lines: list[str] = []
         if capability_id == "tests.impact":
@@ -739,7 +763,8 @@ class NativeGraphProvider(CapabilityProvider):
             content="\n".join(lines)[:max_file_bytes],
             source_uri=f"code://{capability_id}",
             authority="native-code-graph",
-            transform_lineage=("raw", "code-graph-slice"),
+            transform_lineage=("raw", "code-graph-slice")
+            + (("source-filtered",) if _source_filter(hints) is not None else ()),
         )
         units = (unit,) if unit is not None else ()
         return ProviderResult(capability_id, self.provider_id, units)
