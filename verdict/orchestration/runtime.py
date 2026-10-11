@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.orchestration.candidate_builder import (
     MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
 )
@@ -63,10 +64,13 @@ from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
+from verdict.orchestration.worker_context import WorkerPrompt
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
 _sleep = asyncio.sleep
+_WORKER_OUTPUT_RESERVE = 1024
+_WORKER_SAFETY_RESERVE = 512
 
 
 class EventSink(Protocol):
@@ -144,6 +148,7 @@ class NodeRun:
     failure_feedback: str = ""
     rehydrated_routes: set[str] = field(default_factory=set)
     excluded_pools: set[str] = field(default_factory=set)
+    selected_context_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -262,7 +267,7 @@ class DagRuntime:
         executor: WorkerExecutor,
         classifier: FailureClassifier,
         events: EventSink,
-        prompt_for: Callable[[WorkNode, Path], str],
+        prompt_for: Callable[..., str | WorkerPrompt],
         reviewer: Reviewer | None = None,
         policy: RuntimePolicy = RuntimePolicy(),
         runner: Runner = subprocess_runner,
@@ -739,6 +744,7 @@ class DagRuntime:
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id
+            run.selected_context_window = choice.context_window
             self.events.emit(
                 "eligibility",
                 node_id,
@@ -1008,16 +1014,63 @@ class DagRuntime:
 
     def _hydrator_takes_budget(self) -> bool:
         try:
-            return "context_budget_bytes" in inspect.signature(self.prompt_for).parameters
+            params = inspect.signature(self.prompt_for).parameters
         except (TypeError, ValueError):
             return False
+        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()) or any(
+            key in params and params[key].kind != inspect.Parameter.POSITIONAL_ONLY
+            for key in ("context_budget_bytes", "context_plan")
+        )
 
-    def _prompt(self, node: WorkNode, worktree: Path, budget: int) -> str:
-        """Hydrate the node prompt; pass the byte budget when the hydrator takes one."""
-        if self._hydrator_takes_budget():
-            hydrate: Any = self.prompt_for
-            return str(hydrate(node, worktree, context_budget_bytes=budget))
-        return self.prompt_for(node, worktree)
+    def _context_plan(self, run: NodeRun, budget: int) -> ContextPlan:
+        # RouteVerdict already owns this fact. It is a conservative catalog
+        # ceiling: the public contract does not distinguish input-only from
+        # total windows. Never infer the source shape or query private inventory.
+        output, safety = _WORKER_OUTPUT_RESERVE, _WORKER_SAFETY_RESERVE
+        window = run.selected_context_window
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+            window = None
+        total = min(window if window is not None else 8192, max(0, budget // 4) + output + safety)
+        return ContextPlan(
+            plan_id=f"worker:{run.node.node_id}:a{run.attempt}",
+            candidate_id=run.route_id,
+            # ContextPlan requires one remaining input token. Clamp reserves
+            # only to represent a tiny ceiling, not to waive the runtime's
+            # reserve policy. The event records the shortfall and rejects input.
+            token_budget=max(1, total),
+            output_token_reserve=min(output, max(0, total - 1)),
+            tool_token_reserve=min(safety, max(0, total - output - 1)),
+            candidate_context_window=window,
+        )
+
+    def _prompt(
+        self, node: WorkNode, worktree: Path, budget: int, plan: ContextPlan, suffix: str
+    ) -> str | WorkerPrompt:
+        """Pass only supported keywords; legacy strings have unknown provenance."""
+        values: dict[str, Any] = {
+            "context_budget_bytes": budget,
+            "context_plan": plan,
+            "mandatory_suffix": suffix,
+        }
+        params: Mapping[str, inspect.Parameter]
+        try:
+            params = inspect.signature(self.prompt_for).parameters
+        except (TypeError, ValueError):
+            params = {}
+        arbitrary = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs = {
+            k: v
+            for k, v in values.items()
+            if arbitrary or (k in params and params[k].kind != inspect.Parameter.POSITIONAL_ONLY)
+        }
+        result = self.prompt_for(node, worktree, **kwargs)
+        if "mandatory_suffix" not in kwargs and suffix:
+            if isinstance(result, WorkerPrompt):
+                # Metadata is no longer authoritative after a foreign hydrator
+                # omitted retry instructions. Report unknown sources, not a lie.
+                return result.text + suffix
+            return result + suffix
+        return result
 
     def _repack(self, run: NodeRun) -> bool:
         """Halve the node's context budget after an overflow. False once at the floor."""
@@ -1073,7 +1126,8 @@ class DagRuntime:
                 )
                 self._set(run, NodeState.RUNNING)
                 budget = run.context_budget or self.policy.context_budget_bytes
-                prompt = self._prompt(node, worktree, budget)
+                plan = self._context_plan(run, budget)
+                suffix = ""
                 if run.failure_feedback:
                     ownership = run.failures[-1].category == "ownership_violation"
                     header = (
@@ -1081,22 +1135,81 @@ class DagRuntime:
                         if ownership
                         else "PREVIOUS_ATTEMPT_FAILED_VERIFICATION"
                     )
-                    prompt += (
+                    suffix = (
                         f"\n\n{header}:\n"
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
-                prompt_bytes = len(prompt.encode())
+                hydrated = self._prompt(node, worktree, budget, plan, suffix)
+                prompt = hydrated.text if isinstance(hydrated, WorkerPrompt) else hydrated
+                evidence = (
+                    hydrated.evidence()
+                    if isinstance(hydrated, WorkerPrompt)
+                    else {
+                        "sources": [],
+                        "sources_status": "unknown_legacy_callback",
+                        "budget_source": "candidate_plan"
+                        if plan.candidate_context_window is not None
+                        else "conservative_unknown_candidate",
+                        "omissions": ["legacy_callback_pack_provenance_unavailable"],
+                    }
+                )
+                input_limit = plan.input_token_budget
+                if plan.candidate_context_window is not None:
+                    input_limit = max(
+                        0,
+                        min(
+                            input_limit,
+                            plan.candidate_context_window
+                            - _WORKER_OUTPUT_RESERVE
+                            - _WORKER_SAFETY_RESERVE,
+                        ),
+                    )
+                estimated = estimate_tokens(prompt)
+                fits = estimated <= input_limit and len(prompt.encode()) <= budget
                 self.events.emit(
                     "hydrate",
                     node.node_id,
                     context_files=list(node.required_context),
-                    prompt_bytes=prompt_bytes,
-                    truncated="[truncated" in prompt.lower(),
+                    prompt_bytes=len(prompt.encode()),
+                    truncated=bool(evidence["omissions"]),
                     budget_bytes=budget,
-                    sources=_hydrate_sources(node.required_context, worktree, budget),
+                    route_id=run.route_id,
+                    context_plan=plan.to_dict(),
+                    input_token_budget=input_limit,
+                    reserve_policy={
+                        "output_tokens": _WORKER_OUTPUT_RESERVE,
+                        "safety_tokens": _WORKER_SAFETY_RESERVE,
+                        "shortfall_tokens": _WORKER_OUTPUT_RESERVE
+                        + _WORKER_SAFETY_RESERVE
+                        - plan.output_token_reserve
+                        - plan.tool_token_reserve,
+                    },
+                    prompt_tokens_estimated=estimated,
+                    prompt_tokens_measured=None,
+                    tokenizer="unknown:offline_four_char_estimate",
+                    estimated_fit=fits,
                     compression="not_performed",
+                    **evidence,
                 )
+                if not fits:
+                    # This is a local input failure, not admission or provider
+                    # health. Do not launch or let transport classification cool
+                    # a route for mandatory instructions that cannot fit.
+                    reason = "context_input_rejected: full prompt exceeds conservative input budget"
+                    terminal = WorkerTerminal(ok=False, error=reason)
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "context_input_rejected", "FAIL_CLOSED", 0, "none", reason
+                        ),
+                    )
+                    run.reason = reason
+                    self._set(run, NodeState.BLOCKED, reason=reason)
+                    await self.git.remove_worktree(worktree)
+                    return True  # attempt settled locally; do not reselect
                 terminal = await self._execute(prompt, run.route_id, worktree)
             finally:
                 self.inflight.pop(node.node_id, None)
@@ -1577,7 +1690,10 @@ def _normalize_context_path(rel: str) -> str:
 def _hydrate_sources(
     required_context: Sequence[str], worktree: Path, budget_bytes: int
 ) -> list[dict[str, Any]]:
-    """Build per-source entries from the same data hydrate_node_prompt uses.
+    """Legacy prefix accounting retained for historical tooling only.
+
+    Production hydrate events MUST NOT use this helper. It does not describe
+    the selected native pack.
 
     Normalises each path and de-duplicates: the *first* occurrence of a
     canonical path is processed normally; subsequent occurrences get
