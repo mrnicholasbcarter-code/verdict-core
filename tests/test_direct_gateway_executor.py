@@ -1459,3 +1459,20 @@ def test_excerpts_never_exceed_their_budget(tmp_path: Path) -> None:
     )
     excerpt = prompt.split("never the whole file) ---\n", 1)[1]
     assert len(excerpt.encode()) <= 3000
+
+
+def test_repeated_edit_blocks_for_one_file_apply_in_order(tmp_path: Path) -> None:
+    """Live finding 2026-10-12: a model wrote one FILE block per edited region."""
+    (tmp_path / "owned.py").write_text("a = 1\nb = 2\n")
+    hunk = "FILE: owned.py\n```\n<<<<<<< SEARCH\n{s}=======\n{r}>>>>>>> REPLACE\n```\n"
+    output = hunk.format(s="a = 1\n", r="a = 10\n") + hunk.format(s="b = 2\n", r="b = 20\n")
+    files = DirectGatewayExecutor._extract_files(output)
+    assert files is not None
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None and resolved["owned.py"] == "a = 10\nb = 20\n"
+
+
+def test_repeated_complete_contents_blocks_are_refused() -> None:
+    output = "FILE: owned.py\n```\nx = 1\n```\nFILE: owned.py\n```\nx = 2\n```"
+    with pytest.raises(ValueError, match="duplicate FILE block"):
+        DirectGatewayExecutor._extract_files(output)

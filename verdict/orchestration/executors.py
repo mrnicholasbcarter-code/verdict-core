@@ -850,8 +850,8 @@ class DirectGatewayExecutor:
             if not line.startswith("FILE:"):
                 continue
             path = line[5:].strip()
-            if not path or path in files:
-                raise ValueError("diff_rejected: malformed FILE block: empty or duplicate path")
+            if not path:
+                raise ValueError("diff_rejected: malformed FILE block: empty path")
             if index >= len(lines):
                 raise ValueError(f"diff_rejected: malformed FILE block for {path}: missing fence")
             opening = re.fullmatch(r"(`{3,}|~{3,})[^`~]*", lines[index].rstrip("\r\n"))
@@ -867,7 +867,17 @@ class DirectGatewayExecutor:
                 raise ValueError(
                     f"diff_rejected: malformed FILE block for {path}: missing closing fence"
                 )
-            files[path] = "".join(content)
+            body = "".join(content)
+            if path in files:
+                # Several SEARCH/REPLACE blocks for one file are applied in order;
+                # a repeated complete-contents block is ambiguous and refused.
+                if not (
+                    DirectGatewayExecutor._EDIT_RE.search(files[path])
+                    and DirectGatewayExecutor._EDIT_RE.search(body)
+                ):
+                    raise ValueError(f"diff_rejected: duplicate FILE block for {path}")
+                body = files[path] + body
+            files[path] = body
             index += 1
         return files or None
 
