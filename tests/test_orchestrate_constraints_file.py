@@ -107,3 +107,36 @@ def test_run_started_records_only_a_digest_of_the_constraints(tmp_path: Path) ->
     started = next(e for e in events if e["type"] == "run_started")
     assert started["data"]["constraints_sha256"] == hashlib.sha256(text.encode()).hexdigest()
     assert text not in (result.run_dir / "events.jsonl").read_text()
+
+
+def test_resume_refuses_different_constraints_and_keeps_the_original_digest(tmp_path: Path) -> None:
+    import asyncio
+
+    from tests.test_orch_stages import _Classifier, _Executor, _repo, _Reviewer, _Selector
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+
+    repo = _repo(tmp_path)
+    graph = WorkGraph(
+        "g", (WorkNode("a", "write a", owned_files=("a.txt",), verification_command=("true",)),)
+    )
+    common: dict[str, Any] = dict(
+        repo=repo,
+        runs_root=tmp_path / "runs",
+        selector=_Selector(),
+        executor=_Executor(),
+        classifier=_Classifier(),
+        reviewer=_Reviewer(),
+        graph=graph,
+        run_id="r1",
+    )
+    asyncio.run(run.run_golden_path("g", constraints="original lesson", **common))
+    changed = asyncio.run(run.run_golden_path("g", constraints="different lesson", **common))
+    assert changed.outcome == "BLOCKED" and "constraints" in changed.reason
+    asyncio.run(run.run_golden_path("g", **common))  # resume without the file is allowed
+    log = (tmp_path / "runs" / "r1" / "events.jsonl").read_text().splitlines()
+    digests = {
+        json.loads(line)["data"].get("constraints_sha256")
+        for line in log
+        if json.loads(line)["type"] == "run_started"
+    }
+    assert digests == {hashlib.sha256(b"original lesson").hexdigest()}

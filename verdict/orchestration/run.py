@@ -700,6 +700,18 @@ async def run_golden_path(
     prior_started = next((e for e in log.read() if e.type == "run_started"), None)
     producer = capture_producer() if prior_started is None else producer_from_started(prior_started)
     producer_kwargs: dict[str, Any] = {"producer": producer} if producer is not None else {}
+    constraints_digest = hashlib.sha256(constraints.encode()).hexdigest() if constraints else ""
+    if prior_started is not None:
+        # A resumed run keeps the constraints its plan was made under.
+        original = str(prior_started.data.get("constraints_sha256") or "")
+        if constraints and constraints_digest != original:
+            reason = "resume constraints differ from the constraints the run was planned under"
+            events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=reason)
+            _otel_root.end()
+            return GoldenRunResult(
+                run_dir, RunOutcome.BLOCKED.value, reason, run_dir / "receipt.json"
+            )
+        constraints_digest = original
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -723,11 +735,7 @@ async def run_golden_path(
         mode=mode,
         **producer_kwargs,
         # Digest only: the text itself reaches the planner prompt, not the event log.
-        **(
-            {"constraints_sha256": hashlib.sha256(constraints.encode()).hexdigest()}
-            if constraints
-            else {}
-        ),
+        **({"constraints_sha256": constraints_digest} if constraints_digest else {}),
     )
     if resumed:
         events.emit(
