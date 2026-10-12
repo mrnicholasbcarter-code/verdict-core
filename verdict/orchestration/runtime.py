@@ -321,6 +321,17 @@ class DagRuntime:
         self._cancel_requested = False
         self._processed_controls: set[str] = set()
         self._recovery_budget = RecoveryBudget(max_attempts_per_node=policy.max_attempts_per_node)
+        # The 900s attempt timeout ceiling (see _execute's min(..., 900.0)) is a
+        # hard operational limit. A configured value above it would otherwise be
+        # silently unusable; make the clamp an explicit, one-time event per run,
+        # emitted here (before any dispatch) rather than hidden inside _execute.
+        if policy.attempt_timeout_seconds > 900.0:
+            self.events.emit(
+                "controller",
+                state="ATTEMPT_TIMEOUT_CLAMPED",
+                configured=policy.attempt_timeout_seconds,
+                applied=900.0,
+            )
 
     # ------------------------------------------------------------------ state
     def _set(self, run: NodeRun, state: NodeState, **data: Any) -> None:
