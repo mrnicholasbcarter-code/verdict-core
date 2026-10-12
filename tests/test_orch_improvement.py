@@ -172,6 +172,7 @@ def test_decisive_failure_of_blocked_node_classifies_and_points_to_later_event(
     tmp_path: Path,
 ) -> None:
     """An early upstream_temporary failure followed by a final verification_failed must classify as verification."""
+    (tmp_path / "graph.json").write_text(json.dumps({"nodes": [{"node_id": "a"}]}))
     log = EventLog(tmp_path / "events.jsonl")
     log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
     log.emit("failure", node_id="a", category="verification_failed", action="RETRY")
@@ -182,6 +183,7 @@ def test_decisive_failure_of_blocked_node_classifies_and_points_to_later_event(
 
 
 def test_decisive_failure_with_node_prefix_reason(tmp_path: Path) -> None:
+    (tmp_path / "graph.json").write_text(json.dumps({"nodes": [{"node_id": "a"}]}))
     log = EventLog(tmp_path / "events.jsonl")
     log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
     log.emit("failure", node_id="a", category="verification_failed", action="FAIL_CLOSED")
@@ -192,13 +194,62 @@ def test_decisive_failure_with_node_prefix_reason(tmp_path: Path) -> None:
 
 
 def test_multi_node_classifies_blocked_node_not_unrelated_early_failure(tmp_path: Path) -> None:
+    (tmp_path / "graph.json").write_text(
+        json.dumps({"nodes": [{"node_id": "a"}, {"node_id": "b"}]})
+    )
     log = EventLog(tmp_path / "events.jsonl")
     log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
     log.emit("failure", node_id="b", category="verification_failed", action="FAIL_CLOSED")
+    log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
     log.emit("run_finished", outcome="BLOCKED", reason="node b not VALIDATED")
     layer, evidence = improvement.classify_blocker("node b not VALIDATED", tmp_path)
     assert layer == "verification"
     assert evidence == "event:2 failure verification_failed"
+
+
+def test_fallback_when_reason_names_no_node(tmp_path: Path) -> None:
+    """When the reason names no node (e.g. integration barrier), fall back to the last failure of any node."""
+    log = EventLog(tmp_path / "events.jsonl")
+    log.emit("node_state", node_id="a", state="RUNNING")
+    log.emit("failure", node_id="a", category="verification_failed", action="RETRY")
+    log.emit("run_finished", outcome="BLOCKED", reason="integration barrier failed: test_gate")
+    layer, evidence = improvement.classify_blocker(
+        "integration barrier failed: test_gate", tmp_path
+    )
+    assert layer == "verification"
+    assert evidence == "event:2 failure verification_failed"
+
+
+def test_fallback_when_named_node_has_no_failure(tmp_path: Path) -> None:
+    """When the named node has no failure, fall back to the last categorized failure of any node."""
+    log = EventLog(tmp_path / "events.jsonl")
+    log.emit("node_state", node_id="a", state="RUNNING")
+    log.emit("failure", node_id="a", category="verification_failed", action="FAIL_CLOSED")
+    log.emit("node_state", node_id="b", state="BLOCKED")
+    log.emit("run_finished", outcome="BLOCKED", reason="node b not VALIDATED")
+    layer, evidence = improvement.classify_blocker("node b not VALIDATED", tmp_path)
+    assert layer == "verification"
+    assert evidence == "event:2 failure verification_failed"
+
+
+def test_blocked_node_requires_membership_in_real_node_ids() -> None:
+    """_blocked_node must not return arbitrary words when known_nodes is empty."""
+    assert improvement._blocked_node("node arbitrary_word not VALIDATED", set()) is None
+    assert improvement._blocked_node("arbitrary: failed", set()) is None
+    assert improvement._blocked_node("node arbitrary_word not VALIDATED", {"real_node"}) is None
+    assert improvement._blocked_node("node real_node not VALIDATED", {"real_node"}) == "real_node"
+
+
+def test_blocked_node_matches_whole_tokens_not_substrings() -> None:
+    """_blocked_node must match node ids as whole tokens, not substrings."""
+    assert improvement._blocked_node("update-plan-execution: failed", {"plan"}) is None
+    assert (
+        improvement._blocked_node("update-plan-execution: failed", {"update-plan-execution"})
+        == "update-plan-execution"
+    )
+    assert improvement._blocked_node("node a-1 not VALIDATED", {"a"}) is None
+    assert improvement._blocked_node("node a not VALIDATED", {"a"}) == "a"
+    assert improvement._blocked_node("submission failed", {"sub"}) is None
 
 
 async def test_cycle_classifies_decisive_failure_as_verification_lesson(tmp_path: Path) -> None:
