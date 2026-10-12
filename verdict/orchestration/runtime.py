@@ -68,6 +68,7 @@ from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.salvage import restore_salvaged_files, salvage_owned_files
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import WorkerPrompt
@@ -1119,6 +1120,20 @@ class DagRuntime:
             self._set(run, NodeState.ADMITTED)
             base = await self._node_base(node)
             await self.git.add_worktree(worktree, branch, base)
+            # BOD-308: restore salvaged partial work from a previous attempt.
+            if run.attempt > 1 and run.node.owned_files:
+                salvage_dir = self.run_dir / "salvage" / run.node.node_id
+                restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                if restore.restored or restore.error:
+                    self.events.emit(
+                        "restore",
+                        node.node_id,
+                        restored=list(restore.restored),
+                        skipped=list(restore.skipped),
+                        total_bytes=restore.total_bytes,
+                        attempt=run.attempt,
+                        error=restore.error,
+                    )
             self.inflight[node.node_id] = run.route_id
             try:
                 self._set(run, NodeState.DISPATCHED)
@@ -1432,6 +1447,20 @@ class DagRuntime:
         validated: bool = False,
     ) -> bool:
         self._record_failure(run, terminal, failures, validated=validated)
+        # BOD-308: salvage owned partial work before discarding the worktree.
+        if run.node.owned_files and worktree.exists():
+            salvage_dir = self.run_dir / "salvage" / run.node.node_id
+            result = salvage_owned_files(worktree, run.node.owned_files, salvage_dir)
+            if result.saved or result.skipped or result.error:
+                self.events.emit(
+                    "salvage",
+                    run.node.node_id,
+                    saved=list(result.saved),
+                    skipped=list(result.skipped),
+                    total_bytes=result.total_bytes,
+                    attempt=run.attempt,
+                    error=result.error,
+                )
         await self.git.remove_worktree(worktree)
         return False
 
