@@ -1600,6 +1600,31 @@ class DagRuntime:
         finally:
             await self.git.remove_worktree(path)
 
+    async def _repair_formatting(
+        self, run: NodeRun, worktree: Path, changed: list[str]
+    ) -> list[str]:
+        """Run ``ruff format`` on the node's changed files, then rerun the gates."""
+        targets = [p for p in changed if (worktree / p).is_file()]
+        if not targets:
+            return ["repo_gate_failed: ruff-format exit 1: no changed files to format"]
+        try:
+            argv = _resolve_gate_argv(("ruff", "format", *targets), worktree)
+        except FileNotFoundError:
+            return ["repo_gate_failed: ruff-format exit 127: ruff not found"]
+        code, out = await self.runner(argv, worktree, self.policy.verify_timeout_seconds)
+        self.events.emit(
+            "controller",
+            run.node.node_id,
+            state="FORMATTER_APPLIED",
+            command=shlex.join(["ruff", "format", *targets]),
+            files=targets,
+            exit_code=code,
+            tail=out[-300:],
+        )
+        failed: list[str] = []
+        await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+        return failed
+
     async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
         """Whether the failing gate named in ``gate_reason`` already fails on ``base``."""
         name = gate_reason.removeprefix("repo_gate_failed: ").split(" ", 1)[0]
@@ -1691,6 +1716,11 @@ class DagRuntime:
                 # this node newly broke, so every failing gate is checked.
                 failed: list[str] = []
                 await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+                if failed and all(f.startswith("repo_gate_failed: ruff-format ") for f in failed):
+                    # Formatting is mechanical: apply the repo's formatter to the files
+                    # this node changed, record it, and check the gates again. Lint and
+                    # type failures are never auto-fixed; they go back to the worker.
+                    failed = await self._repair_formatting(run, worktree, changed)
                 for gate_reason in failed:
                     if not await self._gate_fails_on_base(gate_reason, base):
                         return f"verification_failed: {gate_reason[:600]}"
