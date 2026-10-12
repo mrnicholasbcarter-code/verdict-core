@@ -7,8 +7,12 @@ run reads those records before ranking. Existing selectors reload the cache
 before assessment and dispatch, and after a refresh hook.
 
 - Account quota, rate limit, authentication and permission failures block the
-  canonical credential pool when classifier scope is provider.
+  canonical credential pool when classifier scope is provider. The ladder
+  records this as a `pool:<pool>` cooldown; there is no separate provider-wide
+  key, so other pools of the same provider stay eligible.
 - Explicit route-scoped failures do not block healthy credential siblings.
+- A later success on the same route clears that route's own cooldown but never
+  an active pool capacity cooldown.
 - Verification, ownership, review, context-size and unknown failures do not
   write provider health evidence.
 - Injected, scripted and unknown executor provenance never supply live evidence.
