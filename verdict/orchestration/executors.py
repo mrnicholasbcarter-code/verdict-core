@@ -1202,20 +1202,20 @@ class DirectGatewayExecutor:
             diff_path.unlink(missing_ok=True)
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="direct-gateway")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         started = time.monotonic()
-        owned_files = self._parse_owned_files(prompt)
+        owned_files = self._parse_owned_files(prompt) if tools else []
         is_implement = bool(owned_files)
 
         # For implement nodes, request complete contents of changed owned files.
