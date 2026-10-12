@@ -115,6 +115,12 @@ def add_parsers(subparsers: Any) -> None:
         help="Worker executor backend (default: prime)",
     )
     orch.add_argument(
+        "--planner-executor",
+        choices=("direct-gateway",),
+        default="direct-gateway",
+        help="Planner executor backend (answer-only; default: direct-gateway)",
+    )
+    orch.add_argument(
         "--executor-map",
         metavar="NODE=BACKEND[,NODE=BACKEND,...]",
         default="",
@@ -409,7 +415,17 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
-    from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
+    from verdict.orchestration.executors import FaultInjectingExecutor
+
+    executor = _worker_executor(args)
+    faults, state = _faults_and_state(args)
+    if faults:
+        executor = FaultInjectingExecutor(executor, faults, state=state)
+    return executor
+
+
+def _worker_executor(args: argparse.Namespace) -> WorkerExecutor:
+    from verdict.orchestration.executors import MixedExecutor
 
     # Empty here lets each executor apply Verdict key precedence
     # (VERDICT_OMNIROUTE_API_KEY > OMNIROUTE_API_KEY > OPENAI_API_KEY).
@@ -417,7 +433,6 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
     raw_map = getattr(args, "executor_map", "") or ""
     node_backend_map = _parse_executor_map(raw_map)
 
-    executor: WorkerExecutor
     default_name = getattr(args, "executor", "prime") or "prime"
     default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
 
@@ -426,9 +441,24 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
             node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
             for node_id, backend in node_backend_map.items()
         }
-        executor = MixedExecutor(node_map=named, default=default_executor)
-    else:
-        executor = default_executor
+        return MixedExecutor(node_map=named, default=default_executor)
+    return default_executor
+
+
+def _planner_executor(args: argparse.Namespace) -> WorkerExecutor:
+    from verdict.orchestration.executors import FaultInjectingExecutor
+
+    # Empty here lets DirectGatewayExecutor apply Verdict key precedence.
+    api_key = ""
+    name = getattr(args, "planner_executor", "direct-gateway") or "direct-gateway"
+    executor = _build_single_executor(name, gateway=args.gateway, api_key=api_key)
+    faults, state = _faults_and_state(args)
+    if faults:
+        executor = FaultInjectingExecutor(executor, faults, state=state)
+    return executor
+
+
+def _faults_from_args(args: argparse.Namespace) -> dict[str, list[str]]:
     faults: dict[str, list[str]] = {}
     injected = list(args.inject)
     # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
@@ -440,9 +470,18 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
         faults.setdefault(route.strip(), []).extend(
             k.strip() for k in kinds.split(",") if k.strip()
         )
-    if faults:
-        executor = FaultInjectingExecutor(executor, faults)
-    return executor
+    return faults
+
+
+def _faults_and_state(args: argparse.Namespace):
+    from verdict.orchestration.executors import FaultInjectionState
+
+    faults = _faults_from_args(args)
+    state = getattr(args, "_fault_injection_state", None)
+    if state is None:
+        state = FaultInjectionState(faults)
+        setattr(args, "_fault_injection_state", state)
+    return faults, state
 
 
 def _chaos_state(args: argparse.Namespace, runs_root: Path) -> Path | None:
@@ -602,6 +641,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             selector=selector,
             executor=_executor(args),
             classifier=FailureIntelligence(),
+            planner_executor=_planner_executor(args),
             reviewer=reviewer,
             graph=graph,
             run_id=run_id,

@@ -50,6 +50,7 @@ from verdict.orchestration.prime_settings import (
 __all__ = [
     "DirectGatewayExecutor",
     "FaultInjectingExecutor",
+    "FaultInjectionState",
     "MixedExecutor",
     "PrimeHeadlessExecutor",
     "ScriptedExecutor",
@@ -236,12 +237,18 @@ class PrimeHeadlessExecutor:
         extra_args: tuple[str, ...] = ("-nc", "-ns", "-ne"),
         thinking: str | None = None,
         env: Mapping[str, str] | None = None,
+        answer_only_flag: str | None = None,
     ) -> None:
         self.prime_bin = prime_bin
         self.provider = provider
         self.extra_args = tuple(extra_args)
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
+        # Prime 0.10 removed the old tool-disabling CLI flag.  Keep the
+        # compatibility hook explicit for legacy smoke tests, but default live
+        # Prime headless launches to worker mode only.
+        self.answer_only_flag = answer_only_flag
+        self.answer_only_supported = answer_only_flag is not None
 
     def _command(self, prompt: str, route_id: str, cwd: Path, *, tools: bool = True) -> list[str]:
         cmd = [
@@ -258,9 +265,8 @@ class PrimeHeadlessExecutor:
             str(cwd),
             *self.extra_args,
         ]
-        if not tools:
-            # Prime 0.9.8 documents --no-tools as "Disable all tools by default".
-            cmd.append("--no-tools")
+        if not tools and self.answer_only_flag is not None:
+            cmd.append(self.answer_only_flag)
         if self.thinking is not None:
             cmd.extend(["--thinking", self.thinking])
         cmd.append("--")  # prompt is data, never a flag
@@ -642,14 +648,27 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
 _WORKER_ATTEMPT_DIR_RE = re.compile(r"^.+-a\d+$")
 
 
+class FaultInjectionState:
+    """Shared synthetic fault queues and counters for one orchestration run."""
+
+    def __init__(self, faults: Mapping[str, list[str]]) -> None:
+        self.faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
+        self.dispatches = 0  # executor calls seen (planning included), for "#N" keys
+        self.worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
+
+
 class FaultInjectingExecutor:
     """Pop queued synthetic faults per route before delegating to ``inner``."""
 
-    def __init__(self, inner: WorkerExecutor, faults: Mapping[str, list[str]]) -> None:
+    def __init__(
+        self,
+        inner: WorkerExecutor,
+        faults: Mapping[str, list[str]],
+        *,
+        state: FaultInjectionState | None = None,
+    ) -> None:
         self.inner = inner
-        self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
-        self._dispatches = 0  # executor calls seen (planning included), for "#N" keys
-        self._worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
+        self._state = state or FaultInjectionState(faults)
 
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
@@ -668,15 +687,15 @@ class FaultInjectingExecutor:
         """
         provider = route_id.split("/", 1)[0] + "/*"
         node = cwd.name.rsplit("-a", 1)[0] if "-a" in cwd.name else cwd.name
-        keys = [f"#{self._dispatches}"]
+        keys = [f"#{self._state.dispatches}"]
         if self._is_worker_attempt(cwd):
-            keys.append(f"worker#{self._worker_dispatches}")
+            keys.append(f"worker#{self._state.worker_dispatches}")
         keys.extend([route_id, provider, "@" + node, "*"])
         return keys
 
     def _pop_fault(self, route_id: str, cwd: Path | None = None) -> str | None:
         for key in self._keys(route_id, cwd or Path(".")):
-            queue = self._faults.get(key)
+            queue = self._state.faults.get(key)
             if queue:
                 return queue.pop(0)
         return None
@@ -684,9 +703,9 @@ class FaultInjectingExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
-        self._dispatches += 1
+        self._state.dispatches += 1
         if self._is_worker_attempt(cwd):
-            self._worker_dispatches += 1
+            self._state.worker_dispatches += 1
         kind = self._pop_fault(route_id, cwd)
         if kind is None:
             return await run_executor(
@@ -707,6 +726,8 @@ ScriptFn = Callable[[str, str, Path], "WorkerTerminal | Awaitable[WorkerTerminal
 
 class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
+
+    answer_only_supported = True
 
     def __init__(self, script: ScriptFn) -> None:
         self.script = script
@@ -735,6 +756,8 @@ class DirectGatewayExecutor:
     fields compatible with the recovery classifier so that failover works
     unchanged.
     """
+
+    answer_only_supported = True
 
     _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
     _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)
