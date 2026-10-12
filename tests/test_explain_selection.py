@@ -281,9 +281,9 @@ class TestBehaviourParityAcrossFixtures:
             assert v.rank_components is not None
             assert list(v.rank_components) == [  # ordered dict, matches _rank_key
                 "capacity_order",
-                "quota_percent",
                 "slack",
                 "price",
+                "quota_percent",
                 "provider_pref",
                 "load",
                 "fit",

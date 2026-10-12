@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -139,16 +140,11 @@ def quota_remaining(conn: Mapping[str, Any] | None, route_id: str) -> float | No
     model = route_id.split("/", 1)[-1]
     per_model = conn.get("quota_models")
     if isinstance(per_model, Mapping):
-        matches = [float(v) for k, v in per_model.items() if str(k) and str(k) in model]
-        if matches:
-            return min(matches)
+        for name in (model, re.sub(r"-(low|medium|high|xhigh|tiered)$", "", model)):
+            if isinstance(per_model.get(name), (int, float)):
+                return float(per_model[name])
     value = conn.get("quota_percent")
     return float(value) if isinstance(value, (int, float)) else None
-
-
-def _more_quota(candidate: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
-    a, b = candidate.get("quota_percent"), current.get("quota_percent")
-    return isinstance(a, (int, float)) and (not isinstance(b, (int, float)) or a > b)
 
 
 def quota_rank(percent: float | None) -> int:
@@ -378,10 +374,7 @@ class EligibilityLadder:
                 current = table.get(name)
                 if current is None or (not current.get("isActive") and conn.get("isActive")):
                     table[name] = conn
-                elif conn.get("isActive") and _more_quota(conn, current):
-                    # The gateway rotates a provider's accounts; the one with the most
-                    # measured quota left is the account the route can actually use.
-                    table[name] = conn
+
             index = (self._connections, table)
             self.__dict__["_connection_index"] = index
         return index[1].get(key)
@@ -618,12 +611,24 @@ class EligibilityLadder:
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "provider_rate_limited"
             a.cooldown_until = _iso(limited)
             return a
-        a.quota_percent = quota_remaining(conn, route_id)
+        measured = [
+            q
+            for c in self._connections
+            if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            for q in [quota_remaining(c, route_id)]
+            if q is not None
+        ]
+        a.quota_percent = min(measured) if measured else None
         floor = getattr(self, "_min_quota_percent", DEFAULT_MIN_QUOTA_PERCENT)
-        if a.quota_percent is not None and a.quota_percent < floor:
+        if measured and max(measured) < floor:
             # Measured near-exhaustion: dispatching here fails mid-task on a 429.
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "quota_low"
-            reset = _parse_iso(str((conn or {}).get("quota_reset_at") or ""))
+            resets = [
+                _parse_iso(str(c.get("quota_reset_at") or ""))
+                for c in self._connections
+                if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            ]
+            reset = min((r for r in resets if r is not None), default=None)
             a.cooldown_until = _iso(reset) if reset is not None and reset > now else None
             return a
 
@@ -815,10 +820,10 @@ class EligibilityLadder:
         quota = getattr(a, "quota_percent", None)
         components = {
             "capacity_order": cap_order,
-            "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
-            "quota_percent": quota if isinstance(quota, (int, float)) else None,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
+            "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
+            "quota_percent": quota if isinstance(quota, (int, float)) else None,
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
@@ -841,14 +846,15 @@ class EligibilityLadder:
         """Build the sort tuple from :meth:`_rank_components`.
 
         Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
-        Within a capacity class, a route with more measured quota left ranks first.
+        Among equally sufficient, equally priced routes, more measured quota left
+        ranks first, ahead of static provider preference.
         """
         c = self._rank_components(a)
         return (
             c["capacity_order"],
-            c["quota_rank"],
             c["slack"],
             c["price_for_rank"],
+            c["quota_rank"],
             c["provider_pref"],
             c["load"],
             -c["fit"],  # negate: stronger routes (higher fit) should rank lower
@@ -866,9 +872,9 @@ class EligibilityLadder:
         price_value = components.get("price_for_rank", 0.0)
         display = {
             "capacity_order": components["capacity_order"],
-            "quota_percent": components.get("quota_percent"),
             "slack": components["slack"],
             "price": price_value if price_known else None,
+            "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],
             "load": components["load"],
             "fit": components["fit"],  # stays positive

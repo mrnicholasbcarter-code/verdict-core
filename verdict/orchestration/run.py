@@ -231,7 +231,7 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
 
 
 def fetch_connections(
-    gateway: str, *, api_key: str | None, timeout: float = 30
+    gateway: str, *, api_key: str | None, timeout: float = 30, include_quota: bool = False
 ) -> list[dict[str, Any]]:
     if "VERDICT_CONNECTIONS_SNAPSHOT" in os.environ:
         from verdict.orchestration.connections_snapshot import read_connections_snapshot
@@ -239,7 +239,7 @@ def fetch_connections(
         return read_connections_snapshot(Path(os.environ["VERDICT_CONNECTIONS_SNAPSHOT"]))
     raw = _get_json(gateway.rstrip("/") + "/api/providers", api_key=api_key, timeout=timeout)
     rows = raw.get("connections") if isinstance(raw, Mapping) else raw
-    if isinstance(rows, list):
+    if include_quota and isinstance(rows, list):
         attach_quota(rows, gateway, api_key=api_key, timeout=min(timeout, 10))
     return sanitize_connections(raw)
 
@@ -268,7 +268,9 @@ def quota_from_usage(body: Any) -> dict[str, Any]:
             continue
         pct = round(min(100.0, max(0.0, pct)), 1)
         reset = window.get("resetAt") if isinstance(window.get("resetAt"), str) else None
-        if "-" in str(name) and not str(name).startswith(("session", "weekly")):
+        if "remaining" not in window:
+            # Account windows (Claude, Codex) carry an absolute remaining count;
+            # Antigravity's per-model windows report only a fraction.
             models[str(name)] = pct
         else:
             account.append((pct, reset))
