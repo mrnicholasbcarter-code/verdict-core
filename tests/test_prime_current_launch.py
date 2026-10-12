@@ -1,13 +1,15 @@
 """Prime launch compatibility uses its offline CLI, not shipped documentation layout."""
 
-from datetime import datetime, timezone
-from pathlib import Path
 import shutil
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pytest
+
+from verdict.orchestration.contracts import WorkerTerminal
 from verdict.orchestration.executors import PrimeHeadlessExecutor
 from verdict.orchestration.recovery import FailureIntelligence
-from verdict.orchestration.contracts import WorkerTerminal
 
 
 def test_real_default_worker_argv_is_accepted_without_model_call(tmp_path: Path) -> None:
@@ -18,7 +20,7 @@ def test_real_default_worker_argv_is_accepted_without_model_call(tmp_path: Path)
     command = executor._command("fixture", "cc/fixture", tmp_path)
     separator = command.index("--")
     result = subprocess.run(
-        command[:separator] + ["--offline", "--help"], capture_output=True, text=True, timeout=10
+        [*command[:separator], "--offline", "--help"], capture_output=True, text=True, timeout=10
     )
     assert result.returncode == 0, result.stderr
 
