@@ -862,6 +862,8 @@ class HealthCache:
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
         self._cooldowns: dict[str, ScopedCooldown] = {}
+        # What disk held at the last load/save; differs from _snapshot() when unsaved.
+        self._disk_snapshot: dict[str, Any] = {}
         self._load()
 
     # -- persistence -------------------------------------------------------
@@ -869,10 +871,48 @@ class HealthCache:
     def reload(self) -> None:
         """Read-only refresh from disk (another HealthCache object may have written it).
 
-        Unsaved in-memory mutations are discarded; callers that mutate must
-        ``save()`` (which merges over disk under the lock) before reloading.
+        Unsaved in-memory mutations are kept: they are folded over the newer disk
+        state with the same newest-wins rules ``save()`` applies, so a probe this
+        object recorded but has not saved yet is never silently dropped. Nothing
+        is written; the object stays unsaved until ``save()``.
         """
+        if self._snapshot() == self._disk_snapshot:
+            self._load()
+            return
+        # Keep only what this object changed since it last matched disk; records it
+        # merely read from disk must not be replayed over a newer disk state.
+        loaded = self._disk_snapshot
+        changed_routes = {
+            key: entry
+            for key, entry in self._routes.items()
+            if entry.to_dict() != loaded.get("routes", {}).get(key)
+        }
+        changed_cooldowns = {
+            key: cooldown
+            for key, cooldown in self._cooldowns.items()
+            if cooldown.to_dict() != loaded.get("cooldowns", {}).get(key)
+        }
+        changed_buckets = {
+            key: bucket
+            for key, bucket in self._buckets.items()
+            if bucket.to_dict() != loaded.get("buckets", {}).get(key)
+        }
+        cursor_changed = self._cursor != loaded.get("cursor", {})
+        cursor = dict(self._cursor)
         self._load()
+        for key, entry in changed_routes.items():
+            disk = self._routes.get(key)
+            if disk is None or entry.checked_at > disk.checked_at:
+                self._routes[key] = entry
+        for cooldown in changed_cooldowns.values():
+            self.record_cooldown(cooldown)
+        for key, bucket in changed_buckets.items():
+            if key in self._buckets:
+                self._buckets[key].merge_from(bucket)
+            else:
+                self._buckets[key] = bucket
+        if cursor_changed:
+            self._cursor = cursor
 
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
@@ -882,6 +922,7 @@ class HealthCache:
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
+            self._disk_snapshot = self._snapshot()
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -926,6 +967,7 @@ class HealthCache:
             for key, value in cooldowns.items()
             if isinstance(value, Mapping)
         }
+        self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {
@@ -971,8 +1013,10 @@ class HealthCache:
             )
             try:
                 self._merge_in_memory_over_disk()
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -1044,8 +1088,10 @@ class HealthCache:
                         self._routes[route_id] = replace(
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
