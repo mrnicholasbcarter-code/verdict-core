@@ -631,6 +631,13 @@ def _update_openspec_progress(
     temp.replace(graph_path)
 
 
+def _blocked_before_plan(run_dir: Path, reason: str) -> GoldenRunResult:
+    """Settle a run that ended before planning finished, with a verifiable receipt."""
+    with contextlib.suppress(Exception):  # receipt evidence must never mask the cause
+        write_run_receipt(run_dir)
+    return GoldenRunResult(run_dir, RunOutcome.BLOCKED.value, reason, run_dir / "receipt.json")
+
+
 async def run_golden_path(
     goal: str,
     *,
@@ -787,11 +794,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec block malformed: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec block malformed: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec block malformed: {SPEC_CHANGED}"
                     )
 
                 openspec_block = raw_openspec
@@ -811,12 +815,7 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec change_dir or digest missing: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec incomplete: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
-                    )
+                    return _blocked_before_plan(run_dir, f"OpenSpec incomplete: {SPEC_CHANGED}")
 
                 change_dir = Path(change_dir_str)
                 if not change_dir.exists():
@@ -830,11 +829,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec change directory missing: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec change directory missing: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec change directory missing: {SPEC_CHANGED}"
                     )
 
                 # Recompute digest from change_dir
@@ -859,11 +855,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec {SPEC_CHANGED}: digest mismatch (was {persisted_digest[:12]}, now {current_digest[:12]})",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec {SPEC_CHANGED}: digest mismatch",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec {SPEC_CHANGED}: digest mismatch"
                     )
 
             # Load graph from file only if not provided
@@ -907,9 +900,7 @@ async def run_golden_path(
                 events.emit(
                     "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
                 )
-                return GoldenRunResult(
-                    run_dir, RunOutcome.BLOCKED.value, admission_reason, run_dir / "receipt.json"
-                )
+                return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
@@ -950,9 +941,7 @@ async def run_golden_path(
         if openspec_block:
             error_graph["openspec"] = openspec_block
         graph_path.write_text(json.dumps(error_graph))
-        return GoldenRunResult(
-            run_dir, RunOutcome.BLOCKED.value, str(exc), run_dir / "receipt.json"
-        )
+        return _blocked_before_plan(run_dir, str(exc))
     graph_data = {**graph.to_dict(), "run_id": run_dir.name}
     if openspec_block:
         graph_data["openspec"] = openspec_block

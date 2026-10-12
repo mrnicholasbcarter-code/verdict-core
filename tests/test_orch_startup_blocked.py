@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import urllib.error
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 
 from verdict.orchestration import cli, run
 from verdict.orchestration.eligibility_report import GatewayDiscoveryError, _gateway_fetch_error
-from verdict.orchestration.receipt import EventLog
+from verdict.orchestration.receipt import EventLog, verify_run_receipt
 from verdict.orchestration.supervisor import (
     ControllerSupervisor,
     build_command_factory,
@@ -129,7 +130,12 @@ def test_gateway_auth_failure_settles_run_without_restart(
         "phase": "startup",
     }
     assert not any(e["type"] in {"plan_started", "dispatch"} for e in events)
-    assert not (supervisor.run_dir / "receipt.json").exists()
+    # The startup cause is a verifiable receipt with no plan (release review S9).
+    assert verify_run_receipt(supervisor.run_dir) == []
+    receipt = json.loads((supervisor.run_dir / "receipt.json").read_text())
+    assert (receipt["outcome"], receipt["reason"]) == ("BLOCKED", outcome.reason)
+    assert receipt["nodes"] == []
+    assert "fixture-only-never-send" not in json.dumps(receipt)
     assert not (supervisor.run_dir / "graph.json").exists()
     output = capsys.readouterr()
     assert "BLOCKED:" in output.err

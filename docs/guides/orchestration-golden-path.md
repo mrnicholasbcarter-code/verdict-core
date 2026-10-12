@@ -1,8 +1,8 @@
 # Orchestration golden path
 
-One goal enters the orchestrator. Completed execution paths can produce locally
-verifiable receipts; early admission or planning failures may retain only events,
-a graph, and a blocked reason, without a receipt. This guide uses repository
+One goal enters the orchestrator. Every settled run produces a locally verifiable
+receipt, including runs blocked at startup, admission or planning: those receipts
+have no nodes and carry the recorded blocked reason. This guide uses repository
 commands. The historical observations below are not an exact-SHA public proof
 bundle; see [Evidence](#evidence).
 
@@ -84,7 +84,8 @@ Exit code is `0` only for `COMPLETE`.
 Rejected gateway credentials or permissions during selector discovery
 write a `run_finished` BLOCKED event with `phase=startup` before planning. The
 supervisor reports that cause without restarting unchanged credentials. These
-early blocked runs have events but no completion receipt. Unexpected controller
+early blocked runs still get a receipt with no nodes, so `verdict run-receipt`
+shows the startup cause. Unexpected controller
 implementation errors still use bounded crash recovery.
 
 Keep the planner's `verification_command` test-focused: the runtime runs declared

@@ -553,14 +553,24 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     if not events_path.exists():
         raise OrchestrationError(f"missing {EVENTS_FILE} in {run_dir}")
     events = EventLog(events_path).read() if events_path.stat().st_size else []
-    graph_raw = _load_json(run_dir / GRAPH_FILE)
-    graph = WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+    # A run that ended before a plan existed (startup, admission or planning
+    # BLOCKED) has no graph or an empty one. It still gets a receipt with no
+    # nodes, so its cause is verifiable like any other run's.
+    graph_path = run_dir / GRAPH_FILE
+    graph_raw = _load_json(graph_path) if graph_path.exists() else {}
+    planned = bool(graph_raw.get("nodes"))
+    graph = (
+        WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+        if planned
+        else None
+    )
+    plan_nodes = graph.nodes if graph is not None else ()
 
-    by_node: dict[str, list[RunEvent]] = {n.node_id: [] for n in graph.nodes}
+    by_node: dict[str, list[RunEvent]] = {n.node_id: [] for n in plan_nodes}
     for event in events:
         if event.node_id in by_node:
             by_node[event.node_id].append(event)
-    nodes = [_node_record(n.node_id, n.kind.value, by_node[n.node_id]) for n in graph.nodes]
+    nodes = [_node_record(n.node_id, n.kind.value, by_node[n.node_id]) for n in plan_nodes]
 
     started = next((e for e in events if e.type == "run_started"), None)
     finished = [e for e in events if e.type == "run_finished"]
@@ -569,7 +579,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         if event.type == "barrier":
             name = str(event.data.get("name") or event.node_id or "integration")
             barriers[name] = {"name": name, "ok": event.data.get("ok") is True, "seq": event.seq}
-    declared = sorted({str(n.barrier) for n in graph.nodes if n.barrier})
+    declared = sorted({str(n.barrier) for n in plan_nodes if n.barrier})
     missing = [name for name in declared if name not in barriers]
     integration_ok = bool(barriers) and not missing and all(b["ok"] for b in barriers.values())
 
@@ -600,7 +610,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "unattested": route_identity_counts["unattested"],
         "mechanical": route_identity_counts["mechanical"],
     }
-    no_change_nodes = _no_change_implement_nodes(graph, events, nodes)
+    no_change_nodes = _no_change_implement_nodes(graph, events, nodes) if graph else []
 
     receipt: dict[str, Any] = {
         "schema": RECEIPT_SCHEMA,
@@ -609,9 +619,9 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
             or (started.data.get("run_id") if started else "")
             or run_dir.name
         ),
-        "goal": graph.goal,
-        "graph_digest": graph.digest(),
-        "topology": graph.topology.value,
+        "goal": graph.goal if graph is not None else str(graph_raw.get("goal") or ""),
+        "graph_digest": graph.digest() if graph is not None else None,
+        "topology": graph.topology.value if graph is not None else None,
         "nodes": nodes,
         "route_identity_summary": route_identity_summary,
         "integration": {
@@ -630,6 +640,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         ],
         "decision_signals": _free("decision_signals") or None,  # SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
+        **(
+            {"claimed_reason": str(finished[-1].data.get("reason", ""))[:500]}
+            if graph is None and finished
+            else {}
+        ),
         "event_count": len(events),
         "events_digest": _sha256_file(events_path),
         "started_at": (started.at if started else events[0].at) if events else None,
@@ -770,6 +785,9 @@ def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
     gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
     work = [n for n in receipt.get("nodes") or [] if n.get("kind") in gated]
     if not work:
+        # A run that ended before planning keeps its own recorded cause.
+        if receipt.get("graph_digest") is None and receipt.get("claimed_reason"):
+            return blocked, str(receipt["claimed_reason"])
         return blocked, "no implement/integrate nodes to validate"
     for node in work:
         if node.get("final_state") != NodeState.VALIDATED.value:

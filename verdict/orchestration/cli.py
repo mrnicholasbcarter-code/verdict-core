@@ -605,6 +605,9 @@ def _orchestrate(args: argparse.Namespace) -> int:
         EventLog(run_dir / "events.jsonl").emit(
             "run_finished", outcome="BLOCKED", reason=reason, phase="startup"
         )
+        from verdict.orchestration.receipt import write_run_receipt
+
+        write_run_receipt(run_dir)
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 2
     reviewer = (
