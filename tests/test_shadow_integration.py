@@ -50,6 +50,8 @@ def _init_git_repo(tmp_path: Path) -> Path:
 class _ScriptedExecutor:
     """Fake WorkerExecutor returning scripted terminals in sequence."""
 
+    answer_only_supported = True  # also used as the planner executor
+
     def __init__(self, outputs: list[WorkerTerminal]) -> None:
         self._outputs = list(outputs)
         self.calls: list[str] = []
