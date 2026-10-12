@@ -48,6 +48,8 @@ def _isolate_verdict_env(monkeypatch: pytest.MonkeyPatch) -> None:
     detects pytest via PYTEST_CURRENT_TEST)."""
     monkeypatch.delenv("VERDICT_ALLOW_UNVERIFIED_DEV", raising=False)
     for key in (
+        "CODEX_HOME",
+        "ORCA_CODEX_HOME",
         "VERDICT_SUPERVISED_RUN_DIR",
         "VERDICT_CONTROLLER_TOKEN",
         "VERDICT_CONTROLLER_DEADLINE",
