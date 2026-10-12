@@ -198,6 +198,32 @@ def capacity_reset(run_dir: Path, after: datetime) -> datetime | None:
     return min(resets, default=None)
 
 
+def _only_capacity_failures(run_dir: Path) -> bool:
+    """True when the run failed attempts, and every failure was a capacity limit."""
+    categories = []
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("type") == "failure":
+                categories.append((event.get("data") or {}).get("category"))
+    return bool(categories) and all(c in CAPACITY_CATEGORIES for c in categories)
+
+
+def _blocker_reason(run_dir: Path, measured: Mapping[str, Any]) -> str:
+    """The run's own recorded cause; the receipt verdict reason only restates it."""
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for line in reversed(events_path.read_text().splitlines()):
+            event = json.loads(line)
+            if event.get("type") == "run_finished":
+                reason = str((event.get("data") or {}).get("reason") or "")
+                if reason:
+                    return f"{reason}; {measured.get('reason', '')}"
+                break
+    return str(measured.get("reason", ""))
+
+
 def measure_run(run_dir: Path) -> dict[str, Any]:
     """Outcome and claims recomputed from the run's files; a missing receipt is NOT_MET."""
     problems = verify_run_receipt(run_dir)
@@ -310,12 +336,21 @@ async def run_cycle(
     )
     if measured["metric_met"]:
         return CycleResult(cycle_id, "MET", str(measured.get("reason", "")), run_id)
-    layer, evidence = classify_blocker(str(measured.get("reason", "")), run_dir)
-    # A cooldown still in force after the run is direct evidence of a capacity block.
+    layer, evidence = classify_blocker(_blocker_reason(run_dir, measured), run_dir)
+    # Wait only when capacity is what stopped the run: the blocker is a selection
+    # failure, or every failed attempt was a quota/rate limit, and a cooldown on
+    # that capacity is still in force. A capacity cooldown next to an unrelated
+    # failure (bad code, review) is not a reason to rerun the same inputs later.
     reset = capacity_reset(run_dir, clock())
-    if reset is not None and layer not in _OPERATOR_LAYERS:
+    if (
+        reset is not None
+        and layer not in _OPERATOR_LAYERS
+        and (layer == "selection" or _only_capacity_failures(run_dir))
+    ):
         layer, evidence = "selection", f"cooldown until {reset.isoformat()}"
-    wait_until = reset.isoformat() if reset is not None and layer == "selection" else ""
+        wait_until = reset.isoformat()
+    else:
+        wait_until = ""
     _append(
         cycles_dir,
         {

@@ -281,6 +281,50 @@ async def test_a_long_capacity_wait_ends_the_loop_with_the_reset_time(tmp_path: 
     assert clock.now == start and len(calls) == 1
 
 
+async def test_a_capacity_cooldown_next_to_an_unrelated_failure_does_not_wait(
+    tmp_path: Path,
+) -> None:
+    """Review finding: bad code plus an unrelated rate limit must not become a wait."""
+    start = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    repo, calls = _repo(tmp_path), []
+
+    async def supervise(run_id: str, argv: list[str]) -> None:
+        calls.append(argv)
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "graph.json").write_text(json.dumps({**GRAPH.to_dict(), "run_id": run_id}))
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("failure", node_id="a", category="verification_failed", action="RETRY")
+        log.emit(
+            "cooldown",
+            node_id="a",
+            key="pool:cx",
+            scope="pool",
+            category="rate_limited",
+            until=(start + timedelta(minutes=5)).isoformat(),
+        )
+        log.emit("run_finished", outcome="BLOCKED", reason="node a not VALIDATED")
+        write_run_receipt(run_dir)
+
+    kwargs: dict[str, Any] = dict(
+        repo=repo,
+        runs_dir=tmp_path / "runs",
+        cycles_dir=tmp_path / "cycles",
+        orchestrate_args=[],
+        supervise=supervise,
+        clock=clock,
+    )
+    first = await improvement.run_cycle("g", **kwargs)
+    assert first.layer != "selection" and not first.wait_until
+    clock.now = start + timedelta(hours=1)
+    second = await improvement.run_cycle("g", **kwargs)
+    # The planner lesson changes the inputs; a third identical cycle is refused
+    # even though the cooldown has long reset.
+    third = await improvement.run_cycle("g", **kwargs)
+    assert second.outcome == "NOT_MET" and third.outcome == "REFUSED" and len(calls) == 2
+
+
 def test_a_capacity_wait_is_not_a_planner_lesson() -> None:
     log = [
         {
