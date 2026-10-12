@@ -276,6 +276,7 @@ def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, f
         source.write_text(json.dumps({**row("FALSE_CLAIM"), "route": route}) + "\n")
         import_sessions(source, cache, now=NOW)
     cache.record(route, ProbeResult("ok", True, True), NOW - timedelta(minutes=live_age))
+    cache.save()
     ladder, probe = make_ladder(
         tmp_path,
         [model_row(route, owned_by="glm")],
