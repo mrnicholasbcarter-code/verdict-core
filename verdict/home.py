@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -30,6 +30,7 @@ from rich.text import Text
 from verdict.design import TOKENS, PresentationMode, panel, presentation_mode
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.run import resolve_api_key
+from verdict.paths import verdict_home
 from verdict.terminal_ui import TerminalUI, clean
 from verdict.tui_completion import (
     ArgumentSpec,
@@ -127,12 +128,9 @@ _COMMAND_INDEX: dict[str, tuple[str, str, str]] | None = None
 _PROBE_MAX_BYTES = 32 * 1024 * 1024
 
 
-def history_file(env: dict[str, str] | None = None) -> Path:
-    """Resolve the prompt history file path based on VERDICT_HOME or $HOME."""
-    source = os.environ if env is None else env
-    configured = (source.get("VERDICT_HOME") or "").strip()
-    base = Path(configured) if configured else Path(source.get("HOME") or Path.home()) / ".verdict"
-    return base.expanduser() / "prompt_history"
+def history_file(env: Mapping[str, str] | None = None) -> Path:
+    """Prompt history file inside the Verdict home."""
+    return verdict_home(env) / "prompt_history"
 
 
 HISTORY_MAX_LINES = 500

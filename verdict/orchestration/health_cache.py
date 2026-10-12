@@ -53,6 +53,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.paths import verdict_home
+
 HEALTH_CACHE_SCHEMA_VERSION = "1"
 
 STATE_FRESH = "fresh"
@@ -154,9 +156,7 @@ def default_cache_path() -> Path:
     configured = os.getenv(ENV_CACHE_PATH)
     if configured and configured.strip():
         return Path(configured).expanduser().resolve()
-    home = (os.getenv("VERDICT_HOME") or "").strip()
-    base = Path(home).expanduser() if home else Path.home() / ".verdict"
-    return (base / "health-cache.json").resolve()
+    return (verdict_home() / "health-cache.json").resolve()
 
 
 def _aware(value: datetime, field_name: str) -> datetime:

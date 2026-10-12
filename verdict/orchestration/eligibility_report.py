@@ -19,16 +19,13 @@ from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.orchestration.contracts import OrchestrationError
 from verdict.orchestration.health_cache import HealthCache, default_cache_path
 from verdict.orchestration.session_evidence import SessionLedger
+from verdict.paths import verdict_home
 
 
 def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     """``["cc,kr", "gc"]`` -> ``("cc", "gc", "kr")`` (deduplicated, sorted, lowercase)."""
     found = {part.strip().lower() for value in values for part in value.split(",")}
     return tuple(sorted(f for f in found if f))
-
-
-def _state_dir() -> Path:
-    return Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
 
 
 def route_prefix(route_id: str) -> str:
@@ -179,7 +176,7 @@ def build_selector(
         connections = fetch_connections(gateway, api_key=key, include_quota=True)
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/api/providers", exc) from None
-    state_path = state_file or (_state_dir() / "orchestration-health.json")
+    state_path = state_file or (verdict_home() / "orchestration-health.json")
     now = datetime.now(timezone.utc)
     # Canonical admission over the full live inventory first. Scope, provider
     # family and the active controller are extra narrowing on that set.

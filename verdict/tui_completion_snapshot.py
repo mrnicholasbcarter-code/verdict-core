@@ -24,6 +24,7 @@ from verdict.orchestration.verified_models import (
     project_verified_models,
     snapshots_from_documents,
 )
+from verdict.paths import verdict_home
 from verdict.tui_completion import SCHEMA, CompletionSnapshot
 
 MAX_BYTES = 4 * 1024 * 1024
@@ -52,10 +53,7 @@ _FIELDS = (
 
 
 def snapshot_path() -> Path:
-    return (
-        Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
-        / "verified-completion-snapshot.json"
-    )
+    return verdict_home() / "verified-completion-snapshot.json"
 
 
 def _id(value: Any) -> bool:

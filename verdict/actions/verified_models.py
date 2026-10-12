@@ -41,6 +41,7 @@ from verdict.orchestration.verified_refresh import (
     refresh_for_consumer,
     select_candidates,
 )
+from verdict.paths import verdict_home
 from verdict.tui_verified_controls import VerifiedControlsController
 
 
@@ -58,7 +59,7 @@ class StorePaths:
 
     @classmethod
     def defaults(cls, state_dir: Path | None = None) -> StorePaths:
-        base = state_dir or Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
+        base = state_dir or verdict_home()
         return cls(
             Path(os.environ.get("VERDICT_HEALTH_CACHE", str(base / "health-cache.json"))),
             base / "orchestration-health.json",

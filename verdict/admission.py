@@ -45,6 +45,7 @@ from typing import Any
 from verdict.availability import QuotaEvidence
 from verdict.capacity_models import CapacitySnapshot
 from verdict.orchestration.provider_catalog import resolve_provider
+from verdict.paths import verdict_home
 from verdict.subscription_headroom import (
     DEFAULT_SUBSCRIPTION_FRESHNESS_TTL_SECONDS,
     subscription_observations,
@@ -1187,7 +1188,7 @@ def default_runtime_evidence(
     (for example a ``--state-file`` or a per-run chaos file). It defaults to
     ``orchestration-health.json`` in ``state_dir``.
     """
-    base = state_dir or Path(os.environ.get("VERDICT_HOME", Path.home() / ".verdict"))
+    base = state_dir or verdict_home()
     ladder = ladder_state or (base / "orchestration-health.json")
     return (
         evidence_from_ladder_state(ladder, now=now)
