@@ -177,6 +177,21 @@ def add_parsers(subparsers: Any) -> None:
 
     supervisor.add_parser(subparsers)
 
+    improve = subparsers.add_parser(
+        "improve",
+        help="Run one improvement cycle: supervised run, measure, learn a lesson for the next",
+    )
+    improve.add_argument("goal", help="Goal for the supervised orchestrate run")
+    improve.add_argument("--once", action="store_true", required=True, help="Run exactly one cycle")
+    improve.add_argument("--repo", default=".", help="Git repository to change (default: .)")
+    improve.add_argument("--runs-dir", required=True, help="Directory for run directories")
+    improve.add_argument(
+        "--cycles-dir", required=True, help="Directory for the cycle log and lessons"
+    )
+    improve.add_argument("--cgroup-root", default=None, help="As for verdict supervise")
+    improve.add_argument("--total-deadline-seconds", type=float, default=7200.0)
+    improve.add_argument("orchestrate_args", nargs=argparse.REMAINDER, help="Args after `--`")
+
     elig = subparsers.add_parser(
         "eligibility",
         help="Show DISCOVERED -> ENTITLED -> HEALTHY -> AVAILABLE -> TASK_ELIGIBLE -> SELECTED",
@@ -304,6 +319,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
 
     handlers = {
         "supervise": supervisor.dispatch,
+        "improve": _improve,
         "orchestrate": _orchestrate,
         "watch": _watch,
         "run-receipt": _receipt,
@@ -523,6 +539,57 @@ def _resolve_run(value: str, runs_dir: str) -> Path:
     if base.parts and path.parts[: len(base.parts)] == base.parts:
         return path
     return base / value
+
+
+def _improve(args: argparse.Namespace) -> int:
+    """One improvement cycle; exit 0 only when the run met its measured metric."""
+    from verdict.orchestration.controller_operations import CGROUP_ROOT_ENV
+    from verdict.orchestration.improvement import run_once_with_supervisor
+    from verdict.orchestration.supervisor import resolve_cgroup_root
+
+    extra = [str(token) for token in (args.orchestrate_args or [])]
+    while extra and extra[0] == "--":
+        extra.pop(0)
+    owned = ("--runs-dir", "--resume", "--constraints-file")
+    if any(token == flag or token.startswith(flag + "=") for token in extra for flag in owned):
+        print(
+            "BLOCKED: improve sets --runs-dir, --resume and --constraints-file itself",
+            file=sys.stderr,
+        )
+        return 2
+    cgroup_root = resolve_cgroup_root(args.cgroup_root)
+    if cgroup_root is None:
+        print(
+            "BLOCKED: improve runs a supervised run; pass --cgroup-root PATH|auto "
+            "(see verdict supervise --help)",
+            file=sys.stderr,
+        )
+        return 2
+    result = run_once_with_supervisor(
+        args.goal,
+        repo=Path(args.repo).resolve(),
+        runs_dir=Path(args.runs_dir).resolve(),
+        cycles_dir=Path(args.cycles_dir).resolve(),
+        orchestrate_args=extra,
+        supervisor_kwargs={
+            "total_deadline_seconds": args.total_deadline_seconds,
+            "env": {CGROUP_ROOT_ENV: cgroup_root},
+            "require_worker_containment": True,
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "cycle_id": result.cycle_id,
+                "outcome": result.outcome,
+                "reason": result.reason,
+                "run_id": result.run_id,
+                "layer": result.layer,
+            },
+            indent=2,
+        )
+    )
+    return 0 if result.outcome == "MET" else 1
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
