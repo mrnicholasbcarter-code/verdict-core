@@ -182,7 +182,15 @@ def add_parsers(subparsers: Any) -> None:
         help="Run one improvement cycle: supervised run, measure, learn a lesson for the next",
     )
     improve.add_argument("goal", help="Goal for the supervised orchestrate run")
-    improve.add_argument("--once", action="store_true", required=True, help="Run exactly one cycle")
+    count = improve.add_mutually_exclusive_group(required=True)
+    count.add_argument("--once", action="store_true", help="Run exactly one cycle")
+    count.add_argument(
+        "--cycles",
+        type=int,
+        metavar="N",
+        help="Run up to N cycles (at most 5); stop at MET, a refused relaunch, or a lesson "
+        "that needs the operator",
+    )
     improve.add_argument("--repo", default=".", help="Git repository to change (default: .)")
     improve.add_argument("--runs-dir", required=True, help="Directory for run directories")
     improve.add_argument(
@@ -542,9 +550,9 @@ def _resolve_run(value: str, runs_dir: str) -> Path:
 
 
 def _improve(args: argparse.Namespace) -> int:
-    """One improvement cycle; exit 0 only when the run met its measured metric."""
+    """Bounded improvement cycles; exit 0 only when the last cycle met its measured metric."""
     from verdict.orchestration.controller_operations import CGROUP_ROOT_ENV
-    from verdict.orchestration.improvement import run_once_with_supervisor
+    from verdict.orchestration.improvement import MAX_CYCLES, run_with_supervisor
     from verdict.orchestration.supervisor import resolve_cgroup_root
 
     extra = [str(token) for token in (args.orchestrate_args or [])]
@@ -565,7 +573,11 @@ def _improve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    result = run_once_with_supervisor(
+    cycles = 1 if args.once else int(args.cycles)
+    if not 1 <= cycles <= MAX_CYCLES:
+        print(f"BLOCKED: --cycles must be between 1 and {MAX_CYCLES}", file=sys.stderr)
+        return 2
+    results = run_with_supervisor(
         args.goal,
         repo=Path(args.repo).resolve(),
         runs_dir=Path(args.runs_dir).resolve(),
@@ -576,20 +588,24 @@ def _improve(args: argparse.Namespace) -> int:
             "env": {CGROUP_ROOT_ENV: cgroup_root},
             "require_worker_containment": True,
         },
+        cycles=cycles,
     )
     print(
         json.dumps(
-            {
-                "cycle_id": result.cycle_id,
-                "outcome": result.outcome,
-                "reason": result.reason,
-                "run_id": result.run_id,
-                "layer": result.layer,
-            },
+            [
+                {
+                    "cycle_id": r.cycle_id,
+                    "outcome": r.outcome,
+                    "reason": r.reason,
+                    "run_id": r.run_id,
+                    "layer": r.layer,
+                }
+                for r in results
+            ],
             indent=2,
         )
     )
-    return 0 if result.outcome == "MET" else 1
+    return 0 if results[-1].outcome == "MET" else 1
 
 
 def _orchestrate(args: argparse.Namespace) -> int:

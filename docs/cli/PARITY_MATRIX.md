@@ -24,7 +24,7 @@
 | `gateway` | `gateway.connections-snapshot` | Runtime | mutation | ✅ action |
 | `harness` | `harness.prime.select.preview` | Harness | read | ✅ action |
 | `hook` | `hook.status` | Configuration | read | ✅ action |
-| `improve` | — | Orchestration | launch | 🚀 launch: _improve (run_once_with_supervisor): runs one supervised orchestrate run, then measures and records a lesson; long-running supervisor loop |
+| `improve` | — | Orchestration | launch | 🚀 launch: _improve (run_with_supervisor): runs bounded supervised orchestrate runs, measuring each and recording lessons; long-running supervisor loop |
 | `inspect` | `inspect` | Models | read | ✅ action |
 | `mcp` | `mcp.init` | Configuration | mutation | ✅ action |
 | `memory` | `memory.put` | Memory | mutation | ✅ action |
