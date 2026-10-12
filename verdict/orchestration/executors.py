@@ -331,7 +331,17 @@ class PrimeHeadlessExecutor:
                 env=child_env,
                 start_new_session=True,
             )
-        except (OSError, OwnershipError) as exc:
+        except OwnershipError as exc:
+            launch_config.cleanup()
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                model="",
+                error=f"ownership_refused: {_sanitize(str(exc))}",
+                status_code=125,
+                duration_seconds=time.monotonic() - started,
+            )
+        except OSError as exc:
             launch_config.cleanup()
             return WorkerTerminal(
                 executor_kind="live",
@@ -493,11 +503,14 @@ class PrimeHeadlessExecutor:
         if assistant is None:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
+                if returncode == 125 and "owned worker launch refused" in tail.lower():
+                    tail = "ownership_refused: " + tail
                 return WorkerTerminal(
                     executor_kind="live",
                     ok=False,
                     model="",
                     error=tail,
+                    status_code=returncode if returncode == 125 else None,
                     duration_seconds=duration,
                     usage=usage,
                 )

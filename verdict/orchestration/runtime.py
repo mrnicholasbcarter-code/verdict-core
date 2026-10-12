@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import shlex
 import shutil
 import time
@@ -58,6 +59,11 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
+from verdict.orchestration.controller_operations import (
+    OwnershipError,
+    bounded_executor_call,
+    scrub_fencing_env,
+)
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
@@ -83,11 +89,14 @@ Runner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, str]]]
 async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
     """Run argv without a shell; kill the process group on timeout."""
     try:
+        child_env = dict(os.environ)
+        scrub_fencing_env(child_env)
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=child_env,
             start_new_session=True,
         )
     except (FileNotFoundError, PermissionError) as exc:
@@ -96,7 +105,6 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         out, _ = await asyncio.wait_for(process.communicate(), timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         import contextlib
-        import os
         import signal
 
         with contextlib.suppress(ProcessLookupError):
@@ -1210,7 +1218,13 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
-                terminal = await self._execute(prompt, run.route_id, worktree)
+                terminal = await self._execute(
+                    prompt,
+                    run.route_id,
+                    worktree,
+                    node_id=node.node_id,
+                    attempt=run.attempt,
+                )
             finally:
                 self.inflight.pop(node.node_id, None)
             self.events.emit(
@@ -1311,19 +1325,25 @@ class DagRuntime:
         except OSError:
             pass
 
-    async def _execute(self, prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+    async def _execute(
+        self, prompt: str, route_id: str, cwd: Path, *, node_id: str, attempt: int
+    ) -> WorkerTerminal:
+        timeout_seconds = min(float(self.policy.attempt_timeout_seconds), 900.0)
         try:
-            return await asyncio.wait_for(
-                self.executor.run(
-                    prompt,
-                    route_id=route_id,
-                    cwd=cwd,
-                    timeout_seconds=self.policy.attempt_timeout_seconds,
-                ),
-                self.policy.attempt_timeout_seconds + 30,
+            return await bounded_executor_call(
+                self.executor,
+                prompt,
+                route_id=route_id,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                run_dir=self.run_dir,
+                phase="worker",
+                attempt_id=f"{node_id}-a{attempt}",
             )
-        except asyncio.TimeoutError:
-            return WorkerTerminal(ok=False, model=route_id, error="timeout (runtime watchdog)")
+        except OwnershipError as exc:
+            return WorkerTerminal(
+                ok=False, model=route_id, error=f"ownership_refused: {exc}", status_code=125
+            )
         except Exception as exc:  # executor bugs must not unwind the controller
             return WorkerTerminal(
                 ok=False, model=route_id, error=f"transport: {type(exc).__name__}: {exc}"
