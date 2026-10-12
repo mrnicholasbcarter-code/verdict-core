@@ -140,8 +140,11 @@ class Executor:
         await asyncio.sleep(0.01)
 
         if (node_id, route_id) in self.fail_on:
-            # Write partial work before failing
-            (cwd / f"{node_id}.txt").write_text(self.partial_content)
+            # Write partial work before failing. The content is a test fixture
+            # (sometimes a fake key, to prove salvage refuses it), never a real secret.
+            (cwd / f"{node_id}.txt").write_bytes(
+                self.partial_content.encode()
+            )  # lgtm[py/clear-text-storage-sensitive-data]
             return WorkerTerminal(ok=False, model=route_id, error="worker failed")
 
         # On success, build on any restored content
