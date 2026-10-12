@@ -10,12 +10,15 @@ import stat
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from verdict.orchestration.contracts import WorkerTerminal
 from verdict.orchestration.executors import (
+    DirectGatewayExecutor,
     FaultInjectingExecutor,
+    MixedExecutor,
     PrimeHeadlessExecutor,
     ScriptedExecutor,
     _fault_terminal,
@@ -473,6 +476,31 @@ def test_answer_only_refuses_default_prime_headless_planning(tmp_path: Path) -> 
     prime = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path))
     with pytest.raises(OrchestrationError, match="direct-gateway"):
         AnswerOnlyExecutor(prime)
+
+
+@pytest.mark.parametrize(
+    ("build", "accepted"),
+    [
+        (lambda dg, prime: FaultInjectingExecutor(dg, {}), True),
+        (
+            lambda dg, prime: FaultInjectingExecutor(MixedExecutor(node_map={}, default=dg), {}),
+            True,
+        ),
+        (lambda dg, prime: MixedExecutor(node_map={"n": prime}, default=dg), True),
+        (lambda dg, prime: FaultInjectingExecutor(prime, {}), False),
+        (lambda dg, prime: MixedExecutor(node_map={}, default=prime), False),
+    ],
+)
+def test_answer_only_follows_wrappers_to_the_planning_executor(build: Any, accepted: bool) -> None:
+    """Planning runs at the repo root, so a MixedExecutor plans with its default."""
+    from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
+
+    executor = build(DirectGatewayExecutor(), PrimeHeadlessExecutor())
+    if accepted:
+        AnswerOnlyExecutor(executor)
+    else:
+        with pytest.raises(OrchestrationError):
+            AnswerOnlyExecutor(executor)
 
 
 def test_cli_builds_direct_planner_and_prime_workers() -> None:
