@@ -41,8 +41,22 @@ def test_both_redactors_catch_the_same_credentials(text: str) -> None:
         "max_tokens = 4096",
         "token_budget = estimate_tokens(text)",
         "num_tokens = 12345678901234567",
+        "token_count = 123",
+        "password_hash_rounds = 12",
     ],
 )
 def test_worker_context_keeps_source_code_that_holds_no_secret(code: str) -> None:
     """Source code is read by workers; placeholders and lookups are not secrets."""
     assert _redact_worker_context_secrets(code) == code
+
+
+@pytest.mark.parametrize(
+    "text", ["token_count=123", "password_hash_rounds=12", "token_limit: 4096"]
+)
+def test_diagnostics_keep_counters_that_mention_tokens(text: str) -> None:
+    assert redact_text(text) == text
+
+
+def test_an_authorization_bearer_value_is_always_redacted() -> None:
+    text = "Authorization: Bearer abcdefghijklmno"
+    assert redact_text(text) != text and _redact_worker_context_secrets(text) != text

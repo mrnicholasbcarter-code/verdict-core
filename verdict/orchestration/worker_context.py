@@ -55,7 +55,7 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"""(?ix)
     (?<![A-Za-z0-9])
     ["']?(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)
-    (?:[_-][A-Za-z0-9]+)*["']?
+    (?:[_-](?:key|base|value|id)){0,2}["']?
     \s*
     (?:
         :\s*[^=\n#]{1,80}\s*=  # Python annotated assignment: token: str = "..."

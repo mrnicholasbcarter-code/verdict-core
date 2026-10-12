@@ -14,6 +14,8 @@ from urllib.parse import urlsplit, urlunsplit
 # Every redactor in Verdict applies these, so a key caught in one place is
 # caught everywhere.
 CREDENTIAL_SHAPES = (
+    # After an Authorization label, whatever follows "Bearer" is the credential.
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     # A bare "Bearer <token>" (no Authorization: label), as models often echo it.
     # Real tokens contain a digit or are long random runs; English words and file
     # names after "Bearer" do not ("Bearer authentication", "authentication-x.py").
@@ -39,13 +41,12 @@ CREDENTIAL_SHAPES = (
 )
 
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     *CREDENTIAL_SHAPES,
     re.compile(
         r"""(?ix)
         ((?:["']?)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*
         (?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)
-        (?:[_-][A-Za-z0-9]+)*(?:["']?)\s*[=:]\s*)
+        (?:[_-](?:key|base|value|id)){0,2}(?:["']?)\s*[=:]\s*)
         (?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s&,;]+)
         """
     ),
