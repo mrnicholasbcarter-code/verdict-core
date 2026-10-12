@@ -7,14 +7,21 @@ preserving real stall detection and preventing unsafe detached-worker replacemen
 ## ADDED Requirements
 
 ### Requirement: Bounded waiting is distinct from progress
-The supervisor SHALL permit a valid owner-bound initial or repair planning wait
-until its fixed operation deadline, capped at 600 seconds and the overall run
-deadline. Waiting SHALL NOT be reported as progress or model health. Invalid,
-stale, extended, reopened or unowned leases MUST NOT suppress stall detection.
+The supervisor SHALL permit a valid owner-bound initial, repair planning or REVIEW
+wait until its fixed operation deadline, capped at 600 seconds for planner/plan_repair,
+900 seconds for review, and the overall run deadline. Waiting SHALL NOT be reported
+as progress or model health. Invalid, stale, extended, reopened or unowned leases
+MUST NOT suppress stall detection.
 
 #### Scenario: Quiet bounded initial planner
 - **WHEN** a controller waits quietly on a registered 600-second planner operation
   and ordinary progress has stopped for 240 seconds
+- **THEN** supervision reports bounded waiting and does not preempt the operation
+  before its deadline
+
+#### Scenario: Quiet bounded REVIEW
+- **WHEN** a controller waits quietly on a registered `review-round-N` operation
+  with a deadline no later than 900 seconds and the run deadline
 - **THEN** supervision reports bounded waiting and does not preempt the operation
   before its deadline
 
@@ -26,6 +33,21 @@ stale, extended, reopened or unowned leases MUST NOT suppress stall detection.
 #### Scenario: No owned operation
 - **WHEN** progress stalls with no valid active operation
 - **THEN** the ordinary stall watchdog remains effective
+
+
+### Requirement: REVIEW cancellation is explicit when cleanup is uncertain
+REVIEW selection and OCR subprocess work MUST be bounded by the remaining review
+operation budget. The supported OCR subprocess runner MUST honour cancellation by
+killing and reaping its process group before returning terminal evidence. If cleanup
+cannot settle inside the bounded reserve, Verdict MUST fail closed with cleanup
+UNKNOWN, MUST NOT mark provider health unhealthy, and MUST NOT retry or fall back to
+another review independence level based on uncertain reviewer work.
+
+#### Scenario: OCR cleanup does not settle
+- **WHEN** a REVIEW cancellation asks the OCR runner to stop but cleanup does not
+  settle before the bounded reserve expires
+- **THEN** the review result is a local fail-closed cleanup UNKNOWN error with no
+  provider cooldown, and the controller does not launch another review attempt
 
 ### Requirement: Overall deadline is authoritative
 The supervisor MUST enforce its absolute run deadline before accepting completion,

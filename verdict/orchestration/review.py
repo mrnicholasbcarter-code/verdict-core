@@ -22,7 +22,6 @@ variable at runtime and never written into the repo, argv, or logs.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import json
 import os
@@ -197,14 +196,14 @@ def _run_with_watchdog(
                 output_size = size
                 if size >= 0:
                     last_activity[0] = now
-        if stop_event is not None and stop_event.is_set():
-            reason = "cancelled"
-            break
         if now - started >= timeout:
             reason = "timeout"
             break
         if idle_seconds is not None and now - last_activity[0] >= idle_seconds:
             reason = "idle"
+            break
+        if stop_event is not None and stop_event.is_set():
+            reason = "cancelled"
             break
         time.sleep(0.05)
     if reason:
@@ -218,11 +217,13 @@ def _run_with_watchdog(
     stdout = b"".join(chunks["stdout"]).decode("utf-8", "replace")
     stderr = b"".join(chunks["stderr"]).decode("utf-8", "replace")
     if reason:
+        if reason == "cancelled" and not stderr:
+            stderr = "ocr review stopped after cancellation"
         return OcrRun(
             exit_code=124,
             stdout=stdout,
             stderr=stderr,
-            timed_out=reason in {"timeout", "cancelled"},
+            timed_out=reason == "timeout",
             idle_timed_out=reason == "idle",
         )
     return OcrRun(exit_code=proc.returncode or 0, stdout=stdout, stderr=stderr)
@@ -274,31 +275,33 @@ async def _run_runner_bounded(
         return runner(argv, env=env, timeout=runner_timeout)
 
     task = asyncio.create_task(asyncio.to_thread(call_runner))
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), runner_timeout)
-    except asyncio.TimeoutError:
+
+    async def request_stop_and_wait(*, preserve_provider_timeout: bool) -> OcrRun:
         stop_event.set()
         cleanup_wait = min(_RUNNER_SETTLE_SECONDS, settle_budget)
         try:
             run = await asyncio.wait_for(asyncio.shield(task), cleanup_wait)
-            return OcrRun(
-                exit_code=run.exit_code,
-                stdout=run.stdout,
-                stderr="ocr review stopped after cancellation",
-                timed_out=False,
-                idle_timed_out=run.idle_timed_out,
-            )
         except asyncio.TimeoutError:
             return OcrRun(
                 exit_code=124,
                 stderr="ocr review cleanup UNKNOWN after cancellation",
             )
+        if preserve_provider_timeout and run.timed_out and "stopped" not in run.stderr.lower():
+            return run
+        return OcrRun(
+            exit_code=run.exit_code,
+            stdout=run.stdout,
+            stderr="ocr review stopped after cancellation",
+            timed_out=False,
+            idle_timed_out=run.idle_timed_out,
+        )
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), runner_timeout)
+    except asyncio.TimeoutError:
+        return await request_stop_and_wait(preserve_provider_timeout=True)
     except asyncio.CancelledError:
-        stop_event.set()
-        cleanup_wait = min(_RUNNER_SETTLE_SECONDS, settle_budget)
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(task), cleanup_wait)
-        raise
+        return await request_stop_and_wait(preserve_provider_timeout=False)
 
 
 _subprocess_runner = make_subprocess_runner()

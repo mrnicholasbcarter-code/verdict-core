@@ -366,6 +366,54 @@ async def test_ocr_runner_cleanup_unknown_is_fail_closed_without_cooldown(
     assert failures == []
 
 
+async def test_runtime_outer_review_cancellation_reports_cleanup_unknown_no_fallback(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    monkeypatch.setattr("verdict.orchestration.review.executor_timeout_within", lambda timeout: timeout)
+    release = threading.Event()
+
+    def nonsettling_runner(
+        argv: list[str],
+        *,
+        env: dict[str, str],
+        timeout: float,
+        stop_event: threading.Event,
+    ) -> OcrRun:
+        stop_event.wait(5)
+        release.wait(5)
+        return OcrRun(exit_code=0)
+
+    selector = FakeSelector(_verdict("cx/reviewer"))
+    reviewer = OpenCodeReviewer(
+        selector,
+        api_key_env="TEST_OCR_KEY",
+        out_dir=repo.parent / "out",
+        runner=nonsettling_runner,  # type: ignore[arg-type]
+        max_reviewer_attempts=3,
+    )
+    runtime = make_runtime(repo, reviewer, review_timeout_seconds=0.1)
+
+    try:
+        result = await runtime.run()
+    finally:
+        release.set()
+
+    assert result.outcome.name == "BLOCKED"
+    assert result.review is not None
+    assert "cleanup UNKNOWN" in result.review.detail
+    assert result.review.attempts == (
+        {
+            "route_id": "cx/reviewer",
+            "status": "ERROR",
+            "category": "",
+            "scope": "none",
+            "duration_seconds": result.review.attempts[0]["duration_seconds"],
+        },
+    )
+    assert selector.requirements is not None
+
+
 async def test_no_independent_reviewer_can_fall_back_to_route_level_under_bound(repo: Path) -> None:
     reviewer = NoIndependentReviewer()
     runtime = make_runtime(repo, reviewer, review_timeout_seconds=30)
@@ -604,8 +652,9 @@ async def test_run_with_watchdog_stop_event_kills_and_reaps_process_group() -> N
     stop_event.set()
     run = await asyncio.wait_for(task, 3)
 
-    assert run.timed_out
+    assert not run.timed_out
     assert run.exit_code == 124
+    assert "stopped after cancellation" in run.stderr
 
 
 def test_ocr_timeout_kills_process_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
