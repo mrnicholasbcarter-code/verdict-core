@@ -43,10 +43,18 @@ def _isolate_provider_credentials(
 
 @pytest.fixture(autouse=True)
 def _isolate_verdict_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the unverified-dev opt-in off unless a test sets it explicitly, and
+    """Keep controller/test env isolated unless a test sets it explicitly, and
     give the API an explicit in-memory receipts store (production code no longer
     detects pytest via PYTEST_CURRENT_TEST)."""
     monkeypatch.delenv("VERDICT_ALLOW_UNVERIFIED_DEV", raising=False)
+    for key in (
+        "VERDICT_SUPERVISED_RUN_DIR",
+        "VERDICT_CONTROLLER_TOKEN",
+        "VERDICT_CONTROLLER_DEADLINE",
+        "VERDICT_CONTROLLER_LAUNCH",
+        "VERDICT_CONTROLLER_OPERATION",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("VERDICT_RECEIPTS_DB", ":memory:")
 
 

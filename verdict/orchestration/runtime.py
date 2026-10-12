@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import shlex
 import shutil
 import time
@@ -58,7 +59,7 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
-from verdict.orchestration.controller_operations import bounded_executor_call
+from verdict.orchestration.controller_operations import bounded_executor_call, scrub_fencing_env
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
@@ -84,11 +85,14 @@ Runner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, str]]]
 async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
     """Run argv without a shell; kill the process group on timeout."""
     try:
+        child_env = dict(os.environ)
+        scrub_fencing_env(child_env)
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=child_env,
             start_new_session=True,
         )
     except (FileNotFoundError, PermissionError) as exc:
@@ -97,7 +101,6 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         out, _ = await asyncio.wait_for(process.communicate(), timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         import contextlib
-        import os
         import signal
 
         with contextlib.suppress(ProcessLookupError):

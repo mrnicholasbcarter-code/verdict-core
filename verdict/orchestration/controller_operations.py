@@ -35,6 +35,7 @@ TOKEN_ENV = "VERDICT_CONTROLLER_TOKEN"
 DEADLINE_ENV = "VERDICT_CONTROLLER_DEADLINE"
 LAUNCH_ENV = "VERDICT_CONTROLLER_LAUNCH"
 OPERATION_ENV = "VERDICT_CONTROLLER_OPERATION"
+FENCING_ENV_KEYS = (RUN_DIR_ENV, TOKEN_ENV, DEADLINE_ENV, LAUNCH_ENV, OPERATION_ENV)
 _operation_id: contextvars.ContextVar[str] = contextvars.ContextVar("operation_id", default="")
 
 
@@ -476,9 +477,16 @@ async def kill_containment(record: dict[str, Any], token: str, timeout: float) -
         raise OwnershipError("contained worker cleanup unavailable") from exc
 
 
+def scrub_fencing_env(environment: dict[str, str]) -> None:
+    """Remove controller-only fencing variables before payload processes run."""
+    for key in FENCING_ENV_KEYS:
+        environment.pop(key, None)
+
+
 def owned_worker_command(command: list[str], environment: dict[str, str]) -> list[str]:
     """Wrap supervised launches; unsupervised command and behavior stay unchanged."""
     if not environment.get(RUN_DIR_ENV):
+        scrub_fencing_env(environment)
         return command
     if not environment.get(TOKEN_ENV):
         raise OwnershipError("supervised worker has no generation token")
@@ -537,7 +545,9 @@ def register_worker(
             # Hold the stable lock through exec. CLOEXEC releases it only when
             # payload execution starts, so revocation cannot cross the check/exec gap.
             _write_state(run_dir, state)
-            os.execvpe(command[0], command, os.environ)
+            payload_env = dict(os.environ)
+            scrub_fencing_env(payload_env)
+            os.execvpe(command[0], command, payload_env)
 
 
 def _signal_identity(identity: dict[str, Any], sig: signal.Signals) -> None:
