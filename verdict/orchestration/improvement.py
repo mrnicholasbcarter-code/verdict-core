@@ -33,6 +33,7 @@ from verdict.security import redact_text
 CYCLES_FILE = "cycles.jsonl"
 REQUIRED_CLAIMS = ("validation_passed", "independent_review", "receipt_integrity")
 MAX_LESSON_BYTES = 2048
+CAPACITY_CATEGORIES = frozenset({"quota_exhausted", "rate_limited"})
 
 # First matching rule wins; the order puts the most specific evidence first.
 _LAYER_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -75,6 +76,7 @@ class CycleResult:
     reason: str
     run_id: str = ""
     layer: str = ""
+    wait_until: str = ""  # set when the next cycle can run only after a capacity reset
 
 
 def _sha256(data: bytes) -> str:
@@ -135,7 +137,12 @@ def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]]) -> str:
     seen: list[str] = []
     for record in reversed(cycles):
         layer = str(record.get("layer", ""))
-        if record.get("stage") != "learned" or layer in _OPERATOR_LAYERS:
+        # Operator lessons and capacity waits are not things a planner can act on.
+        if (
+            record.get("stage") != "learned"
+            or layer in _OPERATOR_LAYERS
+            or record.get("wait_until")
+        ):
             continue
         text = _LAYER_LESSONS.get(layer)
         if text and text not in seen:
@@ -168,6 +175,53 @@ def classify_blocker(reason: str, run_dir: Path) -> tuple[str, str]:
         if any(needle in text for needle in needles):
             return layer, evidence
     return "execution", evidence
+
+
+def capacity_reset(run_dir: Path, after: datetime) -> datetime | None:
+    """Earliest credential-capacity reset after ``after`` recorded by the run, if any."""
+    resets: list[datetime] = []
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text().splitlines():
+            event = json.loads(line)
+            data = event.get("data") or {}
+            # Only credential capacity is worth waiting for; a short route cooldown
+            # after a crash is not a reason to hold the next cycle.
+            if event.get("type") != "cooldown" or data.get("category") not in CAPACITY_CATEGORIES:
+                continue
+            try:
+                until = datetime.fromisoformat(str(data.get("until", "")))
+            except ValueError:
+                continue
+            if until.tzinfo is not None and until > after:
+                resets.append(until)
+    return min(resets, default=None)
+
+
+def _only_capacity_failures(run_dir: Path) -> bool:
+    """True when the run failed attempts, and every failure was a capacity limit."""
+    categories = []
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("type") == "failure":
+                categories.append((event.get("data") or {}).get("category"))
+    return bool(categories) and all(c in CAPACITY_CATEGORIES for c in categories)
+
+
+def _blocker_reason(run_dir: Path, measured: Mapping[str, Any]) -> str:
+    """The run's own recorded cause; the receipt verdict reason only restates it."""
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for line in reversed(events_path.read_text().splitlines()):
+            event = json.loads(line)
+            if event.get("type") == "run_finished":
+                reason = str((event.get("data") or {}).get("reason") or "")
+                if reason:
+                    return f"{reason}; {measured.get('reason', '')}"
+                break
+    return str(measured.get("reason", ""))
 
 
 def measure_run(run_dir: Path) -> dict[str, Any]:
@@ -206,6 +260,7 @@ async def run_cycle(
     cycles_dir: Path,
     orchestrate_args: Sequence[str],
     supervise: Supervise,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> CycleResult:
     """Plan, act, measure and learn once. ``supervise(run_id, argv)`` runs the run."""
     cycles = read_cycles(cycles_dir)
@@ -218,11 +273,34 @@ async def run_cycle(
         r for r in cycles if r.get("stage") == "measured" and r.get("fingerprint") == fingerprint
     ]
     if prior and not prior[-1].get("metric_met"):
-        reason = f"unchanged relaunch of cycle {prior[-1]['cycle_id']}: same goal, repo HEAD, arguments and lessons"
-        _append(
-            cycles_dir, {"stage": "refused", "cycle_id": cycle_id, "at": _now(), "reason": reason}
+        # Time is an input too: after a capacity reset the same inputs may succeed.
+        learned = next(
+            (
+                r
+                for r in cycles
+                if r.get("stage") == "learned" and r.get("cycle_id") == prior[-1]["cycle_id"]
+            ),
+            {},
         )
-        return CycleResult(cycle_id, "REFUSED", reason)
+        wait_until = str(learned.get("wait_until") or "")
+        if not wait_until or clock() < datetime.fromisoformat(wait_until):
+            reason = (
+                f"waiting for capacity until {wait_until} (cycle {prior[-1]['cycle_id']})"
+                if wait_until
+                else f"unchanged relaunch of cycle {prior[-1]['cycle_id']}: "
+                "same goal, repo HEAD, arguments and lessons"
+            )
+            _append(
+                cycles_dir,
+                {
+                    "stage": "refused",
+                    "cycle_id": cycle_id,
+                    "at": _now(),
+                    "reason": reason,
+                    "wait_until": wait_until,
+                },
+            )
+            return CycleResult(cycle_id, "REFUSED", reason, wait_until=wait_until)
     run_id = f"improve-{cycle_id}"
     argv = [goal, "--repo", str(repo), *orchestrate_args]
     if constraints:
@@ -258,7 +336,21 @@ async def run_cycle(
     )
     if measured["metric_met"]:
         return CycleResult(cycle_id, "MET", str(measured.get("reason", "")), run_id)
-    layer, evidence = classify_blocker(str(measured.get("reason", "")), run_dir)
+    layer, evidence = classify_blocker(_blocker_reason(run_dir, measured), run_dir)
+    # Wait only when capacity is what stopped the run: the blocker is a selection
+    # failure, or every failed attempt was a quota/rate limit, and a cooldown on
+    # that capacity is still in force. A capacity cooldown next to an unrelated
+    # failure (bad code, review) is not a reason to rerun the same inputs later.
+    reset = capacity_reset(run_dir, clock())
+    if (
+        reset is not None
+        and layer not in _OPERATOR_LAYERS
+        and (layer == "selection" or _only_capacity_failures(run_dir))
+    ):
+        layer, evidence = "selection", f"cooldown until {reset.isoformat()}"
+        wait_until = reset.isoformat()
+    else:
+        wait_until = ""
     _append(
         cycles_dir,
         {
@@ -270,9 +362,12 @@ async def run_cycle(
             "evidence": evidence,
             "lesson": _LAYER_LESSONS[layer],
             "operator_action": layer in _OPERATOR_LAYERS,
+            "wait_until": wait_until,
         },
     )
-    return CycleResult(cycle_id, "NOT_MET", str(measured.get("reason", "")), run_id, layer)
+    return CycleResult(
+        cycle_id, "NOT_MET", str(measured.get("reason", "")), run_id, layer, wait_until
+    )
 
 
 def verify_cycles(cycles_dir: Path, runs_dir: Path) -> list[str]:
@@ -290,6 +385,7 @@ def verify_cycles(cycles_dir: Path, runs_dir: Path) -> list[str]:
 
 
 MAX_CYCLES = 5
+MAX_WAIT_SECONDS = 900.0
 
 
 async def run_cycles(
@@ -301,13 +397,18 @@ async def run_cycles(
     orchestrate_args: Sequence[str],
     supervise: Supervise,
     cycles: int,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> list[CycleResult]:
-    """Up to ``cycles`` cycles (at most MAX_CYCLES). Stops at the first cycle that
-    is MET, refused, or whose lesson needs the operator rather than the planner."""
+    """Up to ``cycles`` runs (at most MAX_CYCLES). Stops at the first cycle that is
+    MET, refused, or whose lesson needs the operator rather than the planner. A
+    cycle that must wait for a capacity reset of at most MAX_WAIT_SECONDS waits
+    once and tries again; a longer wait ends the loop and reports the reset time."""
     if not 1 <= cycles <= MAX_CYCLES:
         raise CycleError(f"--cycles must be between 1 and {MAX_CYCLES}")
     results: list[CycleResult] = []
-    for _ in range(cycles):
+    runs, waited = 0, False
+    while runs < cycles:
         result = await run_cycle(
             goal,
             repo=repo,
@@ -315,10 +416,18 @@ async def run_cycles(
             cycles_dir=cycles_dir,
             orchestrate_args=orchestrate_args,
             supervise=supervise,
+            clock=clock,
         )
         results.append(result)
+        if result.outcome == "REFUSED" and result.wait_until and not waited:
+            delay = (datetime.fromisoformat(result.wait_until) - clock()).total_seconds()
+            if delay <= MAX_WAIT_SECONDS:
+                waited = True
+                await sleep(max(0.0, delay) + 1)
+                continue
         if result.outcome != "NOT_MET" or result.layer in _OPERATOR_LAYERS:
             break
+        runs, waited = runs + 1, False
     return results
 
 
