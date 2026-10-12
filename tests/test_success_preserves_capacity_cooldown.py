@@ -35,3 +35,18 @@ def test_success_clears_old_expired_capacity_evidence(tmp_path: Path) -> None:
     )
     ladder.record_success(route, now=NOW + timedelta(seconds=2))
     assert ladder.dispatch_blocker(route, now=NOW + timedelta(seconds=2)) is None
+
+
+def test_exact_route_success_lifts_only_model_local_throttle(tmp_path: Path) -> None:
+    route = "cc/claude-sonnet-5"
+    sibling = "cc/claude-haiku-5"
+    ladder, _ = make_ladder(
+        tmp_path, [row(route, owned_by="claude"), row(sibling, owned_by="claude")], [conn("claude")]
+    )
+    ladder.record_failure(
+        route, FailureClassification("rate_limited", "REROUTE", 300, "route"), now=NOW
+    )
+    assert ladder.dispatch_blocker(sibling, now=NOW) is None
+    ladder.record_success(route, now=NOW + timedelta(seconds=1))
+    assert ladder.dispatch_blocker(route, now=NOW + timedelta(seconds=1)) is None
+    assert ladder.dispatch_blocker(sibling, now=NOW + timedelta(seconds=1)) is None
