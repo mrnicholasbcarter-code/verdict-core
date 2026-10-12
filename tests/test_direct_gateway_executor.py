@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import json as _json
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -120,6 +122,44 @@ async def _run_with_transport(
             return await transport.handle_async_request(req)
 
         mock_client.post = fake_post
+
+        @contextlib.asynccontextmanager
+        async def fake_stream(method: str, url: str, json: Any = None, headers: Any = None):  # type: ignore[no-untyped-def]
+            """Replay the scripted response as server-sent events, as a gateway would."""
+            req = httpx.Request(method, url, json=json, headers=headers or {})
+            scripted = await transport.handle_async_request(req)
+            if scripted.status_code >= 400:
+                yield scripted
+                return
+            try:
+                body = scripted.json()
+            except ValueError:
+                yield scripted
+                return
+            lines: list[str] = []
+            for choice in body.get("choices") or []:
+                content = (choice.get("message") or {}).get("content", "")
+                for start in range(0, max(len(content), 1), 7):
+                    piece = {"choices": [{"delta": {"content": content[start : start + 7]}}]}
+                    lines.append(
+                        "data: "
+                        + _json.dumps({**piece, "id": body.get("id"), "model": body.get("model")})
+                    )
+                lines.append(
+                    "data: "
+                    + _json.dumps(
+                        {
+                            "choices": [
+                                {"delta": {}, "finish_reason": choice.get("finish_reason")}
+                            ],
+                            "usage": body.get("usage"),
+                        }
+                    )
+                )
+            lines.append("data: [DONE]")
+            yield httpx.Response(200, content="\n\n".join(lines).encode(), request=req)
+
+        mock_client.stream = fake_stream
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_cls.return_value = mock_client
@@ -1476,3 +1516,60 @@ def test_repeated_complete_contents_blocks_are_refused() -> None:
     output = "FILE: owned.py\n```\nx = 1\n```\nFILE: owned.py\n```\nx = 2\n```"
     with pytest.raises(ValueError, match="duplicate FILE block"):
         DirectGatewayExecutor._extract_files(output)
+
+
+@pytest.mark.asyncio
+async def test_implement_requests_are_streamed_and_reassembled(tmp_path: Path) -> None:
+    """Self-host runs 2026-10-12: 10 of 21 attempts died on the gateway's 30 s
+    response-start deadline for non-streamed requests. Implement calls stream."""
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    output = "FILE: owned.py\n```\nx = 2\n```\nRESULT: DONE"
+    terminal = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert terminal.ok, terminal.error
+    assert (tmp_path / "owned.py").read_text() == "x = 2\n"
+
+
+def _sse(*events: str) -> bytes:
+    return "\n\n".join(f"data: {e}" for e in events).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stream",
+    [
+        # finish_reason stop, but the stream is cut before [DONE]
+        _sse(
+            '{"choices":[{"delta":{"content":"FILE: owned.py"}}]}',
+            '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        ),
+        # an error chunk after HTTP 200
+        _sse(
+            '{"choices":[{"delta":{"content":"partial"}}]}',
+            '{"error":{"message":"upstream reset"}}',
+            "[DONE]",
+        ),
+        # a malformed event
+        _sse('{"choices":[{"delta":{"content":"partial"}}]}', "{not json", "[DONE]"),
+    ],
+)
+async def test_a_failed_stream_is_never_a_complete_answer(tmp_path: Path, stream: bytes) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+
+    class Streamed(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=stream, request=request)
+
+    async with httpx.AsyncClient(transport=Streamed()) as client:
+        resp = await DirectGatewayExecutor()._post_streamed(
+            client, "http://gw/v1/chat/completions", {"model": "cc/x", "stream": True}
+        )
+    assert resp.status_code == 502
+    terminal = DirectGatewayExecutor._interpret(resp, route_id="cc/x", duration=0.0)
+    assert not terminal.ok
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"
