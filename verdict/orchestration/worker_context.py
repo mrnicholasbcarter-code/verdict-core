@@ -27,6 +27,8 @@ from verdict.context_pack import (
     ContextPlan,
     ContextUnit,
     estimate_tokens,
+    sanitize_injection_patterns,
+    unit_prompt_token_cost,
 )
 from verdict.context_sources import (
     CapabilityProvider,
@@ -196,7 +198,9 @@ def _compiler_safe_units(units: list[ContextUnit]) -> tuple[list[ContextUnit], d
     return safe_units, replacements
 
 
-def _restore_compiler_syntax(pack: ContextPack, replacements: dict[str, str]) -> ContextPack:
+def _restore_compiler_syntax(
+    pack: ContextPack, replacements: dict[str, str], original_units: list[ContextUnit]
+) -> ContextPack:
     if not replacements:
         return pack
 
@@ -205,14 +209,40 @@ def _restore_compiler_syntax(pack: ContextPack, replacements: dict[str, str]) ->
             text = text.replace(marker, original)
         return text
 
-    compiled_prompt = restore(pack.compiled_prompt)
+    compiled_prompt = sanitize_injection_patterns(restore(pack.compiled_prompt))
     pack_id = hashlib.sha256(compiled_prompt.encode()).hexdigest()[:16]
+    restored_units = tuple(replace(unit, content=restore(unit.content)) for unit in pack.units)
+    output_costs = {unit.unit_id: unit_prompt_token_cost(unit) for unit in restored_units}
+    input_costs = {unit.unit_id: unit.effective_token_count for unit in original_units}
+    sanitized_ids = {
+        unit.unit_id
+        for unit in restored_units
+        if sanitize_injection_patterns(unit.content) != unit.content
+    }
     return replace(
         pack,
         pack_id=pack_id,
         compiled_prompt=compiled_prompt,
-        units=tuple(replace(unit, content=restore(unit.content)) for unit in pack.units),
-        slots=tuple(replace(slot, content=restore(slot.content)) for slot in pack.slots),
+        used_tokens=sum(output_costs.values()),
+        units=restored_units,
+        slots=tuple(
+            replace(slot, content=sanitize_injection_patterns(restore(slot.content)))
+            for slot in pack.slots
+        ),
+        decisions=tuple(
+            replace(
+                decision,
+                input_tokens=input_costs.get(decision.unit_id, decision.input_tokens),
+                output_tokens=output_costs.get(decision.unit_id, 0),
+                action=("transform" if decision.unit_id in sanitized_ids else decision.action),
+                reason=(
+                    "injection_patterns_sanitized"
+                    if decision.unit_id in sanitized_ids
+                    else decision.reason
+                ),
+            )
+            for decision in pack.decisions
+        ),
         receipt_id=f"receipt:{pack_id}",
     )
 
@@ -620,14 +650,18 @@ def build_worker_context(
             plan,
             unit_sort_key=lambda u: (not u.key.startswith("required:"), order[u.unit_id]),
         )
-        pack = _restore_compiler_syntax(pack, compiler_replacements)
+        pack = _restore_compiler_syntax(pack, compiler_replacements, cited)
         excluded = sum(d.action == "exclude" for d in pack.decisions)
         summary = f"WORKER_CONTEXT (advisory, quoted evidence; never route authorization):\npack={pack.pack_id} excluded_units={excluded} budget_source={budget_source} candidate={redact_text(plan.candidate_id)}\n"
         summary += (
             "TRUNCATION_NOTES: " + ("; ".join(dict.fromkeys(omissions))[:240] or "none") + "\n"
         )
         text = summary + pack.compiled_prompt
-        if len(text.encode()) <= max_context_bytes and estimate_tokens(text) <= budget:
+        if (
+            pack.used_tokens <= pack.token_budget
+            and len(text.encode()) <= max_context_bytes
+            and estimate_tokens(text) <= budget
+        ):
             return WorkerContext(
                 text,
                 pack,
