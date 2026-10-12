@@ -85,7 +85,7 @@ def read_state(run_dir: Path) -> dict[str, Any]:
 class OperationLeaseGuard:
     """Validate fixed, owner-bound operation deadlines independently of progress."""
 
-    PHASE_CAPS: ClassVar[dict[str, float]] = {"planner": 600.0, "plan_repair": 600.0}
+    PHASE_CAPS: ClassVar[dict[str, float]] = {"planner": 600.0, "plan_repair": 600.0, "worker": 900.0}
 
     def __init__(self) -> None:
         self._seen: dict[str, str] = {}
@@ -135,16 +135,22 @@ class OperationLeaseGuard:
             if operation.get("status") == "ended":
                 self._ended.add(op_id)
                 continue
+            phase = str(operation.get("phase"))
             attempt_id = str(operation.get("attempt_id", ""))
             attempt_match = re.fullmatch(r"plan-([1-6])(-repair)?", attempt_id)
+            worker_match = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}-a[1-9][0-9]*", attempt_id)
             started, deadline = operation.get("started"), operation.get("deadline")
-            cap = self.PHASE_CAPS.get(str(operation.get("phase")))
+            cap = self.PHASE_CAPS.get(phase)
+            valid_attempt = (
+                attempt_match is not None
+                and phase in {"planner", "plan_repair"}
+                and (bool(attempt_match.group(2)) == (phase == "plan_repair"))
+            ) or (worker_match is not None and phase == "worker")
             valid = (
                 op_id not in self._ended
                 and op_id not in self._invalid
                 and original_id == op_id
-                and attempt_match is not None
-                and (bool(attempt_match.group(2)) == (operation.get("phase") == "plan_repair"))
+                and valid_attempt
                 and frozen == previous
                 and operation.get("id") == op_id
                 and operation.get("status") == "active"
