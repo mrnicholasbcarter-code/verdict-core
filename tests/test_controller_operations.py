@@ -564,3 +564,35 @@ def test_startup_verified_revoke_reads_revoked_state_before_cleanup(
     assert killed == ["token"]
     assert "fixture verification" in outcome.reason
     assert outcome.state == "BLOCKED"
+
+
+def test_a_lease_at_exactly_the_cap_is_valid_despite_float_rounding() -> None:
+    """CI (Python 3.10, PR #811): started + 900 - started rounded above 900 and a
+    valid review lease was rejected. Found a start time where that happens."""
+    import itertools
+
+    started = next(
+        s for s in (100_000.0 + i * 0.137 for i in itertools.count()) if (s + 900.0) - s > 900.0
+    )
+    owner = {"pid": 1, "boot": "b", "start": 1, "pgid": 1, "sid": 1}
+    state = {
+        "active": True,
+        "token": "t",
+        "operations": {
+            "op": {
+                "id": "op",
+                "status": "active",
+                "token": "t",
+                "phase": "review",
+                "attempt_id": "review-round-1",
+                "owner": owner,
+                "started": started,
+                "deadline": started + 900.0,
+            }
+        },
+    }
+    guard = operations.OperationLeaseGuard()
+    result, _ = guard.inspect(
+        state, token="t", owner=owner, now=started + 240, overall_deadline=started + 1200
+    )
+    assert result == "WAITING_BOUNDED"

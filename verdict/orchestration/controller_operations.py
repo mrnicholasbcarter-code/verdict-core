@@ -182,7 +182,9 @@ class OperationLeaseGuard:
                 and math.isfinite(deadline)
                 and 0 <= started <= now
                 and started < deadline <= overall_deadline
-                and deadline - started <= float(cap or 0)
+                # started + cap can round to slightly more than cap after subtraction;
+                # allow float rounding, never a real extension.
+                and deadline - started <= float(cap or 0) + 1e-6
             )
             if not valid:
                 self._invalid.add(op_id)
