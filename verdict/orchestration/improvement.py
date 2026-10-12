@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -156,21 +157,76 @@ def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]]) -> str:
     return out
 
 
+def _blocked_node(reason: str, known_nodes: set[str] | None = None) -> str | None:
+    """Extract the node_id that blocked the run from the run_finished reason, if any."""
+    # 1. "node <node_id> not VALIDATED" or "node <node_id>"
+    m = re.search(r"\bnode\s+['\"]?([a-zA-Z0-9_\-\.]+)['\"]?\b", reason, re.IGNORECASE)
+    if m and (not known_nodes or m.group(1) in known_nodes):
+        return m.group(1)
+    # 2. "<node_id> not VALIDATED"
+    m = re.search(r"\b([a-zA-Z0-9_\-\.]+)\s+not\s+VALIDATED\b", reason, re.IGNORECASE)
+    if m and (not known_nodes or m.group(1) in known_nodes):
+        return m.group(1)
+    # 3. "<node_id>: ..." at the start of reason or after a semicolon
+    for part in re.split(r"[;\n]", reason):
+        part = part.strip()
+        if part.lower().startswith("run_finished:"):
+            part = part[len("run_finished:") :].strip()
+        m_part = re.match(r"^([a-zA-Z0-9_\-\.]+):", part)
+        if m_part:
+            candidate = m_part.group(1)
+            if candidate.lower() not in {
+                "claims",
+                "event",
+                "error",
+                "warning",
+                "note",
+                "review",
+                "gateway",
+                "controller",
+            } and (not known_nodes or candidate in known_nodes):
+                return candidate
+    # 4. If explicit syntax didn't match, check if any known node appears with word boundaries
+    if known_nodes:
+        for nid in sorted(known_nodes, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(nid)}\b", reason):
+                return nid
+    return None
+
+
 def classify_blocker(reason: str, run_dir: Path) -> tuple[str, str]:
-    """(layer, evidence) for the run's first concrete blocker; deterministic."""
+    """(layer, evidence) for the run's decisive blocker; deterministic."""
     text = reason.lower()
     evidence = f"run_finished: {redact_text(reason)[:300]}"
     if "independent_review=" in text:
         return "review_independence", f"claims: {redact_text(reason)[:300]}"
     events_path = run_dir / "events.jsonl"
     if events_path.exists():
-        for line in events_path.read_text().splitlines():
-            event = json.loads(line)
-            data = event.get("data") or {}
-            if event.get("type") == "failure" and data.get("category"):
-                text = f"{text} {data['category']}".lower()
-                evidence = f"event:{event.get('seq')} failure {data['category']}"
-                break
+        events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+        known_nodes = {
+            str(e.get("node_id") or (e.get("data") or {}).get("node_id") or "") for e in events
+        }
+        known_nodes.discard("")
+        blocked_node = _blocked_node(reason, known_nodes)
+        last_failure: dict[str, Any] | None = None
+        for event in reversed(events):
+            if event.get("type") == "failure":
+                data = event.get("data") or {}
+                if data.get("category"):
+                    ev_node = str(event.get("node_id") or data.get("node_id") or "")
+                    if blocked_node is not None:
+                        if ev_node == blocked_node:
+                            last_failure = event
+                            break
+                    elif not ev_node:
+                        last_failure = event
+                        break
+        if last_failure is not None:
+            data = last_failure.get("data") or {}
+            category = str(data.get("category", ""))
+            if category:
+                text = f"{text} {category}".lower()
+                evidence = f"event:{last_failure.get('seq')} failure {category}"
     for layer, needles in _LAYER_RULES:
         if any(needle in text for needle in needles):
             return layer, evidence

@@ -168,6 +168,69 @@ def test_blocker_classification_is_deterministic(tmp_path: Path, reason: str, la
     assert improvement.classify_blocker(reason, tmp_path)[0] == layer
 
 
+def test_decisive_failure_of_blocked_node_classifies_and_points_to_later_event(
+    tmp_path: Path,
+) -> None:
+    """An early upstream_temporary failure followed by a final verification_failed must classify as verification."""
+    log = EventLog(tmp_path / "events.jsonl")
+    log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
+    log.emit("failure", node_id="a", category="verification_failed", action="RETRY")
+    log.emit("run_finished", outcome="BLOCKED", reason="node a not VALIDATED")
+    layer, evidence = improvement.classify_blocker("node a not VALIDATED", tmp_path)
+    assert layer == "verification"
+    assert evidence == "event:2 failure verification_failed"
+
+
+def test_decisive_failure_with_node_prefix_reason(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "events.jsonl")
+    log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
+    log.emit("failure", node_id="a", category="verification_failed", action="FAIL_CLOSED")
+    log.emit("run_finished", outcome="BLOCKED", reason="a: verification_failed")
+    layer, evidence = improvement.classify_blocker("a: verification_failed", tmp_path)
+    assert layer == "verification"
+    assert evidence == "event:2 failure verification_failed"
+
+
+def test_multi_node_classifies_blocked_node_not_unrelated_early_failure(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "events.jsonl")
+    log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
+    log.emit("failure", node_id="b", category="verification_failed", action="FAIL_CLOSED")
+    log.emit("run_finished", outcome="BLOCKED", reason="node b not VALIDATED")
+    layer, evidence = improvement.classify_blocker("node b not VALIDATED", tmp_path)
+    assert layer == "verification"
+    assert evidence == "event:2 failure verification_failed"
+
+
+async def test_cycle_classifies_decisive_failure_as_verification_lesson(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    calls: list[list[str]] = []
+
+    async def supervise(run_id: str, argv: list[str]) -> None:
+        calls.append(argv)
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "graph.json").write_text(json.dumps({**GRAPH.to_dict(), "run_id": run_id}))
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("failure", node_id="a", category="upstream_temporary", action="RETRY")
+        log.emit("failure", node_id="a", category="verification_failed", action="FAIL_CLOSED")
+        log.emit("run_finished", outcome="BLOCKED", reason="node a not VALIDATED")
+        write_run_receipt(run_dir)
+
+    result = await improvement.run_cycle(
+        "g",
+        repo=repo,
+        runs_dir=tmp_path / "runs",
+        cycles_dir=tmp_path / "cycles",
+        orchestrate_args=[],
+        supervise=supervise,
+    )
+    assert result.outcome == "NOT_MET"
+    assert result.layer == "verification"
+    learned = [r for r in improvement.read_cycles(tmp_path / "cycles") if r["stage"] == "learned"]
+    assert learned and learned[0]["evidence"] == "event:2 failure verification_failed"
+    assert learned[0]["lesson"] == improvement._LAYER_LESSONS["verification"]
+
+
 async def _loop(tmp_path: Path, repo: Path, executor: Any, calls: list[list[str]], n: int) -> Any:
     return await improvement.run_cycles(
         "g",
