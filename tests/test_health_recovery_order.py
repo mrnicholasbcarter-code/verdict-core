@@ -37,7 +37,9 @@ def _ladder(
 def _cache_failure(cache: HealthCache, *, checked_seconds_ago: float, ttl_seconds: float) -> None:
     cache.record(
         ROUTE,
-        ProbeResult(CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False, negative_ttl_seconds=ttl_seconds),
+        ProbeResult(
+            CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False, negative_ttl_seconds=ttl_seconds
+        ),
         NOW - timedelta(seconds=checked_seconds_ago),
     )
 
@@ -72,7 +74,9 @@ def test_newer_ladder_probe_success_reused_without_another_probe(tmp_path: Path)
         probe=FakeProbe({ROUTE: HealthResult(healthy=False, category="unexpected_reprobe")}),
     )
     _cache_failure(cache, checked_seconds_ago=120, ttl_seconds=60)
-    ladder._record_health(ROUTE, HealthResult(healthy=True, category="healthy"), NOW - timedelta(seconds=10))
+    ladder._record_health(
+        ROUTE, HealthResult(healthy=True, category="healthy"), NOW - timedelta(seconds=10)
+    )
 
     selected, verdicts = ladder.select(REQ, now=NOW)
 

@@ -393,17 +393,11 @@ class TestSalvageOwnedFiles:
         (worktree / "a.txt").write_text("new partial")
         salvage_dir = tmp_path / "salvage"
 
-        result = salvage_owned_files(
-            worktree, ("a.txt",), salvage_dir, changed_files=["a.txt"]
-        )
+        result = salvage_owned_files(worktree, ("a.txt",), salvage_dir, changed_files=["a.txt"])
 
         assert result.saved == ("a.txt",)
         assert result.files == (
-            {
-                "path": "a.txt",
-                "bytes": len("new partial"),
-                "sha256": result.files[0]["sha256"],
-            },
+            {"path": "a.txt", "bytes": len("new partial"), "sha256": result.files[0]["sha256"]},
         )
         assert (salvage_dir / "a.txt").read_text() == "new partial"
 
@@ -697,10 +691,7 @@ class TestDagRuntimeSalvageRestore:
             (cwd / f"{node_id}.txt").write_text(f"completed by {route_id}\n")
             return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
 
-        executor = FaultInjectingExecutor(
-            ScriptedExecutor(script),
-            {"worker#1": ["auth"]},
-        )
+        executor = FaultInjectingExecutor(ScriptedExecutor(script), {"worker#1": ["auth"]})
         runtime = DagRuntime(
             repo=repo,
             run_dir=run_dir,
