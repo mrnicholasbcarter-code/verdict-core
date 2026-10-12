@@ -237,20 +237,14 @@ class PrimeHeadlessExecutor:
         extra_args: tuple[str, ...] = ("-nc", "-ns"),
         thinking: str | None = None,
         env: Mapping[str, str] | None = None,
-        answer_only_flag: str | None = None,
     ) -> None:
         self.prime_bin = prime_bin
         self.provider = provider
         self.extra_args = tuple(extra_args)
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
-        # Prime 0.10 removed the old tool-disabling CLI flag.  Keep the
-        # compatibility hook explicit for legacy smoke tests, but default live
-        # Prime headless launches to worker mode only.
-        self.answer_only_flag = answer_only_flag
-        self.answer_only_supported = answer_only_flag is not None
 
-    def _command(self, prompt: str, route_id: str, cwd: Path, *, tools: bool = True) -> list[str]:
+    def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
         cmd = [
             self.prime_bin,
             "-p",
@@ -265,8 +259,6 @@ class PrimeHeadlessExecutor:
             str(cwd),
             *self.extra_args,
         ]
-        if not tools and self.answer_only_flag is not None:
-            cmd.append(self.answer_only_flag)
         if self.thinking is not None:
             cmd.extend(["--thinking", self.thinking])
         cmd.append("--")  # prompt is data, never a flag
@@ -274,27 +266,21 @@ class PrimeHeadlessExecutor:
         return cmd
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
-        """Run one prompt. ``tools=False`` is for answer-only calls such as planning."""
+        """Run one prompt as an agent worker. Prime headless has no answer-only mode."""
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="prime-headless")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
-        # Worker calls keep the historical argv exactly (subclasses may
-        # override ``_command`` without the ``tools`` keyword).
-        argv = (
-            self._command(prompt, route_id, cwd)
-            if tools
-            else self._command(prompt, route_id, cwd, tools=False)
-        )
+        argv = self._command(prompt, route_id, cwd)
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
