@@ -629,7 +629,11 @@ def resolve_cgroup_root(value: str | None) -> str | None:
     value = value or os.environ.get(CGROUP_ROOT_ENV)
     if value != "auto":
         return value or None
-    for line in Path("/proc/self/cgroup").read_text().splitlines():
+    try:
+        lines = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
         if line.startswith("0::"):
             scope = Path("/sys/fs/cgroup") / line[3:].lstrip("/")
             return str(scope) if os.access(scope, os.W_OK) else None

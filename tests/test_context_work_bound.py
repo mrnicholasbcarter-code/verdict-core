@@ -65,3 +65,24 @@ def test_scan_bound_is_reported_not_silent(tmp_path: Path, monkeypatch: pytest.M
         capability_id="code.definitions", query="", repo_root=repo, hints={"symbols": ["target_fn"]}
     )
     assert result.gap_reason == "traversal_bounded"
+
+
+def test_bound_counts_python_files_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path, unrelated=0)
+    for i in range(40):
+        (repo / "pkg" / f"data_{i}.json").write_text("{}")
+    monkeypatch.setattr(cs, "MAX_SCAN_FILES", 10)
+    result = NativeCodeProvider().provide(
+        capability_id="code.definitions", query="", repo_root=repo, hints={"symbols": ["target_fn"]}
+    )
+    assert result.gap_reason is None
+    assert [u.key for u in result.units] == ["def:pkg/target.py:target_fn:1"]
+
+
+def test_prefilter_reads_a_bounded_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    big = tmp_path / "big.py"
+    big.write_text("x = 1\n" * 1000 + "target_fn()\n")
+    monkeypatch.setattr(cs, "MAX_SCAN_FILE_BYTES", 100)
+    assert not cs._mentions(big, (b"target_fn",))
+    monkeypatch.setattr(cs, "MAX_SCAN_FILE_BYTES", 1 << 20)
+    assert cs._mentions(big, (b"target_fn",))
