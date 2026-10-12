@@ -455,49 +455,15 @@ def test_worker_invocation_keeps_tools(tmp_path: Path) -> None:
     assert argv[-2:] == ["--", "PROMPT"]
 
 
-def test_prime_headless_answer_only_requires_explicit_legacy_flag(tmp_path: Path) -> None:
-    """Latest Prime does not receive guessed tool-disabling flags by default."""
+def test_prime_headless_never_receives_a_guessed_tool_disabling_flag(tmp_path: Path) -> None:
+    """Prime 0.10 has no answer-only flag; its argv carries none."""
     executor = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path), thinking="high")
-    result = asyncio.run(
-        executor.run("PROMPT", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30, tools=False)
-    )
+    result = asyncio.run(executor.run("PROMPT", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30))
     assert result.ok
     argv = result.output.split(" ")
     assert "--no-tools" not in argv
     assert "--thinking" in argv and "high" in argv
     assert argv[-2:] == ["--", "PROMPT"]
-
-
-def test_prime_headless_legacy_answer_only_flag_is_explicit(tmp_path: Path) -> None:
-    """Legacy adapters can still prove their exact supported flag explicitly."""
-    executor = PrimeHeadlessExecutor(
-        prime_bin=_argv_echo_prime(tmp_path), thinking="high", answer_only_flag="--no-tools"
-    )
-    result = asyncio.run(
-        executor.run("PROMPT", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30, tools=False)
-    )
-    assert result.ok
-    argv = result.output.split(" ")
-    assert "--no-tools" in argv
-    assert argv.index("--no-tools") < argv.index("--")
-    assert argv[-2:] == ["--", "PROMPT"]
-
-
-def test_wrappers_forward_answer_only_flag(tmp_path: Path) -> None:
-    """Fault-injecting and mixed wrappers must not drop tools=False on the way down."""
-    from verdict.orchestration.contracts import AnswerOnlyExecutor
-    from verdict.orchestration.executors import MixedExecutor
-
-    prime = PrimeHeadlessExecutor(
-        prime_bin=_argv_echo_prime(tmp_path), answer_only_flag="--no-tools"
-    )
-    wrapped = FaultInjectingExecutor(MixedExecutor(node_map={}, default=prime), {})
-    planned = asyncio.run(
-        AnswerOnlyExecutor(wrapped).run("P", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30)
-    )
-    worker = asyncio.run(wrapped.run("P", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30))
-    assert "--no-tools" in planned.output.split(" ")
-    assert "--no-tools" not in worker.output.split(" ")
 
 
 def test_answer_only_refuses_default_prime_headless_planning(tmp_path: Path) -> None:
