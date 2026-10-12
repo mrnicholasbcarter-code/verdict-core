@@ -402,6 +402,77 @@ async def test_frontier_planner_success_first_try(tmp_path: Path) -> None:
     assert len(executor.calls) == 1
 
 
+class _ToolAwareExecutor(_ScriptedExecutor):
+    """Fake executor that records the ``tools`` keyword of every call."""
+
+    def __init__(self, outputs: list[WorkerTerminal]) -> None:
+        super().__init__(outputs)
+        self.tools: list[bool] = []
+
+    async def run(  # type: ignore[override]
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+    ) -> WorkerTerminal:
+        self.tools.append(tools)
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_plan_and_repair_calls_run_without_tools(tmp_path: Path) -> None:
+    """Planning needs one JSON answer; a tool-enabled planner looped until timeout."""
+    repo = _init_git_repo(tmp_path)
+    executor = _ToolAwareExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json at all"),
+            WorkerTerminal(ok=True, output=_VALID_NODES_JSON),
+        ]
+    )
+    await FrontierPlanner().plan(
+        "ship it", repo=repo, executor=executor, route_id="cc/claude-sonnet-5"
+    )
+    assert executor.tools == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_prime_invocation_includes_no_tools(tmp_path: Path) -> None:
+    """End to end through PrimeHeadlessExecutor: the planner argv has --no-tools."""
+    import json
+    import stat
+
+    from verdict.orchestration.executors import PrimeHeadlessExecutor
+
+    route = "cc/claude-sonnet-5"
+    (tmp_path / "repo").mkdir()
+    repo = _init_git_repo(tmp_path / "repo")
+    argv_log = tmp_path / "argv.json"
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": _VALID_NODES_JSON}],
+        "provider": "omniroute",
+        "model": route,
+        "stopReason": "stop",
+    }
+    prime = tmp_path / "fake-prime"
+    prime.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\n"
+        f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        f"print({json.dumps({'messages': [message]})!r})\n"
+    )
+    prime.chmod(prime.stat().st_mode | stat.S_IXUSR)
+    graph, terminal = await FrontierPlanner().plan(
+        "ship it",
+        repo=repo,
+        executor=PrimeHeadlessExecutor(prime_bin=str(prime)),
+        route_id=route,
+        timeout_seconds=30,
+    )
+    assert terminal.ok and len(graph.nodes) == 3
+    argv = json.loads(argv_log.read_text())
+    assert "--no-tools" in argv
+    assert argv.index("--no-tools") < argv.index("--")
+
+
 @pytest.mark.asyncio
 async def test_frontier_planner_repairs_after_bad_first_output(tmp_path: Path) -> None:
     repo = _init_git_repo(tmp_path)

@@ -31,7 +31,12 @@ from typing import Any, ClassVar
 
 import httpx
 
-from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
+from verdict.orchestration.contracts import (
+    AttemptUsage,
+    WorkerExecutor,
+    WorkerTerminal,
+    run_executor,
+)
 from verdict.orchestration.prime_settings import (
     PRIME_AGENT_DIR_ENV,
     PROJECT_SETTINGS_RELPATH,
@@ -237,7 +242,7 @@ class PrimeHeadlessExecutor:
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
 
-    def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
+    def _command(self, prompt: str, route_id: str, cwd: Path, *, tools: bool = True) -> list[str]:
         cmd = [
             self.prime_bin,
             "-p",
@@ -252,6 +257,9 @@ class PrimeHeadlessExecutor:
             str(cwd),
             *self.extra_args,
         ]
+        if not tools:
+            # Prime 0.9.8 documents --no-tools as "Disable all tools by default".
+            cmd.append("--no-tools")
         if self.thinking is not None:
             cmd.extend(["--thinking", self.thinking])
         cmd.append("--")  # prompt is data, never a flag
@@ -259,19 +267,27 @@ class PrimeHeadlessExecutor:
         return cmd
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
+        """Run one prompt. ``tools=False`` is for answer-only calls such as planning."""
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="prime-headless")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         started = time.monotonic()
+        # Worker calls keep the historical argv exactly (subclasses may
+        # override ``_command`` without the ``tools`` keyword).
+        argv = (
+            self._command(prompt, route_id, cwd)
+            if tools
+            else self._command(prompt, route_id, cwd, tools=False)
+        )
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
@@ -307,7 +323,7 @@ class PrimeHeadlessExecutor:
             )
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self._command(prompt, route_id, cwd),
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
@@ -652,15 +668,20 @@ class FaultInjectingExecutor:
         return None
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         self._dispatches += 1
         if self._is_worker_attempt(cwd):
             self._worker_dispatches += 1
         kind = self._pop_fault(route_id, cwd)
         if kind is None:
-            return await self.inner.run(
-                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            return await run_executor(
+                self.inner,
+                prompt,
+                route_id=route_id,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                tools=tools,
             )
         if kind == "hang":
             await asyncio.sleep(timeout_seconds)
@@ -1432,13 +1453,18 @@ class MixedExecutor:
         return self._default
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         # Delegate entirely.  executor_kind and harness are set by the delegate
         # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
         # ScriptedExecutor stamps executor_kind='scripted').  MixedExecutor
         # must NOT overwrite either field so fault-injected and scripted
         # provenance remain intact.
-        return await self._pick(cwd).run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        return await run_executor(
+            self._pick(cwd),
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=tools,
         )
