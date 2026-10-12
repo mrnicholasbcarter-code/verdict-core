@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -184,7 +185,7 @@ def test_no_transcript_dotfile_or_outside_symlink_content(tmp_path: Path) -> Non
     )
 
 
-def test_registry_optional_tools_stay_unavailable_and_memory_is_not_opened(
+def test_registry_optional_tools_stay_unavailable_and_memory_is_never_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from verdict.capability_registry import build_default_registry
@@ -193,7 +194,7 @@ def test_registry_optional_tools_stay_unavailable_and_memory_is_not_opened(
     node = _repo(tmp_path)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("worker pack must not open durable memory")
+        raise AssertionError("worker pack must not write durable memory")
 
     monkeypatch.setattr(MemoryGate, "__init__", forbidden)
     before = build_default_registry().resolve("code.references")
@@ -493,3 +494,114 @@ def test_arbitrary_provider_cannot_claim_filtered_aggregate_provenance(
     monkeypatch.setattr(NativeCapabilityResolver, "resolve_all", resolve)
     context = build_worker_context(node, repo=tmp_path)
     assert "UNTRUSTED_AGGREGATE_CANARY" not in context.text
+
+
+def _plane(home: Path) -> Path:
+    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+    from verdict.memory_plane import MemoryPlane, MemoryRecord
+
+    path = home / ".verdict" / "memory.db"
+    with MemoryPlane(path) as plane:
+        gate = MemoryGate(plane)
+        for namespace, key, value, extra in (
+            ("decisions", "widget-contract", "compute_widget keeps integer input; ADR-7.", {}),
+            ("feedback", "widget-style", "compute_widget: no float coercion, operator 10-09.", {}),
+            ("decisions", "widget-secret", "compute_widget", {"sensitivity": "confidential"}),
+            ("patterns", "unrelated", "Rotate the dashboard colours weekly.", {}),
+        ):
+            result = gate.write(
+                MemoryWriteRequest(
+                    namespace,
+                    key,
+                    value,
+                    "human" if namespace == "feedback" else "verdict-core",
+                    provenance={"source": "fixture"},
+                    **extra,
+                )
+            )
+            assert result.allowed, result.reason
+        # Not gate-verified, or not a fact namespace: never recalled.
+        plane.put(MemoryRecord("raw", "decisions", "raw", "compute_widget unverified", "cli"))
+        plane.put(
+            MemoryRecord(
+                "hist",
+                "session_history",
+                "s",
+                "compute_widget transcript",
+                "hook",
+                authority_verified=True,
+            )
+        )
+    return path
+
+
+def test_worker_pack_recalls_gated_facts_with_citations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.memory_plane import MemoryPlane
+
+    home = Path(os.environ["HOME"])
+    path = _plane(home)
+    node = _repo(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("worker pack must not write durable memory")
+
+    monkeypatch.setattr(MemoryPlane, "put", forbidden)
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="ship widget", structured=True)
+    text = prompt.text
+    assert "compute_widget keeps integer input; ADR-7." in text
+    assert "no float coercion, operator 10-09" in text
+    for absent in ("unverified", "transcript", "Rotate the dashboard"):
+        assert absent not in text
+    assert text.count("compute_widget") > 0 and "widget-secret" not in text
+
+    recalled = [s for s in prompt.evidence()["sources"] if s["path"].startswith("memory:gate_")]
+    assert {s["authority"] for s in recalled} == {"verdict-core", "human"}
+    assert all("memory-search" in s["transform_lineage"] for s in recalled)
+    cited = [line for line in text.splitlines() if '"source": "memory:gate_' in line]
+    assert len(cited) == 2 and all('"excerpt_digest": "sha256:' in line for line in cited)
+
+    pack = prompt.context.pack
+    assert pack is not None
+    kinds = [unit.slot_type for unit in pack.units]
+    assert kinds.index("memory") > kinds.index("evidence")  # code evidence first
+    assert path.exists()
+
+
+def test_missing_or_broken_memory_plane_is_a_named_gap(tmp_path: Path) -> None:
+    node = _repo(tmp_path)
+    plane = Path(os.environ["HOME"]) / ".verdict" / "memory.db"
+
+    context = build_worker_context(node, repo=tmp_path)
+    assert "memory.search:no_default_location" in context.omissions
+    assert not plane.exists()  # never created by a worker pack
+
+    plane.parent.mkdir(parents=True)
+    plane.write_text("not a sqlite database")
+    context = build_worker_context(node, repo=tmp_path)
+    assert "memory.search:memory_plane_unavailable" in context.omissions
+    assert "must preserve integer input" in context.text
+
+
+def test_recalled_fact_is_redacted_before_rendering(tmp_path: Path) -> None:
+    from verdict.memory_plane import MemoryPlane, MemoryRecord
+
+    key = "ghp_" + "Z" * 30
+    path = Path(os.environ["HOME"]) / ".verdict" / "memory.db"
+    with MemoryPlane(path) as plane:
+        plane.put_verified(
+            MemoryRecord(
+                "gate_secret",
+                "decisions",
+                "k",
+                f"compute_widget deploy uses {key}",
+                "fixture",
+                authority="verdict-core",
+                authority_verified=True,
+                sensitivity="standard",
+            )
+        )
+    context = build_worker_context(_repo(tmp_path), repo=tmp_path)
+    assert key not in context.text
+    assert "compute_widget deploy uses [redacted]" in context.text
