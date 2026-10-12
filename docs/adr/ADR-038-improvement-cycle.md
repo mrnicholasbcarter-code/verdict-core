@@ -42,9 +42,9 @@ starts again. Verdict already had the parts this needs (the planner's
    (a selection blocker, or every failed attempt a quota/rate limit) and a quota
    cooldown is still in force, the cycle records when capacity returns.
 
-`--once` runs one cycle; `--cycles N` (at most 5) stops at the first MET cycle, a
-refused relaunch, or an operator lesson, and waits once for a capacity reset of at
-most 15 minutes. `--verify` recomputes every measured cycle from its run receipt.
+`--once` runs one cycle. `--cycles N` (at most 5) stops at the first MET cycle, an
+operator lesson, or a refused relaunch; a relaunch refused only until a capacity
+reset at most 15 minutes away is waited for once and retried instead. `--verify` recomputes every measured cycle from its run receipt.
 
 ## Consequences
 

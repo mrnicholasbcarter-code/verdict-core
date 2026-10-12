@@ -137,14 +137,14 @@ verdict improve --verify --runs-dir runs --cycles-dir cycles
 | `--cycles-dir CYCLES_DIR` | Directory for the cycle log (required) |
 | `--cgroup-root PATH\|auto` | As for `verdict supervise` |
 | `--total-deadline-seconds SECONDS` | Supervisor deadline per run |
-| `orchestrate_args` | Arguments after `--` passed to orchestrate; `--runs-dir`, `--resume` and `--constraints-file` are set by `improve` |
+| `orchestrate_args` | Arguments after `--` passed to orchestrate; `--runs-dir` and `--resume` are set by the supervisor and `--constraints-file` by `improve`, so they are refused here |
 
 A cycle is **MET** only when `completion_verdict` is COMPLETE and the
 `validation_passed`, `independent_review` and `receipt_integrity` claims are
 VERIFIED. A cycle with the same goal, repo HEAD, arguments, lessons and Verdict
-build as an earlier NOT_MET cycle is refused before anything runs. A run blocked
-by quota waits for the recorded reset (once, up to 15 minutes, in `--cycles`
-mode). Lessons that need the operator (environment, review independence) are
+build as an earlier NOT_MET cycle is refused before anything runs, unless that
+cycle recorded a quota reset that has since passed. In `--cycles` mode a reset
+within 15 minutes is waited for once and the run is retried. Lessons that need the operator (environment, review independence) are
 reported and never sent to the planner. Exit 0 only when the last cycle is MET.
 
 ### `verdict watch` — View orchestration state

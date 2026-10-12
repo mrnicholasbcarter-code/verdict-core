@@ -179,7 +179,8 @@ verified public proof:
 
 `verdict improve` runs bounded cycles above `verdict supervise`: one supervised
 run, measured from its receipt, then a lesson the next cycle passes to the
-planner. A cycle with unchanged inputs after a failure is refused. See the
+planner. A cycle with unchanged inputs after a failure is refused, unless a
+recorded quota reset has since passed. See the
 [CLI reference](../CLI_REFERENCE.md#verdict-improve--measured-improvement-cycles)
 and [ADR-038](../adr/ADR-038-improvement-cycle.md).
 
