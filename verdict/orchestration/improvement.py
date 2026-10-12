@@ -6,9 +6,12 @@ claims), classifies the first blocker into one layer, and records a lesson the
 next cycle passes to the planner through ``--constraints-file``. A cycle whose
 inputs match a previous NOT_MET cycle is refused before anything runs.
 
-The cycle log is append-only JSONL in ``<cycles-dir>/cycles.jsonl``. Lesson
-text comes from a fixed per-layer table, never from files, so the log can only
-select among Verdict's own lessons.
+The cycle log is JSONL in ``<cycles-dir>/cycles.jsonl``. It is a working record,
+not tamper-evident storage: the unchanged-relaunch guard stops Verdict from
+wasting a run, it is not a boundary against the operator, and ``verify_cycles``
+cannot prove that no record was deleted. Measured results are trusted only after
+recomputing them from each run's digest-verified receipt. Lesson text comes from
+a fixed per-layer table, so the log can only select among Verdict's own lessons.
 """
 
 from __future__ import annotations
