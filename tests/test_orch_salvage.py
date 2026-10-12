@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import verdict.orchestration.salvage as salvage_module
 from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
@@ -261,6 +262,110 @@ class TestSalvageOwnedFiles:
         assert not result.saved
         assert result.skipped == ("a.txt",)
 
+    def test_rejects_unsafe_owned_paths(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("must remain outside")
+        salvage_dir = tmp_path / "salvage"
+
+        result = salvage_owned_files(
+            worktree, ("../outside.txt", "/absolute.txt", "./dot.txt"), salvage_dir
+        )
+
+        assert not result.saved
+        assert set(result.skipped) == {"../outside.txt", "/absolute.txt", "./dot.txt"}
+        assert not salvage_dir.exists()
+        assert outside.read_text() == "must remain outside"
+
+    def test_source_symlink_secret_outside_ignored(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("api_key=sk-ant-abc123def456ghi789jkl012mno345pq")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").symlink_to(outside)
+        salvage_dir = tmp_path / "salvage"
+
+        result = salvage_owned_files(worktree, ("a.txt",), salvage_dir)
+
+        assert not result.saved
+        assert result.skipped == ("a.txt",)
+        assert not (salvage_dir / "a.txt").exists()
+        assert outside.read_text().startswith("api_key=")
+
+    def test_unreadable_content_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").write_text("partial")
+        salvage_dir = tmp_path / "salvage"
+
+        def unreadable(_: Path) -> str:
+            raise OSError("permission denied: raw path must not leak")
+
+        monkeypatch.setattr(salvage_module, "_read_text_no_follow", unreadable)
+
+        result = salvage_owned_files(worktree, ("a.txt",), salvage_dir)
+
+        assert not result.saved
+        assert result.skipped == ("a.txt",)
+        assert not result.error
+        assert not (salvage_dir / "a.txt").exists()
+
+    def test_oversized_file_is_not_read_for_secret_scan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").write_bytes(b"x" * (1_048_576 + 1))
+        salvage_dir = tmp_path / "salvage"
+
+        def fail_if_read(_: str) -> str:
+            raise AssertionError("oversized file content was read")
+
+        monkeypatch.setattr(salvage_module, "redact_text", fail_if_read)
+
+        result = salvage_owned_files(worktree, ("a.txt",), salvage_dir)
+
+        assert not result.saved
+        assert result.skipped == ("a.txt",)
+        assert not (salvage_dir / "a.txt").exists()
+
+    def test_salvage_rejects_symlink_destination_component(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        (worktree / "safe").mkdir(parents=True)
+        (worktree / "safe" / "a.txt").write_text("safe text")
+        salvage_dir = tmp_path / "salvage"
+        salvage_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (salvage_dir / "safe").symlink_to(outside, target_is_directory=True)
+
+        result = salvage_owned_files(worktree, ("safe/",), salvage_dir)
+
+        assert not result.saved
+        assert "safe/a.txt" in result.skipped
+        assert not (outside / "a.txt").exists()
+
+    def test_salvage_total_size_cap_is_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(salvage_module, "_MAX_TOTAL_BYTES", 5)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").write_text("123")
+        (worktree / "b.txt").write_text("456")
+        salvage_dir = tmp_path / "salvage"
+
+        result = salvage_owned_files(worktree, ("a.txt", "b.txt"), salvage_dir)
+
+        assert result.saved == ("a.txt",)
+        assert result.skipped == ("b.txt",)
+        assert result.total_bytes == 3
+        assert (salvage_dir / "a.txt").read_text() == "123"
+        assert not (salvage_dir / "b.txt").exists()
+
 
 class TestRestoreSalvagedFiles:
     """Unit tests for restore_salvaged_files."""
@@ -311,6 +416,75 @@ class TestRestoreSalvagedFiles:
 
         assert not result.restored
         assert "a.txt" in result.skipped
+
+    def test_restore_rejects_path_traversal_and_leaves_outside_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        salvage_dir = tmp_path / "salvage"
+        salvage_dir.mkdir()
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside original")
+
+        result = restore_salvaged_files(salvage_dir, worktree, ("../outside.txt",))
+
+        assert not result.restored
+        assert result.error == ""
+        assert outside.read_text() == "outside original"
+        assert not (worktree / "outside.txt").exists()
+
+    def test_restore_rejects_symlink_destination_component(self, tmp_path: Path) -> None:
+        salvage_dir = tmp_path / "salvage"
+        (salvage_dir / "link").mkdir(parents=True)
+        (salvage_dir / "link" / "secret.txt").write_text("safe text")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("outside original")
+        (worktree / "link").symlink_to(outside, target_is_directory=True)
+
+        result = restore_salvaged_files(salvage_dir, worktree, ("link/",))
+
+        assert not result.restored
+        assert "link/secret.txt" in result.skipped
+        assert (outside / "secret.txt").read_text() == "outside original"
+
+    def test_restore_rejects_symlink_source_outside(self, tmp_path: Path) -> None:
+        salvage_dir = tmp_path / "salvage"
+        salvage_dir.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("do not copy")
+        (salvage_dir / "a.txt").symlink_to(outside)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        result = restore_salvaged_files(salvage_dir, worktree, ("a.txt",))
+
+        assert not result.restored
+        assert "a.txt" in result.skipped
+        assert not (worktree / "a.txt").exists()
+        assert outside.read_text() == "do not copy"
+
+    def test_restore_total_size_cap_is_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(salvage_module, "_MAX_TOTAL_BYTES", 5)
+        salvage_dir = tmp_path / "salvage"
+        salvage_dir.mkdir()
+        (salvage_dir / "a.txt").write_text("123")
+        (salvage_dir / "b.txt").write_text("456")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        result = restore_salvaged_files(salvage_dir, worktree, ("a.txt", "b.txt"))
+
+        assert result.restored == ("a.txt",)
+        assert result.skipped == ("b.txt",)
+        assert result.total_bytes == 3
+        assert (worktree / "a.txt").read_text() == "123"
+        assert not (worktree / "b.txt").exists()
 
 
 # ====================================================================
