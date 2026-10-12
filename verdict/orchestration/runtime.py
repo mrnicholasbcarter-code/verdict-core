@@ -1758,9 +1758,15 @@ class DagRuntime:
                     integration=integration,
                 )
             # Independence policy: the reviewer must not be any route that wrote code in
-            # this run. Prefer a different model family too; if no other family has
-            # capacity, fall back to route-level independence (recorded as such).
-            implementers = frozenset(r.route_id for r in self.nodes.values() if r.route_id)
+            # this run, including attempts that failed and were replaced (their partial
+            # work can survive into the result). Prefer a different model family too; if
+            # no other family has capacity, fall back to route-level independence.
+            implementers = frozenset(
+                route
+                for r in self.nodes.values()
+                for route in (r.route_id, *(h.get("route_id", "") for h in r.history))
+                if route
+            )
             families = frozenset(route_family(r) for r in implementers)
             review = None
             for level, excluded_families in (("family", families), ("route", frozenset())):

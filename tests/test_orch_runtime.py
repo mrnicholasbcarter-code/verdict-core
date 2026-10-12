@@ -27,6 +27,7 @@ from verdict.orchestration.contracts import (
     WorkerTerminal,
     WorkGraph,
     WorkNode,
+    route_family,
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
@@ -569,6 +570,24 @@ async def test_review_falls_back_to_route_independence_when_no_other_family(repo
     assert all("cc/s" in c["exclude_routes"] for c in reviewer.calls)
     levels = [e["level"] for e in ev.of("controller") if e.get("state") == "REVIEW_INDEPENDENCE"]
     assert levels == ["family", "route"]
+
+
+async def test_reviewer_excludes_the_family_of_a_failed_replaced_attempt(repo: Path) -> None:
+    """Live finding 2026-10-12: a failed agy/gemini attempt was replaced by cc/claude,
+    then agy/gemini reviewed; independence was not shown. Every attempted route counts."""
+    reviewer = Reviewer()
+    rt, _, _ = make(
+        repo,
+        WorkGraph("g", (node("a"),)),
+        Executor({("a", "agy/gem"): "quota"}),
+        ["agy/gem", "cc/s"],
+        reviewer=reviewer,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    first = reviewer.calls[0]
+    assert {"agy/gem", "cc/s"} <= first["exclude_routes"]
+    assert {route_family("agy/gem"), route_family("cc/s")} <= first["exclude_families"]
 
 
 # Cooldown wait tests
