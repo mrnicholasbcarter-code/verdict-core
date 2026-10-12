@@ -313,6 +313,13 @@ class HealthEntry:
     agentic_source: str | None = None
     agentic_child_id: str | None = None
     write_revision: int = 0  # allocated only under the shared writer lock
+    # BOD-304: negative availability evidence from a real worker terminal.
+    # Missing turns stay explicit unknown; provenance contains only an opaque digest.
+    feedback_source: str | None = None
+    feedback_category: str | None = None
+    feedback_turn_count: int | None = None
+    feedback_turns_source: str | None = None
+    feedback_provenance: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -368,6 +375,12 @@ class HealthEntry:
             payload["last_success_at"] = format_datetime(self.last_success_at)
         if self.failure_scope is not None:
             payload["failure_scope"] = self.failure_scope
+        if self.feedback_source is not None:
+            payload["feedback_source"] = self.feedback_source
+            payload["feedback_category"] = self.feedback_category
+            payload["feedback_turn_count"] = self.feedback_turn_count
+            payload["feedback_turns_source"] = self.feedback_turns_source or "unknown"
+            payload["feedback_provenance"] = self.feedback_provenance
         return payload
 
     @classmethod
@@ -423,6 +436,11 @@ class HealthEntry:
                 if isinstance(value.get("failure_scope"), str) and value["failure_scope"].strip()
                 else None
             ),
+            feedback_source=value.get("feedback_source"),
+            feedback_category=value.get("feedback_category"),
+            feedback_turn_count=value.get("feedback_turn_count"),
+            feedback_turns_source=value.get("feedback_turns_source"),
+            feedback_provenance=value.get("feedback_provenance"),
         )
 
 
@@ -485,6 +503,13 @@ class ProbeResult:
     # forward onto a failure entry, and the canonical failure scope.
     last_success_at: datetime | None = None
     failure_scope: str | None = None
+    # Classified runtime cooldowns override probe backoff, bounded to 24 h.
+    negative_ttl_seconds: float | None = None
+    feedback_source: str | None = None
+    feedback_category: str | None = None
+    feedback_turn_count: int | None = None
+    feedback_turns_source: str | None = None
+    feedback_provenance: str | None = None
 
     @property
     def healthy(self) -> bool:
@@ -837,6 +862,8 @@ class HealthCache:
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
         self._cooldowns: dict[str, ScopedCooldown] = {}
+        # What disk held at the last load/save; differs from _snapshot() when unsaved.
+        self._disk_snapshot: dict[str, Any] = {}
         self._load()
 
     # -- persistence -------------------------------------------------------
@@ -844,10 +871,48 @@ class HealthCache:
     def reload(self) -> None:
         """Read-only refresh from disk (another HealthCache object may have written it).
 
-        Unsaved in-memory mutations are discarded; callers that mutate must
-        ``save()`` (which merges over disk under the lock) before reloading.
+        Unsaved in-memory mutations are kept: they are folded over the newer disk
+        state with the same newest-wins rules ``save()`` applies, so a probe this
+        object recorded but has not saved yet is never silently dropped. Nothing
+        is written; the object stays unsaved until ``save()``.
         """
+        if self._snapshot() == self._disk_snapshot:
+            self._load()
+            return
+        # Keep only what this object changed since it last matched disk; records it
+        # merely read from disk must not be replayed over a newer disk state.
+        loaded = self._disk_snapshot
+        changed_routes = {
+            key: entry
+            for key, entry in self._routes.items()
+            if entry.to_dict() != loaded.get("routes", {}).get(key)
+        }
+        changed_cooldowns = {
+            key: cooldown
+            for key, cooldown in self._cooldowns.items()
+            if cooldown.to_dict() != loaded.get("cooldowns", {}).get(key)
+        }
+        changed_buckets = {
+            key: bucket
+            for key, bucket in self._buckets.items()
+            if bucket.to_dict() != loaded.get("buckets", {}).get(key)
+        }
+        cursor_changed = self._cursor != loaded.get("cursor", {})
+        cursor = dict(self._cursor)
         self._load()
+        for key, entry in changed_routes.items():
+            disk = self._routes.get(key)
+            if disk is None or entry.checked_at > disk.checked_at:
+                self._routes[key] = entry
+        for cooldown in changed_cooldowns.values():
+            self.record_cooldown(cooldown)
+        for key, bucket in changed_buckets.items():
+            if key in self._buckets:
+                self._buckets[key].merge_from(bucket)
+            else:
+                self._buckets[key] = bucket
+        if cursor_changed:
+            self._cursor = cursor
 
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
@@ -857,6 +922,7 @@ class HealthCache:
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
+            self._disk_snapshot = self._snapshot()
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -901,6 +967,7 @@ class HealthCache:
             for key, value in cooldowns.items()
             if isinstance(value, Mapping)
         }
+        self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {
@@ -946,8 +1013,10 @@ class HealthCache:
             )
             try:
                 self._merge_in_memory_over_disk()
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -1019,8 +1088,10 @@ class HealthCache:
                         self._routes[route_id] = replace(
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -1158,12 +1229,18 @@ class HealthCache:
         else:
             prior = previous.consecutive_failures if previous is not None else 0
             failures = prior + 1
-            seconds = negative_seconds(
-                result.category,
-                http_status=result.http_status,
-                retry_after_seconds=result.retry_after_seconds,
-                consecutive_failures=failures,
-            )
+            if result.negative_ttl_seconds is not None:
+                seconds = result.negative_ttl_seconds
+                if not math.isfinite(seconds) or seconds <= 0:
+                    raise HealthCacheError("negative_ttl_seconds must be finite and positive")
+                seconds = min(seconds, LONG_CAP_SECONDS)
+            else:
+                seconds = negative_seconds(
+                    result.category,
+                    http_status=result.http_status,
+                    retry_after_seconds=result.retry_after_seconds,
+                    consecutive_failures=failures,
+                )
             if (
                 previous is not None
                 and not previous.healthy
@@ -1204,6 +1281,11 @@ class HealthCache:
                     else (previous.last_success_at if previous is not None else None)
                 ),
                 failure_scope=result.failure_scope,
+                feedback_source=result.feedback_source,
+                feedback_category=result.feedback_category,
+                feedback_turn_count=result.feedback_turn_count,
+                feedback_turns_source=result.feedback_turns_source,
+                feedback_provenance=result.feedback_provenance,
             )
         entry = replace(
             entry,

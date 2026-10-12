@@ -22,6 +22,8 @@ import contextlib
 import importlib
 import json
 import os
+import re
+import secrets
 import signal
 import sys
 import time
@@ -31,13 +33,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, ClassVar, Protocol
 
-from verdict.orchestration.contracts import FailureClassification, FailureClassifier, WorkerTerminal
+from verdict.orchestration.contracts import (
+    STAGES,
+    FailureClassification,
+    FailureClassifier,
+    WorkerTerminal,
+)
+from verdict.orchestration.controller_operations import (
+    CGROUP_ROOT_ENV,
+    DEADLINE_ENV,
+    RUN_DIR_ENV,
+    TOKEN_ENV,
+    OperationLeaseGuard,
+    OwnershipError,
+    activate_generation,
+    bind_controller,
+    cleanup_workers,
+    preflight_worker_containment,
+    process_identity,
+    read_state,
+    revoke_generation,
+)
 
 EVENTS_FILE = "events.jsonl"
 PROGRESS_FILE = "progress.json"
 REDACTED = "[REDACTED]"
 TAIL_BYTES = 8192
 QUOTA_CATEGORIES = frozenset({"quota_exhausted", "rate_limited"})
+
+# A controller narrative line: one of the run-view stage tags, then the event text.
+_NARRATIVE = re.compile(r"^\[(?:" + "|".join(re.escape(s) for s in STAGES) + r")\] ")
 
 # Controller-capacity death markers, matched case-insensitively on the log tail.
 CAPACITY_MARKERS: tuple[str, ...] = (
@@ -188,6 +213,7 @@ class ControllerSupervisor:
         spawner: Spawner | None = None,
         kill_grace_seconds: float = 10.0,
         classifier: FailureClassifier | None = None,
+        require_worker_containment: bool = False,
     ) -> None:
         self.command_factory, self.run_dir = command_factory, Path(run_dir)
         self.stall_seconds, self.poll_seconds = float(stall_seconds), max(poll_seconds, 0.001)
@@ -195,10 +221,14 @@ class ControllerSupervisor:
         self.env = dict(env) if env is not None else None
         self.kill_grace_seconds = float(kill_grace_seconds)
         self.classifier = classifier or default_classifier()
+        self.require_worker_containment = require_worker_containment
         self.generations: list[dict[str, Any]] = []
         self._clock, self._sleep, self._spawner = clock, sleep, spawner
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._start_seq = 0
+        self._token = ""
+        self._deadline = 0.0
+        self._ownership_snapshot: dict[str, Any] = {}
 
     # -------------------------------------------------------------- run state
     def _emit(self, **data: Any) -> None:
@@ -243,8 +273,15 @@ class ControllerSupervisor:
             return ""
 
     def _scan(self, record: dict[str, Any], log_path: Path) -> None:
-        """Classify controller-capacity markers found in the controller log tail."""
-        text = self._tail(log_path)
+        """Classify controller-capacity markers found in the controller log tail.
+
+        The controller's own narrative lines (``[STAGE] ...``, e.g. a handled
+        worker cooldown under ``[QUOTA/COOLDOWN]``) describe run events, not the
+        controller's death, so they are not evidence of controller capacity loss.
+        """
+        text = "\n".join(
+            line for line in self._tail(log_path).splitlines() if not _NARRATIVE.match(line)
+        )
         lowered = text.lower()
         marker = next((m for m in CAPACITY_MARKERS if m in lowered), None)
         if marker is None:
@@ -258,20 +295,30 @@ class ControllerSupervisor:
     # -------------------------------------------------------------- processes
     async def _spawn(self, argv: list[str], log_path: Path) -> tuple[SupervisedProcess, IO[bytes]]:
         stream = log_path.open("ab")
-        if self._spawner is not None:
-            child_env = dict(self.env) if self.env is not None else None
-            return await self._spawner(argv, log_path=log_path, env=child_env), stream
         generation = str(len(self.generations) - 1 if self.generations else 0)
         environment = {
             **os.environ,
             **(self.env or {}),
             "VERDICT_CONTROLLER_GENERATION": generation,
+            RUN_DIR_ENV: str(self.run_dir.resolve()),
+            TOKEN_ENV: self._token,
+            DEADLINE_ENV: str(self._deadline),
         }
+        if self._spawner is not None:
+            try:
+                return await self._spawner(argv, log_path=log_path, env=environment), stream
+            except BaseException:
+                stream.close()
+                raise
         merged = asyncio.subprocess.STDOUT
-        process = await asyncio.create_subprocess_exec(
-            *argv, stdout=stream, stderr=merged, start_new_session=True, env=environment
-        )
-        return process, stream
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv, stdout=stream, stderr=merged, start_new_session=True, env=environment
+            )
+            return process, stream
+        except BaseException:
+            stream.close()
+            raise
 
     def _signal(self, process: SupervisedProcess, sig: int) -> None:
         """Signal the whole process group so grandchildren die with the controller."""
@@ -308,7 +355,11 @@ class ControllerSupervisor:
     ) -> _Watch:
         """Bounded liveness loop for one controller life."""
         last_progress, last_advance = (-2, ""), self._clock()
+        guard = OperationLeaseGuard()
         while True:
+            now = self._clock()
+            if now >= deadline:
+                return _Watch("DEADLINE", reason="total deadline exceeded")
             finished = self._finished(self._start_seq)
             if finished is not None:
                 return finished
@@ -320,20 +371,81 @@ class ControllerSupervisor:
                 self._scan(record, log_path)
                 exited = _Watch("EXITED", reason="controller exited without run_finished")
                 return self._finished(self._start_seq) or exited
-            now = self._clock()
-            if now >= deadline:
-                return _Watch("DEADLINE", reason="total deadline exceeded")
-            if now - last_advance >= self.stall_seconds:
+            try:
+                self._ownership_snapshot = read_state(self.run_dir)
+                lease_state, operation = guard.inspect(
+                    self._ownership_snapshot,
+                    token=self._token,
+                    owner=record.get("identity"),
+                    now=now,
+                    overall_deadline=deadline,
+                )
+            except OwnershipError:
+                lease_state, operation = "NONE", None
+            if lease_state == "EXPIRED":
+                return _Watch(
+                    "OPERATION_EXPIRED", reason="bounded controller operation deadline exceeded"
+                )
+            if operation is not None:
+                record["operation"] = {
+                    k: operation[k] for k in ("id", "phase", "attempt_id", "deadline")
+                }
+            record["wait_state"] = lease_state
+            if now - last_advance >= self.stall_seconds and lease_state != "WAITING_BOUNDED":
                 return _Watch("STALLED", reason=f"no progress for {self.stall_seconds:g}s")
             await self._sleep(self.poll_seconds)
 
     # -------------------------------------------------------------- main loop
     async def run(self) -> SupervisorOutcome:
         deadline = self._clock() + self.total_deadline_seconds
+        self._deadline = deadline
+        # A supervisor restart must clean known containment even when earlier
+        # controller/spawn/revocation ownership is unknown; it must not restart.
+        prior_state: dict[str, Any] = {}
+        uncertainty = ""
+        revoked = True
+        try:
+            prior_state = read_state(self.run_dir)
+            if prior_state:
+                old_token = str(prior_state.get("token", ""))
+                try:
+                    revoke_generation(self.run_dir, old_token)
+                except OwnershipError as exc:
+                    revoked, uncertainty = False, str(exc)
+                if prior_state.get("controller_spawn_pending"):
+                    uncertainty = uncertainty or "previous controller spawn cleanup unknown"
+                old_owner = prior_state.get("controller")
+                if (
+                    isinstance(old_owner, dict)
+                    and process_identity(int(old_owner["pid"])) is not None
+                ):
+                    uncertainty = uncertainty or "previous controller cleanup unknown"
+                try:
+                    await cleanup_workers(
+                        self.run_dir,
+                        grace_seconds=self.kill_grace_seconds,
+                        snapshot=prior_state if uncertainty or not revoked else None,
+                        revocation_verified=False if uncertainty else revoked,
+                    )
+                except OwnershipError as exc:
+                    uncertainty = uncertainty or str(exc)
+                if not revoked:
+                    # Joined launcher lock holders were killed; now fence any
+                    # still-unjoined pending launcher. Uncertainty still BLOCKS.
+                    with contextlib.suppress(OwnershipError):
+                        revoke_generation(self.run_dir, old_token)
+                if uncertainty:
+                    raise OwnershipError(uncertainty)
+        except (OwnershipError, KeyError, ValueError) as exc:
+            return self._fail_closed(f"ownership cleanup blocked: {exc}", 0)
         prior = [e.get("seq") for e in read_events(self.run_dir / EVENTS_FILE)]
         self._start_seq = max((s for s in prior if isinstance(s, int)), default=0)
         generation, restarts = 0, 0
         while True:
+            if self._clock() >= deadline:
+                return self._fail_closed(
+                    "total deadline exceeded before controller spawn", restarts
+                )
             argv = list(self.command_factory(generation))
             if not argv:
                 return self._fail_closed("command_factory returned an empty command", restarts)
@@ -344,7 +456,11 @@ class ControllerSupervisor:
             record: dict[str, Any] = {"generation": generation, "argv": summary}
             record.update(log=log_path.name, pid=None, state="RUNNING", category="", exit_code=None)
             self.generations.append(record)
-            watch = await self._supervise_one(record, log_path, argv, deadline)
+            try:
+                watch = await self._supervise_one(record, log_path, argv, deadline)
+            except OwnershipError as exc:
+                record["state"] = "CLEANUP_BLOCKED"
+                return self._fail_closed(f"ownership cleanup blocked: {exc}", restarts)
             if watch.kind == "FINISHED":
                 state = "COMPLETE" if watch.outcome == "COMPLETE" else "BLOCKED"
                 record["state"] = state
@@ -365,26 +481,87 @@ class ControllerSupervisor:
         self, record: dict[str, Any], log_path: Path, argv: list[str], deadline: float
     ) -> _Watch:
         """Spawn one controller life and watch it to a bounded conclusion."""
+        self._token = secrets.token_hex(16)
+        activate_generation(self.run_dir, self._token, deadline)
+        if self.require_worker_containment:
+            root = (self.env or os.environ).get(CGROUP_ROOT_ENV)
+            if not root:
+                raise OwnershipError(
+                    f"supervised controller requires explicit {CGROUP_ROOT_ENV} delegation"
+                )
+            preflight_worker_containment(self.run_dir, self._token, Path(root))
+        self._ownership_snapshot = read_state(self.run_dir)
+        process: SupervisedProcess | None = None
+        stream: IO[bytes] | None = None
+        waiter: asyncio.Future[int] | None = None
         try:
-            process, stream = await self._spawn(argv, log_path)
-        except OSError as exc:
-            return _Watch("EXITED", reason=f"spawn failed: {exc}"[:300])
-        record["pid"] = process.pid
-        waiter: asyncio.Future[int] = asyncio.ensure_future(_wait(process))
-        try:
+            try:
+                spawning = asyncio.create_task(self._spawn(argv, log_path))
+                try:
+                    process, stream = await asyncio.shield(spawning)
+                except asyncio.CancelledError:
+                    # Resolve the short spawn handshake to obtain the owned child handle.
+                    try:
+                        process, stream = await asyncio.wait_for(asyncio.shield(spawning), 5.0)
+                        assert process is not None
+                        bind_controller(
+                            self.run_dir,
+                            self._token,
+                            process_identity(process.pid) if process.pid is not None else None,
+                        )
+                        waiter = asyncio.ensure_future(_wait(process))
+                    except (TimeoutError, OSError) as exc:
+                        raise OwnershipError("controller spawn cleanup unknown") from exc
+                    raise
+            except OSError as exc:
+                bind_controller(self.run_dir, self._token, None)
+                return _Watch("EXITED", reason=f"spawn failed: {exc}"[:300])
+            assert process is not None
+            record["pid"] = process.pid
+            record["identity"] = process_identity(process.pid) if process.pid is not None else None
+            waiter = asyncio.ensure_future(_wait(process))
+            bind_controller(self.run_dir, self._token, record["identity"])
             return await self._watch(record, log_path, waiter, deadline)
         finally:
-            await self._kill(process, waiter)
-            record["exit_code"] = process.returncode
-            with contextlib.suppress(Exception):
+            # Revoke before killing: a racing launcher cannot exec an unregistered payload.
+            snapshot = self._ownership_snapshot
+            revocation_verified = True
+            try:
+                snapshot = read_state(self.run_dir)
+                revoke_generation(self.run_dir, self._token)
+            except OwnershipError:
+                revocation_verified = False
+            if process is not None:
+                if waiter is None:
+                    waiter = asyncio.ensure_future(_wait(process))
+                await self._kill(process, waiter)
+                record["exit_code"] = process.returncode
+                if (not waiter.done() or waiter.cancelled()) and process.returncode is None:
+                    raise OwnershipError("controller termination could not be verified")
+            if stream is not None:
                 stream.close()
+            try:
+                await cleanup_workers(
+                    self.run_dir,
+                    grace_seconds=self.kill_grace_seconds,
+                    snapshot=None if revocation_verified else snapshot,
+                    revocation_verified=revocation_verified,
+                )
+            finally:
+                if not revocation_verified:
+                    # Lock-owning launchers joined before the gate and were in
+                    # the killed leaf. Retry the fence, never authorize restart.
+                    with contextlib.suppress(OwnershipError):
+                        revoke_generation(self.run_dir, self._token)
 
     def _note_death(self, record: dict[str, Any], watch: _Watch, generation: int) -> None:
         """Record STALLED / QUOTA / CRASHED for the controller life that just ended."""
         category = str(record.get("category") or "")
         quota = category in QUOTA_CATEGORIES
         record["state"] = (
-            "STALLED" if watch.kind == "STALLED" else ("QUOTA" if quota else "CRASHED")
+            "STALLED"
+            if watch.kind in {"STALLED", "OPERATION_EXPIRED"}
+            else ("QUOTA" if quota else "CRASHED")
         )
         self._emit(
             state=record["state"],
@@ -443,10 +620,40 @@ def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser.add_argument(
         "--total-deadline-seconds", type=float, default=7200.0, help="Hard deadline"
     )
+    parser.add_argument(
+        "--cgroup-root",
+        default=None,
+        help=(
+            f"Delegated cgroup-v2 subtree for worker containment (default: ${CGROUP_ROOT_ENV}); "
+            "'auto' uses this process's own delegated scope, e.g. under "
+            "`systemd-run --user --scope -p Delegate=yes`"
+        ),
+    )
     parser.add_argument("orchestrate_args", nargs=argparse.REMAINDER, help="Args after `--`")
     parser.set_defaults(func=dispatch)
     result: argparse.ArgumentParser = parser
     return result
+
+
+def resolve_cgroup_root(value: str | None) -> str | None:
+    """The containment root from --cgroup-root, then the environment.
+
+    ``auto`` resolves to this process's own cgroup, accepted only when the
+    user can write it (a delegated scope). Containment itself still validates
+    the subtree before any worker runs.
+    """
+    value = value or os.environ.get(CGROUP_ROOT_ENV)
+    if value != "auto":
+        return value or None
+    try:
+        lines = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("0::"):
+            scope = Path("/sys/fs/cgroup") / line[3:].lstrip("/")
+            return str(scope) if os.access(scope, os.W_OK) else None
+    return None
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -469,13 +676,26 @@ def dispatch(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    cgroup_root = resolve_cgroup_root(getattr(args, "cgroup_root", None))
+    if cgroup_root is None:
+        print(
+            "BLOCKED: supervised runs contain workers in a delegated cgroup-v2 subtree. "
+            f"Pass --cgroup-root PATH (or set {CGROUP_ROOT_ENV}), or run inside a delegated "
+            "user scope with --cgroup-root auto:\n"
+            "  systemd-run --user --scope -p Delegate=yes "
+            "verdict supervise --cgroup-root auto --run-id ... --runs-dir ... -- ...",
+            file=sys.stderr,
+        )
+        return 2
     supervisor = ControllerSupervisor(
         build_command_factory(run_id, extra, runs_dir),
         runs_dir / run_id,
+        env={CGROUP_ROOT_ENV: cgroup_root},
         stall_seconds=float(getattr(args, "stall_seconds", 300.0)),
         poll_seconds=float(getattr(args, "poll_seconds", 5.0)),
         max_restarts=int(getattr(args, "max_restarts", 2)),
         total_deadline_seconds=float(getattr(args, "total_deadline_seconds", 7200.0)),
+        require_worker_containment=True,
     )
     outcome = asyncio.run(supervisor.run())
     report: dict[str, Any] = {"run_id": run_id, "state": outcome.state, "reason": outcome.reason}

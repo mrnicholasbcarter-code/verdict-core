@@ -42,7 +42,9 @@ def make_runtime(
             return await subprocess_runner(argv, cwd, timeout)
         calls.append((list(argv), cwd, timeout))
         name = Path(argv[0]).name
-        if name == fail:
+        # These tests exercise the integration barrier; node-level gates are
+        # covered by test_implement_node_gate_failure_is_correction_feedback.
+        if name == fail and cwd.name.startswith("i-"):
             return 1, "old output\n" * 150 + "gate failure: actionable diagnostic"
         return 0, "passed"
 
@@ -236,7 +238,7 @@ async def test_gate_diagnostics_do_not_change_verification_failure_category(
     git_runner = runtime.runner
 
     async def timeout_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
-        if Path(argv[0]).name == "ruff":
+        if Path(argv[0]).name == "ruff" and cwd.name.startswith("i-"):
             return 124, "timeout after 600s"
         return await git_runner(argv, cwd, timeout)
 
@@ -264,8 +266,11 @@ async def test_gates_are_not_run_before_passing_integration_tests(
     result = await runtime.run()
     assert result.outcome is RunOutcome.BLOCKED
     assert "combined pytest failed" in result.nodes["i"].failure_feedback
-    assert not events.of("repo_gate")
-    assert not any(Path(argv[0]).name in {"ruff", "mypy"} for argv, _, _ in calls)
+    assert not events.of("repo_gate", "i")
+    assert not any(
+        Path(argv[0]).name in {"ruff", "mypy"} and cwd.name.startswith("i-")
+        for argv, cwd, _ in calls
+    )
 
 
 @pytest.mark.parametrize("config", ["", "[tool.ruff]\n"])
@@ -283,12 +288,17 @@ async def test_real_receipt_records_gate_discovery_and_results(
     result = await runtime.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     receipt = json.loads(write_run_receipt(runtime.run_dir).read_text())
-    [summary] = receipt["repo_gates"]
+    # Gates run for the implement node and again at the integration barrier.
+    summaries = receipt["repo_gates"]
+    assert [s["node_id"] for s in summaries] == ["a", "i"]
+    summary = summaries[-1]
     assert summary["declared"] is bool(config)
     if config:
-        assert [gate["name"] for gate in receipt["repo_gate_results"]] == [
-            "ruff-check",
-            "ruff-format",
+        assert [(g["node_id"], g["name"]) for g in receipt["repo_gate_results"]] == [
+            ("a", "ruff-check"),
+            ("a", "ruff-format"),
+            ("i", "ruff-check"),
+            ("i", "ruff-format"),
         ]
         assert all(gate["exit_code"] == 0 for gate in receipt["repo_gate_results"])
         assert receipt["repo_gate_results"][0]["executed_command"].startswith(
@@ -316,3 +326,127 @@ def test_committed_legacy_receipt_keeps_bytes_and_field_set() -> None:
     assert set(fresh) == set(stored)
     assert verify_run_receipt(run_dir) == []
     assert path.read_bytes() == before
+
+
+async def test_implement_node_gate_failure_is_correction_feedback(
+    repo: Path, gate_bin: Path
+) -> None:
+    """Self-host run 2026-10-12: tests passed, a gate failed only at integration
+    and blocked the run. A node-level lint failure now goes back to the worker."""
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    seen = {"check": 0}
+
+    async def lint_fails_once(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv and cwd.name.startswith("a-"):
+            seen["check"] += 1
+            if seen["check"] == 1:
+                return 1, "F401 unused import in a.txt"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = lint_fails_once
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    failure = events.of("failure", "a")[0]
+    assert failure["category"] == "verification_failed"
+    node_gates = [e for e in events.of("repo_gate", "a") if e["name"] == "ruff-check"]
+    assert [g["ok"] for g in node_gates] == [False, True]
+    assert events.of("rehydrate", "a")
+
+
+async def test_node_level_gates_leave_environment_problems_to_integration(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (gate_bin / "ruff").unlink()
+    # CI images ship ruff on PATH; hide it so the gate executable is really missing.
+    monkeypatch.setattr(verification.shutil, "which", lambda name: None)
+    runtime, _, _ = make_runtime(repo, "[tool.ruff]\n")
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED
+    assert "exit 127" in result.nodes["i"].reason
+
+
+async def test_existing_gate_debt_is_not_blamed_on_the_node(repo: Path, gate_bin: Path) -> None:
+    """Review finding: a gate that already fails on the node's base is not the
+    node's fault; it is left to the integration barrier."""
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def debt(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv:
+            return 1, "existing lint debt in untouched.py"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = debt
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED
+    assert not events.of("failure", "a")
+    assert "existing lint debt" in result.nodes["i"].reason
+
+
+async def test_existing_debt_in_one_gate_does_not_hide_a_new_failure_in_another(
+    repo: Path, gate_bin: Path
+) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    seen = {"format": 0}
+
+    async def debt_plus_new(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if name == "ruff" and "check" in argv:
+            return 1, "existing lint debt"
+        if name == "ruff" and "format" in argv and cwd.name.startswith("a-"):
+            seen["format"] += 1
+            if seen["format"] == 1:
+                return 1, "Would reformat: a.txt"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = debt_plus_new
+    await runtime.run()
+    failure = events.of("failure", "a")[0]
+    assert failure["category"] == "verification_failed"
+    assert events.of("rehydrate", "a")
+
+
+async def test_formatting_only_failure_is_repaired_with_the_formatter(
+    repo: Path, gate_bin: Path
+) -> None:
+    """Self-host run 2026-10-12: two models' edits passed their tests but failed
+    only ruff format, and neither fixed it. Formatting is applied mechanically."""
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    formatted = {"done": False}
+
+    async def needs_format(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if (
+            name == "ruff"
+            and list(argv[1:3]) == ["format", "--check"]
+            and cwd.name.startswith("a-")
+        ):
+            return (0, "") if formatted["done"] else (1, "Would reformat: a.txt")
+        if name == "ruff" and argv[1] == "format" and "--check" not in argv:
+            formatted["done"] = True
+            return 0, "1 file reformatted"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = needs_format
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    applied = [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
+    assert len(applied) == 1 and not events.of("failure", "a")
+
+
+async def test_lint_failures_are_never_auto_fixed(repo: Path, gate_bin: Path) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def lint_fails(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv and cwd.name.startswith("a-"):
+            return 1, "F401 unused import"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = lint_fails
+    await runtime.run()
+    assert not [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
+    assert events.of("failure", "a")[0]["category"] == "verification_failed"

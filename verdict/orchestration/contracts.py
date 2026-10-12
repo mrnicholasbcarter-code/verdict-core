@@ -517,6 +517,8 @@ EVENT_TYPES = frozenset(
         "failure",
         "cooldown",
         "reassign",
+        "salvage",
+        "restore",
         "verify",
         "repo_gate",  # BOD-289: individual repo quality-gate result
         "repo_gates",  # BOD-289: deterministic discovery (including none declared)
@@ -536,6 +538,23 @@ EVENT_TYPES = frozenset(
         "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
         "run_finished",
     }
+)
+
+
+# Run-view stage tags. The controller narrates each event as ``[STAGE] text``.
+STAGES: tuple[str, ...] = (
+    "GOAL",
+    "UNDERSTAND",
+    "CONTROLLER",
+    "PLAN",
+    "DAG",
+    "SELECT",
+    "HYDRATE",
+    "WORKERS",
+    "QUOTA/COOLDOWN",
+    "FAILURE/REASSIGN",
+    "VERIFY",
+    "REVIEW",
 )
 
 
@@ -611,6 +630,7 @@ def dedupe(items: Iterable[str]) -> tuple[str, ...]:
 # ---------------------------------------------------------------- component protocols
 # Parallel implementation units code against these; the runtime composes them.
 
+import inspect  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Protocol  # noqa: E402
@@ -622,11 +642,95 @@ class WorkerExecutor(Protocol):
     Must never raise for provider/transport failures: those become
     ``WorkerTerminal(ok=False, ...)``. Must enforce ``timeout_seconds`` itself.
     ``route_id`` is a bare OmniRoute id (``cc/claude-sonnet-5``).
+
+    An executor MAY also accept an optional ``tools: bool = True`` keyword.
+    ``tools=False`` asks for an answer-only call with no agent tools (planning
+    needs only a JSON answer). Executors without the keyword are called
+    exactly as before; see :func:`run_executor`.
     """
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal: ...
+
+
+def _accepts_tools_flag(executor: object) -> bool:
+    """True when ``executor.run`` takes a ``tools`` keyword (or ``**kwargs``)."""
+    try:
+        params = inspect.signature(executor.run).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "tools" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+async def run_executor(
+    executor: WorkerExecutor,
+    prompt: str,
+    *,
+    route_id: str,
+    cwd: Path,
+    timeout_seconds: float,
+    tools: bool = True,
+) -> WorkerTerminal:
+    """Call ``executor.run``; pass ``tools=False`` only to executors that accept it.
+
+    With ``tools=True`` (every worker call) the call is byte-identical to a
+    plain ``executor.run(...)``, so existing executors and fakes are unchanged.
+    """
+    if tools or not _accepts_tools_flag(executor):
+        return await executor.run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+    return await executor.run(  # type: ignore[call-arg]
+        prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=False
+    )
+
+
+def _answer_only(executor: object) -> bool:
+    """Whether ``executor`` (or the executor every wrapper layer delegates to) is answer-only."""
+    seen: set[int] = set()
+    current: object | None = executor
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "answer_only_supported", False):
+            return True
+        picker = getattr(current, "_pick", None)
+        current = (
+            picker(PurePosixPath(".")) if callable(picker) else getattr(current, "inner", None)
+        )
+    return False
+
+
+class AnswerOnlyExecutor:
+    """Adapter for planner calls that need one answer, not an agent loop.
+
+    Only executors that declare ``answer_only_supported = True`` qualify (the
+    direct gateway's chat/completions call, scripted test executors); wrappers
+    qualify through the executor they wrap. Prime headless has no answer-only
+    mode, so wrapping it is refused instead of silently planning with tools.
+    """
+
+    def __init__(self, inner: WorkerExecutor) -> None:
+        self.inner = inner
+        if not _answer_only(inner):
+            raise OrchestrationError(
+                "planner executor must support answer-only execution; use direct-gateway "
+                "for planning instead of Prime headless"
+            )
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        return await run_executor(
+            self.inner,
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=False,
+        )
 
 
 class ModelSelector(Protocol):

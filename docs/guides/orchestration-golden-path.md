@@ -1,8 +1,8 @@
 # Orchestration golden path
 
-One goal enters the orchestrator. Completed execution paths can produce locally
-verifiable receipts; early admission or planning failures may retain only events,
-a graph, and a blocked reason, without a receipt. This guide uses repository
+One goal enters the orchestrator. Every settled run produces a locally verifiable
+receipt, including runs blocked at startup, admission or planning: those receipts
+have no nodes and carry the recorded blocked reason. This guide uses repository
 commands. The historical observations below are not an exact-SHA public proof
 bundle; see [Evidence](#evidence).
 
@@ -67,7 +67,10 @@ verdict orchestrate "<goal>" --repo /path/to/repo --scope cc/,cx/ \
 
 # 4. Controller survival: generation 0 hangs, the supervisor kills it and resumes.
 # Env-injected chaos also needs an explicit isolated state file:
-VERDICT_CHAOS_G0="#2=hang" verdict supervise --run-id demo --runs-dir /path/to/isolated/runs \
+# Supervised runs contain workers in a delegated cgroup-v2 subtree; a transient
+# delegated user scope provides one without host changes.
+VERDICT_CHAOS_G0="#2=hang" systemd-run --user --scope -p Delegate=yes \
+  verdict supervise --cgroup-root auto --run-id demo --runs-dir /path/to/isolated/runs \
   --stall-seconds 90 -- "<goal>" --repo /path/to/repo --scope cc/,cx/ \
   --state-file /path/to/isolated/controller-chaos-health.json
 
@@ -78,14 +81,54 @@ verdict run-receipt <run-dir>
 
 Exit code is `0` only for `COMPLETE`.
 
+Rejected gateway credentials or permissions during selector discovery
+write a `run_finished` BLOCKED event with `phase=startup` before planning. The
+supervisor reports that cause without restarting unchanged credentials. These
+early blocked runs still get a receipt with no nodes, so `verdict run-receipt`
+shows the startup cause. Unexpected controller
+implementation errors still use bounded crash recovery.
+
 Keep the planner's `verification_command` test-focused: the runtime runs declared
-repo quality gates at integration, after the combined tests pass. Discovery reads
+repo quality gates for each implement node after its verification passes, and
+again at integration after the combined tests pass. A node-level gate failure
+goes back to that node's worker as correction feedback; configuration errors and
+missing gate executables are left to the integration barrier. Discovery reads
 Ruff/Mypy declarations from Python configuration and `typecheck`, `lint`, and
 `format:check` scripts from `package.json` in a fixed order. The event log records
 each gate's declared and executed command, source, exit code, and bounded output.
 A gate failure blocks completion with verification feedback. No declared gates
 is recorded as `none declared`, not a silent pass. `RuntimePolicy.run_repo_gates`
 defaults to `True`; isolated fixtures can opt out explicitly.
+
+## Partial-work salvage on retry
+
+When a worker attempt fails, the runtime (`verdict/orchestration/runtime.py`)
+preserves the attempt's owned-file partial work before the failed worktree is
+removed, and restores it into the SAME node's next attempt worktree
+(`verdict/orchestration/salvage.py`). Retries of a half-finished node continue
+from the salvaged owned files instead of only the node base plus failure
+feedback. Salvage changes no decision: acceptance, the node verification
+command, admission and route selection behave exactly as without it, and wrong
+salvaged work fails verification the same way wrong worker output does.
+
+Handoff evidence is bounded and content-free. A `salvage` event in
+`events.jsonl` and a node history record carry relative paths, byte counts,
+content digests and rejection reasons only. File content never enters the
+event log, the history or the digest-bound receipt.
+
+Rejection boundaries:
+
+- paths outside the node's ownership contract are never staged or restored;
+  they are named in the rejection evidence without content;
+- credential-bearing files are rejected whole before staging — neither content
+  nor partial excerpts are kept or emitted;
+- fault-injected attempts (`fault_injected` terminals) salvage nothing, so
+  chaos runs cannot seed later attempts with synthetic partial work;
+- an attempt with no owned-file changes stages nothing and the retry proceeds
+  exactly as before (no-change safe).
+
+Contract and tests: [`openspec/changes/bod-308-partial-salvage/`](../../openspec/changes/bod-308-partial-salvage/proposal.md),
+`tests/test_orch_salvage.py` (actual `DagRuntime` failure-to-retry restoration).
 
 ## Fault keys (`--inject KEY=FAULT[,FAULT]`)
 
@@ -134,6 +177,58 @@ verified public proof:
 | live7 | planner quota -> planner replaced; account-level quota on both subscription providers -> explicit pool exhaustion | BLOCKED reported (fail-closed, no hang) |
 | live9 | route quota, then no-final, then 429 rate limit; same node moved sonnet-4-6 -> sonnet-5 -> haiku; sibling moved to `cx/gpt-5.5`; review independence fell back to route level (review coverage not retained here) | COMPLETE; 28 integration tests reported, report not retained |
 | live10 | `verdict supervise`: generation 0 hung -> STALLED -> process group killed -> generation 1 `--resume` reused the validated node | COMPLETE reported |
+
+## Improvement cycles
+
+`verdict improve` runs bounded cycles above `verdict supervise`: one supervised
+run, measured from its receipt, then a lesson the next cycle passes to the
+planner. A cycle with unchanged inputs after a failure is refused, unless a
+recorded quota reset has since passed. See the
+[CLI reference](../CLI_REFERENCE.md#verdict-improve--measured-improvement-cycles)
+and [ADR-038](../adr/ADR-038-improvement-cycle.md).
+
+## Controller bounded operations and Prime ownership
+
+Supervision distinguishes real event progress from `WAITING_BOUNDED`. Initial and
+repair planning each publish a fixed, owner/generation-bound operation deadline.
+The supported cap is 600 seconds per planner call. Each worker attempt runs for
+at most 900 seconds: `--attempt-timeout` values above 900 are reduced to 900.
+REVIEW publishes a distinct `review-round-N` operation with a 900-second cap; the
+remaining run/supervisor deadline still wins. An active valid operation can outlast the ordinary stall
+window; its deadline and the absolute supervisor deadline still terminate it.
+Invalid, stale, extended or reopened leases do not defer stalls. Selection refresh
+and DAG operations do not gain this lease exemption. Admission and completion proof
+gates are unchanged.
+
+The OCR reviewer runs selection and subprocess calls off the event loop under the
+remaining REVIEW budget. The supported subprocess runner accepts cancellation,
+kills/reaps its process group, and returns terminal evidence. If cleanup cannot
+settle inside the bounded reserve, Verdict reports `ocr review cleanup UNKNOWN
+after cancellation`, fails the review closed with local `scope=none`, and does not
+retry or fall back to another independence level based on uncertain reviewer work.
+
+Supervised Prime requires an operator-selected writable delegated cgroup-v2
+subtree, passed as `verdict supervise --cgroup-root PATH` or the environment variable
+`VERDICT_CONTROLLER_CGROUP_ROOT`. `--cgroup-root auto` uses the supervisor's own
+scope when it is delegated, for example under
+`systemd-run --user --scope -p Delegate=yes verdict supervise --cgroup-root auto ...`.
+Without a root, `verdict supervise` exits 2 before creating run state. It must expose writable `cgroup.procs` and `cgroup.kill`, and
+readable `cgroup.events`. The runtime creates only its unique generation child leaf.
+Never point at the cgroup mount root. Never migrate or kill the supervising process's
+current scope. No systemd/global permissions or resource-controller settings are
+changed automatically. Missing delegation blocks Prime before payload execution.
+Unsupervised Prime keeps its existing execution behavior.
+
+The worker launcher records pending intent before spawn, joins the generation leaf
+and registers exact process identity before exec. Cleanup uses kernel `cgroup.kill`
+and requires `populated 0` before restart. Ordinary fork/clone/setsid descendants are
+contained. Pending registration, unverified revocation, ownership mismatch or cleanup
+errors block restart even after known containment is stopped. Deliberate same-UID
+cgroup escape or state tampering is outside this cooperative-controller trust model.
+Older run artifacts cannot prove the absence of workers detached before this fix.
+
+Offline fake clocks, local children and fixture cgroup files validate the mechanism;
+they do not establish live provider or self-hosting COMPLETE evidence.
 
 ## Known limits
 

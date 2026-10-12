@@ -15,7 +15,10 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.orchestration.executors import FaultInjectionState
 
 from verdict.orchestration.contracts import WorkerExecutor
 from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
@@ -52,6 +55,10 @@ def _capacity_filter(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+# Planner constraints are prompt text; keep them a small, reviewable input.
+MAX_CONSTRAINTS_BYTES = 8 * 1024
+
+
 def add_parsers(subparsers: Any) -> None:
     orch = subparsers.add_parser(
         "orchestrate", help="Goal -> frontier plan -> DAG -> parallel workers -> review -> receipt"
@@ -65,6 +72,14 @@ def add_parsers(subparsers: Any) -> None:
     )
     orch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     orch.add_argument(
+        "--constraints-file",
+        metavar="PATH",
+        help=(
+            "UTF-8 text the planner must follow (CONSTRAINTS: section), e.g. lessons "
+            f"from an earlier run; at most {MAX_CONSTRAINTS_BYTES} bytes, digest recorded"
+        ),
+    )
+    orch.add_argument(
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
     orch.add_argument("--max-parallel", type=int, default=3)
@@ -75,7 +90,12 @@ def add_parsers(subparsers: Any) -> None:
         default=(),
         help="Hard economic-class filter, e.g. free,subscription (default: unchanged)",
     )
-    orch.add_argument("--attempt-timeout", type=float, default=900)
+    orch.add_argument(
+        "--attempt-timeout",
+        type=float,
+        default=900,
+        help="Seconds per worker attempt (default and maximum: 900)",
+    )
     orch.add_argument("--run-deadline", type=float, default=3600)
     orch.add_argument(
         "--prefer",
@@ -113,6 +133,12 @@ def add_parsers(subparsers: Any) -> None:
         choices=("prime", "direct-gateway"),
         default="prime",
         help="Worker executor backend (default: prime)",
+    )
+    orch.add_argument(
+        "--planner-executor",
+        choices=("direct-gateway",),
+        default="direct-gateway",
+        help="Planner executor backend (answer-only; default: direct-gateway)",
     )
     orch.add_argument(
         "--executor-map",
@@ -155,6 +181,34 @@ def add_parsers(subparsers: Any) -> None:
     from verdict.orchestration import supervisor
 
     supervisor.add_parser(subparsers)
+
+    improve = subparsers.add_parser(
+        "improve",
+        help="Run one improvement cycle: supervised run, measure, learn a lesson for the next",
+    )
+    improve.add_argument("goal", nargs="?", help="Goal for the supervised orchestrate run")
+    count = improve.add_mutually_exclusive_group(required=True)
+    count.add_argument("--once", action="store_true", help="Run exactly one cycle")
+    count.add_argument(
+        "--verify",
+        action="store_true",
+        help="Recompute every measured cycle from its run receipt; runs nothing",
+    )
+    count.add_argument(
+        "--cycles",
+        type=int,
+        metavar="N",
+        help="Run up to N cycles (at most 5); stop at MET, a refused relaunch, or a lesson "
+        "that needs the operator",
+    )
+    improve.add_argument("--repo", default=".", help="Git repository to change (default: .)")
+    improve.add_argument("--runs-dir", required=True, help="Directory for run directories")
+    improve.add_argument(
+        "--cycles-dir", required=True, help="Directory for the cycle log and lessons"
+    )
+    improve.add_argument("--cgroup-root", default=None, help="As for verdict supervise")
+    improve.add_argument("--total-deadline-seconds", type=float, default=7200.0)
+    improve.add_argument("orchestrate_args", nargs=argparse.REMAINDER, help="Args after `--`")
 
     elig = subparsers.add_parser(
         "eligibility",
@@ -283,6 +337,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
 
     handlers = {
         "supervise": supervisor.dispatch,
+        "improve": _improve,
         "orchestrate": _orchestrate,
         "watch": _watch,
         "run-receipt": _receipt,
@@ -409,7 +464,17 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
-    from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
+    from verdict.orchestration.executors import FaultInjectingExecutor
+
+    executor = _worker_executor(args)
+    faults, state = _faults_and_state(args)
+    if faults:
+        executor = FaultInjectingExecutor(executor, faults, state=state)
+    return executor
+
+
+def _worker_executor(args: argparse.Namespace) -> WorkerExecutor:
+    from verdict.orchestration.executors import MixedExecutor
 
     # Empty here lets each executor apply Verdict key precedence
     # (VERDICT_OMNIROUTE_API_KEY > OMNIROUTE_API_KEY > OPENAI_API_KEY).
@@ -417,7 +482,6 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
     raw_map = getattr(args, "executor_map", "") or ""
     node_backend_map = _parse_executor_map(raw_map)
 
-    executor: WorkerExecutor
     default_name = getattr(args, "executor", "prime") or "prime"
     default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
 
@@ -426,9 +490,24 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
             node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
             for node_id, backend in node_backend_map.items()
         }
-        executor = MixedExecutor(node_map=named, default=default_executor)
-    else:
-        executor = default_executor
+        return MixedExecutor(node_map=named, default=default_executor)
+    return default_executor
+
+
+def _planner_executor(args: argparse.Namespace) -> WorkerExecutor:
+    from verdict.orchestration.executors import FaultInjectingExecutor
+
+    # Empty here lets DirectGatewayExecutor apply Verdict key precedence.
+    api_key = ""
+    name = getattr(args, "planner_executor", "direct-gateway") or "direct-gateway"
+    executor = _build_single_executor(name, gateway=args.gateway, api_key=api_key)
+    faults, state = _faults_and_state(args)
+    if faults:
+        executor = FaultInjectingExecutor(executor, faults, state=state)
+    return executor
+
+
+def _faults_from_args(args: argparse.Namespace) -> dict[str, list[str]]:
     faults: dict[str, list[str]] = {}
     injected = list(args.inject)
     # Supervisor-generation-scoped chaos: VERDICT_CHAOS_G0 applies only to the
@@ -440,9 +519,18 @@ def _executor(args: argparse.Namespace) -> WorkerExecutor:
         faults.setdefault(route.strip(), []).extend(
             k.strip() for k in kinds.split(",") if k.strip()
         )
-    if faults:
-        executor = FaultInjectingExecutor(executor, faults)
-    return executor
+    return faults
+
+
+def _faults_and_state(args: argparse.Namespace) -> tuple[dict[str, list[str]], FaultInjectionState]:
+    from verdict.orchestration.executors import FaultInjectionState
+
+    faults = _faults_from_args(args)
+    state = getattr(args, "_fault_injection_state", None)
+    if state is None:
+        state = FaultInjectionState(faults)
+        args._fault_injection_state = state
+    return faults, state
 
 
 def _chaos_state(args: argparse.Namespace, runs_root: Path) -> Path | None:
@@ -469,6 +557,74 @@ def _resolve_run(value: str, runs_dir: str) -> Path:
     if base.parts and path.parts[: len(base.parts)] == base.parts:
         return path
     return base / value
+
+
+def _improve(args: argparse.Namespace) -> int:
+    """Bounded improvement cycles; exit 0 only when the last cycle met its measured metric."""
+    from verdict.orchestration.controller_operations import CGROUP_ROOT_ENV
+    from verdict.orchestration.improvement import MAX_CYCLES, run_with_supervisor
+    from verdict.orchestration.supervisor import resolve_cgroup_root
+
+    if args.verify:
+        from verdict.orchestration.improvement import verify_cycles
+
+        problems = verify_cycles(Path(args.cycles_dir).resolve(), Path(args.runs_dir).resolve())
+        print(json.dumps({"problems": problems}, indent=2))
+        return 0 if not problems else 1
+    if not args.goal:
+        print("BLOCKED: a goal is required unless --verify", file=sys.stderr)
+        return 2
+    extra = [str(token) for token in (args.orchestrate_args or [])]
+    while extra and extra[0] == "--":
+        extra.pop(0)
+    owned = ("--runs-dir", "--resume", "--constraints-file")
+    if any(token == flag or token.startswith(flag + "=") for token in extra for flag in owned):
+        print(
+            "BLOCKED: improve sets --runs-dir, --resume and --constraints-file itself",
+            file=sys.stderr,
+        )
+        return 2
+    cgroup_root = resolve_cgroup_root(args.cgroup_root)
+    if cgroup_root is None:
+        print(
+            "BLOCKED: improve runs a supervised run; pass --cgroup-root PATH|auto "
+            "(see verdict supervise --help)",
+            file=sys.stderr,
+        )
+        return 2
+    cycles = 1 if args.once else int(args.cycles)
+    if not 1 <= cycles <= MAX_CYCLES:
+        print(f"BLOCKED: --cycles must be between 1 and {MAX_CYCLES}", file=sys.stderr)
+        return 2
+    results = run_with_supervisor(
+        args.goal,
+        repo=Path(args.repo).resolve(),
+        runs_dir=Path(args.runs_dir).resolve(),
+        cycles_dir=Path(args.cycles_dir).resolve(),
+        orchestrate_args=extra,
+        supervisor_kwargs={
+            "total_deadline_seconds": args.total_deadline_seconds,
+            "env": {CGROUP_ROOT_ENV: cgroup_root},
+            "require_worker_containment": True,
+        },
+        cycles=cycles,
+    )
+    print(
+        json.dumps(
+            [
+                {
+                    "cycle_id": r.cycle_id,
+                    "outcome": r.outcome,
+                    "reason": r.reason,
+                    "run_id": r.run_id,
+                    "layer": r.layer,
+                }
+                for r in results
+            ],
+            indent=2,
+        )
+    )
+    return 0 if results[-1].outcome == "MET" else 1
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
@@ -502,6 +658,26 @@ def _orchestrate(args: argparse.Namespace) -> int:
     if not goal:
         print("BLOCKED: a goal (or --graph/--resume) is required", file=sys.stderr)
         return 2
+    constraints = ""
+    if getattr(args, "constraints_file", None):
+        path = Path(args.constraints_file)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            print(f"BLOCKED: cannot read --constraints-file: {exc.strerror}", file=sys.stderr)
+            return 2
+        if len(data) > MAX_CONSTRAINTS_BYTES:
+            print(
+                f"BLOCKED: --constraints-file is {len(data)} bytes; the limit is "
+                f"{MAX_CONSTRAINTS_BYTES}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            constraints = data.decode("utf-8")
+        except UnicodeDecodeError:
+            print("BLOCKED: --constraints-file must be UTF-8 text", file=sys.stderr)
+            return 2
     # Validate --executor-map node ids against the graph when one is available.
     # When no graph exists yet (frontier planning), the graph is built later;
     # emit a stderr warning so the operator can catch typos before waiting.
@@ -537,18 +713,37 @@ def _orchestrate(args: argparse.Namespace) -> int:
     refresh_kwargs: dict[str, Any] = (
         {"refresh_hook": refresh_hook} if refresh_hook is not None else {}
     )
-    selector = build_selector(
-        args.gateway,
-        scope=args.scope,
-        prefer=args.prefer,
-        load=lambda route: sum(1 for r in inflight.values() if r == route),
-        state_file=state_path,
-        **refresh_kwargs,
-        **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
-    )
+    from verdict.orchestration.eligibility_report import GatewayDiscoveryError
+    from verdict.orchestration.receipt import EventLog
+
     run_id = args.resume or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = runs_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        selector = build_selector(
+            args.gateway,
+            scope=args.scope,
+            prefer=args.prefer,
+            load=lambda route: sum(1 for r in inflight.values() if r == route),
+            state_file=state_path,
+            **refresh_kwargs,
+            **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
+        )
+    except GatewayDiscoveryError as exc:
+        if exc.retryable:
+            raise
+        # Expected discovery blockers cannot be repaired by restarting the
+        # same controller with unchanged credentials. Settle the run so the
+        # external supervisor preserves the cause and does not burn retries.
+        reason = str(exc)[:500]
+        EventLog(run_dir / "events.jsonl").emit(
+            "run_finished", outcome="BLOCKED", reason=reason, phase="startup"
+        )
+        from verdict.orchestration.receipt import write_run_receipt
+
+        write_run_receipt(run_dir)
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 2
     reviewer = (
         None
         if args.no_review
@@ -586,6 +781,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             selector=selector,
             executor=_executor(args),
             classifier=FailureIntelligence(),
+            planner_executor=_planner_executor(args),
             reviewer=reviewer,
             graph=graph,
             run_id=run_id,
@@ -593,6 +789,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             summary=getattr(selector, "summary", None),
             inflight=inflight,
             openspec_change_dir=openspec_change_dir,
+            constraints=constraints,
         )
     )
     stop.set()

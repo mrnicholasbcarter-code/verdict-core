@@ -42,7 +42,7 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(
         orch_run,
         "fetch_connections",
-        lambda gateway, api_key: [conn("claude"), conn("kiro"), conn("gemini")],
+        lambda gateway, api_key, **_: [conn("claude"), conn("kiro"), conn("gemini")],
     )
 
     def fake_probe_factory(*_a: Any, **_k: Any) -> Any:

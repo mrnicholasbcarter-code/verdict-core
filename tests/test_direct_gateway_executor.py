@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import json as _json
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -120,6 +122,44 @@ async def _run_with_transport(
             return await transport.handle_async_request(req)
 
         mock_client.post = fake_post
+
+        @contextlib.asynccontextmanager
+        async def fake_stream(method: str, url: str, json: Any = None, headers: Any = None):  # type: ignore[no-untyped-def]
+            """Replay the scripted response as server-sent events, as a gateway would."""
+            req = httpx.Request(method, url, json=json, headers=headers or {})
+            scripted = await transport.handle_async_request(req)
+            if scripted.status_code >= 400:
+                yield scripted
+                return
+            try:
+                body = scripted.json()
+            except ValueError:
+                yield scripted
+                return
+            lines: list[str] = []
+            for choice in body.get("choices") or []:
+                content = (choice.get("message") or {}).get("content", "")
+                for start in range(0, max(len(content), 1), 7):
+                    piece = {"choices": [{"delta": {"content": content[start : start + 7]}}]}
+                    lines.append(
+                        "data: "
+                        + _json.dumps({**piece, "id": body.get("id"), "model": body.get("model")})
+                    )
+                lines.append(
+                    "data: "
+                    + _json.dumps(
+                        {
+                            "choices": [
+                                {"delta": {}, "finish_reason": choice.get("finish_reason")}
+                            ],
+                            "usage": body.get("usage"),
+                        }
+                    )
+                )
+            lines.append("data: [DONE]")
+            yield httpx.Response(200, content="\n\n".join(lines).encode(), request=req)
+
+        mock_client.stream = fake_stream
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_cls.return_value = mock_client
@@ -1226,7 +1266,10 @@ def test_file_prompt_requests_complete_contents(tmp_path: Path) -> None:
     prompt = DirectGatewayExecutor._augment_prompt_for_diff("TASK", ["new.py"], tmp_path)
     assert "FILE: <relative path>" in prompt
     assert "COMPLETE" in prompt
-    assert "no diffs" in prompt
+    assert "no unified diffs" in prompt
+    assert "<<<<<<< SEARCH" in prompt and ">>>>>>> REPLACE" in prompt
+    # Direct-gateway workers have no tools; Verdict runs the verification itself.
+    assert "no tools" in prompt and "runs VERIFICATION_COMMAND itself" in prompt
 
 
 @pytest.mark.asyncio
@@ -1306,3 +1349,227 @@ def test_chaos_state_is_kept_outside_the_runs_dir(tmp_path: Path) -> None:
         argparse.Namespace(state_file=None, inject=["x"], resume="r1"), runs
     )
     assert resumed is not None and resumed.parent.name == "r1" and runs not in resumed.parents
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["answer-only", "fault-injecting", "mixed"])
+async def test_answer_only_contract_never_parses_or_writes_owned_files(
+    tmp_path: Path, wrapper: str
+) -> None:
+    from verdict.orchestration.contracts import AnswerOnlyExecutor
+    from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
+
+    target = tmp_path / "source.py"
+    target.write_text("original\n")
+    prompt = "Plan JSON only.\nOWNED_FILES: source.py\n"
+    response = "FILE: source.py\n```python\nmodified\n```\n"
+    transport = FakeTransport(200, _ok_response(response))
+    executor = DirectGatewayExecutor(base_url="http://fake:20128", api_key="fixture")
+    inner: Any = executor
+    if wrapper == "fault-injecting":
+        inner = FaultInjectingExecutor(executor, {})
+    elif wrapper == "mixed":
+        inner = MixedExecutor(node_map={}, default=executor)
+    captured: list[dict[str, Any]] = []
+
+    with patch("httpx.AsyncClient") as factory:
+        client = AsyncMock()
+
+        async def post(url: str, json: Any = None, headers: Any = None) -> httpx.Response:
+            captured.append(json)
+            return await transport.handle_async_request(httpx.Request("POST", url, json=json))
+
+        client.post = post
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        factory.return_value = client
+        result = await AnswerOnlyExecutor(inner).run(
+            prompt, route_id="cc/claude-sonnet-5", cwd=tmp_path, timeout_seconds=3
+        )
+
+    assert result.ok
+    assert result.output == response
+    assert captured[0]["messages"][0]["content"] == prompt
+    assert target.read_text() == "original\n"
+    assert not (tmp_path / ".verdict-pending.patch").exists()
+
+
+def _edit(*hunks: tuple[str, str]) -> str:
+    body = "".join(f"<<<<<<< SEARCH\n{s}=======\n{r}>>>>>>> REPLACE\n" for s, r in hunks)
+    return f"FILE: owned.py\n```\n{body}```\nRESULT: DONE"
+
+
+def test_search_replace_edits_a_large_file_exactly(tmp_path: Path) -> None:
+    big = "".join(f"line {i}\n" for i in range(20_000)) + "TARGET = 1\n"
+    (tmp_path / "owned.py").write_text(big)
+    files = DirectGatewayExecutor._extract_files(_edit(("TARGET = 1\n", "TARGET = 2\n")))
+    assert files is not None
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None
+    assert resolved["owned.py"] == big.replace("TARGET = 1\n", "TARGET = 2\n")
+
+
+@pytest.mark.parametrize(
+    ("hunk", "message"), [(("missing\n", "x\n"), "not found"), (("same\n", "x\n"), "found 3 times")]
+)
+def test_search_text_must_occur_exactly_once(
+    tmp_path: Path, hunk: tuple[str, str], message: str
+) -> None:
+    (tmp_path / "owned.py").write_text("same\nunique\nsame\nsame\n")
+    files = DirectGatewayExecutor._extract_files(_edit(hunk))
+    assert files is not None
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None and message in error
+
+
+def test_search_replace_keeps_ownership_checks(tmp_path: Path) -> None:
+    (tmp_path / "other.py").write_text("x = 1\n")
+    files = {"other.py": "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"}
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None and "outside" in error
+    assert (tmp_path / "other.py").read_text() == "x = 1\n"
+
+
+def test_large_owned_files_get_focused_line_numbered_excerpts(tmp_path: Path) -> None:
+    body = "".join(f"filler_{i} = {i}\n" for i in range(8000)) + "def _execute():\n    pass\n"
+    (tmp_path / "owned.py").write_text(body)
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "Change _execute in owned.py", ["owned.py"], tmp_path, budget_bytes=4000
+    )
+    assert "TRUNCATED" in prompt and "SEARCH/REPLACE" in prompt
+    assert "8001: def _execute():" in prompt
+    assert len(prompt.encode()) < 8000
+
+
+@pytest.mark.asyncio
+async def test_worker_reporting_blocked_is_returned_for_the_runtime(tmp_path: Path) -> None:
+    """Live finding 2026-10-12: a correct refusal was recorded as 'no unified diff'."""
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    executor = DirectGatewayExecutor()
+    output = "I cannot see the whole file.\n\nRESULT: BLOCKED owned.py is truncated"
+    terminal = await _run_with_transport(
+        executor,
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert terminal.ok and terminal.error in (None, "")
+    assert terminal.output.endswith("RESULT: BLOCKED owned.py is truncated")
+
+
+def test_search_replace_never_reads_through_a_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOKEN = 1\n")
+    (tmp_path / "owned.py").symlink_to(secret)
+    files = {"owned.py": "<<<<<<< SEARCH\nTOKEN = 1\n=======\nTOKEN = 2\n>>>>>>> REPLACE\n"}
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None
+    assert secret.read_text() == "TOKEN = 1\n"
+
+
+def test_search_replace_keeps_crlf_line_endings(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    files = {"owned.py": "<<<<<<< SEARCH\na = 1\r\n=======\na = 3\r\n>>>>>>> REPLACE\n"}
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None and resolved["owned.py"] == "a = 3\r\nb = 2\r\n"
+
+
+@pytest.mark.asyncio
+async def test_edits_are_never_applied_with_a_blocked_report(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    output = "FILE: owned.py\n```\nx = 2\n```\nRESULT: BLOCKED could not finish"
+    terminal = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not terminal.ok and "nothing applied" in (terminal.error or "")
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"
+
+
+def test_excerpts_never_exceed_their_budget(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text(
+        "x" * 5000 + "\n" + "".join(f"v{i} = {i}\n" for i in range(9000))
+    )
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "no matching names here", ["owned.py"], tmp_path, budget_bytes=3000
+    )
+    excerpt = prompt.split("never the whole file) ---\n", 1)[1]
+    assert len(excerpt.encode()) <= 3000
+
+
+def test_repeated_edit_blocks_for_one_file_apply_in_order(tmp_path: Path) -> None:
+    """Live finding 2026-10-12: a model wrote one FILE block per edited region."""
+    (tmp_path / "owned.py").write_text("a = 1\nb = 2\n")
+    hunk = "FILE: owned.py\n```\n<<<<<<< SEARCH\n{s}=======\n{r}>>>>>>> REPLACE\n```\n"
+    output = hunk.format(s="a = 1\n", r="a = 10\n") + hunk.format(s="b = 2\n", r="b = 20\n")
+    files = DirectGatewayExecutor._extract_files(output)
+    assert files is not None
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None and resolved["owned.py"] == "a = 10\nb = 20\n"
+
+
+def test_repeated_complete_contents_blocks_are_refused() -> None:
+    output = "FILE: owned.py\n```\nx = 1\n```\nFILE: owned.py\n```\nx = 2\n```"
+    with pytest.raises(ValueError, match="duplicate FILE block"):
+        DirectGatewayExecutor._extract_files(output)
+
+
+@pytest.mark.asyncio
+async def test_implement_requests_are_streamed_and_reassembled(tmp_path: Path) -> None:
+    """Self-host runs 2026-10-12: 10 of 21 attempts died on the gateway's 30 s
+    response-start deadline for non-streamed requests. Implement calls stream."""
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    output = "FILE: owned.py\n```\nx = 2\n```\nRESULT: DONE"
+    terminal = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert terminal.ok, terminal.error
+    assert (tmp_path / "owned.py").read_text() == "x = 2\n"
+
+
+def _sse(*events: str) -> bytes:
+    return "\n\n".join(f"data: {e}" for e in events).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stream",
+    [
+        # finish_reason stop, but the stream is cut before [DONE]
+        _sse(
+            '{"choices":[{"delta":{"content":"FILE: owned.py"}}]}',
+            '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        ),
+        # an error chunk after HTTP 200
+        _sse(
+            '{"choices":[{"delta":{"content":"partial"}}]}',
+            '{"error":{"message":"upstream reset"}}',
+            "[DONE]",
+        ),
+        # a malformed event
+        _sse('{"choices":[{"delta":{"content":"partial"}}]}', "{not json", "[DONE]"),
+    ],
+)
+async def test_a_failed_stream_is_never_a_complete_answer(tmp_path: Path, stream: bytes) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+
+    class Streamed(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=stream, request=request)
+
+    async with httpx.AsyncClient(transport=Streamed()) as client:
+        resp = await DirectGatewayExecutor()._post_streamed(
+            client, "http://gw/v1/chat/completions", {"model": "cc/x", "stream": True}
+        )
+    assert resp.status_code == 502
+    terminal = DirectGatewayExecutor._interpret(resp, route_id="cc/x", duration=0.0)
+    assert not terminal.ok
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"

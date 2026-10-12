@@ -206,6 +206,52 @@ emit("run_finished", outcome="COMPLETE", reason="second life finished")
     assert "no progress" in str(stalled[0]["data"]["detail"])
 
 
+def test_handled_worker_cooldown_narrative_is_not_controller_quota(tmp_path: Path) -> None:
+    """The controller prints handled worker cooldowns under [QUOTA/COOLDOWN]; a
+    run that then crashes for another reason must not be recorded as QUOTA."""
+    run_dir = tmp_path / "run-narrative"
+    crashing = write_controller(
+        tmp_path,
+        "narrative.py",
+        """
+emit("run_started", run_id=run_dir.name)
+print("[QUOTA/COOLDOWN] pool:claude (pool) quota_exhausted until 2026-10-12T17:00:00Z", flush=True)
+print("[FAILURE/REASSIGN] a 429 usage limit -> reassigned to cx/gpt-5.5", flush=True)
+raise SystemExit(3)
+""",
+    )
+    supervisor = ControllerSupervisor(
+        lambda g: argv_for(crashing, run_dir), run_dir, max_restarts=0, **FAST
+    )
+    outcome = run_supervisor(supervisor)
+    first = outcome.generations[0]
+    assert first["state"] == "CRASHED"
+    assert "marker" not in first and not first.get("category")
+
+
+def test_unprefixed_capacity_error_after_narrative_is_still_controller_quota(
+    tmp_path: Path,
+) -> None:
+    """Only stage-tagged narrative is ignored; the controller's own stderr error,
+    which carries no stage tag, still classifies the death as QUOTA."""
+    run_dir = tmp_path / "run-real-quota"
+    dying = write_controller(
+        tmp_path,
+        "real_quota.py",
+        """
+emit("run_started", run_id=run_dir.name)
+print("[QUOTA/COOLDOWN] pool:claude (pool) quota_exhausted until 2026-10-12T17:00:00Z", flush=True)
+sys.stderr.write("openai.RateLimitError: Error code: 429 - usage limit reached\\n")
+raise SystemExit(1)
+""",
+    )
+    supervisor = ControllerSupervisor(
+        lambda g: argv_for(dying, run_dir), run_dir, max_restarts=0, **FAST
+    )
+    outcome = run_supervisor(supervisor)
+    assert outcome.generations[0]["state"] == "QUOTA"
+
+
 def test_quota_message_is_classified_and_triggers_replacement(tmp_path: Path) -> None:
     """A 429/usage-limit death is QUOTA, and generation 1 uses the replacement argv."""
     run_dir = tmp_path / "run-quota"
@@ -580,9 +626,43 @@ def test_dispatch_returns_nonzero_when_blocked(tmp_path: Path, monkeypatch: Any)
         max_restarts=0,
         total_deadline_seconds=5.0,
         orchestrate_args=["--", "--goal", "x"],
+        cgroup_root=str(tmp_path / "not-a-cgroup"),
     )
     assert dispatch(args) == 1
     assert (tmp_path / "run-9" / "events.jsonl").exists()
+
+
+def test_dispatch_without_containment_root_says_how_to_provide_it(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import argparse
+
+    args = argparse.Namespace(
+        run_id="r1",
+        runs_dir=str(tmp_path),
+        stall_seconds=0.2,
+        poll_seconds=0.02,
+        max_restarts=0,
+        total_deadline_seconds=5.0,
+        orchestrate_args=[],
+        cgroup_root=None,
+    )
+    assert dispatch(args) == 2
+    err = capsys.readouterr().err
+    assert "--cgroup-root" in err and "Delegate=yes" in err
+    assert not (tmp_path / "r1").exists()  # refused before any run state
+
+
+def test_cgroup_root_flag_wins_over_environment_and_auto_needs_a_writable_scope(
+    monkeypatch: Any,
+) -> None:
+    from verdict.orchestration import supervisor as module
+
+    monkeypatch.setenv(module.CGROUP_ROOT_ENV, "/sys/fs/cgroup/from-env")
+    assert module.resolve_cgroup_root("/sys/fs/cgroup/flag") == "/sys/fs/cgroup/flag"
+    assert module.resolve_cgroup_root(None) == "/sys/fs/cgroup/from-env"
+    monkeypatch.setattr(module.os, "access", lambda path, mode: False)
+    assert module.resolve_cgroup_root("auto") is None
 
 
 def test_read_events_ignores_torn_tail(tmp_path: Path) -> None:

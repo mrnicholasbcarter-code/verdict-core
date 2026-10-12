@@ -27,6 +27,7 @@ from verdict.orchestration.contracts import (
     WorkerTerminal,
     WorkGraph,
     WorkNode,
+    route_family,
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
@@ -571,6 +572,49 @@ async def test_review_falls_back_to_route_independence_when_no_other_family(repo
     assert levels == ["family", "route"]
 
 
+async def test_a_worker_blocked_report_as_its_final_line_is_task_feedback(repo: Path) -> None:
+    """Live finding 2026-10-12: RESULT: BLOCKED after an explanation was missed."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    class Explains(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            return WorkerTerminal(
+                ok=True,
+                output="The file is truncated.\n\nRESULT: BLOCKED a.txt truncated",
+                model=route_id,
+            )
+
+    rt, ev, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Explains({}), ["cc/s", "cx/g"], max_attempts_per_node=1
+    )
+    rt.classifier = FailureIntelligence()
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    failure = ev.of("failure", "a")[0]
+    assert failure["category"] == "worker_blocked"
+    assert not ev.of("cooldown", "a")
+
+
+async def test_reviewer_excludes_the_family_of_a_failed_replaced_attempt(repo: Path) -> None:
+    """Live finding 2026-10-12: a failed agy/gemini attempt was replaced by cc/claude,
+    then agy/gemini reviewed; independence was not shown. Every attempted route counts."""
+    reviewer = Reviewer()
+    rt, _, _ = make(
+        repo,
+        WorkGraph("g", (node("a"),)),
+        Executor({("a", "agy/gem"): "quota"}),
+        ["agy/gem", "cc/s"],
+        reviewer=reviewer,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    first = reviewer.calls[0]
+    assert {"agy/gem", "cc/s"} <= first["exclude_routes"]
+    assert {route_family("agy/gem"), route_family("cc/s")} <= first["exclude_families"]
+
+
 # Cooldown wait tests
 @pytest.mark.asyncio
 async def test_short_cooldown_wait(repo: Path) -> None:
@@ -1050,7 +1094,7 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     # Provider scope: the sibling route cc/b was never dispatched either.
     assert not [e for e in events.of("dispatch") if e["route_id"] == "cc/b"]
     state = json.loads((repo.parent / "ladder-state.json").read_text())
-    assert "provider:cc" in state["cooldowns"]
+    assert "provider:cc" not in state["cooldowns"]
     assert "pool:claude" in state["cooldowns"]
     assert revoked[0]["node_id"] != cc_dispatches[0]["node_id"]
     # Both nodes complete on the other provider with the same node contract.

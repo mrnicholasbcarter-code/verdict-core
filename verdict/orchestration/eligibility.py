@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from verdict.orchestration.contracts import (
     FailureClassification,
     RouteVerdict,
     TaskRequirements,
+    WorkerTerminal,
     route_family,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
@@ -127,6 +129,35 @@ def cooldown_seconds_for(category: str, retry_after_seconds: float | None) -> fl
     return _CATEGORY_COOLDOWN_SECONDS.get(category, _DEFAULT_COOLDOWN_SECONDS)
 
 
+DEFAULT_MIN_QUOTA_PERCENT = 5.0
+_QUOTA_BUCKET = 20.0
+
+
+def quota_remaining(conn: Mapping[str, Any] | None, route_id: str) -> float | None:
+    """Measured remaining quota for a route: its own model window, else the account's."""
+    if conn is None:
+        return None
+    model = route_id.split("/", 1)[-1]
+    per_model = conn.get("quota_models")
+    if isinstance(per_model, Mapping):
+        for name in (model, re.sub(r"-(low|medium|high|xhigh|tiered)$", "", model)):
+            if isinstance(per_model.get(name), (int, float)):
+                return float(per_model[name])
+    value = conn.get("quota_percent")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def quota_rank(percent: float | None) -> int:
+    """Coarse bucket so only material quota differences reorder routes.
+
+    Unmeasured quota ranks with the middle bucket: never preferred over a route
+    with plenty measured, never pushed behind one that is nearly exhausted.
+    """
+    if percent is None:
+        return 2
+    return 4 - min(4, int(percent // _QUOTA_BUCKET))
+
+
 @dataclass
 class _Assessment:
     route_id: str
@@ -155,6 +186,8 @@ class _Assessment:
     # (never an email, token, or account id).
     cooldown_scope: str = ""
     agentic_capability: Mapping[str, Any] | None = None
+    # Measured remaining subscription quota (percent), None when not reported.
+    quota_percent: float | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -232,6 +265,7 @@ class EligibilityLadder:
         session_ledger: SessionLedger | None = None,
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
+        min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -271,6 +305,7 @@ class EligibilityLadder:
         # Default None keeps behaviour identical; the existing exact ladder
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
+        self._min_quota_percent = min_quota_percent
         # Route ids whose health the last select() re-read upgraded after refresh.
         self._last_refresh_upgrades: tuple[str, ...] = ()
 
@@ -339,6 +374,7 @@ class EligibilityLadder:
                 current = table.get(name)
                 if current is None or (not current.get("isActive") and conn.get("isActive")):
                     table[name] = conn
+
             index = (self._connections, table)
             self.__dict__["_connection_index"] = index
         return index[1].get(key)
@@ -420,14 +456,26 @@ class EligibilityLadder:
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
+        expired_negative = None
         if cache is not None:
             lookup = cache.lookup(route_id, now)
-            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
+            if lookup.entry is not None and not lookup.entry.healthy:
+                if lookup.state == "negative":
+                    return "unhealthy", lookup.entry.category
+                # Expired negative is half-open: only a newer validated ladder
+                # success may supersede it. Older/equal positives stay unprobed.
+                expired_negative = lookup.entry
+            elif lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):
-            return "unprobed", ""
+            category = expired_negative.category if expired_negative is not None else ""
+            return "unprobed", category
         checked = _parse_iso(str(entry.get("checked_at", "")))
+        if expired_negative is not None and (
+            not entry.get("healthy") or checked is None or checked <= expired_negative.checked_at
+        ):
+            return "unprobed", expired_negative.category
         if checked is None or now - checked > self._ttl:
             return "stale", str(entry.get("category", ""))
         if entry.get("healthy"):
@@ -444,6 +492,9 @@ class EligibilityLadder:
         when the route may still launch. A blocked route must not be launched;
         the caller reselects from this refreshed evidence.
         """
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None and cache.path.exists():
+            cache.reload()
         fresh = self._load_state()["cooldowns"]
         for key, entry in fresh.items():
             current = self._state["cooldowns"].get(key)
@@ -457,16 +508,18 @@ class EligibilityLadder:
         for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}", f"provider:{provider}"):
             if self._active_cooldown(key, now) is not None:
                 return key
+        if cache is not None and cache.lookup(route_id, now).state == "negative":
+            return f"route:{route_id}"
         return None
 
     def _active_cooldown(self, key: str, now: datetime) -> datetime | None:
         entry = self._state["cooldowns"].get(key)
-        if not isinstance(entry, dict):
-            return None
-        until = _parse_iso(str(entry.get("until", "")))
-        if until is not None and until > now:
-            return until
-        return None
+        until = _parse_iso(str(entry.get("until", ""))) if isinstance(entry, dict) else None
+        cache = getattr(self, "_health_cache", None)
+        cooldown = cache.cooldown_for(key, now) if cache is not None else None
+        if cooldown is not None and (until is None or cooldown.until > until):
+            until = cooldown.until
+        return until if until is not None and until > now else None
 
     def _rate_limited_until(
         self, conn: Mapping[str, Any] | None, route_id: str, now: datetime
@@ -557,6 +610,26 @@ class EligibilityLadder:
         if limited is not None:
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "provider_rate_limited"
             a.cooldown_until = _iso(limited)
+            return a
+        measured = [
+            q
+            for c in self._connections
+            if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            for q in [quota_remaining(c, route_id)]
+            if q is not None
+        ]
+        a.quota_percent = min(measured) if measured else None
+        floor = getattr(self, "_min_quota_percent", DEFAULT_MIN_QUOTA_PERCENT)
+        if measured and max(measured) < floor:
+            # Measured near-exhaustion: dispatching here fails mid-task on a 429.
+            a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "quota_low"
+            resets = [
+                _parse_iso(str(c.get("quota_reset_at") or ""))
+                for c in self._connections
+                if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            ]
+            reset = min((r for r in resets if r is not None), default=None)
+            a.cooldown_until = _iso(reset) if reset is not None and reset > now else None
             return a
 
         # BOD-277: pull the capability facts the assessment already has access
@@ -744,10 +817,13 @@ class EligibilityLadder:
                 probe_class = lookup.entry.probe_class
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
+        quota = getattr(a, "quota_percent", None)
         components = {
             "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
+            "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
+            "quota_percent": quota if isinstance(quota, (int, float)) else None,
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
@@ -766,16 +842,19 @@ class EligibilityLadder:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
 
         Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
+        Among equally sufficient, equally priced routes, more measured quota left
+        ranks first, ahead of static provider preference.
         """
         c = self._rank_components(a)
         return (
             c["capacity_order"],
             c["slack"],
             c["price_for_rank"],
+            c["quota_rank"],
             c["provider_pref"],
             c["load"],
             -c["fit"],  # negate: stronger routes (higher fit) should rank lower
@@ -795,6 +874,7 @@ class EligibilityLadder:
             "capacity_order": components["capacity_order"],
             "slack": components["slack"],
             "price": price_value if price_known else None,
+            "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],
             "load": components["load"],
             "fit": components["fit"],  # stays positive
@@ -813,6 +893,9 @@ class EligibilityLadder:
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        cache = getattr(self, "_health_cache", None)
+        if cache is not None and cache.path.exists():
+            cache.reload()
         self._current_requirements = requirements
         self._current_now = now
         self._session_evidence_error = None
@@ -895,15 +978,21 @@ class EligibilityLadder:
             # reserved fallback see them. Never upgrade a candidate the
             # refresh marked failed.
             cache = getattr(self, "_health_cache", None)
-            if cache is not None:
+            if cache is not None and cache.path.exists():
                 with contextlib.suppress(Exception):
                     cache.reload()
             upgraded: list[str] = []
             for candidate in candidates:
-                if candidate.failed_stage is None and candidate.health != "healthy":
-                    health, category = self._health_status(candidate.route_id, now)
-                    if health == "healthy":
-                        candidate.health, candidate.health_category = health, category
+                if candidate.failed_stage is None:
+                    refreshed = self._assess(candidate.route_id, requirements, now)
+                    candidate.health = refreshed.health
+                    candidate.health_category = refreshed.health_category
+                    if refreshed.failed_stage is not None:
+                        candidate.failed_stage = refreshed.failed_stage
+                        candidate.reason = refreshed.reason
+                        candidate.cooldown_until = refreshed.cooldown_until
+                        candidate.cooldown_scope = refreshed.cooldown_scope
+                    elif candidate.health == "healthy":
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
@@ -1142,10 +1231,13 @@ class EligibilityLadder:
             # Only credential-pool exhaustion or account failures cool the whole
             # pool (SH-1). A bad model id, a 400 or a timeout is about this route
             # and must not block healthy sibling models on the same credential.
-            if failure.category in POOL_COOLDOWN_CATEGORIES:
+            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
                 self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
             self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-        if failure.scope == "provider":
+        if failure.scope == "provider" and failure.category not in POOL_COOLDOWN_CATEGORIES:
+            # Credential failures already have a canonical pool blocker above.
+            # A second provider blocker would spread a FREE-pool failure onto
+            # unrelated pools owned by the same provider (e.g. OpenRouter).
             raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
             provider = resolve_provider(raw_provider) if raw_provider else raw_provider
             if not provider:
@@ -1153,8 +1245,44 @@ class EligibilityLadder:
             self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
         self._persist()
 
+    def record_session_failure(
+        self,
+        route_id: str,
+        failure: FailureClassification,
+        terminal: WorkerTerminal,
+        *,
+        now: datetime,
+        provenance: str,
+    ) -> Any:
+        """Project real session failure into the same cache subsequent runs read."""
+        from verdict.orchestration.session_feedback import record_worker_failure
+
+        cache = getattr(self, "_health_cache", None)
+        if cache is None:
+            return None
+        raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
+        provider = resolve_provider(raw_provider) if raw_provider else route_id.split("/", 1)[0]
+        return record_worker_failure(
+            cache,
+            failure=failure,
+            terminal=terminal,
+            route_id=route_id,
+            provider_id=provider,
+            pool=pool_of(route_id),
+            now=now,
+            provenance=provenance,
+        )
+
     def record_success(self, route_id: str, *, now: datetime) -> None:
-        self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)
+        pool_key = f"pool:{pool_of(route_id)}"
+        entry = self._state["cooldowns"].get(pool_key)
+        if not (
+            isinstance(entry, dict)
+            and entry.get("category") in POOL_COOLDOWN_CATEGORIES
+            and self._active_cooldown(pool_key, now) is not None
+        ):
+            self._state["cooldowns"].pop(pool_key, None)
+        # Exact-route success supersedes a model-local throttle, not pool capacity.
         self._state["cooldowns"].pop(f"route:{route_id}", None)
         self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
         self._persist()

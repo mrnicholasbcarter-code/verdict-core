@@ -35,7 +35,7 @@ def _fake_fetch_inventory(gateway: str, *, api_key: object, timeout: float = 30)
     return FAKE_ROWS
 
 
-def _fake_fetch_connections(gateway: str, *, api_key: object, timeout: float = 30) -> list:
+def _fake_fetch_connections(gateway: str, *, api_key: object, **_: object) -> list:
     return FAKE_CONNECTIONS
 
 

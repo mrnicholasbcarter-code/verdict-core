@@ -46,9 +46,10 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--graph GRAPH` | Use a pre-built WorkGraph JSON instead of frontier planning |
 | `--resume RUN_ID` | Resume a run from durable state |
 | `--runs-dir RUNS_DIR` | Run directory root |
+| `--constraints-file PATH` | UTF-8 text (at most 8 KiB) added to the planner prompt under `CONSTRAINTS:`, for example lessons from an earlier run. `run_started` records only its SHA-256 |
 | `--gateway GATEWAY` | Gateway endpoint or identifier |
 | `--max-parallel MAX_PARALLEL` | Maximum parallel workers |
-| `--attempt-timeout ATTEMPT_TIMEOUT` | Per-attempt timeout |
+| `--attempt-timeout ATTEMPT_TIMEOUT` | Seconds per worker attempt (default and maximum: 900; larger values are reduced to 900) |
 | `--run-deadline RUN_DEADLINE` | Overall run deadline |
 | `--prefer PREFER` | Comma-separated provider preference among subscription capacity (ranking policy, not a fallback chain) |
 | `--scope SCOPE` | Comma-separated allowed route prefixes; empty means all |
@@ -112,7 +113,39 @@ verdict supervise --run-id RUN_ID --runs-dir .verdict/runs
 | `--poll-seconds POLL_SECONDS` | Liveness poll interval |
 | `--max-restarts MAX_RESTARTS` | Controller restart budget |
 | `--total-deadline-seconds TOTAL_DEADLINE_SECONDS` | Hard deadline |
+| `--cgroup-root PATH\|auto` | Delegated cgroup-v2 subtree for worker containment (default: `$VERDICT_CONTROLLER_CGROUP_ROOT`). `auto` uses this process's own delegated scope, e.g. under `systemd-run --user --scope -p Delegate=yes`. Without a root the command exits 2 before creating run state |
 | `orchestrate_args` | Arguments after `--` passed to orchestration |
+
+### `verdict improve` — Measured improvement cycles
+
+Runs a supervised orchestrate run, measures it from its receipt, and records a
+lesson the next cycle passes to the planner ([ADR-038](adr/ADR-038-improvement-cycle.md)).
+
+```bash
+systemd-run --user --scope -p Delegate=yes \
+  verdict improve --cycles 3 --cgroup-root auto --runs-dir runs --cycles-dir cycles \
+  "Add a farewell() function with a test" -- --scope cc/,agy/ --capacity subscription
+verdict improve --verify --runs-dir runs --cycles-dir cycles
+```
+
+| Flag | Description |
+|---|---|
+| `goal` | Goal for the orchestrate run (not needed with `--verify`) |
+| `--once` / `--cycles N` / `--verify` | One cycle; up to N cycles (at most 5); or recompute every measured cycle from its run receipt and run nothing |
+| `--repo REPO` | Git repository to change (default: `.`) |
+| `--runs-dir RUNS_DIR` | Directory for run directories (required) |
+| `--cycles-dir CYCLES_DIR` | Directory for the cycle log (required) |
+| `--cgroup-root PATH\|auto` | As for `verdict supervise` |
+| `--total-deadline-seconds SECONDS` | Supervisor deadline per run |
+| `orchestrate_args` | Arguments after `--` passed to orchestrate; `--runs-dir` and `--resume` are set by the supervisor and `--constraints-file` by `improve`, so they are refused here |
+
+A cycle is **MET** only when `completion_verdict` is COMPLETE and the
+`validation_passed`, `independent_review` and `receipt_integrity` claims are
+VERIFIED. A cycle with the same goal, repo HEAD, arguments, lessons and Verdict
+build as an earlier NOT_MET cycle is refused before anything runs, unless that
+cycle recorded a quota reset that has since passed. In `--cycles` mode a reset
+within 15 minutes is waited for once and the run is retried. Lessons that need the operator (environment, review independence) are
+reported and never sent to the planner. Exit 0 only when the last cycle is MET.
 
 ### `verdict watch` — View orchestration state
 

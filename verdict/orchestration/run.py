@@ -16,6 +16,7 @@ Controller survival (minimal demo-safe slice):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.availability import opaque_connection_token
+from verdict.context_pack import ContextPlan
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassifier,
@@ -46,6 +48,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
+from verdict.orchestration.worker_context import WorkerPrompt
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalProvider
@@ -194,6 +197,8 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
             "lastErrorAt",
             "quota_percent",
             "quotaRemainingPct",
+            "quota_models",
+            "quota_reset_at",
             "quota_window",
             "quotaWindow",
             "updatedAt",
@@ -227,14 +232,78 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
 
 
 def fetch_connections(
-    gateway: str, *, api_key: str | None, timeout: float = 30
+    gateway: str, *, api_key: str | None, timeout: float = 30, include_quota: bool = False
 ) -> list[dict[str, Any]]:
     if "VERDICT_CONNECTIONS_SNAPSHOT" in os.environ:
         from verdict.orchestration.connections_snapshot import read_connections_snapshot
 
         return read_connections_snapshot(Path(os.environ["VERDICT_CONNECTIONS_SNAPSHOT"]))
     raw = _get_json(gateway.rstrip("/") + "/api/providers", api_key=api_key, timeout=timeout)
+    rows = raw.get("connections") if isinstance(raw, Mapping) else raw
+    if include_quota and isinstance(rows, list):
+        attach_quota(rows, gateway, api_key=api_key, timeout=min(timeout, 10))
     return sanitize_connections(raw)
+
+
+def quota_from_usage(body: Any) -> dict[str, Any]:
+    """Remaining-quota evidence from one OmniRoute ``/api/usage/{connection}`` body.
+
+    Account windows (5h, weekly, ...) collapse to the scarcest remaining percent.
+    Windows named after a model (Antigravity reports per-model quotas) are kept
+    per model. Unlimited or unreadable windows are ignored, never guessed.
+    """
+    quotas = body.get("quotas") if isinstance(body, Mapping) else None
+    if not isinstance(quotas, Mapping):
+        return {}
+    account: list[tuple[float, str | None]] = []
+    models: dict[str, float] = {}
+    for name, window in quotas.items():
+        if not isinstance(window, Mapping) or window.get("unlimited"):
+            continue
+        total, remaining = window.get("total"), window.get("remaining")
+        if isinstance(window.get("remainingPercentage"), (int, float)):
+            pct = float(window["remainingPercentage"])
+        elif isinstance(total, (int, float)) and total > 0 and isinstance(remaining, (int, float)):
+            pct = 100.0 * remaining / total
+        else:
+            continue
+        pct = round(min(100.0, max(0.0, pct)), 1)
+        reset = window.get("resetAt") if isinstance(window.get("resetAt"), str) else None
+        if "remaining" not in window:
+            # Account windows (Claude, Codex) carry an absolute remaining count;
+            # Antigravity's per-model windows report only a fraction.
+            models[str(name)] = pct
+        else:
+            account.append((pct, reset))
+    evidence: dict[str, Any] = {}
+    if account:
+        evidence["quota_percent"], evidence["quota_reset_at"] = min(account, key=lambda w: w[0])
+    if models:
+        evidence["quota_models"] = models
+    return evidence
+
+
+def attach_quota(rows: list[Any], gateway: str, *, api_key: str | None, timeout: float) -> None:
+    """Add remaining-quota evidence to active OAuth (subscription) connections in place."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("isActive")
+        and str(row.get("authType", "")).lower() == "oauth"
+        and isinstance(row.get("id"), str)
+    ]
+
+    def fetch(row: dict[str, Any]) -> None:
+        url = f"{gateway.rstrip('/')}/api/usage/{urllib.parse.quote(row['id'], safe='')}"
+        # Quota evidence is optional; selection keeps its other gates without it.
+        with contextlib.suppress(OSError, ValueError, OrchestrationError):
+            row.update(quota_from_usage(_get_json(url, api_key=api_key, timeout=timeout)))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(fetch, targets))
 
 
 class _Progress:
@@ -294,6 +363,7 @@ async def plan_with_failover(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     events: Any,
+    planner_executor: WorkerExecutor | None = None,
     run_dir: Path | None = None,
     max_attempts: int = 6,
     timeout_seconds: float = 600,
@@ -376,7 +446,7 @@ async def plan_with_failover(
             graph, terminal = await FrontierPlanner().plan(
                 goal,
                 repo=repo,
-                executor=executor,
+                executor=planner_executor or executor,
                 route_id=choice.route_id,
                 timeout_seconds=timeout_seconds,
                 constraints=constraints,
@@ -406,12 +476,44 @@ async def plan_with_failover(
                 detail=str(exc)[:300],
                 fault_injected=source.session_ref.startswith("fault-injected"),
             )
+            if failure.action == "BLOCK":
+                raise OrchestrationError(
+                    f"planning blocked by local controller failure: {failure.category}: "
+                    f"{failure.evidence}"
+                ) from exc
+            feedback = getattr(selector, "record_session_failure", None)
+            if callable(feedback):
+                try:
+                    recorded = feedback(
+                        choice.route_id,
+                        failure,
+                        source,
+                        now=now(),
+                        provenance=f"{run_dir.name if run_dir else 'planner'}:plan:a{attempt}",
+                    )
+                    events.emit(
+                        "controller",
+                        route_id=choice.route_id,
+                        phase="session_feedback",
+                        recorded=bool(recorded and recorded.recorded),
+                        reason=recorded.reason if recorded is not None else "no_health_cache",
+                    )
+                except Exception as feedback_error:
+                    events.emit(
+                        "controller",
+                        route_id=choice.route_id,
+                        recorded=False,
+                        phase="session_feedback",
+                        reason=f"persistence_error:{type(feedback_error).__name__}",
+                    )
             if failure.scope != "none" and failure.cooldown_seconds > 0:
                 selector.record_failure(choice.route_id, failure, now=now())
                 until = datetime.fromtimestamp(
                     now().timestamp() + failure.cooldown_seconds, timezone.utc
                 )
-                pooled = failure.category in POOL_COOLDOWN_CATEGORIES
+                pooled = (
+                    failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
+                )
                 events.emit(
                     "cooldown",
                     key=pool_of(choice.route_id) if pooled else choice.route_id,
@@ -420,7 +522,7 @@ async def plan_with_failover(
                     until=until.isoformat(timespec="seconds"),
                 )
             tried.add(choice.route_id)
-            if failure.category in POOL_COOLDOWN_CATEGORIES:
+            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
                 tried_pools.add(pool_of(choice.route_id))
             events.emit(
                 "controller",
@@ -596,6 +698,13 @@ def _update_openspec_progress(
     temp.replace(graph_path)
 
 
+def _blocked_before_plan(run_dir: Path, reason: str) -> GoldenRunResult:
+    """Settle a run that ended before planning finished, with a verifiable receipt."""
+    with contextlib.suppress(Exception):  # receipt evidence must never mask the cause
+        write_run_receipt(run_dir)
+    return GoldenRunResult(run_dir, RunOutcome.BLOCKED.value, reason, run_dir / "receipt.json")
+
+
 async def run_golden_path(
     goal: str,
     *,
@@ -605,6 +714,7 @@ async def run_golden_path(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     reviewer: Reviewer | None,
+    planner_executor: WorkerExecutor | None = None,
     graph: WorkGraph | None = None,
     run_id: str | None = None,
     policy: RuntimePolicy = RuntimePolicy(),
@@ -642,8 +752,13 @@ async def run_golden_path(
                 graph_path.write_text(json.dumps(existing, indent=2))
         except (OSError, ValueError):
             pass  # Existing graph validation below fails closed as before.
-    # BOD-188: record executor identity for harness-independence proof
-    _executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    # BOD-188: record executor identity for harness-independence proof.
+    # Planning can now use a distinct answer-only backend from worker dispatch.
+    _worker_executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    _planner_executor_for_event = planner_executor or executor
+    _planner_executor_identity = getattr(
+        _planner_executor_for_event, "__class__", type(_planner_executor_for_event)
+    ).__name__
     _executor_labels: dict[str, str] = {
         "DirectGatewayExecutor": "direct-gateway",
         "FaultInjectingExecutor": "fault-injecting",
@@ -651,11 +766,25 @@ async def run_golden_path(
         "PrimeHeadlessExecutor": "prime-headless",
         "ScriptedExecutor": "scripted",
     }
+    _worker_backend = _executor_labels.get(_worker_executor_identity, _worker_executor_identity)
+    _planner_backend = _executor_labels.get(_planner_executor_identity, _planner_executor_identity)
     # BOD-225: capture once; resumed starts keep the original producer. Legacy
     # runs without producer remain legacy, even after an upgrade of Verdict.
     prior_started = next((e for e in log.read() if e.type == "run_started"), None)
     producer = capture_producer() if prior_started is None else producer_from_started(prior_started)
     producer_kwargs: dict[str, Any] = {"producer": producer} if producer is not None else {}
+    constraints_digest = hashlib.sha256(constraints.encode()).hexdigest() if constraints else ""
+    if prior_started is not None:
+        # A resumed run may plan again, so it must use the constraints it started with.
+        original = str(prior_started.data.get("constraints_sha256") or "")
+        if constraints_digest != original:
+            reason = "resume constraints differ from the constraints the run was planned under"
+            events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=reason)
+            _otel_root.end()
+            return GoldenRunResult(
+                run_dir, RunOutcome.BLOCKED.value, reason, run_dir / "receipt.json"
+            )
+        constraints_digest = original
     events.emit(
         "run_started",
         run_id=run_dir.name,
@@ -666,7 +795,9 @@ async def run_golden_path(
         controller_route=os.environ.get("VERDICT_ACTIVE_CONTROLLER_ROUTE", ""),
         controller_generation=os.environ.get("VERDICT_CONTROLLER_GENERATION", ""),
         resumed_nodes=sorted(resumed),
-        executor=_executor_labels.get(_executor_identity, _executor_identity),
+        executor=_worker_backend,
+        worker_backend=_worker_backend,
+        planner_backend=_planner_backend,
         retry_budget={
             "max_attempts_per_node": policy.max_attempts_per_node,
             "max_parallel": policy.max_parallel,
@@ -676,6 +807,8 @@ async def run_golden_path(
         # by the caller (e.g. demo_scenario.py); absent ("") for live runs.
         mode=mode,
         **producer_kwargs,
+        # Digest only: the text itself reaches the planner prompt, not the event log.
+        **({"constraints_sha256": constraints_digest} if constraints_digest else {}),
     )
     if resumed:
         events.emit(
@@ -742,11 +875,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec block malformed: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec block malformed: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec block malformed: {SPEC_CHANGED}"
                     )
 
                 openspec_block = raw_openspec
@@ -766,12 +896,7 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec change_dir or digest missing: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec incomplete: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
-                    )
+                    return _blocked_before_plan(run_dir, f"OpenSpec incomplete: {SPEC_CHANGED}")
 
                 change_dir = Path(change_dir_str)
                 if not change_dir.exists():
@@ -785,11 +910,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec change directory missing: {SPEC_CHANGED}",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec change directory missing: {SPEC_CHANGED}",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec change directory missing: {SPEC_CHANGED}"
                     )
 
                 # Recompute digest from change_dir
@@ -814,11 +936,8 @@ async def run_golden_path(
                         outcome=RunOutcome.BLOCKED.value,
                         reason=f"OpenSpec {SPEC_CHANGED}: digest mismatch (was {persisted_digest[:12]}, now {current_digest[:12]})",
                     )
-                    return GoldenRunResult(
-                        run_dir,
-                        RunOutcome.BLOCKED.value,
-                        f"OpenSpec {SPEC_CHANGED}: digest mismatch",
-                        run_dir / "receipt.json",
+                    return _blocked_before_plan(
+                        run_dir, f"OpenSpec {SPEC_CHANGED}: digest mismatch"
                     )
 
             # Load graph from file only if not provided
@@ -862,9 +981,7 @@ async def run_golden_path(
                 events.emit(
                     "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
                 )
-                return GoldenRunResult(
-                    run_dir, RunOutcome.BLOCKED.value, admission_reason, run_dir / "receipt.json"
-                )
+                return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
@@ -891,6 +1008,7 @@ async def run_golden_path(
                 selector=selector,
                 executor=executor,
                 classifier=classifier,
+                planner_executor=planner_executor,
                 events=events,
                 run_dir=run_dir,
                 constraints=constraints,
@@ -904,9 +1022,7 @@ async def run_golden_path(
         if openspec_block:
             error_graph["openspec"] = openspec_block
         graph_path.write_text(json.dumps(error_graph))
-        return GoldenRunResult(
-            run_dir, RunOutcome.BLOCKED.value, str(exc), run_dir / "receipt.json"
-        )
+        return _blocked_before_plan(run_dir, str(exc))
     graph_data = {**graph.to_dict(), "run_id": run_dir.name}
     if openspec_block:
         graph_data["openspec"] = openspec_block
@@ -962,9 +1078,23 @@ async def run_golden_path(
             )
             events.emit("executor_map_unmatched", unmatched_keys=unmatched)
 
-    def prompt_for(node: WorkNode, cwd: Path, *, context_budget_bytes: int = 60_000) -> str:
+    def prompt_for(
+        node: WorkNode,
+        cwd: Path,
+        *,
+        context_budget_bytes: int = 60_000,
+        context_plan: ContextPlan | None = None,
+        mandatory_suffix: str = "",
+    ) -> WorkerPrompt:
         return hydrate_node_prompt(
-            node, repo=cwd, goal=goal, max_context_bytes=context_budget_bytes
+            node,
+            repo=cwd,
+            goal=goal,
+            max_context_bytes=context_budget_bytes,
+            max_prompt_bytes=context_budget_bytes,
+            context_plan=context_plan,
+            mandatory_suffix=mandatory_suffix,
+            structured=True,
         )
 
     runtime = DagRuntime(

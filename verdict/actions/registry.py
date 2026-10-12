@@ -141,6 +141,14 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.orchestration.tui:follow",
         section="Orchestration",
     ),
+    "improve": LaunchSpec(
+        reason=(
+            "_improve (run_with_supervisor): runs bounded supervised orchestrate "
+            "runs, measuring each and recording lessons; long-running supervisor loop"
+        ),
+        entry="verdict.orchestration.improvement:run_with_supervisor",
+        section="Orchestration",
+    ),
     "supervise": LaunchSpec(
         reason=(
             "dispatch (supervise_run): spawns and restarts an orchestrate "

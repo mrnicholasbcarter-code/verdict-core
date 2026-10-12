@@ -377,6 +377,8 @@ def test_hydrate_node_prompt_excludes_sibling_node_details(tmp_path: Path) -> No
 class _ScriptedExecutor:
     """Fake WorkerExecutor returning scripted terminals in sequence."""
 
+    answer_only_supported = True
+
     def __init__(self, outputs: list[WorkerTerminal]) -> None:
         self._outputs = list(outputs)
         self.calls: list[str] = []
@@ -400,6 +402,62 @@ async def test_frontier_planner_success_first_try(tmp_path: Path) -> None:
     assert isinstance(graph, WorkGraph)
     assert terminal.ok
     assert len(executor.calls) == 1
+
+
+class _ToolAwareExecutor(_ScriptedExecutor):
+    """Fake executor that records the ``tools`` keyword of every call."""
+
+    def __init__(self, outputs: list[WorkerTerminal]) -> None:
+        super().__init__(outputs)
+        self.tools: list[bool] = []
+
+    async def run(  # type: ignore[override]
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+    ) -> WorkerTerminal:
+        self.tools.append(tools)
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_plan_and_repair_calls_run_without_tools(tmp_path: Path) -> None:
+    """Planning needs one JSON answer; a tool-enabled planner looped until timeout."""
+    repo = _init_git_repo(tmp_path)
+    executor = _ToolAwareExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json at all"),
+            WorkerTerminal(ok=True, output=_VALID_NODES_JSON),
+        ]
+    )
+    await FrontierPlanner().plan(
+        "ship it", repo=repo, executor=executor, route_id="cc/claude-sonnet-5"
+    )
+    assert executor.tools == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_refuses_default_prime_headless(tmp_path: Path) -> None:
+    """Prime headless is worker-only unless a legacy answer-only flag is explicit."""
+    import stat
+
+    from verdict.orchestration.executors import PrimeHeadlessExecutor
+
+    route = "cc/claude-sonnet-5"
+    (tmp_path / "repo").mkdir()
+    repo = _init_git_repo(tmp_path / "repo")
+    prime = tmp_path / "fake-prime"
+    prime.write_text("#!/usr/bin/env python3\nraise SystemExit('should not spawn')\n")
+    prime.chmod(prime.stat().st_mode | stat.S_IXUSR)
+
+    with pytest.raises(OrchestrationError, match="direct-gateway"):
+        await FrontierPlanner().plan(
+            "ship it",
+            repo=repo,
+            executor=PrimeHeadlessExecutor(prime_bin=str(prime)),
+            route_id=route,
+            timeout_seconds=30,
+        )
 
 
 @pytest.mark.asyncio
@@ -664,6 +722,112 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
     assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
     cooldown = next(r for r in rows if r["type"] == "cooldown")
     assert (cooldown["scope"], cooldown["key"]) == ("route", "cc/claude-haiku")
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_uses_distinct_planner_executor(tmp_path, monkeypatch):
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    rows = []
+    planner_executor = object()
+    worker_executor = object()
+
+    class Selector:
+        def select(self, req, *, now):
+            return RouteVerdict(
+                "cc/claude-sonnet",
+                "claude",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.SUBSCRIPTION,
+            ), ()
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    async def plan(self, *args, **kwargs):
+        assert kwargs["executor"] is planner_executor
+        return WorkGraph("g", (_impl_node("a"),)), WorkerTerminal(ok=True, model=kwargs["route_id"])
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+    monkeypatch.setattr(FrontierPlanner, "plan", plan)
+    graph = await plan_with_failover(
+        "g",
+        repo=tmp_path,
+        selector=Selector(),
+        executor=worker_executor,
+        planner_executor=planner_executor,
+        classifier=FailureIntelligence(),
+        events=Events(),
+        run_dir=tmp_path / "run",
+    )
+
+    assert graph.nodes[0].node_id == "a"
+    healthy = next(r for r in rows if r["type"] == "controller" and r.get("state") == "HEALTHY")
+    assert healthy["route_id"] == "cc/claude-sonnet"
+
+
+@pytest.mark.asyncio
+async def test_direct_planner_missing_capacity_blocks_explicitly(tmp_path):
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    rows = []
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo = _init_git_repo(repo)
+
+    class Selector:
+        def __init__(self):
+            self.calls = 0
+
+        def select(self, req, *, now):
+            self.calls += 1
+            if self.calls > 1:
+                return None, ()
+            return RouteVerdict(
+                "cc/claude-sonnet",
+                "claude",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.SUBSCRIPTION,
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            rows.append({"type": "record_failure", "route": route, "category": failure.category})
+
+    class DirectPlanner:
+        answer_only_supported = True
+
+        async def run(self, prompt, *, route_id, cwd, timeout_seconds):
+            return WorkerTerminal(ok=False, model=route_id, status_code=429, error="rate limited")
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    with pytest.raises(OrchestrationError, match="planning failed on every eligible"):
+        await plan_with_failover(
+            "g",
+            repo=repo,
+            selector=Selector(),
+            executor=object(),
+            planner_executor=DirectPlanner(),
+            classifier=FailureIntelligence(),
+            events=Events(),
+            run_dir=tmp_path / "run",
+            max_attempts=2,
+        )
+
+    controller = next(r for r in rows if r["type"] == "controller" and r.get("state") == "QUOTA")
+    assert controller["route_id"] == "cc/claude-sonnet"
+    assert next(r for r in rows if r["type"] == "cooldown")["category"] == "rate_limited"
 
 
 @pytest.mark.parametrize("kind", [NodeKind.IMPLEMENT, NodeKind.RESEARCH])

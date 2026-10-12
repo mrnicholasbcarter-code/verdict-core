@@ -111,12 +111,24 @@ def prime_visibility(path: Path | None = None, *, live_rows: Any = None, sync: b
     return HarnessVisibility(visible, source="models.json")
 
 
+class GatewayDiscoveryError(OrchestrationError):
+    """Safe discovery failure with an explicit, conservative restart policy."""
+
+    def __init__(self, endpoint: str, status_code: int | None) -> None:
+        self.status_code = status_code
+        # Authentication and permission failures cannot be repaired by an
+        # unchanged process restart. Other discovery failures retain recovery.
+        self.retryable = status_code not in {401, 403}
+        failure = f"HTTP {status_code}" if status_code is not None else "connection error"
+        super().__init__(
+            f"gateway {endpoint} failed ({failure}); check --gateway and gateway credentials"
+        )
+
+
 def _gateway_fetch_error(endpoint: str, exc: urllib.error.URLError | OSError) -> OrchestrationError:
     """Give actionable endpoint context without exposing request headers or credentials."""
-    failure = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else "connection error"
-    return OrchestrationError(
-        f"gateway {endpoint} failed ({failure}); check --gateway and that the gateway is running"
-    )
+    status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+    return GatewayDiscoveryError(endpoint, status)
 
 
 def build_selector(
@@ -164,7 +176,7 @@ def build_selector(
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/v1/models", exc) from None
     try:
-        connections = fetch_connections(gateway, api_key=key)
+        connections = fetch_connections(gateway, api_key=key, include_quota=True)
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (_state_dir() / "orchestration-health.json")

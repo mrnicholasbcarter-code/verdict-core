@@ -63,6 +63,10 @@ Use `verdict supervise` when the controller itself needs bounded restart and
 resume supervision. See [orchestration golden path](orchestration-golden-path.md) for
 its required arguments and a complete example.
 
+Real worker and planner availability failures feed the shared health cache;
+see [worker-session failure feedback](worker-session-feedback.md). Task and
+verification failures do not mark the provider unhealthy.
+
 ## 4. Treat model inventory as discovery, not proof
 
 OmniRoute is the inventory and execution boundary. A catalog row does not prove

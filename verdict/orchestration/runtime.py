@@ -18,7 +18,10 @@ Isolation guarantees:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
+import os
+import secrets
 import shlex
 import shutil
 import time
@@ -26,8 +29,9 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
+from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.orchestration.candidate_builder import (
     MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
 )
@@ -57,16 +61,30 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
+from verdict.orchestration.controller_operations import (
+    OwnershipError,
+    bounded_executor_call,
+    operation_scope,
+    scrub_fencing_env,
+)
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.salvage import (
+    _MAX_EVIDENCE_PATHS,
+    restore_salvaged_files,
+    salvage_owned_files,
+)
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
+from verdict.orchestration.worker_context import WorkerPrompt
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
 _sleep = asyncio.sleep
+_WORKER_OUTPUT_RESERVE = 1024
+_WORKER_SAFETY_RESERVE = 512
 
 
 class EventSink(Protocol):
@@ -79,11 +97,14 @@ Runner = Callable[[Sequence[str], Path, float], Awaitable[tuple[int, str]]]
 async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
     """Run argv without a shell; kill the process group on timeout."""
     try:
+        child_env = dict(os.environ)
+        scrub_fencing_env(child_env)
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=child_env,
             start_new_session=True,
         )
     except (FileNotFoundError, PermissionError) as exc:
@@ -92,7 +113,6 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         out, _ = await asyncio.wait_for(process.communicate(), timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
         import contextlib
-        import os
         import signal
 
         with contextlib.suppress(ProcessLookupError):
@@ -113,6 +133,7 @@ class RuntimePolicy:
     run_deadline_seconds: float = 3600.0
     require_review: bool = True
     max_review_rounds: int = 2
+    review_timeout_seconds: float = 900.0
     max_cooldown_wait_seconds: float = 120.0
     # BOD-272: REQUIRED_CONTEXT byte budget for a node's worker prompt. After a
     # context-length overflow the next attempt gets a smaller pack (halved, not
@@ -144,6 +165,7 @@ class NodeRun:
     failure_feedback: str = ""
     rehydrated_routes: set[str] = field(default_factory=set)
     excluded_pools: set[str] = field(default_factory=set)
+    selected_context_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +271,15 @@ class Git:
         return await self.head(cwd)
 
 
+def _blocked_report(output: str) -> str:
+    """The worker's ``RESULT: BLOCKED <reason>`` line, first or final; else ""."""
+    lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+    for line in (lines[:1] + lines[-1:]) if lines else []:
+        if line.upper().startswith("RESULT: BLOCKED"):
+            return line
+    return ""
+
+
 class DagRuntime:
     """Execute a validated ``WorkGraph`` to an explicit COMPLETE or BLOCKED result."""
 
@@ -262,7 +293,7 @@ class DagRuntime:
         executor: WorkerExecutor,
         classifier: FailureClassifier,
         events: EventSink,
-        prompt_for: Callable[[WorkNode, Path], str],
+        prompt_for: Callable[..., str | WorkerPrompt],
         reviewer: Reviewer | None = None,
         policy: RuntimePolicy = RuntimePolicy(),
         runner: Runner = subprocess_runner,
@@ -280,6 +311,7 @@ class DagRuntime:
         # node_id -> route_id. Shared with the selector's load callback so concurrent
         # selections spread across routes; reserved at SELECTION time, not dispatch.
         self.inflight: dict[str, str] = inflight if inflight is not None else {}
+        self._run_started_monotonic: float | None = None
         self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
@@ -524,6 +556,7 @@ class DagRuntime:
     # ------------------------------------------------------------------ run
     async def run(self) -> RunResult:
         started = time.monotonic()
+        self._run_started_monotonic = started
         self._base_sha = await self.git.head() if self.base_ref == "HEAD" else self.base_ref
         self.events.emit(
             "topology",
@@ -739,6 +772,7 @@ class DagRuntime:
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id
+            run.selected_context_window = choice.context_window
             self.events.emit(
                 "eligibility",
                 node_id,
@@ -860,8 +894,20 @@ class DagRuntime:
                 return
             self._set(run, NodeState.PLANNED, reassign=True)
 
-    async def _run_repo_gates(self, run: NodeRun, worktree: Path) -> str | None:
-        """Run every declared gate, retaining the first failure with bounded evidence."""
+    async def _run_repo_gates(
+        self,
+        run: NodeRun,
+        worktree: Path,
+        *,
+        worker_fixable_only: bool = False,
+        failed: list[str] | None = None,
+    ) -> str | None:
+        """Run every declared gate, retaining the first failure with bounded evidence.
+
+        ``worker_fixable_only`` (implement-node validation) reports only real check
+        failures: configuration errors and missing executables are left for the
+        integration barrier, since the node's worker cannot fix them.
+        """
         node_id = run.node.node_id
         if not self.policy.run_repo_gates:
             self.events.emit(
@@ -880,7 +926,7 @@ class DagRuntime:
                 note="discovery failed",
                 error=config_reason,
             )
-            return config_reason
+            return None if worker_fixable_only else config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
         reason: str | None = None
         for gate in gates:
@@ -904,8 +950,12 @@ class DagRuntime:
                 source=gate.source,
                 tail=out[-600:],
             )
-            if code != 0 and reason is None:
-                reason = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+            fixable = code not in (126, 127) or not worker_fixable_only
+            if code != 0 and fixable:
+                message = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+                reason = reason or message
+                if failed is not None:
+                    failed.append(message)
         return reason
 
     async def _integrate_node(self, run: NodeRun) -> None:
@@ -1008,16 +1058,63 @@ class DagRuntime:
 
     def _hydrator_takes_budget(self) -> bool:
         try:
-            return "context_budget_bytes" in inspect.signature(self.prompt_for).parameters
+            params = inspect.signature(self.prompt_for).parameters
         except (TypeError, ValueError):
             return False
+        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()) or any(
+            key in params and params[key].kind != inspect.Parameter.POSITIONAL_ONLY
+            for key in ("context_budget_bytes", "context_plan")
+        )
 
-    def _prompt(self, node: WorkNode, worktree: Path, budget: int) -> str:
-        """Hydrate the node prompt; pass the byte budget when the hydrator takes one."""
-        if self._hydrator_takes_budget():
-            hydrate: Any = self.prompt_for
-            return str(hydrate(node, worktree, context_budget_bytes=budget))
-        return self.prompt_for(node, worktree)
+    def _context_plan(self, run: NodeRun, budget: int) -> ContextPlan:
+        # RouteVerdict already owns this fact. It is a conservative catalog
+        # ceiling: the public contract does not distinguish input-only from
+        # total windows. Never infer the source shape or query private inventory.
+        output, safety = _WORKER_OUTPUT_RESERVE, _WORKER_SAFETY_RESERVE
+        window = run.selected_context_window
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+            window = None
+        total = min(window if window is not None else 8192, max(0, budget // 4) + output + safety)
+        return ContextPlan(
+            plan_id=f"worker:{run.node.node_id}:a{run.attempt}",
+            candidate_id=run.route_id,
+            # ContextPlan requires one remaining input token. Clamp reserves
+            # only to represent a tiny ceiling, not to waive the runtime's
+            # reserve policy. The event records the shortfall and rejects input.
+            token_budget=max(1, total),
+            output_token_reserve=min(output, max(0, total - 1)),
+            tool_token_reserve=min(safety, max(0, total - output - 1)),
+            candidate_context_window=window,
+        )
+
+    def _prompt(
+        self, node: WorkNode, worktree: Path, budget: int, plan: ContextPlan, suffix: str
+    ) -> str | WorkerPrompt:
+        """Pass only supported keywords; legacy strings have unknown provenance."""
+        values: dict[str, Any] = {
+            "context_budget_bytes": budget,
+            "context_plan": plan,
+            "mandatory_suffix": suffix,
+        }
+        params: Mapping[str, inspect.Parameter]
+        try:
+            params = inspect.signature(self.prompt_for).parameters
+        except (TypeError, ValueError):
+            params = {}
+        arbitrary = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs = {
+            k: v
+            for k, v in values.items()
+            if arbitrary or (k in params and params[k].kind != inspect.Parameter.POSITIONAL_ONLY)
+        }
+        result = self.prompt_for(node, worktree, **kwargs)
+        if "mandatory_suffix" not in kwargs and suffix:
+            if isinstance(result, WorkerPrompt):
+                # Metadata is no longer authoritative after a foreign hydrator
+                # omitted retry instructions. Report unknown sources, not a lie.
+                return result.text + suffix
+            return result + suffix
+        return result
 
     def _repack(self, run: NodeRun) -> bool:
         """Halve the node's context budget after an overflow. False once at the floor."""
@@ -1058,6 +1155,41 @@ class DagRuntime:
             self._set(run, NodeState.ADMITTED)
             base = await self._node_base(node)
             await self.git.add_worktree(worktree, branch, base)
+            # BOD-308: restore salvaged partial work from a previous attempt.
+            if run.attempt > 1 and run.node.owned_files:
+                salvage_dir = self.run_dir / "salvage" / run.node.node_id
+                restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                if restore.restored or restore.error:
+                    restored_proj = list(restore.restored[:_MAX_EVIDENCE_PATHS])
+                    skipped_proj = list(restore.skipped[:_MAX_EVIDENCE_PATHS])
+                    restore_truncated = (
+                        len(restore.restored) > _MAX_EVIDENCE_PATHS
+                        or len(restore.skipped) > _MAX_EVIDENCE_PATHS
+                    )
+                    self.events.emit(
+                        "restore",
+                        node.node_id,
+                        restored=restored_proj,
+                        restored_count=len(restore.restored),
+                        skipped=skipped_proj,
+                        total_bytes=restore.total_bytes,
+                        attempt=run.attempt,
+                        evidence_truncated=restore_truncated,
+                        error=restore.error,
+                    )
+                    run.history.append(
+                        {
+                            "attempt": run.attempt,
+                            "route_id": run.route_id,
+                            "outcome": "restore",
+                            "restored": restored_proj,
+                            "restored_count": len(restore.restored),
+                            "skipped": skipped_proj,
+                            "total_bytes": restore.total_bytes,
+                            "evidence_truncated": restore_truncated,
+                            "error": restore.error,
+                        }
+                    )
             self.inflight[node.node_id] = run.route_id
             try:
                 self._set(run, NodeState.DISPATCHED)
@@ -1073,7 +1205,8 @@ class DagRuntime:
                 )
                 self._set(run, NodeState.RUNNING)
                 budget = run.context_budget or self.policy.context_budget_bytes
-                prompt = self._prompt(node, worktree, budget)
+                plan = self._context_plan(run, budget)
+                suffix = ""
                 if run.failure_feedback:
                     ownership = run.failures[-1].category == "ownership_violation"
                     header = (
@@ -1081,93 +1214,166 @@ class DagRuntime:
                         if ownership
                         else "PREVIOUS_ATTEMPT_FAILED_VERIFICATION"
                     )
-                    prompt += (
+                    suffix = (
                         f"\n\n{header}:\n"
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
-                prompt_bytes = len(prompt.encode())
+                hydrated = self._prompt(node, worktree, budget, plan, suffix)
+                prompt = hydrated.text if isinstance(hydrated, WorkerPrompt) else hydrated
+                evidence = (
+                    hydrated.evidence()
+                    if isinstance(hydrated, WorkerPrompt)
+                    else {
+                        "sources": [],
+                        "sources_status": "unknown_legacy_callback",
+                        "budget_source": "candidate_plan"
+                        if plan.candidate_context_window is not None
+                        else "conservative_unknown_candidate",
+                        "omissions": ["legacy_callback_pack_provenance_unavailable"],
+                    }
+                )
+                input_limit = plan.input_token_budget
+                if plan.candidate_context_window is not None:
+                    input_limit = max(
+                        0,
+                        min(
+                            input_limit,
+                            plan.candidate_context_window
+                            - _WORKER_OUTPUT_RESERVE
+                            - _WORKER_SAFETY_RESERVE,
+                        ),
+                    )
+                estimated = estimate_tokens(prompt)
+                fits = estimated <= input_limit and len(prompt.encode()) <= budget
                 self.events.emit(
                     "hydrate",
                     node.node_id,
                     context_files=list(node.required_context),
-                    prompt_bytes=prompt_bytes,
-                    truncated="[truncated" in prompt.lower(),
+                    prompt_bytes=len(prompt.encode()),
+                    # A plain-string callback has no pack provenance; only its own
+                    # truncation marker shows lost content.
+                    truncated=bool(evidence["omissions"])
+                    if isinstance(hydrated, WorkerPrompt)
+                    else "[truncated" in prompt.lower(),
                     budget_bytes=budget,
-                    sources=_hydrate_sources(node.required_context, worktree, budget),
+                    route_id=run.route_id,
+                    context_plan=plan.to_dict(),
+                    input_token_budget=input_limit,
+                    reserve_policy={
+                        "output_tokens": _WORKER_OUTPUT_RESERVE,
+                        "safety_tokens": _WORKER_SAFETY_RESERVE,
+                        "shortfall_tokens": _WORKER_OUTPUT_RESERVE
+                        + _WORKER_SAFETY_RESERVE
+                        - plan.output_token_reserve
+                        - plan.tool_token_reserve,
+                    },
+                    prompt_tokens_estimated=estimated,
+                    prompt_tokens_measured=None,
+                    tokenizer="unknown:offline_four_char_estimate",
+                    estimated_fit=fits,
                     compression="not_performed",
+                    **evidence,
                 )
-                terminal = await self._execute(prompt, run.route_id, worktree)
+                if not fits:
+                    # This is a local input failure, not admission or provider
+                    # health. Do not launch or let transport classification cool
+                    # a route for mandatory instructions that cannot fit.
+                    reason = "context_input_rejected: full prompt exceeds conservative input budget"
+                    terminal = WorkerTerminal(ok=False, error=reason)
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "context_input_rejected", "FAIL_CLOSED", 0, "none", reason
+                        ),
+                    )
+                    run.reason = reason
+                    self._set(run, NodeState.BLOCKED, reason=reason)
+                    await self.git.remove_worktree(worktree)
+                    return True  # attempt settled locally; do not reselect
+                terminal = await self._execute(
+                    prompt, run.route_id, worktree, node_id=node.node_id, attempt=run.attempt
+                )
             finally:
                 self.inflight.pop(node.node_id, None)
-            self.events.emit(
-                "terminal",
-                node.node_id,
-                ok=terminal.ok,
-                route_id=run.route_id,
-                reported_model=terminal.model,
-                # Empty is explicitly unknown for custom adapters; never legacy inference.
-                executor_kind=terminal.executor_kind,
-                harness=terminal.harness,
-                duration_seconds=round(terminal.duration_seconds, 2),
-                session_ref=terminal.session_ref,
-                stop_reason=terminal.stop_reason,
-                error=terminal.error,
-                attempt=run.attempt,
-                fault_injected=terminal.executor_kind == "fault-injected",
-                **(
-                    {
-                        "usage": {
-                            "input_tokens": terminal.usage.input_tokens,
-                            "output_tokens": terminal.usage.output_tokens,
-                            "cost_usd": terminal.usage.cost_usd,
-                            "tokens_source": terminal.usage.tokens_source,
-                            "turns": terminal.usage.turns,
-                        }
-                    }
-                    if terminal.usage is not None
-                    else ({"usage_missing": True} if terminal.ok else {})
-                ),
-            )
-            self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
-            if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
-                terminal = WorkerTerminal(
-                    ok=False,
-                    output=terminal.output,
-                    model=terminal.model,
-                    error="worker_blocked: " + terminal.output.strip()[:200],
-                    session_ref=terminal.session_ref,
+            try:
+                self.events.emit(
+                    "terminal",
+                    node.node_id,
+                    ok=terminal.ok,
+                    route_id=run.route_id,
+                    reported_model=terminal.model,
+                    # Empty is explicitly unknown for custom adapters; never legacy inference.
                     executor_kind=terminal.executor_kind,
                     harness=terminal.harness,
+                    duration_seconds=round(terminal.duration_seconds, 2),
+                    session_ref=terminal.session_ref,
+                    stop_reason=terminal.stop_reason,
+                    error=terminal.error,
+                    attempt=run.attempt,
+                    fault_injected=terminal.executor_kind == "fault-injected",
+                    **(
+                        {
+                            "usage": {
+                                "input_tokens": terminal.usage.input_tokens,
+                                "output_tokens": terminal.usage.output_tokens,
+                                "cost_usd": terminal.usage.cost_usd,
+                                "tokens_source": terminal.usage.tokens_source,
+                                "turns": terminal.usage.turns,
+                            }
+                        }
+                        if terminal.usage is not None
+                        else ({"usage_missing": True} if terminal.ok else {})
+                    ),
                 )
-            if not terminal.ok or not terminal.output.strip():
-                return await self._fail(run, terminal, failures, worktree)
-            self._set(run, NodeState.TERMINAL_SUCCESS)
-            verdict = await self._validate(run, worktree, base)
-            if verdict is not None:
-                failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
-                return await self._fail(run, failed, failures, worktree, validated=True)
-            run.commit = await self.git.commit_all(
-                worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
-            )
-            # The commit is durable on its branch; the checkout is no longer needed.
-            await self.git.remove_worktree(worktree)
-            self.selector.record_success(run.route_id, now=self.now())
-            run.history.append(
-                {
-                    "attempt": run.attempt,
-                    "route_id": run.route_id,
-                    "outcome": "validated",
-                    "commit": run.commit,
-                }
-            )
-            self._set(run, NodeState.VALIDATED, commit=run.commit)
-            return True
+                self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
+                blocked_line = _blocked_report(terminal.output) if terminal.ok else ""
+                if blocked_line:
+                    terminal = WorkerTerminal(
+                        ok=False,
+                        output=terminal.output,
+                        model=terminal.model,
+                        error="worker_blocked: " + blocked_line[:200],
+                        session_ref=terminal.session_ref,
+                        executor_kind=terminal.executor_kind,
+                        harness=terminal.harness,
+                    )
+                if not terminal.ok or not terminal.output.strip():
+                    return await self._fail(run, terminal, failures, worktree)
+                self._set(run, NodeState.TERMINAL_SUCCESS)
+                verdict = await self._validate(run, worktree, base)
+                if verdict is not None:
+                    failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    return await self._fail(run, failed, failures, worktree, validated=True)
+                run.commit = await self.git.commit_all(
+                    worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
+                )
+                # The commit is durable on its branch; the checkout is no longer needed.
+                await self.git.remove_worktree(worktree)
+                self.selector.record_success(run.route_id, now=self.now())
+                run.history.append(
+                    {
+                        "attempt": run.attempt,
+                        "route_id": run.route_id,
+                        "outcome": "validated",
+                        "commit": run.commit,
+                    }
+                )
+                self._set(run, NodeState.VALIDATED, commit=run.commit)
+                return True
+            finally:
+                if worktree.exists():
+                    await self.git.remove_worktree(worktree)
 
     def _save_attempt(
         self, node_id: str, attempt: int, route_id: str, terminal: WorkerTerminal
     ) -> None:
         """Durable per-attempt evidence (sanitized by the executor); never fatal."""
+        if terminal.executor_kind == "fault-injected":
+            return
+
         import json
 
         try:
@@ -1198,19 +1404,25 @@ class DagRuntime:
         except OSError:
             pass
 
-    async def _execute(self, prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+    async def _execute(
+        self, prompt: str, route_id: str, cwd: Path, *, node_id: str, attempt: int
+    ) -> WorkerTerminal:
+        timeout_seconds = min(float(self.policy.attempt_timeout_seconds), 900.0)
         try:
-            return await asyncio.wait_for(
-                self.executor.run(
-                    prompt,
-                    route_id=route_id,
-                    cwd=cwd,
-                    timeout_seconds=self.policy.attempt_timeout_seconds,
-                ),
-                self.policy.attempt_timeout_seconds + 30,
+            return await bounded_executor_call(
+                self.executor,
+                prompt,
+                route_id=route_id,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                run_dir=self.run_dir,
+                phase="worker",
+                attempt_id=f"{node_id}-a{attempt}",
             )
-        except asyncio.TimeoutError:
-            return WorkerTerminal(ok=False, model=route_id, error="timeout (runtime watchdog)")
+        except OwnershipError as exc:
+            return WorkerTerminal(
+                ok=False, model=route_id, error=f"ownership_refused: {exc}", status_code=125
+            )
         except Exception as exc:  # executor bugs must not unwind the controller
             return WorkerTerminal(
                 ok=False, model=route_id, error=f"transport: {type(exc).__name__}: {exc}"
@@ -1242,9 +1454,36 @@ class DagRuntime:
             fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
         )
+        feedback = getattr(self.selector, "record_session_failure", None)
+        if callable(feedback):
+            try:
+                recorded = feedback(
+                    run.route_id,
+                    failure,
+                    terminal,
+                    now=self.now(),
+                    provenance=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
+                )
+                self.events.emit(
+                    "controller",
+                    run.node.node_id,
+                    route_id=run.route_id,
+                    phase="session_feedback",
+                    recorded=bool(recorded and recorded.recorded),
+                    reason=recorded.reason if recorded is not None else "no_health_cache",
+                )
+            except Exception as exc:
+                self.events.emit(
+                    "controller",
+                    run.node.node_id,
+                    route_id=run.route_id,
+                    recorded=False,
+                    phase="session_feedback",
+                    reason=f"persistence_error:{type(exc).__name__}",
+                )
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
-            pooled = failure.category in POOL_COOLDOWN_CATEGORIES
+            pooled = failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
             key = pool_of(run.route_id) if pooled else run.route_id
             until = datetime.fromtimestamp(
                 self.now().timestamp() + failure.cooldown_seconds, timezone.utc
@@ -1275,8 +1514,59 @@ class DagRuntime:
         *,
         validated: bool = False,
     ) -> bool:
-        self._record_failure(run, terminal, failures, validated=validated)
-        await self.git.remove_worktree(worktree)
+        try:
+            self._record_failure(run, terminal, failures, validated=validated)
+            # BOD-308: salvage owned partial work before discarding the worktree.
+            if (
+                run.node.owned_files
+                and worktree.exists()
+                and terminal.executor_kind != "fault-injected"
+            ):
+                salvage_dir = self.run_dir / "salvage" / run.node.node_id
+                changed = await self.git.changed_files(worktree, await self._node_base(run.node))
+                result = salvage_owned_files(
+                    worktree,
+                    run.node.owned_files,
+                    salvage_dir,
+                    changed_files=changed,
+                    replace_existing=True,
+                )
+                if result.saved or result.skipped or result.error:
+                    saved_proj = list(result.saved[:_MAX_EVIDENCE_PATHS])
+                    skipped_proj = list(result.skipped[:_MAX_EVIDENCE_PATHS])
+                    evidence_truncated = (
+                        result.evidence_truncated
+                        or len(result.saved) > _MAX_EVIDENCE_PATHS
+                        or len(result.skipped) > _MAX_EVIDENCE_PATHS
+                    )
+                    self.events.emit(
+                        "salvage",
+                        run.node.node_id,
+                        saved=saved_proj,
+                        saved_count=len(result.saved),
+                        skipped=skipped_proj,
+                        files=list(result.files),
+                        evidence_truncated=evidence_truncated,
+                        total_bytes=result.total_bytes,
+                        attempt=run.attempt,
+                        error=result.error,
+                    )
+                    run.history.append(
+                        {
+                            "attempt": run.attempt,
+                            "route_id": run.route_id,
+                            "outcome": "salvage",
+                            "saved": saved_proj,
+                            "saved_count": len(result.saved),
+                            "skipped": skipped_proj,
+                            "files": list(result.files),
+                            "evidence_truncated": evidence_truncated,
+                            "total_bytes": result.total_bytes,
+                            "error": result.error,
+                        }
+                    )
+        finally:
+            await self.git.remove_worktree(worktree)
         return False
 
     async def _node_base(self, node: WorkNode) -> str:
@@ -1309,6 +1599,60 @@ class DagRuntime:
             return await self.git.head(path)
         finally:
             await self.git.remove_worktree(path)
+
+    async def _repair_formatting(
+        self, run: NodeRun, worktree: Path, changed: list[str]
+    ) -> list[str]:
+        """Run ``ruff format`` on the node's changed files, then rerun the gates."""
+        root = worktree.resolve()
+        targets = [
+            p
+            for p in changed
+            if not (worktree / p).is_symlink()
+            and (worktree / p).is_file()
+            and (worktree / p).resolve().is_relative_to(root)
+        ]
+        if not targets:
+            return ["repo_gate_failed: ruff-format exit 1: no changed files to format"]
+        try:
+            argv = _resolve_gate_argv(("ruff", "format", *targets), worktree)
+        except FileNotFoundError:
+            return ["repo_gate_failed: ruff-format exit 127: ruff not found"]
+        code, out = await self.runner(argv, worktree, self.policy.verify_timeout_seconds)
+        self.events.emit(
+            "controller",
+            run.node.node_id,
+            state="FORMATTER_APPLIED",
+            command=shlex.join(["ruff", "format", *targets]),
+            files=targets,
+            exit_code=code,
+            tail=out[-300:],
+        )
+        failed: list[str] = []
+        await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+        return failed
+
+    async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
+        """Whether the failing gate named in ``gate_reason`` already fails on ``base``."""
+        name = gate_reason.removeprefix("repo_gate_failed: ").split(" ", 1)[0]
+        tag = secrets.token_hex(4)
+        scratch = self.run_dir / "worktrees" / f"gate-base-{tag}"
+        await self.git.add_worktree(scratch, f"verdict/gate-base-{tag}", base)
+        try:
+            for gate in discover_repo_gates(scratch):
+                if gate.name == name:
+                    resolved = _resolve_gate_argv(gate.argv, scratch)
+                    code, _ = await self.runner(
+                        resolved, scratch, self.policy.verify_timeout_seconds
+                    )
+                    return code != 0
+            return False
+        except (FileNotFoundError, ValueError):
+            return False
+        finally:
+            await self.git.remove_worktree(scratch)
+            with contextlib.suppress(OrchestrationError):
+                await self.git.call("branch", "-D", f"verdict/gate-base-{tag}")
 
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
@@ -1369,6 +1713,24 @@ class DagRuntime:
             )
             if code != 0:
                 return f"verification_failed: exit {code}: {out[-300:]}"
+            if node.kind is NodeKind.IMPLEMENT and changed:
+                # Declared repo gates also run here, so a lint or format slip goes back
+                # to this node's worker as correction feedback instead of blocking the
+                # run at integration, where no worker can fix it (ADR-036 amendment).
+                # Only failures the node introduced count: if a gate already fails on
+                # the node's base, that is existing debt for the integration barrier.
+                # A gate already failing on the base must not hide a different gate
+                # this node newly broke, so every failing gate is checked.
+                failed: list[str] = []
+                await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+                if failed and all(f.startswith("repo_gate_failed: ruff-format ") for f in failed):
+                    # Formatting is mechanical: apply the repo's formatter to the files
+                    # this node changed, record it, and check the gates again. Lint and
+                    # type failures are never auto-fixed; they go back to the worker.
+                    failed = await self._repair_formatting(run, worktree, changed)
+                for gate_reason in failed:
+                    if not await self._gate_fails_on_base(gate_reason, base):
+                        return f"verification_failed: {gate_reason[:600]}"
         else:
             self.events.emit(
                 "verify", node.node_id, ok=True, exit_code=0, command="(none: non-code node)"
@@ -1376,6 +1738,95 @@ class DagRuntime:
         return None
 
     # ------------------------------------------------------------------ conclude
+    def _remaining_run_seconds(self) -> float:
+        now = time.monotonic()
+        remaining = float(self.policy.run_deadline_seconds)
+        if self._run_started_monotonic is not None:
+            remaining = min(remaining, self._run_started_monotonic + remaining - now)
+        controller_deadline = os.environ.get("VERDICT_CONTROLLER_DEADLINE")
+        if controller_deadline:
+            with contextlib.suppress(ValueError):
+                remaining = min(remaining, float(controller_deadline) - now)
+        return remaining
+
+    def _review_timeout_seconds(self) -> float:
+        timeout = min(
+            float(self.policy.review_timeout_seconds), 900.0, self._remaining_run_seconds()
+        )
+        if not (timeout > 0):
+            raise OwnershipError("overall controller deadline spent")
+        return timeout
+
+    async def _review_with_bound(
+        self,
+        *,
+        level: str,
+        round_number: int,
+        repo: Path,
+        base_ref: str,
+        head_ref: str,
+        background: str,
+        exclude_routes: frozenset[str],
+        exclude_families: frozenset[str],
+    ) -> ReviewResult:
+        assert self.reviewer is not None
+        started = time.monotonic()
+        timeout_seconds = self._review_timeout_seconds()
+        attempt_id = f"review-round-{round_number}"
+        with operation_scope(
+            self.run_dir, phase="review", attempt_id=attempt_id, timeout_seconds=timeout_seconds
+        ):
+            try:
+                review = self.reviewer.review
+                supports_timeout = False
+                try:
+                    parameters = inspect.signature(review).parameters
+                    supports_timeout = "timeout_seconds" in parameters or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    pass
+                if supports_timeout:
+                    review_call = cast(Any, review)(
+                        repo=repo,
+                        base_ref=base_ref,
+                        head_ref=head_ref,
+                        background=background,
+                        exclude_routes=exclude_routes,
+                        exclude_families=exclude_families,
+                        timeout_seconds=timeout_seconds,
+                    )
+                else:
+                    review_call = review(
+                        repo=repo,
+                        base_ref=base_ref,
+                        head_ref=head_ref,
+                        background=background,
+                        exclude_routes=exclude_routes,
+                        exclude_families=exclude_families,
+                    )
+                return await asyncio.wait_for(review_call, timeout_seconds)
+            except asyncio.TimeoutError:
+                return ReviewResult(
+                    status="ERROR",
+                    reviewer="unknown",
+                    route_id="",
+                    detail=(
+                        f"review {attempt_id} timed out after {timeout_seconds:g}s "
+                        f"during {level} independence"
+                    ),
+                    attempts=(
+                        {
+                            "route_id": "",
+                            "status": "ERROR",
+                            "category": "review_timeout",
+                            "scope": "none",
+                            "duration_seconds": round(time.monotonic() - started, 3),
+                        },
+                    ),
+                )
+
     async def _conclude(self) -> RunResult:
         blocked = [r for r in self.nodes.values() if r.state is not NodeState.VALIDATED]
         if blocked:
@@ -1406,14 +1857,22 @@ class DagRuntime:
                     integration=integration,
                 )
             # Independence policy: the reviewer must not be any route that wrote code in
-            # this run. Prefer a different model family too; if no other family has
-            # capacity, fall back to route-level independence (recorded as such).
-            implementers = frozenset(r.route_id for r in self.nodes.values() if r.route_id)
+            # this run, including attempts that failed and were replaced (their partial
+            # work can survive into the result). Prefer a different model family too; if
+            # no other family has capacity, fall back to route-level independence.
+            implementers = frozenset(
+                route
+                for r in self.nodes.values()
+                for route in (r.route_id, *(h.get("route_id", "") for h in r.history))
+                if route
+            )
             families = frozenset(route_family(r) for r in implementers)
             review = None
             for level, excluded_families in (("family", families), ("route", frozenset())):
                 try:
-                    candidate = await self.reviewer.review(
+                    candidate = await self._review_with_bound(
+                        level=level,
+                        round_number=1 if level == "family" else 2,
                         repo=self.repo,
                         base_ref=self._base_sha,
                         head_ref=integration,
@@ -1550,7 +2009,10 @@ def _normalize_context_path(rel: str) -> str:
 def _hydrate_sources(
     required_context: Sequence[str], worktree: Path, budget_bytes: int
 ) -> list[dict[str, Any]]:
-    """Build per-source entries from the same data hydrate_node_prompt uses.
+    """Legacy prefix accounting retained for historical tooling only.
+
+    Production hydrate events MUST NOT use this helper. It does not describe
+    the selected native pack.
 
     Normalises each path and de-duplicates: the *first* occurrence of a
     canonical path is processed normally; subsequent occurrences get

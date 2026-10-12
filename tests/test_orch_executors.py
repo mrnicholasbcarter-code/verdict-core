@@ -10,12 +10,15 @@ import stat
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from verdict.orchestration.contracts import WorkerTerminal
 from verdict.orchestration.executors import (
+    DirectGatewayExecutor,
     FaultInjectingExecutor,
+    MixedExecutor,
     PrimeHeadlessExecutor,
     ScriptedExecutor,
     _fault_terminal,
@@ -430,9 +433,133 @@ def test_command_flags_and_thinking(tmp_path: Path) -> None:
     assert "--provider" in argv and "omniroute" in argv
     assert "--model" in argv and ROUTE in argv
     assert "--thinking" in argv and "high" in argv
-    for flag in ("-nc", "-ns", "-ne"):
+    for flag in PrimeHeadlessExecutor().extra_args:
         assert flag in argv
     assert argv[-2:] == ["--", "PROMPT"]
+
+
+def _argv_echo_prime(tmp_path: Path) -> str:
+    body = (
+        "args = sys.argv[1:]\n"
+        "msg = {'role': 'assistant', 'content': [{'type': 'text', 'text': ' '.join(args)}],\n"
+        f"       'provider': 'omniroute', 'model': {ROUTE!r}, 'stopReason': 'stop'}}\n"
+        "print(json.dumps({'messages': [msg]}))\n"
+    )
+    return make_fake_prime(tmp_path, body)
+
+
+def test_worker_invocation_keeps_tools(tmp_path: Path) -> None:
+    """Default (worker) calls never disable tools: workers must edit and test."""
+    result = run(PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path)), "PROMPT", tmp_path)
+    assert result.ok
+    argv = result.output.split(" ")
+    assert "--no-tools" not in argv
+    assert "-nt" not in argv
+    assert argv[-2:] == ["--", "PROMPT"]
+
+
+def test_prime_headless_never_receives_a_guessed_tool_disabling_flag(tmp_path: Path) -> None:
+    """Prime 0.10 has no answer-only flag; its argv carries none."""
+    executor = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path), thinking="high")
+    result = asyncio.run(executor.run("PROMPT", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30))
+    assert result.ok
+    argv = result.output.split(" ")
+    assert "--no-tools" not in argv
+    assert "--thinking" in argv and "high" in argv
+    assert argv[-2:] == ["--", "PROMPT"]
+
+
+def test_answer_only_refuses_default_prime_headless_planning(tmp_path: Path) -> None:
+    """Prime 0.10 has no supported --no-tools flag, so planner must not use it."""
+    from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
+
+    prime = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path))
+    with pytest.raises(OrchestrationError, match="direct-gateway"):
+        AnswerOnlyExecutor(prime)
+
+
+@pytest.mark.parametrize(
+    ("build", "accepted"),
+    [
+        (lambda dg, prime: FaultInjectingExecutor(dg, {}), True),
+        (
+            lambda dg, prime: FaultInjectingExecutor(MixedExecutor(node_map={}, default=dg), {}),
+            True,
+        ),
+        (lambda dg, prime: MixedExecutor(node_map={"n": prime}, default=dg), True),
+        (lambda dg, prime: FaultInjectingExecutor(prime, {}), False),
+        (lambda dg, prime: MixedExecutor(node_map={}, default=prime), False),
+    ],
+)
+def test_answer_only_follows_wrappers_to_the_planning_executor(build: Any, accepted: bool) -> None:
+    """Planning runs at the repo root, so a MixedExecutor plans with its default."""
+    from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
+
+    executor = build(DirectGatewayExecutor(), PrimeHeadlessExecutor())
+    if accepted:
+        AnswerOnlyExecutor(executor)
+    else:
+        with pytest.raises(OrchestrationError):
+            AnswerOnlyExecutor(executor)
+
+
+def test_cli_builds_direct_planner_and_prime_workers() -> None:
+    import argparse
+
+    from verdict.orchestration.cli import _planner_executor, _worker_executor
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    args = argparse.Namespace(
+        executor="prime",
+        planner_executor="direct-gateway",
+        executor_map="",
+        gateway="http://gateway.invalid",
+        inject=[],
+    )
+
+    assert isinstance(_planner_executor(args), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(args), PrimeHeadlessExecutor)
+
+
+def test_cli_parser_exposes_planner_executor_role() -> None:
+    import argparse
+
+    from verdict.orchestration.cli import add_parsers
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["orchestrate", "ship", "--planner-executor", "direct-gateway"])
+
+    assert args.executor == "prime"
+    assert args.planner_executor == "direct-gateway"
+
+
+async def test_cli_planner_and_worker_faults_share_call_count() -> None:
+    import argparse
+
+    from verdict.orchestration.cli import _executor, _planner_executor
+    from verdict.orchestration.executors import ScriptedExecutor
+
+    args = argparse.Namespace(
+        executor="prime",
+        planner_executor="direct-gateway",
+        executor_map="",
+        gateway="http://gateway.invalid",
+        inject=["#2=rate_limit"],
+    )
+    planner = _planner_executor(args)
+    worker = _executor(args)
+    planner.inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="plan", model=r)
+    )
+    worker.inner = ScriptedExecutor(lambda p, r, c: WorkerTerminal(ok=True, output="work", model=r))
+    worker_cwd = Path("run") / "worktrees" / "node-a1"
+
+    first = await planner.run("plan", route_id=ROUTE, cwd=Path("repo"), timeout_seconds=5)
+    second = await worker.run("work", route_id=ROUTE, cwd=worker_cwd, timeout_seconds=5)
+
+    assert first.ok
+    assert second.status_code == 429
 
 
 # ----------------------------------------------------------- FaultInjecting
@@ -616,20 +743,74 @@ async def test_fault_hash_n_still_counts_planner(tmp_path: Path) -> None:
     assert worker.ok
 
 
-def test_installed_prime_096_declares_config_directory_override() -> None:
-    """Pin launch env to Prime 0.9.6's published real config contract."""
+def test_prime_config_directory_override_isolated_behavior(tmp_path: Path) -> None:
+    """Verdict passes an isolated Prime agent dir to each worker launch."""
+    capture = tmp_path / "launch.json"
+    prime = make_fake_prime(
+        tmp_path,
+        "from pathlib import Path\n"
+        "import json, os\n"
+        "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
+        f"Path({str(capture)!r}).write_text(json.dumps({{'root': str(root), 'exists': root.exists(), 'entries': sorted(p.name for p in root.iterdir())}}))\n"
+        f"print({success_payload()!r})\n",
+    )
+    operator_dir = tmp_path / "operator-agent"
+    operator_dir.mkdir()
+    (operator_dir / "settings.json").write_text(json.dumps({"retry": {"enabled": True}}))
+
+    result = run(
+        PrimeHeadlessExecutor(
+            prime_bin=prime, env={"PRIME_AGENT_CODING_AGENT_DIR": str(operator_dir)}
+        ),
+        "exact task",
+        tmp_path,
+    )
+
+    assert result.ok
+    launch = json.loads(capture.read_text())
+    assert launch["root"] != str(operator_dir)
+    assert launch["exists"] is True
+    assert "settings.json" in launch["entries"]
+    assert not Path(launch["root"]).exists()
+
+
+def test_installed_prime_supported_cli_contract_offline(tmp_path: Path) -> None:
+    """Optional native proof for Prime's supported local CLI surface."""
     import shutil
+    import subprocess
 
     binary = shutil.which("prime-agent")
     if binary is None:
         pytest.skip("prime-agent not installed")
-    package = Path(binary).resolve().parent
-    readme = (package / "README.md").read_text()
-    usage = (package / "docs" / "usage.md").read_text()
-    assert "PRIME_AGENT_CODING_AGENT_DIR" in readme
-    assert "Override config directory" in readme
-    assert "PRIME_AGENT_CODING_AGENT_DIR" in usage
-    assert "default is `~/.prime/agent`" in usage
+    help_result = subprocess.run(
+        [binary, "--help"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
+    )
+    assert help_result.returncode == 0
+    assert "--session-dir <dir>" in help_result.stdout
+    assert "--no-session" in help_result.stdout
+    assert "--no-tools" not in help_result.stdout
+    assert "--tools" not in help_result.stdout
+
+    unsupported = subprocess.run(
+        [binary, "--no-tools", "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert unsupported.returncode != 0
+    assert "Unknown option: --no-tools" in unsupported.stdout
+
+    session_dir = tmp_path / "sessions"
+    offline = subprocess.run(
+        [binary, "--offline", "--no-session", "--session-dir", str(session_dir), "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert offline.returncode == 0
+    assert "--session-dir <dir>" in offline.stdout
 
 
 @pytest.mark.parametrize("kind", ["empty", "rate_limit", "server"])

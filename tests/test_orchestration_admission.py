@@ -108,7 +108,7 @@ def test_ladder_bypass_guard_raises_if_admitted_set_is_swapped(tmp_path: Path) -
 
 def _patch_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: _rows())
-    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: _conns())
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, **_: _conns())
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     state = tmp_path / "orchestration-health.json"
     until = (NOW + timedelta(days=3650)).isoformat()
@@ -232,7 +232,7 @@ def test_build_selector_reads_evidence_from_the_state_file_it_uses(
     # --state-file / --inject shape: the ladder reads chaos-health.json, so
     # admission must read the same file, not only orchestration-health.json.
     monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: _rows())
-    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: _conns())
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, **_: _conns())
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
     now = datetime.now(timezone.utc)
@@ -266,7 +266,7 @@ def test_ladder_confirmations_are_persisted_to_admission_latest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: _rows())
-    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: _conns())
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, **_: _conns())
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
     probed: list[str] = []

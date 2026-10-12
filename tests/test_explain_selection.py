@@ -272,7 +272,7 @@ class TestBehaviourParityAcrossFixtures:
         assert chosen1 == chosen2
         assert order1 == order2
         # 2) Every candidate carries populated rank_components with the same
-        # seven keys, in the same order, as the sort key.
+        # keys, in the same order, as the sort key (quota_percent displays quota_rank).
         ladder = _ladder(tmp_path / "c", rows, conns)
         _, verdicts = ladder.select(TaskRequirements(coding=False), now=NOW)
         candidates = [v for v in verdicts if v.rank_components is not None]
@@ -283,6 +283,7 @@ class TestBehaviourParityAcrossFixtures:
                 "capacity_order",
                 "slack",
                 "price",
+                "quota_percent",
                 "provider_pref",
                 "load",
                 "fit",

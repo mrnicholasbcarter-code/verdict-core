@@ -31,7 +31,13 @@ from typing import Any, ClassVar
 
 import httpx
 
-from verdict.orchestration.contracts import AttemptUsage, WorkerExecutor, WorkerTerminal
+from verdict.orchestration.contracts import (
+    AttemptUsage,
+    WorkerExecutor,
+    WorkerTerminal,
+    run_executor,
+)
+from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
 from verdict.orchestration.prime_settings import (
     PRIME_AGENT_DIR_ENV,
     PROJECT_SETTINGS_RELPATH,
@@ -44,6 +50,7 @@ from verdict.orchestration.prime_settings import (
 __all__ = [
     "DirectGatewayExecutor",
     "FaultInjectingExecutor",
+    "FaultInjectionState",
     "MixedExecutor",
     "PrimeHeadlessExecutor",
     "ScriptedExecutor",
@@ -227,7 +234,7 @@ class PrimeHeadlessExecutor:
         self,
         prime_bin: str = "prime-agent",
         provider: str = "omniroute",
-        extra_args: tuple[str, ...] = ("-nc", "-ns", "-ne"),
+        extra_args: tuple[str, ...] = ("-nc", "-ns"),
         thinking: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
@@ -261,6 +268,7 @@ class PrimeHeadlessExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
+        """Run one prompt as an agent worker. Prime headless has no answer-only mode."""
         terminal = await self._run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
@@ -272,6 +280,7 @@ class PrimeHeadlessExecutor:
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
+        argv = self._command(prompt, route_id, cwd)
         child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
@@ -299,7 +308,7 @@ class PrimeHeadlessExecutor:
                 ok=False,
                 model="",
                 error=(
-                    "prime retry policy not one-shot: "
+                    "harness_configuration: prime retry policy not one-shot: "
                     + "; ".join(policy_problems)
                     + f" (fix {cwd / PROJECT_SETTINGS_RELPATH})"
                 ),
@@ -307,12 +316,22 @@ class PrimeHeadlessExecutor:
             )
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self._command(prompt, route_id, cwd),
+                *owned_worker_command(argv, child_env),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
                 env=child_env,
                 start_new_session=True,
+            )
+        except OwnershipError as exc:
+            launch_config.cleanup()
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                model="",
+                error=f"ownership_refused: {_sanitize(str(exc))}",
+                status_code=125,
+                duration_seconds=time.monotonic() - started,
             )
         except OSError as exc:
             launch_config.cleanup()
@@ -476,11 +495,16 @@ class PrimeHeadlessExecutor:
         if assistant is None:
             if returncode != 0:
                 tail = _sanitize(stderr) or f"exit {returncode} with no assistant message"
+                if returncode == 125 and "owned worker launch refused" in tail.lower():
+                    tail = "ownership_refused: " + tail
+                elif tail.lower().startswith("error: unknown option:"):
+                    tail = "harness_configuration: " + tail
                 return WorkerTerminal(
                     executor_kind="live",
                     ok=False,
                     model="",
                     error=tail,
+                    status_code=returncode if returncode == 125 else None,
                     duration_seconds=duration,
                     usage=usage,
                 )
@@ -612,14 +636,27 @@ def _fault_terminal(kind: str, route_id: str, session_ref: str) -> WorkerTermina
 _WORKER_ATTEMPT_DIR_RE = re.compile(r"^.+-a\d+$")
 
 
+class FaultInjectionState:
+    """Shared synthetic fault queues and counters for one orchestration run."""
+
+    def __init__(self, faults: Mapping[str, list[str]]) -> None:
+        self.faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
+        self.dispatches = 0  # executor calls seen (planning included), for "#N" keys
+        self.worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
+
+
 class FaultInjectingExecutor:
     """Pop queued synthetic faults per route before delegating to ``inner``."""
 
-    def __init__(self, inner: WorkerExecutor, faults: Mapping[str, list[str]]) -> None:
+    def __init__(
+        self,
+        inner: WorkerExecutor,
+        faults: Mapping[str, list[str]],
+        *,
+        state: FaultInjectionState | None = None,
+    ) -> None:
         self.inner = inner
-        self._faults: dict[str, list[str]] = {k: list(v) for k, v in faults.items()}
-        self._dispatches = 0  # executor calls seen (planning included), for "#N" keys
-        self._worker_dispatches = 0  # attempt worktrees ``<node>-a<N>`` only, for "worker#N"
+        self._state = state or FaultInjectionState(faults)
 
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
@@ -638,29 +675,34 @@ class FaultInjectingExecutor:
         """
         provider = route_id.split("/", 1)[0] + "/*"
         node = cwd.name.rsplit("-a", 1)[0] if "-a" in cwd.name else cwd.name
-        keys = [f"#{self._dispatches}"]
+        keys = [f"#{self._state.dispatches}"]
         if self._is_worker_attempt(cwd):
-            keys.append(f"worker#{self._worker_dispatches}")
+            keys.append(f"worker#{self._state.worker_dispatches}")
         keys.extend([route_id, provider, "@" + node, "*"])
         return keys
 
     def _pop_fault(self, route_id: str, cwd: Path | None = None) -> str | None:
         for key in self._keys(route_id, cwd or Path(".")):
-            queue = self._faults.get(key)
+            queue = self._state.faults.get(key)
             if queue:
                 return queue.pop(0)
         return None
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
-        self._dispatches += 1
+        self._state.dispatches += 1
         if self._is_worker_attempt(cwd):
-            self._worker_dispatches += 1
+            self._state.worker_dispatches += 1
         kind = self._pop_fault(route_id, cwd)
         if kind is None:
-            return await self.inner.run(
-                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            return await run_executor(
+                self.inner,
+                prompt,
+                route_id=route_id,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                tools=tools,
             )
         if kind == "hang":
             await asyncio.sleep(timeout_seconds)
@@ -672,6 +714,8 @@ ScriptFn = Callable[[str, str, Path], "WorkerTerminal | Awaitable[WorkerTerminal
 
 class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
+
+    answer_only_supported = True
 
     def __init__(self, script: ScriptFn) -> None:
         self.script = script
@@ -687,6 +731,52 @@ class ScriptedExecutor:
 # ---------------------------------------------------------------- direct gateway
 
 
+def _focused_view(text: str, prompt: str, budget: int) -> str:
+    """Line-numbered excerpts of ``text`` around identifiers the prompt names.
+
+    A large owned file cannot be shown whole, so the worker sees the regions it
+    is most likely to edit (and edits them with exact SEARCH/REPLACE hunks).
+    Names that are rare in the file (``_execute``, ``attempt_timeout_seconds``)
+    are specific evidence; common ones (``self``, ``policy``) are not, so regions
+    are taken rarest-name first until the budget is used.
+    """
+    lines = text.splitlines()
+    names = {n for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", prompt) if not n.isupper()}
+    counts = {n: sum(n in line for line in lines) for n in names}
+    ranked = sorted((c, n) for n, c in counts.items() if c)
+    keep: set[int] = set()
+    used = 0
+    for _, name in ranked:
+        for i, line in enumerate(lines):
+            if name not in line:
+                continue
+            window = set(range(max(0, i - 12), min(len(lines), i + 13))) - keep
+            cost = sum(len(lines[j].encode()) + 8 for j in window)
+            if used + cost > budget:
+                break
+            keep |= window
+            used += cost
+    if not keep:
+        keep = set(range(len(lines)))
+    out: list[str] = []
+    written = 0
+    previous = -2
+    for i in sorted(keep):
+        piece = ("...\n" if i != previous + 1 else "") + f"{i + 1}: {lines[i]}\n"
+        if written + len(piece.encode()) > budget:
+            break
+        out.append(piece)
+        written += len(piece.encode())
+        previous = i
+    return "".join(out)
+
+
+def _final_result_line(output: str) -> str:
+    """The worker's last non-empty line, upper-cased (where RESULT: DONE/BLOCKED goes)."""
+    lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+    return lines[-1].upper() if lines else ""
+
+
 class DirectGatewayExecutor:
     """Run one prompt on one exact OmniRoute route via direct HTTP — no Prime harness.
 
@@ -700,6 +790,8 @@ class DirectGatewayExecutor:
     fields compatible with the recovery classifier so that failover works
     unchanged.
     """
+
+    answer_only_supported = True
 
     _OWNED_FILES_RE = re.compile(r"^OWNED_FILES:\s*(.+)$", re.MULTILINE)
     _DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)\n(.*?)```", re.DOTALL)
@@ -758,8 +850,8 @@ class DirectGatewayExecutor:
             if not line.startswith("FILE:"):
                 continue
             path = line[5:].strip()
-            if not path or path in files:
-                raise ValueError("diff_rejected: malformed FILE block: empty or duplicate path")
+            if not path:
+                raise ValueError("diff_rejected: malformed FILE block: empty path")
             if index >= len(lines):
                 raise ValueError(f"diff_rejected: malformed FILE block for {path}: missing fence")
             opening = re.fullmatch(r"(`{3,}|~{3,})[^`~]*", lines[index].rstrip("\r\n"))
@@ -775,7 +867,17 @@ class DirectGatewayExecutor:
                 raise ValueError(
                     f"diff_rejected: malformed FILE block for {path}: missing closing fence"
                 )
-            files[path] = "".join(content)
+            body = "".join(content)
+            if path in files:
+                # Several SEARCH/REPLACE blocks for one file are applied in order;
+                # a repeated complete-contents block is ambiguous and refused.
+                if not (
+                    DirectGatewayExecutor._EDIT_RE.search(files[path])
+                    and DirectGatewayExecutor._EDIT_RE.search(body)
+                ):
+                    raise ValueError(f"diff_rejected: duplicate FILE block for {path}")
+                body = files[path] + body
+            files[path] = body
             index += 1
         return files or None
 
@@ -994,6 +1096,71 @@ class DirectGatewayExecutor:
 
         return None
 
+    _EDIT_RE = re.compile(
+        r"^<{7} SEARCH\n(.*?)^={7}\n(.*?)^>{7} REPLACE\n?", re.DOTALL | re.MULTILINE
+    )
+
+    @staticmethod
+    def _read_owned_regular(cwd: Path, rel: str) -> str:
+        """Read an owned file without following any symlink; regular files only.
+
+        Bytes are decoded without newline translation, so CRLF files keep their
+        line endings through a SEARCH/REPLACE edit.
+        """
+        with contextlib.ExitStack() as stack:
+            directory = os.open(cwd.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, directory)
+            components = Path(rel).parts
+            for component in components[:-1]:
+                directory = os.open(
+                    component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+                )
+                stack.callback(os.close, directory)
+            fd = os.open(
+                components[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            stack.callback(os.close, fd)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("not a regular file")
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8")
+
+    @staticmethod
+    def _resolve_edits(
+        files: dict[str, str], owned_files: list[str], cwd: Path
+    ) -> tuple[dict[str, str], str | None]:
+        """Turn EDIT blocks into complete new contents; FILE blocks pass through.
+
+        A block whose body is a sequence of SEARCH/REPLACE hunks edits the current
+        file: each SEARCH text must occur exactly once (after earlier hunks), so a
+        model that cannot see the whole file can still change it without guessing.
+        """
+        resolved: dict[str, str] = {}
+        for rel, body in files.items():
+            hunks = DirectGatewayExecutor._EDIT_RE.findall(body)
+            if not hunks:
+                resolved[rel] = body
+                continue
+            if DirectGatewayExecutor._EDIT_RE.sub("", body).strip():
+                return {}, f"diff_rejected: text outside SEARCH/REPLACE hunks for {rel}"
+            error = DirectGatewayExecutor._validate_file_paths({rel: ""}, owned_files, cwd)
+            if error:
+                return {}, error
+            try:
+                current = DirectGatewayExecutor._read_owned_regular(cwd, rel)
+            except (OSError, UnicodeError, ValueError) as exc:
+                return {}, f"diff_rejected: cannot read {rel} for SEARCH/REPLACE: {exc}"
+            for number, (search, replacement) in enumerate(hunks, 1):
+                count = current.count(search) if search else 0
+                if count != 1:
+                    found = "not found" if count == 0 else f"found {count} times"
+                    return {}, f"diff_rejected: {rel} hunk {number}: SEARCH text {found}"
+                current = current.replace(search, replacement, 1)
+            resolved[rel] = current
+        return resolved, None
+
     def _apply_files(self, files: dict[str, str], owned_files: list[str], cwd: Path) -> str | None:
         """Validate every target before writing; replace each file atomically.
 
@@ -1055,13 +1222,21 @@ class DirectGatewayExecutor:
         """Append whole-file instructions and current contents (legacy method name)."""
         parts: list[str] = [prompt]
         parts.append("")
-        parts.append("OUTPUT_FORMAT: complete files (no diffs)")
-        parts.append("For each changed owned file, output a header FILE: <relative path>.")
-        parts.append("Immediately follow the header with a fenced block of COMPLETE new contents.")
+        parts.append("EXECUTION_MODE: one answer, no tools.")
+        parts.append("You cannot run commands, read other files or call tools here. Do not try.")
+        parts.append("Verdict applies your FILE blocks and then runs VERIFICATION_COMMAND itself;")
+        parts.append("this overrides any rule above that asks you to run it. Never report")
+        parts.append("BLOCKED only because you cannot run a command.")
+        parts.append("")
+        parts.append("OUTPUT_FORMAT: one FILE block per changed owned file (no unified diffs)")
+        parts.append("Each block is a header FILE: <relative path> followed by one fenced block.")
+        parts.append("The fenced block holds EITHER the COMPLETE new file contents,")
+        parts.append("OR one or more exact edit hunks, each written as:")
+        parts.append("<<<<<<< SEARCH\n<exact current lines>\n=======\n<new lines>\n>>>>>>> REPLACE")
+        parts.append("Use hunks for any file shown TRUNCATED or OMITTED below: you cannot")
+        parts.append("rewrite it whole. Each SEARCH text must match the current file exactly")
+        parts.append("and occur exactly once; include enough surrounding lines to be unique.")
         parts.append("Example: FILE: src/example.py\n```python\nvalue = 1\n```")
-        parts.append(
-            "Preserve indentation and include the whole file, not snippets or unified diffs."
-        )
         parts.append("Use longer fences if the contents contain triple backticks.")
         parts.append("Empty content is allowed: FILE header, opening fence, then closing fence.")
         parts.append("Only modify files listed in OWNED_FILES. Never include paths outside them.")
@@ -1086,16 +1261,22 @@ class DirectGatewayExecutor:
             if not data:
                 parts.append(f"--- {rel} (EXISTS and is EMPTY — output COMPLETE contents) ---")
                 continue
-            keep = min(len(data), remaining)
-            if keep <= 0:
-                parts.append(f"--- {rel} (omitted: budget exhausted) ---")
+            share = max(0, remaining // max(1, len(owned_files) - owned_files.index(rel)))
+            if len(data) <= share:
+                parts.append(f"--- {rel} ---")
+                parts.append(data.decode("utf-8", errors="replace"))
+                remaining -= len(data)
                 continue
-            text = data[:keep].decode("utf-8", errors="replace")
-            parts.append(f"--- {rel} ---")
-            parts.append(text)
-            if keep < len(data):
-                parts.append(f"[TRUNCATED: {len(data) - keep} bytes omitted]")
-            remaining -= keep
+            if share <= 0:
+                parts.append(f"--- {rel} (OMITTED: budget exhausted; edit with SEARCH/REPLACE) ---")
+                continue
+            view = _focused_view(data.decode("utf-8", errors="replace"), prompt, share)
+            parts.append(
+                f"--- {rel} (TRUNCATED: {len(data)} bytes; excerpts shown with line numbers; "
+                "edit with SEARCH/REPLACE, never the whole file) ---"
+            )
+            parts.append(view)
+            remaining -= len(view.encode())
         return "\n".join(parts)
 
     async def _apply_diff(self, diff_text: str, cwd: Path) -> tuple[bool, str]:
@@ -1144,20 +1325,20 @@ class DirectGatewayExecutor:
             diff_path.unlink(missing_ok=True)
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="direct-gateway")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         started = time.monotonic()
-        owned_files = self._parse_owned_files(prompt)
+        owned_files = self._parse_owned_files(prompt) if tools else []
         is_implement = bool(owned_files)
 
         # For implement nodes, request complete contents of changed owned files.
@@ -1169,12 +1350,21 @@ class DirectGatewayExecutor:
         payload = {
             "model": route_id,
             "messages": [{"role": "user", "content": effective_prompt}],
-            "stream": False,
+            # Long answers stream: the gateway ends a non-streamed request whose model
+            # has not started answering within its start deadline (30 s), and large
+            # implement prompts often take longer to produce the whole answer.
+            "stream": is_implement,
         }
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                resp = await client.post(url, json=payload, headers=self._headers())
-        except httpx.TimeoutException:
+                if is_implement:
+                    # httpx timeouts are per read; bound the whole streamed answer too.
+                    resp = await asyncio.wait_for(
+                        self._post_streamed(client, url, payload), timeout_seconds
+                    )
+                else:
+                    resp = await client.post(url, json=payload, headers=self._headers())
+        except (httpx.TimeoutException, asyncio.TimeoutError):
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
@@ -1199,13 +1389,26 @@ class DirectGatewayExecutor:
         if not is_implement or not terminal.ok:
             return terminal
 
+        # A worker that reports its task blocked (final RESULT line) and sends no
+        # FILE blocks is task feedback for the runtime, not a malformed edit.
+        if _final_result_line(terminal.output).startswith("RESULT: BLOCKED"):
+            if "FILE:" in terminal.output:
+                # Never apply edits from a worker that says it could not finish.
+                return replace(
+                    terminal,
+                    ok=False,
+                    error="diff_rejected: FILE blocks with RESULT: BLOCKED; nothing applied",
+                )
+            return terminal
+
         # Prefer complete FILE blocks; only legacy output may use diff fallback.
         try:
             files = self._extract_files(terminal.output)
         except ValueError as exc:
             return replace(terminal, ok=False, error=str(exc))
         if files is not None:
-            error = self._apply_files(files, owned_files, cwd)
+            files, error = self._resolve_edits(files, owned_files, cwd)
+            error = error or self._apply_files(files, owned_files, cwd)
             return replace(terminal, ok=False, error=error) if error else terminal
 
         # --- Legacy implement node: extract, validate, and apply the diff ---
@@ -1267,6 +1470,66 @@ class DirectGatewayExecutor:
             )
 
         return terminal
+
+    @staticmethod
+    def _stream_failure(resp: httpx.Response, detail: str) -> httpx.Response:
+        """A 502 response for a stream that failed after the gateway answered 200."""
+        return httpx.Response(502, text=f"stream_failed: {detail}", request=resp.request)
+
+    async def _post_streamed(
+        self, client: httpx.AsyncClient, url: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        """POST a streamed chat completion and rebuild one non-streamed response.
+
+        The returned response has the same JSON shape ``_interpret`` reads, so
+        every existing check (status, finish_reason, usage, empty output) applies.
+        """
+        async with client.stream("POST", url, json=payload, headers=self._headers()) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                return resp
+            parts: list[str] = []
+            finish = ""
+            usage: Any = None
+            model = ""
+            response_id = ""
+            done = False
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    done = True
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    return self._stream_failure(resp, "malformed stream event")
+                if chunk.get("error"):
+                    return self._stream_failure(resp, json.dumps(chunk["error"])[:400])
+                model = chunk.get("model") or model
+                response_id = chunk.get("id") or response_id
+                usage = chunk.get("usage") or usage
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta.get("content"), str):
+                        parts.append(delta["content"])
+                    finish = choice.get("finish_reason") or finish
+            if not done:
+                # A stream that ends without [DONE] was cut off; never a complete answer.
+                return self._stream_failure(resp, "stream ended before [DONE]")
+        body = {
+            "id": response_id,
+            "model": model,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "".join(parts)},
+                    "finish_reason": finish,
+                }
+            ],
+            "usage": usage,
+        }
+        return httpx.Response(200, json=body, request=resp.request)
 
     @staticmethod
     def _interpret(resp: httpx.Response, *, route_id: str, duration: float) -> WorkerTerminal:
@@ -1432,13 +1695,18 @@ class MixedExecutor:
         return self._default
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
     ) -> WorkerTerminal:
         # Delegate entirely.  executor_kind and harness are set by the delegate
         # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
         # ScriptedExecutor stamps executor_kind='scripted').  MixedExecutor
         # must NOT overwrite either field so fault-injected and scripted
         # provenance remain intact.
-        return await self._pick(cwd).run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        return await run_executor(
+            self._pick(cwd),
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=tools,
         )
