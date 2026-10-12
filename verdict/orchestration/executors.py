@@ -1212,6 +1212,12 @@ class DirectGatewayExecutor:
         """Append whole-file instructions and current contents (legacy method name)."""
         parts: list[str] = [prompt]
         parts.append("")
+        parts.append("EXECUTION_MODE: one answer, no tools.")
+        parts.append("You cannot run commands, read other files or call tools here. Do not try.")
+        parts.append("Verdict applies your FILE blocks and then runs VERIFICATION_COMMAND itself;")
+        parts.append("this overrides any rule above that asks you to run it. Never report")
+        parts.append("BLOCKED only because you cannot run a command.")
+        parts.append("")
         parts.append("OUTPUT_FORMAT: one FILE block per changed owned file (no unified diffs)")
         parts.append("Each block is a header FILE: <relative path> followed by one fenced block.")
         parts.append("The fenced block holds EITHER the COMPLETE new file contents,")
