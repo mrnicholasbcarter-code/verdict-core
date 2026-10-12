@@ -89,7 +89,10 @@ shows the startup cause. Unexpected controller
 implementation errors still use bounded crash recovery.
 
 Keep the planner's `verification_command` test-focused: the runtime runs declared
-repo quality gates at integration, after the combined tests pass. Discovery reads
+repo quality gates for each implement node after its verification passes, and
+again at integration after the combined tests pass. A node-level gate failure
+goes back to that node's worker as correction feedback; configuration errors and
+missing gate executables are left to the integration barrier. Discovery reads
 Ruff/Mypy declarations from Python configuration and `typecheck`, `lint`, and
 `format:check` scripts from `package.json` in a fixed order. The event log records
 each gate's declared and executed command, source, exit code, and bounded output.

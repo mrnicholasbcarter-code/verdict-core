@@ -893,8 +893,15 @@ class DagRuntime:
                 return
             self._set(run, NodeState.PLANNED, reassign=True)
 
-    async def _run_repo_gates(self, run: NodeRun, worktree: Path) -> str | None:
-        """Run every declared gate, retaining the first failure with bounded evidence."""
+    async def _run_repo_gates(
+        self, run: NodeRun, worktree: Path, *, worker_fixable_only: bool = False
+    ) -> str | None:
+        """Run every declared gate, retaining the first failure with bounded evidence.
+
+        ``worker_fixable_only`` (implement-node validation) reports only real check
+        failures: configuration errors and missing executables are left for the
+        integration barrier, since the node's worker cannot fix them.
+        """
         node_id = run.node.node_id
         if not self.policy.run_repo_gates:
             self.events.emit(
@@ -913,7 +920,7 @@ class DagRuntime:
                 note="discovery failed",
                 error=config_reason,
             )
-            return config_reason
+            return None if worker_fixable_only else config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
         reason: str | None = None
         for gate in gates:
@@ -937,7 +944,8 @@ class DagRuntime:
                 source=gate.source,
                 tail=out[-600:],
             )
-            if code != 0 and reason is None:
+            fixable = code not in (126, 127) or not worker_fixable_only
+            if code != 0 and reason is None and fixable:
                 reason = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
         return reason
 
@@ -1642,6 +1650,13 @@ class DagRuntime:
             )
             if code != 0:
                 return f"verification_failed: exit {code}: {out[-300:]}"
+            if node.kind is NodeKind.IMPLEMENT and changed:
+                # Declared repo gates also run here, so a lint or format slip goes back
+                # to this node's worker as correction feedback instead of blocking the
+                # run at integration, where no worker can fix it (ADR-036 amendment).
+                gate_reason = await self._run_repo_gates(run, worktree, worker_fixable_only=True)
+                if gate_reason:
+                    return f"verification_failed: {gate_reason[:600]}"
         else:
             self.events.emit(
                 "verify", node.node_id, ok=True, exit_code=0, command="(none: non-code node)"
