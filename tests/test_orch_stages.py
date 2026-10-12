@@ -395,6 +395,8 @@ async def test_run_golden_path_emits_understand_before_plan_started_when_plannin
     )
 
     class _PlanningExecutor:
+        answer_only_supported = True
+
         async def run(
             self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
         ) -> WorkerTerminal:
