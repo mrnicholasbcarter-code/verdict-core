@@ -331,25 +331,25 @@ def test_committed_legacy_receipt_keeps_bytes_and_field_set() -> None:
 async def test_implement_node_gate_failure_is_correction_feedback(
     repo: Path, gate_bin: Path
 ) -> None:
-    """Self-host run 2026-10-12: tests passed, ruff format failed only at integration
-    and blocked the run. A node-level gate failure now goes back to the worker."""
+    """Self-host run 2026-10-12: tests passed, a gate failed only at integration
+    and blocked the run. A node-level lint failure now goes back to the worker."""
     runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
     normal_runner = runtime.runner
-    seen = {"format": 0}
+    seen = {"check": 0}
 
-    async def format_fails_once(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
-        if Path(argv[0]).name == "ruff" and "format" in argv and cwd.name.startswith("a-"):
-            seen["format"] += 1
-            if seen["format"] == 1:
-                return 1, "Would reformat: a.txt"
+    async def lint_fails_once(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv and cwd.name.startswith("a-"):
+            seen["check"] += 1
+            if seen["check"] == 1:
+                return 1, "F401 unused import in a.txt"
         return await normal_runner(argv, cwd, timeout)
 
-    runtime.runner = format_fails_once
+    runtime.runner = lint_fails_once
     result = await runtime.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     failure = events.of("failure", "a")[0]
     assert failure["category"] == "verification_failed"
-    node_gates = [e for e in events.of("repo_gate", "a") if e["name"] == "ruff-format"]
+    node_gates = [e for e in events.of("repo_gate", "a") if e["name"] == "ruff-check"]
     assert [g["ok"] for g in node_gates] == [False, True]
     assert events.of("rehydrate", "a")
 
@@ -404,3 +404,47 @@ async def test_existing_debt_in_one_gate_does_not_hide_a_new_failure_in_another(
     failure = events.of("failure", "a")[0]
     assert failure["category"] == "verification_failed"
     assert events.of("rehydrate", "a")
+
+
+async def test_formatting_only_failure_is_repaired_with_the_formatter(
+    repo: Path, gate_bin: Path
+) -> None:
+    """Self-host run 2026-10-12: two models' edits passed their tests but failed
+    only ruff format, and neither fixed it. Formatting is applied mechanically."""
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    formatted = {"done": False}
+
+    async def needs_format(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if (
+            name == "ruff"
+            and list(argv[1:3]) == ["format", "--check"]
+            and cwd.name.startswith("a-")
+        ):
+            return (0, "") if formatted["done"] else (1, "Would reformat: a.txt")
+        if name == "ruff" and argv[1] == "format" and "--check" not in argv:
+            formatted["done"] = True
+            return 0, "1 file reformatted"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = needs_format
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    applied = [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
+    assert len(applied) == 1 and not events.of("failure", "a")
+
+
+async def test_lint_failures_are_never_auto_fixed(repo: Path, gate_bin: Path) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def lint_fails(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv and cwd.name.startswith("a-"):
+            return 1, "F401 unused import"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = lint_fails
+    await runtime.run()
+    assert not [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
+    assert events.of("failure", "a")[0]["category"] == "verification_failed"
