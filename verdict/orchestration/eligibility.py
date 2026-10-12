@@ -421,20 +421,26 @@ class EligibilityLadder:
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
+        expired_negative = None
         if cache is not None:
             lookup = cache.lookup(route_id, now)
             if lookup.entry is not None and not lookup.entry.healthy:
                 if lookup.state == "negative":
                     return "unhealthy", lookup.entry.category
-                # Expired negative is half-open: an older ladder positive must
-                # not revive it without a new exact-route probe.
-                return "unprobed", lookup.entry.category
-            if lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
+                # Expired negative is half-open: only a newer validated ladder
+                # success may supersede it. Older/equal positives stay unprobed.
+                expired_negative = lookup.entry
+            elif lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):
-            return "unprobed", ""
+            category = expired_negative.category if expired_negative is not None else ""
+            return "unprobed", category
         checked = _parse_iso(str(entry.get("checked_at", "")))
+        if expired_negative is not None and (
+            not entry.get("healthy") or checked is None or checked <= expired_negative.checked_at
+        ):
+            return "unprobed", expired_negative.category
         if checked is None or now - checked > self._ttl:
             return "stale", str(entry.get("category", ""))
         if entry.get("healthy"):
