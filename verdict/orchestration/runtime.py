@@ -1604,7 +1604,14 @@ class DagRuntime:
         self, run: NodeRun, worktree: Path, changed: list[str]
     ) -> list[str]:
         """Run ``ruff format`` on the node's changed files, then rerun the gates."""
-        targets = [p for p in changed if (worktree / p).is_file()]
+        root = worktree.resolve()
+        targets = [
+            p
+            for p in changed
+            if not (worktree / p).is_symlink()
+            and (worktree / p).is_file()
+            and (worktree / p).resolve().is_relative_to(root)
+        ]
         if not targets:
             return ["repo_gate_failed: ruff-format exit 1: no changed files to format"]
         try:
