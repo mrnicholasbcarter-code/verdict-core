@@ -60,9 +60,7 @@ def test_build_selector_honours_prime_agent_home_and_never_touches_home(
 
     rows = [row("cc/claude-sonnet-5", owned_by="claude"), row("cc/claude-new-6", owned_by="claude")]
     monkeypatch.setattr(orch_run, "fetch_inventory", lambda gw, *, api_key, timeout=30: rows)
-    monkeypatch.setattr(
-        orch_run, "fetch_connections", lambda gw, *, api_key, timeout=30: [conn("claude")]
-    )
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda gw, *, api_key, **_: [conn("claude")])
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
 

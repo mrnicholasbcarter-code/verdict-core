@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -128,6 +129,35 @@ def cooldown_seconds_for(category: str, retry_after_seconds: float | None) -> fl
     return _CATEGORY_COOLDOWN_SECONDS.get(category, _DEFAULT_COOLDOWN_SECONDS)
 
 
+DEFAULT_MIN_QUOTA_PERCENT = 5.0
+_QUOTA_BUCKET = 20.0
+
+
+def quota_remaining(conn: Mapping[str, Any] | None, route_id: str) -> float | None:
+    """Measured remaining quota for a route: its own model window, else the account's."""
+    if conn is None:
+        return None
+    model = route_id.split("/", 1)[-1]
+    per_model = conn.get("quota_models")
+    if isinstance(per_model, Mapping):
+        for name in (model, re.sub(r"-(low|medium|high|xhigh|tiered)$", "", model)):
+            if isinstance(per_model.get(name), (int, float)):
+                return float(per_model[name])
+    value = conn.get("quota_percent")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def quota_rank(percent: float | None) -> int:
+    """Coarse bucket so only material quota differences reorder routes.
+
+    Unmeasured quota ranks with the middle bucket: never preferred over a route
+    with plenty measured, never pushed behind one that is nearly exhausted.
+    """
+    if percent is None:
+        return 2
+    return 4 - min(4, int(percent // _QUOTA_BUCKET))
+
+
 @dataclass
 class _Assessment:
     route_id: str
@@ -156,6 +186,8 @@ class _Assessment:
     # (never an email, token, or account id).
     cooldown_scope: str = ""
     agentic_capability: Mapping[str, Any] | None = None
+    # Measured remaining subscription quota (percent), None when not reported.
+    quota_percent: float | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -233,6 +265,7 @@ class EligibilityLadder:
         session_ledger: SessionLedger | None = None,
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
+        min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -272,6 +305,7 @@ class EligibilityLadder:
         # Default None keeps behaviour identical; the existing exact ladder
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
+        self._min_quota_percent = min_quota_percent
         # Route ids whose health the last select() re-read upgraded after refresh.
         self._last_refresh_upgrades: tuple[str, ...] = ()
 
@@ -340,6 +374,7 @@ class EligibilityLadder:
                 current = table.get(name)
                 if current is None or (not current.get("isActive") and conn.get("isActive")):
                     table[name] = conn
+
             index = (self._connections, table)
             self.__dict__["_connection_index"] = index
         return index[1].get(key)
@@ -576,6 +611,26 @@ class EligibilityLadder:
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "provider_rate_limited"
             a.cooldown_until = _iso(limited)
             return a
+        measured = [
+            q
+            for c in self._connections
+            if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            for q in [quota_remaining(c, route_id)]
+            if q is not None
+        ]
+        a.quota_percent = min(measured) if measured else None
+        floor = getattr(self, "_min_quota_percent", DEFAULT_MIN_QUOTA_PERCENT)
+        if measured and max(measured) < floor:
+            # Measured near-exhaustion: dispatching here fails mid-task on a 429.
+            a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "quota_low"
+            resets = [
+                _parse_iso(str(c.get("quota_reset_at") or ""))
+                for c in self._connections
+                if str(c.get("provider", "")).lower() == provider and c.get("isActive")
+            ]
+            reset = min((r for r in resets if r is not None), default=None)
+            a.cooldown_until = _iso(reset) if reset is not None and reset > now else None
+            return a
 
         # BOD-277: pull the capability facts the assessment already has access
         # to onto the assessment so RouteVerdict can expose them. None means
@@ -762,10 +817,13 @@ class EligibilityLadder:
                 probe_class = lookup.entry.probe_class
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
+        quota = getattr(a, "quota_percent", None)
         components = {
             "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
             "price_for_rank": price_value if price_known else 0.0,
+            "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
+            "quota_percent": quota if isinstance(quota, (int, float)) else None,
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
@@ -784,16 +842,19 @@ class EligibilityLadder:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, str]:
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
 
         Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
+        Among equally sufficient, equally priced routes, more measured quota left
+        ranks first, ahead of static provider preference.
         """
         c = self._rank_components(a)
         return (
             c["capacity_order"],
             c["slack"],
             c["price_for_rank"],
+            c["quota_rank"],
             c["provider_pref"],
             c["load"],
             -c["fit"],  # negate: stronger routes (higher fit) should rank lower
@@ -813,6 +874,7 @@ class EligibilityLadder:
             "capacity_order": components["capacity_order"],
             "slack": components["slack"],
             "price": price_value if price_known else None,
+            "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],
             "load": components["load"],
             "fit": components["fit"],  # stays positive

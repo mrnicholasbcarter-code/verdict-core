@@ -176,7 +176,7 @@ def build_selector(
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/v1/models", exc) from None
     try:
-        connections = fetch_connections(gateway, api_key=key)
+        connections = fetch_connections(gateway, api_key=key, include_quota=True)
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (_state_dir() / "orchestration-health.json")

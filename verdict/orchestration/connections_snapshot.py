@@ -103,6 +103,8 @@ def _valid(field: str, value: Any) -> bool:
         return field != "provider" and field in _REQUIRED | _DATES | set(_ENUMS) | {
             "quota_percent",
             "quotaRemainingPct",
+            "quota_models",
+            "quota_reset_at",
         }
     if field in _ENUMS:
         return isinstance(value, str) and value in _ENUMS[field]
@@ -122,6 +124,12 @@ def _valid(field: str, value: Any) -> bool:
         return type(value) is int and value >= 0
     if field in {"quota_percent", "quotaRemainingPct"}:
         return type(value) in {int, float} and math.isfinite(value) and 0 <= value <= 100
+    if field == "quota_models":
+        return isinstance(value, dict) and all(
+            _valid("model", model) and _valid("quota_percent", pct) for model, pct in value.items()
+        )
+    if field == "quota_reset_at":
+        return _valid("observed_at", value)
     if field == "rate_limited_until":
         return isinstance(value, dict) and all(
             _valid("model", key) and _valid("observed_at", stamp) and stamp is not None
