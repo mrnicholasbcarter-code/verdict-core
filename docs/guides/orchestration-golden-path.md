@@ -93,6 +93,36 @@ A gate failure blocks completion with verification feedback. No declared gates
 is recorded as `none declared`, not a silent pass. `RuntimePolicy.run_repo_gates`
 defaults to `True`; isolated fixtures can opt out explicitly.
 
+## Partial-work salvage on retry
+
+When a worker attempt fails, the runtime (`verdict/orchestration/runtime.py`)
+preserves the attempt's owned-file partial work before the failed worktree is
+removed, and restores it into the SAME node's next attempt worktree
+(`verdict/orchestration/salvage.py`). Retries of a half-finished node continue
+from the salvaged owned files instead of only the node base plus failure
+feedback. Salvage changes no decision: acceptance, the node verification
+command, admission and route selection behave exactly as without it, and wrong
+salvaged work fails verification the same way wrong worker output does.
+
+Handoff evidence is bounded and content-free. A `salvage` event in
+`events.jsonl` and a node history record carry relative paths, byte counts,
+content digests and rejection reasons only. File content never enters the
+event log, the history or the digest-bound receipt.
+
+Rejection boundaries:
+
+- paths outside the node's ownership contract are never staged or restored;
+  they are named in the rejection evidence without content;
+- credential-bearing files are rejected whole before staging — neither content
+  nor partial excerpts are kept or emitted;
+- fault-injected attempts (`fault_injected` terminals) salvage nothing, so
+  chaos runs cannot seed later attempts with synthetic partial work;
+- an attempt with no owned-file changes stages nothing and the retry proceeds
+  exactly as before (no-change safe).
+
+Contract and tests: [`openspec/changes/bod-308-partial-salvage/`](../../openspec/changes/bod-308-partial-salvage/proposal.md),
+`tests/test_orch_salvage.py` (actual `DagRuntime` failure-to-retry restoration).
+
 ## Fault keys (`--inject KEY=FAULT[,FAULT]`)
 
 Keys:
