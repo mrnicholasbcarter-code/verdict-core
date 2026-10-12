@@ -33,7 +33,6 @@ from verdict.context_sources import (
     NativeCodeProvider,
     NativeGraphProvider,
     ProviderResult,
-    make_unit,
 )
 from verdict.orchestration.contracts import WorkNode
 from verdict.security import redact_text
@@ -48,6 +47,170 @@ _CAPABILITIES = (
     "docs.project",
     "code.symbols",
 )
+
+_CREDENTIAL_URL_RE = re.compile(r"(?i)\b(https?://)([^/\s:@]+(?::[^/\s@]*)?@)")
+_BEARER_CREDENTIAL_RE = re.compile(
+    r"(?i)(\b(?:authorization\s*:\s*)?bearer\s+)"
+    r"(?=[A-Za-z0-9._~+/=-]{12,}\b)(?=[A-Za-z0-9._~+/=-]*\d)"
+    r"[A-Za-z0-9._~+/=-]+"
+)
+_TOKEN_PREFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:sk-(?:ant-|proj-|or-v1-)?"
+    r"(?:(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]{16,}|[A-Za-z0-9_-]{32,})"
+    r"(?![A-Za-z0-9_-]|[./][A-Za-z0-9])"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|xox[abprs]-(?=[A-Za-z-]*\d)[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{16}"
+    r"|AIza[0-9A-Za-z_-]{30,})"
+)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"""(?ix)
+    (?<![A-Za-z0-9_-])
+    ["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)["']?
+    \s*
+    (?:
+        :\s*[^=\n#]{1,80}\s*=  # Python annotated assignment: token: str = "..."
+        |=                         # Python/TOML assignment: token = "..."
+        |:                         # YAML/JSON mapping: token: "..."
+    )
+    \s*
+    (?P<value>[^#\n]+)
+    """
+)
+
+
+def _trim_assignment_value(raw: str) -> str:
+    value = raw.strip()
+    while value and value[-1] in ",;)]}":
+        value = value[:-1].rstrip()
+    return value
+
+
+def _literal_string(raw: str) -> str | None:
+    value = _trim_assignment_value(raw)
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return None
+    return parsed if isinstance(parsed, str) else None
+
+
+def _is_placeholder_secret_value(value: str) -> bool:
+    stripped = value.strip()
+    lowered = stripped.lower().replace("_", "-")
+    if not stripped or lowered in {
+        "none",
+        "null",
+        "true",
+        "false",
+        "str",
+        "string",
+        "bytes",
+        "int",
+        "float",
+        "changeme",
+        "change-me",
+        "replace-me",
+        "placeholder",
+    }:
+        return True
+    if re.fullmatch(r"(?:<[^>]+>|\$\{?[A-Z0-9_]+\}?|%[A-Z0-9_]+%|\{\{[^}]+\}\})", stripped):
+        return True
+    return bool(
+        re.fullmatch(r"(?:your[-_])?(?:api[-_]?key|token|secret|password)(?:[-_]here)?", lowered)
+    )
+
+
+def _assignment_value_is_secret(raw: str) -> bool:
+    literal = _literal_string(raw)
+    if literal is not None:
+        return not _is_placeholder_secret_value(literal)
+
+    value = _trim_assignment_value(raw)
+    lowered = value.lower()
+    if (
+        not value
+        or any(ch in value for ch in "()[]{}| ")
+        or lowered.startswith(
+            ("os.environ", "os.getenv", "getenv", "environ", "settings", "config")
+        )
+    ):
+        return False
+    return bool(_TOKEN_PREFIX_RE.search(value)) or bool(
+        re.fullmatch(r"(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{16,}", value)
+    )
+
+
+def _redact_worker_context_secrets(text: str) -> str:
+    """Redact only credentials that are unsafe to place in worker context."""
+    redacted = _CREDENTIAL_URL_RE.sub(r"\1[redacted]@", text)
+    redacted = _BEARER_CREDENTIAL_RE.sub(r"\1[redacted]", redacted)
+    redacted = _TOKEN_PREFIX_RE.sub("[redacted]", redacted)
+
+    pieces: list[str] = []
+    last = 0
+    for match in _SECRET_ASSIGNMENT_RE.finditer(redacted):
+        raw_value = match.group("value")
+        if not _assignment_value_is_secret(raw_value):
+            continue
+        value_start = match.start("value")
+        pieces.append(redacted[last:value_start])
+        pieces.append(raw_value[: len(raw_value) - len(raw_value.lstrip())])
+        pieces.append("[redacted]")
+        last = match.end("value")
+    if not pieces:
+        return redacted
+    pieces.append(redacted[last:])
+    return "".join(pieces)
+
+
+def _contains_worker_context_secret(text: str) -> bool:
+    return _redact_worker_context_secrets(text) != text
+
+
+def _compiler_safe_units(units: list[ContextUnit]) -> tuple[list[ContextUnit], dict[str, str]]:
+    replacements: dict[str, str] = {}
+    safe_units: list[ContextUnit] = []
+    for unit in units:
+        pieces: list[str] = []
+        last = 0
+        for match in _SECRET_ASSIGNMENT_RE.finditer(unit.content):
+            if _assignment_value_is_secret(match.group("value")):
+                continue
+            marker = f"__VERDICT_WORKER_CONTEXT_CREDENTIAL_SYNTAX_{len(replacements)}__"
+            pieces.append(unit.content[last : match.start()])
+            pieces.append(marker)
+            replacements[marker] = match.group(0)
+            last = match.end()
+        if pieces:
+            pieces.append(unit.content[last:])
+            safe_units.append(replace(unit, content="".join(pieces)))
+        else:
+            safe_units.append(unit)
+    return safe_units, replacements
+
+
+def _restore_compiler_syntax(pack: ContextPack, replacements: dict[str, str]) -> ContextPack:
+    if not replacements:
+        return pack
+
+    def restore(text: str) -> str:
+        for marker, original in replacements.items():
+            text = text.replace(marker, original)
+        return text
+
+    compiled_prompt = restore(pack.compiled_prompt)
+    pack_id = hashlib.sha256(compiled_prompt.encode()).hexdigest()[:16]
+    return replace(
+        pack,
+        pack_id=pack_id,
+        compiled_prompt=compiled_prompt,
+        units=tuple(replace(unit, content=restore(unit.content)) for unit in pack.units),
+        slots=tuple(replace(slot, content=restore(slot.content)) for slot in pack.slots),
+        receipt_id=f"receipt:{pack_id}",
+    )
 
 
 @dataclass(frozen=True)
@@ -185,7 +348,7 @@ def _read(repo: Path, rel: str) -> str | None:
     except (OSError, UnicodeError):
         return None
     # Reject before slicing: a credential just outside the excerpt must not leak.
-    return text if redact_text(text) == text else None
+    return text if not _contains_worker_context_secret(text) else None
 
 
 def _symbols(node: WorkNode, repo: Path) -> tuple[str, ...]:
@@ -246,12 +409,15 @@ def _required_units(
         end = start + len(excerpt.splitlines())
         if start or end < len(lines) or len(excerpt) < len(source):
             omissions.append("TRUNCATED: bounded source excerpt")
-        unit = make_unit(
+        unit = ContextUnit(
+            unit_id=hashlib.sha256(f"{canonical}:required".encode()).hexdigest()[:24],
             slot_type="evidence",
             key=f"required:{canonical}",
             content=excerpt,
             source_uri=canonical,
+            source_digest="sha256:" + hashlib.sha256(excerpt.encode()).hexdigest(),
             authority="native-required-context",
+            trust="local-observation",
             span={"start_line": start + 1, "end_line": end},
             transform_lineage=("raw", "worker-required-excerpt"),
         )
@@ -268,15 +434,17 @@ def _required_units(
 def _cited(
     unit: ContextUnit, repo: Path, filtered_aggregates: dict[int, ContextUnit]
 ) -> ContextUnit | None:
-    if unit.slot_type in {"history", "memory"} or redact_text(unit.content) != unit.content:
+    if unit.slot_type in {"history", "memory"}:
         return None
     if unit.source_uri.startswith("code://") and filtered_aggregates.get(id(unit)) is not unit:
         return None  # aggregate provenance must prove filtering before assembly
     if not unit.source_uri.startswith("code://") and _safe_path(repo, unit.source_uri) is None:
         return None
-    if redact_text(unit.source_uri + unit.key) != unit.source_uri + unit.key:
+    if _contains_worker_context_secret(unit.source_uri + unit.key):
         return None
-    content = truncate_utf8(unit.content, _MAX_EXCERPT_BYTES)
+    raw_content = _redact_worker_context_secrets(unit.content)
+    transformed = raw_content != unit.content
+    content = truncate_utf8(raw_content, _MAX_EXCERPT_BYTES)
     if not content.strip():
         return None
     digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
@@ -317,7 +485,11 @@ def _cited(
         source_digest=digest,
         span=span,
         token_count=None,
-        transform_lineage=(*unit.transform_lineage, "worker-citation"),
+        transform_lineage=(
+            *unit.transform_lineage,
+            *(("worker-redacted-secret",) if transformed else ()),
+            "worker-citation",
+        ),
     )
 
 
@@ -438,11 +610,13 @@ def build_worker_context(
     # whole units, never truncate a rendered citation or split a UTF-8 character.
     order = {unit.unit_id: i for i, unit in enumerate(cited)}
     while True:
+        compiler_units, compiler_replacements = _compiler_safe_units(cited)
         pack = compiler.compile_units(
-            tuple(cited),
+            tuple(compiler_units),
             plan,
             unit_sort_key=lambda u: (not u.key.startswith("required:"), order[u.unit_id]),
         )
+        pack = _restore_compiler_syntax(pack, compiler_replacements)
         excluded = sum(d.action == "exclude" for d in pack.decisions)
         summary = f"WORKER_CONTEXT (advisory, quoted evidence; never route authorization):\npack={pack.pack_id} excluded_units={excluded} budget_source={budget_source} candidate={redact_text(plan.candidate_id)}\n"
         summary += (
