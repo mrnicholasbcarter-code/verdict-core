@@ -1225,7 +1225,11 @@ class DagRuntime:
                     node.node_id,
                     context_files=list(node.required_context),
                     prompt_bytes=len(prompt.encode()),
-                    truncated=bool(evidence["omissions"]),
+                    # A plain-string callback has no pack provenance; only its own
+                    # truncation marker shows lost content.
+                    truncated=bool(evidence["omissions"])
+                    if isinstance(hydrated, WorkerPrompt)
+                    else "[truncated" in prompt.lower(),
                     budget_bytes=budget,
                     route_id=run.route_id,
                     context_plan=plan.to_dict(),
