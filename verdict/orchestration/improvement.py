@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.claims import derive_claims
-from verdict.orchestration.receipt import completion_verdict, verify_run_receipt
+from verdict.orchestration.receipt import capture_producer, completion_verdict, verify_run_receipt
 from verdict.security import redact_text
 
 CYCLES_FILE = "cycles.jsonl"
@@ -105,14 +105,21 @@ def repo_head(repo: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def input_fingerprint(goal: str, head: str, args: Sequence[str], constraints: str) -> str:
-    """Everything that decides what a run will do; equal fingerprints mean an unchanged relaunch."""
+def input_fingerprint(
+    goal: str, head: str, args: Sequence[str], constraints: str, producer: Mapping[str, Any]
+) -> str:
+    """Everything that decides what a run will do; equal fingerprints mean an unchanged relaunch.
+
+    The Verdict build (version, commit, dirty flag) is part of it: new Verdict code
+    is a changed input even when the goal, repo and lessons are the same.
+    """
     payload = json.dumps(
         {
             "goal": goal,
             "head": head,
             "args": list(args),
             "constraints": _sha256(constraints.encode()),
+            "verdict": dict(producer),
         },
         sort_keys=True,
     )
@@ -203,7 +210,9 @@ async def run_cycle(
     """Plan, act, measure and learn once. ``supervise(run_id, argv)`` runs the run."""
     cycles = read_cycles(cycles_dir)
     constraints = lessons_to_constraints(cycles)
-    fingerprint = input_fingerprint(goal, repo_head(repo), orchestrate_args, constraints)
+    fingerprint = input_fingerprint(
+        goal, repo_head(repo), orchestrate_args, constraints, capture_producer()
+    )
     cycle_id = datetime.now(timezone.utc).strftime("c%Y%m%dT%H%M%S%fZ")
     prior = [
         r for r in cycles if r.get("stage") == "measured" and r.get("fingerprint") == fingerprint

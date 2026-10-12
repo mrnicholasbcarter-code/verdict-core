@@ -89,6 +89,20 @@ async def test_unchanged_relaunch_after_not_met_is_refused_without_running(tmp_p
     assert third.outcome == "REFUSED" and len(calls) == 2
 
 
+async def test_new_verdict_code_is_a_changed_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live finding 2026-10-12: a fix to Verdict was refused as an unchanged relaunch."""
+    repo, calls = _repo(tmp_path), []
+    builds = iter([{"git_sha": "a" * 40}, {"git_sha": "a" * 40}, {"git_sha": "b" * 40}])
+    monkeypatch.setattr(improvement, "capture_producer", lambda: next(builds))
+    monkeypatch.setattr(improvement, "_OPERATOR_LAYERS", frozenset(improvement._LAYER_LESSONS))
+    assert (await _cycle(tmp_path, repo, _FailingExecutor(), calls)).outcome == "NOT_MET"
+    assert (await _cycle(tmp_path, repo, _FailingExecutor(), calls)).outcome == "REFUSED"
+    assert (await _cycle(tmp_path, repo, _FailingExecutor(), calls)).outcome == "NOT_MET"
+    assert len(calls) == 2
+
+
 async def test_lessons_reach_the_next_run_as_constraints(tmp_path: Path) -> None:
     repo, calls = _repo(tmp_path), []
     await _cycle(tmp_path, repo, _FailingExecutor(), calls)
