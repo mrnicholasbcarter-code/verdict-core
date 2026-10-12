@@ -109,7 +109,7 @@ def test_run_started_records_only_a_digest_of_the_constraints(tmp_path: Path) ->
     assert text not in (result.run_dir / "events.jsonl").read_text()
 
 
-def test_resume_refuses_different_constraints_and_keeps_the_original_digest(tmp_path: Path) -> None:
+def test_resume_requires_the_constraints_the_run_started_with(tmp_path: Path) -> None:
     import asyncio
 
     from tests.test_orch_stages import _Classifier, _Executor, _repo, _Reviewer, _Selector
@@ -130,9 +130,11 @@ def test_resume_refuses_different_constraints_and_keeps_the_original_digest(tmp_
         run_id="r1",
     )
     asyncio.run(run.run_golden_path("g", constraints="original lesson", **common))
-    changed = asyncio.run(run.run_golden_path("g", constraints="different lesson", **common))
-    assert changed.outcome == "BLOCKED" and "constraints" in changed.reason
-    asyncio.run(run.run_golden_path("g", **common))  # resume without the file is allowed
+    for other in ("different lesson", ""):
+        changed = asyncio.run(run.run_golden_path("g", constraints=other, **common))
+        assert changed.outcome == "BLOCKED" and "constraints" in changed.reason
+    same = asyncio.run(run.run_golden_path("g", constraints="original lesson", **common))
+    assert "constraints" not in same.reason
     log = (tmp_path / "runs" / "r1" / "events.jsonl").read_text().splitlines()
     digests = {
         json.loads(line)["data"].get("constraints_sha256")

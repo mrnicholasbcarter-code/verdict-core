@@ -702,9 +702,9 @@ async def run_golden_path(
     producer_kwargs: dict[str, Any] = {"producer": producer} if producer is not None else {}
     constraints_digest = hashlib.sha256(constraints.encode()).hexdigest() if constraints else ""
     if prior_started is not None:
-        # A resumed run keeps the constraints its plan was made under.
+        # A resumed run may plan again, so it must use the constraints it started with.
         original = str(prior_started.data.get("constraints_sha256") or "")
-        if constraints and constraints_digest != original:
+        if constraints_digest != original:
             reason = "resume constraints differ from the constraints the run was planned under"
             events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=reason)
             _otel_root.end()
