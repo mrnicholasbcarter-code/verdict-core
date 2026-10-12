@@ -1368,8 +1368,7 @@ def test_search_replace_edits_a_large_file_exactly(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("hunk", "message"),
-    [(("missing\n", "x\n"), "not found"), (("same\n", "x\n"), "found 3 times")],
+    ("hunk", "message"), [(("missing\n", "x\n"), "not found"), (("same\n", "x\n"), "found 3 times")]
 )
 def test_search_text_must_occur_exactly_once(
     tmp_path: Path, hunk: tuple[str, str], message: str
@@ -1415,3 +1414,46 @@ async def test_worker_reporting_blocked_is_returned_for_the_runtime(tmp_path: Pa
     )
     assert terminal.ok and terminal.error in (None, "")
     assert terminal.output.endswith("RESULT: BLOCKED owned.py is truncated")
+
+
+def test_search_replace_never_reads_through_a_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOKEN = 1\n")
+    (tmp_path / "owned.py").symlink_to(secret)
+    files = {"owned.py": "<<<<<<< SEARCH\nTOKEN = 1\n=======\nTOKEN = 2\n>>>>>>> REPLACE\n"}
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None
+    assert secret.read_text() == "TOKEN = 1\n"
+
+
+def test_search_replace_keeps_crlf_line_endings(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    files = {"owned.py": "<<<<<<< SEARCH\na = 1\r\n=======\na = 3\r\n>>>>>>> REPLACE\n"}
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None and resolved["owned.py"] == "a = 3\r\nb = 2\r\n"
+
+
+@pytest.mark.asyncio
+async def test_edits_are_never_applied_with_a_blocked_report(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    output = "FILE: owned.py\n```\nx = 2\n```\nRESULT: BLOCKED could not finish"
+    terminal = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not terminal.ok and "nothing applied" in (terminal.error or "")
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"
+
+
+def test_excerpts_never_exceed_their_budget(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text(
+        "x" * 5000 + "\n" + "".join(f"v{i} = {i}\n" for i in range(9000))
+    )
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "no matching names here", ["owned.py"], tmp_path, budget_bytes=3000
+    )
+    excerpt = prompt.split("never the whole file) ---\n", 1)[1]
+    assert len(excerpt.encode()) <= 3000

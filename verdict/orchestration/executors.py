@@ -757,11 +757,16 @@ def _focused_view(text: str, prompt: str, budget: int) -> str:
             keep |= window
             used += cost
     if not keep:
-        keep = set(range(min(len(lines), 80)))
+        keep = set(range(len(lines)))
     out: list[str] = []
+    written = 0
     previous = -2
     for i in sorted(keep):
-        out.append(("...\n" if i != previous + 1 else "") + f"{i + 1}: {lines[i]}\n")
+        piece = ("...\n" if i != previous + 1 else "") + f"{i + 1}: {lines[i]}\n"
+        if written + len(piece.encode()) > budget:
+            break
+        out.append(piece)
+        written += len(piece.encode())
         previous = i
     return "".join(out)
 
@@ -1086,6 +1091,33 @@ class DirectGatewayExecutor:
     )
 
     @staticmethod
+    def _read_owned_regular(cwd: Path, rel: str) -> str:
+        """Read an owned file without following any symlink; regular files only.
+
+        Bytes are decoded without newline translation, so CRLF files keep their
+        line endings through a SEARCH/REPLACE edit.
+        """
+        with contextlib.ExitStack() as stack:
+            directory = os.open(cwd.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, directory)
+            components = Path(rel).parts
+            for component in components[:-1]:
+                directory = os.open(
+                    component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+                )
+                stack.callback(os.close, directory)
+            fd = os.open(
+                components[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            stack.callback(os.close, fd)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("not a regular file")
+            chunks: list[bytes] = []
+            while chunk := os.read(fd, 1 << 20):
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8")
+
+    @staticmethod
     def _resolve_edits(
         files: dict[str, str], owned_files: list[str], cwd: Path
     ) -> tuple[dict[str, str], str | None]:
@@ -1106,10 +1138,9 @@ class DirectGatewayExecutor:
             error = DirectGatewayExecutor._validate_file_paths({rel: ""}, owned_files, cwd)
             if error:
                 return {}, error
-            path = cwd / rel
             try:
-                current = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
+                current = DirectGatewayExecutor._read_owned_regular(cwd, rel)
+            except (OSError, UnicodeError, ValueError) as exc:
                 return {}, f"diff_rejected: cannot read {rel} for SEARCH/REPLACE: {exc}"
             for number, (search, replacement) in enumerate(hunks, 1):
                 count = current.count(search) if search else 0
@@ -1335,9 +1366,14 @@ class DirectGatewayExecutor:
 
         # A worker that reports its task blocked (final RESULT line) and sends no
         # FILE blocks is task feedback for the runtime, not a malformed edit.
-        if _final_result_line(terminal.output).startswith("RESULT: BLOCKED") and (
-            "FILE:" not in terminal.output
-        ):
+        if _final_result_line(terminal.output).startswith("RESULT: BLOCKED"):
+            if "FILE:" in terminal.output:
+                # Never apply edits from a worker that says it could not finish.
+                return replace(
+                    terminal,
+                    ok=False,
+                    error="diff_rejected: FILE blocks with RESULT: BLOCKED; nothing applied",
+                )
             return terminal
 
         # Prefer complete FILE blocks; only legacy output may use diff fallback.
