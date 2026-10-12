@@ -196,6 +196,8 @@ def sanitize_connections(raw: Any) -> list[dict[str, Any]]:
             "lastErrorAt",
             "quota_percent",
             "quotaRemainingPct",
+            "quota_models",
+            "quota_reset_at",
             "quota_window",
             "quotaWindow",
             "updatedAt",
@@ -236,7 +238,69 @@ def fetch_connections(
 
         return read_connections_snapshot(Path(os.environ["VERDICT_CONNECTIONS_SNAPSHOT"]))
     raw = _get_json(gateway.rstrip("/") + "/api/providers", api_key=api_key, timeout=timeout)
+    rows = raw.get("connections") if isinstance(raw, Mapping) else raw
+    if isinstance(rows, list):
+        attach_quota(rows, gateway, api_key=api_key, timeout=min(timeout, 10))
     return sanitize_connections(raw)
+
+
+def quota_from_usage(body: Any) -> dict[str, Any]:
+    """Remaining-quota evidence from one OmniRoute ``/api/usage/{connection}`` body.
+
+    Account windows (5h, weekly, ...) collapse to the scarcest remaining percent.
+    Windows named after a model (Antigravity reports per-model quotas) are kept
+    per model. Unlimited or unreadable windows are ignored, never guessed.
+    """
+    quotas = body.get("quotas") if isinstance(body, Mapping) else None
+    if not isinstance(quotas, Mapping):
+        return {}
+    account: list[tuple[float, str | None]] = []
+    models: dict[str, float] = {}
+    for name, window in quotas.items():
+        if not isinstance(window, Mapping) or window.get("unlimited"):
+            continue
+        total, remaining = window.get("total"), window.get("remaining")
+        if isinstance(window.get("remainingPercentage"), (int, float)):
+            pct = float(window["remainingPercentage"])
+        elif isinstance(total, (int, float)) and total > 0 and isinstance(remaining, (int, float)):
+            pct = 100.0 * remaining / total
+        else:
+            continue
+        pct = round(min(100.0, max(0.0, pct)), 1)
+        reset = window.get("resetAt") if isinstance(window.get("resetAt"), str) else None
+        if "-" in str(name) and not str(name).startswith(("session", "weekly")):
+            models[str(name)] = pct
+        else:
+            account.append((pct, reset))
+    evidence: dict[str, Any] = {}
+    if account:
+        evidence["quota_percent"], evidence["quota_reset_at"] = min(account, key=lambda w: w[0])
+    if models:
+        evidence["quota_models"] = models
+    return evidence
+
+
+def attach_quota(rows: list[Any], gateway: str, *, api_key: str | None, timeout: float) -> None:
+    """Add remaining-quota evidence to active OAuth (subscription) connections in place."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("isActive")
+        and str(row.get("authType", "")).lower() == "oauth"
+        and isinstance(row.get("id"), str)
+    ]
+
+    def fetch(row: dict[str, Any]) -> None:
+        url = f"{gateway.rstrip('/')}/api/usage/{urllib.parse.quote(row['id'], safe='')}"
+        # Quota evidence is optional; selection keeps its other gates without it.
+        with contextlib.suppress(OSError, ValueError, OrchestrationError):
+            row.update(quota_from_usage(_get_json(url, api_key=api_key, timeout=timeout)))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(fetch, targets))
 
 
 class _Progress:
