@@ -1219,11 +1219,7 @@ class DagRuntime:
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
                 terminal = await self._execute(
-                    prompt,
-                    run.route_id,
-                    worktree,
-                    node_id=node.node_id,
-                    attempt=run.attempt,
+                    prompt, run.route_id, worktree, node_id=node.node_id, attempt=run.attempt
                 )
             finally:
                 self.inflight.pop(node.node_id, None)

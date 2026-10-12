@@ -470,7 +470,9 @@ class ControllerSupervisor:
         if self.require_worker_containment:
             root = (self.env or os.environ).get(CGROUP_ROOT_ENV)
             if not root:
-                raise OwnershipError(f"supervised controller requires explicit {CGROUP_ROOT_ENV} delegation")
+                raise OwnershipError(
+                    f"supervised controller requires explicit {CGROUP_ROOT_ENV} delegation"
+                )
             preflight_worker_containment(self.run_dir, self._token, Path(root))
         self._ownership_snapshot = read_state(self.run_dir)
         process: SupervisedProcess | None = None

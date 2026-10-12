@@ -196,7 +196,11 @@ def test_runtime_subprocess_runner_scrubs_fencing_env(tmp_path: Path, monkeypatc
 
 
 def _worker_operation(
-    owner: dict[str, Any], *, op_id: str = "op", attempt_id: str = "node-a1", deadline: float = 600.0
+    owner: dict[str, Any],
+    *,
+    op_id: str = "op",
+    attempt_id: str = "node-a1",
+    deadline: float = 600.0,
 ) -> dict[str, Any]:
     return {
         "id": op_id,
@@ -347,9 +351,7 @@ def test_runtime_execute_keeps_ownership_refused_local(tmp_path: Path) -> None:
     runtime.run_dir = tmp_path
     runtime.policy = RuntimePolicy(attempt_timeout_seconds=1)
 
-    terminal = asyncio.run(
-        runtime._execute("prompt", "route", tmp_path, node_id="node", attempt=1)
-    )
+    terminal = asyncio.run(runtime._execute("prompt", "route", tmp_path, node_id="node", attempt=1))
 
     assert terminal.error == "ownership_refused: fixture refusal"
     assert terminal.status_code == 125
@@ -363,7 +365,9 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
             self.selects = 0
             self.failures = 0
 
-        def select(self, requirements: object, *, now: object) -> tuple[RouteVerdict | None, list[RouteVerdict]]:
+        def select(
+            self, requirements: object, *, now: object
+        ) -> tuple[RouteVerdict | None, list[RouteVerdict]]:
             del requirements, now
             self.selects += 1
             choice = RouteVerdict(
@@ -383,7 +387,13 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
 
     class RefusingExecutor:
         async def run(
-            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+            self,
+            prompt: str,
+            *,
+            route_id: str,
+            cwd: Path,
+            timeout_seconds: float,
+            tools: bool = True,
         ) -> WorkerTerminal:
             del prompt, route_id, cwd, timeout_seconds, tools
             return WorkerTerminal(ok=False, error="ownership_refused: fixture", status_code=125)
@@ -411,7 +421,19 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
     ) -> object:
         from verdict.orchestration.planner import PlanningExecutorError
 
-        del self, goal, repo, executor, route_id, timeout_seconds, constraints, events, run_dir, attempt, max_attempts
+        del (
+            self,
+            goal,
+            repo,
+            executor,
+            route_id,
+            timeout_seconds,
+            constraints,
+            events,
+            run_dir,
+            attempt,
+            max_attempts,
+        )
         terminal = WorkerTerminal(ok=False, error="ownership_refused: fixture", status_code=125)
         raise PlanningExecutorError("fixture refused", terminal)
 
@@ -446,17 +468,12 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
 
 
 def test_supervisor_preflights_containment_before_provider_work(tmp_path: Path) -> None:
-    async def spawn(
-        argv: list[str], *, log_path: Path, env: dict[str, str] | None
-    ) -> object:
+    async def spawn(argv: list[str], *, log_path: Path, env: dict[str, str] | None) -> object:
         raise AssertionError("controller spawned before containment preflight")
 
     outcome = asyncio.run(
         ControllerSupervisor(
-            lambda gen: ["must-not-start"],
-            tmp_path,
-            spawner=spawn,
-            require_worker_containment=True,
+            lambda gen: ["must-not-start"], tmp_path, spawner=spawn, require_worker_containment=True
         ).run()
     )
 

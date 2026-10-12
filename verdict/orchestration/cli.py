@@ -480,7 +480,7 @@ def _faults_and_state(args: argparse.Namespace):
     state = getattr(args, "_fault_injection_state", None)
     if state is None:
         state = FaultInjectionState(faults)
-        setattr(args, "_fault_injection_state", state)
+        args._fault_injection_state = state
     return faults, state
 
 
