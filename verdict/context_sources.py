@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import re
 import subprocess
 import time
@@ -31,6 +32,7 @@ from verdict.shared_memory import (
 PROVIDER_ID = "native.verdict"
 DEFAULT_MAX_FILE_BYTES = 8_192
 DEFAULT_MAX_UNITS = 8
+MAX_SCAN_FILES = 20_000
 _SKIP_DIR_PARTS = {
     ".git",
     ".hg",
@@ -208,22 +210,43 @@ def _source_allowed(path: Path, hints: Mapping[str, Any] | None) -> bool:
     return source_filter(path) if source_filter is not None else True
 
 
-def _iter_py_files(root: Path, hints: Mapping[str, Any] | None = None) -> list[Path]:
+def _mentions(path: Path, needles: tuple[bytes, ...]) -> bool:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    data = data.lower()  # test names match symbols case-insensitively (CodeGraphEngine.tests_for)
+    return any(needle in data for needle in needles)
+
+
+def _iter_py_files(
+    root: Path, hints: Mapping[str, Any] | None = None, symbols: Sequence[str] = ()
+) -> tuple[list[Path], bool]:
+    """Python files that mention a target symbol, and whether the scan hit its bound.
+
+    A definition, reference, caller or test of a symbol names it textually, so
+    files without any symbol are never parsed or passed to the source filter.
+    Skipped directories are pruned rather than walked.
+    """
     if not root.is_dir():
-        return []
+        return [], False
+    needles = tuple(s.lower().encode() for s in symbols if s)
     files: list[Path] = []
-    for path in root.rglob("*.py"):
-        if not path.is_file():
-            continue
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            rel = path
-        if _skip_path(rel):
-            continue
-        if _source_allowed(path, hints):
-            files.append(path)
-    return sorted(files)
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
+        scanned += len(filenames)
+        if scanned > MAX_SCAN_FILES:
+            return sorted(files), True
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            path = Path(dirpath, name)
+            if not path.is_file() or (needles and not _mentions(path, needles)):
+                continue
+            if _source_allowed(path, hints):
+                files.append(path)
+    return sorted(files), False
 
 
 def _extract_definitions(path: Path, root: Path, symbols: Sequence[str]) -> list[_SymbolHit]:
@@ -343,7 +366,7 @@ class NativeCodeProvider(CapabilityProvider):
         if not symbols:
             return ProviderResult(capability_id, self.provider_id, gap_reason="no_symbol_seed")
         units: list[ContextUnit] = []
-        files = _iter_py_files(root, hints)
+        files, bounded = _iter_py_files(root, hints, symbols)
         if capability_id == "code.definitions":
             for path in files:
                 for hit in _extract_definitions(path, root, symbols):
@@ -406,9 +429,10 @@ class NativeCodeProvider(CapabilityProvider):
                 )
                 if unit is not None:
                     units.append(unit)
+        gap = "traversal_bounded" if bounded else None
         if not units:
-            return ProviderResult(capability_id, self.provider_id, gap_reason="not_found")
-        return ProviderResult(capability_id, self.provider_id, tuple(units[:max_units]))
+            return ProviderResult(capability_id, self.provider_id, gap_reason=gap or "not_found")
+        return ProviderResult(capability_id, self.provider_id, tuple(units[:max_units]), gap)
 
 
 class NativeDocsProvider(CapabilityProvider):
@@ -730,13 +754,13 @@ class NativeGraphProvider(CapabilityProvider):
         from verdict.code_graph import CodeGraphEngine
 
         root = repo_root.resolve()
-        engine = CodeGraphEngine()
-        if _source_filter(hints) is not None:
-            for path in _iter_py_files(root, hints):
-                engine.parse_file(path, root)
-        else:
-            engine.parse_directory(root)
         symbols = _symbols_from_hints(hints, query)
+        if not symbols:
+            return ProviderResult(capability_id, self.provider_id, gap_reason="no_symbol_seed")
+        engine = CodeGraphEngine()
+        files, bounded = _iter_py_files(root, hints, symbols[:4])
+        for path in files:
+            engine.parse_file(path, root)
         lines: list[str] = []
         if capability_id == "tests.impact":
             for symbol in symbols[:4]:
@@ -754,9 +778,10 @@ class NativeGraphProvider(CapabilityProvider):
                     lines.append(f"  callee {callee}")
                 for node in engine.callers_of(symbol)[:8]:
                     lines.append(f"  caller {node.name} @ {node.file_path}")
+        gap = "traversal_bounded" if bounded else None
         if len(lines) <= len(symbols[:4]):
             # Only symbol headers — treat as empty neighborhood.
-            return ProviderResult(capability_id, self.provider_id, gap_reason="not_found")
+            return ProviderResult(capability_id, self.provider_id, gap_reason=gap or "not_found")
         unit = make_unit(
             slot_type="evidence",
             key=f"graph:{capability_id}",
@@ -767,7 +792,7 @@ class NativeGraphProvider(CapabilityProvider):
             + (("source-filtered",) if _source_filter(hints) is not None else ()),
         )
         units = (unit,) if unit is not None else ()
-        return ProviderResult(capability_id, self.provider_id, units)
+        return ProviderResult(capability_id, self.provider_id, units, gap)
 
 
 class SharedMemoryCapabilityProvider(CapabilityProvider):
