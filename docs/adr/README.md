@@ -103,6 +103,8 @@ hardening pass (successor for ADR-023).
 | [034](ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md) — Outbox mirror | Durable outbox; fail-open shared recall | Accepted | PARTIALLY_TRUE | VERIFIED | — |
 | [035](ADR-035-authorized-selected-route-dispatch.md) — Authorized selected-route dispatch | Execution-path strategy authority on the serve path + authorize-only dispatcher binding; demoted selectors | Accepted | PARTIALLY_TRUE | *(new — pending ecosystem re-audit)* | Supersedes ADR-023 |
 | [036](ADR-036-goal-to-receipt-orchestration.md) — Goal-to-receipt orchestration | Frontier DAG, capacity-aware eligibility ladder, same-node reassignment, independent OCR review, fail-closed receipt, supervised controller | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (live runs + fresh-clone certification) | Scope successor to ADR-023 for multi-worker execution |
+| [037](ADR-037-supervisor-concurrency-governor.md) — Supervisor concurrency governor | Bounded concurrent stories under one supervisor; `VERDICT_MULTI_STORY` off by default | Accepted | *(new — pending ecosystem re-audit)* | PARTIALLY_TRUE | — |
+| [038](ADR-038-improvement-cycle.md) — Measured improvement cycle | `verdict improve`: bounded cycles above a supervised run, measured only from recomputable receipt evidence, deterministic lessons, unchanged-relaunch refusal | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (offline tests + live cycles 2026-10-12) | Amends ADR-036 |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
