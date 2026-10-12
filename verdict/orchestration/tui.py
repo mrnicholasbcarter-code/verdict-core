@@ -28,24 +28,9 @@ from rich.text import Text
 
 from verdict.design import GLYPHS as GLYPHS  # re-export for local callers
 from verdict.design import PresentationMode
+from verdict.orchestration.contracts import STAGES as STAGES  # re-export for local callers
 from verdict.orchestration.contracts import NodeState, RunEvent
 from verdict.terminal_ui import TOKENS, clean
-
-STAGES: tuple[str, ...] = (
-    "GOAL",
-    "UNDERSTAND",
-    "CONTROLLER",
-    "PLAN",
-    "DAG",
-    "SELECT",
-    "HYDRATE",
-    "WORKERS",
-    "QUOTA/COOLDOWN",
-    "FAILURE/REASSIGN",
-    "VERIFY",
-    "REVIEW",
-)
-
 
 _STATE_GLYPH: Mapping[NodeState, str] = {
     NodeState.PLANNED: "planned",

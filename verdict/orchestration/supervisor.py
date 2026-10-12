@@ -33,7 +33,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, ClassVar, Protocol
 
-from verdict.orchestration.contracts import FailureClassification, FailureClassifier, WorkerTerminal
+from verdict.orchestration.contracts import (
+    STAGES,
+    FailureClassification,
+    FailureClassifier,
+    WorkerTerminal,
+)
 from verdict.orchestration.controller_operations import (
     CGROUP_ROOT_ENV,
     DEADLINE_ENV,
@@ -49,7 +54,6 @@ from verdict.orchestration.controller_operations import (
     read_state,
     revoke_generation,
 )
-from verdict.orchestration.tui import STAGES
 
 EVENTS_FILE = "events.jsonl"
 PROGRESS_FILE = "progress.json"
