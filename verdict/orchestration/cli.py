@@ -90,7 +90,12 @@ def add_parsers(subparsers: Any) -> None:
         default=(),
         help="Hard economic-class filter, e.g. free,subscription (default: unchanged)",
     )
-    orch.add_argument("--attempt-timeout", type=float, default=900)
+    orch.add_argument(
+        "--attempt-timeout",
+        type=float,
+        default=900,
+        help="Seconds per worker attempt (default and maximum: 900)",
+    )
     orch.add_argument("--run-deadline", type=float, default=3600)
     orch.add_argument(
         "--prefer",

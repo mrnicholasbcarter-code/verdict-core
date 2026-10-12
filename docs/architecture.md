@@ -271,6 +271,8 @@ Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually ce
 - [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (Ruflo/swarm removal and legacy selector demotion → ADR-035)
 - Cross-repo evidence: [verdict-ecosystem ADR_LIFECYCLE](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
 - [Unknown ≠ healthy](guides/unknown-not-healthy.md)
+- [Worker context packs](guides/worker-context.md)
+- [Worker-session failure feedback](guides/worker-session-feedback.md)
 - [Free-tier admit smoke](guides/free-tier-admit-smoke.md)
 - [Model metadata store](guides/model-metadata-store.md)
 - Design-only specs under [`architecture/`](architecture/) — label as planned unless an ADR marks them CURRENT

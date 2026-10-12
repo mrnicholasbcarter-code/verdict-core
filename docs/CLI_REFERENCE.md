@@ -49,7 +49,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--constraints-file PATH` | UTF-8 text (at most 8 KiB) added to the planner prompt under `CONSTRAINTS:`, for example lessons from an earlier run. `run_started` records only its SHA-256 |
 | `--gateway GATEWAY` | Gateway endpoint or identifier |
 | `--max-parallel MAX_PARALLEL` | Maximum parallel workers |
-| `--attempt-timeout ATTEMPT_TIMEOUT` | Per-attempt timeout |
+| `--attempt-timeout ATTEMPT_TIMEOUT` | Seconds per worker attempt (default and maximum: 900; larger values are reduced to 900) |
 | `--run-deadline RUN_DEADLINE` | Overall run deadline |
 | `--prefer PREFER` | Comma-separated provider preference among subscription capacity (ranking policy, not a fallback chain) |
 | `--scope SCOPE` | Comma-separated allowed route prefixes; empty means all |

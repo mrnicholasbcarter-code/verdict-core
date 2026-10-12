@@ -179,9 +179,10 @@ verified public proof:
 
 Supervision distinguishes real event progress from `WAITING_BOUNDED`. Initial and
 repair planning each publish a fixed, owner/generation-bound operation deadline.
-The supported cap is 600 seconds per planner call. REVIEW publishes a distinct
-`review-round-N` operation with a 900-second cap; the remaining run/supervisor
-deadline still wins. An active valid operation can outlast the ordinary stall
+The supported cap is 600 seconds per planner call. Each worker attempt runs for
+at most 900 seconds: `--attempt-timeout` values above 900 are reduced to 900.
+REVIEW publishes a distinct `review-round-N` operation with a 900-second cap; the
+remaining run/supervisor deadline still wins. An active valid operation can outlast the ordinary stall
 window; its deadline and the absolute supervisor deadline still terminate it.
 Invalid, stale, extended or reopened leases do not defer stalls. Selection refresh
 and DAG operations do not gain this lease exemption. Admission and completion proof
