@@ -68,6 +68,7 @@ from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.salvage import restore_salvaged_files, salvage_owned_files
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import WorkerPrompt
@@ -1119,6 +1120,20 @@ class DagRuntime:
             self._set(run, NodeState.ADMITTED)
             base = await self._node_base(node)
             await self.git.add_worktree(worktree, branch, base)
+            # BOD-308: restore salvaged partial work from a previous attempt.
+            if run.attempt > 1 and run.node.owned_files:
+                salvage_dir = self.run_dir / "salvage" / run.node.node_id
+                restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                if restore.restored or restore.error:
+                    self.events.emit(
+                        "restore",
+                        node.node_id,
+                        restored=list(restore.restored),
+                        skipped=list(restore.skipped),
+                        total_bytes=restore.total_bytes,
+                        attempt=run.attempt,
+                        error=restore.error,
+                    )
             self.inflight[node.node_id] = run.route_id
             try:
                 self._set(run, NodeState.DISPATCHED)
@@ -1223,74 +1238,81 @@ class DagRuntime:
                 )
             finally:
                 self.inflight.pop(node.node_id, None)
-            self.events.emit(
-                "terminal",
-                node.node_id,
-                ok=terminal.ok,
-                route_id=run.route_id,
-                reported_model=terminal.model,
-                # Empty is explicitly unknown for custom adapters; never legacy inference.
-                executor_kind=terminal.executor_kind,
-                harness=terminal.harness,
-                duration_seconds=round(terminal.duration_seconds, 2),
-                session_ref=terminal.session_ref,
-                stop_reason=terminal.stop_reason,
-                error=terminal.error,
-                attempt=run.attempt,
-                fault_injected=terminal.executor_kind == "fault-injected",
-                **(
-                    {
-                        "usage": {
-                            "input_tokens": terminal.usage.input_tokens,
-                            "output_tokens": terminal.usage.output_tokens,
-                            "cost_usd": terminal.usage.cost_usd,
-                            "tokens_source": terminal.usage.tokens_source,
-                            "turns": terminal.usage.turns,
-                        }
-                    }
-                    if terminal.usage is not None
-                    else ({"usage_missing": True} if terminal.ok else {})
-                ),
-            )
-            self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
-            if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
-                terminal = WorkerTerminal(
-                    ok=False,
-                    output=terminal.output,
-                    model=terminal.model,
-                    error="worker_blocked: " + terminal.output.strip()[:200],
-                    session_ref=terminal.session_ref,
+            try:
+                self.events.emit(
+                    "terminal",
+                    node.node_id,
+                    ok=terminal.ok,
+                    route_id=run.route_id,
+                    reported_model=terminal.model,
+                    # Empty is explicitly unknown for custom adapters; never legacy inference.
                     executor_kind=terminal.executor_kind,
                     harness=terminal.harness,
+                    duration_seconds=round(terminal.duration_seconds, 2),
+                    session_ref=terminal.session_ref,
+                    stop_reason=terminal.stop_reason,
+                    error=terminal.error,
+                    attempt=run.attempt,
+                    fault_injected=terminal.executor_kind == "fault-injected",
+                    **(
+                        {
+                            "usage": {
+                                "input_tokens": terminal.usage.input_tokens,
+                                "output_tokens": terminal.usage.output_tokens,
+                                "cost_usd": terminal.usage.cost_usd,
+                                "tokens_source": terminal.usage.tokens_source,
+                                "turns": terminal.usage.turns,
+                            }
+                        }
+                        if terminal.usage is not None
+                        else ({"usage_missing": True} if terminal.ok else {})
+                    ),
                 )
-            if not terminal.ok or not terminal.output.strip():
-                return await self._fail(run, terminal, failures, worktree)
-            self._set(run, NodeState.TERMINAL_SUCCESS)
-            verdict = await self._validate(run, worktree, base)
-            if verdict is not None:
-                failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
-                return await self._fail(run, failed, failures, worktree, validated=True)
-            run.commit = await self.git.commit_all(
-                worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
-            )
-            # The commit is durable on its branch; the checkout is no longer needed.
-            await self.git.remove_worktree(worktree)
-            self.selector.record_success(run.route_id, now=self.now())
-            run.history.append(
-                {
-                    "attempt": run.attempt,
-                    "route_id": run.route_id,
-                    "outcome": "validated",
-                    "commit": run.commit,
-                }
-            )
-            self._set(run, NodeState.VALIDATED, commit=run.commit)
-            return True
+                self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
+                if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
+                    terminal = WorkerTerminal(
+                        ok=False,
+                        output=terminal.output,
+                        model=terminal.model,
+                        error="worker_blocked: " + terminal.output.strip()[:200],
+                        session_ref=terminal.session_ref,
+                        executor_kind=terminal.executor_kind,
+                        harness=terminal.harness,
+                    )
+                if not terminal.ok or not terminal.output.strip():
+                    return await self._fail(run, terminal, failures, worktree)
+                self._set(run, NodeState.TERMINAL_SUCCESS)
+                verdict = await self._validate(run, worktree, base)
+                if verdict is not None:
+                    failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    return await self._fail(run, failed, failures, worktree, validated=True)
+                run.commit = await self.git.commit_all(
+                    worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
+                )
+                # The commit is durable on its branch; the checkout is no longer needed.
+                await self.git.remove_worktree(worktree)
+                self.selector.record_success(run.route_id, now=self.now())
+                run.history.append(
+                    {
+                        "attempt": run.attempt,
+                        "route_id": run.route_id,
+                        "outcome": "validated",
+                        "commit": run.commit,
+                    }
+                )
+                self._set(run, NodeState.VALIDATED, commit=run.commit)
+                return True
+            finally:
+                if worktree.exists():
+                    await self.git.remove_worktree(worktree)
 
     def _save_attempt(
         self, node_id: str, attempt: int, route_id: str, terminal: WorkerTerminal
     ) -> None:
         """Durable per-attempt evidence (sanitized by the executor); never fatal."""
+        if terminal.executor_kind == "fault-injected":
+            return
+
         import json
 
         try:
@@ -1431,8 +1453,52 @@ class DagRuntime:
         *,
         validated: bool = False,
     ) -> bool:
-        self._record_failure(run, terminal, failures, validated=validated)
-        await self.git.remove_worktree(worktree)
+        try:
+            self._record_failure(run, terminal, failures, validated=validated)
+            # BOD-308: salvage owned partial work before discarding the worktree.
+            if (
+                run.node.owned_files
+                and worktree.exists()
+                and terminal.executor_kind != "fault-injected"
+            ):
+                salvage_dir = self.run_dir / "salvage" / run.node.node_id
+                changed = await self.git.changed_files(worktree, await self._node_base(run.node))
+                result = salvage_owned_files(
+                    worktree,
+                    run.node.owned_files,
+                    salvage_dir,
+                    changed_files=changed,
+                    replace_existing=True,
+                )
+                if result.saved or result.skipped or result.error:
+                    skipped = list(result.skipped[:50])
+                    evidence_truncated = result.evidence_truncated or len(result.skipped) > 50
+                    self.events.emit(
+                        "salvage",
+                        run.node.node_id,
+                        saved=list(result.saved),
+                        skipped=skipped,
+                        files=list(result.files),
+                        evidence_truncated=evidence_truncated,
+                        total_bytes=result.total_bytes,
+                        attempt=run.attempt,
+                        error=result.error,
+                    )
+                    run.history.append(
+                        {
+                            "attempt": run.attempt,
+                            "route_id": run.route_id,
+                            "outcome": "salvage",
+                            "saved": list(result.saved),
+                            "skipped": skipped,
+                            "files": list(result.files),
+                            "evidence_truncated": evidence_truncated,
+                            "total_bytes": result.total_bytes,
+                            "error": result.error,
+                        }
+                    )
+        finally:
+            await self.git.remove_worktree(worktree)
         return False
 
     async def _node_base(self, node: WorkNode) -> str:
