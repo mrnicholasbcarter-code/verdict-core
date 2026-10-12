@@ -1615,7 +1615,9 @@ class DagRuntime:
         return remaining
 
     def _review_timeout_seconds(self) -> float:
-        timeout = min(float(self.policy.review_timeout_seconds), 900.0, self._remaining_run_seconds())
+        timeout = min(
+            float(self.policy.review_timeout_seconds), 900.0, self._remaining_run_seconds()
+        )
         if not (timeout > 0):
             raise OwnershipError("overall controller deadline spent")
         return timeout

@@ -130,11 +130,7 @@ def make_subprocess_runner(idle_seconds: float | None = None) -> OcrRunner:
         stop_event: threading.Event | None = None,
     ) -> OcrRun:
         return _run_with_watchdog(
-            argv,
-            env=env,
-            timeout=timeout,
-            idle_seconds=idle_seconds,
-            stop_event=stop_event,
+            argv, env=env, timeout=timeout, idle_seconds=idle_seconds, stop_event=stop_event
         )
 
     return run
@@ -255,11 +251,7 @@ async def _select_bounded(
 
 
 async def _run_runner_bounded(
-    runner: OcrRunner,
-    argv: Sequence[str],
-    *,
-    env: Mapping[str, str],
-    timeout_seconds: float,
+    runner: OcrRunner, argv: Sequence[str], *, env: Mapping[str, str], timeout_seconds: float
 ) -> OcrRun:
     runner_timeout = executor_timeout_within(timeout_seconds) if timeout_seconds > 0 else 0.0
     runner_timeout = max(0.0, runner_timeout)
@@ -269,9 +261,9 @@ async def _run_runner_bounded(
 
     def call_runner() -> OcrRun:
         if accepts_stop_event:
-            return cast(
-                Callable[..., OcrRun], runner
-            )(argv, env=env, timeout=runner_timeout, stop_event=stop_event)
+            return cast(Callable[..., OcrRun], runner)(
+                argv, env=env, timeout=runner_timeout, stop_event=stop_event
+            )
         return runner(argv, env=env, timeout=runner_timeout)
 
     task = asyncio.create_task(asyncio.to_thread(call_runner))
@@ -282,10 +274,7 @@ async def _run_runner_bounded(
         try:
             run = await asyncio.wait_for(asyncio.shield(task), cleanup_wait)
         except asyncio.TimeoutError:
-            return OcrRun(
-                exit_code=124,
-                stderr="ocr review cleanup UNKNOWN after cancellation",
-            )
+            return OcrRun(exit_code=124, stderr="ocr review cleanup UNKNOWN after cancellation")
         if preserve_provider_timeout and run.timed_out and "stopped" not in run.stderr.lower():
             return run
         return OcrRun(
@@ -570,10 +559,7 @@ class OpenCodeReviewer:
                 str(raw_path),
             ]
             run = await _run_runner_bounded(
-                self._runner,
-                argv,
-                env={"HOME": str(home_dir)},
-                timeout_seconds=timeout_seconds,
+                self._runner, argv, env={"HOME": str(home_dir)}, timeout_seconds=timeout_seconds
             )
         finally:
             shutil.rmtree(home_dir, ignore_errors=True)

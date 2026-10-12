@@ -93,12 +93,7 @@ class StopAwareRunner:
         self.timeouts: list[float] = []
 
     def __call__(
-        self,
-        argv: list[str],
-        *,
-        env: dict[str, str],
-        timeout: float,
-        stop_event: threading.Event,
+        self, argv: list[str], *, env: dict[str, str], timeout: float, stop_event: threading.Event
     ) -> OcrRun:
         self.timeouts.append(timeout)
         while not stop_event.is_set() and not self.release.is_set():
@@ -127,7 +122,9 @@ def make_runtime(repo: Path, reviewer: Any, **policy: Any) -> DagRuntime:
     )
 
 
-def review_lease(owner: dict[str, Any], *, op_id: str = "op", deadline: float = 900.0) -> dict[str, Any]:
+def review_lease(
+    owner: dict[str, Any], *, op_id: str = "op", deadline: float = 900.0
+) -> dict[str, Any]:
     return {
         "id": op_id,
         "token": "token",
@@ -182,7 +179,11 @@ def test_review_lease_quiet_wait_beats_supervisor_stall(tmp_path: Path) -> None:
 def test_review_lease_expired_and_rekey_fail_closed() -> None:
     owner = operations.process_identity(os.getpid())
     assert owner is not None
-    state = {"token": "token", "active": True, "operations": {"review": review_lease(owner, op_id="review")}}
+    state = {
+        "token": "token",
+        "active": True,
+        "operations": {"review": review_lease(owner, op_id="review")},
+    }
     guard = operations.OperationLeaseGuard()
 
     result, _ = guard.inspect(state, token="token", owner=owner, now=900, overall_deadline=1200)
@@ -197,7 +198,9 @@ def test_review_lease_expired_and_rekey_fail_closed() -> None:
             "deadline": 910.0,
         }
     }
-    result, operation = guard.inspect(state, token="token", owner=owner, now=10, overall_deadline=1200)
+    result, operation = guard.inspect(
+        state, token="token", owner=owner, now=10, overall_deadline=1200
+    )
     assert result == "NONE"
     assert operation is None
 
@@ -215,7 +218,9 @@ async def test_runtime_review_timeout_fails_closed_without_provider_cooldown(rep
     assert runtime.selector.cool == {}
 
 
-async def test_review_scope_closes_after_timeout(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_review_scope_closes_after_timeout(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(operations.RUN_DIR_ENV, str(repo.parent / "run1"))
     monkeypatch.setenv(operations.TOKEN_ENV, "token")
     operations.activate_generation(repo.parent / "run1", "token", time.monotonic() + 30)
@@ -239,10 +244,7 @@ async def test_blocking_reviewer_selector_does_not_block_event_loop_or_launch(
     selector = BlockingSelector(_verdict("cx/reviewer"), release=release)
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json"))
     reviewer = OpenCodeReviewer(
-        selector,
-        api_key_env="TEST_OCR_KEY",
-        out_dir=tmp_path / "out",
-        runner=runner,
+        selector, api_key_env="TEST_OCR_KEY", out_dir=tmp_path / "out", runner=runner
     )
     started = time.monotonic()
     ticks = 0
@@ -322,11 +324,7 @@ async def test_ocr_runner_cleanup_unknown_is_fail_closed_without_cooldown(
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
 
     def stuck_runner(
-        argv: list[str],
-        *,
-        env: dict[str, str],
-        timeout: float,
-        stop_event: threading.Event,
+        argv: list[str], *, env: dict[str, str], timeout: float, stop_event: threading.Event
     ) -> OcrRun:
         stop_event.wait(5)
         time.sleep(5)
@@ -370,15 +368,13 @@ async def test_runtime_outer_review_cancellation_reports_cleanup_unknown_no_fall
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    monkeypatch.setattr("verdict.orchestration.review.executor_timeout_within", lambda timeout: timeout)
+    monkeypatch.setattr(
+        "verdict.orchestration.review.executor_timeout_within", lambda timeout: timeout
+    )
     release = threading.Event()
 
     def nonsettling_runner(
-        argv: list[str],
-        *,
-        env: dict[str, str],
-        timeout: float,
-        stop_event: threading.Event,
+        argv: list[str], *, env: dict[str, str], timeout: float, stop_event: threading.Event
     ) -> OcrRun:
         stop_event.wait(5)
         release.wait(5)
@@ -426,7 +422,9 @@ async def test_no_independent_reviewer_can_fall_back_to_route_level_under_bound(
     assert "no independent reviewer" in result.review.detail
 
 
-async def test_runtime_review_lease_keeps_supervisor_quiet_at_240(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_runtime_review_lease_keeps_supervisor_quiet_at_240(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     run_dir = repo.parent / "run1"
     operations.activate_generation(run_dir, "token", time.monotonic() + 1200)
     monkeypatch.setenv(operations.RUN_DIR_ENV, str(run_dir))
@@ -469,7 +467,9 @@ async def test_runtime_review_lease_keeps_supervisor_quiet_at_240(repo: Path, mo
     assert result.outcome.name == "COMPLETE"
 
 
-def test_ocr_runner_wraps_supervised_review_in_owned_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_ocr_runner_wraps_supervised_review_in_owned_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
 
     class FakeProc:
@@ -498,7 +498,9 @@ def test_ocr_runner_wraps_supervised_review_in_owned_launch(monkeypatch: pytest.
     monkeypatch.setattr("verdict.orchestration.review.subprocess.Popen", fake_popen)
     argv = ["ocr", "review", "--output", str(tmp_path / "out.json")]
 
-    run = _run_with_watchdog(argv, env={operations.RUN_DIR_ENV: str(tmp_path)}, timeout=1, idle_seconds=None)
+    run = _run_with_watchdog(
+        argv, env={operations.RUN_DIR_ENV: str(tmp_path)}, timeout=1, idle_seconds=None
+    )
 
     assert isinstance(run, OcrRun)
     assert run.exit_code == 0
@@ -534,10 +536,7 @@ def test_ocr_owned_launch_refusal_is_not_provider_cooldown(
     failures: list[Any] = []
     selector.record_failure = lambda route_id, failure, *, now: failures.append(failure)  # type: ignore[method-assign]
     reviewer = OpenCodeReviewer(
-        selector,
-        api_key_env="TEST_OCR_KEY",
-        out_dir=tmp_path / "out",
-        runner=runner,
+        selector, api_key_env="TEST_OCR_KEY", out_dir=tmp_path / "out", runner=runner
     )
 
     result = _run(reviewer)
@@ -560,10 +559,7 @@ def test_scope_review_failure_does_not_poison_provider_health(
     failures: list[Any] = []
     selector.record_failure = lambda route_id, failure, *, now: failures.append(failure)  # type: ignore[method-assign]
     reviewer = OpenCodeReviewer(
-        selector,
-        api_key_env="TEST_OCR_KEY",
-        out_dir=tmp_path / "out",
-        runner=runner,
+        selector, api_key_env="TEST_OCR_KEY", out_dir=tmp_path / "out", runner=runner
     )
 
     result = _run(reviewer)
@@ -577,7 +573,9 @@ def test_scope_review_failure_does_not_poison_provider_health(
 async def test_bounded_runner_copies_review_operation_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("verdict.orchestration.review.executor_timeout_within", lambda timeout: timeout)
+    monkeypatch.setattr(
+        "verdict.orchestration.review.executor_timeout_within", lambda timeout: timeout
+    )
     run_dir = tmp_path / "run"
     cgroup_root = tmp_path / "cgroup"
     run_dir.mkdir()
@@ -610,17 +608,11 @@ async def test_bounded_runner_copies_review_operation_context(
     monkeypatch.setattr("verdict.orchestration.review.subprocess.Popen", fake_popen)
 
     with operations.operation_scope(
-        run_dir,
-        phase="review",
-        attempt_id="review-round-1",
-        timeout_seconds=1,
+        run_dir, phase="review", attempt_id="review-round-1", timeout_seconds=1
     ):
         run = await _run_runner_bounded(
             lambda argv, *, env, timeout: _run_with_watchdog(
-                argv,
-                env=env,
-                timeout=timeout,
-                idle_seconds=None,
+                argv, env=env, timeout=timeout, idle_seconds=None
             ),
             ["ocr", "--version"],
             env={operations.RUN_DIR_ENV: str(run_dir), operations.TOKEN_ENV: "token"},
@@ -632,11 +624,7 @@ async def test_bounded_runner_copies_review_operation_context(
 
 
 async def test_run_with_watchdog_stop_event_kills_and_reaps_process_group() -> None:
-    script = (
-        "import signal,time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "time.sleep(30)\n"
-    )
+    script = "import signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
     stop_event = threading.Event()
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -676,8 +664,12 @@ def test_ocr_timeout_kills_process_group(monkeypatch: pytest.MonkeyPatch, tmp_pa
         def kill(self) -> None:
             self.returncode = -9
 
-    monkeypatch.setattr("verdict.orchestration.review.subprocess.Popen", lambda *a, **kw: FakeProc())
-    monkeypatch.setattr("verdict.orchestration.review.os.killpg", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(
+        "verdict.orchestration.review.subprocess.Popen", lambda *a, **kw: FakeProc()
+    )
+    monkeypatch.setattr(
+        "verdict.orchestration.review.os.killpg", lambda pid, sig: killed.append(pid)
+    )
     monkeypatch.setattr("verdict.orchestration.review.time.sleep", lambda delay: None)
 
     run = _run_with_watchdog(
