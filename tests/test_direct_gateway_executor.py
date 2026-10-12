@@ -1228,6 +1228,8 @@ def test_file_prompt_requests_complete_contents(tmp_path: Path) -> None:
     assert "COMPLETE" in prompt
     assert "no unified diffs" in prompt
     assert "<<<<<<< SEARCH" in prompt and ">>>>>>> REPLACE" in prompt
+    # Direct-gateway workers have no tools; Verdict runs the verification itself.
+    assert "no tools" in prompt and "runs VERIFICATION_COMMAND itself" in prompt
 
 
 @pytest.mark.asyncio
