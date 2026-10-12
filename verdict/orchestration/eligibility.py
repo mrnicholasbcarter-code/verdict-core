@@ -842,7 +842,7 @@ class EligibilityLadder:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, int, float, int, int, int, str]:
+    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
 
         Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
