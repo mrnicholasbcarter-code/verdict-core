@@ -303,6 +303,66 @@ def test_bounded_executor_call_times_out_whole_call(tmp_path: Path) -> None:
     assert not terminal.ok and terminal.error == "timeout"
 
 
+def test_bounded_planner_timeout_keeps_attested_terminal_for_session_feedback(
+    tmp_path: Path,
+) -> None:
+    """A cooperating adapter's own timeout must win the race with the outer bound.
+
+    Self-host run bod308-salvage-safe-20261011 lost a live 600 s planner timeout:
+    the outer bound fired first, replaced Prime's ``executor_kind="live"`` terminal
+    with an unattested one, and session feedback refused to learn from it.
+    """
+    import stat
+    import time
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.executors import PrimeHeadlessExecutor
+    from verdict.orchestration.health_cache import HealthCache
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.session_feedback import record_worker_failure
+
+    prime = tmp_path / "fake-prime"
+    prime.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    prime.chmod(prime.stat().st_mode | stat.S_IXUSR)
+    route = "antigravity/gemini-fixture"
+    started = time.monotonic()
+    terminal = asyncio.run(
+        operations.bounded_executor_call(
+            PrimeHeadlessExecutor(prime_bin=str(prime)),
+            "plan",
+            route_id=route,
+            cwd=tmp_path,
+            timeout_seconds=2.0,
+            run_dir=None,
+            phase="planner",
+            attempt_id="plan-1",
+        )
+    )
+    assert time.monotonic() - started < 2.5  # the whole-call bound still holds
+    assert not terminal.ok and terminal.error == "timeout"
+    assert terminal.executor_kind == "live"
+    now = datetime.now(timezone.utc)
+    failure = FailureIntelligence().classify(terminal, now=now)
+    assert (failure.category, failure.scope) == ("timeout", "route")
+    recorded = record_worker_failure(
+        HealthCache(tmp_path / "health.json"),
+        failure=failure,
+        terminal=terminal,
+        route_id=route,
+        provider_id="antigravity",
+        pool="antigravity",
+        now=now,
+        provenance="run:plan:a1",
+    )
+    assert recorded.recorded, recorded.reason
+
+
+def test_executor_timeout_reserve_is_bounded() -> None:
+    assert operations.executor_timeout_within(600) == 585
+    assert operations.executor_timeout_within(2.0) == pytest.approx(1.8)
+    assert 0 < operations.executor_timeout_within(0.01) < 0.01
+
+
 def test_same_logical_attempt_cannot_rekey() -> None:
     owner = operations.process_identity(os.getpid())
     assert owner is not None

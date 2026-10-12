@@ -301,6 +301,21 @@ def operation_scope(
                     operation["ended"] = clock()
 
 
+# Share of the fixed whole-call bound reserved for the executor to settle its
+# OWN timeout: launch preparation runs before an adapter starts its timer, and a
+# Prime process-group kill may wait up to two term-grace periods. Without this
+# reserve the outer bound always fires first and replaces the adapter-attested
+# terminal with an unattested one that session feedback must not learn from.
+_EXECUTOR_SETTLE_FRACTION = 0.1
+_EXECUTOR_SETTLE_CAP_SECONDS = 15.0
+
+
+def executor_timeout_within(timeout_seconds: float) -> float:
+    """Executor-own timeout that lets its attested terminal land inside the bound."""
+    reserve = min(_EXECUTOR_SETTLE_CAP_SECONDS, timeout_seconds * _EXECUTOR_SETTLE_FRACTION)
+    return timeout_seconds - reserve
+
+
 async def bounded_executor_call(
     executor: WorkerExecutor,
     prompt: str,
@@ -312,7 +327,13 @@ async def bounded_executor_call(
     phase: str,
     attempt_id: str,
 ) -> WorkerTerminal:
-    """Bound the whole initial/repair call, including direct HTTP multi-phase I/O."""
+    """Bound the whole initial/repair call, including direct HTTP multi-phase I/O.
+
+    The executor receives a slightly shorter timeout so a cooperating adapter
+    times out, cleans up and returns its own attested terminal first. The fixed
+    whole-call bound (and the lease deadline) stay ``timeout_seconds`` and only
+    fire for an executor that does not honour its timeout.
+    """
     # Lazy import keeps the self-registering launcher lightweight and standalone.
     from verdict.orchestration.contracts import WorkerTerminal
 
@@ -322,7 +343,12 @@ async def bounded_executor_call(
     ):
         try:
             return await asyncio.wait_for(
-                executor.run(prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds),
+                executor.run(
+                    prompt,
+                    route_id=route_id,
+                    cwd=cwd,
+                    timeout_seconds=executor_timeout_within(timeout_seconds),
+                ),
                 timeout_seconds,
             )
         except asyncio.TimeoutError:
