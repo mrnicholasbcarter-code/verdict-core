@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from tests.test_orch_stages import _Classifier, _Executor, _repo, _Reviewer, _Selector
 from verdict.orchestration import improvement
 from verdict.orchestration.contracts import WorkerTerminal, WorkGraph, WorkNode
+from verdict.orchestration.receipt import EventLog, write_run_receipt
 from verdict.orchestration.run import run_golden_path
 
 GRAPH = WorkGraph(
@@ -196,6 +198,118 @@ async def test_cycles_apply_each_lesson_then_stop_when_nothing_changes(tmp_path:
 async def test_cycle_count_is_bounded(tmp_path: Path, n: int) -> None:
     with pytest.raises(improvement.CycleError):
         await _loop(tmp_path, _repo(tmp_path), _Executor(), [], n)
+
+
+class _Clock:
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
+def _quota_supervise(tmp_path: Path, repo: Path, calls: list[list[str]], until: datetime) -> Any:
+    """A run blocked by a quota cooldown that resets at ``until``."""
+
+    async def supervise(run_id: str, argv: list[str]) -> None:
+        calls.append(argv)
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "graph.json").write_text(json.dumps({**GRAPH.to_dict(), "run_id": run_id}))
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit(
+            "cooldown",
+            node_id="a",
+            key="pool:cc",
+            scope="pool",
+            category="quota_exhausted",
+            until=until.isoformat(),
+        )
+        log.emit("run_finished", outcome="BLOCKED", reason="no eligible route: quota cooldown")
+        write_run_receipt(tmp_path / "runs" / run_id)
+
+    return supervise
+
+
+async def _wait_loop(
+    tmp_path: Path, until: datetime, clock: _Clock, n: int
+) -> tuple[Any, list[list[str]]]:
+    repo, calls = _repo(tmp_path), []
+    monkey = _quota_supervise(tmp_path, repo, calls, until)
+    results = await improvement.run_cycles(
+        "g",
+        repo=repo,
+        runs_dir=tmp_path / "runs",
+        cycles_dir=tmp_path / "cycles",
+        orchestrate_args=[],
+        supervise=monkey,
+        cycles=n,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    return results, calls
+
+
+async def test_quota_block_records_when_capacity_returns(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    results, _ = await _wait_loop(tmp_path, start + timedelta(hours=5), clock, 1)
+    assert results[0].layer == "selection"
+    assert results[0].wait_until == (start + timedelta(hours=5)).isoformat()
+
+
+async def test_a_short_capacity_wait_is_taken_once_then_the_run_is_retried(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    results, calls = await _wait_loop(tmp_path, start + timedelta(minutes=5), clock, 2)
+    # NOT_MET with a capacity reset -> same inputs held until the reset (one bounded
+    # wait) -> the run is retried after the reset.
+    assert [r.outcome for r in results] == ["NOT_MET", "REFUSED", "NOT_MET"]
+    assert results[1].wait_until and clock.now >= start + timedelta(minutes=5)
+    assert len(calls) == 2
+
+
+async def test_a_long_capacity_wait_ends_the_loop_with_the_reset_time(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    results, calls = await _wait_loop(tmp_path, start + timedelta(days=3), clock, 5)
+    assert [r.outcome for r in results] == ["NOT_MET", "REFUSED"]
+    assert "waiting for capacity" in results[-1].reason and results[-1].wait_until
+    assert clock.now == start and len(calls) == 1
+
+
+def test_a_capacity_wait_is_not_a_planner_lesson() -> None:
+    log = [
+        {
+            "stage": "learned",
+            "cycle_id": "c1",
+            "layer": "selection",
+            "wait_until": "2026-10-12T17:00:00+00:00",
+        }
+    ]
+    assert improvement.lessons_to_constraints(log) == ""
+
+
+async def test_after_the_reset_the_same_inputs_run_again(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    clock = _Clock(start)
+    await _wait_loop(tmp_path, start + timedelta(days=3), clock, 5)
+    clock.now = start + timedelta(days=3, minutes=1)
+    repo = tmp_path / "repo"
+    calls: list[list[str]] = []
+    again = await improvement.run_cycle(
+        "g",
+        repo=repo,
+        runs_dir=tmp_path / "runs",
+        cycles_dir=tmp_path / "cycles",
+        orchestrate_args=[],
+        supervise=_quota_supervise(tmp_path, repo, calls, clock.now),
+        clock=clock,
+    )
+    assert again.outcome == "NOT_MET" and len(calls) == 1
 
 
 def test_edited_cycle_log_cannot_inject_planner_text(tmp_path: Path) -> None:
