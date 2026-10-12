@@ -49,6 +49,7 @@ from verdict.decision_signals.contracts import (
 from verdict.orchestration.contracts import ReviewResult, TaskRequirements, WorkerTerminal
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
+from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.orchestration.recovery import FailureIntelligence
 from verdict.orchestration.run import run_golden_path
 from verdict.orchestration.runtime import RuntimePolicy
@@ -67,6 +68,9 @@ def _row(route_id: str, *, tools: bool = True, price: float | None = None) -> di
     return {
         "id": route_id,
         "owned_by": route_id.split("/", 1)[0],
+        # Fixture names are unknown to the classifier, and unknown capability is
+        # never treated as sufficient (BOD-271), so the inventory declares a tier.
+        "capability_tier": 1,
         "context_length": 200_000,
         "max_input_tokens": 200_000,
         "max_output_tokens": 32_000,
@@ -102,6 +106,17 @@ def fixture_inventory() -> list[dict[str, Any]]:
         _row("demo-busy/juniper-coder", price=0.0),  # provider rate-limited
         _row("demo-orphan/gum-coder", price=0.0),  # no connected account
     ]
+
+
+def fixture_health_cache(path: Path, now: datetime) -> HealthCache:
+    """Fixture agentic probe passes, so free routes may implement (BOD-304 gate)."""
+    cache = HealthCache(path)
+    for route in ("demo-free/birch-coder", "demo-free/cedar-coder", "demo-free2/elm-coder"):
+        cache.record(
+            route, ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True), now
+        )
+    cache.save()
+    return cache
 
 
 def fixture_connections() -> list[dict[str, Any]]:
@@ -267,6 +282,7 @@ async def run_demo(out: Path) -> int:
             prefer_providers=("demo-sub",),
             load=lambda route: sum(1 for r in inflight.values() if r == route),
             admitted=admitted,
+            health_cache=fixture_health_cache(root / "state" / "health-cache.json", now),
         )
         print(f"goal: {GOAL}")
         print(f"admission: {len(admitted)} of {len(rows)} fixture routes admitted")
