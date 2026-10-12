@@ -876,10 +876,43 @@ class HealthCache:
         object recorded but has not saved yet is never silently dropped. Nothing
         is written; the object stays unsaved until ``save()``.
         """
-        if self._snapshot() != self._disk_snapshot:
-            self._merge_in_memory_over_disk()
-        else:
+        if self._snapshot() == self._disk_snapshot:
             self._load()
+            return
+        # Keep only what this object changed since it last matched disk; records it
+        # merely read from disk must not be replayed over a newer disk state.
+        loaded = self._disk_snapshot
+        changed_routes = {
+            key: entry
+            for key, entry in self._routes.items()
+            if entry.to_dict() != loaded.get("routes", {}).get(key)
+        }
+        changed_cooldowns = {
+            key: cooldown
+            for key, cooldown in self._cooldowns.items()
+            if cooldown.to_dict() != loaded.get("cooldowns", {}).get(key)
+        }
+        changed_buckets = {
+            key: bucket
+            for key, bucket in self._buckets.items()
+            if bucket.to_dict() != loaded.get("buckets", {}).get(key)
+        }
+        cursor_changed = self._cursor != loaded.get("cursor", {})
+        cursor = dict(self._cursor)
+        self._load()
+        for key, entry in changed_routes.items():
+            disk = self._routes.get(key)
+            if disk is None or entry.checked_at > disk.checked_at:
+                self._routes[key] = entry
+        for cooldown in changed_cooldowns.values():
+            self.record_cooldown(cooldown)
+        for key, bucket in changed_buckets.items():
+            if key in self._buckets:
+                self._buckets[key].merge_from(bucket)
+            else:
+                self._buckets[key] = bucket
+        if cursor_changed:
+            self._cursor = cursor
 
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
@@ -980,9 +1013,10 @@ class HealthCache:
             )
             try:
                 self._merge_in_memory_over_disk()
-                self._disk_snapshot = self._snapshot()
-                body = json.dumps(self._disk_snapshot, indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -1054,9 +1088,10 @@ class HealthCache:
                         self._routes[route_id] = replace(
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
-                self._disk_snapshot = self._snapshot()
-                body = json.dumps(self._disk_snapshot, indent=2, sort_keys=True) + "\n"
+                snapshot = self._snapshot()
+                body = json.dumps(snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
+                self._disk_snapshot = snapshot
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
