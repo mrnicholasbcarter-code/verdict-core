@@ -181,9 +181,14 @@ def add_parsers(subparsers: Any) -> None:
         "improve",
         help="Run one improvement cycle: supervised run, measure, learn a lesson for the next",
     )
-    improve.add_argument("goal", help="Goal for the supervised orchestrate run")
+    improve.add_argument("goal", nargs="?", help="Goal for the supervised orchestrate run")
     count = improve.add_mutually_exclusive_group(required=True)
     count.add_argument("--once", action="store_true", help="Run exactly one cycle")
+    count.add_argument(
+        "--verify",
+        action="store_true",
+        help="Recompute every measured cycle from its run receipt; runs nothing",
+    )
     count.add_argument(
         "--cycles",
         type=int,
@@ -555,6 +560,15 @@ def _improve(args: argparse.Namespace) -> int:
     from verdict.orchestration.improvement import MAX_CYCLES, run_with_supervisor
     from verdict.orchestration.supervisor import resolve_cgroup_root
 
+    if args.verify:
+        from verdict.orchestration.improvement import verify_cycles
+
+        problems = verify_cycles(Path(args.cycles_dir).resolve(), Path(args.runs_dir).resolve())
+        print(json.dumps({"problems": problems}, indent=2))
+        return 0 if not problems else 1
+    if not args.goal:
+        print("BLOCKED: a goal is required unless --verify", file=sys.stderr)
+        return 2
     extra = [str(token) for token in (args.orchestrate_args or [])]
     while extra and extra[0] == "--":
         extra.pop(0)

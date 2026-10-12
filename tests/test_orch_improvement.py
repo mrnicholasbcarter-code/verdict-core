@@ -461,3 +461,30 @@ async def test_unindependent_review_is_not_met_and_needs_operator_action(tmp_pat
     # Not a planner lesson: the next cycle gets no constraints, so it is an unchanged relaunch.
     again = await improvement.run_cycle("g", **kwargs)
     assert again.outcome == "REFUSED" and len(calls) == 1
+
+
+async def test_cli_verify_recomputes_cycles_and_runs_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    from verdict.orchestration import cli
+
+    repo, calls = _repo(tmp_path), []
+    await _cycle(tmp_path, repo, _Executor(), calls)
+    parser = argparse.ArgumentParser()
+    cli.add_parsers(parser.add_subparsers(dest="command"))
+    argv = [
+        "improve",
+        "--verify",
+        "--runs-dir",
+        str(tmp_path / "runs"),
+        "--cycles-dir",
+        str(tmp_path / "cycles"),
+    ]
+    assert cli._improve(parser.parse_args(argv)) == 0
+    assert json.loads(capsys.readouterr().out) == {"problems": []}
+    log = tmp_path / "cycles" / improvement.CYCLES_FILE
+    log.write_text(log.read_text().replace('"metric_met": true', '"metric_met": false'))
+    assert cli._improve(parser.parse_args(argv)) == 1
+    assert len(calls) == 1

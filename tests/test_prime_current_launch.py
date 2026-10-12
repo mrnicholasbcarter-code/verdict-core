@@ -12,7 +12,9 @@ from verdict.orchestration.executors import PrimeHeadlessExecutor
 from verdict.orchestration.recovery import FailureIntelligence
 
 
+@pytest.mark.integration
 def test_real_default_worker_argv_is_accepted_without_model_call(tmp_path: Path) -> None:
+    """Needs a real prime-agent; select or deselect it with -m integration."""
     binary = shutil.which("prime-agent")
     if binary is None:
         pytest.skip("prime-agent is not installed")
