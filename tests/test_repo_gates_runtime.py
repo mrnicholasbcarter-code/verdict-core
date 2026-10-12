@@ -362,3 +362,21 @@ async def test_node_level_gates_leave_environment_problems_to_integration(
     result = await runtime.run()
     assert result.nodes["a"].state is NodeState.VALIDATED
     assert "exit 127" in result.nodes["i"].reason
+
+
+async def test_existing_gate_debt_is_not_blamed_on_the_node(repo: Path, gate_bin: Path) -> None:
+    """Review finding: a gate that already fails on the node's base is not the
+    node's fault; it is left to the integration barrier."""
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def debt(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "check" in argv:
+            return 1, "existing lint debt in untouched.py"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = debt
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED
+    assert not events.of("failure", "a")
+    assert "existing lint debt" in result.nodes["i"].reason

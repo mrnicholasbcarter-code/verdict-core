@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import inspect
 import os
+import secrets
 import shlex
 import shutil
 import time
@@ -1591,6 +1592,28 @@ class DagRuntime:
         finally:
             await self.git.remove_worktree(path)
 
+    async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
+        """Whether the failing gate named in ``gate_reason`` already fails on ``base``."""
+        name = gate_reason.removeprefix("repo_gate_failed: ").split(" ", 1)[0]
+        tag = secrets.token_hex(4)
+        scratch = self.run_dir / "worktrees" / f"gate-base-{tag}"
+        await self.git.add_worktree(scratch, f"verdict/gate-base-{tag}", base)
+        try:
+            for gate in discover_repo_gates(scratch):
+                if gate.name == name:
+                    resolved = _resolve_gate_argv(gate.argv, scratch)
+                    code, _ = await self.runner(
+                        resolved, scratch, self.policy.verify_timeout_seconds
+                    )
+                    return code != 0
+            return False
+        except (FileNotFoundError, ValueError):
+            return False
+        finally:
+            await self.git.remove_worktree(scratch)
+            with contextlib.suppress(OrchestrationError):
+                await self.git.call("branch", "-D", f"verdict/gate-base-{tag}")
+
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
         changed = await self.git.changed_files(worktree, base)
@@ -1654,8 +1677,10 @@ class DagRuntime:
                 # Declared repo gates also run here, so a lint or format slip goes back
                 # to this node's worker as correction feedback instead of blocking the
                 # run at integration, where no worker can fix it (ADR-036 amendment).
+                # Only failures the node introduced count: if a gate already fails on
+                # the node's base, that is existing debt for the integration barrier.
                 gate_reason = await self._run_repo_gates(run, worktree, worker_fixable_only=True)
-                if gate_reason:
+                if gate_reason and not await self._gate_fails_on_base(gate_reason, base):
                     return f"verification_failed: {gate_reason[:600]}"
         else:
             self.events.emit(
