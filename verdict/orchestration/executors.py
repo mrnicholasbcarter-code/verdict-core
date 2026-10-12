@@ -1358,10 +1358,13 @@ class DirectGatewayExecutor:
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 if is_implement:
-                    resp = await self._post_streamed(client, url, payload)
+                    # httpx timeouts are per read; bound the whole streamed answer too.
+                    resp = await asyncio.wait_for(
+                        self._post_streamed(client, url, payload), timeout_seconds
+                    )
                 else:
                     resp = await client.post(url, json=payload, headers=self._headers())
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, asyncio.TimeoutError):
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
@@ -1468,6 +1471,11 @@ class DirectGatewayExecutor:
 
         return terminal
 
+    @staticmethod
+    def _stream_failure(resp: httpx.Response, detail: str) -> httpx.Response:
+        """A 502 response for a stream that failed after the gateway answered 200."""
+        return httpx.Response(502, text=f"stream_failed: {detail}", request=resp.request)
+
     async def _post_streamed(
         self, client: httpx.AsyncClient, url: str, payload: dict[str, Any]
     ) -> httpx.Response:
@@ -1485,16 +1493,20 @@ class DirectGatewayExecutor:
             usage: Any = None
             model = ""
             response_id = ""
+            done = False
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    done = True
                     break
                 try:
                     chunk = json.loads(data)
                 except ValueError:
-                    continue
+                    return self._stream_failure(resp, "malformed stream event")
+                if chunk.get("error"):
+                    return self._stream_failure(resp, json.dumps(chunk["error"])[:400])
                 model = chunk.get("model") or model
                 response_id = chunk.get("id") or response_id
                 usage = chunk.get("usage") or usage
@@ -1503,6 +1515,9 @@ class DirectGatewayExecutor:
                     if isinstance(delta.get("content"), str):
                         parts.append(delta["content"])
                     finish = choice.get("finish_reason") or finish
+            if not done:
+                # A stream that ends without [DONE] was cut off; never a complete answer.
+                return self._stream_failure(resp, "stream ended before [DONE]")
         body = {
             "id": response_id,
             "model": model,

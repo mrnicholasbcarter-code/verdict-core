@@ -1533,3 +1533,43 @@ async def test_implement_requests_are_streamed_and_reassembled(tmp_path: Path) -
     )
     assert terminal.ok, terminal.error
     assert (tmp_path / "owned.py").read_text() == "x = 2\n"
+
+
+def _sse(*events: str) -> bytes:
+    return "\n\n".join(f"data: {e}" for e in events).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stream",
+    [
+        # finish_reason stop, but the stream is cut before [DONE]
+        _sse(
+            '{"choices":[{"delta":{"content":"FILE: owned.py"}}]}',
+            '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        ),
+        # an error chunk after HTTP 200
+        _sse(
+            '{"choices":[{"delta":{"content":"partial"}}]}',
+            '{"error":{"message":"upstream reset"}}',
+            "[DONE]",
+        ),
+        # a malformed event
+        _sse('{"choices":[{"delta":{"content":"partial"}}]}', "{not json", "[DONE]"),
+    ],
+)
+async def test_a_failed_stream_is_never_a_complete_answer(tmp_path: Path, stream: bytes) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+
+    class Streamed(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=stream, request=request)
+
+    async with httpx.AsyncClient(transport=Streamed()) as client:
+        resp = await DirectGatewayExecutor()._post_streamed(
+            client, "http://gw/v1/chat/completions", {"model": "cc/x", "stream": True}
+        )
+    assert resp.status_code == 502
+    terminal = DirectGatewayExecutor._interpret(resp, route_id="cc/x", duration=0.0)
+    assert not terminal.ok
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"
