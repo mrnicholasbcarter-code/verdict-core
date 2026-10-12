@@ -1350,11 +1350,17 @@ class DirectGatewayExecutor:
         payload = {
             "model": route_id,
             "messages": [{"role": "user", "content": effective_prompt}],
-            "stream": False,
+            # Long answers stream: the gateway ends a non-streamed request whose model
+            # has not started answering within its start deadline (30 s), and large
+            # implement prompts often take longer to produce the whole answer.
+            "stream": is_implement,
         }
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                resp = await client.post(url, json=payload, headers=self._headers())
+                if is_implement:
+                    resp = await self._post_streamed(client, url, payload)
+                else:
+                    resp = await client.post(url, json=payload, headers=self._headers())
         except httpx.TimeoutException:
             return WorkerTerminal(
                 executor_kind="live",
@@ -1461,6 +1467,54 @@ class DirectGatewayExecutor:
             )
 
         return terminal
+
+    async def _post_streamed(
+        self, client: httpx.AsyncClient, url: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        """POST a streamed chat completion and rebuild one non-streamed response.
+
+        The returned response has the same JSON shape ``_interpret`` reads, so
+        every existing check (status, finish_reason, usage, empty output) applies.
+        """
+        async with client.stream("POST", url, json=payload, headers=self._headers()) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                return resp
+            parts: list[str] = []
+            finish = ""
+            usage: Any = None
+            model = ""
+            response_id = ""
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                model = chunk.get("model") or model
+                response_id = chunk.get("id") or response_id
+                usage = chunk.get("usage") or usage
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta.get("content"), str):
+                        parts.append(delta["content"])
+                    finish = choice.get("finish_reason") or finish
+        body = {
+            "id": response_id,
+            "model": model,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "".join(parts)},
+                    "finish_reason": finish,
+                }
+            ],
+            "usage": usage,
+        }
+        return httpx.Response(200, json=body, request=resp.request)
 
     @staticmethod
     def _interpret(resp: httpx.Response, *, route_id: str, duration: float) -> WorkerTerminal:
