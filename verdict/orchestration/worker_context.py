@@ -51,7 +51,7 @@ _CAPABILITIES = (
 _CREDENTIAL_URL_RE = re.compile(r"(?i)\b(https?://)([^/\s:@]+(?::[^/\s@]*)?@)")
 _BEARER_CREDENTIAL_RE = re.compile(
     r"(?i)(\b(?:authorization\s*:\s*)?bearer\s+)"
-    r"(?=[A-Za-z0-9._~+/=-]{12,}\b)(?=[A-Za-z0-9._~+/=-]*\d)"
+    r"(?=[A-Za-z0-9._~+/=-]{12,}\b)"
     r"[A-Za-z0-9._~+/=-]+"
 )
 _TOKEN_PREFIX_RE = re.compile(
@@ -76,7 +76,11 @@ _SECRET_ASSIGNMENT_RE = re.compile(
         |:                         # YAML/JSON mapping: token: "..."
     )
     \s*
-    (?P<value>[^#\n]+)
+    (?P<value>
+        "(?:\\.|[^"\\])*"       # One quoted value, not later JSON fields.
+        |'(?:\\.|[^'\\])*'
+        |[^#\n]+
+    )
     """
 )
 

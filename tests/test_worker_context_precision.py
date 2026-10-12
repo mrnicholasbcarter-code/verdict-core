@@ -167,3 +167,32 @@ def test_production_orchestration_files_not_dropped_for_token_annotations() -> N
     assert any(
         unit.source_uri == "verdict/orchestration/executors.py" for unit in context.pack.units
     )
+
+
+def test_credentials_with_alphabetic_bearer_and_multiple_json_fields_are_excluded(
+    tmp_path: Path,
+) -> None:
+    from verdict.orchestration.worker_context import (
+        _contains_worker_context_secret,
+        _redact_worker_context_secrets,
+    )
+
+    credentials = (
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        '{"token": "abcdefghijklmnop1234", "other": "x"}',
+        '{"other": "x", "api_key": "abcdefghijklmnop1234"}',
+    )
+    for index, source in enumerate(credentials):
+        assert _contains_worker_context_secret(source)
+        redacted = _redact_worker_context_secrets(source)
+        assert "abcdefghijklmnop" not in redacted
+        assert "[redacted]" in redacted
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        _write_package(
+            directory, "def configure_client():\n    return None\n" + "# padding\n" * 400 + source
+        )
+        context = build_worker_context(_node(), repo=directory)
+        assert "abcdefghijklmnop" not in context.text
+        assert context.pack is not None
+        assert not any(unit.source_uri == "pkg/service.py" for unit in context.pack.units)
