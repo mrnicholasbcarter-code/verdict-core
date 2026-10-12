@@ -6,8 +6,9 @@ claims), classifies the first blocker into one layer, and records a lesson the
 next cycle passes to the planner through ``--constraints-file``. A cycle whose
 inputs match a previous NOT_MET cycle is refused before anything runs.
 
-The cycle log is append-only JSONL in ``<cycles-dir>/cycles.jsonl``; each
-cycle's lesson text lives beside it as ``<cycle-id>.lesson.txt``.
+The cycle log is append-only JSONL in ``<cycles-dir>/cycles.jsonl``. Lesson
+text comes from a fixed per-layer table, never from files, so the log can only
+select among Verdict's own lessons.
 """
 
 from __future__ import annotations
@@ -115,14 +116,18 @@ def input_fingerprint(goal: str, head: str, args: Sequence[str], constraints: st
     return _sha256(payload.encode())
 
 
-def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]], cycles_dir: Path) -> str:
-    """Distinct lessons from earlier NOT_MET cycles, newest first, within MAX_LESSON_BYTES."""
+def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]]) -> str:
+    """Distinct planner lessons from earlier NOT_MET cycles, newest first.
+
+    The text comes only from Verdict's fixed per-layer table, keyed by the
+    recorded layer, so nothing written to disk can put new text into a prompt.
+    """
     seen: list[str] = []
     for record in reversed(cycles):
-        if record.get("stage") != "learned" or record.get("operator_action"):
+        layer = str(record.get("layer", ""))
+        if record.get("stage") != "learned" or layer in _OPERATOR_LAYERS:
             continue
-        path = cycles_dir / f"{record['cycle_id']}.lesson.txt"
-        text = path.read_text().strip() if path.exists() else ""
+        text = _LAYER_LESSONS.get(layer)
         if text and text not in seen:
             seen.append(text)
     out = ""
@@ -194,7 +199,7 @@ async def run_cycle(
 ) -> CycleResult:
     """Plan, act, measure and learn once. ``supervise(run_id, argv)`` runs the run."""
     cycles = read_cycles(cycles_dir)
-    constraints = lessons_to_constraints(cycles, cycles_dir)
+    constraints = lessons_to_constraints(cycles)
     fingerprint = input_fingerprint(goal, repo_head(repo), orchestrate_args, constraints)
     cycle_id = datetime.now(timezone.utc).strftime("c%Y%m%dT%H%M%S%fZ")
     prior = [
@@ -242,7 +247,6 @@ async def run_cycle(
     if measured["metric_met"]:
         return CycleResult(cycle_id, "MET", str(measured.get("reason", "")), run_id)
     layer, evidence = classify_blocker(str(measured.get("reason", "")), run_dir)
-    (cycles_dir / f"{cycle_id}.lesson.txt").write_text(_LAYER_LESSONS[layer] + "\n")
     _append(
         cycles_dir,
         {
@@ -252,6 +256,7 @@ async def run_cycle(
             "run_id": run_id,
             "layer": layer,
             "evidence": evidence,
+            "lesson": _LAYER_LESSONS[layer],
             "operator_action": layer in _OPERATOR_LAYERS,
         },
     )

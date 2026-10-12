@@ -550,7 +550,8 @@ def _improve(args: argparse.Namespace) -> int:
     extra = [str(token) for token in (args.orchestrate_args or [])]
     while extra and extra[0] == "--":
         extra.pop(0)
-    if any(flag in extra for flag in ("--runs-dir", "--resume", "--constraints-file")):
+    owned = ("--runs-dir", "--resume", "--constraints-file")
+    if any(token == flag or token.startswith(flag + "=") for token in extra for flag in owned):
         print(
             "BLOCKED: improve sets --runs-dir, --resume and --constraints-file itself",
             file=sys.stderr,
