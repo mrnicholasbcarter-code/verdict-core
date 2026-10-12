@@ -296,7 +296,7 @@ def test_unsafe_existing_scope_refused_without_expansion(
     plan = preview_selection(
         settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
     )
-    assert f"enabledModels[0]:{entry}:{reason}" in plan.refusals
+    assert f"enabledModels[0]:{entry}:{reason}; remove it via Prime /scoped-models" in plan.refusals
     assert plan.to_dict()["unsafe_scope_tokens"] == [
         {
             "entry": entry,
@@ -346,9 +346,9 @@ def test_retained_scope_refusal_names_each_offending_token(tmp_path: Path) -> No
     ]
     assert data["refusals"] == [
         "identity_unsupported",
-        "enabledModels[1]:cx/gpt-5.4:ambiguous_fuzzy_match",
-        "enabledModels[3]:cc/claude-opus-5-5:ambiguous_fuzzy_match",
-        "enabledModels[4]:Gpt-6-Sol:not_in_registry",
+        f"enabledModels[1]:cx/gpt-5.4:ambiguous_fuzzy_match; {remedy}",
+        f"enabledModels[3]:cc/claude-opus-5-5:ambiguous_fuzzy_match; {remedy}",
+        f"enabledModels[4]:Gpt-6-Sol:not_in_registry; {remedy}",
     ]
     assert plan.retained == ("external", "historic/exact")
     assert plan.rows[0].selectable  # the selected row is fine; only scope blocks
@@ -364,7 +364,7 @@ def test_retained_scope_refusal_names_each_offending_token(tmp_path: Path) -> No
         clock=lambda: NOW,
     )
     assert result.status == "refused"
-    assert "enabledModels[4]:Gpt-6-Sol:not_in_registry" in result.reasons
+    assert f"enabledModels[4]:Gpt-6-Sol:not_in_registry; {remedy}" in result.reasons
     assert not list(tmp_path.iterdir())
 
 

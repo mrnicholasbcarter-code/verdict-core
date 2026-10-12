@@ -200,6 +200,10 @@ class UnsafeScopeToken:
     reason: str
     remediation: str = SCOPE_REMEDIATION
 
+    @property
+    def refusal(self) -> str:
+        return f"enabledModels[{self.index}]:{self.entry}:{self.reason}; {self.remediation}"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "entry": self.entry,
@@ -304,8 +308,9 @@ def preview_selection(
     Retained unknowns are not verified. Missing visibility offers separate
     ``verdict harness prime sync-models --dry-run``; this API never invokes it.
     Raw projection error/restriction text is untrusted and never rendered.
-    Each unsafe current scope token is named in ``unsafe_scope_tokens`` and in a
-    ``enabledModels[i]:token:reason`` refusal; the fail-closed decision is the same.
+    Each unsafe current scope token is named in ``unsafe_scope_tokens`` and in an
+    ``enabledModels[i]:token:reason; remediation`` refusal, which ``apply_selection``
+    also returns. The fail-closed decision is unchanged.
     """
     aware_time(now)
     before_raw = _scope(settings.value)
@@ -343,12 +348,10 @@ def preview_selection(
         binding = bind_prime_token(token, models)
         before.append(binding.token)
         if binding.disposition == "unsafe":
-            reason = binding.reasons[-1]
-            refusals.extend(
-                (binding.reasons[0], f"enabledModels[{index}]:{binding.token}:{reason}")
-            )
+            unsafe = UnsafeScopeToken(binding.token, index, binding.reasons[-1])
+            refusals.extend((binding.reasons[0], unsafe.refusal))
             warnings.append("resolve_unsafe_scope_through_Prime_/scoped-models")
-            unsafe_scope.append(UnsafeScopeToken(binding.token, index, reason))
+            unsafe_scope.append(unsafe)
         elif binding.registry_provider != "omniroute":
             retained.append(token)
             if binding.disposition == "retained_unknown":
