@@ -21,18 +21,22 @@ variable at runtime and never written into the repo, argv, or logs.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import inspect
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from verdict.orchestration.contracts import (
     FailureClassification,
@@ -43,7 +47,11 @@ from verdict.orchestration.contracts import (
     dispatch_blocker,
     require_launchable,
 )
-from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
+from verdict.orchestration.controller_operations import (
+    OwnershipError,
+    executor_timeout_within,
+    owned_worker_command,
+)
 from verdict.orchestration.provider_catalog import aliased_pools_for
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate", "make_subprocess_runner"]
@@ -94,11 +102,16 @@ class OcrRunner(Protocol):
     Implementations must never raise for process/transport failures and must
     enforce ``timeout`` themselves (returning ``timed_out=True`` on expiry).
     ``env`` carries the isolated ``HOME`` and must be applied to the child.
+    Some runners also accept an optional ``stop_event`` keyword for cooperative
+    cancellation and cleanup before the caller reports a terminal failure.
     """
 
     def __call__(
         self, argv: Sequence[str], *, env: Mapping[str, str], timeout: float
     ) -> OcrRun: ...
+
+
+_RUNNER_SETTLE_SECONDS = 2.0
 
 
 def make_subprocess_runner(idle_seconds: float | None = None) -> OcrRunner:
@@ -110,24 +123,39 @@ def make_subprocess_runner(idle_seconds: float | None = None) -> OcrRunner:
     reviewer is replaced long before the hard timeout.
     """
 
-    def run(argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
-        return _run_with_watchdog(argv, env=env, timeout=timeout, idle_seconds=idle_seconds)
+    def run(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        stop_event: threading.Event | None = None,
+    ) -> OcrRun:
+        return _run_with_watchdog(
+            argv,
+            env=env,
+            timeout=timeout,
+            idle_seconds=idle_seconds,
+            stop_event=stop_event,
+        )
 
     return run
 
 
 def _run_with_watchdog(
-    argv: Sequence[str], *, env: Mapping[str, str], timeout: float, idle_seconds: float | None
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    timeout: float,
+    idle_seconds: float | None,
+    stop_event: threading.Event | None = None,
 ) -> OcrRun:
     import signal
-    import threading
-    import time
 
     environment = {**os.environ, **env}
     try:
         argv = owned_worker_command(list(argv), environment)
     except OwnershipError as exc:
-        return OcrRun(exit_code=125, stderr=f"owned review launch refused: {exc}")
+        return OcrRun(exit_code=125, stderr=f"owned worker launch refused: {exc}")
     output_path = Path(argv[argv.index("--output") + 1]) if "--output" in argv else None
     try:
         proc = subprocess.Popen(
@@ -169,6 +197,9 @@ def _run_with_watchdog(
                 output_size = size
                 if size >= 0:
                     last_activity[0] = now
+        if stop_event is not None and stop_event.is_set():
+            reason = "cancelled"
+            break
         if now - started >= timeout:
             reason = "timeout"
             break
@@ -191,10 +222,83 @@ def _run_with_watchdog(
             exit_code=124,
             stdout=stdout,
             stderr=stderr,
-            timed_out=reason == "timeout",
+            timed_out=reason in {"timeout", "cancelled"},
             idle_timed_out=reason == "idle",
         )
     return OcrRun(exit_code=proc.returncode or 0, stdout=stdout, stderr=stderr)
+
+
+def _call_accepts_keyword(callable_obj: Callable[..., object], keyword: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+    return keyword in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
+async def _select_bounded(
+    select: Callable[..., tuple[Any, tuple[Any, ...]]],
+    requirements: TaskRequirements,
+    *,
+    now: datetime,
+    timeout_seconds: float,
+) -> tuple[Any | None, tuple[Any, ...]] | None:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(select, requirements, now=now), timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        return None
+
+
+async def _run_runner_bounded(
+    runner: OcrRunner,
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    timeout_seconds: float,
+) -> OcrRun:
+    runner_timeout = executor_timeout_within(timeout_seconds) if timeout_seconds > 0 else 0.0
+    runner_timeout = max(0.0, runner_timeout)
+    settle_budget = max(0.0, timeout_seconds - runner_timeout)
+    stop_event = threading.Event()
+    accepts_stop_event = _call_accepts_keyword(cast(Callable[..., object], runner), "stop_event")
+
+    def call_runner() -> OcrRun:
+        if accepts_stop_event:
+            return cast(
+                Callable[..., OcrRun], runner
+            )(argv, env=env, timeout=runner_timeout, stop_event=stop_event)
+        return runner(argv, env=env, timeout=runner_timeout)
+
+    task = asyncio.create_task(asyncio.to_thread(call_runner))
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), runner_timeout)
+    except asyncio.TimeoutError:
+        stop_event.set()
+        cleanup_wait = min(_RUNNER_SETTLE_SECONDS, settle_budget)
+        try:
+            run = await asyncio.wait_for(asyncio.shield(task), cleanup_wait)
+            return OcrRun(
+                exit_code=run.exit_code,
+                stdout=run.stdout,
+                stderr="ocr review stopped after cancellation",
+                timed_out=False,
+                idle_timed_out=run.idle_timed_out,
+            )
+        except asyncio.TimeoutError:
+            return OcrRun(
+                exit_code=124,
+                stderr="ocr review cleanup UNKNOWN after cancellation",
+            )
+    except asyncio.CancelledError:
+        stop_event.set()
+        cleanup_wait = min(_RUNNER_SETTLE_SECONDS, settle_budget)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), cleanup_wait)
+        raise
 
 
 _subprocess_runner = make_subprocess_runner()
@@ -247,7 +351,7 @@ class OpenCodeReviewer:
         now = datetime.now(timezone.utc)
         budget = self._timeout_seconds
         if timeout_seconds is not None:
-            budget = min(budget, float(timeout_seconds))
+            budget = min(budget, executor_timeout_within(float(timeout_seconds)))
         review_deadline = time.monotonic() + budget
         requirements = TaskRequirements(
             required_capabilities=frozenset({"tools"}),
@@ -261,9 +365,47 @@ class OpenCodeReviewer:
         last: ReviewResult | None = None
         attempts: list[dict[str, object]] = []
         for _attempt in range(self._max_reviewer_attempts):
-            chosen, _verdicts = self._selector.select(
-                replace(requirements, exclude_routes=frozenset(exclude_routes | tried)), now=now
+            started = time.monotonic()
+            remaining = review_deadline - started
+            if remaining <= 0:
+                return ReviewResult(
+                    status="ERROR",
+                    reviewer=self._REVIEWER_PREFIX,
+                    route_id="",
+                    detail="reviewer selection timed out; selector ownership/work unknown",
+                    attempts=(
+                        {
+                            "route_id": "",
+                            "status": "ERROR",
+                            "category": "selector_timeout",
+                            "scope": "none",
+                            "duration_seconds": 0.0,
+                        },
+                    ),
+                )
+            selection = await _select_bounded(
+                self._selector.select,
+                replace(requirements, exclude_routes=frozenset(exclude_routes | tried)),
+                now=now,
+                timeout_seconds=executor_timeout_within(remaining),
             )
+            if selection is None:
+                return ReviewResult(
+                    status="ERROR",
+                    reviewer=self._REVIEWER_PREFIX,
+                    route_id="",
+                    detail="reviewer selection timed out; selector ownership/work unknown",
+                    attempts=(
+                        {
+                            "route_id": "",
+                            "status": "ERROR",
+                            "category": "selector_timeout",
+                            "scope": "none",
+                            "duration_seconds": round(time.monotonic() - started, 3),
+                        },
+                    ),
+                )
+            chosen, _verdicts = selection
             if chosen is None:
                 break
             # Launch gate: the reviewer route must be proven healthy or confirmed
@@ -308,6 +450,7 @@ class OpenCodeReviewer:
                         "route_id": chosen.route_id,
                         "status": result.status,
                         "category": "",
+                        "scope": "none",
                         "duration_seconds": round(time.monotonic() - started, 3),
                     }
                 )
@@ -423,7 +566,12 @@ class OpenCodeReviewer:
                 "--output",
                 str(raw_path),
             ]
-            run = self._runner(argv, env={"HOME": str(home_dir)}, timeout=timeout_seconds)
+            run = await _run_runner_bounded(
+                self._runner,
+                argv,
+                env={"HOME": str(home_dir)},
+                timeout_seconds=timeout_seconds,
+            )
         finally:
             shutil.rmtree(home_dir, ignore_errors=True)
 
@@ -452,6 +600,15 @@ class OpenCodeReviewer:
 
     def _interpret(self, run: OcrRun, raw_path: Path, route_id: str) -> ReviewResult:
         raw_ref = str(raw_path)
+        if "ocr review cleanup UNKNOWN" in run.stderr:
+            return self._error(route_id, raw_ref, run.stderr)
+        if "ocr review stopped after cancellation" in run.stderr:
+            return self._error(route_id, raw_ref, run.stderr)
+        if run.exit_code == 125 and (
+            "owned worker launch refused" in run.stderr
+            or "owned review launch refused" in run.stderr
+        ):
+            return self._error(route_id, raw_ref, run.stderr)
         if run.timed_out:
             return self._error(route_id, raw_ref, "ocr review timed out")
         if run.idle_timed_out:
@@ -461,8 +618,6 @@ class OpenCodeReviewer:
                 raw_ref,
                 f"ocr review timed out: no progress for {self._idle_timeout_seconds}s",
             )
-        if run.exit_code == 125 and "owned review launch refused" in run.stderr:
-            return self._error(route_id, raw_ref, run.stderr)
         if run.exit_code != 0:
             return self._error(route_id, raw_ref, f"ocr review exited {run.exit_code}")
         if not raw_path.exists():
