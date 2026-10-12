@@ -296,6 +296,7 @@ async def plan_with_failover(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     events: Any,
+    planner_executor: WorkerExecutor | None = None,
     run_dir: Path | None = None,
     max_attempts: int = 6,
     timeout_seconds: float = 600,
@@ -378,7 +379,7 @@ async def plan_with_failover(
             graph, terminal = await FrontierPlanner().plan(
                 goal,
                 repo=repo,
-                executor=executor,
+                executor=planner_executor or executor,
                 route_id=choice.route_id,
                 timeout_seconds=timeout_seconds,
                 constraints=constraints,
@@ -639,6 +640,7 @@ async def run_golden_path(
     executor: WorkerExecutor,
     classifier: FailureClassifier,
     reviewer: Reviewer | None,
+    planner_executor: WorkerExecutor | None = None,
     graph: WorkGraph | None = None,
     run_id: str | None = None,
     policy: RuntimePolicy = RuntimePolicy(),
@@ -676,8 +678,13 @@ async def run_golden_path(
                 graph_path.write_text(json.dumps(existing, indent=2))
         except (OSError, ValueError):
             pass  # Existing graph validation below fails closed as before.
-    # BOD-188: record executor identity for harness-independence proof
-    _executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    # BOD-188: record executor identity for harness-independence proof.
+    # Planning can now use a distinct answer-only backend from worker dispatch.
+    _worker_executor_identity = getattr(executor, "__class__", type(executor)).__name__
+    _planner_executor_for_event = planner_executor or executor
+    _planner_executor_identity = getattr(
+        _planner_executor_for_event, "__class__", type(_planner_executor_for_event)
+    ).__name__
     _executor_labels: dict[str, str] = {
         "DirectGatewayExecutor": "direct-gateway",
         "FaultInjectingExecutor": "fault-injecting",
@@ -685,6 +692,8 @@ async def run_golden_path(
         "PrimeHeadlessExecutor": "prime-headless",
         "ScriptedExecutor": "scripted",
     }
+    _worker_backend = _executor_labels.get(_worker_executor_identity, _worker_executor_identity)
+    _planner_backend = _executor_labels.get(_planner_executor_identity, _planner_executor_identity)
     # BOD-225: capture once; resumed starts keep the original producer. Legacy
     # runs without producer remain legacy, even after an upgrade of Verdict.
     prior_started = next((e for e in log.read() if e.type == "run_started"), None)
@@ -700,7 +709,9 @@ async def run_golden_path(
         controller_route=os.environ.get("VERDICT_ACTIVE_CONTROLLER_ROUTE", ""),
         controller_generation=os.environ.get("VERDICT_CONTROLLER_GENERATION", ""),
         resumed_nodes=sorted(resumed),
-        executor=_executor_labels.get(_executor_identity, _executor_identity),
+        executor=_worker_backend,
+        worker_backend=_worker_backend,
+        planner_backend=_planner_backend,
         retry_budget={
             "max_attempts_per_node": policy.max_attempts_per_node,
             "max_parallel": policy.max_parallel,
@@ -925,6 +936,7 @@ async def run_golden_path(
                 selector=selector,
                 executor=executor,
                 classifier=classifier,
+                planner_executor=planner_executor,
                 events=events,
                 run_dir=run_dir,
                 constraints=constraints,

@@ -670,15 +670,53 @@ async def run_executor(
 
 
 class AnswerOnlyExecutor:
-    """Adapter that runs every call on ``inner`` with ``tools=False`` when supported.
+    """Adapter for planner calls that need one answer, not an agent loop.
 
-    The frontier planner wraps its executor in this adapter. The planning
-    prompt already carries the repo map and the output contract, so the call
-    needs one JSON answer, not an agent tool loop. Worker calls never use it.
+    Use this only around an executor that has a supported answer-only contract
+    (for example ``DirectGatewayExecutor`` via chat/completions, or a legacy
+    test adapter with an explicit tool-disabling flag). Prime 0.10 no longer
+    exposes a supported ``--no-tools`` CLI flag, so wrapping a live
+    ``PrimeHeadlessExecutor`` is refused instead of silently planning with
+    tools enabled.
     """
 
     def __init__(self, inner: WorkerExecutor) -> None:
         self.inner = inner
+        self._require_supported_answer_only(inner)
+
+    @classmethod
+    def _require_supported_answer_only(cls, executor: WorkerExecutor) -> None:
+        if not cls._supports_answer_only(executor):
+            raise OrchestrationError(
+                "planner executor must support answer-only execution; use direct-gateway "
+                "for planning instead of Prime headless"
+            )
+
+    @classmethod
+    def _supports_answer_only(cls, executor: object) -> bool:
+        visited: set[int] = set()
+        stack: list[object] = [executor]
+        while stack:
+            current = stack.pop()
+            if id(current) in visited:
+                continue
+            visited.add(id(current))
+            if getattr(current, "answer_only_supported", False):
+                return True
+            inner = getattr(current, "inner", None)
+            if inner is not None:
+                stack.append(inner)
+            picker = getattr(current, "_pick", None)
+            if callable(picker):
+                try:
+                    picked = picker(PurePosixPath("."))
+                except Exception:
+                    picked = None
+                if picked is not None:
+                    stack.append(picked)
+            if current.__class__.__module__ != "verdict.orchestration.executors":
+                return True
+        return False
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
