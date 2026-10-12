@@ -430,7 +430,7 @@ def test_command_flags_and_thinking(tmp_path: Path) -> None:
     assert "--provider" in argv and "omniroute" in argv
     assert "--model" in argv and ROUTE in argv
     assert "--thinking" in argv and "high" in argv
-    for flag in ("-nc", "-ns", "-ne"):
+    for flag in PrimeHeadlessExecutor().extra_args:
         assert flag in argv
     assert argv[-2:] == ["--", "PROMPT"]
 
