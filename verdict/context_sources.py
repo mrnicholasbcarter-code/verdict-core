@@ -33,6 +33,7 @@ PROVIDER_ID = "native.verdict"
 DEFAULT_MAX_FILE_BYTES = 8_192
 DEFAULT_MAX_UNITS = 8
 MAX_SCAN_FILES = 20_000
+MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024  # larger generated files are not hand-written source
 _SKIP_DIR_PARTS = {
     ".git",
     ".hg",
@@ -211,8 +212,10 @@ def _source_allowed(path: Path, hints: Mapping[str, Any] | None) -> bool:
 
 
 def _mentions(path: Path, needles: tuple[bytes, ...]) -> bool:
+    """Whether the file names a symbol, reading at most MAX_SCAN_FILE_BYTES."""
     try:
-        data = path.read_bytes()
+        with path.open("rb") as handle:
+            data = handle.read(MAX_SCAN_FILE_BYTES)
     except OSError:
         return False
     data = data.lower()  # test names match symbols case-insensitively (CodeGraphEngine.tests_for)
@@ -235,12 +238,12 @@ def _iter_py_files(
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
-        scanned += len(filenames)
-        if scanned > MAX_SCAN_FILES:
-            return sorted(files), True
         for name in filenames:
             if not name.endswith(".py"):
                 continue
+            scanned += 1
+            if scanned > MAX_SCAN_FILES:
+                return sorted(files), True
             path = Path(dirpath, name)
             if not path.is_file() or (needles and not _mentions(path, needles)):
                 continue
