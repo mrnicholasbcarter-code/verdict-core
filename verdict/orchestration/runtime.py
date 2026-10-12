@@ -270,6 +270,15 @@ class Git:
         return await self.head(cwd)
 
 
+def _blocked_report(output: str) -> str:
+    """The worker's ``RESULT: BLOCKED <reason>`` line, first or final; else ""."""
+    lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+    for line in (lines[:1] + lines[-1:]) if lines else []:
+        if line.upper().startswith("RESULT: BLOCKED"):
+            return line
+    return ""
+
+
 class DagRuntime:
     """Execute a validated ``WorkGraph`` to an explicit COMPLETE or BLOCKED result."""
 
@@ -1303,12 +1312,13 @@ class DagRuntime:
                     ),
                 )
                 self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
-                if terminal.ok and terminal.output.strip().upper().startswith("RESULT: BLOCKED"):
+                blocked_line = _blocked_report(terminal.output) if terminal.ok else ""
+                if blocked_line:
                     terminal = WorkerTerminal(
                         ok=False,
                         output=terminal.output,
                         model=terminal.model,
-                        error="worker_blocked: " + terminal.output.strip()[:200],
+                        error="worker_blocked: " + blocked_line[:200],
                         session_ref=terminal.session_ref,
                         executor_kind=terminal.executor_kind,
                         harness=terminal.harness,

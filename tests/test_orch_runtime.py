@@ -572,6 +572,31 @@ async def test_review_falls_back_to_route_independence_when_no_other_family(repo
     assert levels == ["family", "route"]
 
 
+async def test_a_worker_blocked_report_as_its_final_line_is_task_feedback(repo: Path) -> None:
+    """Live finding 2026-10-12: RESULT: BLOCKED after an explanation was missed."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    class Explains(Executor):
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            return WorkerTerminal(
+                ok=True,
+                output="The file is truncated.\n\nRESULT: BLOCKED a.txt truncated",
+                model=route_id,
+            )
+
+    rt, ev, _ = make(
+        repo, WorkGraph("g", (node("a"),)), Explains({}), ["cc/s", "cx/g"], max_attempts_per_node=1
+    )
+    rt.classifier = FailureIntelligence()
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    failure = ev.of("failure", "a")[0]
+    assert failure["category"] == "worker_blocked"
+    assert not ev.of("cooldown", "a")
+
+
 async def test_reviewer_excludes_the_family_of_a_failed_replaced_attempt(repo: Path) -> None:
     """Live finding 2026-10-12: a failed agy/gemini attempt was replaced by cc/claude,
     then agy/gemini reviewed; independence was not shown. Every attempted route counts."""

@@ -731,6 +731,47 @@ class ScriptedExecutor:
 # ---------------------------------------------------------------- direct gateway
 
 
+def _focused_view(text: str, prompt: str, budget: int) -> str:
+    """Line-numbered excerpts of ``text`` around identifiers the prompt names.
+
+    A large owned file cannot be shown whole, so the worker sees the regions it
+    is most likely to edit (and edits them with exact SEARCH/REPLACE hunks).
+    Names that are rare in the file (``_execute``, ``attempt_timeout_seconds``)
+    are specific evidence; common ones (``self``, ``policy``) are not, so regions
+    are taken rarest-name first until the budget is used.
+    """
+    lines = text.splitlines()
+    names = {n for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", prompt) if not n.isupper()}
+    counts = {n: sum(n in line for line in lines) for n in names}
+    ranked = sorted((c, n) for n, c in counts.items() if c)
+    keep: set[int] = set()
+    used = 0
+    for _, name in ranked:
+        for i, line in enumerate(lines):
+            if name not in line:
+                continue
+            window = set(range(max(0, i - 12), min(len(lines), i + 13))) - keep
+            cost = sum(len(lines[j].encode()) + 8 for j in window)
+            if used + cost > budget:
+                break
+            keep |= window
+            used += cost
+    if not keep:
+        keep = set(range(min(len(lines), 80)))
+    out: list[str] = []
+    previous = -2
+    for i in sorted(keep):
+        out.append(("...\n" if i != previous + 1 else "") + f"{i + 1}: {lines[i]}\n")
+        previous = i
+    return "".join(out)
+
+
+def _final_result_line(output: str) -> str:
+    """The worker's last non-empty line, upper-cased (where RESULT: DONE/BLOCKED goes)."""
+    lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+    return lines[-1].upper() if lines else ""
+
+
 class DirectGatewayExecutor:
     """Run one prompt on one exact OmniRoute route via direct HTTP — no Prime harness.
 
@@ -1040,6 +1081,45 @@ class DirectGatewayExecutor:
 
         return None
 
+    _EDIT_RE = re.compile(
+        r"^<{7} SEARCH\n(.*?)^={7}\n(.*?)^>{7} REPLACE\n?", re.DOTALL | re.MULTILINE
+    )
+
+    @staticmethod
+    def _resolve_edits(
+        files: dict[str, str], owned_files: list[str], cwd: Path
+    ) -> tuple[dict[str, str], str | None]:
+        """Turn EDIT blocks into complete new contents; FILE blocks pass through.
+
+        A block whose body is a sequence of SEARCH/REPLACE hunks edits the current
+        file: each SEARCH text must occur exactly once (after earlier hunks), so a
+        model that cannot see the whole file can still change it without guessing.
+        """
+        resolved: dict[str, str] = {}
+        for rel, body in files.items():
+            hunks = DirectGatewayExecutor._EDIT_RE.findall(body)
+            if not hunks:
+                resolved[rel] = body
+                continue
+            if DirectGatewayExecutor._EDIT_RE.sub("", body).strip():
+                return {}, f"diff_rejected: text outside SEARCH/REPLACE hunks for {rel}"
+            error = DirectGatewayExecutor._validate_file_paths({rel: ""}, owned_files, cwd)
+            if error:
+                return {}, error
+            path = cwd / rel
+            try:
+                current = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                return {}, f"diff_rejected: cannot read {rel} for SEARCH/REPLACE: {exc}"
+            for number, (search, replacement) in enumerate(hunks, 1):
+                count = current.count(search) if search else 0
+                if count != 1:
+                    found = "not found" if count == 0 else f"found {count} times"
+                    return {}, f"diff_rejected: {rel} hunk {number}: SEARCH text {found}"
+                current = current.replace(search, replacement, 1)
+            resolved[rel] = current
+        return resolved, None
+
     def _apply_files(self, files: dict[str, str], owned_files: list[str], cwd: Path) -> str | None:
         """Validate every target before writing; replace each file atomically.
 
@@ -1101,13 +1181,15 @@ class DirectGatewayExecutor:
         """Append whole-file instructions and current contents (legacy method name)."""
         parts: list[str] = [prompt]
         parts.append("")
-        parts.append("OUTPUT_FORMAT: complete files (no diffs)")
-        parts.append("For each changed owned file, output a header FILE: <relative path>.")
-        parts.append("Immediately follow the header with a fenced block of COMPLETE new contents.")
+        parts.append("OUTPUT_FORMAT: one FILE block per changed owned file (no unified diffs)")
+        parts.append("Each block is a header FILE: <relative path> followed by one fenced block.")
+        parts.append("The fenced block holds EITHER the COMPLETE new file contents,")
+        parts.append("OR one or more exact edit hunks, each written as:")
+        parts.append("<<<<<<< SEARCH\n<exact current lines>\n=======\n<new lines>\n>>>>>>> REPLACE")
+        parts.append("Use hunks for any file shown TRUNCATED or OMITTED below: you cannot")
+        parts.append("rewrite it whole. Each SEARCH text must match the current file exactly")
+        parts.append("and occur exactly once; include enough surrounding lines to be unique.")
         parts.append("Example: FILE: src/example.py\n```python\nvalue = 1\n```")
-        parts.append(
-            "Preserve indentation and include the whole file, not snippets or unified diffs."
-        )
         parts.append("Use longer fences if the contents contain triple backticks.")
         parts.append("Empty content is allowed: FILE header, opening fence, then closing fence.")
         parts.append("Only modify files listed in OWNED_FILES. Never include paths outside them.")
@@ -1132,16 +1214,22 @@ class DirectGatewayExecutor:
             if not data:
                 parts.append(f"--- {rel} (EXISTS and is EMPTY — output COMPLETE contents) ---")
                 continue
-            keep = min(len(data), remaining)
-            if keep <= 0:
-                parts.append(f"--- {rel} (omitted: budget exhausted) ---")
+            share = max(0, remaining // max(1, len(owned_files) - owned_files.index(rel)))
+            if len(data) <= share:
+                parts.append(f"--- {rel} ---")
+                parts.append(data.decode("utf-8", errors="replace"))
+                remaining -= len(data)
                 continue
-            text = data[:keep].decode("utf-8", errors="replace")
-            parts.append(f"--- {rel} ---")
-            parts.append(text)
-            if keep < len(data):
-                parts.append(f"[TRUNCATED: {len(data) - keep} bytes omitted]")
-            remaining -= keep
+            if share <= 0:
+                parts.append(f"--- {rel} (OMITTED: budget exhausted; edit with SEARCH/REPLACE) ---")
+                continue
+            view = _focused_view(data.decode("utf-8", errors="replace"), prompt, share)
+            parts.append(
+                f"--- {rel} (TRUNCATED: {len(data)} bytes; excerpts shown with line numbers; "
+                "edit with SEARCH/REPLACE, never the whole file) ---"
+            )
+            parts.append(view)
+            remaining -= len(view.encode())
         return "\n".join(parts)
 
     async def _apply_diff(self, diff_text: str, cwd: Path) -> tuple[bool, str]:
@@ -1245,13 +1333,21 @@ class DirectGatewayExecutor:
         if not is_implement or not terminal.ok:
             return terminal
 
+        # A worker that reports its task blocked (final RESULT line) and sends no
+        # FILE blocks is task feedback for the runtime, not a malformed edit.
+        if _final_result_line(terminal.output).startswith("RESULT: BLOCKED") and (
+            "FILE:" not in terminal.output
+        ):
+            return terminal
+
         # Prefer complete FILE blocks; only legacy output may use diff fallback.
         try:
             files = self._extract_files(terminal.output)
         except ValueError as exc:
             return replace(terminal, ok=False, error=str(exc))
         if files is not None:
-            error = self._apply_files(files, owned_files, cwd)
+            files, error = self._resolve_edits(files, owned_files, cwd)
+            error = error or self._apply_files(files, owned_files, cwd)
             return replace(terminal, ok=False, error=error) if error else terminal
 
         # --- Legacy implement node: extract, validate, and apply the diff ---
