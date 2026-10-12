@@ -10,12 +10,17 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
-    # A bare "Bearer <token>" (no Authorization: label), as models often echo
-    # it. Real tokens contain a digit; English words and file names do not
-    # need to ("Bearer authentication"), so require one.
-    re.compile(r"(?i)(\bbearer\s+)(?=[A-Za-z._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}"),
+# Patterns that match a credential by its own shape, with no label context.
+# Every redactor in Verdict applies these, so a key caught in one place is
+# caught everywhere.
+CREDENTIAL_SHAPES = (
+    # A bare "Bearer <token>" (no Authorization: label), as models often echo it.
+    # Real tokens contain a digit or are long random runs; English words and file
+    # names after "Bearer" do not ("Bearer authentication", "authentication-x.py").
+    re.compile(
+        r"(?i)(\bbearer\s+)"
+        r"(?:(?=[A-Za-z._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}|[A-Za-z0-9_~+/=-]{20,}(?![.A-Za-z]))"
+    ),
     # Common provider key prefixes that appear without any key=/key: label.
     # Keys contain a digit, or are long (32+) random runs. An sk- run followed
     # by "." or "/" plus an alphanumeric is a file name or path segment, not a
@@ -31,9 +36,16 @@ _SECRET_PATTERNS = (
         r"|AKIA[0-9A-Z]{16}"
         r"|AIza[0-9A-Za-z_-]{30,})"
     ),
+)
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
+    *CREDENTIAL_SHAPES,
     re.compile(
         r"""(?ix)
-        ((?:["']?)(?:api[_-]?key|token|password|secret)(?:["']?)\s*[=:]\s*)
+        ((?:["']?)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*
+        (?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)
+        (?:[_-][A-Za-z0-9]+)*(?:["']?)\s*[=:]\s*)
         (?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s&,;]+)
         """
     ),

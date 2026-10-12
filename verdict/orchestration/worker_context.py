@@ -37,7 +37,7 @@ from verdict.context_sources import (
     ProviderResult,
 )
 from verdict.orchestration.contracts import WorkNode
-from verdict.security import redact_text
+from verdict.security import CREDENTIAL_SHAPES, redact_text
 
 _MAX_FILE_BYTES = 262_144
 _MAX_EXCERPT_BYTES = 2_048
@@ -51,26 +51,11 @@ _CAPABILITIES = (
 )
 
 _CREDENTIAL_URL_RE = re.compile(r"(?i)\b(https?://)([^/\s:@]+(?::[^/\s@]*)?@)")
-_BEARER_CREDENTIAL_RE = re.compile(
-    r"(?i)(\b(?:authorization\s*:\s*)?bearer\s+)"
-    r"(?=[A-Za-z0-9._~+/=-]{12,}\b)"
-    r"[A-Za-z0-9._~+/=-]+"
-)
-_TOKEN_PREFIX_RE = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:sk-(?:ant-|proj-|or-v1-)?"
-    r"(?:(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]{16,}|[A-Za-z0-9_-]{32,})"
-    r"(?![A-Za-z0-9_-]|[./][A-Za-z0-9])"
-    r"|gh[pousr]_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|xox[abprs]-(?=[A-Za-z-]*\d)[A-Za-z0-9-]{10,}"
-    r"|AKIA[0-9A-Z]{16}"
-    r"|AIza[0-9A-Za-z_-]{30,})"
-)
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"""(?ix)
-    (?<![A-Za-z0-9_-])
-    ["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)["']?
+    (?<![A-Za-z0-9])
+    ["']?(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)
+    (?:[_-][A-Za-z0-9]+)*["']?
     \s*
     (?:
         :\s*[^=\n#]{1,80}\s*=  # Python annotated assignment: token: str = "..."
@@ -144,16 +129,22 @@ def _assignment_value_is_secret(raw: str) -> bool:
         )
     ):
         return False
-    return bool(_TOKEN_PREFIX_RE.search(value)) or bool(
+    return any(shape.search(value) for shape in CREDENTIAL_SHAPES) or bool(
         re.fullmatch(r"(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{16,}", value)
     )
 
 
 def _redact_worker_context_secrets(text: str) -> str:
-    """Redact only credentials that are unsafe to place in worker context."""
+    """Redact credentials before source text enters worker context.
+
+    Key shapes are shared with ``verdict.security`` (``CREDENTIAL_SHAPES``). The
+    assignment rule here is deliberately narrower than ``redact_text``: it reads
+    source code, so placeholders, type annotations and ``os.environ`` lookups are
+    not secrets and must not hide useful code from the worker.
+    """
     redacted = _CREDENTIAL_URL_RE.sub(r"\1[redacted]@", text)
-    redacted = _BEARER_CREDENTIAL_RE.sub(r"\1[redacted]", redacted)
-    redacted = _TOKEN_PREFIX_RE.sub("[redacted]", redacted)
+    for shape in CREDENTIAL_SHAPES:
+        redacted = shape.sub(r"\1[redacted]", redacted)
 
     pieces: list[str] = []
     last = 0
