@@ -1306,3 +1306,46 @@ def test_chaos_state_is_kept_outside_the_runs_dir(tmp_path: Path) -> None:
         argparse.Namespace(state_file=None, inject=["x"], resume="r1"), runs
     )
     assert resumed is not None and resumed.parent.name == "r1" and runs not in resumed.parents
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["answer-only", "fault-injecting", "mixed"])
+async def test_answer_only_contract_never_parses_or_writes_owned_files(
+    tmp_path: Path, wrapper: str
+) -> None:
+    from verdict.orchestration.contracts import AnswerOnlyExecutor
+    from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
+
+    target = tmp_path / "source.py"
+    target.write_text("original\n")
+    prompt = "Plan JSON only.\nOWNED_FILES: source.py\n"
+    response = "FILE: source.py\n```python\nmodified\n```\n"
+    transport = FakeTransport(200, _ok_response(response))
+    executor = DirectGatewayExecutor(base_url="http://fake:20128", api_key="fixture")
+    inner: Any = executor
+    if wrapper == "fault-injecting":
+        inner = FaultInjectingExecutor(executor, {})
+    elif wrapper == "mixed":
+        inner = MixedExecutor(node_map={}, default=executor)
+    captured: list[dict[str, Any]] = []
+
+    with patch("httpx.AsyncClient") as factory:
+        client = AsyncMock()
+
+        async def post(url: str, json: Any = None, headers: Any = None) -> httpx.Response:
+            captured.append(json)
+            return await transport.handle_async_request(httpx.Request("POST", url, json=json))
+
+        client.post = post
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        factory.return_value = client
+        result = await AnswerOnlyExecutor(inner).run(
+            prompt, route_id="cc/claude-sonnet-5", cwd=tmp_path, timeout_seconds=3
+        )
+
+    assert result.ok
+    assert result.output == response
+    assert captured[0]["messages"][0]["content"] == prompt
+    assert target.read_text() == "original\n"
+    assert not (tmp_path / ".verdict-pending.patch").exists()
