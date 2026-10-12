@@ -1212,8 +1212,15 @@ class EligibilityLadder:
         )
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
-        self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)
-        self._state["cooldowns"].pop(f"route:{route_id}", None)
+        for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}"):
+            entry = self._state["cooldowns"].get(key)
+            if (
+                isinstance(entry, dict)
+                and entry.get("category") in POOL_COOLDOWN_CATEGORIES
+                and self._active_cooldown(key, now) is not None
+            ):
+                continue  # A concurrent success does not revoke observed credential exhaustion.
+            self._state["cooldowns"].pop(key, None)
         self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
         self._persist()
 
