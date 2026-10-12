@@ -70,7 +70,11 @@ from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
-from verdict.orchestration.salvage import restore_salvaged_files, salvage_owned_files
+from verdict.orchestration.salvage import (
+    _MAX_EVIDENCE_PATHS,
+    restore_salvaged_files,
+    salvage_owned_files,
+)
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import WorkerPrompt
@@ -1130,14 +1134,35 @@ class DagRuntime:
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
                 restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
                 if restore.restored or restore.error:
+                    restored_proj = list(restore.restored[:_MAX_EVIDENCE_PATHS])
+                    skipped_proj = list(restore.skipped[:_MAX_EVIDENCE_PATHS])
+                    restore_truncated = (
+                        len(restore.restored) > _MAX_EVIDENCE_PATHS
+                        or len(restore.skipped) > _MAX_EVIDENCE_PATHS
+                    )
                     self.events.emit(
                         "restore",
                         node.node_id,
-                        restored=list(restore.restored),
-                        skipped=list(restore.skipped),
+                        restored=restored_proj,
+                        restored_count=len(restore.restored),
+                        skipped=skipped_proj,
                         total_bytes=restore.total_bytes,
                         attempt=run.attempt,
+                        evidence_truncated=restore_truncated,
                         error=restore.error,
+                    )
+                    run.history.append(
+                        {
+                            "attempt": run.attempt,
+                            "route_id": run.route_id,
+                            "outcome": "restore",
+                            "restored": restored_proj,
+                            "restored_count": len(restore.restored),
+                            "skipped": skipped_proj,
+                            "total_bytes": restore.total_bytes,
+                            "evidence_truncated": restore_truncated,
+                            "error": restore.error,
+                        }
                     )
             self.inflight[node.node_id] = run.route_id
             try:
@@ -1476,13 +1501,19 @@ class DagRuntime:
                     replace_existing=True,
                 )
                 if result.saved or result.skipped or result.error:
-                    skipped = list(result.skipped[:50])
-                    evidence_truncated = result.evidence_truncated or len(result.skipped) > 50
+                    saved_proj = list(result.saved[:_MAX_EVIDENCE_PATHS])
+                    skipped_proj = list(result.skipped[:_MAX_EVIDENCE_PATHS])
+                    evidence_truncated = (
+                        result.evidence_truncated
+                        or len(result.saved) > _MAX_EVIDENCE_PATHS
+                        or len(result.skipped) > _MAX_EVIDENCE_PATHS
+                    )
                     self.events.emit(
                         "salvage",
                         run.node.node_id,
-                        saved=list(result.saved),
-                        skipped=skipped,
+                        saved=saved_proj,
+                        saved_count=len(result.saved),
+                        skipped=skipped_proj,
                         files=list(result.files),
                         evidence_truncated=evidence_truncated,
                         total_bytes=result.total_bytes,
@@ -1494,8 +1525,9 @@ class DagRuntime:
                             "attempt": run.attempt,
                             "route_id": run.route_id,
                             "outcome": "salvage",
-                            "saved": list(result.saved),
-                            "skipped": skipped,
+                            "saved": saved_proj,
+                            "saved_count": len(result.saved),
+                            "skipped": skipped_proj,
                             "files": list(result.files),
                             "evidence_truncated": evidence_truncated,
                             "total_bytes": result.total_bytes,
