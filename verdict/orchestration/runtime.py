@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import inspect
 import os
+import secrets
 import shlex
 import shutil
 import time
@@ -893,8 +894,20 @@ class DagRuntime:
                 return
             self._set(run, NodeState.PLANNED, reassign=True)
 
-    async def _run_repo_gates(self, run: NodeRun, worktree: Path) -> str | None:
-        """Run every declared gate, retaining the first failure with bounded evidence."""
+    async def _run_repo_gates(
+        self,
+        run: NodeRun,
+        worktree: Path,
+        *,
+        worker_fixable_only: bool = False,
+        failed: list[str] | None = None,
+    ) -> str | None:
+        """Run every declared gate, retaining the first failure with bounded evidence.
+
+        ``worker_fixable_only`` (implement-node validation) reports only real check
+        failures: configuration errors and missing executables are left for the
+        integration barrier, since the node's worker cannot fix them.
+        """
         node_id = run.node.node_id
         if not self.policy.run_repo_gates:
             self.events.emit(
@@ -913,7 +926,7 @@ class DagRuntime:
                 note="discovery failed",
                 error=config_reason,
             )
-            return config_reason
+            return None if worker_fixable_only else config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
         reason: str | None = None
         for gate in gates:
@@ -937,8 +950,12 @@ class DagRuntime:
                 source=gate.source,
                 tail=out[-600:],
             )
-            if code != 0 and reason is None:
-                reason = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+            fixable = code not in (126, 127) or not worker_fixable_only
+            if code != 0 and fixable:
+                message = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+                reason = reason or message
+                if failed is not None:
+                    failed.append(message)
         return reason
 
     async def _integrate_node(self, run: NodeRun) -> None:
@@ -1583,6 +1600,28 @@ class DagRuntime:
         finally:
             await self.git.remove_worktree(path)
 
+    async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
+        """Whether the failing gate named in ``gate_reason`` already fails on ``base``."""
+        name = gate_reason.removeprefix("repo_gate_failed: ").split(" ", 1)[0]
+        tag = secrets.token_hex(4)
+        scratch = self.run_dir / "worktrees" / f"gate-base-{tag}"
+        await self.git.add_worktree(scratch, f"verdict/gate-base-{tag}", base)
+        try:
+            for gate in discover_repo_gates(scratch):
+                if gate.name == name:
+                    resolved = _resolve_gate_argv(gate.argv, scratch)
+                    code, _ = await self.runner(
+                        resolved, scratch, self.policy.verify_timeout_seconds
+                    )
+                    return code != 0
+            return False
+        except (FileNotFoundError, ValueError):
+            return False
+        finally:
+            await self.git.remove_worktree(scratch)
+            with contextlib.suppress(OrchestrationError):
+                await self.git.call("branch", "-D", f"verdict/gate-base-{tag}")
+
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
         changed = await self.git.changed_files(worktree, base)
@@ -1642,6 +1681,19 @@ class DagRuntime:
             )
             if code != 0:
                 return f"verification_failed: exit {code}: {out[-300:]}"
+            if node.kind is NodeKind.IMPLEMENT and changed:
+                # Declared repo gates also run here, so a lint or format slip goes back
+                # to this node's worker as correction feedback instead of blocking the
+                # run at integration, where no worker can fix it (ADR-036 amendment).
+                # Only failures the node introduced count: if a gate already fails on
+                # the node's base, that is existing debt for the integration barrier.
+                # A gate already failing on the base must not hide a different gate
+                # this node newly broke, so every failing gate is checked.
+                failed: list[str] = []
+                await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+                for gate_reason in failed:
+                    if not await self._gate_fails_on_base(gate_reason, base):
+                        return f"verification_failed: {gate_reason[:600]}"
         else:
             self.events.emit(
                 "verify", node.node_id, ok=True, exit_code=0, command="(none: non-code node)"
