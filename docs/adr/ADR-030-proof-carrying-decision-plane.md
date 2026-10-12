@@ -54,10 +54,20 @@ rewrite the decision after the fact.
 
 ### 2. Context sources are adapters, not new storage systems
 
-Basic Memory remains the permanent searchable-memory layer for context hydration. Existing
-context-mode, codebase-memory, repository evidence, session context, and future sources remain
-replaceable adapters. Verdict consumes canonical context items and explicit omission records; it
-does not fork those systems or create a new memory database for this product.
+**Memory authority superseded (2026-10-12 reconciliation).** The original Basic Memory
+permanent-layer/no-new-database decision in this subsection is superseded by accepted
+[ADR-033](ADR-033-shared-memory-provider.md) and
+[ADR-034](ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md).
+[MemoryPlane](ADR-004-local-first-memory-plane.md) and
+[MemoryGate](ADR-009-durable-memory-write-gate.md) remain the local durable authority.
+Shared providers, including MCP Memory Service, are optional advisory recall and mirror
+adapters. Their results cannot assert verified authority or bypass scope and safety gates.
+
+Existing context-mode, codebase-memory, repository evidence, session context, and future
+sources remain replaceable adapters. Verdict consumes canonical context items and explicit
+omission records; it does not fork external systems. The context provenance requirements
+below and the rest of this ADR's proof-carrying decision, claim, and privacy semantics remain
+in force; this is not whole-ADR supersession.
 
 A context pack must preserve, where available:
 

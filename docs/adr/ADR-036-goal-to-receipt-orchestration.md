@@ -32,9 +32,18 @@ harness. OmniRoute is only transport and inventory.
    `AVAILABLE` (no route or provider cooldown, no account rate-limit window), `TASK_ELIGIBLE`
    (capabilities, context, frontier policy, reviewer exclusions), then `SELECTED`. Economics only
    orders the routes that pass. Capacity class comes from account evidence (OAuth plan labels,
-   free-only flags, pricing), not from model names. The order is
-   subscription > free > metered > unknown. A configurable provider preference (default
-   `claude`) and current load then spread concurrent nodes. There is no static fallback chain.
+   free-only flags, pricing), not from model names. Prefer a healthy, task-qualified free
+   route when it is likely to complete the work correctly. Use authorized subscription
+   capacity when no sufficient free route is available or the role requires it. Metered
+   execution requires explicit budget authorization; unknown cost is not free. Optimize
+   the expected cost of verified accepted work, including context, retries and independent
+   review, rather than free-call count. A one-token health probe does not establish
+   role or session adequacy. Provider preferences and current load may spread concurrent
+   nodes only after these gates and economics. There is no static fallback chain.
+
+   **Policy amendment (2026-10-12):** this replaces the original subscription-first
+   order with the operator's capable-free-first policy confirmed on 2026-09-29 and
+   2026-10-10. See [operating standards](../guides/operator-standards.md).
 3. **DAG runtime.** Ready nodes run at the same time, up to `max_parallel`. Each attempt
    runs in its own git worktree, based on its validated dependencies. Lifecycle:
    `PLANNED -> ADMITTED -> DISPATCHED -> RUNNING -> TERMINAL_SUCCESS/TERMINAL_FAILURE ->
