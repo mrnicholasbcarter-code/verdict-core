@@ -602,3 +602,7 @@ async def test_cli_verify_recomputes_cycles_and_runs_nothing(
     log.write_text(log.read_text().replace('"metric_met": true', '"metric_met": false'))
     assert cli._improve(parser.parse_args(argv)) == 1
     assert len(calls) == 1
+
+
+def test_sentence_final_node_id_is_matched() -> None:
+    assert improvement._blocked_node("blocked at node build.", {"build", "test"}) == "build"

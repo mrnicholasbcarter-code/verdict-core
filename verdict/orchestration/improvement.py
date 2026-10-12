@@ -157,7 +157,7 @@ def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]]) -> str:
     return out
 
 
-_NODE_TOKEN_CHAR = r"[a-zA-Z0-9_\-\.]"
+_NODE_TOKEN_CHAR = r"[a-zA-Z0-9_\-]"  # no ".": a sentence-final id must still match
 
 
 def _real_node_ids(run_dir: Path, events: Sequence[Mapping[str, Any]]) -> set[str]:
