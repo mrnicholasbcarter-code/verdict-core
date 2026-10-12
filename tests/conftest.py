@@ -53,6 +53,7 @@ def _isolate_verdict_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "VERDICT_CONTROLLER_DEADLINE",
         "VERDICT_CONTROLLER_LAUNCH",
         "VERDICT_CONTROLLER_OPERATION",
+        "VERDICT_CONTROLLER_CGROUP_ROOT",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("VERDICT_RECEIPTS_DB", ":memory:")

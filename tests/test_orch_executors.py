@@ -555,7 +555,9 @@ async def test_cli_planner_and_worker_faults_share_call_count() -> None:
     )
     planner = _planner_executor(args)
     worker = _executor(args)
-    planner.inner = ScriptedExecutor(lambda p, r, c: WorkerTerminal(ok=True, output="plan", model=r))
+    planner.inner = ScriptedExecutor(
+        lambda p, r, c: WorkerTerminal(ok=True, output="plan", model=r)
+    )
     worker.inner = ScriptedExecutor(lambda p, r, c: WorkerTerminal(ok=True, output="work", model=r))
     worker_cwd = Path("run") / "worktrees" / "node-a1"
 

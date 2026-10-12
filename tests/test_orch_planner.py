@@ -737,7 +737,12 @@ async def test_plan_with_failover_uses_distinct_planner_executor(tmp_path, monke
     class Selector:
         def select(self, req, *, now):
             return RouteVerdict(
-                "cc/claude-sonnet", "claude", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+                "cc/claude-sonnet",
+                "claude",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.SUBSCRIPTION,
             ), ()
 
     class Events:
@@ -786,7 +791,12 @@ async def test_direct_planner_missing_capacity_blocks_explicitly(tmp_path):
             if self.calls > 1:
                 return None, ()
             return RouteVerdict(
-                "cc/claude-sonnet", "claude", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+                "cc/claude-sonnet",
+                "claude",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.SUBSCRIPTION,
             ), ()
 
         def record_failure(self, route, failure, *, now):
@@ -796,12 +806,7 @@ async def test_direct_planner_missing_capacity_blocks_explicitly(tmp_path):
         answer_only_supported = True
 
         async def run(self, prompt, *, route_id, cwd, timeout_seconds):
-            return WorkerTerminal(
-                ok=False,
-                model=route_id,
-                status_code=429,
-                error="rate limited",
-            )
+            return WorkerTerminal(ok=False, model=route_id, status_code=429, error="rate limited")
 
     class Events:
         def emit(self, kind, **data):

@@ -15,7 +15,10 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.orchestration.executors import FaultInjectionState
 
 from verdict.orchestration.contracts import WorkerExecutor
 from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
@@ -473,7 +476,7 @@ def _faults_from_args(args: argparse.Namespace) -> dict[str, list[str]]:
     return faults
 
 
-def _faults_and_state(args: argparse.Namespace):
+def _faults_and_state(args: argparse.Namespace) -> tuple[dict[str, list[str]], FaultInjectionState]:
     from verdict.orchestration.executors import FaultInjectionState
 
     faults = _faults_from_args(args)

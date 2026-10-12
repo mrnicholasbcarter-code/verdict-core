@@ -88,7 +88,11 @@ def read_state(run_dir: Path) -> dict[str, Any]:
 class OperationLeaseGuard:
     """Validate fixed, owner-bound operation deadlines independently of progress."""
 
-    PHASE_CAPS: ClassVar[dict[str, float]] = {"planner": 600.0, "plan_repair": 600.0, "worker": 900.0}
+    PHASE_CAPS: ClassVar[dict[str, float]] = {
+        "planner": 600.0,
+        "plan_repair": 600.0,
+        "worker": 900.0,
+    }
 
     def __init__(self) -> None:
         self._seen: dict[str, str] = {}
@@ -141,7 +145,9 @@ class OperationLeaseGuard:
             phase = str(operation.get("phase"))
             attempt_id = str(operation.get("attempt_id", ""))
             attempt_match = re.fullmatch(r"plan-([1-6])(-repair)?", attempt_id)
-            worker_match = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}-a[1-9][0-9]*", attempt_id)
+            worker_match = re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}-a[1-9][0-9]*", attempt_id
+            )
             started, deadline = operation.get("started"), operation.get("deadline")
             cap = self.PHASE_CAPS.get(phase)
             valid_attempt = (
