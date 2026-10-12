@@ -118,7 +118,8 @@ async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monke
         "goal",
         repo=tmp_path,
         selector=selector,
-        executor=SimpleNamespace(run=run),
+        # A planner executor must declare that it answers without agent tools.
+        executor=SimpleNamespace(run=run, answer_only_supported=True),
         classifier=FailureIntelligence(),
         events=events,
         now=lambda: NOW,
