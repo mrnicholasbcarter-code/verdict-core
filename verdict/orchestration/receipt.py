@@ -50,6 +50,7 @@ from verdict.orchestration.contracts import (
     route_provider,
 )
 from verdict.outcome_records import write_outcome_records
+from verdict.security import redact_text
 
 RECEIPT_SCHEMA = "verdict.run-receipt/v1"
 EVENTS_FILE = "events.jsonl"
@@ -558,12 +559,22 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     # nodes, so its cause is verifiable like any other run's.
     graph_path = run_dir / GRAPH_FILE
     graph_raw = _load_json(graph_path) if graph_path.exists() else {}
-    planned = bool(graph_raw.get("nodes"))
     graph = (
         WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
-        if planned
+        if graph_raw.get("nodes")
         else None
     )
+    if graph is None:
+        # Only a run that never executed a node and settled BLOCKED is pre-plan;
+        # a planned run whose graph is missing stays unverifiable.
+        last = next((e for e in reversed(events) if e.type == "run_finished"), None)
+        if (
+            last is None
+            or last.data.get("outcome") != RunOutcome.BLOCKED.value
+            or any(e.node_id for e in events)
+            or any(e.type == "plan_ready" for e in events)
+        ):
+            raise OrchestrationError(f"missing or empty {GRAPH_FILE} for a run that was planned")
     plan_nodes = graph.nodes if graph is not None else ()
 
     by_node: dict[str, list[RunEvent]] = {n.node_id: [] for n in plan_nodes}
@@ -641,7 +652,7 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
         "decision_signals": _free("decision_signals") or None,  # SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
         **(
-            {"claimed_reason": str(finished[-1].data.get("reason", ""))[:500]}
+            {"claimed_reason": redact_text(str(finished[-1].data.get("reason", "")))[:500]}
             if graph is None and finished
             else {}
         ),
