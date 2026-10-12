@@ -58,7 +58,12 @@ class PrimeCompatibilityContext:
 
 @dataclass(frozen=True)
 class PrimeBinding:
-    """A unique literal binding, retained unknown, or unsafe resolution."""
+    """A unique literal binding, retained unknown, or unsafe resolution.
+
+    For an unsafe binding the last reason is the specific per-token cause:
+    ``unsafe_scope_token`` (not displayable), ``ambiguous_fuzzy_match`` or
+    ``not_in_registry``.
+    """
 
     token: str
     registry_provider: str | None
@@ -198,32 +203,55 @@ def _bind(token: str, entries: tuple[_Entry, ...]) -> PrimeBinding:
             continue
         hay = (e[1].casefold(), f"{e[0]}/{e[1]}".casefold(), e[2].casefold())
         if any(lower in h or (base is not None and base in h) for h in hay):
-            return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+            return _unsupported(token, entries)
     matches = [
         e for e in entries if e[4] and lower in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold())
     ]
     if len(matches) > 1:
-        return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+        return _unsupported(token, entries)
     if matches:
         entry = matches[0]
         competitors = [e for e in entries if e is not entry and lower in e[2].casefold()]
         if competitors:
-            return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+            return _unsupported(token, entries)
         if token not in (entry[1], f"{entry[0]}/{entry[1]}"):
-            return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+            return _unsupported(token, entries)
         # A literal colon id is supported when it has no alternate base binding.
         if ":" in token:
             base = token.rsplit(":", 1)[0].casefold()
             if any(base in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold()) for e in entries):
-                return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+                return _unsupported(token, entries)
         return PrimeBinding(token, entry[0], entry[1], "bound")
     fuzzy = any(lower in e[1].casefold() or lower in e[2].casefold() for e in entries)
     if ":" in token:
         base = token.rsplit(":", 1)[0].casefold()
         fuzzy = fuzzy or any(base in e[1].casefold() or base in e[2].casefold() for e in entries)
     if fuzzy:
-        return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported",))
+        return _unsupported(token, entries)
     return PrimeBinding(token, None, None, "retained_unknown", ("retained_unknown_not_verified",))
+
+
+def _unsupported(token: str, entries: tuple[_Entry, ...]) -> PrimeBinding:
+    """Name why Prime's fallback resolver makes an exact-looking token unsafe.
+
+    ``ambiguous_fuzzy_match``: the literal id exists but other rows compete, or
+    Prime could resolve the token to several rows. ``not_in_registry``: the
+    token is no registry id; Prime would substitute one other row by case,
+    substring or effort-suffix fallback. Never echoes a matched row.
+    """
+    lower = token.casefold()
+    base = token.rsplit(":", 1)[0].casefold() if ":" in token else None
+    literal = any(e[4] and token in (e[1], f"{e[0]}/{e[1]}") for e in entries)
+    hits = sum(
+        1
+        for e in entries
+        if any(
+            lower in h or (base is not None and base in h)
+            for h in (e[1].casefold(), f"{e[0]}/{e[1]}".casefold(), e[2].casefold())
+        )
+    )
+    reason = "ambiguous_fuzzy_match" if literal or hits > 1 else "not_in_registry"
+    return PrimeBinding(token, None, None, "unsafe", ("identity_unsupported", reason))
 
 
 def _endpoint(value: object) -> str | None:

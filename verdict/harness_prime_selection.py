@@ -42,6 +42,7 @@ SCHEMA = "verdict.prime-selection/v1"
 RECEIPT_SCHEMA = "verdict.prime-selection-receipt/v1"
 RESTORE_RECEIPT_SCHEMA = "verdict.prime-restore-receipt/v1"
 POLICY = "replace_unique_omniroute_interactive_scope"
+SCOPE_REMEDIATION = "remove it via Prime /scoped-models"
 _OWNED = re.compile(
     r"settings\.json\.verdict-(select|restore)-(\d{8}T\d{12}Z)-([a-f0-9]{32})\.receipt\.json\Z"
 )
@@ -186,6 +187,29 @@ class SelectionPaths:
 
 
 @dataclass(frozen=True)
+class UnsafeScopeToken:
+    """One current ``enabledModels`` entry that blocks safe scope classification.
+
+    ``entry`` is the exact token, or ``[unsafe entry]`` when it is not
+    display-safe; ``index`` always locates it. (Not keyed ``token``: renderers
+    redact ``token`` keys as secrets.)
+    """
+
+    entry: str
+    index: int
+    reason: str
+    remediation: str = SCOPE_REMEDIATION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "entry": self.entry,
+            "index": self.index,
+            "reason": self.reason,
+            "remediation": self.remediation,
+        }
+
+
+@dataclass(frozen=True)
 class SelectionPreview:
     target: Path
     selected_ids: tuple[str, ...]
@@ -200,6 +224,7 @@ class SelectionPreview:
     dependency_digests: tuple[tuple[str, str | None], ...]
     proof_deadline: datetime | None
     rows: tuple[PrimeSelectionRow, ...]
+    unsafe_scope_tokens: tuple[UnsafeScopeToken, ...]
     _settings: SettingsDocument = field(repr=False)
     _dependencies: PrimeDependencies = field(repr=False)
     _projection_bytes: bytes = field(repr=False)
@@ -226,6 +251,7 @@ class SelectionPreview:
             "retained": list(self.retained),
             "warnings": list(self.warnings),
             "refusals": list(self.refusals),
+            "unsafe_scope_tokens": [t.to_dict() for t in self.unsafe_scope_tokens],
             "pre_digest": self.pre_digest,
             "dependency_digests": dict(self.dependency_digests),
             "proof_deadline": self.proof_deadline.isoformat() if self.proof_deadline else None,
@@ -278,6 +304,8 @@ def preview_selection(
     Retained unknowns are not verified. Missing visibility offers separate
     ``verdict harness prime sync-models --dry-run``; this API never invokes it.
     Raw projection error/restriction text is untrusted and never rendered.
+    Each unsafe current scope token is named in ``unsafe_scope_tokens`` and in a
+    ``enabledModels[i]:token:reason`` refusal; the fail-closed decision is the same.
     """
     aware_time(now)
     before_raw = _scope(settings.value)
@@ -310,12 +338,17 @@ def preview_selection(
         refusals.append("nonempty_selection_required")
     retained: list[str] = []
     before: list[str] = []
-    for token in before_raw:
+    unsafe_scope: list[UnsafeScopeToken] = []
+    for index, token in enumerate(before_raw):
         binding = bind_prime_token(token, models)
         before.append(binding.token)
         if binding.disposition == "unsafe":
-            refusals.extend(binding.reasons)
+            reason = binding.reasons[-1]
+            refusals.extend(
+                (binding.reasons[0], f"enabledModels[{index}]:{binding.token}:{reason}")
+            )
             warnings.append("resolve_unsafe_scope_through_Prime_/scoped-models")
+            unsafe_scope.append(UnsafeScopeToken(binding.token, index, reason))
         elif binding.registry_provider != "omniroute":
             retained.append(token)
             if binding.disposition == "retained_unknown":
@@ -362,6 +395,7 @@ def preview_selection(
         dependency_digests=tuple(dependencies.digests().items()),
         proof_deadline=min(deadlines) if len(deadlines) == len(selected) and deadlines else None,
         rows=tuple(chosen),
+        unsafe_scope_tokens=tuple(unsafe_scope),
         _settings=settings,
         _dependencies=dependencies,
         _projection_bytes=_encode({"rows": list(projection_rows)}),
