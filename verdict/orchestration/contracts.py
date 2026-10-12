@@ -611,6 +611,7 @@ def dedupe(items: Iterable[str]) -> tuple[str, ...]:
 # ---------------------------------------------------------------- component protocols
 # Parallel implementation units code against these; the runtime composes them.
 
+import inspect  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Protocol  # noqa: E402
@@ -622,11 +623,74 @@ class WorkerExecutor(Protocol):
     Must never raise for provider/transport failures: those become
     ``WorkerTerminal(ok=False, ...)``. Must enforce ``timeout_seconds`` itself.
     ``route_id`` is a bare OmniRoute id (``cc/claude-sonnet-5``).
+
+    An executor MAY also accept an optional ``tools: bool = True`` keyword.
+    ``tools=False`` asks for an answer-only call with no agent tools (planning
+    needs only a JSON answer). Executors without the keyword are called
+    exactly as before; see :func:`run_executor`.
     """
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal: ...
+
+
+def _accepts_tools_flag(executor: object) -> bool:
+    """True when ``executor.run`` takes a ``tools`` keyword (or ``**kwargs``)."""
+    try:
+        params = inspect.signature(executor.run).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return "tools" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+async def run_executor(
+    executor: WorkerExecutor,
+    prompt: str,
+    *,
+    route_id: str,
+    cwd: Path,
+    timeout_seconds: float,
+    tools: bool = True,
+) -> WorkerTerminal:
+    """Call ``executor.run``; pass ``tools=False`` only to executors that accept it.
+
+    With ``tools=True`` (every worker call) the call is byte-identical to a
+    plain ``executor.run(...)``, so existing executors and fakes are unchanged.
+    """
+    if tools or not _accepts_tools_flag(executor):
+        return await executor.run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+    return await executor.run(  # type: ignore[call-arg]
+        prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=False
+    )
+
+
+class AnswerOnlyExecutor:
+    """Adapter that runs every call on ``inner`` with ``tools=False`` when supported.
+
+    The frontier planner wraps its executor in this adapter. The planning
+    prompt already carries the repo map and the output contract, so the call
+    needs one JSON answer, not an agent tool loop. Worker calls never use it.
+    """
+
+    def __init__(self, inner: WorkerExecutor) -> None:
+        self.inner = inner
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        return await run_executor(
+            self.inner,
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=False,
+        )
 
 
 class ModelSelector(Protocol):

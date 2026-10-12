@@ -21,6 +21,7 @@ from typing import Any, Literal, overload
 
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.orchestration.contracts import (
+    AnswerOnlyExecutor,
     NodeKind,
     OrchestrationError,
     Topology,
@@ -458,6 +459,10 @@ class FrontierPlanner:
         attempt: int = 1,
         max_attempts: int = 1,
     ) -> tuple[WorkGraph, WorkerTerminal]:
+        # The prompt already carries the repo map and the JSON contract, so the
+        # planning and repair calls need one answer, not an agent tool loop
+        # (a tool-enabled planner explored the repo until the 600 s timeout).
+        executor = AnswerOnlyExecutor(executor)
         repo_map_text = repo_map(repo)
         prompt = build_planning_prompt(goal, repo_map_text, constraints)
         terminal = await bounded_executor_call(

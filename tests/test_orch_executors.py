@@ -435,6 +435,55 @@ def test_command_flags_and_thinking(tmp_path: Path) -> None:
     assert argv[-2:] == ["--", "PROMPT"]
 
 
+def _argv_echo_prime(tmp_path: Path) -> str:
+    body = (
+        "args = sys.argv[1:]\n"
+        "msg = {'role': 'assistant', 'content': [{'type': 'text', 'text': ' '.join(args)}],\n"
+        f"       'provider': 'omniroute', 'model': {ROUTE!r}, 'stopReason': 'stop'}}\n"
+        "print(json.dumps({'messages': [msg]}))\n"
+    )
+    return make_fake_prime(tmp_path, body)
+
+
+def test_worker_invocation_keeps_tools(tmp_path: Path) -> None:
+    """Default (worker) calls never disable tools: workers must edit and test."""
+    result = run(PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path)), "PROMPT", tmp_path)
+    assert result.ok
+    argv = result.output.split(" ")
+    assert "--no-tools" not in argv
+    assert "-nt" not in argv
+    assert argv[-2:] == ["--", "PROMPT"]
+
+
+def test_answer_only_invocation_disables_tools(tmp_path: Path) -> None:
+    """tools=False (planning) adds --no-tools before the prompt separator."""
+    executor = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path), thinking="high")
+    result = asyncio.run(
+        executor.run("PROMPT", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30, tools=False)
+    )
+    assert result.ok
+    argv = result.output.split(" ")
+    assert "--no-tools" in argv
+    assert argv.index("--no-tools") < argv.index("--")
+    assert "--thinking" in argv and "high" in argv
+    assert argv[-2:] == ["--", "PROMPT"]
+
+
+def test_wrappers_forward_answer_only_flag(tmp_path: Path) -> None:
+    """Fault-injecting and mixed wrappers must not drop tools=False on the way down."""
+    from verdict.orchestration.contracts import AnswerOnlyExecutor
+    from verdict.orchestration.executors import MixedExecutor
+
+    prime = PrimeHeadlessExecutor(prime_bin=_argv_echo_prime(tmp_path))
+    wrapped = FaultInjectingExecutor(MixedExecutor(node_map={}, default=prime), {})
+    planned = asyncio.run(
+        AnswerOnlyExecutor(wrapped).run("P", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30)
+    )
+    worker = asyncio.run(wrapped.run("P", route_id=ROUTE, cwd=tmp_path, timeout_seconds=30))
+    assert "--no-tools" in planned.output.split(" ")
+    assert "--no-tools" not in worker.output.split(" ")
+
+
 # ----------------------------------------------------------- FaultInjecting
 
 
