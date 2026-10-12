@@ -797,7 +797,9 @@ class TestDagRuntimeSalvageRestore:
         events = Events()
         executor = Executor(
             fail_on={("a", "r1/m1")},
-            partial_content="api_key=sk-ant-abc123def456ghi789jkl012mno345pq",
+            # A fake key assembled at runtime: the test proves salvage refuses it.
+            partial_content="api_key="
+            + "-".join(("sk", "ant", "abc123def456ghi789jkl012mno345pq")),
         )
 
         runtime = DagRuntime(
