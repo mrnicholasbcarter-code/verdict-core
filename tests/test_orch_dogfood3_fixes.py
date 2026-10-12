@@ -235,20 +235,20 @@ def test_planner_prompt_mentions_barrier_and_research() -> None:
     assert "owned_files=[]" in prompt or "owned_files" in prompt
 
 
-def test_hydrate_research_node_no_file_writes() -> None:
+def test_hydrate_research_node_no_file_writes(tmp_path: Path) -> None:
     """Worker prompt for a research node tells it not to write files."""
     node = WorkNode("research", "investigate things", kind="research", coding=False)
-    prompt = hydrate_node_prompt(node, repo=Path("/tmp"), goal="test")
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="test")
     assert "do not create" in prompt.lower() or "DO NOT create" in prompt
     assert "OWNED_FILES: (none)" in prompt
 
 
-def test_hydrate_implement_node_mentions_owned_files() -> None:
+def test_hydrate_implement_node_mentions_owned_files(tmp_path: Path) -> None:
     """Worker prompt for an implement node still lists its owned files."""
     node = WorkNode(
         "impl", "build", owned_files=("pkg/a.py",), verification_command=("pytest", "-q", "t.py")
     )
-    prompt = hydrate_node_prompt(node, repo=Path("/tmp"), goal="test")
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="test")
     assert "pkg/a.py" in prompt
     assert "Only edit files" in prompt
 
