@@ -355,9 +355,11 @@ async def test_implement_node_gate_failure_is_correction_feedback(
 
 
 async def test_node_level_gates_leave_environment_problems_to_integration(
-    repo: Path, gate_bin: Path
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (gate_bin / "ruff").unlink()
+    # CI images ship ruff on PATH; hide it so the gate executable is really missing.
+    monkeypatch.setattr(verification.shutil, "which", lambda name: None)
     runtime, _, _ = make_runtime(repo, "[tool.ruff]\n")
     result = await runtime.run()
     assert result.nodes["a"].state is NodeState.VALIDATED
