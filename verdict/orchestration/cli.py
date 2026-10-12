@@ -55,6 +55,10 @@ def _capacity_filter(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+# Planner constraints are prompt text; keep them a small, reviewable input.
+MAX_CONSTRAINTS_BYTES = 8 * 1024
+
+
 def add_parsers(subparsers: Any) -> None:
     orch = subparsers.add_parser(
         "orchestrate", help="Goal -> frontier plan -> DAG -> parallel workers -> review -> receipt"
@@ -67,6 +71,14 @@ def add_parsers(subparsers: Any) -> None:
         "--openspec-change", metavar="ID", help="OpenSpec change id under repo/openspec/changes"
     )
     orch.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
+    orch.add_argument(
+        "--constraints-file",
+        metavar="PATH",
+        help=(
+            "UTF-8 text the planner must follow (CONSTRAINTS: section), e.g. lessons "
+            f"from an earlier run; at most {MAX_CONSTRAINTS_BYTES} bytes, digest recorded"
+        ),
+    )
     orch.add_argument(
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
@@ -544,6 +556,26 @@ def _orchestrate(args: argparse.Namespace) -> int:
     if not goal:
         print("BLOCKED: a goal (or --graph/--resume) is required", file=sys.stderr)
         return 2
+    constraints = ""
+    if getattr(args, "constraints_file", None):
+        path = Path(args.constraints_file)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            print(f"BLOCKED: cannot read --constraints-file: {exc.strerror}", file=sys.stderr)
+            return 2
+        if len(data) > MAX_CONSTRAINTS_BYTES:
+            print(
+                f"BLOCKED: --constraints-file is {len(data)} bytes; the limit is "
+                f"{MAX_CONSTRAINTS_BYTES}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            constraints = data.decode("utf-8")
+        except UnicodeDecodeError:
+            print("BLOCKED: --constraints-file must be UTF-8 text", file=sys.stderr)
+            return 2
     # Validate --executor-map node ids against the graph when one is available.
     # When no graph exists yet (frontier planning), the graph is built later;
     # emit a stderr warning so the operator can catch typos before waiting.
@@ -652,6 +684,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             summary=getattr(selector, "summary", None),
             inflight=inflight,
             openspec_change_dir=openspec_change_dir,
+            constraints=constraints,
         )
     )
     stop.set()

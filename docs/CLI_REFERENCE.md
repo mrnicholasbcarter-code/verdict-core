@@ -46,6 +46,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--graph GRAPH` | Use a pre-built WorkGraph JSON instead of frontier planning |
 | `--resume RUN_ID` | Resume a run from durable state |
 | `--runs-dir RUNS_DIR` | Run directory root |
+| `--constraints-file PATH` | UTF-8 text (at most 8 KiB) added to the planner prompt under `CONSTRAINTS:`, for example lessons from an earlier run. `run_started` records only its SHA-256 |
 | `--gateway GATEWAY` | Gateway endpoint or identifier |
 | `--max-parallel MAX_PARALLEL` | Maximum parallel workers |
 | `--attempt-timeout ATTEMPT_TIMEOUT` | Per-attempt timeout |

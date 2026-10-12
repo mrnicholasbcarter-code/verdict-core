@@ -16,6 +16,7 @@ Controller survival (minimal demo-safe slice):
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -721,6 +722,12 @@ async def run_golden_path(
         # by the caller (e.g. demo_scenario.py); absent ("") for live runs.
         mode=mode,
         **producer_kwargs,
+        # Digest only: the text itself reaches the planner prompt, not the event log.
+        **(
+            {"constraints_sha256": hashlib.sha256(constraints.encode()).hexdigest()}
+            if constraints
+            else {}
+        ),
     )
     if resumed:
         events.emit(
