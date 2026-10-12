@@ -1226,7 +1226,8 @@ def test_file_prompt_requests_complete_contents(tmp_path: Path) -> None:
     prompt = DirectGatewayExecutor._augment_prompt_for_diff("TASK", ["new.py"], tmp_path)
     assert "FILE: <relative path>" in prompt
     assert "COMPLETE" in prompt
-    assert "no diffs" in prompt
+    assert "no unified diffs" in prompt
+    assert "<<<<<<< SEARCH" in prompt and ">>>>>>> REPLACE" in prompt
 
 
 @pytest.mark.asyncio
@@ -1349,3 +1350,110 @@ async def test_answer_only_contract_never_parses_or_writes_owned_files(
     assert captured[0]["messages"][0]["content"] == prompt
     assert target.read_text() == "original\n"
     assert not (tmp_path / ".verdict-pending.patch").exists()
+
+
+def _edit(*hunks: tuple[str, str]) -> str:
+    body = "".join(f"<<<<<<< SEARCH\n{s}=======\n{r}>>>>>>> REPLACE\n" for s, r in hunks)
+    return f"FILE: owned.py\n```\n{body}```\nRESULT: DONE"
+
+
+def test_search_replace_edits_a_large_file_exactly(tmp_path: Path) -> None:
+    big = "".join(f"line {i}\n" for i in range(20_000)) + "TARGET = 1\n"
+    (tmp_path / "owned.py").write_text(big)
+    files = DirectGatewayExecutor._extract_files(_edit(("TARGET = 1\n", "TARGET = 2\n")))
+    assert files is not None
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None
+    assert resolved["owned.py"] == big.replace("TARGET = 1\n", "TARGET = 2\n")
+
+
+@pytest.mark.parametrize(
+    ("hunk", "message"), [(("missing\n", "x\n"), "not found"), (("same\n", "x\n"), "found 3 times")]
+)
+def test_search_text_must_occur_exactly_once(
+    tmp_path: Path, hunk: tuple[str, str], message: str
+) -> None:
+    (tmp_path / "owned.py").write_text("same\nunique\nsame\nsame\n")
+    files = DirectGatewayExecutor._extract_files(_edit(hunk))
+    assert files is not None
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None and message in error
+
+
+def test_search_replace_keeps_ownership_checks(tmp_path: Path) -> None:
+    (tmp_path / "other.py").write_text("x = 1\n")
+    files = {"other.py": "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"}
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None and "outside" in error
+    assert (tmp_path / "other.py").read_text() == "x = 1\n"
+
+
+def test_large_owned_files_get_focused_line_numbered_excerpts(tmp_path: Path) -> None:
+    body = "".join(f"filler_{i} = {i}\n" for i in range(8000)) + "def _execute():\n    pass\n"
+    (tmp_path / "owned.py").write_text(body)
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "Change _execute in owned.py", ["owned.py"], tmp_path, budget_bytes=4000
+    )
+    assert "TRUNCATED" in prompt and "SEARCH/REPLACE" in prompt
+    assert "8001: def _execute():" in prompt
+    assert len(prompt.encode()) < 8000
+
+
+@pytest.mark.asyncio
+async def test_worker_reporting_blocked_is_returned_for_the_runtime(tmp_path: Path) -> None:
+    """Live finding 2026-10-12: a correct refusal was recorded as 'no unified diff'."""
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    executor = DirectGatewayExecutor()
+    output = "I cannot see the whole file.\n\nRESULT: BLOCKED owned.py is truncated"
+    terminal = await _run_with_transport(
+        executor,
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert terminal.ok and terminal.error in (None, "")
+    assert terminal.output.endswith("RESULT: BLOCKED owned.py is truncated")
+
+
+def test_search_replace_never_reads_through_a_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOKEN = 1\n")
+    (tmp_path / "owned.py").symlink_to(secret)
+    files = {"owned.py": "<<<<<<< SEARCH\nTOKEN = 1\n=======\nTOKEN = 2\n>>>>>>> REPLACE\n"}
+    _, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is not None
+    assert secret.read_text() == "TOKEN = 1\n"
+
+
+def test_search_replace_keeps_crlf_line_endings(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    files = {"owned.py": "<<<<<<< SEARCH\na = 1\r\n=======\na = 3\r\n>>>>>>> REPLACE\n"}
+    resolved, error = DirectGatewayExecutor._resolve_edits(files, ["owned.py"], tmp_path)
+    assert error is None and resolved["owned.py"] == "a = 3\r\nb = 2\r\n"
+
+
+@pytest.mark.asyncio
+async def test_edits_are_never_applied_with_a_blocked_report(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text("x = 1\n")
+    output = "FILE: owned.py\n```\nx = 2\n```\nRESULT: BLOCKED could not finish"
+    terminal = await _run_with_transport(
+        DirectGatewayExecutor(),
+        FakeTransport(200, _ok_response(output)),
+        _implement_prompt(["owned.py"]),
+        "cc/test",
+        tmp_path,
+    )
+    assert not terminal.ok and "nothing applied" in (terminal.error or "")
+    assert (tmp_path / "owned.py").read_text() == "x = 1\n"
+
+
+def test_excerpts_never_exceed_their_budget(tmp_path: Path) -> None:
+    (tmp_path / "owned.py").write_text(
+        "x" * 5000 + "\n" + "".join(f"v{i} = {i}\n" for i in range(9000))
+    )
+    prompt = DirectGatewayExecutor._augment_prompt_for_diff(
+        "no matching names here", ["owned.py"], tmp_path, budget_bytes=3000
+    )
+    excerpt = prompt.split("never the whole file) ---\n", 1)[1]
+    assert len(excerpt.encode()) <= 3000
