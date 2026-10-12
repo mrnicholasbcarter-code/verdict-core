@@ -6,22 +6,25 @@ Buffered executor output is not progress. Prime deliberately starts a new sessio
 which means killing only the controller process group does not own its workers.
 
 ## Goals / Non-Goals
-Correct the initial and repair planning waits and supervised Prime ownership.
-Do not fabricate heartbeats or widen the stall budget. Do not claim safety for
-selection refresh, DAG operations, or review subprocesses. Deliberate same-UID
-cgroup escape or state tampering is outside this cooperative-controller contract.
-Do not claim self-hosting COMPLETE proof.
+Correct the initial, repair planning and REVIEW waits plus supervised Prime
+ownership. Do not fabricate heartbeats or widen the stall budget. Do not claim
+safety for selection refresh or DAG operations. REVIEW subprocess cleanup is
+bounded: if cancellation cleanup cannot settle, the result is cleanup UNKNOWN,
+not proof of no live reviewer work. Deliberate same-UID cgroup escape or state
+tampering is outside this cooperative-controller contract. Do not claim
+self-hosting COMPLETE proof.
 
 ## Decisions
 - Separate atomic `controller-operations.json` state from `progress.json`.
   Each operation has phase, attempt, random ID, immutable monotonic start/deadline,
   controller PID/start ticks/boot/session identity and generation token. Exact
   scope exit marks that operation ended. Initial/repair calls have separate IDs.
-- Supervisor validates first-read phase caps (600 seconds for planner/plan_repair),
-  finite timestamps, owner, generation and fixed snapshots. Invalid or mutated
-  records never defer ordinary stall detection. Expired valid operations trigger
-  termination. Observed waiting is `WAITING_BOUNDED`, not HEALTHY or progress.
-  A whole-call timeout also bounds direct HTTP planning I/O, not only each I/O phase.
+- Supervisor validates first-read phase caps (600 seconds for planner/plan_repair;
+  900 seconds for review), finite timestamps, owner, generation and fixed snapshots.
+  Invalid or mutated records never defer ordinary stall detection. Expired valid
+  operations trigger termination. Observed waiting is `WAITING_BOUNDED`, not HEALTHY
+  or progress. A whole-call timeout also bounds direct HTTP planning I/O and REVIEW
+  selection/subprocess work, not only each I/O phase.
 - The total supervisor deadline is checked before accepting completion or exit,
   before every generation and before spawning a worker. Cancellation also revokes.
 - Use a stable never-renamed lock file shared by controller, launcher and supervisor.

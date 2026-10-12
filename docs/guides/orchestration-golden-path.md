@@ -175,11 +175,20 @@ verified public proof:
 
 Supervision distinguishes real event progress from `WAITING_BOUNDED`. Initial and
 repair planning each publish a fixed, owner/generation-bound operation deadline.
-The supported cap is 600 seconds per call. An active valid call can outlast the
-ordinary stall window; its deadline and the absolute supervisor deadline still
-terminate it. Invalid, stale, extended or reopened leases do not defer stalls.
-Selection refresh, DAG operations and review subprocesses do not gain this lease
-exemption in this increment. Admission and completion proof gates are unchanged.
+The supported cap is 600 seconds per planner call. REVIEW publishes a distinct
+`review-round-N` operation with a 900-second cap; the remaining run/supervisor
+deadline still wins. An active valid operation can outlast the ordinary stall
+window; its deadline and the absolute supervisor deadline still terminate it.
+Invalid, stale, extended or reopened leases do not defer stalls. Selection refresh
+and DAG operations do not gain this lease exemption. Admission and completion proof
+gates are unchanged.
+
+The OCR reviewer runs selection and subprocess calls off the event loop under the
+remaining REVIEW budget. The supported subprocess runner accepts cancellation,
+kills/reaps its process group, and returns terminal evidence. If cleanup cannot
+settle inside the bounded reserve, Verdict reports `ocr review cleanup UNKNOWN
+after cancellation`, fails the review closed with local `scope=none`, and does not
+retry or fall back to another independence level based on uncertain reviewer work.
 
 Supervised Prime requires an explicit process environment variable
 `VERDICT_CONTROLLER_CGROUP_ROOT` pointing at an operator-selected writable delegated

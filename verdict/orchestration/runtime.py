@@ -18,6 +18,7 @@ Isolation guarantees:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import os
 import shlex
@@ -27,7 +28,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.orchestration.candidate_builder import (
@@ -62,6 +63,7 @@ from verdict.orchestration.contracts import (
 from verdict.orchestration.controller_operations import (
     OwnershipError,
     bounded_executor_call,
+    operation_scope,
     scrub_fencing_env,
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
@@ -126,6 +128,7 @@ class RuntimePolicy:
     run_deadline_seconds: float = 3600.0
     require_review: bool = True
     max_review_rounds: int = 2
+    review_timeout_seconds: float = 900.0
     max_cooldown_wait_seconds: float = 120.0
     # BOD-272: REQUIRED_CONTEXT byte budget for a node's worker prompt. After a
     # context-length overflow the next attempt gets a smaller pack (halved, not
@@ -294,6 +297,7 @@ class DagRuntime:
         # node_id -> route_id. Shared with the selector's load callback so concurrent
         # selections spread across routes; reserved at SELECTION time, not dispatch.
         self.inflight: dict[str, str] = inflight if inflight is not None else {}
+        self._run_started_monotonic: float | None = None
         self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
@@ -538,6 +542,7 @@ class DagRuntime:
     # ------------------------------------------------------------------ run
     async def run(self) -> RunResult:
         started = time.monotonic()
+        self._run_started_monotonic = started
         self._base_sha = await self.git.head() if self.base_ref == "HEAD" else self.base_ref
         self.events.emit(
             "topology",
@@ -1598,6 +1603,93 @@ class DagRuntime:
         return None
 
     # ------------------------------------------------------------------ conclude
+    def _remaining_run_seconds(self) -> float:
+        now = time.monotonic()
+        remaining = float(self.policy.run_deadline_seconds)
+        if self._run_started_monotonic is not None:
+            remaining = min(remaining, self._run_started_monotonic + remaining - now)
+        controller_deadline = os.environ.get("VERDICT_CONTROLLER_DEADLINE")
+        if controller_deadline:
+            with contextlib.suppress(ValueError):
+                remaining = min(remaining, float(controller_deadline) - now)
+        return remaining
+
+    def _review_timeout_seconds(self) -> float:
+        timeout = min(float(self.policy.review_timeout_seconds), 900.0, self._remaining_run_seconds())
+        if not (timeout > 0):
+            raise OwnershipError("overall controller deadline spent")
+        return timeout
+
+    async def _review_with_bound(
+        self,
+        *,
+        level: str,
+        round_number: int,
+        repo: Path,
+        base_ref: str,
+        head_ref: str,
+        background: str,
+        exclude_routes: frozenset[str],
+        exclude_families: frozenset[str],
+    ) -> ReviewResult:
+        assert self.reviewer is not None
+        started = time.monotonic()
+        timeout_seconds = self._review_timeout_seconds()
+        attempt_id = f"review-round-{round_number}"
+        with operation_scope(
+            self.run_dir, phase="review", attempt_id=attempt_id, timeout_seconds=timeout_seconds
+        ):
+            try:
+                review = self.reviewer.review
+                supports_timeout = False
+                try:
+                    parameters = inspect.signature(review).parameters
+                    supports_timeout = "timeout_seconds" in parameters or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    pass
+                if supports_timeout:
+                    review_call = cast(Any, review)(
+                        repo=repo,
+                        base_ref=base_ref,
+                        head_ref=head_ref,
+                        background=background,
+                        exclude_routes=exclude_routes,
+                        exclude_families=exclude_families,
+                        timeout_seconds=timeout_seconds,
+                    )
+                else:
+                    review_call = review(
+                        repo=repo,
+                        base_ref=base_ref,
+                        head_ref=head_ref,
+                        background=background,
+                        exclude_routes=exclude_routes,
+                        exclude_families=exclude_families,
+                    )
+                return await asyncio.wait_for(review_call, timeout_seconds)
+            except asyncio.TimeoutError:
+                return ReviewResult(
+                    status="ERROR",
+                    reviewer="unknown",
+                    route_id="",
+                    detail=(
+                        f"review {attempt_id} timed out after {timeout_seconds:g}s "
+                        f"during {level} independence"
+                    ),
+                    attempts=(
+                        {
+                            "route_id": "",
+                            "status": "ERROR",
+                            "category": "review_timeout",
+                            "scope": "none",
+                            "duration_seconds": round(time.monotonic() - started, 3),
+                        },
+                    ),
+                )
+
     async def _conclude(self) -> RunResult:
         blocked = [r for r in self.nodes.values() if r.state is not NodeState.VALIDATED]
         if blocked:
@@ -1635,7 +1727,9 @@ class DagRuntime:
             review = None
             for level, excluded_families in (("family", families), ("route", frozenset())):
                 try:
-                    candidate = await self.reviewer.review(
+                    candidate = await self._review_with_bound(
+                        level=level,
+                        round_number=1 if level == "family" else 2,
                         repo=self.repo,
                         base_ref=self._base_sha,
                         head_ref=integration,
