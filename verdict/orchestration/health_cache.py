@@ -862,6 +862,8 @@ class HealthCache:
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
         self._cooldowns: dict[str, ScopedCooldown] = {}
+        # What disk held at the last load/save; differs from _snapshot() when unsaved.
+        self._disk_snapshot: dict[str, Any] = {}
         self._load()
 
     # -- persistence -------------------------------------------------------
@@ -869,10 +871,15 @@ class HealthCache:
     def reload(self) -> None:
         """Read-only refresh from disk (another HealthCache object may have written it).
 
-        Unsaved in-memory mutations are discarded; callers that mutate must
-        ``save()`` (which merges over disk under the lock) before reloading.
+        Unsaved in-memory mutations are kept: they are folded over the newer disk
+        state with the same newest-wins rules ``save()`` applies, so a probe this
+        object recorded but has not saved yet is never silently dropped. Nothing
+        is written; the object stays unsaved until ``save()``.
         """
-        self._load()
+        if self._snapshot() != self._disk_snapshot:
+            self._merge_in_memory_over_disk()
+        else:
+            self._load()
 
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
@@ -882,6 +889,7 @@ class HealthCache:
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
+            self._disk_snapshot = self._snapshot()
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -926,6 +934,7 @@ class HealthCache:
             for key, value in cooldowns.items()
             if isinstance(value, Mapping)
         }
+        self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {
@@ -971,7 +980,8 @@ class HealthCache:
             )
             try:
                 self._merge_in_memory_over_disk()
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                self._disk_snapshot = self._snapshot()
+                body = json.dumps(self._disk_snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -1044,7 +1054,8 @@ class HealthCache:
                         self._routes[route_id] = replace(
                             entry, write_revision=(prior.write_revision if prior else 0) + 1
                         )
-                body = json.dumps(self._snapshot(), indent=2, sort_keys=True) + "\n"
+                self._disk_snapshot = self._snapshot()
+                body = json.dumps(self._disk_snapshot, indent=2, sort_keys=True) + "\n"
                 _private_atomic_write(self.path, body)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
