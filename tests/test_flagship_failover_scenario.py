@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.demo_scenario import (
     FLAGSHIP_RUN_ID,
     ROUTE_A,
@@ -190,17 +191,13 @@ class TestFlagshipFailoverScenario:
     # ---- cooldown STATE discrimination (mutations A/B would break these) ---
 
     def test_ladder_state_has_cooldown_for_route_a_provider(self) -> None:
-        """The ladder's persisted state has a provider-scope cooldown for alpha.
+        """Credential exhaustion remains scoped to the canonical pool.
 
-        rate_limit (429) is provider-scoped: ``record_failure`` writes both
-        ``route:alpha/claude-a`` and ``provider:alpha``.  Node-2 may call
-        ``record_success(alpha/claude-a)`` which clears the route-level entry,
-        but the provider-level entry survives.
-
-        Mutation A (skip record_failure) → no provider cooldown → FAILS.
+        An in-flight success does not erase a newer capacity cooldown.
+        Broader provider blocks must not affect unrelated credential pools.
         """
         cooldowns = self._r.ladder._state["cooldowns"]
-        provider_key = "provider:alpha"
+        provider_key = f"pool:{pool_of(ROUTE_A)}"
         assert provider_key in cooldowns, (
             f"cooldown entry missing for {provider_key}; keys present: {list(cooldowns.keys())}"
         )
@@ -215,7 +212,7 @@ class TestFlagshipFailoverScenario:
         This test validates the timestamp is well-formed and future-dated.
         """
         cooldowns = self._r.ladder._state["cooldowns"]
-        provider_key = "provider:alpha"
+        provider_key = f"pool:{pool_of(ROUTE_A)}"
         entry = cooldowns.get(provider_key, {})
         until_str = entry.get("until", "")
         assert until_str, "no 'until' in provider cooldown"

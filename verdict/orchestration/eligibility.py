@@ -1212,7 +1212,15 @@ class EligibilityLadder:
         )
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
-        self._state["cooldowns"].pop(f"pool:{pool_of(route_id)}", None)
+        pool_key = f"pool:{pool_of(route_id)}"
+        entry = self._state["cooldowns"].get(pool_key)
+        if not (
+            isinstance(entry, dict)
+            and entry.get("category") in POOL_COOLDOWN_CATEGORIES
+            and self._active_cooldown(pool_key, now) is not None
+        ):
+            self._state["cooldowns"].pop(pool_key, None)
+        # Exact-route success supersedes a model-local throttle, not pool capacity.
         self._state["cooldowns"].pop(f"route:{route_id}", None)
         self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
         self._persist()

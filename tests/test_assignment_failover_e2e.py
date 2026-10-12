@@ -145,9 +145,10 @@ def test_provider_quota_failover_to_independent_review(
     assert (failure["category"], failure["action"]) == ("quota_exhausted", "REROUTE")
     cooldown = events.of("cooldown", "a")[0]
     assert (cooldown["key"], cooldown["scope"]) == ("claude", "pool")
-    # The ladder persists the provider cooldown under the inventory owner.
+    # Credential blockers stay within the pool; provider-wide keys would
+    # incorrectly spread failures onto unrelated pools under the same owner.
     cooldowns = json.loads(state.read_text())["cooldowns"]
-    assert "provider:claude" in cooldowns
+    assert "provider:claude" not in cooldowns
     assert "pool:claude" in cooldowns
     reassign = events.of("reassign", "a")[0]
     assert (reassign["from_route"], reassign["to_route"]) == (
