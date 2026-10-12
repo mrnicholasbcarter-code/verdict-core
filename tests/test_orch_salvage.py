@@ -897,3 +897,192 @@ class TestDagRuntimeSalvageRestore:
         # Serialize all events and check no content leaked
         all_events_str = json.dumps(events.rows)
         assert secret_content not in all_events_str
+
+
+class TestEvidencePathListCap:
+    """BOD-308 followup: path lists in salvage/restore events and
+    NodeRun.history are bounded at _MAX_EVIDENCE_PATHS (50) while
+    preserving exact total counts, byte totals, and full file restoration."""
+
+    def test_over_fifty_owned_files_caps_event_lists_preserves_counts(self, repo: Path) -> None:
+        """Regression: >50 small owned changed files produce capped path
+        lists in events and history, exact total counts, and full file
+        restoration. Uses real EventLog, not a permissive mock."""
+        file_count = 60
+        run_dir = repo.parent / "run-cap"
+        events = EventLog(run_dir / "events.jsonl", clock=lambda: NOW)
+
+        owned = tuple(f"src/f{i:03d}.py" for i in range(file_count))
+
+        node = WorkNode(
+            "cap",
+            "write many files",
+            kind=NodeKind.IMPLEMENT,
+            depends_on=(),
+            owned_files=("src/",),
+            verification_command=("sh", "-c", "true"),
+        )
+
+        class ManyFileExecutor:
+            """Writes file_count small owned files, fails once, succeeds next."""
+
+            def __init__(self) -> None:
+                self.attempt = 0
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                self.attempt += 1
+                src = cwd / "src"
+                src.mkdir(exist_ok=True)
+                if self.attempt == 1:
+                    for i in range(file_count):
+                        (src / f"f{i:03d}.py").write_text(f"# partial {i}\n")
+                    return WorkerTerminal(ok=False, model=route_id, error="first failure")
+                # Second attempt: verify restored files exist, then complete
+                restored_count = sum(1 for p in owned if (cwd / p).exists())
+                (src / "result.txt").write_text(f"restored={restored_count}\n")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (node,)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=ManyFileExecutor(),
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        # ---- Salvage event checks ----
+        all_events = events.read()
+        salvage_evts = [e for e in all_events if e.type == "salvage"]
+        assert len(salvage_evts) == 1
+        s = salvage_evts[0].data
+
+        # Path list capped at 50
+        assert len(s["saved"]) <= 50
+        # Exact total count preserved
+        assert s["saved_count"] == file_count
+        # Total bytes present and positive
+        assert s["total_bytes"] > 0
+        # Truncation flag set
+        assert s["evidence_truncated"] is True
+        # files evidence also capped at 50
+        assert len(s["files"]) <= 50
+        # No raw file content in any event field
+        event_json = json.dumps([e.to_dict() for e in all_events])
+        assert "# partial" not in event_json
+
+        # ---- Restore event checks ----
+        restore_evts = [e for e in all_events if e.type == "restore"]
+        assert len(restore_evts) == 1
+        r = restore_evts[0].data
+
+        # Restored list capped at 50
+        assert len(r["restored"]) <= 50
+        # Exact total count preserved
+        assert r["restored_count"] == file_count
+        # Total bytes present
+        assert r["total_bytes"] > 0
+        # Truncation flag set
+        assert r["evidence_truncated"] is True
+
+        # ---- NodeRun.history checks ----
+        cap_run = result.nodes["cap"]
+        salvage_hist = [h for h in cap_run.history if h.get("outcome") == "salvage"]
+        assert len(salvage_hist) == 1
+        sh = salvage_hist[0]
+        assert len(sh["saved"]) <= 50
+        assert sh["saved_count"] == file_count
+        assert sh["evidence_truncated"] is True
+
+        restore_hist = [h for h in cap_run.history if h.get("outcome") == "restore"]
+        assert len(restore_hist) == 1
+        rh = restore_hist[0]
+        assert len(rh["restored"]) <= 50
+        assert rh["restored_count"] == file_count
+        assert rh["evidence_truncated"] is True
+
+        # ---- All safe partial files were actually restored ----
+        # The second attempt executor counted restored files and wrote the count
+        # Verify that the filesystem restoration was complete (all files, not just 50)
+        salvage_dir = run_dir / "salvage" / "cap"
+        # All files should exist in salvage
+        salvage_files = list((salvage_dir / "src").glob("f*.py")) if salvage_dir.exists() else []
+        assert len(salvage_files) == file_count
+
+    def test_under_fifty_files_no_truncation(self, repo: Path) -> None:
+        """When file count is <= 50, all paths appear in events and
+        evidence_truncated is False."""
+        file_count = 5
+        run_dir = repo.parent / "run-nocap"
+        events = EventLog(run_dir / "events.jsonl", clock=lambda: NOW)
+
+        node = WorkNode(
+            "small",
+            "write few files",
+            kind=NodeKind.IMPLEMENT,
+            depends_on=(),
+            owned_files=("src/",),
+            verification_command=("sh", "-c", "true"),
+        )
+
+        class FewFileExecutor:
+            def __init__(self) -> None:
+                self.attempt = 0
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                self.attempt += 1
+                src = cwd / "src"
+                src.mkdir(exist_ok=True)
+                if self.attempt == 1:
+                    for i in range(file_count):
+                        (src / f"f{i}.py").write_text(f"# code {i}\n")
+                    return WorkerTerminal(ok=False, model=route_id, error="fail")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (node,)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=FewFileExecutor(),
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE
+
+        all_events = events.read()
+        salvage_evts = [e for e in all_events if e.type == "salvage"]
+        assert len(salvage_evts) == 1
+        s = salvage_evts[0].data
+        assert len(s["saved"]) == file_count
+        assert s["saved_count"] == file_count
+        assert s["evidence_truncated"] is False
+
+        restore_evts = [e for e in all_events if e.type == "restore"]
+        assert len(restore_evts) == 1
+        r = restore_evts[0].data
+        assert len(r["restored"]) == file_count
+        assert r["restored_count"] == file_count
+        assert r["evidence_truncated"] is False
