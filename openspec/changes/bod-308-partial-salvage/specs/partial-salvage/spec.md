@@ -34,8 +34,8 @@ node, route or attempt runs next.
 ### Requirement: Handoff evidence SHALL be bounded and content-free
 
 Salvage SHALL record handoff evidence in the existing append-only event log and
-node history: relative paths, byte counts, content digests and rejection
-reasons only, bounded in count and size. File content SHALL never appear in
+node history: relative paths, byte counts, content digests and skipped path
+names only, bounded in count and size. File content SHALL never appear in
 events, history or the receipt.
 
 #### Scenario: Salvage occurs on a retry
@@ -57,14 +57,14 @@ fault-injected SHALL be excluded from salvage entirely.
 - **GIVEN** a failed attempt changed an owned file and an unowned file
 - **WHEN** salvage captures the attempt
 - **THEN** only the owned file is staged and restored
-- **AND** the unowned path is named in the rejection evidence without content.
+- **AND** the unowned path is named in skipped-path evidence without content.
 
 #### Scenario: Partial work contains a credential
 
 - **GIVEN** a changed owned file contains credential-bearing content
 - **WHEN** salvage screens the file
 - **THEN** the whole file is rejected before staging
-- **AND** the rejection is recorded by path and reason only.
+- **AND** the rejection is recorded by path only.
 
 #### Scenario: Failure was fault-injected
 

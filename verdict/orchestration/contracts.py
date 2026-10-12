@@ -517,6 +517,8 @@ EVENT_TYPES = frozenset(
         "failure",
         "cooldown",
         "reassign",
+        "salvage",
+        "restore",
         "verify",
         "repo_gate",  # BOD-289: individual repo quality-gate result
         "repo_gates",  # BOD-289: deterministic discovery (including none declared)

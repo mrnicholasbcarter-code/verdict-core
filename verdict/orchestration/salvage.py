@@ -15,9 +15,11 @@ Safety rules:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -29,6 +31,7 @@ _MAX_FILE_BYTES = 1_048_576
 
 # Maximum total salvage size across all files (4 MiB).
 _MAX_TOTAL_BYTES = 4_194_304
+_MAX_EVIDENCE_PATHS = 50
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
@@ -40,6 +43,8 @@ class SalvageResult:
     skipped: tuple[str, ...]  # paths skipped (too large, credential, unowned)
     total_bytes: int = 0
     error: str = ""  # non-empty only on unexpected failure
+    files: tuple[Mapping[str, object], ...] = ()  # bounded path/bytes/sha256 evidence
+    evidence_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -208,6 +213,35 @@ def _copy_regular_no_follow(src: Path, dst: Path) -> None:
         raise
 
 
+def _sha256_no_follow(path: Path) -> str:
+    digest = hashlib.sha256()
+    fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            file_stat = os.fstat(handle.fileno())
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise OSError("not_regular_file")
+            if file_stat.st_size > _MAX_FILE_BYTES:
+                raise OSError("file_too_large")
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+    except Exception:
+        raise
+    return digest.hexdigest()
+
+
+def _clear_existing_salvage_dir(salvage_dir: Path) -> str:
+    if not salvage_dir.exists():
+        return ""
+    if not _is_dir_no_follow(salvage_dir):
+        return "unsafe_salvage_dir"
+    try:
+        shutil.rmtree(salvage_dir)
+    except OSError as exc:
+        return type(exc).__name__
+    return ""
+
+
 def _iter_regular_relative_files(root: Path) -> tuple[list[str], list[str]]:
     candidates: list[str] = []
     skipped: list[str] = []
@@ -241,54 +275,84 @@ def _iter_regular_relative_files(root: Path) -> tuple[list[str], list[str]]:
 
 
 def salvage_owned_files(
-    worktree: Path, owned_files: tuple[str, ...], salvage_dir: Path, *, base_sha: str = ""
+    worktree: Path,
+    owned_files: tuple[str, ...],
+    salvage_dir: Path,
+    *,
+    changed_files: Sequence[str] | None = None,
+    replace_existing: bool = False,
+    base_sha: str = "",
 ) -> SalvageResult:
     """Preserve owned modified files from a failed attempt's worktree.
 
-    Only files that (a) exist in the worktree, (b) are listed in owned_files,
-    (c) are within size limits, and (d) contain no detectable credentials are
-    saved.  The operation is all-or-nothing on error: a partial copy is cleaned
-    up and an error result is returned.
+    Only files that (a) exist in the worktree, (b) were reported as changed by
+    the caller's Git diff authority when supplied, (c) are listed in
+    owned_files, (d) are within size limits, and (e) contain no detectable
+    credentials are saved.  Runtime callers set ``replace_existing`` so each
+    capture replaces the previous node snapshot and no-change or deletion-only
+    attempts cannot resurrect stale partial work.
 
     Returns a content-free ``SalvageResult``.
     """
+    del base_sha  # Diff authority belongs to the caller; keep API compatibility.
     owned_set = _safe_owned_set(owned_files)
     saved: list[str] = []
     skipped: list[str] = []
+    files: list[Mapping[str, object]] = []
     total_bytes = 0
 
     try:
         if not _is_dir_no_follow(worktree):
             return SalvageResult(saved=(), skipped=(), error="unsafe_worktree")
 
+        if replace_existing:
+            clear_error = _clear_existing_salvage_dir(salvage_dir)
+            if clear_error:
+                skipped_existing, _ = _iter_regular_relative_files(worktree)
+                return SalvageResult(
+                    saved=(),
+                    skipped=tuple(path for path in skipped_existing if _is_owned(path, owned_set)),
+                    error=clear_error,
+                )
+
         candidates: list[str] = []
         seen: set[str] = set()
-        for owned in owned_files:
-            rel = _safe_relative_path(owned)
-            if rel is None:
-                skipped.append(owned)
-                continue
-
-            full = worktree / rel
-            if _has_symlink_component(worktree, rel) or not _resolved_within(
-                full, worktree, strict=False
-            ):
-                skipped.append(rel)
-                continue
-
-            if _regular_file_size_no_follow(full) is not None:
+        if changed_files is not None:
+            for changed in changed_files:
+                rel = _safe_relative_path(changed)
+                if rel is None:
+                    skipped.append(changed)
+                    continue
                 if rel not in seen:
                     candidates.append(rel)
                     seen.add(rel)
-            elif _is_dir_no_follow(full):
-                child_candidates, child_skipped = _iter_regular_relative_files(full)
-                for child_skipped_rel in child_skipped:
-                    skipped.append(f"{rel}/{child_skipped_rel}")
-                for child_rel in child_candidates:
-                    repo_rel = f"{rel}/{child_rel}"
-                    if repo_rel not in seen:
-                        candidates.append(repo_rel)
-                        seen.add(repo_rel)
+        else:
+            for owned in owned_files:
+                rel = _safe_relative_path(owned)
+                if rel is None:
+                    skipped.append(owned)
+                    continue
+
+                full = worktree / rel
+                if _has_symlink_component(worktree, rel) or not _resolved_within(
+                    full, worktree, strict=False
+                ):
+                    skipped.append(rel)
+                    continue
+
+                if _regular_file_size_no_follow(full) is not None:
+                    if rel not in seen:
+                        candidates.append(rel)
+                        seen.add(rel)
+                elif _is_dir_no_follow(full):
+                    child_candidates, child_skipped = _iter_regular_relative_files(full)
+                    for child_skipped_rel in child_skipped:
+                        skipped.append(f"{rel}/{child_skipped_rel}")
+                    for child_rel in child_candidates:
+                        repo_rel = f"{rel}/{child_rel}"
+                        if repo_rel not in seen:
+                            candidates.append(repo_rel)
+                            seen.add(repo_rel)
 
         if not candidates:
             return SalvageResult(saved=(), skipped=tuple(skipped))
@@ -309,7 +373,12 @@ def salvage_owned_files(
                 continue
 
             size = _regular_file_size_no_follow(src)
-            if size is None or size > _MAX_FILE_BYTES:
+            if size is None:
+                if not src.exists():
+                    continue
+                skipped.append(rel_path)
+                continue
+            if size > _MAX_FILE_BYTES:
                 skipped.append(rel_path)
                 continue
             if total_bytes + size > _MAX_TOTAL_BYTES:
@@ -324,11 +393,22 @@ def salvage_owned_files(
             if not _ensure_safe_parent(salvage_dir, rel_path):
                 skipped.append(rel_path)
                 continue
+            digest = _sha256_no_follow(src)
             _copy_regular_no_follow(src, dst)
             saved.append(rel_path)
             total_bytes += size
+            if len(files) < _MAX_EVIDENCE_PATHS:
+                files.append({"path": rel_path, "bytes": size, "sha256": digest})
 
-        return SalvageResult(saved=tuple(saved), skipped=tuple(skipped), total_bytes=total_bytes)
+        if not saved and salvage_dir.exists() and _is_dir_no_follow(salvage_dir):
+            shutil.rmtree(salvage_dir, ignore_errors=True)
+        return SalvageResult(
+            saved=tuple(saved),
+            skipped=tuple(skipped),
+            total_bytes=total_bytes,
+            files=tuple(files),
+            evidence_truncated=len(saved) > len(files),
+        )
 
     except Exception as exc:
         if salvage_dir.exists() and _is_dir_no_follow(salvage_dir):

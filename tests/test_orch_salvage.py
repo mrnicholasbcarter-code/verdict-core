@@ -29,6 +29,8 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     WorkNode,
 )
+from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
+from verdict.orchestration.receipt import EventLog
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 from verdict.orchestration.salvage import restore_salvaged_files, salvage_owned_files
 
@@ -366,6 +368,45 @@ class TestSalvageOwnedFiles:
         assert (salvage_dir / "a.txt").read_text() == "123"
         assert not (salvage_dir / "b.txt").exists()
 
+    def test_changed_set_filters_unchanged_owned_baseline_and_clears_stale(
+        self, tmp_path: Path
+    ) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").write_text("baseline")
+        salvage_dir = tmp_path / "salvage"
+        salvage_dir.mkdir()
+        (salvage_dir / "a.txt").write_text("stale")
+
+        result = salvage_owned_files(
+            worktree, ("a.txt",), salvage_dir, changed_files=[], replace_existing=True
+        )
+
+        assert result.saved == ()
+        assert result.skipped == ()
+        assert not result.error
+        assert not salvage_dir.exists()
+
+    def test_changed_set_includes_untracked_owned_file(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "a.txt").write_text("new partial")
+        salvage_dir = tmp_path / "salvage"
+
+        result = salvage_owned_files(
+            worktree, ("a.txt",), salvage_dir, changed_files=["a.txt"]
+        )
+
+        assert result.saved == ("a.txt",)
+        assert result.files == (
+            {
+                "path": "a.txt",
+                "bytes": len("new partial"),
+                "sha256": result.files[0]["sha256"],
+            },
+        )
+        assert (salvage_dir / "a.txt").read_text() == "new partial"
+
 
 class TestRestoreSalvagedFiles:
     """Unit tests for restore_salvaged_files."""
@@ -618,6 +659,146 @@ class TestDagRuntimeSalvageRestore:
         assert not events.of("salvage")
         # No restore event because no salvage dir exists
         assert not events.of("restore")
+
+    def test_real_event_log_accepts_salvage_and_restore(self, repo: Path) -> None:
+        """Regression for the production EventLog type validation path."""
+        run_dir = repo.parent / "run-real-log"
+        events = EventLog(run_dir / "events.jsonl", clock=lambda: NOW)
+        executor = Executor(fail_on={("a", "r1/m1")}, partial_content="partial from attempt 1")
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+        event_types = [event.type for event in events.read()]
+        assert "salvage" in event_types
+        assert "restore" in event_types
+
+    def test_fault_injected_attempt_is_not_saved_or_salvaged(self, repo: Path) -> None:
+        """Actual FaultInjectingExecutor auth fault must not seed retries."""
+        run_dir = repo.parent / "run-fault"
+        events = EventLog(run_dir / "events.jsonl", clock=lambda: NOW)
+
+        def script(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+            node_id = prompt.split(":", 1)[0]
+            (cwd / f"{node_id}.txt").write_text(f"completed by {route_id}\n")
+            return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+
+        executor = FaultInjectingExecutor(
+            ScriptedExecutor(script),
+            {"worker#1": ["auth"]},
+        )
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+        assert not (run_dir / "attempts" / "a-a1.json").exists()
+        assert not (run_dir / "salvage" / "a").exists()
+        assert "salvage" not in [event.type for event in events.read()]
+
+    def test_no_change_failed_attempt_clears_prior_salvage_snapshot(self, repo: Path) -> None:
+        """A later no-change failure replaces stale salvage instead of carrying it forward."""
+        run_dir = repo.parent / "run-stale"
+        events = EventLog(run_dir / "events.jsonl", clock=lambda: NOW)
+
+        class ThreeAttemptExecutor:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                self.calls += 1
+                node_id = prompt.split(":", 1)[0]
+                target = cwd / f"{node_id}.txt"
+                if self.calls == 1:
+                    target.write_text("stale partial from attempt 1")
+                    return WorkerTerminal(ok=False, model=route_id, error="first failure")
+                if self.calls == 2:
+                    # Restored attempt-1 work is explicitly deleted, then this attempt fails.
+                    if target.exists():
+                        target.unlink()
+                    return WorkerTerminal(ok=False, model=route_id, error="second failure")
+                assert not target.exists(), "attempt 3 resurrected deleted stale salvage"
+                target.write_text("fresh final\n")
+                return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2", "r3/m3"]),
+            executor=ThreeAttemptExecutor(),
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+        event_types = [event.type for event in events.read()]
+        assert event_types.count("salvage") == 1
+        assert event_types.count("restore") == 1
+        assert not (run_dir / "salvage" / "a").exists()
+
+    def test_fail_cleans_worktree_when_failure_event_emit_raises(self, repo: Path) -> None:
+        run_dir = repo.parent / "run-cleanup"
+
+        class RaisingEvents(Events):
+            def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+                if type == "failure":
+                    raise RuntimeError("event sink failed")
+                super().emit(type, node_id, **data)
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1"]),
+            executor=Executor(fail_on={("a", "r1/m1")}),
+            classifier=SimpleClassifier(),
+            events=RaisingEvents(),
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+
+        assert result.outcome is RunOutcome.BLOCKED
+        assert "driver crash: RuntimeError: event sink failed" in runtime.nodes["a"].reason
+        assert not (run_dir / "worktrees" / "a-a1").exists()
 
     def test_credential_bearing_partial_work_rejected(self, repo: Path) -> None:
         """Partial work containing credentials is not salvaged."""

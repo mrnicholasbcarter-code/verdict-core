@@ -49,7 +49,7 @@ run directory; content-bearing receipt data; live-run proof of savings.
    lineage than the node being retried.
 6. Handoff evidence is content-free and bounded: a `salvage` RunEvent and a
    history record carry relative paths, per-file byte counts, SHA-256 digests,
-   and rejection reasons, truncated to a fixed path count. File content never
+   and skipped path names, truncated to a fixed path count. File content never
    enters `events.jsonl`, history or the receipt.
 
 ## Risks / Trade-offs
