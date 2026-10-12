@@ -380,3 +380,27 @@ async def test_existing_gate_debt_is_not_blamed_on_the_node(repo: Path, gate_bin
     assert result.nodes["a"].state is NodeState.VALIDATED
     assert not events.of("failure", "a")
     assert "existing lint debt" in result.nodes["i"].reason
+
+
+async def test_existing_debt_in_one_gate_does_not_hide_a_new_failure_in_another(
+    repo: Path, gate_bin: Path
+) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    seen = {"format": 0}
+
+    async def debt_plus_new(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if name == "ruff" and "check" in argv:
+            return 1, "existing lint debt"
+        if name == "ruff" and "format" in argv and cwd.name.startswith("a-"):
+            seen["format"] += 1
+            if seen["format"] == 1:
+                return 1, "Would reformat: a.txt"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = debt_plus_new
+    await runtime.run()
+    failure = events.of("failure", "a")[0]
+    assert failure["category"] == "verification_failed"
+    assert events.of("rehydrate", "a")

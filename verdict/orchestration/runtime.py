@@ -895,7 +895,12 @@ class DagRuntime:
             self._set(run, NodeState.PLANNED, reassign=True)
 
     async def _run_repo_gates(
-        self, run: NodeRun, worktree: Path, *, worker_fixable_only: bool = False
+        self,
+        run: NodeRun,
+        worktree: Path,
+        *,
+        worker_fixable_only: bool = False,
+        failed: list[str] | None = None,
     ) -> str | None:
         """Run every declared gate, retaining the first failure with bounded evidence.
 
@@ -946,8 +951,11 @@ class DagRuntime:
                 tail=out[-600:],
             )
             fixable = code not in (126, 127) or not worker_fixable_only
-            if code != 0 and reason is None and fixable:
-                reason = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+            if code != 0 and fixable:
+                message = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
+                reason = reason or message
+                if failed is not None:
+                    failed.append(message)
         return reason
 
     async def _integrate_node(self, run: NodeRun) -> None:
@@ -1679,9 +1687,13 @@ class DagRuntime:
                 # run at integration, where no worker can fix it (ADR-036 amendment).
                 # Only failures the node introduced count: if a gate already fails on
                 # the node's base, that is existing debt for the integration barrier.
-                gate_reason = await self._run_repo_gates(run, worktree, worker_fixable_only=True)
-                if gate_reason and not await self._gate_fails_on_base(gate_reason, base):
-                    return f"verification_failed: {gate_reason[:600]}"
+                # A gate already failing on the base must not hide a different gate
+                # this node newly broke, so every failing gate is checked.
+                failed: list[str] = []
+                await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
+                for gate_reason in failed:
+                    if not await self._gate_fails_on_base(gate_reason, base):
+                        return f"verification_failed: {gate_reason[:600]}"
         else:
             self.events.emit(
                 "verify", node.node_id, ok=True, exit_code=0, command="(none: non-code node)"
