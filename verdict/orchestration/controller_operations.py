@@ -36,6 +36,8 @@ DEADLINE_ENV = "VERDICT_CONTROLLER_DEADLINE"
 LAUNCH_ENV = "VERDICT_CONTROLLER_LAUNCH"
 OPERATION_ENV = "VERDICT_CONTROLLER_OPERATION"
 FENCING_ENV_KEYS = (RUN_DIR_ENV, TOKEN_ENV, DEADLINE_ENV, LAUNCH_ENV, OPERATION_ENV)
+_LOCK_WAIT_SECONDS = 2.0
+_LOCK_POLL_SECONDS = 0.02
 _operation_id: contextvars.ContextVar[str] = contextvars.ContextVar("operation_id", default="")
 
 
@@ -206,11 +208,15 @@ def _write_state(run_dir: Path, state: dict[str, Any]) -> None:
 def _locked_state(run_dir: Path) -> Iterator[dict[str, Any]]:
     run_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / ".controller-operations.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            # Fail closed immediately: no stopped lock owner can block deadline/cancel.
-            raise OwnershipError("controller ownership lock unavailable") from exc
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise OwnershipError("controller ownership lock unavailable") from exc
+                time.sleep(_LOCK_POLL_SECONDS)
         state = read_state(run_dir)
         yield state
         _write_state(run_dir, state)
@@ -240,6 +246,15 @@ def bind_controller(run_dir: Path, token: str, owner: dict[str, Any] | None) -> 
             raise OwnershipError("controller generation revoked before binding")
         state["controller"] = owner
         state["controller_spawn_pending"] = False
+
+
+def preflight_worker_containment(run_dir: Path, token: str, root: Path) -> None:
+    """Validate and reserve delegated worker containment before controller work starts."""
+    with _locked_state(run_dir) as state:
+        if state.get("token") != token or state.get("active") is not True:
+            raise OwnershipError("controller generation revoked before containment preflight")
+        if not state.get("containment"):
+            state["containment"] = prepare_containment(root, token)
 
 
 def revoke_generation(run_dir: Path, token: str) -> None:

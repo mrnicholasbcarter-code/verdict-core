@@ -408,6 +408,11 @@ async def plan_with_failover(
                 detail=str(exc)[:300],
                 fault_injected=source.session_ref.startswith("fault-injected"),
             )
+            if failure.action == "BLOCK":
+                raise OrchestrationError(
+                    f"planning blocked by local controller failure: {failure.category}: "
+                    f"{failure.evidence}"
+                ) from exc
             feedback = getattr(selector, "record_session_failure", None)
             if callable(feedback):
                 try:

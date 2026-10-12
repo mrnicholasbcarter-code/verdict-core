@@ -209,6 +209,14 @@ class FailureIntelligence:
                 scope="none",
                 evidence=_sanitize_error(error_text),
             )
+        if error_text.startswith("ownership_refused:") or terminal.status_code == 125:
+            return FailureClassification(
+                category="ownership_refused",
+                action="BLOCK",
+                cooldown_seconds=0,
+                scope="none",
+                evidence=_sanitize_error(error_text),
+            )
 
         # Context-length overflow (HTTP 400/413 "Input is too long", ...): the
         # request does not fit this route; the route/provider stay healthy.

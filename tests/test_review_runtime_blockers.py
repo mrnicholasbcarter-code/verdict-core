@@ -5,11 +5,20 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from verdict.orchestration import controller_operations as operations
-from verdict.orchestration.contracts import WorkerTerminal
+from verdict.orchestration.contracts import (
+    CapacityClass,
+    EligibilityStage,
+    OrchestrationError,
+    RouteVerdict,
+    WorkerTerminal,
+)
+from verdict.orchestration.recovery import FailureIntelligence
+from verdict.orchestration.run import plan_with_failover
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy, subprocess_runner
 from verdict.orchestration.supervisor import ControllerSupervisor
 
@@ -312,3 +321,174 @@ def test_supervisor_worker_lease_rekey_does_not_extend_wait(tmp_path: Path) -> N
         assert ticks[0] == 240
 
     asyncio.run(main())
+
+
+def test_ownership_refused_classifies_local_block() -> None:
+    failure = FailureIntelligence().classify(
+        WorkerTerminal(ok=False, error="ownership_refused: cgroup unavailable", status_code=125),
+        now=datetime.now(timezone.utc),
+    )
+
+    assert failure.category == "ownership_refused"
+    assert failure.action == "BLOCK"
+    assert failure.scope == "none"
+    assert failure.cooldown_seconds == 0
+
+
+def test_runtime_execute_keeps_ownership_refused_local(tmp_path: Path) -> None:
+    class RefusingExecutor:
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            raise operations.OwnershipError("fixture refusal")
+
+    runtime = object.__new__(DagRuntime)
+    runtime.executor = RefusingExecutor()
+    runtime.run_dir = tmp_path
+    runtime.policy = RuntimePolicy(attempt_timeout_seconds=1)
+
+    terminal = asyncio.run(
+        runtime._execute("prompt", "route", tmp_path, node_id="node", attempt=1)
+    )
+
+    assert terminal.error == "ownership_refused: fixture refusal"
+    assert terminal.status_code == 125
+
+
+def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldown(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class Selector:
+        def __init__(self) -> None:
+            self.selects = 0
+            self.failures = 0
+
+        def select(self, requirements: object, *, now: object) -> tuple[RouteVerdict | None, list[RouteVerdict]]:
+            del requirements, now
+            self.selects += 1
+            choice = RouteVerdict(
+                route_id="cc/model",
+                provider="cc",
+                reached=EligibilityStage.SELECTED,
+                failed_stage=None,
+                reason="fixture",
+                capacity_class=CapacityClass.SUBSCRIPTION,
+                context_window=200_000,
+            )
+            return choice, [choice]
+
+        def record_failure(self, route_id: str, failure: object, *, now: object) -> None:
+            del route_id, failure, now
+            self.failures += 1
+
+    class RefusingExecutor:
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        ) -> WorkerTerminal:
+            del prompt, route_id, cwd, timeout_seconds, tools
+            return WorkerTerminal(ok=False, error="ownership_refused: fixture", status_code=125)
+
+    class Events:
+        def __init__(self) -> None:
+            self.rows: list[tuple[str, dict[str, Any]]] = []
+
+        def emit(self, event_type: str, **data: Any) -> None:
+            self.rows.append((event_type, data))
+
+    async def fake_plan(
+        self: object,
+        goal: str,
+        *,
+        repo: Path,
+        executor: object,
+        route_id: str,
+        timeout_seconds: float,
+        constraints: str = "",
+        events: object | None = None,
+        run_dir: Path | None = None,
+        attempt: int = 1,
+        max_attempts: int = 6,
+    ) -> object:
+        from verdict.orchestration.planner import PlanningExecutorError
+
+        del self, goal, repo, executor, route_id, timeout_seconds, constraints, events, run_dir, attempt, max_attempts
+        terminal = WorkerTerminal(ok=False, error="ownership_refused: fixture", status_code=125)
+        raise PlanningExecutorError("fixture refused", terminal)
+
+    from verdict.orchestration import run as run_module
+
+    monkeypatch.setattr(run_module.FrontierPlanner, "plan", fake_plan)
+    selector = Selector()
+    events = Events()
+
+    try:
+        asyncio.run(
+            plan_with_failover(
+                "goal",
+                repo=tmp_path,
+                selector=selector,
+                executor=RefusingExecutor(),
+                classifier=FailureIntelligence(),
+                events=events,
+                run_dir=tmp_path / "run",
+                max_attempts=3,
+                timeout_seconds=1,
+            )
+        )
+    except OrchestrationError as exc:
+        assert "ownership_refused" in str(exc)
+    else:
+        raise AssertionError("plan_with_failover should block on ownership_refused")
+
+    assert selector.selects == 1
+    assert selector.failures == 0
+    assert not [row for row in events.rows if row[0] == "cooldown"]
+
+
+def test_supervisor_preflights_containment_before_provider_work(tmp_path: Path) -> None:
+    async def spawn(
+        argv: list[str], *, log_path: Path, env: dict[str, str] | None
+    ) -> object:
+        raise AssertionError("controller spawned before containment preflight")
+
+    outcome = asyncio.run(
+        ControllerSupervisor(
+            lambda gen: ["must-not-start"],
+            tmp_path,
+            spawner=spawn,
+            require_worker_containment=True,
+        ).run()
+    )
+
+    assert outcome.state == "BLOCKED"
+    assert "VERDICT_CONTROLLER_CGROUP_ROOT" in outcome.reason
+    assert outcome.generations
+    assert outcome.generations[0]["state"] == "CLEANUP_BLOCKED"
+
+
+def test_controller_lock_wait_is_bounded(tmp_path: Path, monkeypatch: Any) -> None:
+    attempts = [0]
+    ticks = [0.0]
+
+    def fake_monotonic() -> float:
+        return ticks[0]
+
+    def fake_sleep(delay: float) -> None:
+        ticks[0] += delay
+
+    def fake_flock(lock: object, flags: int) -> None:
+        attempts[0] += 1
+        raise BlockingIOError
+
+    monkeypatch.setattr(operations.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(operations.time, "sleep", fake_sleep)
+    monkeypatch.setattr(operations.fcntl, "flock", fake_flock)
+
+    try:
+        with operations._locked_state(tmp_path):
+            raise AssertionError("lock should not be acquired")
+    except operations.OwnershipError as exc:
+        assert "lock unavailable" in str(exc)
+
+    assert 2.0 <= ticks[0] <= 2.05
+    assert attempts[0] > 1

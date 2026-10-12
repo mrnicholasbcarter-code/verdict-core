@@ -59,7 +59,11 @@ from verdict.orchestration.contracts import (
     route_family,
     route_provider,
 )
-from verdict.orchestration.controller_operations import bounded_executor_call, scrub_fencing_env
+from verdict.orchestration.controller_operations import (
+    OwnershipError,
+    bounded_executor_call,
+    scrub_fencing_env,
+)
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.recovery import RecoveryBudget
@@ -1335,6 +1339,10 @@ class DagRuntime:
                 run_dir=self.run_dir,
                 phase="worker",
                 attempt_id=f"{node_id}-a{attempt}",
+            )
+        except OwnershipError as exc:
+            return WorkerTerminal(
+                ok=False, model=route_id, error=f"ownership_refused: {exc}", status_code=125
             )
         except Exception as exc:  # executor bugs must not unwind the controller
             return WorkerTerminal(

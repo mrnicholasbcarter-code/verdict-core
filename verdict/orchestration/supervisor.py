@@ -34,6 +34,7 @@ from typing import IO, Any, ClassVar, Protocol
 
 from verdict.orchestration.contracts import FailureClassification, FailureClassifier, WorkerTerminal
 from verdict.orchestration.controller_operations import (
+    CGROUP_ROOT_ENV,
     DEADLINE_ENV,
     RUN_DIR_ENV,
     TOKEN_ENV,
@@ -42,6 +43,7 @@ from verdict.orchestration.controller_operations import (
     activate_generation,
     bind_controller,
     cleanup_workers,
+    preflight_worker_containment,
     process_identity,
     read_state,
     revoke_generation,
@@ -202,6 +204,7 @@ class ControllerSupervisor:
         spawner: Spawner | None = None,
         kill_grace_seconds: float = 10.0,
         classifier: FailureClassifier | None = None,
+        require_worker_containment: bool = False,
     ) -> None:
         self.command_factory, self.run_dir = command_factory, Path(run_dir)
         self.stall_seconds, self.poll_seconds = float(stall_seconds), max(poll_seconds, 0.001)
@@ -209,6 +212,7 @@ class ControllerSupervisor:
         self.env = dict(env) if env is not None else None
         self.kill_grace_seconds = float(kill_grace_seconds)
         self.classifier = classifier or default_classifier()
+        self.require_worker_containment = require_worker_containment
         self.generations: list[dict[str, Any]] = []
         self._clock, self._sleep, self._spawner = clock, sleep, spawner
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -463,6 +467,11 @@ class ControllerSupervisor:
         """Spawn one controller life and watch it to a bounded conclusion."""
         self._token = secrets.token_hex(16)
         activate_generation(self.run_dir, self._token, deadline)
+        if self.require_worker_containment:
+            root = (self.env or os.environ).get(CGROUP_ROOT_ENV)
+            if not root:
+                raise OwnershipError(f"supervised controller requires explicit {CGROUP_ROOT_ENV} delegation")
+            preflight_worker_containment(self.run_dir, self._token, Path(root))
         self._ownership_snapshot = read_state(self.run_dir)
         process: SupervisedProcess | None = None
         stream: IO[bytes] | None = None
@@ -626,6 +635,7 @@ def dispatch(args: argparse.Namespace) -> int:
         poll_seconds=float(getattr(args, "poll_seconds", 5.0)),
         max_restarts=int(getattr(args, "max_restarts", 2)),
         total_deadline_seconds=float(getattr(args, "total_deadline_seconds", 7200.0)),
+        require_worker_containment=True,
     )
     outcome = asyncio.run(supervisor.run())
     report: dict[str, Any] = {"run_id": run_id, "state": outcome.state, "reason": outcome.reason}
