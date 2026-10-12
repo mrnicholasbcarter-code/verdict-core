@@ -403,6 +403,11 @@ Operator-visible fail-closed modes:
   eligible; the stage is `CONTROLLER_SCOPE` with reason
   `outside_controller_route_prefix`. If the scope is non-empty but no admitted
   route matches, the supervisor fails closed with `controller_scope_empty`.
+- `verdict supervise` worker containment: pass `--cgroup-root PATH` or set
+  `VERDICT_CONTROLLER_CGROUP_ROOT` to a writable delegated cgroup-v2 subtree.
+  `--cgroup-root auto` uses the supervisor's own scope when it is delegated, e.g.
+  `systemd-run --user --scope -p Delegate=yes verdict supervise --cgroup-root auto ...`.
+  Without a root the command exits 2 with these instructions and creates no run state.
 - Controller confirmation: the controller launches only routes that the
   budgeted confirm in `prepare` reported as confirmed, or routes that are
   proven healthy. Otherwise it refuses with `no_eligible_route`, and the

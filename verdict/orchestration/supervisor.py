@@ -604,10 +604,36 @@ def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser.add_argument(
         "--total-deadline-seconds", type=float, default=7200.0, help="Hard deadline"
     )
+    parser.add_argument(
+        "--cgroup-root",
+        default=None,
+        help=(
+            f"Delegated cgroup-v2 subtree for worker containment (default: ${CGROUP_ROOT_ENV}); "
+            "'auto' uses this process's own delegated scope, e.g. under "
+            "`systemd-run --user --scope -p Delegate=yes`"
+        ),
+    )
     parser.add_argument("orchestrate_args", nargs=argparse.REMAINDER, help="Args after `--`")
     parser.set_defaults(func=dispatch)
     result: argparse.ArgumentParser = parser
     return result
+
+
+def resolve_cgroup_root(value: str | None) -> str | None:
+    """The containment root from --cgroup-root, then the environment.
+
+    ``auto`` resolves to this process's own cgroup, accepted only when the
+    user can write it (a delegated scope). Containment itself still validates
+    the subtree before any worker runs.
+    """
+    value = value or os.environ.get(CGROUP_ROOT_ENV)
+    if value != "auto":
+        return value or None
+    for line in Path("/proc/self/cgroup").read_text().splitlines():
+        if line.startswith("0::"):
+            scope = Path("/sys/fs/cgroup") / line[3:].lstrip("/")
+            return str(scope) if os.access(scope, os.W_OK) else None
+    return None
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -630,9 +656,21 @@ def dispatch(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    cgroup_root = resolve_cgroup_root(getattr(args, "cgroup_root", None))
+    if cgroup_root is None:
+        print(
+            "BLOCKED: supervised runs contain workers in a delegated cgroup-v2 subtree. "
+            f"Pass --cgroup-root PATH (or set {CGROUP_ROOT_ENV}), or run inside a delegated "
+            "user scope with --cgroup-root auto:\n"
+            "  systemd-run --user --scope -p Delegate=yes "
+            "verdict supervise --cgroup-root auto --run-id ... --runs-dir ... -- ...",
+            file=sys.stderr,
+        )
+        return 2
     supervisor = ControllerSupervisor(
         build_command_factory(run_id, extra, runs_dir),
         runs_dir / run_id,
+        env={CGROUP_ROOT_ENV: cgroup_root},
         stall_seconds=float(getattr(args, "stall_seconds", 300.0)),
         poll_seconds=float(getattr(args, "poll_seconds", 5.0)),
         max_restarts=int(getattr(args, "max_restarts", 2)),

@@ -67,7 +67,10 @@ verdict orchestrate "<goal>" --repo /path/to/repo --scope cc/,cx/ \
 
 # 4. Controller survival: generation 0 hangs, the supervisor kills it and resumes.
 # Env-injected chaos also needs an explicit isolated state file:
-VERDICT_CHAOS_G0="#2=hang" verdict supervise --run-id demo --runs-dir /path/to/isolated/runs \
+# Supervised runs contain workers in a delegated cgroup-v2 subtree; a transient
+# delegated user scope provides one without host changes.
+VERDICT_CHAOS_G0="#2=hang" systemd-run --user --scope -p Delegate=yes \
+  verdict supervise --cgroup-root auto --run-id demo --runs-dir /path/to/isolated/runs \
   --stall-seconds 90 -- "<goal>" --repo /path/to/repo --scope cc/,cx/ \
   --state-file /path/to/isolated/controller-chaos-health.json
 
@@ -190,9 +193,12 @@ settle inside the bounded reserve, Verdict reports `ocr review cleanup UNKNOWN
 after cancellation`, fails the review closed with local `scope=none`, and does not
 retry or fall back to another independence level based on uncertain reviewer work.
 
-Supervised Prime requires an explicit process environment variable
-`VERDICT_CONTROLLER_CGROUP_ROOT` pointing at an operator-selected writable delegated
-cgroup-v2 subtree. It must expose writable `cgroup.procs` and `cgroup.kill`, and
+Supervised Prime requires an operator-selected writable delegated cgroup-v2
+subtree, passed as `verdict supervise --cgroup-root PATH` or the environment variable
+`VERDICT_CONTROLLER_CGROUP_ROOT`. `--cgroup-root auto` uses the supervisor's own
+scope when it is delegated, for example under
+`systemd-run --user --scope -p Delegate=yes verdict supervise --cgroup-root auto ...`.
+Without a root, `verdict supervise` exits 2 before creating run state. It must expose writable `cgroup.procs` and `cgroup.kill`, and
 readable `cgroup.events`. The runtime creates only its unique generation child leaf.
 Never point at the cgroup mount root. Never migrate or kill the supervising process's
 current scope. No systemd/global permissions or resource-controller settings are
