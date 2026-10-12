@@ -92,6 +92,7 @@ class OperationLeaseGuard:
         "planner": 600.0,
         "plan_repair": 600.0,
         "worker": 900.0,
+        "review": 900.0,
     }
 
     def __init__(self) -> None:
@@ -155,6 +156,10 @@ class OperationLeaseGuard:
                 and phase in {"planner", "plan_repair"}
                 and (bool(attempt_match.group(2)) == (phase == "plan_repair"))
             ) or (worker_match is not None and phase == "worker")
+            valid_attempt = valid_attempt or (
+                phase == "review"
+                and re.fullmatch(r"review-round-[1-9][0-9]*", attempt_id) is not None
+            )
             valid = (
                 op_id not in self._ended
                 and op_id not in self._invalid

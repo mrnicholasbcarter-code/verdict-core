@@ -22,6 +22,7 @@ variable at runtime and never written into the repo, argv, or logs.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -42,6 +43,7 @@ from verdict.orchestration.contracts import (
     dispatch_blocker,
     require_launchable,
 )
+from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
 from verdict.orchestration.provider_catalog import aliased_pools_for
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate", "make_subprocess_runner"]
@@ -117,17 +119,20 @@ def make_subprocess_runner(idle_seconds: float | None = None) -> OcrRunner:
 def _run_with_watchdog(
     argv: Sequence[str], *, env: Mapping[str, str], timeout: float, idle_seconds: float | None
 ) -> OcrRun:
-    import os
     import signal
     import threading
     import time
 
-    argv = list(argv)
+    environment = {**os.environ, **env}
+    try:
+        argv = owned_worker_command(list(argv), environment)
+    except OwnershipError as exc:
+        return OcrRun(exit_code=125, stderr=f"owned review launch refused: {exc}")
     output_path = Path(argv[argv.index("--output") + 1]) if "--output" in argv else None
     try:
         proc = subprocess.Popen(
             argv,
-            env={**os.environ, **env},
+            env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -237,8 +242,13 @@ class OpenCodeReviewer:
         background: str,
         exclude_routes: frozenset[str],
         exclude_families: frozenset[str],
+        timeout_seconds: float | None = None,
     ) -> ReviewResult:
         now = datetime.now(timezone.utc)
+        budget = self._timeout_seconds
+        if timeout_seconds is not None:
+            budget = min(budget, float(timeout_seconds))
+        review_deadline = time.monotonic() + budget
         requirements = TaskRequirements(
             required_capabilities=frozenset({"tools"}),
             coding=True,
@@ -275,12 +285,22 @@ class OpenCodeReviewer:
                 tried.add(chosen.route_id)
                 continue
             started = time.monotonic()
+            remaining = review_deadline - started
+            if remaining <= 0:
+                last = ReviewResult(
+                    status="ERROR",
+                    reviewer=self._REVIEWER_PREFIX,
+                    route_id=chosen.route_id,
+                    detail="ocr review timed out",
+                )
+                break
             result = await self._review_once(
                 chosen.route_id,
                 repo=repo,
                 base_ref=base_ref,
                 head_ref=head_ref,
                 background=background,
+                timeout_seconds=remaining,
             )
             if result.status != "ERROR" or not self._provider_failure(result):
                 attempts.append(
@@ -355,7 +375,14 @@ class OpenCodeReviewer:
         return failure
 
     async def _review_once(
-        self, route_id: str, *, repo: Path, base_ref: str, head_ref: str, background: str
+        self,
+        route_id: str,
+        *,
+        repo: Path,
+        base_ref: str,
+        head_ref: str,
+        background: str,
+        timeout_seconds: float,
     ) -> ReviewResult:
 
         self._out_dir.mkdir(parents=True, exist_ok=True)
@@ -396,7 +423,7 @@ class OpenCodeReviewer:
                 "--output",
                 str(raw_path),
             ]
-            run = self._runner(argv, env={"HOME": str(home_dir)}, timeout=self._timeout_seconds)
+            run = self._runner(argv, env={"HOME": str(home_dir)}, timeout=timeout_seconds)
         finally:
             shutil.rmtree(home_dir, ignore_errors=True)
 
@@ -434,6 +461,8 @@ class OpenCodeReviewer:
                 raw_ref,
                 f"ocr review timed out: no progress for {self._idle_timeout_seconds}s",
             )
+        if run.exit_code == 125 and "owned review launch refused" in run.stderr:
+            return self._error(route_id, raw_ref, run.stderr)
         if run.exit_code != 0:
             return self._error(route_id, raw_ref, f"ocr review exited {run.exit_code}")
         if not raw_path.exists():
@@ -489,7 +518,6 @@ class OpenCodeReviewer:
             token in detail
             for token in (
                 "identity_mismatch",
-                "every reviewed item failed",
                 "exited",
                 "timed out",
                 "provider",
