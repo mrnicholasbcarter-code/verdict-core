@@ -541,6 +541,23 @@ EVENT_TYPES = frozenset(
 )
 
 
+# Run-view stage tags. The controller narrates each event as ``[STAGE] text``.
+STAGES: tuple[str, ...] = (
+    "GOAL",
+    "UNDERSTAND",
+    "CONTROLLER",
+    "PLAN",
+    "DAG",
+    "SELECT",
+    "HYDRATE",
+    "WORKERS",
+    "QUOTA/COOLDOWN",
+    "FAILURE/REASSIGN",
+    "VERIFY",
+    "REVIEW",
+)
+
+
 @dataclass(frozen=True)
 class RunEvent:
     """One append-only event. The TUI and receipts are both projections of these."""

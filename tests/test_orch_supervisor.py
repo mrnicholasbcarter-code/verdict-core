@@ -206,6 +206,52 @@ emit("run_finished", outcome="COMPLETE", reason="second life finished")
     assert "no progress" in str(stalled[0]["data"]["detail"])
 
 
+def test_handled_worker_cooldown_narrative_is_not_controller_quota(tmp_path: Path) -> None:
+    """The controller prints handled worker cooldowns under [QUOTA/COOLDOWN]; a
+    run that then crashes for another reason must not be recorded as QUOTA."""
+    run_dir = tmp_path / "run-narrative"
+    crashing = write_controller(
+        tmp_path,
+        "narrative.py",
+        """
+emit("run_started", run_id=run_dir.name)
+print("[QUOTA/COOLDOWN] pool:claude (pool) quota_exhausted until 2026-10-12T17:00:00Z", flush=True)
+print("[FAILURE/REASSIGN] a 429 usage limit -> reassigned to cx/gpt-5.5", flush=True)
+raise SystemExit(3)
+""",
+    )
+    supervisor = ControllerSupervisor(
+        lambda g: argv_for(crashing, run_dir), run_dir, max_restarts=0, **FAST
+    )
+    outcome = run_supervisor(supervisor)
+    first = outcome.generations[0]
+    assert first["state"] == "CRASHED"
+    assert "marker" not in first and not first.get("category")
+
+
+def test_unprefixed_capacity_error_after_narrative_is_still_controller_quota(
+    tmp_path: Path,
+) -> None:
+    """Only stage-tagged narrative is ignored; the controller's own stderr error,
+    which carries no stage tag, still classifies the death as QUOTA."""
+    run_dir = tmp_path / "run-real-quota"
+    dying = write_controller(
+        tmp_path,
+        "real_quota.py",
+        """
+emit("run_started", run_id=run_dir.name)
+print("[QUOTA/COOLDOWN] pool:claude (pool) quota_exhausted until 2026-10-12T17:00:00Z", flush=True)
+sys.stderr.write("openai.RateLimitError: Error code: 429 - usage limit reached\\n")
+raise SystemExit(1)
+""",
+    )
+    supervisor = ControllerSupervisor(
+        lambda g: argv_for(dying, run_dir), run_dir, max_restarts=0, **FAST
+    )
+    outcome = run_supervisor(supervisor)
+    assert outcome.generations[0]["state"] == "QUOTA"
+
+
 def test_quota_message_is_classified_and_triggers_replacement(tmp_path: Path) -> None:
     """A 429/usage-limit death is QUOTA, and generation 1 uses the replacement argv."""
     run_dir = tmp_path / "run-quota"

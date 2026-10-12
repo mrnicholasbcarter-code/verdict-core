@@ -22,6 +22,7 @@ import contextlib
 import importlib
 import json
 import os
+import re
 import secrets
 import signal
 import sys
@@ -32,7 +33,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, ClassVar, Protocol
 
-from verdict.orchestration.contracts import FailureClassification, FailureClassifier, WorkerTerminal
+from verdict.orchestration.contracts import (
+    STAGES,
+    FailureClassification,
+    FailureClassifier,
+    WorkerTerminal,
+)
 from verdict.orchestration.controller_operations import (
     CGROUP_ROOT_ENV,
     DEADLINE_ENV,
@@ -54,6 +60,9 @@ PROGRESS_FILE = "progress.json"
 REDACTED = "[REDACTED]"
 TAIL_BYTES = 8192
 QUOTA_CATEGORIES = frozenset({"quota_exhausted", "rate_limited"})
+
+# A controller narrative line: one of the run-view stage tags, then the event text.
+_NARRATIVE = re.compile(r"^\[(?:" + "|".join(re.escape(s) for s in STAGES) + r")\] ")
 
 # Controller-capacity death markers, matched case-insensitively on the log tail.
 CAPACITY_MARKERS: tuple[str, ...] = (
@@ -264,8 +273,15 @@ class ControllerSupervisor:
             return ""
 
     def _scan(self, record: dict[str, Any], log_path: Path) -> None:
-        """Classify controller-capacity markers found in the controller log tail."""
-        text = self._tail(log_path)
+        """Classify controller-capacity markers found in the controller log tail.
+
+        The controller's own narrative lines (``[STAGE] ...``, e.g. a handled
+        worker cooldown under ``[QUOTA/COOLDOWN]``) describe run events, not the
+        controller's death, so they are not evidence of controller capacity loss.
+        """
+        text = "\n".join(
+            line for line in self._tail(log_path).splitlines() if not _NARRATIVE.match(line)
+        )
         lowered = text.lower()
         marker = next((m for m in CAPACITY_MARKERS if m in lowered), None)
         if marker is None:
