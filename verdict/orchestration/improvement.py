@@ -289,7 +289,40 @@ def verify_cycles(cycles_dir: Path, runs_dir: Path) -> list[str]:
     return problems
 
 
-def run_once_with_supervisor(
+MAX_CYCLES = 5
+
+
+async def run_cycles(
+    goal: str,
+    *,
+    repo: Path,
+    runs_dir: Path,
+    cycles_dir: Path,
+    orchestrate_args: Sequence[str],
+    supervise: Supervise,
+    cycles: int,
+) -> list[CycleResult]:
+    """Up to ``cycles`` cycles (at most MAX_CYCLES). Stops at the first cycle that
+    is MET, refused, or whose lesson needs the operator rather than the planner."""
+    if not 1 <= cycles <= MAX_CYCLES:
+        raise CycleError(f"--cycles must be between 1 and {MAX_CYCLES}")
+    results: list[CycleResult] = []
+    for _ in range(cycles):
+        result = await run_cycle(
+            goal,
+            repo=repo,
+            runs_dir=runs_dir,
+            cycles_dir=cycles_dir,
+            orchestrate_args=orchestrate_args,
+            supervise=supervise,
+        )
+        results.append(result)
+        if result.outcome != "NOT_MET" or result.layer in _OPERATOR_LAYERS:
+            break
+    return results
+
+
+def run_with_supervisor(
     goal: str,
     *,
     repo: Path,
@@ -297,7 +330,8 @@ def run_once_with_supervisor(
     cycles_dir: Path,
     orchestrate_args: Sequence[str],
     supervisor_kwargs: Mapping[str, Any],
-) -> CycleResult:
+    cycles: int = 1,
+) -> list[CycleResult]:
     from verdict.orchestration.supervisor import ControllerSupervisor, build_command_factory
 
     async def supervise(run_id: str, argv: list[str]) -> Any:
@@ -307,12 +341,13 @@ def run_once_with_supervisor(
         return await supervisor.run()
 
     return asyncio.run(
-        run_cycle(
+        run_cycles(
             goal,
             repo=repo,
             runs_dir=runs_dir,
             cycles_dir=cycles_dir,
             orchestrate_args=orchestrate_args,
             supervise=supervise,
+            cycles=cycles,
         )
     )

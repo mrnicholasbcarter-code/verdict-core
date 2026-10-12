@@ -143,10 +143,10 @@ LAUNCH: dict[str, LaunchSpec] = {
     ),
     "improve": LaunchSpec(
         reason=(
-            "_improve (run_once_with_supervisor): runs one supervised orchestrate "
-            "run, then measures and records a lesson; long-running supervisor loop"
+            "_improve (run_with_supervisor): runs bounded supervised orchestrate "
+            "runs, measuring each and recording lessons; long-running supervisor loop"
         ),
-        entry="verdict.orchestration.improvement:run_once_with_supervisor",
+        entry="verdict.orchestration.improvement:run_with_supervisor",
         section="Orchestration",
     ),
     "supervise": LaunchSpec(
