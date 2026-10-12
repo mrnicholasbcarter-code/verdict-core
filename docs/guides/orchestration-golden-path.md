@@ -175,6 +175,14 @@ verified public proof:
 | live9 | route quota, then no-final, then 429 rate limit; same node moved sonnet-4-6 -> sonnet-5 -> haiku; sibling moved to `cx/gpt-5.5`; review independence fell back to route level (review coverage not retained here) | COMPLETE; 28 integration tests reported, report not retained |
 | live10 | `verdict supervise`: generation 0 hung -> STALLED -> process group killed -> generation 1 `--resume` reused the validated node | COMPLETE reported |
 
+## Improvement cycles
+
+`verdict improve` runs bounded cycles above `verdict supervise`: one supervised
+run, measured from its receipt, then a lesson the next cycle passes to the
+planner. A cycle with unchanged inputs after a failure is refused. See the
+[CLI reference](../CLI_REFERENCE.md#verdict-improve--measured-improvement-cycles)
+and [ADR-038](../adr/ADR-038-improvement-cycle.md).
+
 ## Controller bounded operations and Prime ownership
 
 Supervision distinguishes real event progress from `WAITING_BOUNDED`. Initial and
