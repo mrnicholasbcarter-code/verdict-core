@@ -12,6 +12,7 @@ PROBLEM_STATES = frozenset(
     {
         "failed",
         "error",
+        "inactive",
         "blocked",
         "missing",
         "partial",

@@ -331,3 +331,15 @@ def test_setup_services_cli_installs_with_the_key_file(
     assert payload["check"]["status"] == "ok"
     unit = home / ".config/systemd/user/verdict-prove-at-rest.service"
     assert os.path.exists(unit)
+
+
+def test_setup_check_refuses_other_actions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from verdict.cli import main
+
+    monkeypatch.setattr("sys.argv", ["verdict", "setup", "credentials", "--check"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert "--check checks Verdict services" in capsys.readouterr().err
