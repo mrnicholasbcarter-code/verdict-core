@@ -1311,3 +1311,39 @@ class TestReceiptProbeBuffer:
         ]
         rows = _node_record("n1", "implementation", events)["attempts"]
         assert rows[0].get("probe_class") == "agentic"
+
+
+def test_large_coding_model_outranks_small_vision_model_among_free_agentic_passes(
+    tmp_path: Path,
+) -> None:
+    """Operator 2026-10-13: rank FREE agentic passes by capability, not by id order."""
+    small = "bm/meta/llama-3.2-11b-vision-instruct"
+    large = "bm/nvidia/nemotron-3-ultra-550b-a55b"
+    coder = "bm/mistral/codestral-latest"
+    entries = [
+        _fresh_entry(rid, agentic_ok=True, probe_class="agentic") for rid in (small, large, coder)
+    ]
+    cache = _build_cache(tmp_path, entries)
+    free = {"input": 0, "output": 0}
+    rows = [
+        _row(small, owned_by="bm", pricing=free, context=128_000),
+        _row(large, owned_by="bm", pricing=free, context=1_000_000),
+        _row(coder, owned_by="bm", pricing=free, context=256_000),
+    ]
+    conns = [_conn("bm", auth="apikey", plan="free", free_only=True)]
+    ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+    verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+    ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+    assert [v.route_id for v in ranked] == [large, coder, small]
+
+
+def test_free_ranking_does_not_reorder_paid_capacity(tmp_path: Path) -> None:
+    """Quality ordering is FREE-only; subscription keeps the cheapest-sufficient order."""
+    from verdict.orchestration.eligibility import free_capability_score
+
+    assert free_capability_score({}, "x/model-550b") > free_capability_score({}, "x/model-11b")
+    assert free_capability_score({}, "x/nemotron-3-ultra-550b-a55b") == 3
+    rows = [_row("cc/claude-opus-5"), _row("cc/claude-haiku-5")]
+    ladder, _ = _make(tmp_path, rows, [_conn("cc")])
+    a, b = (ladder._assess(r["id"], WORKER_REQ, NOW) for r in rows)
+    assert ladder._rank_key(a)[1:5] == ladder._rank_key(b)[1:5] == (0.0, 0, 0, 0.0)

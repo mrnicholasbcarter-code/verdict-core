@@ -44,6 +44,7 @@ from typing import Any
 
 from verdict.availability import QuotaEvidence
 from verdict.capacity_models import CapacitySnapshot
+from verdict.orchestration.health_cache import FRESH_SECONDS
 from verdict.orchestration.provider_catalog import resolve_provider
 from verdict.paths import verdict_home
 from verdict.subscription_headroom import (
@@ -186,7 +187,7 @@ class RuntimeEvidence:
 
 
 def evidence_from_ladder_state(
-    path: Path, *, now: datetime, healthy_ttl_seconds: float = 300.0
+    path: Path, *, now: datetime, healthy_ttl_seconds: float = FRESH_SECONDS
 ) -> RuntimeEvidence:
     """Non-authoritative ladder hints plus authoritative negative evidence.
 

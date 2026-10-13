@@ -123,7 +123,8 @@ def test_old_or_unverified_failures_do_not_block(tmp_path: Path, days: int, veri
     assert ladder.select(REQ, now=NOW)[0] is not None
 
 
-def test_score_is_exposed_but_does_not_change_sort_order(tmp_path: Path) -> None:
+def test_session_score_ranks_free_routes(tmp_path: Path) -> None:
+    """Operator 2026-10-13: real session outcomes are the first FREE ranking signal."""
     ladder, ledger, cache = setup_ladder(tmp_path)
     other = "gl/glm-6"
     ladder._rows[other] = row(other, owned_by="glm", pricing={"input": 0.0, "output": 0.0})
@@ -132,9 +133,12 @@ def test_score_is_exposed_but_does_not_change_sort_order(tmp_path: Path) -> None
     for day in range(3):
         ledger.append(replace(outcome(True, days=day), route_id=other))
     chosen, verdicts = ladder.select(REQ, now=NOW)
-    assert chosen is not None and chosen.route_id == ROUTE  # existing lexicographic tie break
+    assert chosen is not None and chosen.route_id == other  # beats the lexicographic tie break
     by_id = {v.route_id: v for v in verdicts}
-    assert by_id[other].rank_components["session_score"] > chosen.rank_components["session_score"]
+    assert (
+        by_id[other].rank_components["session_score"]
+        > by_id[ROUTE].rank_components["session_score"]
+    )
 
 
 def test_cli_json_exposes_attached_session_counts(

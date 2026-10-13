@@ -88,7 +88,10 @@ _LONG_TTL_CATEGORIES = frozenset(
     }
 )
 
-FRESH_SECONDS = 600.0
+# Current liveness: one 15-minute window for a probe, a passive success, or the
+# ladder's own health record. The prober proves capability, not liveness;
+# selection checks the chosen route just in time when nothing is this fresh.
+FRESH_SECONDS = 900.0
 USABLE_SECONDS = 1800.0
 # Multi-turn tool use is a stable model property; current liveness is gated
 # separately at HEALTHY. One constant sets both how long a probe-based agentic

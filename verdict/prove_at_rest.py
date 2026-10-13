@@ -48,6 +48,7 @@ One bucket per provider/pool, shared with real calls through
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import re
@@ -66,7 +67,7 @@ from typing import Any
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
-from verdict.orchestration.eligibility import capacity_class_of
+from verdict.orchestration.eligibility import classify_capacity
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
@@ -80,6 +81,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
+    FRESH_SECONDS,
     STATE_FRESH,
     STATE_NEGATIVE,
     STATE_STALE,
@@ -89,6 +91,7 @@ from verdict.orchestration.health_cache import (
     HealthCacheLockTimeoutError,
     HealthEntry,
     ProbeResult,
+    ScopedCooldown,
     agentic_capability,
     default_cache_path,
 )
@@ -615,14 +618,36 @@ def _pool_of(route: AdmittedRoute) -> str:
 
 
 def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
-    """Derive pool cooldowns from existing active negatives, never a second store."""
-    return {
+    """Pools with an active ``pool:`` cooldown or an active pool-scoped negative.
+
+    A credential negative without a recorded scope (written before scopes were
+    recorded) blocks only its own route; ``probe_failure_scope`` decides the
+    scope of every new failure.
+    """
+    pools = {
         entry.pool or pool_of(entry.route_id)
         for entry in cache.routes().values()
         if entry.state_at(now) == STATE_NEGATIVE
         and entry.category in POOL_COOLDOWN_CATEGORIES
-        and entry.failure_scope != "route"
+        and entry.failure_scope not in (None, "route")
     }
+    pools.update(
+        cooldown.key.partition(":")[2]
+        for cooldown in cache.active_cooldowns(now)
+        if cooldown.key.startswith("pool:")
+    )
+    return pools
+
+
+def _pool_live(cache: HealthCache, pool: str, now: datetime) -> bool:
+    """Some route of *pool* succeeded within the liveness window."""
+    window = timedelta(seconds=FRESH_SECONDS)
+    return any(
+        entry.last_success_at is not None
+        and timedelta(0) <= now - entry.last_success_at <= window
+        and (entry.pool or pool_of(entry.route_id)) == pool
+        for entry in cache.routes().values()
+    )
 
 
 def order_cycle(
@@ -899,6 +924,8 @@ class Prober:
     auth_outage_consecutive: int = 5
     auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    # Pools cooled during this cycle; running conversations stop before their next turn.
+    _blocked_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _auth_fail_pools: list[str] = field(default_factory=list, init=False, repr=False)
     _auth_fail_buffer: list[tuple[str, ProbeResult, datetime]] = field(
         default_factory=list, init=False, repr=False
@@ -942,6 +969,7 @@ class Prober:
         stats = CycleStats()
         self._auth_fail_pools = []  # fresh auth-outage window per cycle
         self._auth_fail_buffer = []
+        self._blocked_pools = set()
         self._gateway_auth_result = None
         self._cycle_started = started
         self._request_cap = self.max_requests
@@ -1011,10 +1039,39 @@ class Prober:
             self.cache.clear_cursor()
             self._save()
 
+    def _write(self, route_id: str, result: ProbeResult, now: datetime) -> HealthEntry:
+        """Record one probe; a pool-scoped failure also cools the whole credential pool."""
+        entry = self.cache.record(route_id, result, now)
+        if result.failure_scope == "pool":
+            pool = result.pool or pool_of(route_id)
+            self.cache.record_cooldown(
+                ScopedCooldown(
+                    key=f"pool:{pool}",
+                    category=entry.category,
+                    checked_at=now,
+                    until=entry.until,
+                    pool=pool,
+                )
+            )
+            self._blocked_pools.add(pool)
+        return entry
+
+    def _failure_scope(
+        self, route: AdmittedRoute, category: str, detail: str, *, answered: bool, now: datetime
+    ) -> str:
+        pool = _pool_of(route)
+        return probe_failure_scope(
+            category,
+            detail,
+            route.route_id,
+            answered=answered,
+            pool_live=category in POOL_COOLDOWN_CATEGORIES and _pool_live(self.cache, pool, now),
+        )
+
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
         """Write every buffered auth-outage-window negative as a real failure."""
         for buffered_id, buffered_result, buffered_now in self._auth_fail_buffer:
-            self.cache.record(buffered_id, buffered_result, buffered_now)
+            self._write(buffered_id, buffered_result, buffered_now)
             stats.probed += 1
             stats.negative += 1
         self._auth_fail_buffer = []
@@ -1206,6 +1263,9 @@ class Prober:
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
             identity=_identity,
+            failure_scope=self._failure_scope(
+                route, category, observed.detail, answered=chat_ok, now=now
+            ),
         )
         if self._buffer_auth_failure(route, result, now, stats):
             return not stats.auth_outage and stats.stopped_reason not in {"request_cap", "wall_cap"}
@@ -1215,7 +1275,7 @@ class Prober:
         if chat_ok and kind == "liveness":
             self._record_liveness(route, result, now)
         else:
-            self.cache.record(route.route_id, result, now)
+            self._write(route.route_id, result, now)
         stats.probed += 1
         entry = self.cache.entry(route.route_id)
         if entry is not None and entry.healthy:
@@ -1332,7 +1392,9 @@ class Prober:
                         continue
                     pending.remove(route)
                     busy[route_pool] += 1
-                    running[pool.submit(self._converse, route.route_id, deadline)] = route
+                    running[pool.submit(self._converse, route.route_id, deadline, route_pool)] = (
+                        route
+                    )
                 if not running:
                     if not pending or stats.agentic_stopped_reason:
                         break
@@ -1383,13 +1445,14 @@ class Prober:
             self._save()
 
     def _converse(
-        self, route_id: str, deadline: float
+        self, route_id: str, deadline: float, pool: str = ""
     ) -> tuple[list[ProbeExchange], AgenticFakeFile, bool]:
         """One read/edit/read conversation. Runs in a worker thread; no cache access.
 
         Returns the exchanges, the fake file, and whether the conversation
         reached a verdict (all turns ran, or a turn failed) rather than being
-        cut short by the deadline or the stop signal.
+        cut short by the deadline, the stop signal, or a cooldown of its pool
+        recorded while it ran.
         """
         assert self.agentic_transport is not None
         fake_file = AgenticFakeFile()
@@ -1397,7 +1460,7 @@ class Prober:
         exchanges: list[ProbeExchange] = []
         for payload_fn in (agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload):
             remaining = deadline - self.monotonic()
-            if self._stop.is_set() or remaining <= 0:
+            if self._stop.is_set() or remaining <= 0 or pool in self._blocked_pools:
                 return exchanges, fake_file, False
             payload = payload_fn(route_id, conversation)
             try:
@@ -1456,12 +1519,17 @@ class Prober:
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
             identity="verified" if passed else "",
+            failure_scope=None
+            if passed
+            else self._failure_scope(
+                route, category, last.detail, answered=exchanges[0].ok, now=now
+            ),
         )
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
         if self._buffer_auth_failure(route, result, now, stats):
             return
-        self.cache.record(route.route_id, result, now)
+        self._write(route.route_id, result, now)
         stats.probed += 1
         if passed:
             stats.fresh += 1
@@ -1525,7 +1593,7 @@ def routes_from_evidence(
         row: Mapping[str, Any] = by_id.get(record.route_id, {})
         provider = record.provider or _provider_of(record.route_id)
         conn: Mapping[str, Any] | None = conn_by_provider.get(provider.lower())
-        capacity, plan = capacity_class_of(conn, row)
+        capacity, plan, _rule = classify_capacity(conn, row, record.route_id)
         out.append(
             AdmittedRoute(
                 route_id=record.route_id,
@@ -1657,13 +1725,12 @@ def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> Prob
         except ValueError:
             retry_after = None
     named = None
-    if exc.code == 400:
-        try:
-            body = exc.read(16_384).decode("utf-8", "replace")
-        except OSError:
-            body = ""
-        if is_catalog_stale_error(body):
-            named = CATEGORY_CATALOG_STALE
+    try:
+        body = exc.read(16_384).decode("utf-8", "replace")
+    except OSError:
+        body = ""
+    if exc.code == 400 and is_catalog_stale_error(body):
+        named = CATEGORY_CATALOG_STALE
     return ProbeExchange(
         http_status=exc.code,
         ok=False,
@@ -1672,7 +1739,29 @@ def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> Prob
         error_category=category_for(
             ProbeExchange(http_status=exc.code, ok=False, error_category=named)
         ),
+        detail=error_detail(body),
     )
+
+
+_GATEWAY_TAG = re.compile(r"^(?:\s*\[[^\]]*\]\s*:?)+\s*")
+
+
+def error_detail(body: str) -> str:
+    """The provider message of an error body, without OmniRoute's ``[route] [403]:`` tags.
+
+    In memory only, for the failure-scope decision; never written to the cache.
+    The tags name the requested route on every error, so leaving them in would
+    make every error look model-scoped.
+    """
+    message = body
+    with contextlib.suppress(ValueError):
+        parsed = json.loads(body)
+        if isinstance(parsed, Mapping):
+            error = parsed.get("error")
+            inner = error.get("message") if isinstance(error, Mapping) else error
+            if isinstance(inner, str):
+                message = inner
+    return _GATEWAY_TAG.sub("", message.strip())[:500]
 
 
 def live_agentic_transport(
@@ -1825,7 +1914,29 @@ def _no_write_category(exchange: ProbeExchange) -> str | None:
 
 
 # Ambiguous account-wide errors must never leave sibling routes eligible.
-_ACCOUNT_SCOPE_MARKERS = ("account", "all models", "this provider", "organization", "plan")
+# Live 2026-10-13: "Key limit exceeded (total limit)" (OpenRouter), "requires an
+# opencode API key", "Add credits to continue" (kilocode).
+_ACCOUNT_SCOPE_MARKERS = (
+    "account",
+    "all models",
+    "this provider",
+    "organization",
+    "plan",
+    "key limit",
+    "api key",
+    "credits",
+    "billing",
+)
+
+
+def _names_route(detail: str, route_id: str) -> bool:
+    text = detail.strip().lower()
+    names = {route_id.lower(), route_id.split("/", 1)[-1].lower()}
+    return any(
+        re.search(r"(?<![\w/.-])" + re.escape(name) + r"(?![\w/.-])", text)
+        for name in names
+        if name
+    )
 
 
 def _detail_is_model_scoped(
@@ -1840,12 +1951,30 @@ def _detail_is_model_scoped(
         CATEGORY_RATE_LIMITED,
     }:
         return False
-    names = {route_id.lower(), route_id.split("/", 1)[-1].lower()}
-    return any(
-        re.search(r"(?<![\w/.-])" + re.escape(name) + r"(?![\w/.-])", text)
-        for name in names
-        if name
-    )
+    return _names_route(text, route_id)
+
+
+def probe_failure_scope(
+    category: str, detail: str, route_id: str, *, answered: bool, pool_live: bool
+) -> str:
+    """``pool`` when a credential failure is about the account, else ``route``.
+
+    Account markers in the provider message always mean the pool. Otherwise the
+    failure stays on the route when the message names the model, when this same
+    probe already got an answer (the credential worked), or when another route
+    of the pool succeeded within the liveness window. An unexplained credential
+    error is the pool's (fail closed). Live 2026-10-13: one OpenRouter
+    "inkling:free is only available on agentic harnesses" 403 and one NVIDIA 401
+    after a 200 turn each blocked a whole pool of working routes.
+    """
+    if category not in POOL_COOLDOWN_CATEGORIES:
+        return "route"
+    text = detail.lower()
+    if any(marker in text for marker in _ACCOUNT_SCOPE_MARKERS):
+        return "pool"
+    if answered or pool_live or _names_route(text, route_id):
+        return "route"
+    return "pool"
 
 
 def _aggregate_identity(reports: Sequence[str], route_id: str) -> str:

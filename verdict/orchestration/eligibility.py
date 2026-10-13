@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -22,6 +23,7 @@ from verdict.orchestration.contracts import (
     route_family,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
+from verdict.orchestration.health_cache import FRESH_SECONDS
 from verdict.orchestration.provider_catalog import (
     CATALOG_STALE_COOLDOWN_SECONDS,
     aliased_pools_for,
@@ -253,7 +255,7 @@ class EligibilityLadder:
         probe: Callable[[str], HealthResult],
         state_path: Path,
         *,
-        healthy_ttl_seconds: float = 300.0,
+        healthy_ttl_seconds: float = FRESH_SECONDS,
         harness_visible: Callable[[str], bool] | None = None,
         prefer_providers: tuple[str, ...] = ("claude",),
         load: Callable[[str], int] | None = None,
@@ -266,6 +268,7 @@ class EligibilityLadder:
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
+        gateway_stats: Mapping[str, tuple[float, int]] | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -290,6 +293,9 @@ class EligibilityLadder:
         # BOD-299 phase 1: optional real-session evidence, read-only in selection.
         self._session_ledger = session_ledger
         self._session_evidence_error: str | None = None
+        # ``provider/model`` -> (success rate, requests) from the gateway's
+        # /api/usage/model-latency-stats; ranks FREE routes, never admits.
+        self._gateway_stats = dict(gateway_stats or {})
         # UNKNOWN capacity opt-in: env override if not set explicitly.
         if allow_unknown_capacity is not None:
             self._allow_unknown = allow_unknown_capacity
@@ -392,67 +398,8 @@ class EligibilityLadder:
     def _capacity_class(
         self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
     ) -> tuple[CapacityClass, str, str]:
-        """Classify capacity with evidence.
-
-        Returns ``(capacity, plan_label, evidence_rule)`` where
-        ``evidence_rule`` names the classification rule that fired.
-
-        Priority order (design §B, plus origin/main signals restored):
-        (0) conn is None → UNKNOWN (no connection data; checked before all
-            other rules, so even a ``:free``-suffixed route without a
-            connection returns UNKNOWN, not FREE).
-        (a) ``:free`` suffix → FREE (overrides oauth → subscription).
-        (b) Connection free signals (``importFreeModelsOnly``,
-            ``import_free_only``, free tier/plan, ``plan_label`` containing
-            ``free`` for any auth type) → FREE.
-        (c) oauth without a free signal → SUBSCRIPTION.
-        (d) all-zero explicit pricing → FREE.
-        (e) apikey with positive pricing → METERED.
-        (f) otherwise UNKNOWN with a named reason.
-        """
-        if conn is None:
-            return CapacityClass.UNKNOWN, "", "no_connection"
-        plan_label = sanitized_plan_label(conn.get("plan_label", ""))
-        auth_type = str(conn.get("authType", "")).strip().lower()
-        auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
-
-        # (a) :free suffix overrides oauth → subscription (fixes D5: 72
-        # kilocode :free misclassed as SUBSCRIPTION).
-        if route_id and has_free_suffix(route_id):
-            return CapacityClass.FREE, plan_label, "free_suffix"
-
-        # (b) Connection-level free signals.
-        is_free, signal = connection_signals_free(conn)
-        if is_free:
-            return CapacityClass.FREE, plan_label, signal
-
-        # (c) oauth without a free signal → SUBSCRIPTION.
-        if auth_type == "oauth":
-            return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
-
-        # Pricing evidence for apikey connections.
-        pricing = row.get("pricing")
-        prices: list[float] = []
-        if isinstance(pricing, Mapping):
-            for value in pricing.values():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    prices.append(float(value))
-        all_zero = bool(prices) and all(p == 0 for p in prices)
-        positive = any(p > 0 for p in prices)
-
-        # All-zero explicit pricing is FREE even for apikey.
-        if all_zero:
-            return CapacityClass.FREE, plan_label, "all_zero_pricing"
-
-        # (e) apikey with positive pricing → METERED.
-        if auth_type == "apikey" and positive:
-            return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
-
-        # (f) UNKNOWN with a named, bounded reason. Never persist the raw
-        # connection authType: inventory fields are untrusted and may contain
-        # account identifiers or credentials.
-        reason = f"no_pricing_data:auth={auth_evidence}"
-        return CapacityClass.UNKNOWN, plan_label, reason
+        """Classify capacity with evidence; see :func:`classify_capacity`."""
+        return classify_capacity(conn, row, route_id)
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
@@ -818,6 +765,11 @@ class EligibilityLadder:
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
         quota = getattr(a, "quota_percent", None)
+        latency_ms: float | None = None
+        if cache is not None:
+            entry = cache.entry(a.route_id)
+            latency_ms = entry.latency_ms if entry is not None else None
+        rows = getattr(self, "_rows", {})
         components = {
             "capacity_order": cap_order,
             "slack": getattr(a, "slack", 0),
@@ -832,26 +784,56 @@ class EligibilityLadder:
             "probe_class": probe_class,
             "cache_checked_at": cache_checked_at,
             "cache_freshness": cache_freshness,
-            # Observational only in phase 1; _rank_key intentionally ignores these.
+            # _rank_key uses session_score for FREE routes only (operator 2026-10-13).
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
+            "gateway_success_rate": self._gateway_success_rate(a),
+            "capability_score": free_capability_score(rows.get(a.route_id, {}), a.route_id),
+            "latency_ms": latency_ms,
         }
         error = getattr(self, "_session_evidence_error", None)
         if error is not None:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, int, str]:
+    def _gateway_success_rate(self, a: _Assessment) -> float | None:
+        """Measured gateway success rate for this route, None without enough traffic."""
+        stats: Mapping[str, tuple[float, int]] = getattr(self, "_gateway_stats", None) or {}
+        model = a.route_id.split("/", 1)[-1]
+        found = stats.get(a.route_id) or stats.get(f"{a.provider}/{model}")
+        if found is None or found[1] < _MIN_GATEWAY_REQUESTS:
+            return None
+        return round(found[0], 3)
+
+    def _rank_key(
+        self, a: _Assessment
+    ) -> tuple[int, float, int, int, int, float, int, float, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
 
         Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
         Among equally sufficient, equally priced routes, more measured quota left
         ranks first, ahead of static provider preference.
+
+        FREE routes rank by expected agent-task quality (operator 2026-10-13):
+        real session score, then the gateway's measured success rate (24 h of
+        real traffic, coarse bucket, unknown is neutral), then inventory
+        capability metadata, then context, then probe latency. Free capacity
+        costs nothing per call, so the cheapest-sufficient rule (slack) cannot
+        pick among FREE routes, and quota is a filter, never a FREE rank signal.
+        Other capacity classes get neutral quality values and keep their order.
         """
         c = self._rank_components(a)
+        free = a.capacity == CapacityClass.FREE
+        session = c["session_score"]
+        latency = c["latency_ms"]
         return (
             c["capacity_order"],
+            -(session if session is not None else 0.5) if free else 0.0,
+            _reliability_bucket(c["gateway_success_rate"]) if free else 0,
+            -c["capability_score"] if free else 0,
+            -(a.context_window or 0) if free else 0,
+            (latency if latency is not None else math.inf) if free else 0.0,
             c["slack"],
             c["price_for_rank"],
             c["quota_rank"],
@@ -885,6 +867,9 @@ class EligibilityLadder:
             "session_score": components.get("session_score"),
             "session_passes": components.get("session_passes"),
             "session_fails": components.get("session_fails"),
+            "gateway_success_rate": components.get("gateway_success_rate"),
+            "capability_score": components.get("capability_score"),
+            "latency_ms": components.get("latency_ms"),
         }
         if "session_evidence_error" in components:
             display["session_evidence_error"] = components["session_evidence_error"]
@@ -1306,6 +1291,52 @@ class EligibilityLadder:
         }
 
 
+# Fewer requests than this in the gateway's 24 h window are no evidence.
+_MIN_GATEWAY_REQUESTS = 5
+
+
+def _reliability_bucket(rate: float | None) -> int:
+    """0 good or unknown, 1 mixed, 2 poor. Coarse: success rate measures
+    availability on real traffic, not agent capability."""
+    if rate is None or rate >= 0.8:
+        return 0
+    return 1 if rate >= 0.5 else 2
+
+
+_PARAMS_B = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z])")
+_LARGE_WORDS = ("ultra", "plus", "super", "large", "pro", "max")
+_SMALL_WORDS = ("mini", "nano", "lite", "small", "tiny", "flash")
+
+
+def free_capability_score(row: Mapping[str, Any], route_id: str) -> int:
+    """Rough agent-work strength from inventory metadata; orders FREE routes only.
+
+    Size class 0..3 from the parameter count in the id (``550b`` -> 3; an
+    active-parameter ``a55b`` token is ignored) or from size words, 1 when
+    unknown. +1 for a coding id, +1 for a context of at least 256k tokens, -1
+    for a vision-specialised id. Missing metadata never adds points.
+    """
+    model = route_id.split("/", 1)[-1].lower()
+    sizes = [float(match) for match in _PARAMS_B.findall(model)]
+    if sizes:
+        size = max(sizes)
+        score = 3 if size >= 100 else 2 if size >= 30 else 1 if size >= 10 else 0
+    elif any(word in model for word in _LARGE_WORDS):
+        score = 3
+    elif any(word in model for word in _SMALL_WORDS):
+        score = 0
+    else:
+        score = 1
+    if any(marker in model for marker in _CODING_MARKERS):
+        score += 1
+    context, _tools, _structured = _capability_facts(row)
+    if context is not None and context >= 256_000:
+        score += 1
+    if "vision" in model:
+        score -= 1
+    return score
+
+
 def _capability_tier(row: Mapping[str, Any], route_id: str) -> int | None:
     """Declared capability tier from inventory metadata, else the id classifier.
 
@@ -1378,23 +1409,47 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
     return total, known
 
 
-def capacity_class_of(
-    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
-) -> tuple[CapacityClass, str]:
-    """Classify a route's capacity without instantiating a ladder.
+def classify_capacity(
+    conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
+) -> tuple[CapacityClass, str, str]:
+    """Classify capacity with evidence: ``(capacity, plan_label, evidence_rule)``.
 
-    Applies the same rules as ``EligibilityLadder._capacity_class`` but
-    without the :free-suffix and connection-level-signal extensions added on
-    origin/main (which require provider_catalog helpers used only by the
-    ladder).  Used by ``prove_at_rest`` and any caller that must not touch the
-    ladder's state file.  ``True``/``False`` values in ``pricing`` are not
-    treated as prices.
+    The one capacity rule set: the ladder, the prober and the verified view use it.
+
+    Priority order (design §B, plus origin/main signals restored):
+    (0) conn is None → UNKNOWN (no connection data; checked before all
+        other rules, so even a ``:free``-suffixed route without a
+        connection returns UNKNOWN, not FREE).
+    (a) ``:free`` suffix → FREE (overrides oauth → subscription).
+    (b) Connection free signals (``importFreeModelsOnly``,
+        ``import_free_only``, free tier/plan, ``plan_label`` containing
+        ``free`` for any auth type) → FREE.
+    (c) oauth without a free signal → SUBSCRIPTION.
+    (d) all-zero explicit pricing → FREE.
+    (e) apikey with positive pricing → METERED.
+    (f) otherwise UNKNOWN with a named reason.
     """
     if conn is None:
-        return CapacityClass.UNKNOWN, ""
-    plan_label = str(conn.get("plan_label", ""))
-    plan_lower = plan_label.lower()
-    auth_type = str(conn.get("authType", "")).lower()
+        return CapacityClass.UNKNOWN, "", "no_connection"
+    plan_label = sanitized_plan_label(conn.get("plan_label", ""))
+    auth_type = str(conn.get("authType", "")).strip().lower()
+    auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
+
+    # (a) :free suffix overrides oauth → subscription (fixes D5: 72
+    # kilocode :free misclassed as SUBSCRIPTION).
+    if route_id and has_free_suffix(route_id):
+        return CapacityClass.FREE, plan_label, "free_suffix"
+
+    # (b) Connection-level free signals.
+    is_free, signal = connection_signals_free(conn)
+    if is_free:
+        return CapacityClass.FREE, plan_label, signal
+
+    # (c) oauth without a free signal → SUBSCRIPTION.
+    if auth_type == "oauth":
+        return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
+
+    # Pricing evidence for apikey connections.
     pricing = row.get("pricing")
     prices: list[float] = []
     if isinstance(pricing, Mapping):
@@ -1403,10 +1458,30 @@ def capacity_class_of(
                 prices.append(float(value))
     all_zero = bool(prices) and all(p == 0 for p in prices)
     positive = any(p > 0 for p in prices)
-    if auth_type == "oauth" and "free" not in plan_lower:
-        return CapacityClass.SUBSCRIPTION, plan_label
-    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
-        return CapacityClass.FREE, plan_label
+
+    # All-zero explicit pricing is FREE even for apikey.
+    if all_zero:
+        return CapacityClass.FREE, plan_label, "all_zero_pricing"
+
+    # (e) apikey with positive pricing → METERED.
     if auth_type == "apikey" and positive:
-        return CapacityClass.METERED, plan_label
-    return CapacityClass.UNKNOWN, plan_label
+        return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+
+    # (f) UNKNOWN with a named, bounded reason. Never persist the raw
+    # connection authType: inventory fields are untrusted and may contain
+    # account identifiers or credentials.
+    reason = f"no_pricing_data:auth={auth_evidence}"
+    return CapacityClass.UNKNOWN, plan_label, reason
+
+
+def capacity_class_of(
+    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
+) -> tuple[CapacityClass, str]:
+    """``(capacity, plan_label)`` by :func:`classify_capacity`, route id from ``row["id"]``.
+
+    Used by ``prove_at_rest`` and the verified view, which must not touch the
+    ladder's state file. Before 2026-10-13 this skipped the ``:free`` suffix,
+    so the prober only liveness-probed kilocode ``:free`` routes the ladder calls FREE.
+    """
+    capacity, plan_label, _rule = classify_capacity(conn, row, str(row.get("id") or ""))
+    return capacity, plan_label

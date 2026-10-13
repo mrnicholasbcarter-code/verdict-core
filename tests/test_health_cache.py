@@ -58,13 +58,14 @@ def _at(seconds: float) -> datetime:
 
 
 def test_healthy_windows() -> None:
-    assert FRESH_SECONDS == 600
+    # One 15-minute liveness window (plan M1(d), 2026-10-13).
+    assert FRESH_SECONDS == 900
     assert USABLE_SECONDS == 1800
     assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(599)) == STATE_FRESH
+        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(899)) == STATE_FRESH
     )
     assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(600)) == STATE_STALE
+        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(900)) == STATE_STALE
     )
     assert (
         classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(1799)) == STATE_STALE
@@ -249,7 +250,7 @@ def test_order_is_half_open_then_stale_then_free_then_others(tmp_path: Path) -> 
     cache.record(
         "free/stale",
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
-        NOW - timedelta(seconds=700),
+        NOW - timedelta(seconds=FRESH_SECONDS + 100),
     )
     cache.record(
         "free/fresh",
@@ -586,19 +587,16 @@ def test_capacity_class_matches_the_ladder() -> None:
             f"expected {expected_class} for conn={conn!r} row={row!r}, got {via_standalone[0]}"
         )
 
-    # Extra cases the ladder handles via :free suffix / connection signals that
-    # capacity_class_of intentionally skips (document their divergence).
+    # A :free route on an oauth (kilocode) connection is FREE for the prober
+    # too. The old omission made the prober liveness-probe only routes the ladder
+    # gates as FREE workers, so they could never pass the agentic gate.
     suffix_conn = {"authType": "oauth", "plan_label": "pro"}
-    suffix_row: dict[str, object] = {}
-    # :free suffix → FREE in ladder, but capacity_class_of returns SUBSCRIPTION.
+    suffix_row: dict[str, object] = {"id": "kilocode/nvidia/nemotron-3-super-120b-a12b:free"}
     ladder_class, _, rule = ladder._capacity_class(
-        suffix_conn, suffix_row, route_id="cc/model:free"
+        suffix_conn, suffix_row, route_id=str(suffix_row["id"])
     )
-    assert ladder_class == CapacityClass.FREE, f"ladder should classify :free as FREE, got {rule}"
-    standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
-    assert standalone_class == CapacityClass.SUBSCRIPTION, (
-        "capacity_class_of must NOT classify :free suffix (it is a documented omission)"
-    )
+    assert (ladder_class, rule) == (CapacityClass.FREE, "free_suffix")
+    assert capacity_class_of(suffix_conn, suffix_row)[0] == CapacityClass.FREE
 
 
 def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -991,7 +989,7 @@ def test_half_open_and_stale_paid_routes_get_liveness_kind(tmp_path: Path) -> No
     cache.record(
         "meter/model",
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
-        NOW - timedelta(seconds=700),
+        NOW - timedelta(seconds=FRESH_SECONDS + 100),
     )
     routes = [
         _route("sub/model", "subscription"),

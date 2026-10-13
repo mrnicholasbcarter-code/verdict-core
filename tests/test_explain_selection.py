@@ -294,6 +294,9 @@ class TestBehaviourParityAcrossFixtures:
                 "session_score",
                 "session_passes",
                 "session_fails",
+                "gateway_success_rate",
+                "capability_score",
+                "latency_ms",
             ]
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:

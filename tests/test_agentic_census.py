@@ -220,7 +220,7 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
         ProbeResult(
             "ok", True, True, capacity_evidence="free", probe_class="agentic", agentic_ok=True
         ),
-        NOW - timedelta(minutes=11),
+        NOW - timedelta(minutes=16),
     )
     cache.record("bad/m", ProbeResult("timeout", False, False), NOW)
     report = status_report(cache, now=NOW)
@@ -260,7 +260,7 @@ def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):
 
 @pytest.mark.parametrize(
     "age,live_age,failure,eligible",
-    [(2, 0, False, True), (2, 11, False, False), (2, 0, True, False), (8, 0, False, False)],
+    [(2, 0, False, True), (2, 16, False, False), (2, 0, True, False), (8, 0, False, False)],
 )
 def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, failure, eligible):
     from tests.test_orch_eligibility import REQ, conn, make_ladder

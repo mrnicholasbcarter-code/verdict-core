@@ -1035,9 +1035,10 @@ async def test_planner_reselection_tries_free_routes_before_subscription(tmp_pat
     rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
 
     started = [(r["route_id"], r["capacity_class"]) for r in rows if r["type"] == "plan_started"]
+    # FREE routes rank among themselves by capability (mistral-large first), then subscription.
     assert started == [
-        ("gl/glm-5", "free"),
         ("ms/mistral-large", "free"),
+        ("gl/glm-5", "free"),
         ("cc/claude-sonnet-5", "subscription"),
     ]
 
