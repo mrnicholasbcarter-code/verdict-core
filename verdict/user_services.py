@@ -69,6 +69,13 @@ def _quote(value: str) -> str:
     return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _path_setting(value: str) -> str:
+    """A path for settings such as ``WorkingDirectory=``, which take no quotes."""
+    if "\n" in value:
+        raise ServiceError(f"path cannot be used in a unit file: {value!r}")
+    return value.replace("%", "%%")
+
+
 @dataclass(frozen=True)
 class ProberBudget:
     """Budgets rendered into the prober unit (same flags as ``prove-at-rest daemon``)."""
@@ -146,7 +153,7 @@ class UserUnit:
                 f"Type={self.service_type}\n"
                 "# No secret here: the command resolves the gateway key itself\n"
                 "# (credentials.env, ~/.config/verdict/omniroute-api-key, Prime auth.json).\n"
-                f"WorkingDirectory={_quote(str(Path(__file__).resolve().parent.parent))}\n"
+                f"WorkingDirectory={_path_setting(str(Path(__file__).resolve().parent.parent))}\n"
                 f"ExecStart={command}\n{restart}"
             ),
             self.timer: (

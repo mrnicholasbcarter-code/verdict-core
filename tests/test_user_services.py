@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -145,6 +146,26 @@ def test_install_writes_no_secret_and_is_idempotent(home: Path) -> None:
     assert all(call[2] == "enable" for call in fake.calls)
     user_services.manage_units(units, unit_dir=home / "u", uninstall=True, run=fake)
     assert not list((home / "u").iterdir())
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="needs systemd-analyze")
+def test_rendered_units_pass_systemd_verify(tmp_path: Path) -> None:
+    """The fake runner cannot see bad unit settings; systemd's own parser can."""
+    import subprocess
+
+    for unit in (user_services.prover_unit(), user_services.prime_sync_unit()):
+        for name, body in unit.files().items():
+            (tmp_path / name).write_text(body)
+    done = subprocess.run(
+        ["systemd-analyze", "verify", *sorted(str(p) for p in tmp_path.glob("*.service"))],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "bad unit file setting" not in done.stderr and "not absolute" not in done.stderr, (
+        done.stderr
+    )
+    assert done.returncode == 0, done.stderr
 
 
 def test_install_reports_a_failed_systemctl(home: Path) -> None:
