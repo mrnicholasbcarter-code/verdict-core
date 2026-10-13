@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT))
 
 from verdict.security import redact_text  # noqa: E402
 
+# The schema belongs to this checker, so it is read from the checker's own repository.
 SCHEMA_PATH = Path("proof/dod.schema.json")
 EVIDENCE_DIR = Path("docs/proof/dod")
 ARCHIVE_DIR = Path("openspec/changes/archive")
@@ -121,7 +122,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         evidence = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return [f"cannot read {path}: {exc}"]
-    schema = json.loads((root / SCHEMA_PATH).read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / SCHEMA_PATH).read_text(encoding="utf-8"))
     schema_errors = sorted(
         Draft202012Validator(schema).iter_errors(evidence), key=lambda e: list(e.path)
     )

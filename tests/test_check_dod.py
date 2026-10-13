@@ -6,7 +6,6 @@ import copy
 import hashlib
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -63,8 +62,6 @@ def _run(
 @pytest.fixture
 def repo(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     root = tmp_path / "repo"
-    (root / "proof").mkdir(parents=True)
-    shutil.copy(ROOT / "proof/dod.schema.json", root / "proof/dod.schema.json")
     archived = root / "openspec/changes/archive/2026-10-13-gate"
     archived.mkdir(parents=True)
     (archived / "tasks.md").write_text("# Tasks\n- [x] build it\n", encoding="utf-8")
@@ -210,3 +207,13 @@ def test_all_flags_an_archive_without_evidence(
 
 def test_repository_evidence_passes() -> None:
     assert check_dod.main(["--all"]) == 0
+
+
+def test_root_without_a_schema_copy_is_checked_with_the_checker_schema(
+    repo: tuple[Path, dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, evidence = repo
+    assert not (root / "proof").exists()
+    (root / "docs/proof/dod/gate.json").write_text(json.dumps(evidence), encoding="utf-8")
+    assert check_dod.main(["--all", "--root", str(root)]) == 0
+    assert "DONE: " in capsys.readouterr().out
