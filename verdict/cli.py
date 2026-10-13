@@ -179,6 +179,65 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         )
 
 
+def _render_service_rows(ui: TerminalUI, rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        if "health_cache" in row:
+            cache = row["health_cache"]
+            ui.status(
+                "health cache",
+                "ok",
+                f"fresh {cache.get('fresh')}, stale {cache.get('stale')}, "
+                f"last probe {cache.get('age_seconds')} s ago",
+            )
+            continue
+        detail = (
+            f"service {row['service_state']}, last result {row['last_result'] or 'none'}"
+            f", last run {row['last_run'] or 'never'}"
+        )
+        if row.get("last_error"):
+            detail += f"; last error: {row['last_error']}"
+        ui.doctor_finding(row["unit"], row["state"], detail)
+
+
+def cmd_setup_services(
+    *, check: bool = False, dry_run: bool = False, output_json: bool = False
+) -> None:
+    """Install Verdict's systemd user services and verify them, or only check them."""
+    from verdict.actions.registry import run_action
+
+    installed = None if check else run_action("setup.services", {"dry_run": dry_run})
+    checked = None if dry_run or (installed and not installed.ok) else run_action("setup.check", {})
+    if output_json:
+        payload: dict[str, Any] = {}
+        if installed is not None:
+            payload["install"] = installed.data
+        if checked is not None:
+            payload["check"] = checked.data
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        ui = TerminalUI(console)
+        ui.header("Verdict services")
+        if installed is not None and not installed.ok:
+            ui.doctor_finding("install", "failed", str(installed.data.get("error", "")))
+        elif installed is not None:
+            data = installed.data
+            ui.status("gateway key for services", "ok", str(data.get("key_source")))
+            for name in data["changed_files"]:
+                ui.status(name, "would write" if dry_run else "written", data["unit_dir"])
+            if not data["changed_files"]:
+                ui.status("unit files", "unchanged", data["unit_dir"])
+            for args in data["commands"]:
+                ui.status("would run" if dry_run else "ran", "", " ".join(args))
+        if checked is not None:
+            _render_service_rows(ui, checked.data["services"])
+            for warning in checked.data["warnings"]:
+                ui.doctor_finding("services", "warning", warning)
+            ui.doctor_summary(checked.data["issues"], [])
+    for result in (installed, checked):
+        if result is not None and not result.ok:
+            raise SystemExit(result.exit_code or 1)
+
+
 def cmd_setup(
     *,
     dry_run: bool = False,
@@ -1343,7 +1402,9 @@ def cmd_autodev(
             present.fail("consent", message)
         raise SystemExit(2)
 
-    api_key = os.getenv("OMNIROUTE_API_KEY")
+    from verdict.credentials_store import resolve_api_key
+
+    api_key = resolve_api_key()
     evidence = collect_ruff_evidence(repo_path)
 
     if dry_run:
@@ -1632,11 +1693,10 @@ def cmd_autodev_packet_execute(
         except Exception:
             catalog_rows = []
         if probe_transport is None:
+            from verdict.credentials_store import resolve_api_key
             from verdict.probes import openai_probe_transport
 
-            probe_transport = openai_probe_transport(
-                family_url, api_key=_doctor_diag._read_omniroute_token()
-            )
+            probe_transport = openai_probe_transport(family_url, api_key=resolve_api_key())
     canary_state = None
     if canary_path:
         loaded = json.loads(Path(canary_path).expanduser().resolve().read_text(encoding="utf-8"))
@@ -2022,7 +2082,6 @@ from verdict.doctor_diagnostics import (  # noqa: E402
     _doctor_progress,
     _gateway_probe_for,
     _omniroute_api_request,  # noqa: F401 — backward-compat alias
-    _read_omniroute_token,  # noqa: F401 — backward-compat alias
 )
 
 

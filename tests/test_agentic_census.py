@@ -129,43 +129,6 @@ def test_import_sessions_cli(tmp_path, capsys, monkeypatch):
     assert HealthCache(path).entry("kc/model:free").agentic_ok
 
 
-def test_service_dry_run_idempotence_and_uninstall(tmp_path):
-    from verdict.prove_at_rest_service import manage_service
-
-    units = tmp_path / "units"
-    calls = []
-
-    def run(args):
-        calls.append(args)
-
-    report = manage_service(unit_dir=units, interval=90, max_requests=12, dry_run=True, run=run)
-    assert not units.exists() and not calls
-    service = report["files"]["verdict-prove-at-rest.service"]
-    assert "prove-at-rest daemon --allow-live-probe" in service
-    assert "--interval 90" in service and "--max-requests 12" in service
-    assert "--max-wall-seconds 600" in service
-    assert "verdict-prove-at-rest.service" in report["files"]["verdict-prove-at-rest.timer"]
-    first = manage_service(unit_dir=units, interval=90, max_requests=12, run=run)
-    assert first["changed"]
-    second = manage_service(unit_dir=units, interval=90, max_requests=12, run=run)
-    assert not second["changed"]
-    assert any("enable" in call and "--now" in call for call in calls)
-    manage_service(unit_dir=units, uninstall=True, run=run)
-    assert not list(units.iterdir())
-    manage_service(unit_dir=units, uninstall=True, run=run)
-
-
-@pytest.mark.parametrize(
-    "options", [{"interval": 0}, {"max_requests": 0}, {"interval": float("nan")}]
-)
-def test_service_rejects_unbounded_options_before_writes(tmp_path, options):
-    from verdict.prove_at_rest_service import manage_service
-
-    with pytest.raises(ValueError):
-        manage_service(unit_dir=tmp_path / "units", **options)
-    assert not (tmp_path / "units").exists()
-
-
 def test_service_cli_dry_run_json(tmp_path, monkeypatch, capsys):
     from verdict.cli import main
 
@@ -184,9 +147,14 @@ def test_service_cli_dry_run_json(tmp_path, monkeypatch, capsys):
             "--json",
         ],
     )
+    key_file = tmp_path / "verdict" / "omniroute-api-key"
+    key_file.parent.mkdir()
+    key_file.write_text("k")
+    key_file.chmod(0o600)
     main()
     report = json.loads(capsys.readouterr().out)
     assert report["dry_run"] and report["files"]
+    assert "--interval 45 --max-requests 8" in report["files"]["verdict-prove-at-rest.service"]
     assert not (tmp_path / "systemd").exists()
 
 

@@ -493,7 +493,9 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     normalized_url = (
         _normalize_omniroute_loopback(base_url) if is_omniroute_configured else base_url
     )
-    api_key = os.getenv("OMNIROUTE_API_KEY")
+    from verdict.credentials_store import resolve_api_key
+
+    api_key = resolve_api_key()
     management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
     usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
     allow_private = _allowed_private_hosts() | {
@@ -764,7 +766,9 @@ def _build_proxy() -> UpstreamProxy:
     ``LLMGATE_UPSTREAM_BASE_URL`` is set explicitly.
     """
     base_url = _resolve_upstream_base_url()
-    api_key = os.getenv("LLMGATE_UPSTREAM_API_KEY") or os.getenv("OMNIROUTE_API_KEY")
+    from verdict.credentials_store import resolve_api_key
+
+    api_key = os.getenv("LLMGATE_UPSTREAM_API_KEY") or resolve_api_key()
     timeout_ms = int(os.getenv("LLMGATE_UPSTREAM_TIMEOUT_MS", "30000"))
     if timeout_ms <= 0:
         raise ValueError("LLMGATE_UPSTREAM_TIMEOUT_MS must be positive")

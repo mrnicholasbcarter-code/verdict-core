@@ -318,6 +318,8 @@ def test_omniroute_token_ignores_private_sqlite_credentials(
 ) -> None:
     import sqlite3
 
+    from verdict.credentials_store import resolve_api_key
+
     private_dir = tmp_path / ".omniroute"
     private_dir.mkdir()
     database = private_dir / "storage.sqlite"
@@ -331,28 +333,17 @@ def test_omniroute_token_ignores_private_sqlite_credentials(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
 
-    assert cli._read_omniroute_token() is None
+    assert resolve_api_key() is None
 
 
 def test_omniroute_token_uses_explicit_environment_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from verdict.credentials_store import resolve_api_key
+
     monkeypatch.setenv("OMNIROUTE_API_KEY", "explicit-env-token")
 
-    assert cli._read_omniroute_token() == "explicit-env-token"
-
-
-def test_omniroute_token_does_not_inspect_home_or_private_paths(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_if_path_checked(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("credential lookup must not inspect private paths")
-
-    monkeypatch.setattr(cli.os.path, "exists", fail_if_path_checked)
-    monkeypatch.setattr(cli.os.path, "expanduser", fail_if_path_checked)
-    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
-
-    assert cli._read_omniroute_token() is None
+    assert resolve_api_key() == "explicit-env-token"
 
 
 def test_omniroute_management_requests_return_none_when_no_local_gateway(
@@ -980,7 +971,6 @@ def test_cli_documentation_json_surfaces_blocked_state(
     (docs / "ADR-001.md").write_text("# Decision requiring ingestion")
 
     monkeypatch.setattr(dd, "_omniroute_api_request", lambda *args, **kwargs: None)
-    monkeypatch.setattr(dd, "_read_omniroute_token", lambda: None)
     monkeypatch.setattr(cli, "console", cli.Console(quiet=True))
     monkeypatch.setattr(
         sys,
@@ -1143,6 +1133,11 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     verdict_dir = tmp_path / ".verdict"
     verdict_dir.mkdir(parents=True, exist_ok=True)
     (verdict_dir / "memory.db").touch()
+
+    # Verdict's user services are installed and their prober cache is current.
+    from verdict.user_services import ServiceCheck
+
+    monkeypatch.setattr("verdict.user_services.check_services", lambda **_: ServiceCheck())
 
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(

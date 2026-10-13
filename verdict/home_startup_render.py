@@ -17,9 +17,7 @@ from verdict.terminal_ui import TerminalUI
 
 def setup_complete(home: Path) -> bool:
     return (
-        (home / "setup-complete").is_file()
-        and config_path().is_file()
-        and bool(resolve_api_key() or resolve_api_key("OMNIROUTE_API_KEY"))
+        (home / "setup-complete").is_file() and config_path().is_file() and bool(resolve_api_key())
     )
 
 

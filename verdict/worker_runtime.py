@@ -851,6 +851,8 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
         with events.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event) + "\n")
 
+    from verdict.orchestration.run import resolve_api_key
+
     try:
         task = worker_task_from_config(config.get("task", {}))
         base_url = (
@@ -858,7 +860,7 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             or os.environ.get("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get("VERDICT_OMNIROUTE_API_KEY")
+        api_key = resolve_api_key()
         management_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
         usage_api_key_id = os.environ.get("OMNIROUTE_USAGE_API_KEY_ID")
         transport = OmniRouteHTTPTransport(

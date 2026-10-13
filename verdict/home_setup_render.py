@@ -72,7 +72,7 @@ def run_setup_wizard(
             "Key: "
             + (
                 "configured (hidden)"
-                if resolve_api_key() or resolve_api_key("OMNIROUTE_API_KEY")
+                if resolve_api_key()
                 else "not configured; use verdict credentials set OMNIROUTE_API_KEY"
             )
         )
@@ -252,18 +252,33 @@ def _dependencies(
 def _warm_cache(
     tui: TerminalUI, reader: Callable[[], str | None] | None, gateway: str, notes: list[str]
 ) -> None:
+    """Install the background prober and Prime sync as user services, with consent."""
+    from verdict.actions.registry import run_action
+
     del gateway
-    choice = _choice(tui, reader, "5 / Warm-cache daemon", "not checked", "off", ["off", "on"])
+    check = run_action("setup.check", {})
+    rows = check.data.get("services", [])
+    current = ", ".join(f"{row['unit']} {row['state']}" for row in rows) or "not checked"
+    choice = _choice(tui, reader, "5 / Warm-cache daemon", current, "on", ["off", "on"])
     tui.console.print(
-        Text("Enables: background health cache. Service installer: not available yet.")
+        Text(
+            "Enables: background route proof (health cache) and Prime model sync. "
+            "Live probes may spend free-tier quota."
+        )
     )
-    tui.console.print(Text("Manual command: verdict prove-at-rest daemon --allow-live-probe"))
-    tui.console.print(
-        Text("User-service templates: deploy/systemd/verdict-health-cache.{service,timer}")
-    )
-    tui.console.print(Text("Live probes may spend credits. No daemon is started by this wizard."))
+    if choice != "on":
+        notes.append("Warm-cache: unchanged; no service installed.")
+        return
+    result = run_action("setup.services", {})
+    if not result.ok:
+        tui.status("Verdict services", "failed", str(result.data.get("error", "")))
+        notes.append("Warm-cache: install failed; see verdict setup --check.")
+        return
+    after = run_action("setup.check", {})
+    for row in after.data.get("services", []):
+        tui.status(row["unit"], row["state"], row.get("last_error") or "")
     notes.append(
-        "Warm-cache: not available yet; use the manual command/templates above. No service installed."
-        if choice == "on"
-        else "Warm-cache: unchanged; no enable/disable operation requested."
+        "Warm-cache: services installed and running."
+        if after.ok
+        else "Warm-cache: installed, but a service is not healthy; run verdict setup --check."
     )

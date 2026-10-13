@@ -159,7 +159,7 @@ def _action_credentials_test(**kwargs: Any) -> ActionResult:
     import os
 
     from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, CredentialsStore, resolve_api_key
 
     name: str = kwargs["name"]
     cred = get_credential(name)
@@ -175,6 +175,8 @@ def _action_credentials_test(**kwargs: Any) -> ActionResult:
         )
     CredentialsStore().load_into_env()
     value = os.environ.get(name)
+    if not value and name in GATEWAY_KEY_ENV_NAMES:
+        value = resolve_api_key()
     if not value:
         return ActionResult(
             data={"name": name, "status": "missing", "message": "credential not set"},
@@ -777,21 +779,52 @@ def _action_prove_at_rest_import_sessions(**kwargs: Any) -> ActionResult:
     return ActionResult(data=data)
 
 
-def _manage_prove_service(*, uninstall: bool, **kwargs: Any) -> ActionResult:
-    import subprocess
-
-    from verdict.prove_at_rest_service import manage_service
+def _manage_units(units: Any, **kwargs: Any) -> ActionResult:
+    from verdict.user_services import ServiceError, manage_units
 
     try:
-        data = manage_service(
-            interval=float(kwargs.get("interval", 300)),
-            max_requests=int(kwargs.get("max_requests", 300)),
+        data = manage_units(
+            units,
             dry_run=bool(kwargs.get("dry_run", False)),
-            uninstall=uninstall,
+            uninstall=bool(kwargs.get("uninstall", False)),
         )
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    except (OSError, ServiceError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
     return ActionResult(data=data)
+
+
+def _manage_prove_service(*, uninstall: bool, **kwargs: Any) -> ActionResult:
+    from verdict.user_services import ProberBudget, prover_unit
+
+    try:
+        budget = ProberBudget(
+            interval=float(kwargs.get("interval", 300)),
+            max_requests=int(kwargs.get("max_requests", 300)),
+        )
+    except ValueError as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+    return _manage_units([prover_unit(budget)], uninstall=uninstall, **kwargs)
+
+
+def _action_setup_services(**kwargs: Any) -> ActionResult:
+    """Install (or dry-run) every Verdict user unit this host needs."""
+    from verdict.user_services import verdict_units
+
+    return _manage_units(verdict_units(), **kwargs)
+
+
+def _action_setup_check(**kwargs: Any) -> ActionResult:
+    """Report each Verdict user unit; fail when one is missing, inactive or failed."""
+    from verdict.user_services import check_units, verdict_units
+
+    check = check_units(verdict_units())
+    data = {
+        "status": "issues_found" if check.issues else "ok",
+        "services": check.rows,
+        "issues": check.issues,
+        "warnings": check.warnings,
+    }
+    return ActionResult(data=data, ok=not check.issues, exit_code=1 if check.issues else 0)
 
 
 def _action_prove_at_rest_install_service(**kwargs: Any) -> ActionResult:

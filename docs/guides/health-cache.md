@@ -186,10 +186,13 @@ first), and providers that have no fresh or stale entry.
 
 ## systemd
 
-The unit template is `deploy/systemd/verdict-health-cache.service`. It is a
-long-running service with `--interval 600`. Install notes are in
-[harnesses.md](harnesses.md#health-cache-prober). The unit is not enabled by
-the test suite or by installing the package.
+`verdict setup services` installs the prober as the `verdict-prove-at-rest`
+user service and timer (long-running, `--interval 300`). Install notes and key
+handling are in [harnesses.md](harnesses.md#background-services). `verdict
+doctor` fails when the newest probe in the cache is older than twice the
+prober cycle (`--interval` plus the agentic wall time), or when the cache has
+no fresh or stale route. The unit is not enabled by the test suite or by
+installing the package.
 
 ## Tests
 
