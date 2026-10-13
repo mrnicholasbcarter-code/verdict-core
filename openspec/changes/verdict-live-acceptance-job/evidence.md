@@ -130,3 +130,35 @@ returned `"successful": true, "dryRun": true`. Nothing was sent.
 - With 0 listed, the independent check was skipped; it now always runs (eadccb57).
 - Under systemd, route reported `http 401` and doctor "No gateway URL": the
   checks did not get the job's gateway; fixed (fd9757be).
+
+
+## Final head 1683e96a (manual start of the unit, 15:33:42Z)
+
+```
+Result=success
+ExecMainStartTimestamp=Tue 2026-10-13 15:33:42 UTC
+ExecMainExitTimestamp=Tue 2026-10-13 15:35:43 UTC
+ExecMainStatus=3
+20261013T135854Z.json
+20261013T141225Z.json
+20261013T141743Z.json
+20261013T142647Z.json
+20261013T150010Z.json
+20261013T153343Z.json
+serve-receipts.db
+state.json
+{
+  "alerted": false,
+  "last_result": "~/.verdict/acceptance/20261013T153343Z.json",
+  "last_status": "red",
+  "red_streak": 6,
+  "seen_green": false
+}
+```
+
+`verdict doctor --json` exit 1, `status: issues_found`, `acceptance`:
+`{"age_seconds": 34, "eligible_free": 0, "failed": ["doctor", "eligibility", "choose", "route", "serve", "harness-prime"], "path": "~/.verdict/acceptance/20261013T153343Z.json", "state": "red"}`; unit rows: verdict-prove-at-rest.timer ok,
+verdict-prime-sync.timer ok, verdict-acceptance.timer ok; "Live acceptance" failed.
+`verdict acceptance status --json` exit 1 (same newest result).
+
+Reachability: `scripts/check_reachability.py` reports 0 NEW findings.
