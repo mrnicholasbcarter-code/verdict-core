@@ -38,6 +38,8 @@ jobs:
           vulture verdict/ .vulture-whitelist.py --min-confidence 80
       - name: 'Reachability report (BOD-316: "done means wired")'
         run: python scripts/check_reachability.py
+      - name: Definition of done (docs/proof/dod evidence; AGENTS.md)
+        run: python scripts/check_dod.py --all
 
   actionlint:
     runs-on: ubuntu-latest
