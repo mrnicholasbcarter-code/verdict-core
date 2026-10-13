@@ -914,5 +914,9 @@
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",
     "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+  },
+  {
+    "qualified_name": "verdict.__main__.drill_unused",
+    "reason": "WIRE: drill, a growing baseline must fail"
   }
 ]
