@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+# Module level: collected before conftest replaces host_pressure.current.
+from tests.test_host_pressure import _REAL_CURRENT, fake_host
 from tests.test_orch_runtime import NOW, Classifier, Events, Executor, Reviewer, Selector, node
 from verdict.host_pressure import HostDecision, HostSample, Level, govern
 from verdict.orchestration import improvement
@@ -188,6 +190,73 @@ def test_prover_agentic_concurrency_follows_the_host_level(tmp_path: Path) -> No
         host=lambda: decision(Level.YELLOW),
     ).run_agentic_probes(stats, routes=routes)
     assert stats.agentic_concurrency == 2 and stats.agentic_passed == 4
+
+
+async def test_orchestrate_follows_real_sampler_on_fake_proc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end on a fake /proc: the real sampler, shared state file and hysteresis
+    drive the runtime from 4 workers to fewer under pressure and back to 4."""
+    from verdict import host_pressure as hp
+    from verdict.orchestration import runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "HOST_REFRESH_SECONDS", 0.0)
+    host_dir, state = tmp_path / "host", tmp_path / "home" / "host-pressure.json"
+    roots = fake_host(host_dir)
+    state.parent.mkdir(parents=True)
+    state.write_text('{"level": "GREEN", "since": 0.0, "calm": 0}')
+    clock = [1000.0]
+    monkeypatch.setattr(hp.time, "time", lambda: clock[0])
+
+    def host() -> HostDecision:
+        clock[0] += 30.0  # each read is one sample, 30 s apart
+        return _REAL_CURRENT(roots=roots, state_path=state)
+
+    class Pressing(Executor):
+        async def run(self, prompt: str, **kwargs: Any) -> Any:
+            if len(self.calls) == 3:  # memory stalls start while four workers run
+                fake_host(host_dir, mem_full10=12.0)
+            if len(self.calls) == 7:  # and stop later
+                fake_host(host_dir)
+            return await super().run(prompt, **kwargs)
+
+    repo = _repo(tmp_path)
+    ex = Pressing({}, delay=0.1)
+    events = Events()
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=tmp_path / "run1",
+        graph=WorkGraph("g", tuple(node(f"n{i:02d}") for i in range(16)), max_parallel=4),
+        selector=Selector(["cc/s", "cx/g"]),
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_parallel=4, follow_host_pressure=True),
+        now=lambda: NOW,
+        host=host,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    steps = [
+        (e["level"], e["max_parallel"])
+        for e in events.of("controller")
+        if e.get("state") == "HOST_PRESSURE"
+    ]
+    # One step per level change, in order: no oscillation.
+    assert steps == [("GREEN", 4), ("RED", 1), ("YELLOW", 2), ("GREEN", 4)]
+    # Every new dispatch fits the limit in force; workers already running when the
+    # limit fell were never cancelled (the run completed with every node validated).
+    limit, active = 4, set()
+    for row in events.rows:
+        if row["type"] == "controller" and row.get("state") == "HOST_PRESSURE":
+            limit = row["max_parallel"]
+        elif row["type"] == "dispatch":
+            active.add(row["node_id"])
+            assert len(active) <= limit, (row["node_id"], len(active), limit)
+        elif row["type"] == "terminal":
+            active.discard(row["node_id"])
 
 
 @pytest.mark.parametrize(
