@@ -46,8 +46,14 @@ def _commands(python: str) -> list[tuple[str, list[str]]]:
     """
     return [
         (
-            "python scripts/demo_orchestrate.py --out docs/proof/demo-run",
-            [python, "scripts/demo_orchestrate.py", "--out", "docs/proof/demo-run"],
+            "python scripts/demo_orchestrate.py --out docs/proof/demo-run --update-proof",
+            [
+                python,
+                "scripts/demo_orchestrate.py",
+                "--out",
+                "docs/proof/demo-run",
+                "--update-proof",
+            ],
         ),
         (
             "verdict run-receipt docs/proof/demo-run",

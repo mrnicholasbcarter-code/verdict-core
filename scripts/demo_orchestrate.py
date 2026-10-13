@@ -17,8 +17,12 @@ against a fixture gateway inventory. Nothing calls a model or the network:
 
 Usage::
 
-    python scripts/demo_orchestrate.py --out docs/proof/demo-run
-    verdict run-receipt docs/proof/demo-run
+    python scripts/demo_orchestrate.py --out /tmp/demo-run
+    verdict run-receipt /tmp/demo-run
+
+``--out`` is required. A path inside the repository is refused unless
+``--update-proof`` is given, because ``docs/proof/demo-run`` is a committed,
+digest-bound bundle (regenerate it only on purpose, with a ``Proof:`` trailer).
 
 The copied run directory also holds ``admission.json``, the canonical
 admission receipt for the fixture inventory.
@@ -56,6 +60,7 @@ from verdict.orchestration.runtime import RuntimePolicy
 from verdict.orchestration.tui import event_line
 from verdict.subagent_selection import HealthResult
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 GOAL = "Add a --json flag to the invoice CLI, with a parser module and tests"
 RUN_ID = "demo-run"
 
@@ -323,9 +328,21 @@ async def run_demo(out: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--out", default="docs/proof/demo-run", help="Where to copy the run dir")
+    parser.add_argument("--out", required=True, help="Where to copy the run dir")
+    parser.add_argument(
+        "--update-proof",
+        action="store_true",
+        help="Allow --out inside this repository (replaces a committed proof bundle)",
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(run_demo(Path(args.out)))
+    out = Path(args.out).resolve()
+    if out.is_relative_to(REPO_ROOT) and not args.update_proof:
+        parser.error(
+            f"--out {args.out} is inside the repository; committed proof bundles are "
+            "digest-bound. Use a temporary directory, or pass --update-proof and commit "
+            "with a 'Proof:' trailer (AGENTS.md)."
+        )
+    return asyncio.run(run_demo(out))
 
 
 if __name__ == "__main__":
