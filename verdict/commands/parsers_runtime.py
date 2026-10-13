@@ -125,6 +125,30 @@ def register(subparsers: Any) -> None:
             default=600.0,
             help="Wall-time cap for one cycle in seconds (default 600)",
         )
+        _prove_live_p.add_argument(
+            "--agentic-max-routes",
+            type=int,
+            default=8,
+            help="Agentic (3-turn tool use) probes per cycle, own budget (default 8)",
+        )
+        _prove_live_p.add_argument(
+            "--agentic-concurrency",
+            type=int,
+            default=4,
+            help="Agentic probes running at once (default 4)",
+        )
+        _prove_live_p.add_argument(
+            "--agentic-pool-concurrency",
+            type=int,
+            default=1,
+            help="Agentic probes running at once per credential pool (default 1)",
+        )
+        _prove_live_p.add_argument(
+            "--agentic-wall-seconds",
+            type=float,
+            default=None,
+            help="Wall-time cap for the agentic phase (default: --max-wall-seconds)",
+        )
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )

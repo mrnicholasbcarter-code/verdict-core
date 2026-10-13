@@ -4215,6 +4215,10 @@ def cmd_prove_at_rest(
     output_json: bool = False,
     max_requests: int = 300,
     max_wall_seconds: float = 600.0,
+    agentic_max_routes: int = 8,
+    agentic_concurrency: int = 4,
+    agentic_pool_concurrency: int = 1,
+    agentic_wall_seconds: float | None = None,
     inventory_path: str | None = None,
     ledger: str | None = None,
     dry_run: bool = False,
@@ -4368,6 +4372,10 @@ def cmd_prove_at_rest(
             "timeout": timeout,
             "max_requests": max_requests,
             "max_wall_seconds": max_wall_seconds,
+            "agentic_max_routes": agentic_max_routes,
+            "agentic_concurrency": agentic_concurrency,
+            "agentic_pool_concurrency": agentic_pool_concurrency,
+            "agentic_wall_seconds": agentic_wall_seconds,
         }
         if base_url is not None:
             params["base_url"] = base_url
@@ -4435,6 +4443,10 @@ def cmd_prove_at_rest(
                 allow_live_probe=allow_live_probe,
                 max_requests=max_requests,
                 max_wall_seconds=max_wall_seconds,
+                agentic_max_routes=agentic_max_routes,
+                agentic_concurrency=agentic_concurrency,
+                agentic_pool_concurrency=agentic_pool_concurrency,
+                agentic_wall_seconds=agentic_wall_seconds,
             )
         except ProveError as exc:
             message = str(exc)

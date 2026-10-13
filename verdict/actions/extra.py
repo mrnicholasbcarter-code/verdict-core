@@ -825,6 +825,14 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
             allow_live_probe=True,
             max_requests=int(kwargs.get("max_requests", 300)),
             max_wall_seconds=float(kwargs.get("max_wall_seconds", 600.0)),
+            agentic_max_routes=int(kwargs.get("agentic_max_routes", 8)),
+            agentic_concurrency=int(kwargs.get("agentic_concurrency", 4)),
+            agentic_pool_concurrency=int(kwargs.get("agentic_pool_concurrency", 1)),
+            agentic_wall_seconds=(
+                float(kwargs["agentic_wall_seconds"])
+                if kwargs.get("agentic_wall_seconds") is not None
+                else None
+            ),
         )
         stats = daemon.run_once()
     except ProveError as exc:

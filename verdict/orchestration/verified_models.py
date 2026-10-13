@@ -32,6 +32,7 @@ from verdict.availability import QuotaEvidence, account_forms
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import _marginal_price, capacity_class_of
 from verdict.orchestration.health_cache import (
+    AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
     CATEGORY_GONE,
@@ -1529,7 +1530,7 @@ def _classify_row(
         agentic_fresh = (
             at_rest.agentic_ok
             and at_rest.agentic_checked_at is not None
-            and (now - at_rest.agentic_checked_at).total_seconds() < FRESH_SECONDS
+            and (now - at_rest.agentic_checked_at).total_seconds() < AGENTIC_PROBE_TTL_SECONDS
         )
         if not agentic_fresh:
             restrictions.append("agentic_not_fresh")
