@@ -24,6 +24,15 @@ from typing import Any
 
 import pytest
 
+from tests.fixtures.decision_kernel_demo import (
+    build_demo_decision,
+    build_demo_decision_with_advisory_promoting_excluded,
+    degraded_decision,
+    degraded_inputs,
+    demo_inputs,
+    denied_decision,
+    denied_inputs,
+)
 from verdict.adaptive_ranker import AdaptiveRanker, RankerOutput
 from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
 from verdict.contracts import TaskSpec
@@ -35,15 +44,6 @@ from verdict.decision_kernel import (
     VerificationFault,
     decide,
     verify_decision,
-)
-from verdict.decision_kernel_demo import (
-    build_demo_decision,
-    build_demo_decision_with_advisory_promoting_excluded,
-    degraded_decision,
-    degraded_inputs,
-    demo_inputs,
-    denied_decision,
-    denied_inputs,
 )
 from verdict.eligibility import EligibilityResult
 from verdict.models import ModelInfo
