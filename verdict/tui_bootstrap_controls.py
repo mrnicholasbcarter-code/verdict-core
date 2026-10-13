@@ -205,7 +205,8 @@ def _refresh_selected(
         )
         if plan.ok and plan.data.get("routes"):
             controller.write(render_refresh_plan(plan.data))
-            if controller.confirm("Spend quota for this exact manual refresh plan?").granted:
+            consent = controller.confirm_capacity_groups(plan.data["capacity_groups"])
+            if consent.granted:
                 # Re-read exact current rows AND generation; consent never
                 # relabels capacity or carries forward vanished/blocked ids.
                 latest_view = scoped.load(VerifiedModelQuery(page_size=200))
@@ -217,6 +218,7 @@ def _refresh_selected(
                         {
                             "confirmed": True,
                             "plan": plan.data,
+                            "approved_classes": consent.approved,
                             "snapshot": snap,
                             "cache": HealthCache(scoped.paths.health_cache),
                             "transport": transport

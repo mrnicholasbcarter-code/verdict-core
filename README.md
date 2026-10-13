@@ -123,9 +123,12 @@ view is `/eligibility`.
 /eligibility refresh
 ```
 
-For a manual refresh, Verdict shows a bounded request plan and asks you to confirm before
-sending probes; the plan may include metered or unknown routes, which can cost money. Automatic
-refresh only touches free or already-paid routes.
+For a manual refresh, Verdict shows a bounded request plan grouped by capacity class (FREE,
+SUBSCRIPTION, UNKNOWN, METERED) and asks about each group separately, or "free only". UNKNOWN
+and METERED routes can cost money: they default to no and show an estimated spend. From a
+script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes
+unless you add `--include-unknown` or `--allow-metered`. Automatic refresh only touches free
+or already-paid routes.
 
 **Pick your Prime Agent models with a preview and a one-step undo.**
 

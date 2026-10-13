@@ -12,9 +12,16 @@ consent and wait behaviour, so no edit to home or the registry is required.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from verdict.orchestration.verified_refresh import (
+    CAPACITY_FREE,
+    CAPACITY_METERED,
+    CAPACITY_UNKNOWN,
+    capacity_group,
+)
 
 # ---------------------------------------------------------------------------
 # /eligibility argument parsing
@@ -158,6 +165,61 @@ def prompt_consent(
 
 
 # ---------------------------------------------------------------------------
+# Per-capacity-group consent for a manual refresh plan
+# ---------------------------------------------------------------------------
+
+# The explicit flags that let a run without a terminal include a costly group.
+OPT_IN_FLAGS = {CAPACITY_UNKNOWN: "--include-unknown", CAPACITY_METERED: "--allow-metered"}
+
+
+@dataclass(frozen=True)
+class CapacityConsent:
+    """Which capacity groups of a manual refresh plan the operator approved."""
+
+    approved: tuple[str, ...]
+    cancelled: bool = False
+
+    @property
+    def granted(self) -> bool:
+        return bool(self.approved) and not self.cancelled
+
+
+def format_capacity_group(group: Mapping[str, Any]) -> str:
+    """Describe one group: class, size, requests and spend disclosure."""
+    count = len(group.get("route_ids") or ())
+    parts = [
+        f"{capacity_group(str(group.get('capacity_class') or '')).upper()}: "
+        f"{count} route{'' if count == 1 else 's'}",
+        f"{group.get('estimated_requests')} request"
+        f"{'' if group.get('estimated_requests') == 1 else 's'}",
+    ]
+    if "estimated_spend_usd" in group:
+        spend = group.get("estimated_spend_usd")
+        unpriced = group.get("unpriced_count") or 0
+        if isinstance(spend, (int, float)):
+            text = f"estimated spend ~${spend:.4f}"
+            if unpriced:
+                text += f" plus {unpriced} unpriced route{'' if unpriced == 1 else 's'}"
+        else:
+            text = "estimated spend unknown (no pricing)"
+        parts.append(text)
+    parts.append(str(group.get("spend_note") or ""))
+    return ", ".join(part for part in parts if part)
+
+
+def _ask(prompt: str, read_line: Callable[[str], Any], write: Callable[[str], None]) -> str | None:
+    """Read one lowered answer; ``None`` means cancel (EOF, Esc, Ctrl-C)."""
+    write(prompt)
+    try:
+        answer = read_line(prompt)
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if answer is CANCEL or answer is None:
+        return None
+    return str(answer).strip().lower()
+
+
+# ---------------------------------------------------------------------------
 # Wait-with-progress runner
 # ---------------------------------------------------------------------------
 
@@ -245,6 +307,69 @@ class VerifiedControlsController:
     def confirm(self, message: str) -> ConsentResult:
         return prompt_consent(message, read_line=self.read_line, write=self.write)
 
+    def confirm_capacity_groups(
+        self,
+        groups: Sequence[Mapping[str, Any]],
+        *,
+        interactive: bool = True,
+        opt_in: Collection[str] = (),
+    ) -> CapacityConsent:
+        """Approve a plan's capacity groups separately, never with one blanket answer.
+
+        The first answer defaults to No: ``y`` asks about each group in turn, ``f``
+        approves the FREE group only, and blank/``n`` approves nothing. Each group
+        prompt uses that group's default (FREE/SUBSCRIPTION yes, UNKNOWN/METERED
+        no). EOF, Esc or Ctrl-C at any prompt cancels every group. Without a
+        terminal nothing is asked: the default-yes groups run, and UNKNOWN/METERED
+        run only when their class is in ``opt_in`` (``--include-unknown`` /
+        ``--allow-metered``).
+        """
+        if not groups:
+            self.write("No routes to refresh.")
+            return CapacityConsent(())
+        classes = [capacity_group(str(group.get("capacity_class") or "")) for group in groups]
+        defaults = {
+            cls: bool(g.get("default_approved")) for cls, g in zip(classes, groups, strict=True)
+        }
+        self.write("Capacity groups (each is approved separately):")
+        for group, cls in zip(groups, classes, strict=True):
+            default = "default yes" if defaults[cls] else "default no"
+            self.write(f"  {format_capacity_group(group)} ({default})")
+        if not interactive:
+            approved = tuple(c for c in classes if defaults[c] or c in opt_in)
+            for cls in classes:
+                if cls not in approved:
+                    self.write(
+                        f"{cls.upper()} skipped without a terminal; pass {OPT_IN_FLAGS[cls]}"
+                    )
+            return CapacityConsent(approved)
+        choice = _ask(
+            "Refresh these groups? y = confirm each group, f = free only [y/N] ",
+            self.read_line,
+            self.write,
+        )
+        if choice is None:
+            return CapacityConsent((), cancelled=True)
+        if choice in {"f", "free", "free only"}:
+            if CAPACITY_FREE not in classes:
+                self.write("No FREE routes in this plan; nothing will be refreshed.")
+            return CapacityConsent(tuple(c for c in classes if c == CAPACITY_FREE))
+        if choice not in {"y", "yes"}:
+            return CapacityConsent(())
+        approved_groups: list[str] = []
+        for group, cls in zip(groups, classes, strict=True):
+            default_yes = defaults[cls]
+            answer = _ask(
+                f"Refresh {format_capacity_group(group)}? {'[Y/n]' if default_yes else '[y/N]'} ",
+                self.read_line,
+                self.write,
+            )
+            if answer is None:
+                return CapacityConsent((), cancelled=True)
+            if answer in {"y", "yes"} or (answer == "" and default_yes):
+                approved_groups.append(cls)
+        return CapacityConsent(tuple(approved_groups))
+
     def refresh(
         self,
         snapshot: Any,
@@ -284,12 +409,15 @@ def _format_progress(event: Any) -> str:
 
 __all__ = [
     "CANCEL",
+    "OPT_IN_FLAGS",
+    "CapacityConsent",
     "ConsentResult",
     "ControlsError",
     "EligibilityArgs",
     "ProgressRecorder",
     "VerifiedControlsController",
     "WaitRunner",
+    "format_capacity_group",
     "parse_eligibility_args",
     "parse_probe_model_list",
     "prompt_consent",

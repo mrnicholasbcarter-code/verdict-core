@@ -1,19 +1,28 @@
-"""Consumer-side refresh tests: ordering, cancel, consent, /probe (BOD-292).
+"""Consumer-side refresh tests: ordering, cancel, consent, /probe (BOD-292, BOD-331).
 
 Covers the wait-then-render contract (progress strictly before the final
 outcome), shared cancellation, the y/N consent default-No controller, the
-/eligibility and /probe parsers, the full failure-classification mapping, and
-the picker/selection/autocomplete contracts. All I/O is injected.
+per-capacity-class consent for manual refresh plans, the /eligibility and
+/probe parsers, the full failure-classification mapping, and the
+picker/selection/autocomplete contracts. All I/O is injected.
 """
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import verdict.actions.verified_models as surfaces
+from tests.test_verified_models_projection import conn
+from tests.test_verified_models_projection import row as inventory_row
+from verdict.actions.model_refresh import action_models_refresh_execute, action_models_refresh_plan
+from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter
+from verdict.orchestration import cli as orchestration_cli
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
@@ -29,6 +38,9 @@ from verdict.orchestration.health_cache import (
 )
 from verdict.orchestration.verified_refresh import (
     CAPACITY_FREE,
+    CAPACITY_METERED,
+    CAPACITY_SUBSCRIPTION,
+    CAPACITY_UNKNOWN,
     OUTCOME_CANCELLED,
     OUTCOME_COMPLETED,
     ProbeExchange,
@@ -501,3 +513,358 @@ def test_disabled_auto_refresh_does_not_probe_selection_path(tmp_path: Path) -> 
     )
     assert transport.calls == []
     del out
+
+
+# ---------------------------------------------------------------------------
+# Manual refresh plan: one consent per capacity class (BOD-331)
+# ---------------------------------------------------------------------------
+
+ALL_CLASSES = (CAPACITY_FREE, CAPACITY_SUBSCRIPTION, CAPACITY_UNKNOWN, CAPACITY_METERED)
+GATEWAY = "http://offline.invalid:20128"
+
+
+@pytest.fixture
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep state under tmp_path and ignore the operator's controller route."""
+    monkeypatch.delenv("VERDICT_HEALTH_CACHE", raising=False)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setattr(surfaces, "active_controller_route", lambda: None)
+    return tmp_path
+
+
+def _mixed_adapter(tmp_path: Path) -> VerifiedSnapshotAdapter:
+    """One never-verified route per capacity class; no health cache on disk."""
+    return VerifiedSnapshotAdapter(
+        GATEWAY,
+        StorePaths.defaults(tmp_path),
+        [
+            inventory_row("fr/free"),
+            inventory_row("cc/sub"),
+            inventory_row("zz/unknown"),
+            inventory_row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
+        ],
+        [
+            conn("fr", auth="apikey", plan="free"),
+            conn("cc"),
+            conn("zz", auth="apikey", plan=""),
+            conn("ap", auth="apikey", plan="PAYG"),
+        ],
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+    )
+
+
+ROUTE_CLASS = {
+    "fr/free": CAPACITY_FREE,
+    "cc/sub": CAPACITY_SUBSCRIPTION,
+    "zz/unknown": CAPACITY_UNKNOWN,
+    "ap/metered": CAPACITY_METERED,
+}
+
+
+def _plan_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "route_id": rid,
+            "provider": rid.split("/", 1)[0],
+            "status": "UNVERIFIED",
+            "capacity_class": capacity,
+            "refreshable": capacity in {CAPACITY_FREE, CAPACITY_SUBSCRIPTION},
+            "price": 3.0 if capacity == CAPACITY_METERED else None,
+        }
+        for rid, capacity in ROUTE_CLASS.items()
+    ]
+
+
+def test_plan_groups_routes_by_capacity_with_defaults_and_spend() -> None:
+    # Input order is reversed so the plan's own class order is what is asserted.
+    rows = _plan_rows()[::-1]
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows, needed_ids=[r["route_id"] for r in rows], include_metered=True, now=NOW
+    ).data
+    groups = plan["capacity_groups"]
+    assert [g["capacity_class"] for g in groups] == list(ALL_CLASSES)
+    assert [g["route_ids"] for g in groups] == [[rid] for rid in ROUTE_CLASS]
+    assert [g["default_approved"] for g in groups] == [True, True, False, False]
+    assert [g["estimated_requests"] for g in groups] == [2, 2, 1, 1]
+    assert all("estimated_spend_usd" not in g for g in groups[:2])
+    unknown, metered = groups[2], groups[3]
+    assert unknown["estimated_spend_usd"] is None and unknown["unpriced_count"] == 1
+    assert metered["unpriced_count"] == 0
+    assert 0 < metered["estimated_spend_usd"] < 0.01
+
+
+def test_plan_route_cap_keeps_prepaid_routes_before_costly_ones() -> None:
+    rows = _plan_rows()[::-1]
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows,
+        needed_ids=[r["route_id"] for r in rows],
+        include_metered=True,
+        caps={"max_routes": 2},
+        now=NOW,
+    ).data
+    assert [r["route_id"] for r in plan["routes"]] == ["fr/free", "cc/sub"]
+    assert plan["omitted_count"] == 2
+
+
+def _groups() -> list[dict[str, Any]]:
+    rows = _plan_rows()
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows, needed_ids=[r["route_id"] for r in rows], include_metered=True, now=NOW
+    )
+    groups: list[dict[str, Any]] = plan.data["capacity_groups"]
+    return groups
+
+
+def confirm_capacity_groups(
+    groups: list[dict[str, Any]],
+    *,
+    read_line: Any,
+    write: Any,
+    interactive: bool = True,
+    opt_in: tuple[str, ...] = (),
+) -> Any:
+    controller = VerifiedControlsController(read_line, write, run_refresh=lambda *a, **k: None)
+    return controller.confirm_capacity_groups(groups, interactive=interactive, opt_in=opt_in)
+
+
+@pytest.mark.parametrize(
+    "answers,approved",
+    [
+        ([""], ()),  # blank first answer defaults to No
+        (["n"], ()),
+        (["maybe"], ()),
+        (["f"], (CAPACITY_FREE,)),
+        (["FREE"], (CAPACITY_FREE,)),
+        (["y", "", "", "", ""], (CAPACITY_FREE, CAPACITY_SUBSCRIPTION)),  # per-group defaults
+        (["y", "y", "y", "y", "y"], ALL_CLASSES),
+        (["y", "n", "n", "", ""], ()),
+        (["y", "", "n", "y", "n"], (CAPACITY_FREE, CAPACITY_UNKNOWN)),
+        (["y", "n", "y", "n", "y"], (CAPACITY_SUBSCRIPTION, CAPACITY_METERED)),
+    ],
+)
+def test_capacity_consent_answer_branches(answers: list[str], approved: tuple[str, ...]) -> None:
+    feed = iter(answers)
+    prompts: list[str] = []
+
+    def read_line(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(feed)
+
+    consent = confirm_capacity_groups(_groups(), read_line=read_line, write=lambda _s: None)
+    assert consent.approved == approved
+    assert consent.cancelled is False
+    assert len(prompts) == len(answers)  # every answer used, no extra prompt
+    assert "[y/N]" in prompts[0] and "f = free only" in prompts[0]
+    if len(prompts) > 1:
+        assert [p.rsplit(" ", 2)[-2] for p in prompts[1:]] == ["[Y/n]", "[Y/n]", "[y/N]", "[y/N]"]
+
+
+@pytest.mark.parametrize("cancel_at", [0, 1, 3])
+@pytest.mark.parametrize("how", ["eof", "interrupt", "sentinel"])
+def test_capacity_consent_cancel_at_any_prompt_approves_nothing(cancel_at: int, how: str) -> None:
+    answers = ["y", "y", "y", "y", "y"]
+    calls = {"n": 0}
+
+    def read_line(_prompt: str) -> Any:
+        index = calls["n"]
+        calls["n"] += 1
+        if index == cancel_at:
+            if how == "eof":
+                raise EOFError
+            if how == "interrupt":
+                raise KeyboardInterrupt
+            return CANCEL
+        return answers[index]
+
+    consent = confirm_capacity_groups(_groups(), read_line=read_line, write=lambda _s: None)
+    assert consent.cancelled is True
+    assert consent.granted is False
+
+
+@pytest.mark.parametrize(
+    "opt_in,approved",
+    [
+        ((), (CAPACITY_FREE, CAPACITY_SUBSCRIPTION)),
+        ((CAPACITY_UNKNOWN,), (CAPACITY_FREE, CAPACITY_SUBSCRIPTION, CAPACITY_UNKNOWN)),
+        ((CAPACITY_METERED,), (CAPACITY_FREE, CAPACITY_SUBSCRIPTION, CAPACITY_METERED)),
+        ((CAPACITY_UNKNOWN, CAPACITY_METERED), ALL_CLASSES),
+    ],
+)
+def test_capacity_consent_without_terminal_needs_flags_for_costly_groups(
+    opt_in: tuple[str, ...], approved: tuple[str, ...]
+) -> None:
+    lines: list[str] = []
+
+    def no_prompt(_prompt: str) -> str:
+        raise AssertionError("a run without a terminal must not prompt")
+
+    consent = confirm_capacity_groups(
+        _groups(), read_line=no_prompt, write=lines.append, interactive=False, opt_in=opt_in
+    )
+    assert consent.approved == approved
+    text = "".join(lines)
+    assert ("--include-unknown" in text) is (CAPACITY_UNKNOWN not in opt_in)
+    assert ("--allow-metered" in text) is (CAPACITY_METERED not in opt_in)
+
+
+def _consume_mixed(tmp_path: Path, transport: _Transport, **kwargs: Any) -> Any:
+    return surfaces.consume_verified_models(
+        gateway=GATEWAY,
+        adapter=_mixed_adapter(tmp_path),
+        manual=True,
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        live=False,
+        **kwargs,
+    )
+
+
+def test_free_only_makes_zero_calls_to_unknown_or_metered_routes(isolated_home: Path) -> None:
+    transport = _Transport()
+    lines: list[str] = []
+    result = _consume_mixed(isolated_home, transport, read_line=lambda _p: "f", write=lines.append)
+    assert result.ok, result.data
+    assert sorted(transport.calls) == [("fr/free", "chat"), ("fr/free", "tool")]
+    summary = result.data["refresh"]
+    assert summary["approved_classes"] == [CAPACITY_FREE]
+    reasons = {rid: o["refresh_reason"] for rid, o in summary["route_outcomes"].items()}
+    assert reasons == {
+        "fr/free": None,
+        "cc/sub": "not_approved",
+        "zz/unknown": "not_approved",
+        "ap/metered": "not_approved",
+    }
+    statuses = {r["route_id"]: r["status"] for r in result.data["rows"]}
+    assert statuses["fr/free"] == "VERIFIED"
+    assert statuses["zz/unknown"] == statuses["ap/metered"] == "UNVERIFIED"
+    shown = "".join(lines)
+    assert "UNKNOWN: 1 route" in shown and "estimated spend unknown (no pricing)" in shown
+    assert "METERED: 1 route" in shown and "estimated spend ~$" in shown
+
+
+def test_manual_yes_with_group_defaults_probes_only_prepaid(isolated_home: Path) -> None:
+    transport = _Transport()
+    answers = iter(["y", "", "", "", ""])
+    result = _consume_mixed(isolated_home, transport, read_line=lambda _p: next(answers))
+    assert result.ok, result.data
+    assert transport.routes_called() == {"fr/free", "cc/sub"}
+
+
+def test_non_interactive_manual_refresh_skips_costly_groups_without_flags(
+    isolated_home: Path,
+) -> None:
+    transport = _Transport()
+
+    def no_prompt(_prompt: str) -> str:
+        raise AssertionError("a run without a terminal must not prompt")
+
+    result = _consume_mixed(isolated_home, transport, read_line=no_prompt, interactive=False)
+    assert result.ok, result.data
+    assert transport.routes_called() == {"fr/free", "cc/sub"}
+
+    transport = _Transport()
+    result = _consume_mixed(
+        isolated_home, transport, read_line=no_prompt, interactive=False, opt_in=(CAPACITY_UNKNOWN,)
+    )
+    assert result.ok, result.data
+    assert ("zz/unknown", "chat") in transport.calls
+    assert "ap/metered" not in transport.routes_called()
+
+
+def _cli_args(*flags: str) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    orchestration_cli.add_parsers(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["eligibility", "--verified", "--gateway", GATEWAY, *flags])
+
+
+@pytest.mark.parametrize(
+    "flags,opt_in",
+    [
+        (["--refresh"], ()),
+        (["--refresh", "--include-unknown"], ("unknown",)),
+        (["--refresh", "--allow-metered"], ("metered",)),
+        (["--refresh", "--include-unknown", "--allow-metered"], ("unknown", "metered")),
+    ],
+)
+def test_cli_refresh_flags_reach_the_consumer_without_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, flags: list[str], opt_in: tuple[str, ...]
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def capture(**kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return surfaces.ActionResult(data={"error": "captured"}, ok=False, exit_code=3)
+
+    monkeypatch.setattr(surfaces, "consume_verified_models", capture)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert orchestration_cli._eligibility_verified(_cli_args(*flags, "--json")) == 3
+    assert seen[0]["manual"] is True
+    assert seen[0]["interactive"] is False
+    assert seen[0]["opt_in"] == opt_in
+
+
+@pytest.mark.parametrize("flag", ["--include-unknown", "--allow-metered"])
+def test_cli_cost_opt_in_without_refresh_is_refused_before_io(
+    monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    def forbidden(**_kwargs: Any) -> Any:
+        raise AssertionError("refused flags must not reach the consumer")
+
+    monkeypatch.setattr(surfaces, "consume_verified_models", forbidden)
+    assert orchestration_cli._eligibility_verified(_cli_args(flag, "--json")) == 2
+
+
+def _execute_mixed(tmp_path: Path, transport: _Transport, **kwargs: Any) -> Any:
+    rows = _plan_rows()
+    plan = action_models_refresh_plan(
+        snapshot_rows=rows,
+        needed_ids=[r["route_id"] for r in rows],
+        include_metered=True,
+        now=NOW,
+        gateway_origin="http://g",
+        evidence_generation="gen1",
+    ).data
+    snapshot = RefreshSnapshot(
+        rows=tuple(
+            _row(rid, capacity=capacity, provider=rid.split("/", 1)[0])
+            for rid, capacity in ROUTE_CLASS.items()
+        ),
+        generation="gen1",
+        gateway_origin="http://g",
+    )
+    return action_models_refresh_execute(
+        confirmed=True,
+        plan=plan,
+        snapshot=snapshot,
+        now=NOW,
+        cache=HealthCache(tmp_path / "health-cache.json"),
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        lock_path=tmp_path / "r.lock",
+        marker_path=tmp_path / "r.json",
+        **kwargs,
+    )
+
+
+def test_execute_without_approved_classes_runs_prepaid_groups_only(tmp_path: Path) -> None:
+    transport = _Transport()
+    result = _execute_mixed(tmp_path, transport)
+    assert result.ok, result.data
+    assert transport.routes_called() == {"fr/free", "cc/sub"}
+    assert result.data["approved_classes"] == [CAPACITY_FREE, CAPACITY_SUBSCRIPTION]
+    outcomes = result.data["route_outcomes"]
+    assert outcomes["zz/unknown"]["refresh_reason"] == "not_approved"
+    assert outcomes["ap/metered"]["refresh_reason"] == "not_approved"
+
+
+@pytest.mark.parametrize("approved", ["unknown", ["unkown"], [None], ["UNKNOWN"], 7])
+def test_execute_refuses_unrecognised_approved_classes(tmp_path: Path, approved: Any) -> None:
+    transport = _Transport()
+    result = _execute_mixed(tmp_path, transport, approved_classes=approved)
+    assert not result.ok
+    assert result.data["reason"] == "invalid_approved_classes"
+    assert transport.calls == []
