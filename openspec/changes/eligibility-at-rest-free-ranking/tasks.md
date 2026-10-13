@@ -18,5 +18,7 @@
 
 ## 4. Live
 - [x] 4.1 `verdict eligibility --json` on the operator host lists the proven FREE routes without --probe.
-- [ ] 4.2 Bounded `prove-at-rest once` from the branch; A3 recall/precision against a same-time direct check.
-- [ ] 4.3 Merged-main run and the parent's own re-run (definition of done 1, 6, 7).
+- [x] 4.2 Bounded `prove-at-rest once` from the branch (run 5: 94 agentic probed, 28 passed).
+- [ ] 4.3 A3 recall >= 0.90 and precision >= 0.95 against a same-time direct check
+      (13:27Z: precision 0.93, recall 0.81 on determinate routes; causes fixed in 98448f0f and 7de03b43, re-check after the next prober cycles).
+- [ ] 4.4 Merged-main run and the parent's own re-run (definition of done 1, 6, 7).
