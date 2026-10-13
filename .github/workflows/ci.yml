@@ -5,8 +5,6 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master, develop]
-  # The lint job dispatches this workflow after it pushes ruff fixes.
-  workflow_dispatch:
 
 jobs:
   typescript-contract-parity:
@@ -85,13 +83,12 @@ jobs:
   lint:
     # Required check. The pipeline fixes formatting and safe lint fixes itself:
     # on a pull request from this repository it commits `ruff check --fix-only`
-    # and `ruff format` to the branch, then dispatches the workflows that carry
-    # the required checks, because a push made with GITHUB_TOKEN starts no
-    # workflow run; the dispatched runs attach the required checks to the new
-    # head. GitHub also queues a pull_request run for the bot commit that waits
-    # for approval; leave it alone (cancelling it records cancelled checks).
-    # The job then fails only on what is left. Fork pull requests get the
-    # strict check without the fix.
+    # and `ruff format` to the branch. GitHub creates the pull_request runs for
+    # that bot commit in the "action_required" state; this job approves them, so
+    # the required checks run on the new head with no agent turn (runs started
+    # by workflow_dispatch do not count as pull request checks). If it cannot
+    # approve them, the job fails. It then fails only on what is left. Fork
+    # pull requests get the strict check without the fix.
     # The definition-of-done, OpenSpec, proof-path and reachability gates run
     # here so that they are part of a required check.
     runs-on: ubuntu-latest
@@ -131,9 +128,23 @@ jobs:
           git config user.email "verdict-autofix@users.noreply.github.com"
           git commit -qam "style: ruff autofix (pipeline)"
           git push origin "HEAD:$BRANCH"
-          gh workflow run ci.yml --ref "$BRANCH"
-          gh workflow run security.yml --ref "$BRANCH"
-          echo "::notice::Pushed ruff fixes as $(git rev-parse --short HEAD); required checks were dispatched for it."
+          head=$(git rev-parse HEAD)
+          approved=0
+          for _ in $(seq 1 30); do
+            sleep 10
+            for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&status=action_required" --jq '.workflow_runs[].id'); do
+              gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve" >/dev/null
+              approved=$((approved + 1))
+            done
+            if [ "$approved" -gt 0 ] && [ -z "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&status=action_required" --jq '.workflow_runs[].id')" ]; then
+              break
+            fi
+          done
+          if [ "$approved" -eq 0 ]; then
+            echo "::error::Pushed ruff fixes as ${head:0:8}, but found no pull_request run to approve; re-run the checks on the new head."
+            exit 1
+          fi
+          echo "::notice::Pushed ruff fixes as ${head:0:8} and approved $approved pull_request run(s) for it."
       - name: Run Ruff
         run: ruff check .
       - name: Run Ruff Format (check)
@@ -148,8 +159,6 @@ jobs:
         run: |
           if [ -n "$PR_BASE" ]; then
             echo "sha=$PR_BASE" >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            echo "sha=$(git merge-base HEAD origin/main)" >> "$GITHUB_OUTPUT"
           elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
             echo "sha=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
           fi
