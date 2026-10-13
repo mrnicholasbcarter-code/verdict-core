@@ -140,6 +140,8 @@ class DoctorDiagnostics:
         self.gateway_lifecycle: dict[str, Any] = {}
         #: One row per Verdict user unit, plus the prober's health-cache row.
         self.services: list[dict[str, Any]] = []
+        #: The newest ``verdict acceptance run`` result (``acceptance_state.doctor_check``).
+        self.acceptance: dict[str, Any] = {}
 
 
 DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
@@ -314,6 +316,22 @@ def _doctor_services(diag: DoctorDiagnostics) -> None:
         diag.sections.append((row["unit"], row["state"], detail))
     diag.issues.extend(check.issues)
     diag.warnings.extend(check.warnings)
+
+
+def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
+    """The newest live acceptance result: red or older than 2 h is an issue."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    diag.acceptance = row
+    age = row.get("age_seconds")
+    detail = f"{row.get('state')}: " + row.get("path", "no result yet")
+    if age is not None:
+        detail += f", {age / 60:.0f} min old"
+    state = "failed" if issues else "warning" if warnings else "ok"
+    diag.sections.append(("Live acceptance", state, detail))
+    diag.issues.extend(issues)
+    diag.warnings.extend(warnings)
 
 
 def _collect_doctor_diagnostics(
@@ -697,6 +715,7 @@ def _collect_doctor_diagnostics(
                     )
 
     _doctor_services(diag)
+    _doctor_acceptance(diag)
 
     # Credentials check
     sections.append(("Credentials", "header", ""))

@@ -287,7 +287,7 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     try:
         while time.monotonic() - started < startup_seconds and process.poll() is None:
             try:
-                with urllib.request.urlopen(base + "/health", timeout=2):  # nosec B310
+                with open_no_redirect(urllib.request.Request(base + "/health"), timeout=2):
                     break
             except (OSError, urllib.error.URLError):
                 time.sleep(1)
@@ -309,7 +309,7 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:  # nosec B310
+            with open_no_redirect(request, timeout=180) as response:
                 status, raw = response.status, response.read().decode("utf-8", "replace")
                 served_by = response.headers.get("x-verdict-model") or ""
         except urllib.error.HTTPError as exc:

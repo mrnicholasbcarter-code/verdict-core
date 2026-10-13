@@ -138,6 +138,7 @@ class TestDoctorJsonUnchanged:
             "shared_memory",
             "capability_bootstrap",
             "services",
+            "acceptance",
         }
         assert set(data.keys()) == expected_keys
         assert data["status"] == "ok"

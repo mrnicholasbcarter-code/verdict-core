@@ -84,6 +84,7 @@ class TestDoctorParity:
         d.shared_memory = {}
         d.capability_report = {}
         d.services = []
+        d.acceptance = {}
         return d
 
     def test_cli_calls_run_action(self) -> None:

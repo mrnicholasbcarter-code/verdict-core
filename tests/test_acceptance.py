@@ -267,3 +267,21 @@ def test_doctor_warns_without_result_and_fails_on_red_or_stale(tmp_path: Path) -
     _write_result(tmp_path, "green", NOW - timedelta(hours=3))
     issues = acceptance_state.doctor_check(home=tmp_path, now=NOW)[1]
     assert len(issues) == 1 and "stale" in issues[0]
+
+
+def test_doctor_section_shows_the_newest_result_and_fails_on_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.doctor_diagnostics import DoctorDiagnostics, _doctor_acceptance
+    from verdict.doctor_presentation import repair_command
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    _write_result(tmp_path, "red", datetime.now(timezone.utc) - timedelta(minutes=5))
+    diag = DoctorDiagnostics()
+    _doctor_acceptance(diag)
+    assert diag.acceptance["state"] == "red"
+    assert diag.issues and diag.issues[0].startswith(acceptance_state.ISSUE_PREFIX)
+    label, state, detail = diag.sections[-1]
+    assert (label, state) == ("Live acceptance", "failed")
+    assert detail.startswith("red: ") and "min old" in detail
+    assert repair_command(diag.issues[0]) == "verdict acceptance status"

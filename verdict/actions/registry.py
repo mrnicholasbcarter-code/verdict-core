@@ -402,6 +402,7 @@ def _action_doctor(**kwargs: Any) -> ActionResult:
         "shared_memory": diag.shared_memory,
         "capability_bootstrap": diag.capability_report,
         "services": diag.services,
+        "acceptance": diag.acceptance,
     }
     return ActionResult(data=data, ok=not diag.issues, exit_code=1 if diag.issues else 0)
 

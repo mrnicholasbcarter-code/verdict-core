@@ -91,6 +91,7 @@ class FakeDiagnostics:
     shared_memory: dict[str, Any] = field(default_factory=dict)
     capability_report: dict[str, Any] = field(default_factory=dict)
     services: list[dict[str, Any]] = field(default_factory=list)
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

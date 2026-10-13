@@ -1138,6 +1138,10 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     from verdict.user_services import ServiceCheck
 
     monkeypatch.setattr("verdict.user_services.check_services", lambda **_: ServiceCheck())
+    # The hourly live acceptance job's newest result is green.
+    monkeypatch.setattr(
+        "verdict.acceptance_state.doctor_check", lambda **_: ({"state": "green"}, [], [])
+    )
 
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
