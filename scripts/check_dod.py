@@ -48,7 +48,7 @@ from verdict.security import redact_text  # noqa: E402
 
 # The schema belongs to this checker, so it is read from the checker's own repository.
 SCHEMA_PATH = Path("proof/dod.schema.json")
-EVIDENCE_DIR   =   Path('docs/proof/dod')
+EVIDENCE_DIR = Path("docs/proof/dod")
 ARCHIVE_DIR = Path("openspec/changes/archive")
 # Changes archived before this gate existed are not re-judged. Every later
 # archive needs an evidence file, whatever date its directory name carries.
