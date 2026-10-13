@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -156,21 +157,111 @@ def lessons_to_constraints(cycles: Sequence[Mapping[str, Any]]) -> str:
     return out
 
 
+_NODE_TOKEN_CHAR = r"[a-zA-Z0-9_\-]"  # no ".": a sentence-final id must still match
+
+
+def _real_node_ids(run_dir: Path, events: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Real node IDs belonging to the run, extracted from graph.json or node_state events."""
+    nodes: set[str] = set()
+    graph_path = run_dir / "graph.json"
+    if graph_path.exists():
+        try:
+            gdata = json.loads(graph_path.read_text())
+            for n in gdata.get("nodes", []):
+                if isinstance(n, Mapping) and n.get("node_id"):
+                    nodes.add(str(n["node_id"]))
+        except (json.JSONDecodeError, OSError):
+            pass
+    for e in events:
+        if e.get("type") == "node_state" and e.get("node_id"):
+            nodes.add(str(e["node_id"]))
+        elif e.get("type") == "plan_ready":
+            for n in (e.get("data") or {}).get("nodes", []):
+                if isinstance(n, Mapping) and n.get("node_id"):
+                    nodes.add(str(n["node_id"]))
+    return nodes
+
+
+def _blocked_node(reason: str, known_nodes: set[str]) -> str | None:
+    """Extract the node_id that blocked the run from the run_finished reason, if any.
+
+    Requires membership in the run's real node IDs as a whole token.
+    """
+    if not known_nodes:
+        return None
+
+    # 1. "node <id>" as a whole token
+    for m in re.finditer(
+        rf"\bnode\s+['\"]?({_NODE_TOKEN_CHAR}+)['\"]?(?!{_NODE_TOKEN_CHAR})", reason, re.IGNORECASE
+    ):
+        candidate = m.group(1)
+        if candidate in known_nodes:
+            return candidate
+
+    # 2. "<id> not VALIDATED"
+    for m in re.finditer(
+        rf"(?<!{_NODE_TOKEN_CHAR})({_NODE_TOKEN_CHAR}+)\s+not\s+VALIDATED\b", reason, re.IGNORECASE
+    ):
+        candidate = m.group(1)
+        if candidate in known_nodes:
+            return candidate
+
+    # 3. "<id>: ..." at start of string or after semicolon/newline
+    for part in re.split(r"[;\n]", reason):
+        part = part.strip()
+        if part.lower().startswith("run_finished:"):
+            part = part[len("run_finished:") :].strip()
+        m_part = re.match(rf"^({_NODE_TOKEN_CHAR}+):", part)
+        if m_part:
+            candidate = m_part.group(1)
+            if candidate in known_nodes:
+                return candidate
+
+    # 4. Whole-token match for known nodes (longest first)
+    for nid in sorted(known_nodes, key=len, reverse=True):
+        pattern = rf"(?<!{_NODE_TOKEN_CHAR}){re.escape(nid)}(?!{_NODE_TOKEN_CHAR})"
+        if len(nid) == 1 and not re.search(r"\b(node|validated)\b|:", reason, re.IGNORECASE):
+            continue
+        if re.search(pattern, reason):
+            return nid
+
+    return None
+
+
 def classify_blocker(reason: str, run_dir: Path) -> tuple[str, str]:
-    """(layer, evidence) for the run's first concrete blocker; deterministic."""
+    """(layer, evidence) for the run's decisive blocker; deterministic."""
     text = reason.lower()
     evidence = f"run_finished: {redact_text(reason)[:300]}"
     if "independent_review=" in text:
         return "review_independence", f"claims: {redact_text(reason)[:300]}"
     events_path = run_dir / "events.jsonl"
     if events_path.exists():
-        for line in events_path.read_text().splitlines():
-            event = json.loads(line)
-            data = event.get("data") or {}
-            if event.get("type") == "failure" and data.get("category"):
-                text = f"{text} {data['category']}".lower()
-                evidence = f"event:{event.get('seq')} failure {data['category']}"
-                break
+        events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+        known_nodes = _real_node_ids(run_dir, events)
+        blocked_node = _blocked_node(reason, known_nodes)
+        last_failure: dict[str, Any] | None = None
+        if blocked_node is not None:
+            for event in reversed(events):
+                if event.get("type") == "failure":
+                    data = event.get("data") or {}
+                    if data.get("category"):
+                        ev_node = str(event.get("node_id") or data.get("node_id") or "")
+                        if ev_node == blocked_node:
+                            last_failure = event
+                            break
+        if last_failure is None:
+            for event in reversed(events):
+                if event.get("type") == "failure":
+                    data = event.get("data") or {}
+                    if data.get("category"):
+                        last_failure = event
+                        break
+        if last_failure is not None:
+            data = last_failure.get("data") or {}
+            category = str(data.get("category", ""))
+            if category:
+                text = f"{text} {category}".lower()
+                evidence = f"event:{last_failure.get('seq')} failure {category}"
     for layer, needles in _LAYER_RULES:
         if any(needle in text for needle in needles):
             return layer, evidence

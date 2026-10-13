@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -34,14 +35,20 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
 )
 from verdict.orchestration.verified_refresh import (
+    CAPACITY_FREE,
     CAPACITY_METERED,
+    CAPACITY_ORDER,
+    CAPACITY_SUBSCRIPTION,
     CAPACITY_UNKNOWN,
+    PREPAID_CAPACITY_CLASSES,
     REQUESTS_PER_FULL_PROBE,
     RefreshConfig,
     RefreshConfigError,
     RefreshSnapshot,
     RowInput,
+    capacity_group,
 )
+from verdict.prove_at_rest import chat_payload, tool_payload
 
 # Availability-class negatives (auth / payment / permission / quota) surface as
 # UNAVAILABLE in a refresh result; every other genuine negative is a diagnostic
@@ -57,12 +64,28 @@ SPEND_NOTE = (
     "provider limits; UNKNOWN may incur charges; currency estimate unavailable"
 )
 
+# Per-class spend disclosure for the plan's capacity groups.
+GROUP_SPEND_NOTES = {
+    CAPACITY_FREE: "provider limits may apply",
+    CAPACITY_SUBSCRIPTION: "uses prepaid subscription quota",
+    CAPACITY_UNKNOWN: "may incur charges",
+    CAPACITY_METERED: "billed per token",
+}
+# Output-token ceiling per probe, taken from the probe payloads themselves.
+_MAX_OUTPUT_TOKENS = {
+    "full": int(chat_payload("")["max_tokens"]) + int(tool_payload("")["max_tokens"]),
+    "liveness": int(chat_payload("")["max_tokens"]),
+}
+_REQUESTS = {"full": REQUESTS_PER_FULL_PROBE, "liveness": 1}
+
 _USAGE = 2
 _REFUSED = 4
 
 # Statuses the manual path may refresh by default (same as the automatic path,
 # plus the explicitly consented metered/unknown routes).
 _REFRESHABLE_STATUSES = frozenset({"STALE", "UNVERIFIED"})
+# Refresh reason for a planned route whose capacity group was not approved.
+REASON_NOT_APPROVED = "not_approved"
 
 
 @dataclass(frozen=True)
@@ -142,6 +165,15 @@ def _rows_from_snapshot(snapshot_rows: Sequence[Mapping[str, Any]]) -> tuple[Row
     return tuple(out)
 
 
+def _price_of(value: Any) -> float | None:
+    """A projection row's non-negative price per 1M tokens, else unknown."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        price = float(value)
+        if math.isfinite(price) and price >= 0:
+            return price
+    return None
+
+
 def _parse_iso(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -159,12 +191,14 @@ def _iso(value: datetime) -> str:
 def _manual_candidates(
     rows: Sequence[RowInput], needed_ids: Sequence[str], *, force: bool, include_metered: bool
 ) -> list[RowInput]:
-    """Candidate rows for the manual path.
+    """Candidate rows for the manual path, in capacity-group order.
 
     By default: the supplied ids whose status is stale/unverified. ``force``
     bypasses the stale/unverified gate (an explicitly disclosed manual force).
     ``include_metered`` lets metered/unknown routes in (they are never
-    auto-probed, only shown here after explicit consent).
+    auto-probed, only shown here after explicit consent). FREE rows come first,
+    then SUBSCRIPTION, UNKNOWN and METERED, so the route cap never drops a
+    prepaid route in favour of one that may cost money.
     """
     by_id = {row.route_id: row for row in rows}
     wanted = [by_id[rid] for rid in dict.fromkeys(needed_ids) if rid in by_id]
@@ -172,10 +206,61 @@ def _manual_candidates(
     for row in wanted:
         if not force and row.status not in _REFRESHABLE_STATUSES:
             continue
-        if not include_metered and row.capacity_class in {CAPACITY_METERED, CAPACITY_UNKNOWN}:
+        if not include_metered and capacity_group(row.capacity_class) not in (
+            PREPAID_CAPACITY_CLASSES
+        ):
             continue
         chosen.append(row)
-    return chosen
+    return sorted(chosen, key=lambda row: CAPACITY_ORDER.index(capacity_group(row.capacity_class)))
+
+
+def _estimated_spend(route_id: str, probe_kind: str, price: float) -> float:
+    """Conservative USD estimate of one probe from a per-1M-token price (input + output).
+
+    Tokens are counted as the request bodies' JSON length plus their output
+    ``max_tokens``, all charged at the summed input and output price. Provider
+    prompt templates can add tokens, so this is an estimate, not a hard cap.
+    """
+    payloads = [chat_payload(route_id)]
+    if probe_kind == "full":
+        payloads.append(tool_payload(route_id))
+    tokens = sum(len(json.dumps(p)) for p in payloads) + _MAX_OUTPUT_TOKENS[probe_kind]
+    return price * tokens / 1_000_000
+
+
+def _capacity_groups(
+    routes: Sequence[PlanRoute], prices: Mapping[str, float | None]
+) -> list[dict[str, Any]]:
+    """One group per capacity class present, in consent order, each confirmed separately.
+
+    FREE and SUBSCRIPTION default to yes; UNKNOWN and METERED default to no and
+    disclose an estimated spend in USD from inventory pricing. A route without
+    pricing is counted as ``unpriced``: its cost cannot be estimated.
+    """
+    groups: list[dict[str, Any]] = []
+    for capacity in CAPACITY_ORDER:
+        members = [r for r in routes if capacity_group(r.capacity_class) == capacity]
+        if not members:
+            continue
+        group: dict[str, Any] = {
+            "capacity_class": capacity,
+            "route_ids": [r.route_id for r in members],
+            "estimated_requests": sum(_REQUESTS[r.probe_kind] for r in members),
+            "default_approved": capacity in PREPAID_CAPACITY_CLASSES,
+            "spend_note": GROUP_SPEND_NOTES[capacity],
+        }
+        if capacity not in PREPAID_CAPACITY_CLASSES:
+            priced = [(r, prices.get(r.route_id)) for r in members]
+            known = [
+                _estimated_spend(r.route_id, r.probe_kind, p) for r, p in priced if p is not None
+            ]
+            group["unpriced_count"] = len(members) - len(known)
+            # Round up so a tiny estimate never displays as zero.
+            group["estimated_spend_usd"] = (
+                math.ceil(sum(known) * 10_000) / 10_000 if known else None
+            )
+        groups.append(group)
+    return groups
 
 
 def _build_config(caps: Mapping[str, Any] | None) -> RefreshConfig:
@@ -218,7 +303,9 @@ def action_models_refresh_plan(**kwargs: Any) -> ActionResult:
     except (RefreshConfigError, ValueError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=_USAGE)
 
-    rows = _rows_from_snapshot([dict(r) for r in snapshot_rows])
+    raw_rows = [dict(r) for r in snapshot_rows]
+    rows = _rows_from_snapshot(raw_rows)
+    prices = {str(raw.get("route_id") or ""): _price_of(raw.get("price")) for raw in raw_rows}
     force = bool(kwargs.get("force"))
     include_metered = bool(kwargs.get("include_metered"))
     candidate_rows = _manual_candidates(
@@ -261,6 +348,7 @@ def action_models_refresh_plan(**kwargs: Any) -> ActionResult:
             "concurrency": config.concurrency,
         },
         "estimated_requests": estimated_requests,
+        "capacity_groups": _capacity_groups(plan_routes, prices),
         "spend_note": SPEND_NOTE,
         "requires_confirmation": True,
         "force": force,
@@ -285,9 +373,12 @@ def _safe_code(value: object) -> str | None:
 
 
 def _route_results(
-    plan_routes: Sequence[PlanRoute], snapshot: RefreshSnapshot, outcome: Any
+    plan_routes: Sequence[PlanRoute],
+    snapshot: RefreshSnapshot,
+    outcome: Any,
+    declined: Collection[str] = (),
 ) -> dict[str, dict[str, Any]]:
-    """Report every exact planned id, including narrowed or untested ids."""
+    """Report every exact planned id, including narrowed, declined or untested ids."""
     current = snapshot.by_id()
     results: dict[str, dict[str, Any]] = {}
     for route in plan_routes:
@@ -296,6 +387,8 @@ def _route_results(
         probed = bool(actual is not None and actual.probed)
         category = _safe_code(actual.category) if actual is not None else None
         reason = _safe_code(actual.refresh_reason) if actual is not None else None
+        if route.route_id in declined:
+            reason = REASON_NOT_APPROVED
         if not probed and reason is None and row is not None:
             reason = _safe_code(row.refresh_reason)
         status = row.status if row is not None else "UNAVAILABLE"
@@ -373,7 +466,10 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
       * ``snapshot``: a :class:`RefreshSnapshot` of CURRENT evidence (rows).
       * ``cache``: a :class:`HealthCache`.
     Optional kwargs: ``transport``, ``clock``, ``monotonic``, ``sleep``,
-    ``on_progress``, ``cancel``, ``lock_path``, ``marker_path``, ``now``.
+    ``on_progress``, ``cancel``, ``lock_path``, ``marker_path``, ``now``, and
+    ``approved_classes``: the exact capacity classes the operator approved
+    (default FREE and SUBSCRIPTION). It only narrows the plan; declined routes
+    report ``not_approved`` and an unrecognised class refuses execution.
 
     No live transport is constructed before confirmation; all gating runs with
     zero calls/writes until the plan validates.
@@ -406,16 +502,32 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
     if not plan_routes:
         return _refuse("empty_plan")
 
+    # Capacity groups the operator approved. Omitted means the prepaid groups
+    # only: UNKNOWN and METERED run only when named explicitly.
+    approved_raw = kwargs.get("approved_classes", PREPAID_CAPACITY_CLASSES)
+    if (
+        isinstance(approved_raw, (str, bytes))
+        or not isinstance(approved_raw, Collection)
+        or not all(isinstance(c, str) and c in CAPACITY_ORDER for c in approved_raw)
+    ):
+        return _refuse("invalid_approved_classes")
+    approved = set(approved_raw)
+
     # Re-read gates: identities/capacity must be unchanged. Narrowing (a new
-    # blocker) may skip candidates but must never expand or raise spend.
+    # blocker or a declined capacity group) may skip candidates but must never
+    # expand or raise spend.
     current = snapshot.by_id()
     executable_ids: list[str] = []
+    declined: set[str] = set()
     for pr in plan_routes:
         row = current.get(pr.route_id)
         if row is None:
             continue  # route disappeared: narrow, never expand
         if row.provider != pr.provider or row.capacity_class != pr.capacity_class:
             return _refuse("identity_changed")
+        if capacity_group(pr.capacity_class) not in approved:
+            declined.add(pr.route_id)
+            continue
         executable_ids.append(pr.route_id)
 
     # Re-read current generation and gateway endpoint; refuse a missing or
@@ -443,11 +555,17 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
                 "probed": 0,
                 "route_outcomes": {
                     pr.route_id: {
-                        "status_after": "UNAVAILABLE",
+                        "status_after": (
+                            current[pr.route_id].status
+                            if pr.route_id in declined
+                            else "UNAVAILABLE"
+                        ),
                         "probed": False,
                         "category": None,
                         "http_status": None,
-                        "refresh_reason": "not_tested",
+                        "refresh_reason": (
+                            REASON_NOT_APPROVED if pr.route_id in declined else "not_tested"
+                        ),
                         "requests_made": 0,
                     }
                     for pr in plan_routes
@@ -509,7 +627,8 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
             "requests_made": outcome.requests_made,
             "complete": outcome.complete,
             "cap_reason": outcome.cap_reason,
-            "route_outcomes": _route_results(plan_routes, snapshot, outcome),
+            "approved_classes": [c for c in CAPACITY_ORDER if c in approved],
+            "route_outcomes": _route_results(plan_routes, snapshot, outcome, declined),
         },
         ok=True,
         exit_code=0,
@@ -517,8 +636,10 @@ def action_models_refresh_execute(**kwargs: Any) -> ActionResult:
 
 
 __all__ = [
+    "GROUP_SPEND_NOTES",
     "PLAN_SCHEMA",
     "PLAN_TTL_SECONDS",
+    "REASON_NOT_APPROVED",
     "SPEND_NOTE",
     "PlanRoute",
     "action_models_refresh_execute",

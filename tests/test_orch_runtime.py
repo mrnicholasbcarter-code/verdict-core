@@ -1102,6 +1102,55 @@ async def test_sibling_failure_cools_provider_before_waiting_node_dispatches(rep
     assert {c[0] for c in ex.calls if c[1] == "kr/c"} == {"a", "b"}
 
 
+async def test_attempt_timeout_clamp_emits_controller_event_when_exceeding_max(repo: Path) -> None:
+    """Attempt timeouts above 900s are clamped; the clamp must be visible, not silent."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    events = Events()
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=Selector(["cc/s"]),
+        executor=Executor({}),
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(attempt_timeout_seconds=1200.0),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    clamped = [e for e in events.of("controller") if e.get("state") == "ATTEMPT_TIMEOUT_CLAMPED"]
+    assert len(clamped) == 1
+    assert clamped[0]["configured"] == 1200.0
+    assert clamped[0]["applied"] == 900.0
+
+
+async def test_attempt_timeout_within_max_emits_no_clamp_event(repo: Path) -> None:
+    """Attempt timeouts within the 900s max must not emit a clamp event."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    events = Events()
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=WorkGraph("g", (node("a"),)),
+        selector=Selector(["cc/s"]),
+        executor=Executor({}),
+        classifier=FailureIntelligence(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(attempt_timeout_seconds=300.0),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert not [e for e in events.of("controller") if e.get("state") == "ATTEMPT_TIMEOUT_CLAMPED"]
+
+
 async def test_context_overflow_repacks_and_retries_the_same_route_once(repo: Path) -> None:
     """BOD-272: an overflow shrinks the pack; the same route gets ONE smaller retry."""
     budgets: list[int] = []

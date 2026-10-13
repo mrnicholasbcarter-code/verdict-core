@@ -20,8 +20,8 @@ Session capability lasts 7 days by default. Set
 change it. Invalid settings fail closed. Newer exact-route session failures
 revoke capability immediately. Liveness keeps the existing short health gate
 and cheap bounded probe. Selection requires capability and current liveness.
-Without imported session evidence, the existing 600-second agentic probe TTL
-still applies. Session-score narrowing also remains active.
+Without imported session evidence, a probe-based agentic PASS qualifies for
+24 hours, the same interval as the agentic re-probe. Session-score narrowing also remains active.
 
 ## Install the user service
 

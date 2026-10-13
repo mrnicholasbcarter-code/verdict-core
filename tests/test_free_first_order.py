@@ -25,6 +25,7 @@ from verdict.orchestration.eligibility import (
     EligibilityLadder,
 )
 from verdict.orchestration.health_cache import (
+    AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_OK,
     FRESH_SECONDS,
     STATE_FRESH,
@@ -331,8 +332,8 @@ class TestStaleFresh:
         assert lookup.entry is not None
         assert lookup.entry.agentic_ok is True
 
-    def test_stale_entry_rejected_by_agentic_gate(self, tmp_path: Path) -> None:
-        """Stale agentic entry (agentic_checked_at past FRESH_SECONDS) is rejected."""
+    def test_agentic_pass_outlives_the_liveness_window(self, tmp_path: Path) -> None:
+        """Agentic capability is stable: a PASS older than FRESH_SECONDS still qualifies."""
         entry = _fresh_entry(
             "free/m", agentic_ok=True, probe_class="agentic", age_seconds=FRESH_SECONDS + 60
         )
@@ -342,12 +343,16 @@ class TestStaleFresh:
         ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["free/m"].reason == "agentic_probe_stale"
+        assert by_id["free/m"].reason != "agentic_probe_stale"
+        assert by_id["free/m"].agentic_capability["qualified"] is True
 
     def test_expired_entry_fails_agentic_gate(self, tmp_path: Path) -> None:
-        """Expired (past usable window) loses agentic qualification."""
+        """A PASS older than the agentic re-probe interval loses qualification."""
         entry = _fresh_entry(
-            "free/m", agentic_ok=True, probe_class="agentic", age_seconds=USABLE_SECONDS + 60
+            "free/m",
+            agentic_ok=True,
+            probe_class="agentic",
+            age_seconds=AGENTIC_PROBE_TTL_SECONDS + 60,
         )
         cache = _build_cache(tmp_path, [entry])
         rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]

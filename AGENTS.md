@@ -140,6 +140,9 @@ not flag the new code. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Docs and evidence
 
+- Follow the [operating standards](docs/guides/operator-standards.md) for
+  functionality-first delivery, evidence-backed resumption and current operator policy.
+
 - No savings, benchmark or cost numbers without a live receipt in `docs/proof/`.
   Fixture runs must be labelled as fixtures.
 - Do not call anything "certified". Add new evidence to

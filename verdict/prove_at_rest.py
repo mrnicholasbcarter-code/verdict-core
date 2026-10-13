@@ -53,7 +53,11 @@ import json
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+import urllib.error
+import urllib.request
+from collections import Counter
+from collections.abc import Callable, Collection, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -64,6 +68,7 @@ from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
+    AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
     CATEGORY_GONE,
@@ -87,6 +92,7 @@ from verdict.orchestration.health_cache import (
     agentic_capability,
     default_cache_path,
 )
+from verdict.orchestration.provider_catalog import is_catalog_stale_error
 
 # The old cycle document stays readable. This module no longer writes it.
 # ``ProveAtRestDaemon`` is the legacy free-intersect-active prover; the
@@ -122,7 +128,7 @@ AGENTIC_TOOL_EDIT = "verdict_probe_edit_file"
 AGENTIC_PROBE_FILE = "/tmp/verdict_agentic_probe.txt"  # nosec B108 — in-memory identifier only
 AGENTIC_PROBE_ORIGINAL = "line one\nline two\nline three\n"
 AGENTIC_PROBE_EXPECTED = "line one\nLINE TWO\nline three\n"
-DEFAULT_AGENTIC_INTERVAL_HOURS = 24
+DEFAULT_AGENTIC_INTERVAL_HOURS = AGENTIC_PROBE_TTL_SECONDS / 3600.0
 AGENTIC_TOOLS = [
     {
         "type": "function",
@@ -273,6 +279,11 @@ DEFAULT_MAX_REQUESTS = 300
 DEFAULT_MAX_WALL_SECONDS = 600.0
 DEFAULT_CONCURRENCY = 4
 DEFAULT_EPSILON = 2
+DEFAULT_AGENTIC_MAX_ROUTES = 8
+DEFAULT_AGENTIC_CONCURRENCY = 4
+# Free providers rate-limit per account: one agentic conversation per pool at a time.
+DEFAULT_AGENTIC_POOL_CONCURRENCY = 1
+AGENTIC_TURNS = 3
 ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
 
 # Old on-disk document. Ignored, never migrated, never deleted.
@@ -300,6 +311,9 @@ class AdmittedRoute:
     pool: str | None = None
     capacity_evidence: str | None = None
     non_chat: bool = False
+    # Ordering hint from the gateway's synced live catalog: False means the
+    # gateway is known not to serve the id; None means no catalog evidence.
+    live_catalog: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or not self.provider.strip():
@@ -345,6 +359,10 @@ class CycleStats:
     # ``"auth_outage"`` in that case; this flag lets a caller branch on it by
     # name instead of matching the reason string.
     auth_outage: bool = False
+    # The agentic phase has its own budget, so it reports its own counters.
+    agentic_probed: int = 0
+    agentic_passed: int = 0
+    agentic_stopped_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -355,6 +373,9 @@ class CycleStats:
             "skipped_bucket": self.skipped_bucket,
             "stopped_reason": self.stopped_reason,
             "auth_outage": self.auth_outage,
+            "agentic_probed": self.agentic_probed,
+            "agentic_passed": self.agentic_passed,
+            "agentic_stopped_reason": self.agentic_stopped_reason,
         }
 
 
@@ -655,7 +676,8 @@ def order_cycle(
         )
         or agentic_capability(entry, now)["qualified"]
     }
-    candidates.sort(key=lambda route: _pool_of(route) not in warm)
+    # Gateway-served ids first, then warm pools. Both only reorder admitted routes.
+    candidates.sort(key=lambda route: (_live_rank(route), _pool_of(route) not in warm))
 
     by_id = {route.route_id: route for route in candidates}
     half_open: list[AdmittedRoute] = []
@@ -714,7 +736,9 @@ def order_cycle(
 
     ordered.extend((route, _kind_for(route)) for route in half_open)
     ordered.extend((route, _kind_for(route)) for route in stale)
-    ordered.extend((route, "full") for route in _round_robin(free_new))
+    for live in (True, None, False):
+        tier = [route for route in free_new if route.live_catalog is live]
+        ordered.extend((route, "full") for route in _round_robin(tier))
     ordered.extend((route, "liveness") for route in other_new)
     ordered.extend(
         _epsilon_slice(
@@ -727,6 +751,53 @@ def order_cycle(
         )
     )
     return ordered
+
+
+def _live_rank(route: AdmittedRoute) -> int:
+    """0 when the gateway serves the id, 1 when unknown, 2 when it does not."""
+    return {True: 0, None: 1, False: 2}[route.live_catalog]
+
+
+def agentic_candidates(
+    routes: Sequence[AdmittedRoute], cache: HealthCache, now: datetime
+) -> list[AdmittedRoute]:
+    """FREE routes worth an agentic probe, most promising first.
+
+    Applies the same filters as ``order_cycle`` (non-chat, alias duplicates,
+    cooled pools, effort variants whose base has not passed) and skips routes
+    with an active negative. Order: chat+tool passed, chat passed, then
+    unprobed routes by live-catalog evidence. Ordering never adds a route.
+    """
+    from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
+
+    chat_routes = [
+        route
+        for route in routes
+        if not route.non_chat and route.capacity == CapacityClass.FREE.value
+    ]
+    kept, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
+    kept_ids = set(kept)
+    cooled = _cooled_pools(cache, now)
+    picked: list[tuple[int, AdmittedRoute]] = []
+    for route in chat_routes:
+        if route.route_id not in kept_ids or _pool_of(route) in cooled:
+            continue
+        lookup = cache.lookup(route.route_id, now)
+        if lookup.state == STATE_NEGATIVE:
+            continue
+        base_id = base_route(route.route_id, kept_ids)
+        if base_id != route.route_id and not cache.lookup(base_id, now).healthy:
+            continue
+        entry = lookup.entry
+        if lookup.healthy and entry is not None and entry.tool_ok:
+            rank = 0
+        elif lookup.healthy:
+            rank = 1
+        else:
+            rank = 2 + _live_rank(route)
+        picked.append((rank, route))
+    picked.sort(key=lambda item: item[0])
+    return [route for _rank, route in picked]
 
 
 def _round_robin(routes: Sequence[AdmittedRoute]) -> list[AdmittedRoute]:
@@ -811,12 +882,20 @@ class Prober:
     on_cycle_error: Callable[[Exception], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
+    # The agentic phase has its own budget: it runs even when the chat phase
+    # spent its requests or wall time. ``None`` wall means ``max_wall_seconds``.
+    agentic_max_routes: int = DEFAULT_AGENTIC_MAX_ROUTES
+    agentic_concurrency: int = DEFAULT_AGENTIC_CONCURRENCY
+    agentic_pool_concurrency: int = DEFAULT_AGENTIC_POOL_CONCURRENCY
+    agentic_wall_seconds: float | None = None
     # BOD-338: confirm the gateway key independently of provider credentials.
     # Offline/injected transports without a checker use a majority-pool fallback.
     gateway_auth_check: Callable[[float], ProbeExchange] | None = None
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
+    # Request cap of the running phase, for the gateway-auth confirmation.
+    _request_cap: int = field(default=0, init=False, repr=False)
     auth_outage_consecutive: int = 5
     auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -834,32 +913,60 @@ class Prober:
             raise ProveError("concurrency must be >= 1")
         if self.probe_timeout_seconds <= 0:
             raise ProveError("probe_timeout_seconds must be positive")
+        if self.agentic_max_routes < 0:
+            raise ProveError("agentic_max_routes must be >= 0")
+        if self.agentic_concurrency < 1 or self.agentic_pool_concurrency < 1:
+            raise ProveError("agentic concurrency limits must be >= 1")
+        if self.agentic_wall_seconds is not None and self.agentic_wall_seconds <= 0:
+            raise ProveError("agentic_wall_seconds must be positive")
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _save_for_cycle(self, started: float) -> None:
-        self.cache.save(
-            deadline=started + self.max_wall_seconds, monotonic=self.monotonic, sleep=self.sleep
-        )
+    def _save(self) -> None:
+        """Persist under the cache lock; the wait is bounded by ``LOCK_WAIT_SECONDS``.
+
+        Not by the cycle deadline: a probe that finished at the wall cap must
+        still be written, and an already-passed deadline made every such save
+        fail at once with ``lock_timeout``.
+        """
+        self.cache.save(monotonic=self.monotonic, sleep=self.sleep)
 
     def run_once(self) -> CycleStats:
-        """Probe until request/wall/lock bounds, returning a typed stop reason."""
+        """Chat phase, then the agentic phase, each within its own bounds.
+
+        A chat phase that stops early (request, wall or lock bound) does not
+        skip the agentic phase. Only a gateway auth outage skips it.
+        """
         started = self.monotonic()
         stats = CycleStats()
         self._auth_fail_pools = []  # fresh auth-outage window per cycle
         self._auth_fail_buffer = []
         self._gateway_auth_result = None
         self._cycle_started = started
+        self._request_cap = self.max_requests
+        routes = list(self.routes_loader())
         try:
-            return self._run_once(started, stats)
+            self._run_chat_phase(routes, started, stats)
         except HealthCacheLockTimeoutError:
             stats.stopped_reason = stats.stopped_reason or "lock_timeout"
+        if stats.auth_outage:
             return stats
+        try:
+            # Keep the outage window across both phases; a broken gateway key
+            # must not poison routes through agentic probes after chat probing stops.
+            self.run_agentic_probes(stats, routes=routes)
+            if self.gateway_auth_check is None or self._gateway_auth_result is not None:
+                self._flush_auth_fail_buffer(stats)
+            self._save()
+        except HealthCacheLockTimeoutError:
+            stats.agentic_stopped_reason = stats.agentic_stopped_reason or "lock_timeout"
+        return stats
 
-    def _run_once(self, started: float, stats: CycleStats) -> CycleStats:
+    def _run_chat_phase(
+        self, routes: Sequence[AdmittedRoute], started: float, stats: CycleStats
+    ) -> None:
         now = self.clock()
-        routes = list(self.routes_loader())
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
         self._cycle_pools = {_pool_of(route) for route, _kind in ordered}
         # Defect 2 fix: resume by route_id set, not by index.
@@ -886,32 +993,23 @@ class Prober:
             if reason:
                 stats.stopped_reason = reason
                 self._persist_cursor(probed_ids, open_cycle=True)
-                self._save_for_cycle(started)
+                self._save()
                 break
             batch = pending[:batch_size]
             pending = pending[batch_size:]
             self._persist_cursor(probed_ids, open_cycle=True)
-            self._save_for_cycle(started)
+            self._save()
             newly_probed = self._run_batch(batch, stats, started)
             probed_ids.update(newly_probed)
             self._persist_cursor(probed_ids, open_cycle=True)
-            self._save_for_cycle(started)
+            self._save()
             if stats.stopped_reason:
                 # Cap fired inside the batch: do not drain remaining pending.
                 break
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
-            self._save_for_cycle(started)
-        # Keep the outage window across both phases; a broken gateway key
-        # must not poison routes through agentic probes after chat probing stops.
-        if not stats.auth_outage and stats.requests < self.max_requests:
-            self.run_agentic_probes(stats, started=started, planned_routes=[r for r, _ in ordered])
-        if not stats.auth_outage:
-            if self.gateway_auth_check is None or self._gateway_auth_result is not None:
-                self._flush_auth_fail_buffer(stats)
-            self._save_for_cycle(started)
-        return stats
+            self._save()
 
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
         """Write every buffered auth-outage-window negative as a real failure."""
@@ -935,7 +1033,7 @@ class Prober:
         if self.gateway_auth_check is not None:
             if self._gateway_auth_result is None:
                 remaining = self.max_wall_seconds - (self.monotonic() - self._cycle_started)
-                if stats.requests >= self.max_requests or remaining <= 0:
+                if stats.requests >= self._request_cap or remaining <= 0:
                     # Confirmation cannot run within budget. Keep the buffer unwritten.
                     stats.stopped_reason = "request_cap" if remaining > 0 else "wall_cap"
                     return True
@@ -986,7 +1084,7 @@ class Prober:
             before = stats.requests
             completed = self._probe_route(route, kind, stats, started=started)
             if stats.requests != before:
-                self._save_for_cycle(started)
+                self._save()
             if not completed:
                 # The probe stopped part-way (a cap or bucket fired between the
                 # chat and the tool call). The route was left unchanged, so it
@@ -1171,142 +1269,204 @@ class Prober:
         stats: CycleStats,
         started: float | None = None,
         *,
-        planned_routes: Sequence[AdmittedRoute] | None = None,
+        routes: Sequence[AdmittedRoute] | None = None,
     ) -> None:
-        """Run agentic probes for FREE routes that need them. Bounded.
+        """Run 3-turn agentic probes for FREE routes that need one.
 
-        Enforces the cycle's wall-time budget and the stop signal before
-        each probe and each turn.
+        Own budget: at most ``agentic_max_routes`` conversations within
+        ``agentic_wall_seconds`` (default ``max_wall_seconds``) from *started*.
+        Up to ``agentic_concurrency`` conversations run at once, at most
+        ``agentic_pool_concurrency`` per credential pool. While auth failures
+        await outage confirmation, one conversation runs at a time. A
+        conversation cut short by the deadline or the stop signal is not
+        tested and writes nothing.
         """
         if self.agentic_transport is None or stats.auth_outage:
             return
-        wall_start = started if started is not None else self.monotonic()
+        phase_start = started if started is not None else self.monotonic()
+        deadline = phase_start + (self.agentic_wall_seconds or self.max_wall_seconds)
         now = self.clock()
-        if planned_routes is None:
-            planned_routes = [
-                route
-                for route, _kind in order_cycle(
-                    self.routes_loader(), self.cache, now, epsilon=self.epsilon
-                )
-            ]
-        self._cycle_started = wall_start
+        snapshot = list(self.routes_loader()) if routes is None else list(routes)
         if not self._cycle_pools:
-            self._cycle_pools = {_pool_of(route) for route in planned_routes}
-        routes = [r for r in planned_routes if self._needs_agentic(r, now)]
-        probed = 0
-        max_agentic = min(8, self.max_requests - stats.requests)
-        for route in routes[:max_agentic]:
-            # Check stop signal and wall-time before each probe.
-            if self._stop.is_set():
-                break
-            if self.monotonic() - wall_start >= self.max_wall_seconds:
-                stats.stopped_reason = stats.stopped_reason or "wall_cap"
-                break
-            if stats.requests + 3 > self.max_requests:
-                break
-            now = self.clock()
-            if _pool_of(route) in _cooled_pools(self.cache, now):
-                continue
-            # Consume one bucket token before each turn, stop when empty.
-            if not self.cache.consume(route.provider, now, pool=route.pool):
-                continue
-            fake_file = AgenticFakeFile()
-            conversation: list[dict[str, Any]] = []
-            exchanges: list[ProbeExchange] = []
-            budget_exhausted = False
-            turn_payloads = [agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload]
-            try:
-                for turn_idx, payload_fn in enumerate(turn_payloads):
-                    if turn_idx > 0:
-                        # Consume a bucket token before each subsequent turn.
-                        now = self.clock()
-                        if not self.cache.consume(route.provider, now, pool=route.pool):
-                            budget_exhausted = True
-                            break
-                        # Check stop/wall between turns.
-                        if (
-                            not exchanges[-1].ok
-                            or stats.requests >= self.max_requests
-                            or self._stop.is_set()
-                            or self.monotonic() - wall_start >= self.max_wall_seconds
-                        ):
-                            break
-                    payload = payload_fn(route.route_id, conversation)
-                    ex = self.agentic_transport(route.route_id, payload, self.probe_timeout_seconds)
-                    exchanges.append(ex)
-                    stats.requests += 1
-                    if not ex.ok:
+            self._cycle_pools = {_pool_of(route) for route in snapshot}
+        pending = [
+            route
+            for route in agentic_candidates(snapshot, self.cache, now)
+            if self._needs_agentic(route, now)
+        ][: self.agentic_max_routes]
+        self._cycle_started = phase_start
+        self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
+        if pending:
+            # Prove the cache is writable before any dispatch, as the chat phase does.
+            self._save()
+        running: dict[Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]], AdmittedRoute]
+        running = {}
+        busy: Counter[str] = Counter()
+        with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
+            while pending or running:
+                limit = 1 if self._auth_fail_buffer else self.agentic_concurrency
+                if not stats.agentic_stopped_reason:
+                    if self._stop.is_set():
+                        stats.agentic_stopped_reason = "stopped"
+                    elif self.monotonic() >= deadline:
+                        stats.agentic_stopped_reason = "wall_cap"
+                empty_pools: set[str] = set()
+                for route in list(pending):
+                    if stats.agentic_stopped_reason or len(running) >= limit:
                         break
-                    # Simulate tool calls against the fake file and build
-                    # conversation history for the next turn.
-                    assistant_msg = _extract_assistant_message(ex.response_body)
-                    tool_calls = _extract_tool_calls(ex.response_body)
-                    tool_results = _simulate_tool_calls(fake_file, tool_calls)
-                    # Build cumulative conversation: user + assistant + tool results.
-                    conversation = list(payload.get("messages", []))
-                    conversation.append(assistant_msg)
-                    conversation.extend(tool_results)
-            except TimeoutError:
-                exchanges.append(
-                    ProbeExchange(http_status=None, ok=False, error_category="timeout")
-                )
-            if budget_exhausted:
-                # Record as "not tested" — the route is not failed, just untested.
-                stats.probed += 1
-                continue
-            passed = score_agentic_probe(exchanges)
-            # Also verify the fake file reached the expected state.
-            if passed:
-                passed = fake_file.content == AGENTIC_PROBE_EXPECTED
-            # An agentic PASS qualifies the selected route only when every turn
-            # echoed that route's model. An absent echo can't prove identity.
-            category = CATEGORY_OK if passed else "agentic_fail"
-            if passed and not all(
-                ex.reported_model
-                and self._model_identity_matches(route.route_id, ex.reported_model)
-                for ex in exchanges
-            ):
-                passed = False
-                category = CATEGORY_MODEL_MISMATCH
-            status = exchanges[-1].http_status if exchanges else None
-            if status in (401, 403):
-                category = category_for(exchanges[-1])
-            result = ProbeResult(
-                category=category,
-                http_status=status,
-                chat_ok=len(exchanges) >= 1 and exchanges[0].ok,
-                tool_ok=passed,
-                probe_class="agentic",
-                agentic_ok=passed,
-                pool=route.pool,
-                capacity_evidence=route.capacity_evidence,
-            )
-            if self._buffer_auth_failure(route, result, now, stats):
-                if stats.auth_outage or stats.stopped_reason in {"request_cap", "wall_cap"}:
-                    return
-                self._save_for_cycle(wall_start)
-                continue
-            self.cache.record(route.route_id, result, now)
-            try:
-                self._save_for_cycle(wall_start)
-            except HealthCacheLockTimeoutError:
-                stats.stopped_reason = (
-                    "wall_cap"
-                    if self.monotonic() - wall_start >= self.max_wall_seconds
-                    else "lock_timeout"
-                )
-                return
-            probed += 1
-            stats.probed += 1
-            if passed:
-                stats.fresh += 1
-            else:
-                stats.negative += 1
+                    route_pool = _pool_of(route)
+                    if busy[route_pool] >= self.agentic_pool_concurrency:
+                        continue
+                    if route_pool in empty_pools:
+                        continue
+                    now = self.clock()
+                    if route_pool in _cooled_pools(self.cache, now):
+                        pending.remove(route)
+                        continue
+                    # Reserve every turn up front; an empty bucket keeps the
+                    # route pending while other pools' conversations run.
+                    if not self.cache.consume(
+                        route.provider, now, pool=route.pool, amount=AGENTIC_TURNS
+                    ):
+                        empty_pools.add(route_pool)
+                        continue
+                    pending.remove(route)
+                    busy[route_pool] += 1
+                    running[pool.submit(self._converse, route.route_id, deadline)] = route
+                if not running:
+                    if not pending or stats.agentic_stopped_reason:
+                        break
+                    # Only empty buckets block: wait for the earliest refill
+                    # inside the phase budget instead of ending the phase.
+                    now = self.clock()
+                    ready = [
+                        self.cache.bucket_available_at(
+                            route.provider, now, pool=route.pool, amount=AGENTIC_TURNS
+                        )
+                        for route in pending
+                    ]
+                    known = [at for at in ready if at is not None]
+                    wait_seconds = (min(known) - now).total_seconds() if known else None
+                    if wait_seconds is None or self.monotonic() + wait_seconds >= deadline:
+                        stats.agentic_stopped_reason = "bucket_empty"
+                        stats.skipped_bucket += len(pending)
+                        break
+                    self.sleep(max(wait_seconds, 0.05))
+                    if self.clock() <= now:
+                        # An injected clock that does not move can never refill a bucket.
+                        stats.agentic_stopped_reason = "bucket_empty"
+                        stats.skipped_bucket += len(pending)
+                        break
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    route = running.pop(future)
+                    busy[_pool_of(route)] -= 1
+                    exchanges, fake_file, finished = future.result()
+                    stats.requests += len(exchanges)
+                    if stats.auth_outage or not finished or not exchanges:
+                        continue
+                    self._record_agentic(route, exchanges, fake_file, stats)
+                    if stats.auth_outage:
+                        stats.agentic_stopped_reason = "auth_outage"
+                        pending = []
+                    try:
+                        self._save()
+                    except HealthCacheLockTimeoutError:
+                        stats.agentic_stopped_reason = "lock_timeout"
+                        pending = []
+        if not stats.agentic_stopped_reason:
+            stats.agentic_stopped_reason = "complete"
         if self._auth_fail_buffer and (
             self.gateway_auth_check is None or self._gateway_auth_result is not None
         ):
             self._flush_auth_fail_buffer(stats)
-            self._save_for_cycle(wall_start)
+            self._save()
+
+    def _converse(
+        self, route_id: str, deadline: float
+    ) -> tuple[list[ProbeExchange], AgenticFakeFile, bool]:
+        """One read/edit/read conversation. Runs in a worker thread; no cache access.
+
+        Returns the exchanges, the fake file, and whether the conversation
+        reached a verdict (all turns ran, or a turn failed) rather than being
+        cut short by the deadline or the stop signal.
+        """
+        assert self.agentic_transport is not None
+        fake_file = AgenticFakeFile()
+        conversation: list[dict[str, Any]] = []
+        exchanges: list[ProbeExchange] = []
+        for payload_fn in (agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload):
+            remaining = deadline - self.monotonic()
+            if self._stop.is_set() or remaining <= 0:
+                return exchanges, fake_file, False
+            payload = payload_fn(route_id, conversation)
+            try:
+                ex = self.agentic_transport(
+                    route_id, payload, min(self.probe_timeout_seconds, remaining)
+                )
+            except TimeoutError:
+                ex = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+            exchanges.append(ex)
+            if not ex.ok:
+                break
+            # Simulate tool calls against the fake file and carry the whole
+            # conversation (user + assistant + tool results) to the next turn.
+            tool_results = _simulate_tool_calls(fake_file, _extract_tool_calls(ex.response_body))
+            conversation = list(payload.get("messages", []))
+            conversation.append(_extract_assistant_message(ex.response_body))
+            conversation.extend(tool_results)
+        return exchanges, fake_file, True
+
+    def _record_agentic(
+        self,
+        route: AdmittedRoute,
+        exchanges: Sequence[ProbeExchange],
+        fake_file: AgenticFakeFile,
+        stats: CycleStats,
+    ) -> None:
+        now = self.clock()
+        last = exchanges[-1]
+        self._note_rate_limit(route, last, now)
+        if category_for(last) == CATEGORY_RATE_LIMITED:
+            # A 429 says nothing about capability: not tested, retried after the bucket reopens.
+            return
+        passed = score_agentic_probe(exchanges) and fake_file.content == AGENTIC_PROBE_EXPECTED
+        # A failed HTTP turn keeps its transport category (catalog_stale,
+        # rate_limited, timeout, ...); "agentic_fail" means the model answered
+        # but did not do the task.
+        category = CATEGORY_OK if passed else ("agentic_fail" if last.ok else category_for(last))
+        # An agentic PASS qualifies the selected route only when every turn
+        # echoed that route's model. An absent echo can't prove identity.
+        if passed and not all(
+            ex.reported_model and self._model_identity_matches(route.route_id, ex.reported_model)
+            for ex in exchanges
+        ):
+            passed = False
+            category = CATEGORY_MODEL_MISMATCH
+        latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
+        result = ProbeResult(
+            category=category,
+            http_status=last.http_status,
+            chat_ok=exchanges[0].ok,
+            tool_ok=passed,
+            latency_ms=sum(latencies) if latencies else None,
+            retry_after_seconds=last.retry_after_seconds,
+            probe_class="agentic",
+            agentic_ok=passed,
+            pool=route.pool,
+            capacity_evidence=route.capacity_evidence,
+            identity="verified" if passed else "",
+        )
+        stats.agentic_probed += 1
+        stats.agentic_passed += int(passed)
+        if self._buffer_auth_failure(route, result, now, stats):
+            return
+        self.cache.record(route.route_id, result, now)
+        stats.probed += 1
+        if passed:
+            stats.fresh += 1
+        else:
+            stats.negative += 1
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""
@@ -1337,13 +1497,15 @@ def routes_from_evidence(
     *,
     now: datetime,
     state_dir: Path | None = None,
+    live_catalog: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[AdmittedRoute, ...]:
     """Admit exactly the way ``verdict eligibility`` does, without probing.
 
     Uses ``admit`` over the live inventory and connections. Routes that fail
     admission are not probed. Capacity class comes from the same ladder
     classifier eligibility uses, so this prober and ``verdict eligibility``
-    agree on FREE versus SUBSCRIPTION.
+    agree on FREE versus SUBSCRIPTION. ``live_catalog`` (provider -> served
+    model ids) only sets the ``live_catalog`` ordering hint.
     """
     from verdict.admission import admit, default_runtime_evidence
     from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
@@ -1375,9 +1537,50 @@ def routes_from_evidence(
                 pool=pool_of(record.route_id),
                 capacity_evidence=plan or None,
                 non_chat=is_non_chat_route(record.route_id, row),
+                live_catalog=_served_by_gateway(record.route_id, row, live_catalog),
             )
         )
     return tuple(out)
+
+
+def _served_by_gateway(
+    route_id: str, row: Mapping[str, Any], live_catalog: Mapping[str, Collection[str]] | None
+) -> bool | None:
+    """True/False when the provider's synced catalog is known, else None."""
+    provider = str(row.get("owned_by") or "").lower()
+    if live_catalog is None or provider not in live_catalog:
+        return None
+    served = live_catalog[provider]
+    model = route_id.split("/", 1)[1] if "/" in route_id else route_id
+    return model in served or str(row.get("root") or "") in served
+
+
+def fetch_live_catalog(
+    origin: str, *, api_key: str | None, timeout: float = 30.0
+) -> dict[str, frozenset[str]] | None:
+    """Provider -> model ids the gateway serves (``/api/synced-available-models``).
+
+    ``/v1/models`` also lists ids the gateway rejects with "not available in
+    the active live catalog". This read is an ordering hint only, so an
+    unreadable catalog returns None (no evidence) instead of failing the cycle.
+    """
+    from verdict.orchestration.run import _get_json
+
+    try:
+        raw = _get_json(
+            origin.rstrip("/") + "/api/synced-available-models", api_key=api_key, timeout=timeout
+        )
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        str(provider).lower(): frozenset(
+            str(item["id"]) for item in items if isinstance(item, Mapping) and item.get("id")
+        )
+        for provider, items in raw.items()
+        if isinstance(items, list)
+    }
 
 
 def load_admitted_routes(
@@ -1392,7 +1595,8 @@ def load_admitted_routes(
         origin = origin[: -len("/v1")]
     rows = fetch_inventory(origin, api_key=api_key, timeout=timeout)
     connections = fetch_connections(origin, api_key=api_key, timeout=timeout)
-    return routes_from_evidence(rows, connections, now=current)
+    live = fetch_live_catalog(origin, api_key=api_key, timeout=timeout)
+    return routes_from_evidence(rows, connections, now=current, live_catalog=live)
 
 
 # ---------------------------------------------------------------------------
@@ -1443,6 +1647,34 @@ def _exchange_from_body(
     )
 
 
+def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> ProbeExchange:
+    """Map a gateway HTTP error; a 400 for an id the gateway does not serve is catalog_stale."""
+    retry_after = None
+    header = exc.headers.get("Retry-After") if exc.headers else None
+    if header:
+        try:
+            retry_after = float(header)
+        except ValueError:
+            retry_after = None
+    named = None
+    if exc.code == 400:
+        try:
+            body = exc.read(16_384).decode("utf-8", "replace")
+        except OSError:
+            body = ""
+        if is_catalog_stale_error(body):
+            named = CATEGORY_CATALOG_STALE
+    return ProbeExchange(
+        http_status=exc.code,
+        ok=False,
+        latency_ms=latency_ms,
+        retry_after_seconds=retry_after,
+        error_category=category_for(
+            ProbeExchange(http_status=exc.code, ok=False, error_category=named)
+        ),
+    )
+
+
 def live_agentic_transport(
     base_url: str, *, api_key: str | None
 ) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
@@ -1450,9 +1682,6 @@ def live_agentic_transport(
 
     Built only for a consented live daemon behind ``--allow-live-probe``.
     """
-    import urllib.error
-    import urllib.request
-
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):
         endpoint = endpoint[: -len("/v1")]
@@ -1483,21 +1712,7 @@ def live_agentic_transport(
                     reported_model=str(body.get("model") or ""),
                 )
         except urllib.error.HTTPError as exc:
-            elapsed = (time.monotonic() - started) * 1000.0
-            retry_after = None
-            header = exc.headers.get("Retry-After") if exc.headers else None
-            if header:
-                try:
-                    retry_after = float(header)
-                except ValueError:
-                    retry_after = None
-            return ProbeExchange(
-                http_status=exc.code,
-                ok=False,
-                latency_ms=elapsed,
-                retry_after_seconds=retry_after,
-                error_category=category_for(ProbeExchange(http_status=exc.code, ok=False)),
-            )
+            return _http_error_exchange(exc, (time.monotonic() - started) * 1000.0)
         except TimeoutError:
             return ProbeExchange(http_status=None, ok=False, error_category="timeout")
 
@@ -1508,9 +1723,6 @@ def live_gateway_auth_check(
     base_url: str, *, api_key: str | None
 ) -> Callable[[float], ProbeExchange]:
     """Check gateway credentials without contacting a model or following redirects."""
-    import urllib.error
-    import urllib.request
-
     endpoint = base_url.rstrip("/")
     if not endpoint.endswith("/v1"):
         endpoint += "/v1"
@@ -1534,10 +1746,6 @@ def live_gateway_auth_check(
 
 def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
     """OpenAI-compatible transport. Built only for a consented live daemon."""
-    import json
-    import urllib.error
-    import urllib.request
-
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):
         endpoint = endpoint[: -len("/v1")]
@@ -1568,21 +1776,7 @@ def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
                     retry_after=None,
                 )
         except urllib.error.HTTPError as exc:
-            elapsed = (time.monotonic() - started) * 1000.0
-            retry_after = None
-            header = exc.headers.get("Retry-After") if exc.headers else None
-            if header:
-                try:
-                    retry_after = float(header)
-                except ValueError:
-                    retry_after = None
-            return ProbeExchange(
-                http_status=exc.code,
-                ok=False,
-                latency_ms=elapsed,
-                retry_after_seconds=retry_after,
-                error_category=category_for(ProbeExchange(http_status=exc.code, ok=False)),
-            )
+            return _http_error_exchange(exc, (time.monotonic() - started) * 1000.0)
         except TimeoutError:
             return ProbeExchange(http_status=None, ok=False, error_category="timeout")
 
@@ -2000,6 +2194,10 @@ def build_live_daemon(
     concurrency: int = DEFAULT_CONCURRENCY,
     transport: ProbeTransportFn | None = None,
     cache_path: Path | None = None,
+    agentic_max_routes: int = DEFAULT_AGENTIC_MAX_ROUTES,
+    agentic_concurrency: int = DEFAULT_AGENTIC_CONCURRENCY,
+    agentic_pool_concurrency: int = DEFAULT_AGENTIC_POOL_CONCURRENCY,
+    agentic_wall_seconds: float | None = None,
 ) -> ProverDaemon:
     """Construct the daemon. ``state_path`` is accepted and ignored.
 
@@ -2046,6 +2244,10 @@ def build_live_daemon(
         probe_timeout_seconds=probe_timeout_seconds,
         interval_seconds=interval_seconds,
         agentic_transport=agentic,
+        agentic_max_routes=agentic_max_routes,
+        agentic_concurrency=agentic_concurrency,
+        agentic_pool_concurrency=agentic_pool_concurrency,
+        agentic_wall_seconds=agentic_wall_seconds,
         gateway_auth_check=(
             live_gateway_auth_check(origin, api_key=key) if transport is None else None
         ),

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from verdict.contracts import redact_contract_secrets
 from verdict.harness_prime_compat import (
     PrimeCompatibilityContext,
     bind_prime_token,
@@ -18,7 +19,9 @@ from verdict.harness_prime_compat import (
 from verdict.harness_prime_selection import (
     PrimeDependencies,
     PrimeSelectionError,
+    SelectionPaths,
     SettingsDocument,
+    apply_selection,
     byte_digest,
     preview_selection,
 )
@@ -272,8 +275,20 @@ def test_nonexact_selected_tokens_refused(tmp_path: Path, token: str) -> None:
     assert not any(r.selectable for r in plan.rows)
 
 
-@pytest.mark.parametrize("token", ["cx/*", "gpt", "Friendly GPT", "cx/gpt-6-sol:high", "auto/*"])
-def test_unsafe_existing_scope_refused_without_expansion(tmp_path: Path, token: str) -> None:
+@pytest.mark.parametrize(
+    "token,entry,reason",
+    [
+        ("cx/*", "[unsafe entry]", "unsafe_scope_token"),
+        ("gpt", "gpt", "not_in_registry"),
+        ("Friendly GPT", "[unsafe entry]", "unsafe_scope_token"),
+        ("cx/gpt-6-sol:high", "cx/gpt-6-sol:high", "not_in_registry"),
+        ("CX/GPT-6-SOL", "CX/GPT-6-SOL", "not_in_registry"),
+        ("auto/*", "[unsafe entry]", "unsafe_scope_token"),
+    ],
+)
+def test_unsafe_existing_scope_refused_without_expansion(
+    tmp_path: Path, token: str, entry: str, reason: str
+) -> None:
     settings, deps = inputs(tmp_path)
     settings = SettingsDocument.from_bytes(
         settings.path, json.dumps({"enabledModels": [token]}).encode()
@@ -281,8 +296,84 @@ def test_unsafe_existing_scope_refused_without_expansion(tmp_path: Path, token: 
     plan = preview_selection(
         settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
     )
-    assert plan.refusals
+    assert f"enabledModels[0]:{entry}:{reason}; remove it via Prime /scoped-models" in plan.refusals
+    assert plan.to_dict()["unsafe_scope_tokens"] == [
+        {
+            "entry": entry,
+            "index": 0,
+            "reason": reason,
+            "remediation": "remove it via Prime /scoped-models",
+        }
+    ]
     assert "resolve_unsafe_scope_through_Prime_/scoped-models" in plan.warnings
+    if entry == "[unsafe entry]":
+        assert token not in json.dumps(plan.to_dict())
+
+
+def test_retained_scope_refusal_names_each_offending_token(tmp_path: Path) -> None:
+    """BOD-329: name every blocking retained token, its reason and remediation."""
+    models = registry()
+    models["providers"]["omniroute"]["models"] += [
+        {"id": "cx/gpt-5.4-mini", "name": "cx/gpt-5.4-mini"},
+        {"id": "cx/gpt-5.4-pro", "name": "cx/gpt-5.4-pro"},
+        {"id": "cc/claude-opus-5-5-high", "name": "cc/claude-opus-5-5-high"},
+    ]
+    settings, deps = inputs(tmp_path)
+    deps = replace(deps, registry_bytes=json.dumps(models).encode())
+    scope = ["external", "cx/gpt-5.4", "historic/exact", "cc/claude-opus-5-5", "Gpt-6-Sol"]
+    settings = SettingsDocument.from_bytes(
+        settings.path, json.dumps({"enabledModels": scope}).encode()
+    )
+    plan = preview_selection(
+        settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
+    )
+    data = plan.to_dict()
+    remedy = "remove it via Prime /scoped-models"
+    assert data["unsafe_scope_tokens"] == [
+        {
+            "entry": "cx/gpt-5.4",
+            "index": 1,
+            "reason": "ambiguous_fuzzy_match",
+            "remediation": remedy,
+        },
+        {
+            "entry": "cc/claude-opus-5-5",
+            "index": 3,
+            "reason": "ambiguous_fuzzy_match",
+            "remediation": remedy,
+        },
+        {"entry": "Gpt-6-Sol", "index": 4, "reason": "not_in_registry", "remediation": remedy},
+    ]
+    assert data["refusals"] == [
+        "identity_unsupported",
+        f"enabledModels[1]:cx/gpt-5.4:ambiguous_fuzzy_match; {remedy}",
+        f"enabledModels[3]:cc/claude-opus-5-5:ambiguous_fuzzy_match; {remedy}",
+        f"enabledModels[4]:Gpt-6-Sol:not_in_registry; {remedy}",
+    ]
+    assert plan.retained == ("external", "historic/exact")
+    assert plan.rows[0].selectable  # the selected row is fine; only scope blocks
+    # The human renderer redacts *_token keys; the offending entries must survive it.
+    assert redact_contract_secrets(data)["unsafe_scope_tokens"] == data["unsafe_scope_tokens"]
+    result = apply_selection(
+        plan,
+        expected_pre_digest=plan.pre_digest,
+        confirmed=True,
+        paths=SelectionPaths(tmp_path),
+        reload_rows=lambda: [row()],
+        reload_dependencies=lambda: deps,
+        clock=lambda: NOW,
+    )
+    assert result.status == "refused"
+    assert f"enabledModels[4]:Gpt-6-Sol:not_in_registry; {remedy}" in result.reasons
+    assert not list(tmp_path.iterdir())
+
+
+def test_safe_scope_has_no_unsafe_tokens(tmp_path: Path) -> None:
+    settings, deps = inputs(tmp_path)
+    plan = preview_selection(
+        settings, [row()], selected_ids=["cx/gpt-6-sol"], dependencies=deps, now=NOW
+    )
+    assert plan.to_dict()["unsafe_scope_tokens"] == []
 
 
 @pytest.mark.parametrize(
@@ -298,7 +389,7 @@ def test_provider_and_name_ambiguity_refused(tmp_path: Path, other: dict[str, An
     models["providers"]["openai"]["models"].append(other)
     binding = bind_prime_token("cx/gpt-6-sol", models)
     assert binding.disposition == "unsafe"
-    assert "identity_unsupported" in binding.reasons
+    assert binding.reasons == ("identity_unsupported", "ambiguous_fuzzy_match")
     overlay = prime_selection_rows(models, [row()], context=context(tmp_path), now=NOW)
     assert overlay[0].visible and overlay[0].status == "VERIFIED"
     assert not overlay[0].selectable

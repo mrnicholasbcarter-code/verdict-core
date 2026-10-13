@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from verdict.orchestration.contracts import NodeKind, WorkNode
 from verdict.orchestration.planner import (
+    OwnershipConflict,
+    PlanValidationError,
     _test_files_from_argv,
+    build_repair_prompt,
     ensure_verification_files_owned,
     parse_plan,
 )
@@ -237,3 +242,23 @@ class TestParsePlanIntegration:
         impl = next(n for n in graph.nodes if n.node_id == "impl-1")
         # No duplicates
         assert impl.owned_files.count("tests/test_recovery.py") == 1
+
+    def test_parallel_nodes_verified_by_one_new_test_file_name_the_conflict(self) -> None:
+        """SH-2: two parallel nodes run the same new test file; repair names file and nodes."""
+        plan = json.loads(self._plan_json(["verdict/a.py"], ["pytest", "tests/test_new.py"]))
+        second = {**plan["nodes"][0], "node_id": "impl-2", "owned_files": ["verdict/b.py"]}
+        plan["nodes"].insert(1, second)
+        plan["nodes"][-1]["depends_on"] = ["impl-1", "impl-2"]
+
+        with pytest.raises(PlanValidationError) as caught:
+            parse_plan(json.dumps(plan), "test goal")
+
+        assert caught.value.conflicts == (
+            OwnershipConflict("tests/test_new.py", ("impl-1", "impl-2"), ("impl-1", "impl-2")),
+        )
+        prompt = build_repair_prompt("PLANNING PROMPT", caught.value)
+        assert (
+            "- tests/test_new.py: owned by both node impl-1 and node impl-2 "
+            "(via the verification_command of impl-1, impl-2)"
+        ) in prompt
+        assert "its own new test file" in prompt

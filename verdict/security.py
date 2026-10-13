@@ -36,7 +36,16 @@ CREDENTIAL_SHAPES = (
         r"|github_pat_[A-Za-z0-9_]{20,}"
         r"|xox[abprs]-(?=[A-Za-z-]*\d)[A-Za-z0-9-]{10,}"
         r"|AKIA[0-9A-Z]{16}"
-        r"|AIza[0-9A-Za-z_-]{30,})"
+        r"|AIza[0-9A-Za-z_-]{30,}"
+        # OmniRoute access tokens: "oma_live_" + randomBytes(32) as base64url,
+        # exactly 43 characters (OmniRoute 16.3 access-token mint).
+        r"|oma_live_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-]))"
+    ),
+    # A PEM private key: keep the header, drop the body. An unterminated block is
+    # redacted to the end of the text.
+    re.compile(
+        r"(-----BEGIN [A-Z ]*PRIVATE KEY-----)\s*[A-Za-z0-9+/=][\s\S]*?"
+        r"(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
     ),
 )
 

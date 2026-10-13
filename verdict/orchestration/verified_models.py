@@ -30,8 +30,9 @@ from typing import Any
 from verdict.admission import canonical_route_id, is_opaque, route_provider_prefix
 from verdict.availability import QuotaEvidence, account_forms
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import capacity_class_of
+from verdict.orchestration.eligibility import _marginal_price, capacity_class_of
 from verdict.orchestration.health_cache import (
+    AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
     CATEGORY_GONE,
@@ -561,6 +562,7 @@ class VerifiedModelRow:
     agentic_ok: bool | None = None
     agentic_checked_at: datetime | None = None
     capacity_class: str | None = None
+    price: float | None = None  # inventory price per 1M tokens (in + out); None = unknown
     refreshable: bool = False
     refresh_reason: str | None = None
     hints: tuple[str, ...] = ()
@@ -611,6 +613,7 @@ class VerifiedModelRow:
             "agentic_ok": self.agentic_ok,
             "agentic_checked_at": _iso(self.agentic_checked_at),
             "capacity_class": _display_safe(self.capacity_class),
+            "price": self.price,
             "refreshable": self.refreshable,
             "refresh_reason": _display_safe(self.refresh_reason),
             "hints": [_display_safe(hint) for hint in self.hints],
@@ -1255,6 +1258,7 @@ def _classify_row(
     ]
     connection = active_conns[0] if active_conns else None
     capacity = _capacity_for_row(row, connection)
+    price, price_known = _marginal_price(row)
 
     restrictions: list[str] = []
     # Independent secondary restriction codes that must survive into whatever
@@ -1332,6 +1336,7 @@ def _classify_row(
             tools=tools,
             structured=structured,
             capacity_class=capacity.value,
+            price=price if price_known else None,
             hints=tuple(hints),
             availability_evidence=tuple(
                 QuotaEvidence.from_connection(c).to_dict(now, last_success)
@@ -1525,7 +1530,7 @@ def _classify_row(
         agentic_fresh = (
             at_rest.agentic_ok
             and at_rest.agentic_checked_at is not None
-            and (now - at_rest.agentic_checked_at).total_seconds() < FRESH_SECONDS
+            and (now - at_rest.agentic_checked_at).total_seconds() < AGENTIC_PROBE_TTL_SECONDS
         )
         if not agentic_fresh:
             restrictions.append("agentic_not_fresh")

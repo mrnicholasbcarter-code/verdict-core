@@ -17,8 +17,8 @@ documented OmniRoute install (``npm install -g omniroute``) only — other provi
 still require an explicit runner and otherwise fail closed.
 
 Binary presence is not health, authentication, or qualification. Existing harness
-MCP registries (Claude Code, Cursor, Codex, project ``.mcp.json``) are imported as
-``configured`` providers with config-path references only — secrets are never
+MCP registries (Claude Code, Cursor, Codex, Prime, Hermes, project ``.mcp.json``) are
+imported as ``configured`` providers with config-path references only — secrets are never
 copied, and RECOMMEND/APPLY prefer reuse/repair over duplicate installs.
 Recommendations are capability-first (providers second). OmniRoute may be
 recommended but is never a hard dependency or routing authority.
@@ -790,8 +790,8 @@ def discover_providers(
     """Discover catalog providers without promoting binary presence to healthy.
 
     Also imports existing MCP/provider config from supported harness locations
-    (Claude Code, Cursor, Codex, project ``.mcp.json``). Config hits become
-    ``configured`` (never healthy/qualified). Secrets are never copied — only
+    (Claude Code, Cursor, Codex, Prime, Hermes, project ``.mcp.json``). Config hits
+    become ``configured`` (never healthy/qualified). Secrets are never copied — only
     config file paths are recorded on ``config_sources``.
     """
 

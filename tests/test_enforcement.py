@@ -2,7 +2,7 @@
 
 Covers the single shared primitive ``check_enforcement`` (T005), the lifecycle
 verification gate composition, and the gateway dispatch guard. Fixtures come
-from :mod:`verdict.decision_kernel_demo` so these run credential-free with no
+from :mod:`tests.fixtures.decision_kernel_demo` so these run credential-free with no
 network and no wall-clock reliance (NFR-001); the only live clock use is the
 injectable ``now`` for the expiry path.
 
@@ -24,13 +24,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from verdict.decision_kernel import DecisionRecord, verify_decision
-from verdict.decision_kernel_demo import (
+from tests.fixtures.decision_kernel_demo import (
     build_demo_decision,
     degraded_decision,
     demo_inputs,
     denied_decision,
 )
+from verdict.decision_kernel import DecisionRecord, verify_decision
 from verdict.enforcement import (
     EnforcementContext,
     EnforcementGatewayError,
@@ -395,7 +395,7 @@ class TestDispatchWithEnforcement:
         assert out is result_payload
 
     def test_mapping_attestation_provider_supported(self, declined_record=None) -> None:
-        from verdict.decision_kernel_demo import denied_decision as _denied
+        from tests.fixtures.decision_kernel_demo import denied_decision as _denied
 
         excluded = _first_exclusion(_denied())
         with pytest.raises(EnforcementGatewayError):

@@ -29,12 +29,13 @@ import os
 import signal
 import subprocess  # nosec B404: launches an operator-supplied argv with shell=False.
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
+from verdict.paths import verdict_home
 from verdict.provider_bootstrap import (
     BootstrapDiagnostic,
     BootstrapError,
@@ -235,18 +236,13 @@ def _own_process_group(process: GatewayProcess) -> int | None:
     return pgid if pgid == process.pid else None
 
 
-def gateway_state_dir(*, home: Path | None = None, env: dict[str, str] | None = None) -> Path:
+def gateway_state_dir(*, env: Mapping[str, str] | None = None) -> Path:
     """Verdict state directory holding the gateway lock.
 
     ``VERDICT_HOME`` wins, then ``$HOME/.verdict``. Tests point ``HOME`` at a
     temporary directory, so no test touches the operator's real state.
     """
-    source = os.environ if env is None else env
-    configured = (source.get("VERDICT_HOME") or "").strip()
-    base = Path(configured) if configured else (home or Path(source.get("HOME") or Path.home()))
-    if not configured:
-        base = base / ".verdict"
-    return base.expanduser() / "gateway"
+    return verdict_home(env) / "gateway"
 
 
 def gateway_lock_key(gateway_url: str) -> str:

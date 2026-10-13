@@ -53,6 +53,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.paths import verdict_home
+
 HEALTH_CACHE_SCHEMA_VERSION = "1"
 
 STATE_FRESH = "fresh"
@@ -88,6 +90,10 @@ _LONG_TTL_CATEGORIES = frozenset(
 
 FRESH_SECONDS = 600.0
 USABLE_SECONDS = 1800.0
+# Multi-turn tool use is a stable model property; current liveness is gated
+# separately at HEALTHY. One constant sets both how long a probe-based agentic
+# PASS qualifies a route and how often the prober re-runs the agentic probe.
+AGENTIC_PROBE_TTL_SECONDS = 24 * 3600.0
 RATE_LIMIT_SECONDS = 60.0
 TRANSIENT_BASE_SECONDS = 60.0
 TRANSIENT_CAP_SECONDS = 900.0
@@ -154,9 +160,7 @@ def default_cache_path() -> Path:
     configured = os.getenv(ENV_CACHE_PATH)
     if configured and configured.strip():
         return Path(configured).expanduser().resolve()
-    home = (os.getenv("VERDICT_HOME") or "").strip()
-    base = Path(home).expanduser() if home else Path.home() / ".verdict"
-    return (base / "health-cache.json").resolve()
+    return (verdict_home() / "health-cache.json").resolve()
 
 
 def _aware(value: datetime, field_name: str) -> datetime:
@@ -448,7 +452,7 @@ def agentic_capability(entry: HealthEntry | None, now: datetime) -> dict[str, An
     """Capability is longer-lived session proof or the legacy short probe proof."""
     session = entry is not None and entry.session_agentic_at is not None
     checked = (entry.session_agentic_at if session else entry.agentic_checked_at) if entry else None
-    ttl = FRESH_SECONDS
+    ttl = AGENTIC_PROBE_TTL_SECONDS
     if session:
         try:
             ttl = float(os.getenv("VERDICT_AGENTIC_CAPABILITY_TTL_S", str(7 * 86400)))
@@ -586,6 +590,22 @@ class TokenBucket:
         self.removed = {key: stamp for key, stamp in self.removed.items() if stamp > cutoff}
         self.released = {key: stamp for key, stamp in self.released.items() if stamp > cutoff}
         return True
+
+    def available_at(self, now: datetime, amount: int = 1) -> datetime | None:
+        """When ``amount`` tokens are free; ``None`` when the capacity never allows it."""
+        current = _aware(now, "now")
+        if amount > self.capacity:
+            return None
+        start = current
+        if self.zeroed_until is not None:
+            start = max(start, _aware(self.zeroed_until, "zeroed_until"))
+        cutoff = start - timedelta(seconds=self.window_seconds)
+        live = sorted(_aware(stamp, "timestamp") for stamp in self.timestamps)
+        live = [stamp for stamp in live if stamp > cutoff]
+        excess = len(live) - (self.capacity - amount)
+        if excess <= 0:
+            return start
+        return max(start, live[excess - 1] + timedelta(seconds=self.window_seconds))
 
     def zero(self, until: datetime) -> None:
         """A 429 empties the bucket until ``until``."""
@@ -1420,6 +1440,11 @@ class HealthCache:
     def bucket_remaining(self, provider: str, now: datetime, *, pool: str | None = None) -> int:
         return self.bucket_for(provider, pool).remaining(now)
 
+    def bucket_available_at(
+        self, provider: str, now: datetime, *, pool: str | None = None, amount: int = 1
+    ) -> datetime | None:
+        return self.bucket_for(provider, pool).available_at(now, amount)
+
     def reserve_bucket(
         self,
         provider: str,
@@ -1523,6 +1548,7 @@ class HealthCache:
 
 
 __all__ = [
+    "AGENTIC_PROBE_TTL_SECONDS",
     "CATEGORY_AUTH",
     "CATEGORY_CATALOG_STALE",
     "CATEGORY_GONE",

@@ -4,6 +4,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["verdict"]
+# The TypeScript client SDK publishes to npm from verdict/client-sdk, and the vendoring
+# provenance note stays in the sdist. tests/test_wheel_contents.py enforces wheel contents.
+exclude = ["verdict/client-sdk", "verdict/openspec_vendor/VENDORED.md"]
 artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas/context-pack.v1.json", "schemas/runtime-health.v1.json", "schemas/runtime-passport.v1.json", "schemas/gateway-adapter.v1.json", "schemas/proof-receipt.v1.json", "verdict/schemas/claims-ledger.v1.json"]
 
 [tool.hatch.build.targets.wheel.force-include]

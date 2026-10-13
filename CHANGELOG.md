@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A manual model refresh plan no longer asks one `[y/N]` for every route. It groups routes by capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED) and asks about each group, or "free only"; UNKNOWN and METERED default to no and show an estimated spend. `verdict eligibility --verified --refresh` without a terminal probes UNKNOWN or METERED routes only with `--include-unknown` or `--allow-metered` (BOD-331).
 - Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first, one slot is reserved for a fresh healthy subscription fallback, and routes refreshed during selection are used in the same selection. Found by live certification rehearsals.
 - The health cache default path follows `VERDICT_HOME` like every other store. **Behaviour change:** with `VERDICT_HOME` set, an older `~/.verdict/health-cache.json` is no longer read; route health rebuilds on the next refresh or prove cycle, and session evidence can be re-imported with `verdict prove-at-rest import-sessions`.
 - With `--state-file` or `--inject`, `verdict orchestrate` reads `health-cache.json` next to the state file (the file its refresh job writes), not the default cache. Isolated and chaos runs therefore start from their own evidence.

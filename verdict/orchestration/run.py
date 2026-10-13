@@ -35,6 +35,7 @@ from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
+    FailureClassification,
     FailureClassifier,
     ModelSelector,
     NodeState,
@@ -43,11 +44,12 @@ from verdict.orchestration.contracts import (
     RunOutcome,
     TaskRequirements,
     WorkerExecutor,
+    WorkerTerminal,
     WorkGraph,
     WorkNode,
 )
-from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
-from verdict.orchestration.planner import FrontierPlanner, hydrate_node_prompt
+from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
+from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
 from verdict.orchestration.worker_context import WorkerPrompt
 
 if TYPE_CHECKING:
@@ -430,7 +432,7 @@ async def plan_with_failover(
             exclude_pools=frozenset(tried_pools),
             max_capability_tier=2,
         )
-        choice, _ = selector.select(requirements, now=now())
+        choice, considered = selector.select(requirements, now=now())
         if choice is None:
             break
         events.emit(
@@ -457,12 +459,26 @@ async def plan_with_failover(
             )
         except OrchestrationError as exc:
             last = f"{choice.route_id}: {exc}"
-            source = (
-                exc.terminal
-                if isinstance(exc, PlanningExecutorError)
-                else _terminal_from_error(choice.route_id, str(exc))
-            )
-            failure = classifier.classify(source, now=now())
+            invalid_plan = isinstance(exc, PlanValidationError)
+            source: WorkerTerminal | None = None
+            if invalid_plan:
+                # The model answered; its plan failed validation. That is planning
+                # quality, not capacity: no cooldown, and never sniff status codes
+                # from node ids or file names in the validation text.
+                failure = FailureClassification(
+                    category="plan_invalid",
+                    action="REROUTE",
+                    cooldown_seconds=0,
+                    scope="none",
+                    evidence=str(exc)[:300],
+                )
+            else:
+                source = (
+                    exc.terminal
+                    if isinstance(exc, PlanningExecutorError)
+                    else _terminal_from_error(choice.route_id, str(exc))
+                )
+                failure = classifier.classify(source, now=now())
             state = (
                 "QUOTA"
                 if failure.category in {"quota_exhausted", "rate_limited"}
@@ -474,7 +490,8 @@ async def plan_with_failover(
                 route_id=choice.route_id,
                 category=failure.category,
                 detail=str(exc)[:300],
-                fault_injected=source.session_ref.startswith("fault-injected"),
+                fault_injected=source is not None
+                and source.session_ref.startswith("fault-injected"),
             )
             if failure.action == "BLOCK":
                 raise OrchestrationError(
@@ -482,7 +499,7 @@ async def plan_with_failover(
                     f"{failure.evidence}"
                 ) from exc
             feedback = getattr(selector, "record_session_failure", None)
-            if callable(feedback):
+            if source is not None and callable(feedback):
                 try:
                     recorded = feedback(
                         choice.route_id,
@@ -506,28 +523,43 @@ async def plan_with_failover(
                         phase="session_feedback",
                         reason=f"persistence_error:{type(feedback_error).__name__}",
                     )
+            credential_failure = (
+                failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
+            )
             if failure.scope != "none" and failure.cooldown_seconds > 0:
                 selector.record_failure(choice.route_id, failure, now=now())
                 until = datetime.fromtimestamp(
                     now().timestamp() + failure.cooldown_seconds, timezone.utc
                 )
-                pooled = (
-                    failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES
-                )
                 events.emit(
                     "cooldown",
-                    key=pool_of(choice.route_id) if pooled else choice.route_id,
-                    scope="pool" if pooled else "route",
+                    key=pool_of(choice.route_id) if credential_failure else choice.route_id,
+                    scope="pool" if credential_failure else "route",
                     category=failure.category,
                     until=until.isoformat(timespec="seconds"),
                 )
-            tried.add(choice.route_id)
-            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
-                tried_pools.add(pool_of(choice.route_id))
+            # Reselection never returns to the same backend through another alias
+            # (cc/ and claude/, no-think/ wrappers share one credential pool). A
+            # credential failure or an invalid plan drops the whole pool for this
+            # planning call; any other failure drops every alias of the same model.
+            # An invalid plan is the model's own quality, so the same model id is
+            # dropped from other pools too.
+            failed_pool, failed_model = backend_model(choice.route_id)
+            excluded_pool = failed_pool if credential_failure or invalid_plan else ""
+            if excluded_pool:
+                tried_pools.add(excluded_pool)
+            excluded = {choice.route_id}
+            for candidate in considered:
+                pool, model = backend_model(candidate.route_id)
+                if model == failed_model and (invalid_plan or pool == failed_pool):
+                    excluded.add(candidate.route_id)
+            tried.update(excluded)
             events.emit(
                 "controller",
                 state="REPLACING",
                 detail=f"reselecting planner after {failure.category}",
+                excluded_pool=excluded_pool,
+                excluded_routes=sorted(excluded),
             )
             continue
         events.emit(

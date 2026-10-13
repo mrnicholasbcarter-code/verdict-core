@@ -13,9 +13,16 @@ Model admission, bounded recovery, a separate review route and receipts you can 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-<!-- TODO(Train B, R1): hero = one real-time recording of a real `verdict orchestrate` run through OmniRoute,
-     committed with its proof bundle under docs/proof/<name>-live-<date>/ (date, routes, "real run",
-     bundle link, verify command in the caption). No fixture or sped-up media here. -->
+### Watch the interface in action
+
+<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="Offline UI walkthrough with scripted workers: a task DAG, injected rate-limit recovery, a scripted review, receipt verification and rejection of a tampered receipt" width="860"></picture>
+
+**Offline UI walkthrough — scripted workers and injected failures; no live model calls.**
+Shows the interface and receipt verification, not model performance, savings or release certification.
+Recorded terminal replay at 1×; idle gaps over 1.5 seconds are capped.
+[Recording details and full cast](docs/guides/offline-demo.md#offline-tui-walkthrough) · [Live-run evidence](#proof-from-a-live-run)
+
+<!-- A future live-model recording must include its committed proof bundle and truthful provenance. -->
 <!-- TODO(Train B, badges row 2, gated): "live runs on record" (dynamic JSON from committed receipts) · Codespaces "dev sandbox". -->
 
 [Get started](#try-it-without-api-keys) · [How a run works](#how-it-works) · [Live runs](#proof-from-a-live-run) · [Docs](#documentation)
@@ -123,9 +130,12 @@ view is `/eligibility`.
 /eligibility refresh
 ```
 
-For a manual refresh, Verdict shows a bounded request plan and asks you to confirm before
-sending probes; the plan may include metered or unknown routes, which can cost money. Automatic
-refresh only touches free or already-paid routes.
+For a manual refresh, Verdict shows a bounded request plan grouped by capacity class (FREE,
+SUBSCRIPTION, UNKNOWN, METERED) and asks about each group separately, or "free only". UNKNOWN
+and METERED routes can cost money: they default to no and show an estimated spend. From a
+script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes
+unless you add `--include-unknown` or `--allow-metered`. Automatic refresh only touches free
+or already-paid routes.
 
 **Pick your Prime Agent models with a preview and a one-step undo.**
 

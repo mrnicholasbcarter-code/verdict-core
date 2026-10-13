@@ -143,6 +143,7 @@ def test_finding1_confirmed_metered_plan_executes(tmp_path: Path) -> None:
     r = action_models_refresh_execute(
         confirmed=True,
         plan=plan,
+        approved_classes=[CAPACITY_METERED],
         snapshot=snap,
         now=NOW,
         cache=HealthCache(tmp_path / "health-cache.json"),
@@ -191,6 +192,7 @@ def test_finding1_confirmed_unknown_plan_executes(tmp_path: Path) -> None:
     r = action_models_refresh_execute(
         confirmed=True,
         plan=plan,
+        approved_classes=[CAPACITY_UNKNOWN],
         snapshot=snap,
         now=NOW,
         cache=HealthCache(tmp_path / "health-cache.json"),
@@ -741,6 +743,7 @@ def test_consented_unit1_confirmation_rows_and_auto_gate(tmp_path: Path) -> None
     result = action_models_refresh_execute(
         confirmed=True,
         plan=plan,
+        approved_classes=[CAPACITY_UNKNOWN, CAPACITY_METERED],
         snapshot=snap,
         now=NOW,
         cache=HealthCache(tmp_path / "consent-cache.json"),
@@ -817,6 +820,7 @@ def test_combined_chat_only_liveness_projects_verified_chat_only(tmp_path: Path)
     result = action_models_refresh_execute(
         confirmed=True,
         plan=plan,
+        approved_classes=[CAPACITY_METERED],
         snapshot=snap,
         now=NOW,
         cache=HealthCache(cache_path),
