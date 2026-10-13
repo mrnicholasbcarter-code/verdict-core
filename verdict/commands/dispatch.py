@@ -535,6 +535,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             service_ids=getattr(args, "service_ids", None),
             output_json=getattr(args, "json", False),
         )
+    elif args.command == "host":
+        legacy.cmd_host(args.host_command, output_json=getattr(args, "json", False))
     elif args.command == "prove-at-rest":
         legacy.cmd_prove_at_rest(
             args.prove_command,

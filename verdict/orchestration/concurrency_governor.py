@@ -54,6 +54,11 @@ class ResourcePressure:
     ram: float = 0.0
     disk: float = 0.0
 
+    @classmethod
+    def unknown(cls) -> ResourcePressure:
+        """No evidence: every dimension NaN, which the governor treats as 1.0."""
+        return cls(cpu=math.nan, ram=math.nan, disk=math.nan)
+
     def max_pressure(self) -> float:
         """Return the highest pressure across all dimensions, NaN → 1.0."""
         values = [self.cpu, self.ram, self.disk]
@@ -130,6 +135,11 @@ def _effective_cap(base: int, pressure: float) -> int:
     # effective = base * (1 - pressure), clamped to [1, base]
     raw = base * (1.0 - pressure)
     return max(1, min(base, int(raw)))
+
+
+def effective_cap(base: int, pressure: ResourcePressure) -> int:
+    """*base* lowered by the highest pressure dimension; NaN counts as 1.0, floor 1."""
+    return _effective_cap(base, pressure.max_pressure())
 
 
 # ---------------------------------------------------------------------------

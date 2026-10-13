@@ -183,6 +183,29 @@ def _isolate_home(
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _calm_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never sample the real host or write its shared pressure state.
+
+    ``verdict.host_pressure.current`` answers GREEN from a calm fixed sample;
+    tests of the sampler and the hysteresis call ``sample``/``govern`` directly.
+    """
+    from verdict import host_pressure
+
+    calm = host_pressure.HostSample(
+        t=0.0,
+        psi={
+            "memory": {"some_avg60": 0.0, "full_avg10": 0.0},
+            "cpu": {"some_avg60": 0.0},
+            "io": {"some_avg60": 0.0, "full_avg10": 0.0},
+        },
+        mem_total=16 * 1024**3,
+        mem_available=12 * 1024**3,
+    )
+    _, decision = host_pressure.govern(calm, {"level": "GREEN", "since": 0.0, "calm": 0})
+    monkeypatch.setattr(host_pressure, "current", lambda **_kwargs: decision)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _real_prime_registry_untouched() -> Any:
     """Fail the run if any test modified the real Prime model registry."""

@@ -201,7 +201,7 @@ The operator resolved the open decisions below on 2026-09-29. The feature flag `
 |---|---|---|
 | 1 | Initial cap values | 2 stories / 3 coding workers / 1 integration slot (the "Initial" row above). The operator raises them explicitly. |
 | 2 | Footprint source of truth | (b) Inferred from the story branch's diff against `main`. Unknown or empty footprints SERIALIZE (fail-closed). |
-| 3 | Resource pressure inputs | Memory and swap. This host is memory-bound (8 GB). Pressure is the higher of used-RAM fraction and swap-use fraction; swap above 3 GB counts as pressure 0.8. CPU load is recorded but is not an input. |
+| 3 | Resource pressure inputs | Superseded 2026-10-13 by [ADR-039](ADR-039-host-pressure-admission.md): pressure stall information, `MemAvailable`, the disk swap I/O rate and OOM kills set a GREEN/YELLOW/RED level with hysteresis; swap size and ZRAM never count. (Was: higher of used-RAM and swap-use fractions; swap above 3 GB = 0.8.) |
 | 4 | Provider pool health | OmniRoute live inventory plus the most recent probe result per route. A pool with no probe result is unknown, so DEFER. |
 | 5 | Late collision policy | (a) Wait for the conflicting story to finish, then re-check before integration. |
 | 6 | Kill-switch drain | Graceful drain. In-flight stories finish, and no new stories are admitted. |

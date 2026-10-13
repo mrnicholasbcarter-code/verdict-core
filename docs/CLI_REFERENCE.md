@@ -15,7 +15,7 @@ The registered subcommands below are grouped by their primary use. Run
 | Setup and configuration | `setup`, `plan`, `check`, `doctor`, `compat`, `uninstall` |
 | Routing and selection | `route`, `run`, `compare`, `choose`, `simulate`, `models`, `inspect`, `failover-proof`, `replay` |
 | Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
-| Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify` |
+| Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify`, `host` |
 | Metadata, memory, and integrations | `metadata`, `memory`, `mcp`, `hook`, `harness`, `runtime` |
 | Traces and demo | `trace`, `demo` |
 | Development workflows | `autodev`, `autodev-golden-path`, `quickstart` |
@@ -48,7 +48,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--runs-dir RUNS_DIR` | Run directory root |
 | `--constraints-file PATH` | UTF-8 text (at most 8 KiB) added to the planner prompt under `CONSTRAINTS:`, for example lessons from an earlier run. `run_started` records only its SHA-256 |
 | `--gateway GATEWAY` | Gateway endpoint or identifier |
-| `--max-parallel MAX_PARALLEL` | Maximum parallel workers |
+| `--max-parallel MAX_PARALLEL` | Maximum parallel workers at host level GREEN; half at YELLOW, one at RED ([`verdict host pressure`](#verdict-host-pressure--host-pressure-level-for-admission)). Each change is a `controller` event with state `HOST_PRESSURE` |
 | `--attempt-timeout ATTEMPT_TIMEOUT` | Seconds per worker attempt (default and maximum: 900; larger values are reduced to 900) |
 | `--run-deadline RUN_DEADLINE` | Overall run deadline |
 | `--prefer PREFER` | Comma-separated provider preference among subscription capacity (ranking policy, not a fallback chain) |
@@ -572,6 +572,36 @@ verdict suggest [flags]
 
 ---
 
+### `verdict host pressure` — Host pressure level for admission
+
+```bash
+verdict host pressure [--json]
+```
+
+Samples the host read-only and steps the shared hysteresis level in
+`$VERDICT_HOME/host-pressure.json` ([ADR-039](adr/ADR-039-host-pressure-admission.md)).
+Shows the level (`GREEN`, `YELLOW`, `RED`), the metrics that set it, the hold
+(calm samples and dwell still needed before it steps down), each signal against
+its thresholds, RAM from `MemAvailable` only, and every swap device with its
+kind (`zram` or `disk`) and priority. ZRAM is never counted as RAM; swap size is
+never an input.
+
+`--json` keys: `level`, `target` (what the metrics alone call for), `reasons`,
+`hold`, `evidence_missing`, `pressure` (0, 0.5 or 1.0; `null` when evidence is
+missing), `metrics`, `thresholds`, `calm`, `since`, `ram`, `psi`, `swap`,
+`zram`, `oom_kill`, `cgroup`, `load1`, `cpus`, `sampled_at`, `errors`,
+`state_path`.
+
+The level limits new work: `verdict orchestrate` runs at most `--max-parallel`
+workers at GREEN, half at YELLOW and one at RED (running workers are never
+cancelled); the supervisor starts no new story and `verdict improve` no new
+cycle at RED or without evidence; the prover's agentic concurrency follows the
+same scale.
+
+Exit code: `0` at GREEN or YELLOW, `1` at RED or when evidence is missing.
+
+---
+
 ### `verdict doctor` — Scan & repair config/connectivity
 
 ```bash
@@ -599,8 +629,9 @@ shared diagnostics collector (`_collect_doctor_diagnostics` in
 `verdict/cli.py`), so they report the same `issues` and `warnings` and agree
 on exit code for the same host state. Text mode renders the result; `--json`
 serialises it (`status`, `issues`, `warnings`, `repaired`, `sections`,
-`documentation_preflight`, `gateway_lifecycle`, `shared_memory`,
-`capability_bootstrap`, `runtime_health`).
+`documentation_preflight`, `host_pressure`, `gateway_lifecycle`, `shared_memory`,
+`capability_bootstrap`, `runtime_health`). `host_pressure` is the payload of
+`verdict host pressure --json`.
 
 `gateway_lifecycle` reports gateway readiness as a named state
 (`not_required`, `already_ready`, `started`, `failed_to_start`, `unhealthy`)
@@ -632,6 +663,9 @@ Issues (exit `1`):
 - Missing required credential.
 - Documentation preflight did not pass, unless it is network-only (see below),
   or timed out (`--preflight-timeout`).
+- Host pressure RED, or its evidence (`/proc/pressure`, `/proc/meminfo`) is
+  missing ([ADR-039](adr/ADR-039-host-pressure-admission.md)). YELLOW is shown
+  in the `Host pressure` section and does not change the exit code.
 
 Warnings (exit unaffected):
 

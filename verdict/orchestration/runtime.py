@@ -31,12 +31,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from verdict import host_pressure
 from verdict.context_pack import ContextPlan, estimate_tokens
+from verdict.host_pressure import HostDecision, resource_pressure
 from verdict.orchestration.candidate_builder import (
     MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
 )
 from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
+from verdict.orchestration.concurrency_governor import effective_cap
 from verdict.orchestration.contracts import (
     TRANSITIONS,
     CapacityClass,
@@ -142,6 +145,59 @@ class RuntimePolicy:
     min_context_budget_bytes: int = 4_000
     # Repo quality gates belong to the integration runtime, not the planner.
     run_repo_gates: bool = True
+    # ADR-039: the worker slot limit follows the host pressure level.
+    follow_host_pressure: bool = False
+
+
+# How often a waiting attempt re-reads the host pressure level (ADR-039).
+HOST_REFRESH_SECONDS = 10.0
+
+
+class _WorkerSlots:
+    """Worker slots. With a host sampler the limit is the configured parallelism
+    lowered by host pressure (ADR-039): it shrinks as soon as the host level rises
+    and grows back only as the level steps down. A held slot is never taken back,
+    so running attempts finish; only new attempts wait."""
+
+    def __init__(
+        self,
+        base: int,
+        host: Callable[[], HostDecision] | None,
+        on_change: Callable[[HostDecision, int], None],
+    ) -> None:
+        self.base = self.limit = base
+        self.active = 0
+        self._host = host
+        self._on_change = on_change
+        self._sampled_at: float | None = None
+        self._freed = asyncio.Event()
+
+    def refresh(self) -> None:
+        if self._host is None:
+            return
+        now = time.monotonic()
+        first = self._sampled_at is None
+        if not first and now - cast(float, self._sampled_at) < HOST_REFRESH_SECONDS:
+            return
+        self._sampled_at = now
+        decision = self._host()
+        limit = effective_cap(self.base, resource_pressure(decision))
+        if first or limit != self.limit:
+            self.limit = limit
+            self._on_change(decision, limit)
+
+    async def __aenter__(self) -> None:
+        self.refresh()
+        while self.active >= self.limit:
+            self._freed.clear()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._freed.wait(), HOST_REFRESH_SECONDS)
+            self.refresh()
+        self.active += 1
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.active -= 1
+        self._freed.set()
 
 
 @dataclass
@@ -300,6 +356,7 @@ class DagRuntime:
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         base_ref: str = "HEAD",
         inflight: dict[str, str] | None = None,
+        host: Callable[[], HostDecision] | None = None,
     ) -> None:
         self.repo, self.run_dir, self.graph = repo, run_dir, graph
         self.selector, self.executor, self.classifier = selector, executor, classifier
@@ -312,7 +369,11 @@ class DagRuntime:
         # selections spread across routes; reserved at SELECTION time, not dispatch.
         self.inflight: dict[str, str] = inflight if inflight is not None else {}
         self._run_started_monotonic: float | None = None
-        self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
+        self._slots = _WorkerSlots(
+            min(policy.max_parallel, graph.max_parallel),
+            (host or host_pressure.current) if policy.follow_host_pressure else None,
+            self._host_pressure_changed,
+        )
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
         self._capacity: dict[str, str] = {}
@@ -348,6 +409,17 @@ class DagRuntime:
 
     def route_load(self, route_id: str) -> int:
         return sum(1 for r in self.inflight.values() if r == route_id)
+
+    def _host_pressure_changed(self, decision: HostDecision, limit: int) -> None:
+        self.events.emit(
+            "controller",
+            state="HOST_PRESSURE",
+            level=decision.level.value,
+            max_parallel=limit,
+            configured_max_parallel=self._slots.base,
+            reasons=list(decision.reasons),
+            detail=f"{decision.summary()}; max parallel {limit}",
+        )
 
     # ------------------------------------------------------------------ controls
     def _poll_controls(self, pending: dict[str, asyncio.Task[None]]) -> RunOutcome | None:
@@ -576,6 +648,7 @@ class DagRuntime:
             rationale=list(self.graph.rationale),
             layers=[list(layer) for layer in self.graph.layers()],
         )
+        self._slots.refresh()  # record the host level the run starts under
         pending: dict[str, asyncio.Task[None]] = {}
         try:
             while True:

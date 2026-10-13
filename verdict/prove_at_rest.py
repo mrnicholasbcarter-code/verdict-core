@@ -63,7 +63,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict import host_pressure
+from verdict.host_pressure import HostDecision, resource_pressure
 from verdict.http_safety import open_no_redirect
+from verdict.orchestration.concurrency_governor import effective_cap
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.eligibility import capacity_class_of
@@ -363,6 +366,8 @@ class CycleStats:
     agentic_probed: int = 0
     agentic_passed: int = 0
     agentic_stopped_reason: str = ""
+    # Agentic conversations allowed at once after host pressure (ADR-039).
+    agentic_concurrency: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -376,6 +381,7 @@ class CycleStats:
             "agentic_probed": self.agentic_probed,
             "agentic_passed": self.agentic_passed,
             "agentic_stopped_reason": self.agentic_stopped_reason,
+            "agentic_concurrency": self.agentic_concurrency,
         }
 
 
@@ -891,6 +897,8 @@ class Prober:
     # BOD-338: confirm the gateway key independently of provider credentials.
     # Offline/injected transports without a checker use a majority-pool fallback.
     gateway_auth_check: Callable[[float], ProbeExchange] | None = None
+    # ADR-039: host pressure lowers the agentic concurrency for each phase.
+    host: Callable[[], HostDecision] | None = None
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1302,9 +1310,13 @@ class Prober:
         running: dict[Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]], AdmittedRoute]
         running = {}
         busy: Counter[str] = Counter()
-        with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
+        concurrency = self.agentic_concurrency
+        if self.host is not None:
+            concurrency = effective_cap(concurrency, resource_pressure(self.host()))
+        stats.agentic_concurrency = concurrency
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
             while pending or running:
-                limit = 1 if self._auth_fail_buffer else self.agentic_concurrency
+                limit = 1 if self._auth_fail_buffer else concurrency
                 if not stats.agentic_stopped_reason:
                     if self._stop.is_set():
                         stats.agentic_stopped_reason = "stopped"
@@ -2251,6 +2263,7 @@ def build_live_daemon(
         gateway_auth_check=(
             live_gateway_auth_check(origin, api_key=key) if transport is None else None
         ),
+        host=host_pressure.current,
     )
     return ProverDaemon(prober=prober, consented=allow_live_probe)
 

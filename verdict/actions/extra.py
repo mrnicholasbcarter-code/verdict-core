@@ -618,6 +618,20 @@ def _action_hook_record(**kwargs: Any) -> ActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Host
+# ---------------------------------------------------------------------------
+
+
+def _action_host_pressure(**kwargs: Any) -> ActionResult:
+    """Sample the host and step the shared pressure level (ADR-039)."""
+    from verdict.host_pressure import Level, current
+
+    decision = current()
+    ok = decision.level is not Level.RED and not decision.evidence_missing
+    return ActionResult(data=decision.to_dict(), ok=ok, exit_code=0 if ok else 1)
+
+
+# ---------------------------------------------------------------------------
 # Runtime family
 # ---------------------------------------------------------------------------
 

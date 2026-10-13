@@ -138,6 +138,8 @@ class DoctorDiagnostics:
         self.capability_report: dict[str, Any] = {}
         self.documentation_preflight: dict[str, Any] = {}
         self.shared_memory: Any = None
+        #: Host pressure level and samples (ADR-039).
+        self.host_pressure: dict[str, Any] = {}
         self.config_loaded: bool = False
         #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
         self.gateway_lifecycle: dict[str, Any] = {}
@@ -258,6 +260,28 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
     diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
     if outcome.diagnostic is not None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
+
+
+def _doctor_host_pressure(diag: DoctorDiagnostics) -> None:
+    """Host pressure level (ADR-039). RED or missing evidence is an issue: admission
+    then starts no new story or improvement cycle. YELLOW is shown, not failed."""
+    from verdict.host_pressure import Level, current
+
+    decision = current()
+    diag.host_pressure = decision.to_dict()
+    state = {Level.GREEN: "ok", Level.YELLOW: "warn"}.get(decision.level, "failed")
+    if decision.evidence_missing:
+        state = "failed"
+        diag.issues.append(
+            f"Host pressure evidence missing ({', '.join(decision.errors)}): admission treats "
+            "the host as fully loaded. Check /proc/pressure and /proc/meminfo."
+        )
+    elif decision.level is Level.RED:
+        diag.issues.append(
+            f"Host pressure RED ({', '.join(decision.reasons) or decision.hold}): no new story "
+            "or improvement cycle starts until it steps down. See 'verdict host pressure'."
+        )
+    diag.sections.append(("Host pressure", state, decision.summary()))
 
 
 def _collect_doctor_diagnostics(
@@ -523,6 +547,7 @@ def _collect_doctor_diagnostics(
 
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
+    _doctor_host_pressure(diag)
 
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")

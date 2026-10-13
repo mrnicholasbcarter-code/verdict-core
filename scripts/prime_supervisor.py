@@ -328,6 +328,7 @@ def _check_admission(
     # If an external evaluator is injected (tests), delegate to it.
     if ADMISSION_EVALUATOR is not None:
         return ADMISSION_EVALUATOR(repo=repo, state=state), None
+    from verdict import host_pressure
 
     # Read real story metadata from existing supervisor state files.
     meta = _read_story_metadata(state, story_id_override=story_id_override)
@@ -359,6 +360,7 @@ def _check_admission(
         footprint=footprint,
         admission_state=admission_state,
         config=config,
+        pressure=host_pressure.resource_pressure(host_pressure.current()),
     )
 
     if not result.admit:

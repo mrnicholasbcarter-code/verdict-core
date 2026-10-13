@@ -2738,6 +2738,67 @@ def cmd_uninstall(purge_data: bool = False) -> None:
         present.warn("Purged .verdict memory data directory.")
 
 
+def cmd_host(operation: str, *, output_json: bool = False) -> None:
+    """Show the host pressure level that limits how much work Verdict starts (ADR-039)."""
+    from verdict.actions.registry import run_action
+
+    result = run_action(f"host.{operation}")
+    data = result.data
+    if output_json or "level" not in data:
+        print(json.dumps(data, indent=2, sort_keys=True, default=str))
+    else:
+        from verdict import present
+
+        gib = 1024**3
+        present.header("Host pressure")
+        show = {"GREEN": present.ok, "YELLOW": present.warn}.get(data["level"], present.fail)
+        show(f"level {data['level']}", ", ".join(data["reasons"]) or "all signals below thresholds")
+        if data["hold"]:
+            present.note(data["hold"])
+        ram = data["ram"]
+        if ram["mem_total"]:
+            present.kv(
+                {
+                    "RAM available (MemAvailable)": f"{ram['mem_available'] / gib:.1f} GiB of "
+                    f"{ram['mem_total'] / gib:.1f} GiB",
+                    "load (1 min)": f"{data['load1']} on {data['cpus']} CPUs",
+                    "admission pressure": data["pressure"],
+                }
+            )
+        present.table(
+            ("metric", "value", "yellow at", "red at"),
+            (
+                (
+                    name,
+                    value,
+                    data["thresholds"]["yellow"].get(name),
+                    data["thresholds"]["red"].get(name),
+                )
+                for name, value in data["metrics"].items()
+            ),
+            title="Signals",
+        )
+        present.table(
+            ("device", "kind", "priority", "used GiB", "size GiB"),
+            (
+                (
+                    d["name"],
+                    d["kind"],
+                    d["prio"],
+                    f"{d['used'] / gib:.2f}",
+                    f"{d['size'] / gib:.2f}",
+                )
+                for d in data["swap"]
+            ),
+            title="Swap devices (ZRAM is never counted as RAM)",
+            empty="no swap devices",
+        )
+        for error in data["errors"]:
+            present.warn("missing evidence", error)
+    if not result.ok:
+        raise SystemExit(result.exit_code or 1)
+
+
 def cmd_runtime(
     operation: str,
     *,

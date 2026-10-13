@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 # All imports from the module under test.
+from verdict.orchestration.concurrency_governor import ResourcePressure
 from verdict.orchestration.supervisor_admission import (
     AdmissionState,
     RunningStory,
@@ -40,6 +41,9 @@ from verdict.orchestration.supervisor_admission import (
 # ---------------------------------------------------------------------------
 
 _PYTHON = sys.executable
+
+# Measured calm host: no pressure evidence now counts as full pressure (ADR-039).
+CALM = ResourcePressure()
 
 
 def _subprocess_hold_story_lock(
@@ -153,6 +157,7 @@ class TestDisjointFootprintsBothAdmitted:
                 ),
                 admission_state=admission,
                 config=SupervisorGovernorConfig(max_stories=3, max_coding_workers=3),
+                pressure=CALM,
             )
             assert result.admit is True
         finally:
@@ -201,6 +206,7 @@ class TestSameFileSerialize:
                     story_id="story-y", write_paths=frozenset(["src/api.py"])
                 ),
                 admission_state=admission,
+                pressure=CALM,
             )
             assert result.admit is False
             assert result.reason_code == "SERIALIZE"
@@ -377,6 +383,7 @@ class TestCapReachedDefers:
                 footprint=StoryFootprintV1(story_id="story-3", write_paths=frozenset(["src/c.py"])),
                 admission_state=admission,
                 config=SupervisorGovernorConfig(max_stories=2),
+                pressure=CALM,
             )
             assert result.admit is False
             assert result.reason_code == "SERIALIZE"
@@ -426,6 +433,7 @@ class TestMetadataMissingSerialize:
                     story_id="story-new", write_paths=frozenset(["src/new.py"])
                 ),
                 admission_state=admission,
+                pressure=CALM,
             )
             assert result.admit is False
             assert result.reason_code == "SERIALIZE"
@@ -612,6 +620,7 @@ class TestReadStoryMetadata:
             main_sha="abc123",
             footprint=StoryFootprintV1(story_id="unknown-story"),
             admission_state=admission,
+            pressure=CALM,
         )
         # No running stories → admits (empty footprint is unknown but
         # collide() only triggers against running stories).
@@ -860,6 +869,7 @@ class TestSupervisorLockNarrowingFlagOn:
                 footprint=StoryFootprintV1(story_id="story-c", write_paths=frozenset(["src/c.py"])),
                 admission_state=admission,
                 config=config,
+                pressure=CALM,
             )
             assert result.admit is False, "Third story should be deferred at cap=2"
         finally:

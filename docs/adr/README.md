@@ -105,6 +105,7 @@ hardening pass (successor for ADR-023).
 | [036](ADR-036-goal-to-receipt-orchestration.md) — Goal-to-receipt orchestration | Frontier DAG, capacity-aware eligibility ladder, same-node reassignment, independent OCR review, fail-closed receipt, supervised controller | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (live runs + fresh-clone certification) | Scope successor to ADR-023 for multi-worker execution |
 | [037](ADR-037-supervisor-concurrency-governor.md) — Supervisor concurrency governor | Bounded concurrent stories under one supervisor; `VERDICT_MULTI_STORY` off by default | Accepted | *(new — pending ecosystem re-audit)* | PARTIALLY_TRUE | — |
 | [038](ADR-038-improvement-cycle.md) — Measured improvement cycle | `verdict improve`: bounded cycles above a supervised run, measured only from recomputable receipt evidence, deterministic lessons, unchanged-relaunch refusal | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (offline tests + live cycles 2026-10-12) | Amends ADR-036 |
+| [039](ADR-039-host-pressure-admission.md) — Host pressure governs admission | PSI, MemAvailable and disk swap I/O set a GREEN/YELLOW/RED level with hysteresis; supervisor, orchestrate, improve and the prover admit by it; no evidence fails closed | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (fake /proc tests + live host 2026-10-13) | Amends ADR-037 decision 3 |
 
 ## Duplicate / superseded copies (retain for inbound links)
 

@@ -41,6 +41,16 @@ def register(subparsers: Any) -> None:
     )
     runtime_reconcile_p.add_argument("--json", action="store_true", help="Output JSON")
 
+    host_p = subparsers.add_parser(
+        "host", help="Host resources that limit how much work Verdict starts"
+    )
+    host_sub = host_p.add_subparsers(dest="host_command", required=True)
+    host_pressure_p = host_sub.add_parser(
+        "pressure",
+        help="Sample memory/CPU/IO pressure, RAM, swap and ZRAM; show the admission level",
+    )
+    host_pressure_p.add_argument("--json", action="store_true", help="Output JSON")
+
     prove_p = subparsers.add_parser(
         "prove-at-rest", help="Probe admitted routes into the health cache (daemon or once)"
     )

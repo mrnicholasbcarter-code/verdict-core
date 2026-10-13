@@ -362,10 +362,11 @@ def evaluate_admission(
     """Run the full ADR-037 admission pipeline for *story_id*.
 
     Returns an :class:`AdmissionDecision` with *admit=True* only when all
-    three gates pass.  Fail-closed on any unknown/missing evidence.
+    three gates pass.  Fail-closed on any unknown/missing evidence: no
+    *pressure* counts as full pressure (``verdict.host_pressure`` measures it).
     """
     cfg = config or DEFAULT_CONFIG
-    pressure = pressure or ResourcePressure()  # unknown → 0.0 per-dim; governor NaN→1.0
+    pressure = ResourcePressure.unknown() if pressure is None else pressure
 
     # --- Gate 1: ready_decision -------------------------------------------
     rd: ReadyDecision = ready_decision(labels=labels, deps=deps, main_sha=main_sha)
@@ -386,7 +387,14 @@ def evaluate_admission(
                 detail={"collides_with": rs.story_id, "collision_reason": col_reason.value},
             )
 
-    # --- Gate 3: governor -------------------------------------------------
+    # --- Gate 3: host pressure and governor ---------------------------------
+    already_running = any(rs.story_id == story_id for rs in running)
+    if pressure.max_pressure() >= 1.0 and not already_running:
+        return AdmissionDecision(
+            admit=False,
+            reason_code="DEFER",
+            reason="host pressure at maximum (RED or no evidence); no new story starts",
+        )
     caps = GovernorCaps(
         max_stories=cfg.max_stories,
         max_coding_workers=cfg.max_coding_workers,
@@ -397,7 +405,7 @@ def evaluate_admission(
         running_stories=len(running),
         running_coding_workers=len(running),  # conservative: 1 worker per story
         running_integration_slots=0,
-        story_is_already_running=any(rs.story_id == story_id for rs in running),
+        story_is_already_running=already_running,
     )
     request = AdmitRequest(
         story_id=story_id, needs_coding_worker=True, needs_integration_slot=False

@@ -388,6 +388,7 @@ def _action_doctor(**kwargs: Any) -> ActionResult:
             for label, state, detail in diag.sections
         ],
         "documentation_preflight": diag.documentation_preflight,
+        "host_pressure": diag.host_pressure,
         "gateway_lifecycle": diag.gateway_lifecycle,
         "shared_memory": diag.shared_memory,
         "capability_bootstrap": diag.capability_report,
@@ -1320,6 +1321,7 @@ def _register_builtins() -> None:
         _action_hook_recall,
         _action_hook_record,
         _action_hook_status,
+        _action_host_pressure,
         _action_inspect,
         _action_mcp_init,
         _action_mcp_status,
@@ -1822,6 +1824,16 @@ def _register_builtins() -> None:
                 "hook.record", "memory", "mutation", "Record a memory event from a hook", "Memory"
             ),
             _action_hook_record,
+        ),
+        (
+            ActionSpec(
+                "host.pressure",
+                "runtime",
+                "read",
+                "Host pressure level and the samples behind it",
+                "Health",
+            ),
+            _action_host_pressure,
         ),
         # runtime family (per subcommand)
         (

@@ -19,14 +19,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.host_pressure import MIN_DWELL_S, HostDecision
 from verdict.orchestration.claims import derive_claims
 from verdict.orchestration.receipt import capture_producer, completion_verdict, verify_run_receipt
 from verdict.security import redact_text
@@ -352,8 +354,30 @@ async def run_cycle(
     orchestrate_args: Sequence[str],
     supervise: Supervise,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    host: Callable[[], HostDecision] | None = None,
 ) -> CycleResult:
-    """Plan, act, measure and learn once. ``supervise(run_id, argv)`` runs the run."""
+    """Plan, act, measure and learn once. ``supervise(run_id, argv)`` runs the run.
+
+    ``host`` is the host pressure gate (ADR-039): at full pressure (RED or no
+    evidence) the cycle is refused before anything runs, with a retry time.
+    """
+    if host is not None:
+        decision = host()
+        if math.isnan(decision.pressure) or decision.pressure >= 1.0:
+            cycle_id = datetime.now(timezone.utc).strftime("c%Y%m%dT%H%M%S%fZ")
+            wait_until = (clock() + timedelta(seconds=MIN_DWELL_S)).isoformat()
+            reason = f"host pressure {decision.summary()}; no new cycle starts"
+            _append(
+                cycles_dir,
+                {
+                    "stage": "refused",
+                    "cycle_id": cycle_id,
+                    "at": _now(),
+                    "reason": reason,
+                    "wait_until": wait_until,
+                },
+            )
+            return CycleResult(cycle_id, "REFUSED", reason, wait_until=wait_until)
     cycles = read_cycles(cycles_dir)
     constraints = lessons_to_constraints(cycles)
     fingerprint = input_fingerprint(
@@ -490,6 +514,7 @@ async def run_cycles(
     cycles: int,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    host: Callable[[], HostDecision] | None = None,
 ) -> list[CycleResult]:
     """Up to ``cycles`` runs (at most MAX_CYCLES). Stops at the first cycle that is
     MET, refused, or whose lesson needs the operator rather than the planner. A
@@ -508,6 +533,7 @@ async def run_cycles(
             orchestrate_args=orchestrate_args,
             supervise=supervise,
             clock=clock,
+            host=host,
         )
         results.append(result)
         if result.outcome == "REFUSED" and result.wait_until and not waited:
@@ -532,6 +558,7 @@ def run_with_supervisor(
     supervisor_kwargs: Mapping[str, Any],
     cycles: int = 1,
 ) -> list[CycleResult]:
+    from verdict import host_pressure
     from verdict.orchestration.supervisor import ControllerSupervisor, build_command_factory
 
     async def supervise(run_id: str, argv: list[str]) -> Any:
@@ -549,5 +576,6 @@ def run_with_supervisor(
             orchestrate_args=orchestrate_args,
             supervise=supervise,
             cycles=cycles,
+            host=host_pressure.current,
         )
     )

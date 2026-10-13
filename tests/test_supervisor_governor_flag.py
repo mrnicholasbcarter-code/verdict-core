@@ -37,6 +37,9 @@ from verdict.orchestration.supervisor_admission import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Measured calm host: no pressure evidence now counts as full pressure (ADR-039).
+CALM = ResourcePressure()
+
 
 def module():
     path = ROOT / "scripts" / "prime_supervisor.py"
@@ -139,6 +142,7 @@ class TestDisjointFootprintsAdmit:
             footprint=fp_a,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result_a.admit is True
         assert result_a.reason_code == "ADMIT"
@@ -153,6 +157,7 @@ class TestDisjointFootprintsAdmit:
             footprint=fp_b,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result_b.admit is True
         assert result_b.reason_code == "ADMIT"
@@ -182,6 +187,7 @@ class TestSameFileSerialized:
             footprint=fp_a,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result_a.admit is True
         state.add(RunningStory(story_id="story-a", footprint=fp_a))
@@ -195,6 +201,7 @@ class TestSameFileSerialized:
             footprint=fp_b,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result_b.admit is False
         assert result_b.reason_code == "SERIALIZE"
@@ -216,6 +223,7 @@ class TestManualLabelExcluded:
             main_sha="abc",
             footprint=StoryFootprintV1(story_id="story-x", write_paths=frozenset({"a.py"})),
             admission_state=state,
+            pressure=CALM,
         )
         assert result.admit is False
         assert result.reason_code == "EXCLUDED"
@@ -242,6 +250,7 @@ class TestDependencyWaits:
             main_sha="abc",
             footprint=StoryFootprintV1(story_id="story-y", write_paths=frozenset({"b.py"})),
             admission_state=state,
+            pressure=CALM,
         )
         assert result.admit is False
         assert result.reason_code == "WAIT"
@@ -261,6 +270,7 @@ class TestDependencyWaits:
             main_sha="abc",
             footprint=StoryFootprintV1(story_id="story-z", write_paths=frozenset({"c.py"})),
             admission_state=state,
+            pressure=CALM,
         )
         assert result.admit is False
         assert result.reason_code == "WAIT"
@@ -294,6 +304,7 @@ class TestGovernorCapDefers:
             footprint=fp_new,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result.admit is False
         assert result.reason_code in ("SERIALIZE", "DEFER")
@@ -485,6 +496,7 @@ class TestUnknownFootprintSerializes:
             footprint=fp_unknown,
             admission_state=state,
             config=config,
+            pressure=CALM,
         )
         assert result.admit is False
         assert result.reason_code == "SERIALIZE"

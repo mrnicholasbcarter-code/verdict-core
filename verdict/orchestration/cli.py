@@ -774,6 +774,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         attempt_timeout_seconds=args.attempt_timeout,
         run_deadline_seconds=args.run_deadline,
         require_review=True,
+        follow_host_pressure=True,
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()

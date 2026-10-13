@@ -24,6 +24,7 @@
 | `gateway` | `gateway.connections-snapshot` | Runtime | mutation | ✅ action |
 | `harness` | `harness.prime.select.preview` | Harness | read | ✅ action |
 | `hook` | `hook.status` | Configuration | read | ✅ action |
+| `host` | `host.pressure` | Health | read | ✅ action |
 | `improve` | — | Orchestration | launch | 🚀 launch: _improve (run_with_supervisor): runs bounded supervised orchestrate runs, measuring each and recording lessons; long-running supervisor loop |
 | `inspect` | `inspect` | Models | read | ✅ action |
 | `mcp` | `mcp.init` | Configuration | mutation | ✅ action |
@@ -55,5 +56,5 @@
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 40 actions, 8 launch, 2 machine-only, 0 gaps
+**Summary:** 41 actions, 8 launch, 2 machine-only, 0 gaps
 
