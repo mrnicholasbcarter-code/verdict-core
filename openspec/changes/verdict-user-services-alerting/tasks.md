@@ -12,7 +12,9 @@
 
 ## 3. Checks
 - [x] 3.1 Doctor services section: per-unit state, last error line, cache age and usable routes.
-- [x] 3.2 Tests: stopped timer, failed unit, missing unit, stale cache, no unit-readable key.
+- [x] 3.2 Doctor stale-list check: agentic-proven FREE > 0 and eligible == 0 is an issue.
+- [x] 3.3 Prober daemon prints one summary line per finished cycle.
+- [x] 3.4 Tests: stopped timer, failed unit, missing unit, stale cache, no unit-readable key.
 
 ## 4. Live
 - [x] 4.1 Install both units on the operator host with `verdict setup services` (evidence.md).

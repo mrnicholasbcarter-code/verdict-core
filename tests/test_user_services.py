@@ -264,8 +264,39 @@ def test_cycle_seconds_read_from_installed_unit(home: Path) -> None:
 # -- doctor and setup --check -------------------------------------------------
 
 
+def _listed(eligible: int, proven: int) -> dict[str, object]:
+    return {
+        "summary": {"eligible": eligible},
+        "health_cache": {"agentic_qualified_by_capacity_class": {"free": proven}},
+    }
+
+
+def test_eligible_list_check_fails_only_when_proofs_list_nothing() -> None:
+    assert user_services.check_eligible_list(_listed(0, 0)).issues == []
+    assert user_services.check_eligible_list(_listed(3, 13)).issues == []
+    stale = user_services.check_eligible_list(_listed(0, 13))
+    assert stale.issues and "13 FREE routes have an agentic proof" in stale.issues[0]
+
+
+@pytest.fixture
+def listed(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """The canonical eligibility action, answered from a mutable payload."""
+    from verdict.actions.base import ActionResult
+
+    payload: dict[str, object] = _listed(2, 2)
+    real = __import__("verdict.actions.registry", fromlist=["run_action"]).run_action
+
+    def run_action(name: str, params: dict[str, object] | None = None) -> ActionResult:
+        if name == "eligibility":
+            return ActionResult(data=payload)
+        return real(name, params or {})
+
+    monkeypatch.setattr("verdict.actions.registry.run_action", run_action)
+    return payload
+
+
 def test_doctor_reports_a_stopped_timer_and_exits_non_zero(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, listed: dict[str, object]
 ) -> None:
     from verdict.doctor_diagnostics import DoctorDiagnostics, _doctor_services
 
@@ -284,9 +315,15 @@ def test_doctor_reports_a_stopped_timer_and_exits_non_zero(
     assert red.issues and "verdict-prove-at-rest.timer is inactive" in red.issues[0]
     assert ("verdict-prove-at-rest.timer", "inactive") in [(s[0], s[1]) for s in red.sections]
 
+    _healthy(fake, user_services.prover_unit())
+    listed.update(_listed(0, 13))  # proofs exist, the list is empty
+    stale = DoctorDiagnostics()
+    _doctor_services(stale)
+    assert [i for i in stale.issues if "Eligibility list is stale" in i]
+
 
 def test_doctor_flags_units_that_cannot_read_a_key(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, listed: dict[str, object]
 ) -> None:
     from verdict.doctor_diagnostics import DoctorDiagnostics, _doctor_services
 
@@ -343,3 +380,26 @@ def test_setup_check_refuses_other_actions(
         main()
     assert exc.value.code == 2
     assert "--check checks Verdict services" in capsys.readouterr().err
+
+
+def test_daemon_reports_each_finished_cycle() -> None:
+    from verdict.prove_at_rest import CycleStats, Prober
+
+    done: list[CycleStats] = []
+    prober = Prober(
+        cache=HealthCache.__new__(HealthCache),
+        routes_loader=lambda: [],
+        transport=lambda *a: None,  # type: ignore[arg-type,return-value]
+        interval_seconds=0.01,
+        sleep=lambda _s: None,
+    )
+
+    def run_once() -> CycleStats:
+        if done:
+            prober.stop()
+        return CycleStats(requests=3, stopped_reason="complete")
+
+    prober.run_once = run_once  # type: ignore[method-assign]
+    prober.on_cycle_done = done.append
+    prober.run_forever()
+    assert done and done[0].requests == 3

@@ -264,9 +264,33 @@ def _doctor_services(diag: DoctorDiagnostics) -> None:
     from verdict.user_services import check_services
 
     check = check_services()
+    if check.rows:
+        from verdict.actions.registry import run_action
+        from verdict.user_services import check_eligible_list
+
+        listed = run_action("eligibility", {})
+        if listed.ok:
+            outcome = check_eligible_list(listed.data)
+            check.rows += outcome.rows
+            check.issues += outcome.issues
+        else:
+            check.issues.append(
+                f"verdict eligibility failed: {listed.data.get('error', 'unknown error')}"
+            )
     diag.services = check.rows
     diag.sections.append(("Verdict services", "header", ""))
     for row in check.rows:
+        if "eligible_list" in row:
+            listed_row = row["eligible_list"]
+            diag.sections.append(
+                (
+                    "Eligible routes",
+                    "info",
+                    f"eligible {listed_row['eligible']}, "
+                    f"agentic-proven FREE {listed_row['agentic_proven_free']}",
+                )
+            )
+            continue
         if "health_cache" in row:
             cache = row["health_cache"]
             diag.sections.append(

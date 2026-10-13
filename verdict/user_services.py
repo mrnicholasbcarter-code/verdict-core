@@ -433,6 +433,27 @@ def check_health_cache(cycle_seconds: float, *, now: datetime | None = None) -> 
     return check
 
 
+def check_eligible_list(payload: dict[str, Any]) -> ServiceCheck:
+    """The user outcome: agentic-proven FREE routes exist, so some route must be eligible.
+
+    *payload* is the canonical ``eligibility`` action result. A list with proofs
+    but no eligible route means the evidence behind it went stale or a gate is
+    wrong; either way ``verdict eligibility`` shows the user nothing to run.
+    """
+    check = ServiceCheck()
+    summary = payload.get("summary") or {}
+    proven = (payload.get("health_cache") or {}).get("agentic_qualified_by_capacity_class") or {}
+    free_proven = int(proven.get("free", 0))
+    eligible = int(summary.get("eligible", 0))
+    check.rows.append({"eligible_list": {"eligible": eligible, "agentic_proven_free": free_proven}})
+    if free_proven > 0 and eligible == 0:
+        check.issues.append(
+            f"Eligibility list is stale: {free_proven} FREE routes have an agentic proof "
+            "but none is eligible; run: verdict eligibility"
+        )
+    return check
+
+
 def check_services(*, run: Runner | None = None, now: datetime | None = None) -> ServiceCheck:
     """Doctor's services section: every Verdict unit, then the prober's cache.
 

@@ -50,3 +50,11 @@ non-zero when a unit is missing, inactive or failed.
 #### Scenario: No systemd
 - **WHEN** `systemctl` is not installed
 - **THEN** doctor reports a warning, not a passing services check
+
+### Requirement: Doctor fails on an empty eligible list with proofs
+`verdict doctor` SHALL exit non-zero when the canonical eligibility result has
+FREE routes with a current agentic proof but no eligible route.
+
+#### Scenario: Proofs exist, list is empty
+- **WHEN** 13 FREE routes hold a current agentic proof and `verdict eligibility` lists 0 eligible
+- **THEN** doctor reports "Eligibility list is stale" and exits 1
