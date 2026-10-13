@@ -106,7 +106,7 @@ MAX_RATE_WINDOW_S = 300.0
 #: caps and RED leaves the governor's floor of one (ADR-037).
 LEVEL_PRESSURE: Mapping[Level, float] = {Level.GREEN: 0.0, Level.YELLOW: 0.5, Level.RED: 1.0}
 
-PAGE = 4096
+PAGE = os.sysconf("SC_PAGE_SIZE")  # pswpin/pswpout count pages; block stat counts 512-byte sectors
 STATE_FILE = "host-pressure.json"
 
 
@@ -157,7 +157,7 @@ class HostSample:
     cg_oom_kill: int | None = None
     cg_max_events: int | None = None
     cg_memory_max: int | None = None  # None: unlimited or unknown
-    load1: float = 0.0
+    load1: float | None = None
     cpus: int = 1
     errors: tuple[str, ...] = ()
 
@@ -238,10 +238,11 @@ def sample(roots: HostRoots | None = None, *, now: float | None = None) -> HostS
         memory_max = None if raw_max == "max" else int(raw_max)
     except (OSError, ValueError) as exc:
         errors.append(f"cgroup:{type(exc).__name__}")
+    load1: float | None
     try:
         load1 = float((roots.proc / "loadavg").read_text().split()[0])
     except (OSError, ValueError, IndexError):
-        load1 = math.nan
+        load1 = None
     return HostSample(
         t=time.time() if now is None else now,
         psi=psi,

@@ -62,7 +62,8 @@ def fake_host(
     zram = block / "zram0"
     zram.mkdir(parents=True, exist_ok=True)
     fields = ["0"] * 17
-    fields[2], fields[6] = str(zram_sectors[0]), str(zram_sectors[1])
+    per_page = hp.PAGE // 512  # the fixtures give zram I/O as 4 KiB pages x 8 sectors
+    fields[2], fields[6] = (str(n * per_page // 8) for n in zram_sectors)
     (zram / "stat").write_text(" ".join(fields) + "\n")
     (zram / "mm_stat").write_text(f"{zram_orig} {zram_orig // 5} {zram_orig // 4} 0 0 0 0 0 0\n")
     (zram / "disksize").write_text(f"{8 * GIB}\n")
