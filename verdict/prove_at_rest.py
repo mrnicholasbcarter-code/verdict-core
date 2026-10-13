@@ -1790,13 +1790,27 @@ def _exchange_from_body(
     return ProbeExchange(
         http_status=status,
         ok=ok,
-        chat_exact=(phase == "chat" and text == "OK"),
+        chat_exact=(phase == "chat" and _answered(text, choices)),
         tool_called=(phase == "tool" and called),
         latency_ms=latency_ms,
         retry_after_seconds=retry_after,
         error_category=None,
         reported_model=reported_model,
     )
+
+
+def _answered(text: str, choices: Any) -> bool:
+    """The chat probe got a real answer: exactly OK, or text cut off by ``max_tokens``.
+
+    Reasoning models (live 2026-10-13: cohere command-a-plus, command-a-reasoning)
+    start with "The user says: ..." and stop at the 8-token cap. That proves the
+    route answers; whether it can do the work is the agentic probe's job.
+    """
+    if text == "OK":
+        return True
+    first = choices[0] if isinstance(choices, list) and choices else None
+    finish = first.get("finish_reason") if isinstance(first, Mapping) else None
+    return bool(text) and finish == "length"
 
 
 def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> ProbeExchange:

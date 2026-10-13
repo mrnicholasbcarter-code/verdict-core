@@ -25,7 +25,7 @@ probe. Three defects caused this, and one more made the selected route wrong:
   ladder and admission. A FREE route with an agentic proof <= 24 h that the
   gateway's synced catalog serves and that is not blocked is eligible, with
   reason `liveness_at_select`. Selection confirms candidates in rank order with
-  a 1-token check and falls through on failure. After 2 failed checks in one
+  a 1-token check and falls through on failure. After 3 failed checks in one
   select, a provider's remaining routes wait behind every other provider's
   routes. Failed routes leave the ranking, and the selected route is rank 0.
 - The prober records `failure_scope` on every failure. Account markers in the

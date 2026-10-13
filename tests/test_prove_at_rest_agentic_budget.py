@@ -522,3 +522,23 @@ def test_transient_failure_is_reprobed_after_its_negative_not_a_day_later(tmp_pa
     assert not prober._needs_agentic(route, NOW + timedelta(seconds=30))
     later = cache.entry("p/m").until + timedelta(seconds=1)
     assert prober._needs_agentic(route, later)
+
+
+def test_reasoning_model_cut_off_by_the_token_cap_counts_as_an_answer() -> None:
+    """Live 2026-10-13: command-a-plus answered "The user says: ..." and hit
+    max_tokens; it was recorded as a failed chat and never agentic-probed."""
+    from verdict.prove_at_rest import _exchange_from_body
+
+    def body(content: str, finish: str) -> dict[str, Any]:
+        return {"choices": [{"finish_reason": finish, "message": {"content": content}}]}
+
+    def chat(content: str, finish: str) -> bool:
+        exchange = _exchange_from_body(
+            200, body(content, finish), phase="chat", latency_ms=1.0, retry_after=None
+        )
+        return exchange.chat_exact
+
+    assert chat("OK", "stop")
+    assert chat('The user says: "Reply with exactly', "length")
+    assert not chat("Sure, here you go", "stop")
+    assert not chat("", "length")

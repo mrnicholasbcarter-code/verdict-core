@@ -41,14 +41,14 @@ def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
 
 
 def test_cold_aliases_of_one_provider_cannot_starve_a_live_route(tmp_path: Path) -> None:
-    """Confirmation follows rank (plan M1(d), 2026-10-13); after two failed
+    """Confirmation follows rank (plan M1(d), 2026-10-13); after three failed
     confirmations a provider waits behind every other provider's routes."""
     selector, probe, cold = ladder(tmp_path, fresh_free=True)
     ranked = selector.evaluate(REQ, now=NOW)
     assert next(v for v in ranked if v.route_id == FREE).rank != 0
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is not None and choice.route_id == FREE
-    assert probe.calls == [cold[0], cold[1], FREE]
+    assert probe.calls == [cold[0], cold[1], cold[2], FREE]
     assert choice.rank == 0
     assert selector.admitted.launchable(FREE)
 

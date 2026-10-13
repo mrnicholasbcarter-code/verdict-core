@@ -80,8 +80,10 @@ _DEFAULT_COOLDOWN_SECONDS = 60.0
 # is cooled down and its remaining candidates are skipped without probing.
 _PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
 # Failed live confirmations of one provider in one select before its other
-# routes wait behind every other provider's routes.
-_FAILURES_BEFORE_DEFER = 2
+# routes wait behind every other provider's routes. Live 2026-10-13: with 2, one
+# timeout and one 5xx on openrouter :free routes deferred north-mini-code (rank 1)
+# behind an 11B vision model.
+_FAILURES_BEFORE_DEFER = 3
 
 
 # Source recorded on an admission record confirmed by the ladder's own probe.

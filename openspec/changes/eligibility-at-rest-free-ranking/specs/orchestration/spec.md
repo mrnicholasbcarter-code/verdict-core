@@ -21,7 +21,7 @@ Listing SHALL NOT probe.
 ### Requirement: The selected route is rank 0
 Selection SHALL confirm candidates in rank order with a just-in-time liveness
 check and SHALL select the first that passes. Routes that fail the check SHALL
-leave the ranking. After two failed checks in one selection, the remaining
+leave the ranking. After three failed checks in one selection, the remaining
 routes of that provider SHALL be tried after every other provider's routes.
 
 #### Scenario: Fresh low-ranked route of the top provider

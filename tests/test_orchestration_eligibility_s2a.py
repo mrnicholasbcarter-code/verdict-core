@@ -119,12 +119,12 @@ class TestProviderSpreadProbing:
             max_probes_per_select=8,
         )
         selected, verdicts = ladder.select(REQ, now=NOW)
-        # Rank order first; after 2 route-scoped failures alpha waits behind beta.
+        # Rank order first; after 3 route-scoped failures alpha waits behind beta.
         assert selected is not None and selected.route_id == "bb/model-00"
-        assert probe.calls == ["aa/model-00", "aa/model-01", "bb/model-00"]
+        assert probe.calls == ["aa/model-00", "aa/model-01", "aa/model-02", "bb/model-00"]
         # The selected route is rank 0: failed confirmations leave the ranking.
         assert selected.rank == 0
-        failed = {v.route_id: v for v in verdicts if v.route_id in probe.calls[:2]}
+        failed = {v.route_id: v for v in verdicts if v.route_id in probe.calls[:3]}
         assert all(v.rank is None and v.reason == "timeout" for v in failed.values())
 
     def test_provider_cooldown_persists_to_fresh_selector(self, tmp_path: Path) -> None:
