@@ -1432,8 +1432,10 @@ def omniroute_endpoint_from_env(
     set, use the same local OmniRoute origin as the serve proxy. This does not
     probe the network; a dead default still fails open in the snapshot loader.
     """
+    from verdict.credentials_store import resolve_api_key
+
     env_url = os.getenv("OMNIROUTE_BASE_URL")
-    env_key = os.getenv("OMNIROUTE_API_KEY")
+    env_key = resolve_api_key()
     if env_url and env_url.strip():
         return env_url.strip(), env_key
     if providers:

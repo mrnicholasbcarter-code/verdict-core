@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan
+from verdict.credentials_store import resolve_api_key as resolve_api_key
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassification,
@@ -150,12 +151,6 @@ def _task_profile(goal: str, repo: Path, graph: WorkGraph | None) -> dict[str, A
         "proof_requirements": ["node verification", "integration barrier", "independent review"],
         "scope": f"repo: {repo.name}",
     }
-
-
-def resolve_api_key(env_name: str = "VERDICT_OMNIROUTE_API_KEY") -> str | None:
-    """Gateway key from the environment; never logged, never persisted by Verdict."""
-    value = os.environ.get(env_name, "").strip()
-    return value or None
 
 
 def _get_json(url: str, *, api_key: str | None, timeout: float) -> Any:

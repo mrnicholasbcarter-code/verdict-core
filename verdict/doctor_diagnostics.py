@@ -41,14 +41,11 @@ _DOCTOR_NETWORK_ERROR_MARKERS = (
 # ---------------------------------------------------------------------------
 # OmniRoute API utilities — copied from cli.py to avoid a circular import.
 # ---------------------------------------------------------------------------
-def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-    return os.getenv("OMNIROUTE_API_KEY")
-
-
 def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     """Make an authenticated request to the explicitly configured local router."""
-    token = _read_omniroute_token()
+    from verdict.credentials_store import resolve_api_key
+
+    token = resolve_api_key()
     headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -141,6 +138,8 @@ class DoctorDiagnostics:
         self.config_loaded: bool = False
         #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
         self.gateway_lifecycle: dict[str, Any] = {}
+        #: One row per Verdict user unit, plus the prober's health-cache row.
+        self.services: list[dict[str, Any]] = []
 
 
 DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
@@ -258,6 +257,33 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
     diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
     if outcome.diagnostic is not None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
+
+
+def _doctor_services(diag: DoctorDiagnostics) -> None:
+    """Verdict's user units and the prober's cache; a failed or missing unit is an issue."""
+    from verdict.user_services import check_services
+
+    check = check_services()
+    diag.services = check.rows
+    diag.sections.append(("Verdict services", "header", ""))
+    for row in check.rows:
+        if "health_cache" in row:
+            cache = row["health_cache"]
+            diag.sections.append(
+                (
+                    "Health cache",
+                    "info",
+                    f"fresh {cache.get('fresh')}, stale {cache.get('stale')}, "
+                    f"last probe {cache.get('age_seconds')} s ago",
+                )
+            )
+            continue
+        detail = f"service {row['service_state']}, last result {row['last_result'] or 'none'}"
+        if row.get("last_error"):
+            detail += f"; last error: {row['last_error']}"
+        diag.sections.append((row["unit"], row["state"], detail))
+    diag.issues.extend(check.issues)
+    diag.warnings.extend(check.warnings)
 
 
 def _collect_doctor_diagnostics(
@@ -639,6 +665,8 @@ def _collect_doctor_diagnostics(
                     issues_found.append(
                         f"Configured provider node '{name}' ({url}) is unreachable/offline."
                     )
+
+    _doctor_services(diag)
 
     # Credentials check
     sections.append(("Credentials", "header", ""))

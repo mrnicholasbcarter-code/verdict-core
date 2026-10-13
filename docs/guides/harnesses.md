@@ -368,21 +368,13 @@ Restores the pre-enable backup byte-for-byte.
 
 Verdict refreshes `~/.prime/agent/models.json` from the live OmniRoute catalog
 whenever it selects a model (worker runs, `verdict eligibility`,
-`verdict orchestrate`). To also refresh it between runs, install the user timer:
+`verdict orchestrate`). To also refresh it between runs, `verdict setup services`
+installs the `verdict-prime-sync` user timer (every 15 minutes) when Prime is
+installed. See [Background services](#background-services).
 
-```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now verdict-prime-sync.timer
-```
-
-Edit `VERDICT_CHECKOUT` in the service if your checkout is not at
-`~/dev/verdict-core`. `sync-models` writes nothing when the model set is
-unchanged, and keeps only the newest 5 `models.json.verdict-sync-*.bak` backups.
-Check the last run with `journalctl --user -u verdict-prime-sync`.
-
-
+`sync-models` writes nothing when the model set is unchanged, and keeps only
+the newest 5 `models.json.verdict-sync-*.bak` backups. Check the last run with
+`verdict setup --check` or `journalctl --user -u verdict-prime-sync`.
 
 ### Health-cache prober
 
@@ -394,18 +386,40 @@ the health cache (`$VERDICT_HOME/health-cache.json`, default
 file). The older `~/.verdict/prove-at-rest/state.json` cycle document is
 ignored and left in place.
 
-Install it next to the Prime sync timer. Do not enable it until the unit has
-been reviewed:
+`verdict setup services` installs it as the `verdict-prove-at-rest` user
+service and timer. The process probes, sleeps `--interval` seconds (300 by
+default), and repeats. Each cycle stops at 300 requests or 10 minutes; the
+agentic phase has its own budget (`--agentic-*` flags, see
+[health-cache.md](health-cache.md)). Check it with `verdict setup --check`,
+`journalctl --user -u verdict-prove-at-rest` and `verdict prove-at-rest status`.
+
+### Background services
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/systemd/verdict-health-cache.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now verdict-health-cache.service
+verdict setup services --dry-run   # show the unit files and systemctl commands
+verdict setup services             # install, enable and run each unit once
+verdict setup --check              # exit 1 if a unit is missing, inactive or failed
 ```
 
-Edit `VERDICT_CHECKOUT` if the checkout is not at `~/dev/verdict-core`.
-The process probes, sleeps `--interval` seconds (10 minutes in the unit), and
-repeats. Each cycle stops at 300 requests or 10 minutes. Check it with
-`journalctl --user -u verdict-health-cache` and
-`verdict prove-at-rest status`.
+| Unit | Runs | Schedule |
+|---|---|---|
+| `verdict-prove-at-rest` | `verdict prove-at-rest daemon --allow-live-probe ...` | long-running; the timer restarts it after it exits |
+| `verdict-prime-sync` | `verdict harness prime sync-models` | every 15 minutes (only when Prime is installed) |
+
+Units hold no secret. Each command resolves the gateway key itself, in this
+order: exported `VERDICT_OMNIROUTE_API_KEY`, exported `OMNIROUTE_API_KEY`,
+the same names in `~/.config/verdict/credentials.env`, the file
+`~/.config/verdict/omniroute-api-key`, then the `omniroute` key in Prime's
+`~/.prime/agent/auth.json`. A user service has no exported key, so install
+fails until one of the files holds it:
+
+```bash
+verdict credentials set OMNIROUTE_API_KEY
+# or
+install -m 600 /dev/stdin ~/.config/verdict/omniroute-api-key <<< "$OMNIROUTE_API_KEY"
+```
+
+Key files that group or others can read are ignored. `verdict doctor` reports
+each unit (installed, active, last result, last error line) and the health
+cache (newest probe age, fresh and stale routes), and exits 1 when one is
+wrong.

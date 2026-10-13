@@ -10,10 +10,17 @@ Stores credentials in $XDG_CONFIG_HOME/verdict/credentials.env with:
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import tempfile
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+
+#: Environment names that carry the OmniRoute gateway key, highest first.
+GATEWAY_KEY_ENV_NAMES = ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY")
+#: Owner-only key file next to the credential store (written by the operator).
+GATEWAY_KEY_FILENAME = "omniroute-api-key"
 
 
 class CredentialsStore:
@@ -197,11 +204,71 @@ class CredentialsStore:
         return self.load()
 
 
+def _owner_only_text(path: Path) -> str | None:
+    """Stripped file text, or None when absent, unreadable or group/world accessible."""
+    try:
+        if path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            return None
+        return path.read_text(encoding="utf-8").strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _gateway_key_candidates(environ: Mapping[str, str]) -> Iterator[tuple[str, str]]:
+    for name in GATEWAY_KEY_ENV_NAMES:
+        value = (environ.get(name) or "").strip()
+        if value:
+            yield value, f"env:{name}"
+    store = CredentialsStore()
+    try:
+        stored = store.load()
+    except (PermissionError, OSError):
+        stored = {}
+    for name in GATEWAY_KEY_ENV_NAMES:
+        value = stored.get(name, "").strip()
+        if value:
+            yield value, f"credential_store:{name}"
+    key_file = _owner_only_text(store.config_dir / GATEWAY_KEY_FILENAME)
+    if key_file:
+        yield key_file, "key_file"
+    from verdict.orchestration.prime_settings import default_prime_agent_dir
+
+    auth_text = _owner_only_text(default_prime_agent_dir(environ) / "auth.json")
+    try:
+        auth = json.loads(auth_text) if auth_text else None
+    except json.JSONDecodeError:
+        auth = None
+    entry = auth.get("omniroute") if isinstance(auth, dict) else None
+    key = entry.get("key") if isinstance(entry, dict) else None
+    if isinstance(key, str) and key.strip():
+        yield key.strip(), "prime_auth"
+
+
+def resolve_gateway_key(environ: Mapping[str, str] | None = None) -> tuple[str, str] | None:
+    """The OmniRoute gateway key and the name of its source, or None.
+
+    Precedence: ``VERDICT_OMNIROUTE_API_KEY`` then ``OMNIROUTE_API_KEY`` from the
+    environment, the same names in ``credentials.env``, the owner-only
+    ``omniroute-api-key`` file in the same directory, then the ``omniroute`` key
+    in Prime's ``auth.json``. Files readable by group or others are skipped.
+    ``environ={}`` answers what a systemd user unit (no exported key) resolves.
+    """
+    source = os.environ if environ is None else environ
+    return next(_gateway_key_candidates(source), None)
+
+
+def resolve_api_key() -> str | None:
+    """The gateway key for this process; never logged, never persisted by Verdict."""
+    found = resolve_gateway_key()
+    return found[0] if found else None
+
+
 def get_credential_source(env_name: str, store: CredentialsStore | None = None) -> tuple[str, str]:
     """Determine where a credential comes from.
 
     Returns:
-        (source, masked_value) where source is "env", "store", or "missing"
+        (source, masked_value) where source is "env", "store", or "missing";
+        a gateway key name may also come from "key_file" or "prime_auth"
     """
     # Check environment first
     env_value = os.environ.get(env_name)
@@ -218,6 +285,11 @@ def get_credential_source(env_name: str, store: CredentialsStore | None = None) 
             return "store", _mask_value(stored[env_name])
     except PermissionError:
         pass
+
+    if env_name in GATEWAY_KEY_ENV_NAMES:
+        for value, kind in _gateway_key_candidates({}):
+            if kind in {"key_file", "prime_auth"}:
+                return kind, _mask_value(value)
 
     return "missing", ""
 

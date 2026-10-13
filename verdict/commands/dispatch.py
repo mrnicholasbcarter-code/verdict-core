@@ -224,8 +224,17 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         return
     if args.command == "setup":
         scope = "all"
+        if getattr(args, "check", False) and args.setup_action not in {None, "services"}:
+            parser.error("--check checks Verdict services; use 'verdict setup --check'")
         if args.setup_action == "credentials":
             legacy.cmd_setup_credentials(non_interactive=args.non_interactive)
+            return
+        if args.setup_action == "services" or getattr(args, "check", False):
+            legacy.cmd_setup_services(
+                check=bool(getattr(args, "check", False)),
+                dry_run=args.dry_run,
+                output_json=args.json,
+            )
             return
         if args.setup_action in {"intelligence", "gateways", "harnesses"}:
             scope = args.setup_action

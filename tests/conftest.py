@@ -183,6 +183,18 @@ def _isolate_home(
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never query or change the operator's systemd user units.
+
+    The default answers as a host without systemd; tests that need units pass
+    their own runner.
+    """
+    monkeypatch.setattr(
+        "verdict.user_services.run_systemctl", lambda args: (127, f"{args[0]} not found")
+    )
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _real_prime_registry_untouched() -> Any:
     """Fail the run if any test modified the real Prime model registry."""

@@ -391,6 +391,7 @@ def _action_doctor(**kwargs: Any) -> ActionResult:
         "gateway_lifecycle": diag.gateway_lifecycle,
         "shared_memory": diag.shared_memory,
         "capability_bootstrap": diag.capability_report,
+        "services": diag.services,
     }
     return ActionResult(data=data, ok=not diag.issues, exit_code=1 if diag.issues else 0)
 
@@ -1347,8 +1348,10 @@ def _register_builtins() -> None:
         _action_runtime_explain,
         _action_runtime_reconcile,
         _action_runtime_status,
+        _action_setup_check,
         _action_setup_credentials,
         _action_setup_plan_scoped,
+        _action_setup_services,
         _action_simulate,
     )
     from verdict.actions.harness_bootstrap import (
@@ -1654,6 +1657,22 @@ def _register_builtins() -> None:
                 "Setup",
             ),
             _action_setup_credentials,
+        ),
+        (
+            ActionSpec(
+                "setup.services",
+                "setup",
+                "mutation",
+                "Install Verdict's systemd user services (--dry-run shows them)",
+                "Setup",
+            ),
+            _action_setup_services,
+        ),
+        (
+            ActionSpec(
+                "setup.check", "setup", "read", "Check Verdict's systemd user services", "Setup"
+            ),
+            _action_setup_check,
         ),
         (
             ActionSpec(

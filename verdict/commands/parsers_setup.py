@@ -10,8 +10,13 @@ def register(subparsers: Any) -> None:
     setup_cli_p.add_argument(
         "setup_action",
         nargs="?",
-        choices=["plan", "intelligence", "gateways", "harnesses", "credentials"],
-        help="Read-only setup operation or capability scope",
+        choices=["plan", "intelligence", "gateways", "harnesses", "credentials", "services"],
+        help="Read-only setup operation, capability scope, or 'services' (install user units)",
+    )
+    setup_cli_p.add_argument(
+        "--check",
+        action="store_true",
+        help="Check Verdict's systemd user services; exit 1 if one is missing or failed",
     )
     setup_cli_p.add_argument(
         "--dry-run", action="store_true", help="Build a mutation-free setup plan"

@@ -805,16 +805,10 @@ class DirectGatewayExecutor:
         timeout_connect: float = 10.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        # Same precedence as the rest of Verdict (orchestration.run.resolve_api_key):
-        # the certify workflow and operators set VERDICT_OMNIROUTE_API_KEY.
-        self.api_key = api_key or next(
-            (
-                value
-                for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY")
-                if (value := os.environ.get(name, "").strip())
-            ),
-            "",
-        )
+        # The one gateway key resolver; OPENAI_API_KEY stays a last resort here.
+        from verdict.credentials_store import resolve_api_key
+
+        self.api_key = api_key or resolve_api_key() or os.environ.get("OPENAI_API_KEY", "").strip()
         self.timeout_connect = timeout_connect
 
     def _headers(self) -> dict[str, str]:

@@ -12,6 +12,7 @@ PROBLEM_STATES = frozenset(
     {
         "failed",
         "error",
+        "inactive",
         "blocked",
         "missing",
         "partial",
@@ -37,6 +38,8 @@ def repair_command(finding: str) -> str:
         for word in ("missing", "invalid", "not set", "auth", "credential", "format")
     ):
         return f"verdict credentials set {credential.group(1)}"
+    if "health cache" in lowered or re.search(r"verdict-[a-z-]+\.(service|timer)", lowered):
+        return "verdict setup services"
     if any(word in lowered for word in ("gateway", "omniroute", "host url")):
         return "verdict detect"
     if any(
