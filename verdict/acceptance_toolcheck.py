@@ -207,12 +207,16 @@ def measure(
     if listed_ids and (listed_measured or blocked):
         rate = listed_pass / len(listed_measured) if listed_measured else 0.0
         precision = rate * (len(listed_ids) - blocked) / len(listed_ids)
-    # Passing share of the whole sample: account-blocked routes count as not
-    # missed, so their pools drop out of the estimate.
-    unlisted_pass = sum(r.outcome == "pass" for r in on_unlisted)
+    # A3 removes routes in account-blocked pools from the recall population:
+    # missed = pass rate among measured samples x the unblocked share of the
+    # population. A sample that is all account-blocked (for example a 429 burst)
+    # measures nothing, so recall stays unmeasured (a FAIL), never a free 100%.
+    measured_unlisted = [r for r in on_unlisted if r.outcome != "account"]
+    unlisted_pass = sum(r.outcome == "pass" for r in measured_unlisted)
     missed: float | None = 0.0 if not population else None
-    if on_unlisted:
-        missed = unlisted_pass / len(on_unlisted) * len(population)
+    if measured_unlisted:
+        unblocked = len(population) * len(measured_unlisted) / len(on_unlisted)
+        missed = unlisted_pass / len(measured_unlisted) * unblocked
     recall: float | None = None
     if missed is not None:
         # Nothing listed finds nothing: recall is 0 when the sample shows passes.

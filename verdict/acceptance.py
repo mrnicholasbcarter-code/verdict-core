@@ -337,6 +337,8 @@ def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
                 served_by = response.headers.get("x-verdict-model") or ""
         except urllib.error.HTTPError as exc:
             status, raw, served_by = exc.code, exc.read().decode("utf-8", "replace"), ""
+        except (OSError, urllib.error.URLError) as exc:
+            status, raw, served_by = 0, f"{type(exc).__name__}: {exc}", ""
         check.exit_code = status
         check.stdout_sha256 = _digest(raw)
         reply = _json(raw)
@@ -399,19 +401,32 @@ def _source_sha() -> str | None:
     return done.stdout.strip() or None if done.returncode == 0 else None
 
 
+def _guarded(name: str, run: Callable[[], Check]) -> Check:
+    """A check that raises is a FAIL in the result, never a lost result file."""
+    try:
+        return run()
+    except Exception as exc:
+        return Check(
+            name, [], False, f"check crashed: {type(exc).__name__}: {_tail(str(exc), 160)}"
+        )
+
+
 def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
-    return [
-        _cli_check("doctor", ["doctor", "--json"], 600, judge_doctor, gateway),
-        eligibility_check(gateway, api_key, seed=seed),
-        _cli_check(
-            "choose", ["choose", "--role", "implement", "--json"], 180, judge_choose, gateway
-        ),
-        _cli_check("route", ["route", "--terse", ROUTE_TASK], 300, judge_route, gateway),
-        serve_check(gateway),
-        _cli_check(
-            "harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime, gateway
+    def cli(name: str, args: list[str], timeout: float, judge: Judge) -> Callable[[], Check]:
+        return lambda: _cli_check(name, args, timeout, judge, gateway)
+
+    plan: list[tuple[str, Callable[[], Check]]] = [
+        ("doctor", cli("doctor", ["doctor", "--json"], 600, judge_doctor)),
+        ("eligibility", lambda: eligibility_check(gateway, api_key, seed=seed)),
+        ("choose", cli("choose", ["choose", "--role", "implement", "--json"], 180, judge_choose)),
+        ("route", cli("route", ["route", "--terse", ROUTE_TASK], 300, judge_route)),
+        ("serve", lambda: serve_check(gateway)),
+        (
+            "harness-prime",
+            cli("harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime),
         ),
     ]
+    return [_guarded(name, run) for name, run in plan]
 
 
 def is_green(checks: Sequence[Check]) -> bool:
