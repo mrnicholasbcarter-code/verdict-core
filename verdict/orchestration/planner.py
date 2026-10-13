@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import textwrap
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -171,7 +172,8 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
            to the files/tests it touches).
            Any test file referenced in verification_command MUST appear in
            owned_files (the worker needs write access to run and fix the tests
-           it is verified by).
+           it is verified by). So two nodes that can run concurrently must not
+           reference the same test file: give each node its own test file.
         6. Include exactly one final node with kind="integrate" that depends_on
            ALL implement nodes, whose verification_command runs the combined
            test suite. Keep verification_command test-focused: repo quality gates
@@ -322,6 +324,89 @@ def ensure_verification_files_owned(nodes: list[WorkNode]) -> list[WorkNode]:
     return result
 
 
+@dataclass(frozen=True)
+class OwnershipConflict:
+    """One file owned by two implement nodes that may run at the same time."""
+
+    path: str
+    nodes: tuple[str, str]
+    # Nodes that own ``path`` only because their verification_command runs it.
+    via_verification: tuple[str, ...] = ()
+
+
+class PlanValidationError(OrchestrationError):
+    """The planner answered, but its plan failed validation (model quality, not capacity)."""
+
+    def __init__(self, message: str, conflicts: Sequence[OwnershipConflict] = ()) -> None:
+        super().__init__(message)
+        self.conflicts = tuple(conflicts)
+
+
+def ownership_conflicts(
+    nodes: Sequence[WorkNode], declared: Mapping[str, WorkNode]
+) -> tuple[OwnershipConflict, ...]:
+    """Every file shared by two concurrent implement nodes, for the repair prompt.
+
+    WorkGraph stays the validator and stops at the first conflicting pair. This
+    lists all pairs under the same rule, so one repair round can fix them all.
+    ``declared`` holds the nodes as the planner wrote them, before test files
+    from verification commands were added to owned_files.
+    """
+    deps = {node.node_id: node.depends_on for node in nodes}
+
+    def ancestors(node_id: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(deps.get(node_id, ()))
+        while stack:
+            current = stack.pop()
+            if current not in seen:
+                seen.add(current)
+                stack.extend(deps.get(current, ()))
+        return seen
+
+    writers = [node for node in nodes if node.kind is NodeKind.IMPLEMENT]
+    conflicts: list[OwnershipConflict] = []
+    for i, left in enumerate(writers):
+        for right in writers[i + 1 :]:
+            if left.node_id in ancestors(right.node_id) or right.node_id in ancestors(left.node_id):
+                continue
+            for path in sorted(set(left.owned_files) & set(right.owned_files)):
+                via = tuple(
+                    node.node_id
+                    for node in (left, right)
+                    if node.node_id in declared and path not in declared[node.node_id].owned_files
+                )
+                conflicts.append(OwnershipConflict(path, (left.node_id, right.node_id), via))
+    return tuple(conflicts)
+
+
+def build_repair_prompt(prompt: str, error: OrchestrationError) -> str:
+    """Planning prompt plus the validation error, with each ownership conflict spelled out."""
+    lines = [prompt, "", "Your previous response failed validation with this error:", str(error)]
+    conflicts = error.conflicts if isinstance(error, PlanValidationError) else ()
+    if conflicts:
+        lines += [
+            "",
+            "OWNERSHIP CONFLICTS (two nodes can run in parallel when neither depends_on "
+            "the other, directly or transitively; parallel nodes must not own the same file):",
+        ]
+        for conflict in conflicts:
+            left, right = conflict.nodes
+            line = f"- {conflict.path}: owned by both node {left} and node {right}"
+            if conflict.via_verification:
+                line += f" (via the verification_command of {', '.join(conflict.via_verification)})"
+            lines.append(line)
+        lines += [
+            "For each file above, do one of:",
+            "  1. Keep the file in exactly one node. For a test file, give the other node "
+            "its own new test file and run that file in its verification_command.",
+            "  2. Serialize the two nodes: one node depends_on the other.",
+            "  3. Merge the two nodes into one node.",
+        ]
+    lines += ["", "Emit ONLY the corrected JSON object. No prose, no fences."]
+    return "\n".join(lines)
+
+
 def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
     """Parse frontier output (tolerant of fences/prose) into a validated, topologized WorkGraph."""
     raw = _extract_json_object(text)
@@ -348,8 +433,15 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
         except (OrchestrationError, TypeError) as exc:
             raise OrchestrationError(f"parse_plan: node[{i}]: {exc}") from exc
 
+    declared = {node.node_id: node for node in nodes}
     nodes = ensure_verification_files_owned(nodes)
-    graph = WorkGraph(goal=goal, nodes=tuple(nodes), max_parallel=max_parallel)
+    try:
+        graph = WorkGraph(goal=goal, nodes=tuple(nodes), max_parallel=max_parallel)
+    except OrchestrationError as exc:
+        conflicts = ownership_conflicts(nodes, declared)
+        if conflicts:
+            raise PlanValidationError(str(exc), conflicts) from exc
+        raise
     topology, chosen_max_parallel, rationale = choose_topology(
         graph.nodes, max_parallel=max_parallel
     )
@@ -487,13 +579,7 @@ class FrontierPlanner:
             output_path = _persist_invalid_plan_output(
                 terminal.output, run_dir, attempt=attempt, phase="initial"
             )
-            repair_prompt = (
-                f"{prompt}\n\nYour previous response failed validation with this error:\n"
-                f"{first_error}\n\n"
-                "For an ownership conflict above, keep the named file with one writer. "
-                "Serialize the conflicting nodes with depends_on, or merge them into one node.\n"
-                "Emit ONLY the corrected JSON object. No prose, no fences."
-            )
+            repair_prompt = build_repair_prompt(prompt, first_error)
             if events is not None:
                 events.emit(
                     "plan_repair_started",
@@ -534,9 +620,10 @@ class FrontierPlanner:
                 repair_path = _persist_invalid_plan_output(
                     repaired.output, run_dir, attempt=attempt, phase="repair"
                 )
-                raise OrchestrationError(
+                raise PlanValidationError(
                     f"FrontierPlanner: plan invalid after one repair round: {second_error}"
-                    + (f" (raw output: {repair_path})" if repair_path else "")
+                    + (f" (raw output: {repair_path})" if repair_path else ""),
+                    second_error.conflicts if isinstance(second_error, PlanValidationError) else (),
                 ) from second_error
             return graph, repaired
 

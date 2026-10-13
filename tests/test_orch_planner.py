@@ -675,6 +675,7 @@ def test_worker_prompt_blocks_host_changes_and_out_of_scope_files(tmp_path: Path
 @pytest.mark.asyncio
 async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path, monkeypatch):
     from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.planner import PlanValidationError
     from verdict.orchestration.recovery import FailureIntelligence
     from verdict.orchestration.run import plan_with_failover
 
@@ -690,7 +691,7 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
             ), ()
 
         def record_failure(self, route, failure, *, now):
-            pass
+            rows.append({"type": "record_failure", "route": route})
 
     class Events:
         def emit(self, kind, **data):
@@ -699,7 +700,8 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
     async def plan(self, *args, **kwargs):
         assert kwargs["run_dir"] == tmp_path / "run"
         if kwargs["route_id"].startswith("cc/"):
-            raise OrchestrationError("concurrent nodes a and b both own ['shared.py']")
+            # Node ids and file names may contain digits such as 401 or 429.
+            raise PlanValidationError("concurrent nodes a401 and b429 both own ['shared.py']")
         graph = WorkGraph("g", (_impl_node("a"),))
         return graph, WorkerTerminal(ok=True)
 
@@ -715,13 +717,16 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
         run_dir=tmp_path / "run",
     )
     assert requirements[0].max_capability_tier == 2
-    # A planner validation error is a model-quality failure, not a credential
-    # failure: only the route is excluded; same-pool siblings stay eligible.
-    assert requirements[1].exclude_pools == frozenset()
+    # SH-1: an invalid plan excludes the whole backend pool from reselection.
+    # It is a planning-quality failure, so nothing is cooled for later runs.
+    assert requirements[1].exclude_pools == frozenset({"claude"})
     assert "cc/claude-haiku" in requirements[1].exclude_routes
     assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
-    cooldown = next(r for r in rows if r["type"] == "cooldown")
-    assert (cooldown["scope"], cooldown["key"]) == ("route", "cc/claude-haiku")
+    failed = next(r for r in rows if r.get("state") == "PLANNER_FAILED")
+    assert failed["category"] == "plan_invalid"
+    assert not [r for r in rows if r["type"] in {"cooldown", "record_failure"}]
+    replacing = next(r for r in rows if r.get("state") == "REPLACING")
+    assert replacing["excluded_pool"] == "claude"
 
 
 @pytest.mark.asyncio
@@ -843,20 +848,198 @@ def test_worker_prompt_forbids_summary_files(tmp_path, kind):
 async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
     import json
 
-    left = _impl_node("left", owned=("shared.py",))
-    right = _impl_node("right", owned=("shared.py",))
-    bad = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
-    right = _impl_node("right", owned=("shared.py",), depends_on=("left",))
-    good = json.dumps({"nodes": [left.to_dict(), right.to_dict()]})
+    nodes = [_impl_node(n, owned=("shared.py",)) for n in ("left", "mid", "right")]
+    bad = json.dumps({"nodes": [n.to_dict() for n in nodes]})
+    chained = [
+        nodes[0],
+        _impl_node("mid", owned=("shared.py",), depends_on=("left",)),
+        _impl_node("right", owned=("shared.py",), depends_on=("mid",)),
+    ]
+    good = json.dumps({"nodes": [n.to_dict() for n in chained]})
     executor = _ScriptedExecutor(
         [WorkerTerminal(ok=True, output=bad), WorkerTerminal(ok=True, output=good)]
     )
     repo = _init_git_repo(tmp_path)
     await FrontierPlanner().plan("g", repo=repo, executor=executor, route_id="cc/s")
     prompt = executor.calls[1]
-    assert "concurrent nodes left and right both own ['shared.py']" in prompt
+    assert "concurrent nodes left and mid both own ['shared.py']" in prompt
+    # The graph error stops at the first pair; the repair prompt lists every pair.
+    for pair in ("left and node mid", "left and node right", "mid and node right"):
+        assert f"- shared.py: owned by both node {pair}\n" in prompt
     assert "Serialize" in prompt and "depends_on" in prompt
     assert "merge" in prompt.lower() and "one node" in prompt
+
+
+# ---------------------------------------------------------------- planner reselection (SH-1)
+
+
+def _planner_ladder(tmp_path: Path, routes: list[tuple[str, str, int]], connections):
+    from tests.test_orch_eligibility import make_ladder, row
+
+    rows = [{**row(r, owned_by=owner), "capability_tier": tier} for r, owner, tier in routes]
+    ladder, _ = make_ladder(tmp_path, rows, connections)
+    return ladder
+
+
+class _RoutedPlanner:
+    """Answer-only planner executor; ``reply(route_id)`` decides each terminal."""
+
+    answer_only_supported = True
+
+    def __init__(self, reply) -> None:
+        self.reply = reply
+        self.routes: list[str] = []
+
+    async def run(self, prompt, *, route_id, cwd, timeout_seconds):
+        self.routes.append(route_id)
+        return self.reply(route_id)
+
+
+_COLLIDING_PLAN = WorkerTerminal(
+    ok=True,
+    output=(
+        '{"nodes": ['
+        '{"node_id": "a", "objective": "a", "owned_files": ["verdict/a.py"],'
+        ' "verification_command": ["pytest", "tests/test_new.py"]},'
+        '{"node_id": "b", "objective": "b", "owned_files": ["verdict/b.py"],'
+        ' "verification_command": ["pytest", "tests/test_new.py"]}]}'
+    ),
+)
+_GOOD_PLAN = WorkerTerminal(ok=True, output=_VALID_NODES_JSON)
+_HAIKU = ("cc/claude-haiku-4-5", "claude/claude-haiku-4-5", "no-think/cc/claude-haiku-4-5")
+
+
+async def _plan(tmp_path, monkeypatch, ladder, planner, now):
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    rows: list[dict] = []
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+    monkeypatch.setattr("verdict.orchestration.planner.repo_map", lambda repo: "offline map")
+    await plan_with_failover(
+        "g",
+        repo=tmp_path,
+        selector=ladder,
+        executor=planner,
+        classifier=FailureIntelligence(),
+        events=Events(),
+        now=lambda: now,
+    )
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_invalid_plan_reselects_outside_the_alias_pool(tmp_path, monkeypatch):
+    from tests.test_orch_eligibility import NOW, conn
+
+    routes = [(r, "claude", 2) for r in _HAIKU]
+    routes += [("kr/claude-haiku-4-5", "kiro", 2), ("cx/gpt-5.5", "codex", 1)]
+    ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("kiro"), conn("codex")])
+    planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else _COLLIDING_PLAN)
+
+    rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
+
+    # Same mistake, same model: no claude/ or no-think/cc/ alias, and not the
+    # same model on another pool. One initial call plus one repair, then codex.
+    assert planner.routes == ["cc/claude-haiku-4-5", "cc/claude-haiku-4-5", "cx/gpt-5.5"]
+    replacing = next(r for r in rows if r.get("state") == "REPLACING")
+    assert replacing["excluded_pool"] == "claude"
+    assert set(replacing["excluded_routes"]) == {*_HAIKU, "kr/claude-haiku-4-5"}
+
+
+@pytest.mark.asyncio
+async def test_invalid_plan_from_no_think_wrapper_excludes_the_inner_pool(tmp_path, monkeypatch):
+    from tests.test_orch_eligibility import NOW, conn
+
+    routes = [
+        ("no-think/cc/claude-haiku-4-5", "claude", 2),
+        ("no-think/cc/claude-sonnet-5", "claude", 1),
+        ("cx/gpt-5.5", "codex", 1),
+    ]
+    ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("codex")])
+    planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else _COLLIDING_PLAN)
+
+    rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
+
+    # The sibling wrapper model on the same credential pool is skipped too.
+    assert planner.routes[-1] == "cx/gpt-5.5"
+    assert "no-think/cc/claude-sonnet-5" not in planner.routes
+    replacing = next(r for r in rows if r.get("state") == "REPLACING")
+    assert replacing["excluded_pool"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_route_failure_skips_aliases_but_keeps_sibling_models(tmp_path, monkeypatch):
+    from tests.test_orch_eligibility import NOW, conn
+
+    routes = [(r, "claude", 2) for r in _HAIKU] + [("cc/claude-sonnet-5", "claude", 1)]
+    ladder = _planner_ladder(tmp_path, routes, [conn("claude")])
+    timeout = WorkerTerminal(ok=False, error="timeout", stop_reason="timeout")
+    planner = _RoutedPlanner(lambda r: timeout if "haiku" in r else _GOOD_PLAN)
+
+    rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
+
+    # The aliases rank above the sibling model; a timeout is local to the model.
+    assert planner.routes == ["cc/claude-haiku-4-5", "cc/claude-sonnet-5"]
+    replacing = next(r for r in rows if r.get("state") == "REPLACING")
+    assert replacing["excluded_pool"] == ""
+    assert set(replacing["excluded_routes"]) == set(_HAIKU)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", _HAIKU)
+async def test_credential_cooldown_on_one_alias_blocks_every_alias(tmp_path, monkeypatch, first):
+    from tests.test_orch_eligibility import NOW, conn
+    from verdict.orchestration.contracts import TaskRequirements
+
+    # Only ``first`` has zero capability slack, so it ranks first and fails first.
+    routes = [(r, "claude", 2 if r == first else 1) for r in _HAIKU]
+    routes.append(("cx/gpt-5.5", "codex", 1))
+    ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("codex")])
+    limited = WorkerTerminal(ok=False, status_code=429, error="rate limited")
+    planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else limited)
+
+    rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
+
+    assert planner.routes == [first, "cx/gpt-5.5"]
+    cooldown = next(r for r in rows if r["type"] == "cooldown")
+    assert (cooldown["scope"], cooldown["key"]) == ("pool", "claude")
+    # The cooldown outlives this planning call: a fresh selection with no
+    # exclusions still cannot reach the pool through any alias.
+    for alias in _HAIKU:
+        assert ladder.dispatch_blocker(alias, now=NOW) == "pool:claude"
+    choice, _ = ladder.select(
+        TaskRequirements(frontier_worthy=True, max_capability_tier=2), now=NOW
+    )
+    assert choice is not None and choice.route_id == "cx/gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_planner_reselection_tries_free_routes_before_subscription(tmp_path, monkeypatch):
+    from tests.test_orch_eligibility import NOW, conn
+
+    routes = [
+        ("cc/claude-sonnet-5", "claude", 1),
+        ("gl/glm-5", "glm", 2),
+        ("ms/mistral-large", "mistral", 2),
+    ]
+    connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
+    ladder = _planner_ladder(tmp_path, routes, connections)
+    planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cc/") else _COLLIDING_PLAN)
+
+    rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
+
+    started = [(r["route_id"], r["capacity_class"]) for r in rows if r["type"] == "plan_started"]
+    assert started == [
+        ("gl/glm-5", "free"),
+        ("ms/mistral-large", "free"),
+        ("cc/claude-sonnet-5", "subscription"),
+    ]
 
 
 @pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])
