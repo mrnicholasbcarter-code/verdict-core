@@ -475,7 +475,14 @@ def current(*, roots: HostRoots | None = None, state_path: Path | None = None) -
                 prior = json.loads(path.read_text()) if path.exists() else None
             except (OSError, ValueError) as exc:
                 prior, errors = None, [f"state:{type(exc).__name__}"]
-            state, decision = govern(sample(roots), prior)
+            now = sample(roots)
+            try:
+                if prior is not None and not isinstance(prior, dict):
+                    raise TypeError("state is not an object")
+                state, decision = govern(now, prior)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                errors = [f"state:{type(exc).__name__}"]  # valid JSON, wrong shape
+                state, decision = govern(now, None)
             tmp = path.with_suffix(f".{os.getpid()}.tmp")
             tmp.write_text(json.dumps(state))
             os.replace(tmp, path)

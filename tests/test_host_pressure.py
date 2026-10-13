@@ -220,3 +220,13 @@ def test_current_shares_state_across_calls(tmp_path: Path, monkeypatch: pytest.M
     path.write_text("{not json")
     broken = hp.current(roots=roots, state_path=path)
     assert broken.level is Level.YELLOW and "state:JSONDecodeError" in broken.errors
+    for bad in (
+        "[]",
+        '{"level": "BLUE", "since": 0, "calm": 0}',
+        '{"level": "GREEN", "since": "x", "calm": 0}',
+    ):
+        path.write_text(bad)
+        wrong = hp.current(roots=roots, state_path=path)
+        assert wrong.level is Level.YELLOW and any(e.startswith("state:") for e in wrong.errors), (
+            bad
+        )
