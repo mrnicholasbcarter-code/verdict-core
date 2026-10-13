@@ -4,4 +4,4 @@
 - [x] Validate schema, freshness, payload digest and sanitized evidence.
 - [x] Require and mask protected snapshot evidence in certification production.
 - [x] Run focused tests and touched-file ruff checks.
-- [ ] Independent review and integration-branch gates.
+- [x] Independent review and integration-branch gates (PR #807: Ling review PASS, unmodified vgate PASS on the exact head).

@@ -186,7 +186,7 @@ All assets come from committed code and committed data. None of the tools below 
 
 | Asset | Size | Source data | Regenerate |
 |---|---|---|---|
-| [`docs/proof/demo-run/`](../proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run` |
+| [`docs/proof/demo-run/`](../proof/demo-run) | ~35 KB | fixture inventory in `scripts/demo_orchestrate.py` | `python scripts/demo_orchestrate.py --out docs/proof/demo-run --update-proof` (commit with a `Proof:` trailer) |
 | [`docs/assets/demo.cast`](../assets/demo.cast) | ~1 MB | separate offline scenario with an injected rate limit, recorded in a pty | `python scripts/record_tui_demo.py --scenario --speed 1` (stdlib only; does not regenerate `docs/proof/demo-run/`) |
 | [`docs/assets/demo.svg`](../assets/demo.svg) | ~165 KB | `demo.cast` | `python scripts/render_demo_svg.py docs/assets/demo.cast docs/assets/demo.svg docs/assets/demo-poster.svg` |
 | [`docs/assets/demo-poster.svg`](../assets/demo-poster.svg) | ~22 KB | first COMPLETE cockpit frame of `demo.cast` | same command as `demo.svg` |

@@ -11,6 +11,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -32,3 +34,19 @@ def test_demo_runs_to_a_verified_complete_receipt(tmp_path: Path) -> None:
     receipt = json.loads((out / "receipt.json").read_text())
     assert receipt["outcome"] == "COMPLETE", receipt["reason"]
     assert verify_run_receipt(out) == []
+
+
+def test_out_is_required() -> None:
+    with pytest.raises(SystemExit) as raised:
+        _demo().main([])
+    assert raised.value.code == 2
+
+
+def test_repo_out_is_refused_without_update_proof(capsys: pytest.CaptureFixture[str]) -> None:
+    proof = ROOT / "docs" / "proof" / "demo-run"
+    before = sorted(p.name for p in proof.iterdir())
+    with pytest.raises(SystemExit) as raised:
+        _demo().main(["--out", "docs/proof/demo-run"])
+    assert raised.value.code == 2
+    assert "inside the repository" in capsys.readouterr().err
+    assert sorted(p.name for p in proof.iterdir()) == before

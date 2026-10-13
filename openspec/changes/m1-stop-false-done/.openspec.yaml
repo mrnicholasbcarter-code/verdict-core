@@ -1,0 +1,3 @@
+schema: verdict-change-v1
+# Repository tooling and CI only: no product behaviour changes, so no spec delta.
+skip_specs: true

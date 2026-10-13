@@ -58,7 +58,7 @@ Each gate MUST have evidence linked in the evidence bundle.
 | ID | Criterion | Evidence Required |
 |----|-----------|-------------------|
 | G7.1 | Clean install from PyPI/npm succeeds | Evidence: `quickstart_test.log` |
-| G7.2 | Flagship demo runs without credentials | Evidence: `flagship_demo_output.json` |
+| G7.2 | Flagship demo runs without credentials (offline fixture smoke; not live evidence) | Artifact: `flagship_demo_output.json` |
 | G7.3 | README claims match observed behavior | Evidence: `readme_verification.log` |
 | G7.4 | Issue templates for bug/feature/security | Evidence: `.github/ISSUE_TEMPLATE/` |
 

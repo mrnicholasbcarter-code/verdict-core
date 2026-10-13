@@ -23,18 +23,28 @@ uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
-The reachability gate runs in CI in `.github/workflows/lint.yml`.
-`vgate` is operator-owned and unchanged by BOD-316; this is a separate CI gate.
+The reachability, definition-of-done, proof-path and OpenSpec gates run in
+the required `lint` job of `.github/workflows/ci.yml`. That job also applies
+`ruff check --fix-only` and `ruff format` to same-repository pull requests,
+commits the result and approves the checks GitHub queues for that commit, so a
+formatting-only failure needs no extra turn.
+`vgate` is operator-owned and separate from these CI gates.
 Run the same report locally:
 
 ```bash
 .venv/bin/python scripts/check_reachability.py
 ```
 
-It exits 1 only on findings that are NOT already in `reachability-baseline.json`.
-Add `--json` for machine-readable output, or `--skip-vulture` if vulture is not
-installed locally. See `docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the
-triage policy behind each baselined entry.
+It exits 1 on a public symbol or a `verdict/` module that no production code
+reaches and that is not in `reachability-baseline.json` /
+`reachability-modules-baseline.json`, and on a production reference to a symbol
+listed in `reachability-forbidden.json` outside its `allowed_modules`. On pull
+requests CI adds `--ratchet-base <base sha>`: both baselines may only shrink, a
+fixed entry must leave the baseline, and an `UNTRIAGED` entry in a module the
+pull request changes fails until it is wired, deleted or triaged. Integration
+trains add `--min-burn N`. Add `--json` for machine-readable output, or
+`--skip-vulture` if vulture is not installed locally. See
+`docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the triage policy.
 
 
 ## Running the tests from a clean clone
@@ -53,25 +63,15 @@ Note: Running `pytest` directly from the system will fail collection due to miss
 3. Ensure the project-environment `pytest`, Ruff, and strict mypy commands all pass.
 4. Write a clear PR description explaining what and why.
 
-## Definition of Done (BOD-316: "done means wired")
+## Definition of done
 
-A story is not done when the code merges; it is done when something in
-production calls it. Before marking a story Done:
+The seven-part definition of done is in [AGENTS.md](AGENTS.md#definition-of-done).
+`scripts/check_dod.py` enforces it in CI from `docs/proof/dod/<story>.json`.
+Merged, green and reviewed are necessary, never sufficient.
 
-- A production caller exists, or the story is explicitly scoped
-  library-only in its ticket (and the ticket says so).
-- The live path is demonstrated: a test, demo script, or evidence log shows
-  the new code executing on a real call path, not only in an isolated unit
-  test.
-- No new stub is left as the default. A stub/adapter registered with a
-  default-off or default-unavailable health is fine only if an existing
-  ticket owns turning it on; otherwise wire it or do not ship it as default.
-- Reviewers ask: **"who calls this in production?"** An answer naming only
-  `tests/` is not a production caller.
-- `scripts/check_reachability.py` (see the Lint CI job) must not report the
-  new code as unreachable; see `reachability-baseline.json` for pre-existing
-  exceptions and `docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the triage
-  policy.
+Reviewers still ask **"who calls this in production?"** An answer naming only
+`tests/` is not a production caller, and `scripts/check_reachability.py` must
+not report the new code.
 
 ## Design Principles
 

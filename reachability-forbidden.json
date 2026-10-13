@@ -1,0 +1,28 @@
+[
+  {
+    "symbol": "verdict.gate.Gate",
+    "allowed_modules": [
+      "scripts.live_savings_bench",
+      "scripts.produce_assignment_log_evidence",
+      "verdict.actions.helpers",
+      "verdict.api",
+      "verdict.benchmarking",
+      "verdict.cli",
+      "verdict.comparison",
+      "verdict.mcp_server"
+    ],
+    "reason": "Legacy selector. Route selection must go through the EligibilityLadder (build_selector); no new production caller. M2 removes the remaining ones."
+  },
+  {
+    "symbol": "verdict.eligibility.EligibilityGate",
+    "allowed_modules": [
+      "verdict.api",
+      "verdict.autodev_routing",
+      "verdict.decision_kernel",
+      "verdict.intelligence",
+      "verdict.intelligence_adapter",
+      "verdict.subagent_models"
+    ],
+    "reason": "Second selection authority beside the EligibilityLadder; no new production caller. M2 removes the remaining ones."
+  }
+]

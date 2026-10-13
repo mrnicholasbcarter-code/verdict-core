@@ -56,7 +56,7 @@ uv run python -m pytest -q tests/test_<area>.py      # focused tests first
 uv run ruff check . && uv run ruff format --check .
 uv run mypy verdict --strict
 uv run python scripts/check_doc_links.py
-uv run python scripts/check_reachability.py          # exits 1 only on findings not in reachability-baseline.json
+uv run python scripts/check_reachability.py --ratchet-base origin/main  # new findings, orphan modules, forbidden symbols, growing baselines
 uv run python scripts/verify_proof_matrix.py
 uv run python scripts/proof/run.py --mode full --no-cache
 git diff --check
@@ -120,8 +120,36 @@ switch and is logged), and run it by hand before you ask for review.
 8. Squash-merge pinned to that SHA:
    `gh pr merge <n> --squash --match-head-commit <sha>`.
 
-Done means wired: a production caller exists, and `check_reachability.py` does
-not flag the new code. See [CONTRIBUTING.md](CONTRIBUTING.md).
+## Definition of done
+
+A story is DONE only when all seven parts hold and its evidence file
+`docs/proof/dod/<story>.json` passes `python scripts/check_dod.py --all` (CI,
+schema [`proof/dod.schema.json`](proof/dod.schema.json)):
+
+1. **Works for real.** The acceptance commands ran on the operator's real setup
+   (live gateway, real `~/.verdict`, installed services) from merged main, and
+   the raw output shows the expected result. Date, SHA, command and output are
+   in the evidence file. Repo-tooling stories run on GitHub instead; the run URL
+   is the real-state marker.
+2. **Wired.** Every new symbol has a production caller,
+   `scripts/check_reachability.py` shows nothing new, and the next stage
+   consumes the output.
+3. **Installed.** Every service or timer it needs is installed by `verdict setup`
+   and checked by `verdict doctor`; doctor is green.
+4. **Stays true.** The acceptance command still passes after its freshness
+   window with no manual action, and a scheduled job covers it.
+5. **Spec and docs match.** Its OpenSpec change validates strictly, every task
+   is ticked, and it is archived; docs describe only what runs.
+6. **On main.** Exact-head CI green, squash-merged, clean-main verification.
+7. **Confirmed by the parent.** Someone other than the author re-ran an
+   acceptance command and recorded the raw output.
+
+Not done: tests pass on fixtures, CI green, review approved, merged, or a worker
+saying "implemented". These are necessary, never sufficient. Do not archive an
+OpenSpec change or move a ticket to Done before the evidence file passes.
+Build the evidence file outside the repository and commit it, with the
+archived change, only when `scripts/check_dod.py <file>` passes; CI runs
+`--all`, so an incomplete file in `docs/proof/dod/` fails every pull request.
 
 ## Safety rules
 

@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mrnicholasbcarter-code/verdict-core/proof/dod.schema.json",
+  "title": "Definition-of-done evidence for one story",
+  "description": "Checked by scripts/check_dod.py. The seven parts are in AGENTS.md (Definition of done).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "story",
+    "kind",
+    "author",
+    "merged_sha",
+    "pr",
+    "on_main",
+    "acceptance",
+    "freshness_window_hours",
+    "stays_true_job",
+    "setup_doctor",
+    "openspec",
+    "parent_confirmation"
+  ],
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^docs/proof/dod/[A-Za-z0-9._/-]+$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "sha",
+        "environment",
+        "command",
+        "real_state_marker",
+        "exit_code",
+        "raw_output"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/time"
+        },
+        "sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "environment": {
+          "enum": [
+            "operator-host",
+            "github-actions"
+          ]
+        },
+        "real_state_marker": {
+          "type": "string",
+          "minLength": 8,
+          "description": "Text that only a real run prints (gateway host, run URL); must appear in raw_output."
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "raw_output": {
+          "$ref": "#/$defs/artifact"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "story": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "kind": {
+      "enum": [
+        "product",
+        "repo-tooling"
+      ],
+      "description": "repo-tooling: CI/scripts only; acceptance runs on GitHub and setup/doctor may be not_applicable."
+    },
+    "merged_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "freshness_window_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "stays_true_job": {
+      "type": "string",
+      "minLength": 3,
+      "description": "The scheduled job that keeps re-running the acceptance commands."
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterion",
+          "expect",
+          "first_run",
+          "fresh_run"
+        ],
+        "properties": {
+          "criterion": {
+            "type": "string",
+            "minLength": 3
+          },
+          "expect": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Text the raw output must contain."
+          },
+          "expect_exit_code": {
+            "type": "integer",
+            "default": 0
+          },
+          "first_run": {
+            "$ref": "#/$defs/run"
+          },
+          "fresh_run": {
+            "$ref": "#/$defs/run"
+          }
+        }
+      }
+    },
+    "setup_doctor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "command",
+            "at",
+            "raw_output"
+          ],
+          "properties": {
+            "status": {
+              "const": "green"
+            },
+            "command": {
+              "type": "string"
+            },
+            "at": {
+              "$ref": "#/$defs/time"
+            },
+            "raw_output": {
+              "$ref": "#/$defs/artifact"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "not_applicable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 10
+            }
+          }
+        }
+      ]
+    },
+    "openspec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change"
+      ],
+      "properties": {
+        "change": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        }
+      }
+    },
+    "parent_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "at",
+        "command",
+        "raw_output"
+      ],
+      "properties": {
+        "by": {
+          "type": "string",
+          "minLength": 2
+        },
+        "at": {
+          "$ref": "#/$defs/time"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 3
+        },
+        "raw_output": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    },
+    "author": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Who built the story; the parent confirmation must come from someone else."
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "on_main": {
+      "$ref": "#/$defs/run",
+      "description": "`gh pr checks <pr> --required` on the merged head: exit 0 means every required check passed."
+    }
+  }
+}

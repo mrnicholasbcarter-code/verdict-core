@@ -81,24 +81,122 @@ jobs:
         run: python scripts/verify_proof_matrix.py
 
   lint:
+    # Required check. The pipeline fixes formatting and safe lint fixes itself:
+    # on a pull request from this repository it commits `ruff check --fix-only`
+    # and `ruff format` to the branch. GitHub creates the pull_request runs for
+    # that bot commit in the "action_required" state; this job approves them, so
+    # the required checks run on the new head with no agent turn (runs started
+    # by workflow_dispatch do not count as pull request checks). If it cannot
+    # approve them, the job fails. It then fails only on what is left. Fork
+    # pull requests get the strict check without the fix.
+    # The definition-of-done, OpenSpec, proof-path and reachability gates run
+    # here so that they are part of a required check.
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      AUTOFIX: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      OPENSPEC_TELEMETRY: "0"
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.AUTOFIX == 'true' && github.head_ref || '' }}
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,dashboard]"
+      - name: Autofix formatting and safe lint fixes (same-repository pull requests)
+        if: env.AUTOFIX == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          ruff check --fix-only --exit-zero .
+          ruff format .
+          if git diff --quiet; then exit 0; fi
+          git config user.name "verdict-autofix"
+          git config user.email "verdict-autofix@users.noreply.github.com"
+          git commit -qam "style: ruff autofix (pipeline)"
+          git push origin "HEAD:$BRANCH"
+          head=$(git rev-parse HEAD)
+          # GitHub creates the pull_request runs of the fix commit a few seconds
+          # apart, queued as "action_required". Approve them until no new run
+          # has appeared for two polls in a row.
+          approved=0
+          quiet=0
+          last=-1
+          for _ in $(seq 1 30); do
+            sleep 10
+            for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&status=action_required" --jq '.workflow_runs[].id'); do
+              gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve" >/dev/null
+              approved=$((approved + 1))
+            done
+            seen=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&event=pull_request" --jq '.total_count')
+            if [ "$seen" -eq "$last" ] && [ "$seen" -gt 0 ]; then quiet=$((quiet + 1)); else quiet=0; fi
+            last=$seen
+            if [ "$quiet" -ge 2 ]; then break; fi
+          done
+          if [ "$approved" -eq 0 ]; then
+            echo "::error::Pushed ruff fixes as ${head:0:8}, but found no pull_request run to approve; re-run the checks on the new head."
+            exit 1
+          fi
+          echo "::notice::Pushed ruff fixes as ${head:0:8} and approved $approved of its $seen pull_request run(s)."
       - name: Run Ruff
         run: ruff check .
       - name: Run Ruff Format (check)
         run: ruff format --check .
       - name: Run MyPy
         run: mypy verdict --strict
+      - name: Find the ratchet base
+        id: base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "$PR_BASE" ]; then
+            echo "sha=$PR_BASE" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            echo "sha=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Reachability (symbols, orphan modules, forbidden symbols; baselines only shrink)
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            python scripts/check_reachability.py --ratchet-base "$BASE_SHA"
+          else
+            python scripts/check_reachability.py
+          fi
+      - name: Definition of done (docs/proof/dod evidence; AGENTS.md)
+        run: python scripts/check_dod.py --all
+      - name: Proof paths change only with a Proof trailer and a valid receipt
+        if: steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: python scripts/check_proof_paths.py --base "$BASE_SHA"
+      - name: openspec validate --all --strict (pinned 1.13.2)
+        run: npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive
+      - name: Touched OpenSpec changes have no open tasks (label wip skips)
+        if: steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          WIP: ${{ contains(github.event.pull_request.labels.*.name, 'wip') }}
+        run: |
+          if [ "$WIP" = true ]; then
+            python scripts/check_openspec_tasks.py --base "$BASE_SHA" --wip
+          else
+            python scripts/check_openspec_tasks.py --base "$BASE_SHA"
+          fi
 
   security:
     runs-on: ubuntu-latest

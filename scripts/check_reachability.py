@@ -16,12 +16,31 @@ The optional vulture cross-check uses ``python -m vulture verdict/
 .vulture-whitelist.py --min-confidence 60`` with this interpreter. The whitelist
 is vulture input only; it is not a production caller or a version pin.
 
+Module level: a ``verdict/`` module is an orphan when nothing outside
+``tests/`` reaches it by import or module-name string, starting from
+``pyproject.toml`` entry points, ``verdict/__main__.py`` and every non-test
+file outside ``verdict/`` (scripts, examples). Known orphans are listed in
+``reachability-modules-baseline.json``.
+
+Forbidden symbols (``reachability-forbidden.json``): a top-level symbol that
+production code may reference only from its ``allowed_modules``. Any other
+reference fails; the list is not baselined.
+
+Ratchet (``--ratchet-base REF``, used on pull requests): both baselines may
+only shrink. CI fails on a baseline entry that is not in REF, on a stale entry
+(fixed code must leave the baseline), on an ``UNTRIAGED`` entry whose module
+the branch changed, and on a forbidden symbol's ``allowed_modules`` growing or
+going stale. ``--min-burn N`` also requires the ``UNTRIAGED`` count to fall by
+at least N (integration trains).
+
 Usage:
     scripts/check_reachability.py [--json] [--baseline PATH] [--skip-vulture]
+                                  [--ratchet-base REF [--min-burn N]]
 
 Exit codes:
-    0: no NEW unreachable/stub-default entries beyond the baseline
-    1: new entries found
+    0: no NEW unreachable/stub-default/orphan entries beyond the baselines,
+       no forbidden reference, and the ratchet holds
+    1: new entries, a forbidden reference, or a ratchet violation
     2: usage/parse error
 """
 
@@ -32,7 +51,8 @@ import ast
 import json
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+import tempfile
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -42,8 +62,11 @@ except ImportError:  # Python 3.10
     import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BASELINE = ROOT / "reachability-baseline.json"
+BASELINE_NAME = "reachability-baseline.json"
+MODULE_BASELINE_NAME = "reachability-modules-baseline.json"
+FORBIDDEN_NAME = "reachability-forbidden.json"
 STUB_DEFAULT_HEALTH = {"unavailable", "disabled", "off", "unhealthy"}
+UNTRIAGED = "UNTRIAGED"
 
 
 class BaselineError(ValueError):
@@ -57,9 +80,16 @@ class BaselineEntry:
 
 
 @dataclass(frozen=True)
+class ForbiddenSymbol:
+    symbol: str
+    allowed_modules: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
 class Finding:
     qualified_name: str
-    kind: str  # "uncalled" | "test_only_caller" | "stub_default"
+    kind: str  # "uncalled" | "test_only_caller" | "stub_default" | "orphan_module"
     file: str
     line: int
     detail: str
@@ -75,6 +105,14 @@ class CheckResult:
     findings: tuple[Finding, ...]
     new_findings: tuple[Finding, ...]
     stale_baseline_entries: tuple[str, ...] = ()
+    module_findings: tuple[Finding, ...] = ()
+    new_module_findings: tuple[Finding, ...] = ()
+    stale_module_entries: tuple[str, ...] = ()
+    # "<symbol> in <module>" for production references outside allowed_modules.
+    forbidden_references: tuple[str, ...] = ()
+    # {symbol: production modules that reference it}, for the ratchet.
+    forbidden_usage: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    public_symbols: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +121,10 @@ class CheckResult:
             "findings": [f.to_dict() for f in self.findings],
             "new_findings": [f.to_dict() for f in self.new_findings],
             "stale_baseline_entries": list(self.stale_baseline_entries),
+            "module_findings": [f.to_dict() for f in self.module_findings],
+            "new_module_findings": [f.to_dict() for f in self.new_module_findings],
+            "stale_module_entries": list(self.stale_module_entries),
+            "forbidden_references": list(self.forbidden_references),
         }
 
 
@@ -333,6 +375,98 @@ def load_baseline(path: Path | None) -> tuple[BaselineEntry, ...]:
     return tuple(entries)
 
 
+def load_forbidden(path: Path | None) -> tuple[ForbiddenSymbol, ...]:
+    """Symbols that production code may reference only from ``allowed_modules``."""
+    if path is None or not path.exists():
+        return ()
+    try:
+        payload: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BaselineError(f"cannot read forbidden symbols {path}: {exc}") from exc
+    if not isinstance(payload, list):
+        raise BaselineError("forbidden symbols must be a JSON array")
+    entries: list[ForbiddenSymbol] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict) or set(item) != {"symbol", "allowed_modules", "reason"}:
+            raise BaselineError(
+                f"forbidden entry {index} must contain exactly symbol, allowed_modules and reason"
+            )
+        symbol, allowed, reason = item["symbol"], item["allowed_modules"], item["reason"]
+        if not isinstance(symbol, str) or not symbol.startswith("verdict."):
+            raise BaselineError(f"forbidden entry {index} needs a verdict.* symbol")
+        if not isinstance(allowed, list) or not all(isinstance(m, str) for m in allowed):
+            raise BaselineError(f"forbidden entry {index} ({symbol}) needs a list of modules")
+        if not isinstance(reason, str) or not reason:
+            raise BaselineError(f"forbidden entry {index} ({symbol}) needs a non-empty reason")
+        entries.append(ForbiddenSymbol(symbol, tuple(sorted(allowed)), reason))
+    return tuple(entries)
+
+
+def _prefixes(dotted: str) -> set[str]:
+    parts = dotted.split(".")
+    return {".".join(parts[: index + 1]) for index in range(len(parts))}
+
+
+def _module_dependencies(tree: ast.Module, relative_path: str) -> set[str]:
+    """Modules this file imports, plus ``verdict.*`` module-name strings it holds."""
+    module = _module_dotted(relative_path)
+    package = module if relative_path.endswith("__init__.py") else module.rpartition(".")[0]
+    deps: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                deps |= _prefixes(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")[: len(package.split(".")) - node.level + 1]
+                source = ".".join([*parts, *([node.module] if node.module else [])])
+            else:
+                source = node.module or ""
+            deps |= _prefixes(source)
+            deps |= {f"{source}.{alias.name}" for alias in node.names}
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value.startswith("verdict.")
+            and " " not in node.value
+        ):
+            deps |= _prefixes(node.value.partition(":")[0])
+    return deps - {module}
+
+
+def _orphan_modules(trees: dict[str, ast.Module], entry_points: list[str]) -> list[Finding]:
+    """``verdict/`` modules that no production root reaches by import or module string."""
+    edges: dict[str, set[str]] = {}
+    roots: set[str] = set()
+    for relative_path, tree in trees.items():
+        if _is_test_path(relative_path):
+            continue
+        module = _module_dotted(relative_path)
+        edges[module] = _module_dependencies(tree, relative_path)
+        if not _is_verdict_path(relative_path) or relative_path == "verdict/__main__.py":
+            roots.add(module)
+    for target in entry_points:
+        roots |= _prefixes(target.partition(":")[0])
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        module = pending.pop()
+        if module not in reached:
+            reached.add(module)
+            pending.extend(edges.get(module, ()))
+    return [
+        Finding(
+            _module_dotted(path),
+            "orphan_module",
+            path,
+            1,
+            "no production importer, entry point or module-name string reaches this module",
+        )
+        for path in sorted(trees)
+        if _is_verdict_path(path) and _module_dotted(path) not in reached
+    ]
+
+
 def run_vulture(root: Path) -> dict[tuple[str, int], str]:
     """Run vulture 2.16 on verdict/ (whitelist-aware) and index its findings.
 
@@ -367,12 +501,16 @@ def run_vulture(root: Path) -> dict[tuple[str, int], str]:
 def check(
     root: Path = ROOT, *, baseline_path: Path | None = None, use_vulture: bool = True
 ) -> CheckResult:
-    """Scan tracked ``verdict/`` files for unreachable public symbols."""
+    """Scan tracked ``verdict/`` files for unreachable symbols and modules."""
     root = root.resolve()
     if baseline_path is None:
-        default_baseline = root / "reachability-baseline.json"
-        baseline_path = default_baseline if default_baseline.exists() else None
+        baseline_path = root / BASELINE_NAME
     baseline = {entry.qualified_name for entry in load_baseline(baseline_path)}
+    module_baseline = {
+        entry.qualified_name
+        for entry in load_baseline(baseline_path.with_name(MODULE_BASELINE_NAME))
+    }
+    forbidden = load_forbidden(baseline_path.with_name(FORBIDDEN_NAME))
     vulture_findings = run_vulture(root) if use_vulture else {}
 
     tracked = tracked_python_files(root)
@@ -390,6 +528,7 @@ def check(
     }
     # referenced_in[qualified_name] -> {"prod": bool, "test": bool}
     referenced_in: dict[str, dict[str, bool]] = {}
+    forbidden_usage: dict[str, set[str]] = {entry.symbol: set() for entry in forbidden}
     for relative_path, tree in trees.items():
         if relative_path == ".vulture-whitelist.py":
             continue
@@ -397,16 +536,20 @@ def check(
         for name in _referenced_names(tree, relative_path, module_symbols):
             bucket = referenced_in.setdefault(name, {"prod": False, "test": False})
             bucket["test" if is_test else "prod"] = True
+            module = _module_dotted(relative_path)
+            if not is_test and name in forbidden_usage and module != name.rpartition(".")[0]:
+                forbidden_usage[name].add(module)
 
     pyproject = root / "pyproject.toml"
+    entry_points: list[str] = []
     if pyproject.exists():
-        scripts = (
-            tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            .get("project", {})
-            .get("scripts", {})
-        )
-        for target in scripts.values():
-            if isinstance(target, str) and ":" in target:
+        project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
+        groups = [project.get("scripts", {}), *project.get("entry-points", {}).values()]
+        entry_points = [
+            target for group in groups for target in group.values() if isinstance(target, str)
+        ]
+        for target in entry_points:
+            if ":" in target:
                 referenced_in[target.replace(":", ".")] = {"prod": True, "test": False}
     for relative_path, tree in trees.items():
         if _is_test_path(relative_path):
@@ -421,6 +564,7 @@ def check(
                 }
 
     findings: list[Finding] = []
+    public_symbols: set[str] = set()
     checked = 0
     for relative_path, tree in trees.items():
         if not _is_verdict_path(relative_path):
@@ -429,6 +573,7 @@ def check(
         for definition in _public_definitions(tree, relative_path):
             checked += 1
             qualified_name = f"{_module_dotted(relative_path)}.{definition.name}"
+            public_symbols.add(qualified_name)
             usage = referenced_in.get(qualified_name)
             if usage is None or not (usage["prod"] or usage["test"]):
                 vulture_hit = vulture_findings.get((relative_path, definition.line))
@@ -452,27 +597,166 @@ def check(
     ordered = tuple(sorted(findings, key=lambda f: (f.qualified_name, f.kind)))
     new_ordered = tuple(f for f in ordered if f.qualified_name not in baseline)
     stale = tuple(sorted(baseline - {f.qualified_name for f in ordered}))
-    return CheckResult(not new_ordered, checked, ordered, new_ordered, stale)
+
+    modules = tuple(_orphan_modules(trees, entry_points))
+    new_modules = tuple(f for f in modules if f.qualified_name not in module_baseline)
+    stale_modules = tuple(sorted(module_baseline - {f.qualified_name for f in modules}))
+    forbidden_refs = tuple(
+        f"{entry.symbol} in {module}"
+        for entry in forbidden
+        for module in sorted(forbidden_usage[entry.symbol] - set(entry.allowed_modules))
+    )
+    return CheckResult(
+        not (new_ordered or new_modules or forbidden_refs),
+        checked,
+        ordered,
+        new_ordered,
+        stale,
+        modules,
+        new_modules,
+        stale_modules,
+        forbidden_refs,
+        {symbol: tuple(sorted(used)) for symbol, used in forbidden_usage.items()},
+        frozenset(public_symbols),
+    )
+
+
+def _load_at(root: Path, ref: str, name: str) -> str | None:
+    """``name`` as committed at ``ref``, or None when the file does not exist there."""
+    shown = subprocess.run(
+        ["git", "show", f"{ref}:{name}"], cwd=root, capture_output=True, text=True, check=False
+    )
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def ratchet(root: Path, result: CheckResult, base: str, *, min_burn: int = 0) -> list[str]:
+    """Violations of "the baselines only shrink" between ``base`` and the working tree.
+
+    A baseline file that does not exist at ``base`` is being seeded; its entries
+    are accepted once. Every later change must remove entries, not add them.
+    """
+    root = root.resolve()
+    # Compare with the fork point: a branch that is behind its base must not be
+    # blamed for entries that the base removed after the branch started.
+    fork = subprocess.run(
+        ["git", "merge-base", base, "HEAD"], cwd=root, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if not fork:
+        raise RuntimeError(f"unknown ratchet base {base!r}")
+    with tempfile.TemporaryDirectory() as scratch:
+
+        def at_base(name: str, loader: Any) -> Any:
+            text = _load_at(root, fork, name)
+            if text is None:
+                return None
+            path = Path(scratch) / name
+            path.write_text(text, encoding="utf-8")
+            return loader(path)
+
+        old_symbols = at_base(BASELINE_NAME, load_baseline)
+        old_modules = at_base(MODULE_BASELINE_NAME, load_baseline)
+        old_forbidden = at_base(FORBIDDEN_NAME, load_forbidden)
+
+    errors: list[str] = []
+    current = {
+        BASELINE_NAME: load_baseline(root / BASELINE_NAME),
+        MODULE_BASELINE_NAME: load_baseline(root / MODULE_BASELINE_NAME),
+    }
+    for name, old in ((BASELINE_NAME, old_symbols), (MODULE_BASELINE_NAME, old_modules)):
+        if old is None:
+            continue
+        before = {entry.qualified_name for entry in old}
+        for entry in current[name]:
+            if entry.qualified_name not in before:
+                errors.append(
+                    f"{name}: new entry {entry.qualified_name} (the baseline may only shrink)"
+                )
+    for stale in (*result.stale_baseline_entries, *result.stale_module_entries):
+        errors.append(f"stale baseline entry {stale}: the finding is gone, remove the entry")
+
+    touched = {
+        _module_dotted(path)
+        for path in subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        if _is_verdict_path(path) and path.endswith(".py")
+    }
+    untriaged_now = 0
+    for name, entries in current.items():
+        for entry in entries:
+            if not entry.reason.startswith(UNTRIAGED):
+                continue
+            untriaged_now += 1
+            module = (
+                entry.qualified_name
+                if name == MODULE_BASELINE_NAME
+                else (entry.qualified_name.rpartition(".")[0])
+            )
+            if module in touched:
+                errors.append(
+                    f"{entry.qualified_name} is UNTRIAGED in a module this branch changed "
+                    f"({module}): wire it, delete it, or give it a triage reason"
+                )
+    if min_burn:
+        untriaged_before = sum(
+            entry.reason.startswith(UNTRIAGED)
+            for old in (old_symbols, old_modules)
+            for entry in (old or ())
+        )
+        if untriaged_before - untriaged_now < min_burn:
+            errors.append(
+                f"UNTRIAGED fell by {untriaged_before - untriaged_now} "
+                f"({untriaged_before} -> {untriaged_now}); this branch must burn at least {min_burn}"
+            )
+
+    current_forbidden = {rule.symbol: rule for rule in load_forbidden(root / FORBIDDEN_NAME)}
+    for old_entry in old_forbidden or ():
+        rule = current_forbidden.get(old_entry.symbol)
+        if rule is None:
+            if old_entry.symbol in result.public_symbols:
+                errors.append(f"{FORBIDDEN_NAME}: {old_entry.symbol} was removed but still exists")
+            continue
+        grown = set(rule.allowed_modules) - set(old_entry.allowed_modules)
+        if grown:
+            errors.append(
+                f"{FORBIDDEN_NAME}: {rule.symbol} allowed_modules grew: {', '.join(sorted(grown))}"
+            )
+    for symbol, rule in current_forbidden.items():
+        unused = set(rule.allowed_modules) - set(result.forbidden_usage.get(symbol, ()))
+        if unused:
+            errors.append(
+                f"{FORBIDDEN_NAME}: {symbol} is no longer used by {', '.join(sorted(unused))}; "
+                "remove them from allowed_modules"
+            )
+    return errors
 
 
 def render_text(result: CheckResult) -> str:
-    if not result.findings:
-        return f"reachability check passed: {result.checked_symbols} public symbols checked, 0 findings\n"
     lines = [
         f"reachability check: {result.checked_symbols} public symbols, "
-        f"{len(result.findings)} finding(s), {len(result.new_findings)} NEW (not baselined)"
+        f"{len(result.findings)} finding(s), {len(result.new_findings)} NEW (not baselined); "
+        f"{len(result.module_findings)} orphan module(s), "
+        f"{len(result.new_module_findings)} NEW"
     ]
-    for finding in result.findings:
-        marker = "NEW" if finding in result.new_findings else "baselined"
+    for finding in (*result.findings, *result.module_findings):
+        new = finding in result.new_findings or finding in result.new_module_findings
         lines.append(
-            f"- [{marker}] {finding.kind}: {finding.qualified_name} "
+            f"- [{'NEW' if new else 'baselined'}] {finding.kind}: {finding.qualified_name} "
             f"({finding.file}:{finding.line}) -- {finding.detail}"
         )
+    for reference in result.forbidden_references:
+        lines.append(f"- [FORBIDDEN] {reference} (see {FORBIDDEN_NAME})")
     return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument(
@@ -482,26 +766,42 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help="Skip the vulture cross-check (e.g. if vulture is not installed).",
     )
+    parser.add_argument(
+        "--ratchet-base", metavar="REF", help="fail unless the baselines only shrank since REF"
+    )
+    parser.add_argument(
+        "--min-burn",
+        type=int,
+        default=0,
+        metavar="N",
+        help="with --ratchet-base: UNTRIAGED must fall by at least N",
+    )
     args = parser.parse_args(argv)
+    if args.min_burn and not args.ratchet_base:
+        parser.error("--min-burn needs --ratchet-base")
     try:
         result = check(baseline_path=args.baseline, use_vulture=args.use_vulture)
-    except (BaselineError, RuntimeError, ValueError) as exc:
+        violations = (
+            ratchet(ROOT, result, args.ratchet_base, min_burn=args.min_burn)
+            if args.ratchet_base
+            else []
+        )
+    except (BaselineError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         if args.json_output:
             print(json.dumps({"error": str(exc), "ok": False}, indent=2, sort_keys=True))
         else:
             print(f"reachability check error: {exc}", file=sys.stderr)
         return 2
-    if result.stale_baseline_entries:
-        print(
-            "reachability warning: stale baseline entries: "
-            + ", ".join(result.stale_baseline_entries),
-            file=sys.stderr,
-        )
+    stale = (*result.stale_baseline_entries, *result.stale_module_entries)
+    if stale and not args.ratchet_base:
+        print("reachability warning: stale baseline entries: " + ", ".join(stale), file=sys.stderr)
     if args.json_output:
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps({**result.to_dict(), "ratchet": violations}, indent=2, sort_keys=True))
     else:
         print(render_text(result), end="")
-    return 0 if result.ok else 1
+        for violation in violations:
+            print(f"- [RATCHET] {violation}")
+    return 0 if result.ok and not violations else 1
 
 
 if __name__ == "__main__":
