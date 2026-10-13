@@ -225,8 +225,9 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
     cache.record("bad/m", ProbeResult("timeout", False, False), NOW)
     report = status_report(cache, now=NOW)
     assert report["counts_by_state"] == {"fresh": 46, "stale": 1, "negative": 1, "unprobed": 0}
+    # Agentic capability outlives liveness freshness: the stale-health route still counts.
     assert report["agentic_qualified_by_capacity_class"] == {
-        "free": 45,
+        "free": 46,
         "subscription": 1,
         "metered": 0,
         "unknown": 0,
@@ -236,7 +237,7 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
     assert payload["health_cache"]["counts_by_state"] == report["counts_by_state"]
     from verdict.orchestration.cli import render_eligibility_text
 
-    assert "free=45" in render_eligibility_text(payload)
+    assert "free=46" in render_eligibility_text(payload)
 
 
 def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):

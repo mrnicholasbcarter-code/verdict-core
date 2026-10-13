@@ -32,7 +32,7 @@ the live proof will land in a follow-up.
 | Class | Turns | Qualifies for | Default interval |
 |---|---|---|---|
 | `single_call` | 2 (chat + one tool call) | Chat, summary, liveness | Every cycle |
-| `agentic` | 3 (read file, edit file, confirm read) | Implementation workers | Once per model per 24 h |
+| `agentic` | 3 (read file, edit file, confirm read) | Implementation workers | Once per model per 24 h; a PASS qualifies for 24 h |
 
 ## Cache
 
@@ -126,7 +126,22 @@ Order inside a cycle:
 3. Never-probed FREE routes, round-robin by provider/pool.
 4. SUBSCRIPTION, METERED, and UNKNOWN, chat liveness only.
 5. Up to 2 routes from providers that have no fresh entry.
-6. **Agentic probes** for FREE routes that need them (up to 8 per cycle).
+6. **Agentic probes** for FREE routes that need them. This phase has its own
+   budget and runs even when the chat phase stopped at a cap:
+   `--agentic-max-routes` (default 8), `--agentic-concurrency` (default 4),
+   `--agentic-pool-concurrency` (default 1 per credential pool) and
+   `--agentic-wall-seconds` (default `--max-wall-seconds`). Routes whose chat
+   and tool probe passed go first, then routes the gateway's synced catalog
+   (`/api/synced-available-models`) serves. An empty bucket waits for its refill
+   inside the phase budget.
+
+Never-probed FREE routes the synced catalog serves are also probed first in
+step 3. The catalog only reorders admitted routes; it never admits one. A
+gateway 400 "not available in the active live catalog" is recorded as
+`catalog_stale` (long TTL), not a 60-second `http_error`.
+
+Cache saves wait at most the lock bound, not the cycle deadline, so a probe
+that finished at the wall cap is still written.
 
 ### Single-call probe
 
@@ -145,8 +160,12 @@ Scored pass/fail. A route with agentic PASS sets `agentic_ok=True` in the
 cache entry. This is the gate for FREE routes to serve as implementation
 workers.
 
-The agentic probe runs once per model per 24 hours (default). It uses the
-same bounds, redaction, and atomic writes as the single-call probe.
+The agentic probe runs once per model per 24 hours, and a PASS qualifies the
+route for the same 24 hours (`AGENTIC_PROBE_TTL_SECONDS`). Multi-turn tool use
+is a stable model property; current liveness is still checked separately at
+the HEALTHY stage, so a failed liveness probe removes the route. A 429 during
+the agentic probe records nothing (not tested). It uses the same redaction and
+atomic writes as the single-call probe.
 
 ## Legacy state
 
