@@ -340,3 +340,6 @@ def panel(
         expand=True,
         safe_box=False,
     )
+
+
+# Drill: touching a module that still has UNTRIAGED baseline entries.
