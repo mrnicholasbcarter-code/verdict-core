@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `verdict improve --once | --cycles N | --verify` (ADR-038): one or up to five measured improvement cycles above a supervised run. A cycle is MET only when the run receipt verifies `validation_passed`, `independent_review` and `receipt_integrity`; an unchanged relaunch is refused; the lesson for the next cycle comes from Verdict's fixed per-layer table and reaches the planner through `--constraints-file`. `--verify` recomputes every measured cycle from its receipt.
+- `verdict orchestrate --constraints-file` feeds the planner's CONSTRAINTS section; a resumed run must use the constraints it started with.
+- `verdict supervise --cgroup-root PATH|auto` contains supervised Prime workers in a delegated cgroup.
+- Workers get bounded native context packs (BOD-303) and, as a last source, at most two gated memory facts from a read-only snapshot of the local memory plane (BOD-306 slice 1).
+- Partial-work salvage: a failed attempt's owned-path changes are kept and restored on the retry (BOD-308).
+- Per-node repo gates on implement nodes; a node is charged only for failures it introduced, and a formatting-only failure is repaired with the formatter.
+- Direct-gateway workers can edit files larger than the prompt budget through SEARCH/REPLACE blocks, and implement requests stream.
+- Real worker failures persist in the health cache in their causal scope and are read by later runs (BOD-304).
+- Runs blocked before planning still get a verifiable receipt.
+
+### Removed
+- 20 modules with no production caller and their tests (capacity adapters, delivery controller, 12-stage `workflows/autodev`, intelligence adapter, environment discovery, execution-host contract, Anthropic Messages helper, passport eligibility helper, memory migration, ai-memory POC provider, release scanner normalizers, optimized dispatch, subscription admission wrapper). See `docs/quality/REACHABILITY-TRIAGE-2026-10.md`.
+
 ### Fixed
 - A manual model refresh plan no longer asks one `[y/N]` for every route. It groups routes by capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED) and asks about each group, or "free only"; UNKNOWN and METERED default to no and show an estimated spend. `verdict eligibility --verified --refresh` without a terminal probes UNKNOWN or METERED routes only with `--include-unknown` or `--allow-metered` (BOD-331).
 - Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first, one slot is reserved for a fresh healthy subscription fallback, and routes refreshed during selection are used in the same selection. Found by live certification rehearsals.
@@ -34,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known limitations
 - Certification is not yet attested: the OIDC rehearsal attester step is pending.
-- Worker selection does not read the verified-model health cache yet (BOD-300); verified status is informational, not a routing input.
+- Worker selection does not read the verified-model health cache yet (BOD-300); verified status is informational, not a routing input. (Fixed after 0.5.0: see [Unreleased].)
 - The Prime picker's proof deadline gives roughly 74 seconds from the apply confirmation ("Yes") to the guarded rename; a slower confirm flow needs a fresh preview.
 - A `Retry-After` spec/code mismatch is tracked and not yet fixed in this release.
 - `install.sh` keeps installing 0.4.2 until 0.5.0 is published to PyPI; its pin is updated post-publish with real digests.

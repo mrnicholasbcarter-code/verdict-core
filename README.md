@@ -680,14 +680,13 @@ Tests: [`tests/test_admission.py`](tests/test_admission.py), [`tests/test_orches
 **Per-node assignment, paid-for and free capacity first.** Every node runs the eligibility ladder
 `DISCOVERED → ENTITLED → HEALTHY → AVAILABLE → TASK_ELIGIBLE → SELECTED` and records the failed stage and
 the reason for each candidate. The ladder ranks by capacity class first
-([`verdict/orchestration/eligibility.py:46-58`](verdict/orchestration/eligibility.py#L46-L58)).
-Planning, controller and review tasks use subscription, then free, then metered, then unknown.
-Implementation workers use free, then subscription, then metered, then unknown, but a free route
-qualifies as a worker only with a fresh agentic probe PASS in the health cache, and unknown
-capacity needs an explicit opt-in ([`:596-625`](verdict/orchestration/eligibility.py#L596-L625);
-[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` builds its ladder without a
-health cache ([`eligibility_report.py:158`](verdict/orchestration/eligibility_report.py#L158)), so
-`verdict orchestrate` admits no free route as a worker yet. Within a class the ladder ranks by
+([`_CAPACITY_ORDER`](verdict/orchestration/eligibility.py)): every role uses free, then
+subscription, then metered, then unknown. A free route qualifies as an implementation worker
+only with a fresh agentic probe PASS (or verified session evidence) in the health cache, and
+unknown capacity needs an explicit opt-in ([health cache guide](docs/guides/health-cache.md)).
+`verdict orchestrate` passes the health cache to the ladder
+([`build_selector`](verdict/orchestration/eligibility_report.py)), so free routes with fresh
+agentic evidence are admitted as workers. Within a class the ladder ranks by
 capability slack (tiers above the task floor), price, provider preference, load and task fit
 ([`:706`](verdict/orchestration/eligibility.py#L706)). Capacity class comes from account evidence,
 never from a model name. Probes go round-robin across providers within a class, so one failing provider
@@ -755,7 +754,7 @@ The provider is built only when the mode is not `OFF` and `TYPESAFE_API_KEY` is 
 |---|---|---|
 | `OFF` (default) | Nothing. The provider is never called. | — |
 | `SHADOW` | Nothing. `verdict orchestrate` asks once per run, before planning, and records the answer next to the actual planner choice as a `decision_signals` event in the receipt ([`verdict/orchestration/run.py:281-303`](verdict/orchestration/run.py#L281-L303), [`:402-415`](verdict/orchestration/run.py#L402-L415)). | Planner selection, node requirements, the DAG. Test: [`tests/test_shadow_integration.py`](tests/test_shadow_integration.py). |
-| `ADVISORY` | On the single-route path (`IntelligenceService.route`), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py:526-608`](verdict/intelligence.py#L526-L608)). Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` does not alter the planner selection or DAG but can set initial per-node context budgets; `SHADOW` records only. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
+| `ADVISORY` | On the catalog single-route path (`IntelligenceService.route` without live admission), the order of already-admitted candidates, so it can change which admitted model is picked ([`verdict/intelligence.py`](verdict/intelligence.py)). The live-admission route path does not apply it yet and records `advisory:skipped:admit_path_not_supported`. Every outcome is recorded as an `advisory:*` safety flag. | Membership: it never adds, removes or restores a candidate. It is skipped for protected (tier 0) tasks, restricted-privacy tasks, confidence below 0.6 (default), a provider error, and no answer within the timeout (default 1,500 ms) ([`verdict/decision_signals/advisory.py:1-31`](verdict/decision_signals/advisory.py#L1-L31)). In `verdict orchestrate`, `ADVISORY` does not alter the planner selection or DAG but can set initial per-node context budgets; `SHADOW` records only. Test: [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py). |
 
 The demo run records one `SHADOW` signal from a fixture provider in its receipt. The test above shows that opposite `SHADOW` signals produce the same requirements and the same DAG.
 
