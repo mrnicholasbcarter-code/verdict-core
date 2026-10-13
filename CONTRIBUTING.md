@@ -31,10 +31,16 @@ Run the same report locally:
 .venv/bin/python scripts/check_reachability.py
 ```
 
-It exits 1 only on findings that are NOT already in `reachability-baseline.json`.
-Add `--json` for machine-readable output, or `--skip-vulture` if vulture is not
-installed locally. See `docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the
-triage policy behind each baselined entry.
+It exits 1 on a public symbol or a `verdict/` module that no production code
+reaches and that is not in `reachability-baseline.json` /
+`reachability-modules-baseline.json`, and on a production reference to a symbol
+listed in `reachability-forbidden.json` outside its `allowed_modules`. On pull
+requests CI adds `--ratchet-base <base sha>`: both baselines may only shrink, a
+fixed entry must leave the baseline, and an `UNTRIAGED` entry in a module the
+pull request changes fails until it is wired, deleted or triaged. Integration
+trains add `--min-burn N`. Add `--json` for machine-readable output, or
+`--skip-vulture` if vulture is not installed locally. See
+`docs/quality/REACHABILITY-TRIAGE-2026-10.md` for the triage policy.
 
 
 ## Running the tests from a clean clone

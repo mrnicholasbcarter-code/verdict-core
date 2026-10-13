@@ -56,7 +56,7 @@ uv run python -m pytest -q tests/test_<area>.py      # focused tests first
 uv run ruff check . && uv run ruff format --check .
 uv run mypy verdict --strict
 uv run python scripts/check_doc_links.py
-uv run python scripts/check_reachability.py          # exits 1 only on findings not in reachability-baseline.json
+uv run python scripts/check_reachability.py --ratchet-base origin/main  # new findings, orphan modules, forbidden symbols, growing baselines
 uv run python scripts/verify_proof_matrix.py
 uv run python scripts/proof/run.py --mode full --no-cache
 git diff --check

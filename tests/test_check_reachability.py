@@ -99,7 +99,14 @@ def test_test_only_called_function_is_flagged(tmp_path: Path) -> None:
 
 
 def test_baselined_entry_passes_and_is_excluded_from_new_findings(tmp_path: Path) -> None:
-    root = _repository(tmp_path, {"verdict/fixture.py": _BASELINED_UNCALLED})
+    # The module is imported from production; only the function is unused.
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/fixture.py": _BASELINED_UNCALLED,
+            "verdict/__main__.py": "import verdict.fixture\n",
+        },
+    )
     baseline = tmp_path / "reachability-baseline.json"
     _write_baseline(
         baseline,
@@ -407,7 +414,7 @@ def test_stub_positional_and_async_defaults(tmp_path: Path, prefix: str, signatu
 def test_stale_baseline_entries_are_reported_without_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root = _repository(tmp_path, {"verdict/m.py": ""})
+    root = _repository(tmp_path, {"verdict/m.py": "", "verdict/__main__.py": "import verdict.m\n"})
     baseline = root / "reachability-baseline.json"
     _write_baseline(baseline, [{"qualified_name": "verdict.m.removed", "reason": "removed API"}])
     result = checker.check(root, baseline_path=baseline, use_vulture=False)
@@ -434,3 +441,199 @@ def test_vulture_uses_current_interpreter(tmp_path: Path, monkeypatch: pytest.Mo
         ("verdict/m.py", 1): "unused function 'f' (60% confidence)"
     }
     assert calls[0][:3] == [sys.executable, "-m", "vulture"]
+
+
+def _commit_all(root: Path, message: str = "x") -> None:
+    for args in (["add", "-A"], ["commit", "-qm", message]):
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+            cwd=root,
+            check=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("files", "orphans"),
+    [
+        ({"verdict/m.py": "", "verdict/__main__.py": ""}, ["verdict.m"]),
+        ({"verdict/m.py": "", "verdict/__main__.py": "import verdict.m\n"}, []),
+        ({"verdict/m.py": "", "scripts/tool.py": "from verdict import m\n"}, []),
+        (
+            {"verdict/m.py": "", "verdict/r.py": 'MODULES = ["verdict.m"]\n'},
+            ["verdict.m", "verdict.r"],
+        ),
+        (
+            {
+                "verdict/m.py": "",
+                "verdict/r.py": 'MODULES = ["verdict.m"]\n',
+                "verdict/__main__.py": "import verdict.r\n",
+            },
+            [],
+        ),
+        (
+            {
+                "verdict/m.py": "",
+                "verdict/r.py": 'X = "verdict.m:run"\n',
+                "scripts/t.py": "import verdict.r",
+            },
+            [],
+        ),
+        ({"verdict/m.py": "", "pyproject.toml": '[project.scripts]\nm = "verdict.m:main"\n'}, []),
+        ({"verdict/m.py": "", "tests/test_m.py": "import verdict.m\n"}, ["verdict.m"]),
+        (
+            {
+                "verdict/a/m.py": "",
+                "verdict/a/b.py": "from . import m\n",
+                "scripts/t.py": "import verdict.a.b",
+            },
+            [],
+        ),
+    ],
+)
+def test_orphan_modules(tmp_path: Path, files: dict[str, str], orphans: list[str]) -> None:
+    root = _repository(tmp_path, files)
+    result = checker.check(root, use_vulture=False)
+    found = [f.qualified_name for f in result.module_findings]
+    assert found == orphans
+    assert result.ok is (not orphans)
+
+
+def test_forbidden_symbol_reference_outside_allowed_modules_fails(tmp_path: Path) -> None:
+    rule = [{"symbol": "verdict.gate.Gate", "allowed_modules": ["verdict.cli"], "reason": "legacy"}]
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/gate.py": "class Gate: pass\n",
+            "verdict/cli.py": "from verdict.gate import Gate\nGate()\n",
+            "verdict/__main__.py": "import verdict.cli, verdict.api\n",
+            "verdict/api.py": "",
+            "tests/test_gate.py": "from verdict.gate import Gate\nGate()\n",
+            "reachability-forbidden.json": json.dumps(rule),
+        },
+    )
+    assert checker.check(root, use_vulture=False).ok
+    (root / "verdict/api.py").write_text(
+        "from verdict.gate import Gate\nGate()\n", encoding="utf-8"
+    )
+    result = checker.check(root, use_vulture=False)
+    assert result.forbidden_references == ("verdict.gate.Gate in verdict.api",)
+    assert not result.ok
+
+
+@pytest.fixture
+def ratchet_repo(tmp_path: Path) -> Path:
+    root = _repository(
+        tmp_path,
+        {
+            "verdict/__main__.py": "import verdict.used\n",
+            "verdict/used.py": "def unused_a(): pass\ndef unused_b(): pass\n",
+            "verdict/orphan.py": "",
+            "reachability-baseline.json": json.dumps(
+                [
+                    {"qualified_name": "verdict.used.unused_a", "reason": "UNTRIAGED: a"},
+                    {"qualified_name": "verdict.used.unused_b", "reason": "WIRE: b"},
+                ]
+            ),
+            "reachability-modules-baseline.json": json.dumps(
+                [{"qualified_name": "verdict.orphan", "reason": "UNTRIAGED: orphan"}]
+            ),
+        },
+    )
+    _commit_all(root, "base")
+    subprocess.run(["git", "branch", "base"], cwd=root, check=True)
+    return root
+
+
+def _ratchet(root: Path, min_burn: int = 0) -> list[str]:
+    result = checker.check(root, use_vulture=False)
+    assert result.ok, result.new_findings
+    return checker.ratchet(root, result, "base", min_burn=min_burn)
+
+
+def test_ratchet_passes_when_nothing_changes(ratchet_repo: Path) -> None:
+    assert _ratchet(ratchet_repo) == []
+
+
+def test_ratchet_fails_on_a_growing_baseline(ratchet_repo: Path) -> None:
+    (ratchet_repo / "verdict/used.py").write_text(
+        "def unused_a(): pass\ndef unused_b(): pass\ndef unused_c(): pass\n", encoding="utf-8"
+    )
+    baseline = json.loads((ratchet_repo / "reachability-baseline.json").read_text())
+    baseline.append({"qualified_name": "verdict.used.unused_c", "reason": "WIRE: later"})
+    _write_baseline(ratchet_repo / "reachability-baseline.json", baseline)
+    _commit_all(ratchet_repo)
+    errors = _ratchet(ratchet_repo)
+    assert any("new entry verdict.used.unused_c" in e for e in errors), errors
+
+
+def test_ratchet_fails_on_untriaged_in_a_touched_module(ratchet_repo: Path) -> None:
+    (ratchet_repo / "verdict/used.py").write_text(
+        "def unused_a(): pass\ndef unused_b(): pass\nX = 1\n", encoding="utf-8"
+    )
+    _commit_all(ratchet_repo)
+    errors = _ratchet(ratchet_repo)
+    assert errors == [
+        "verdict.used.unused_a is UNTRIAGED in a module this branch changed (verdict.used): "
+        "wire it, delete it, or give it a triage reason"
+    ]
+
+
+def test_ratchet_fails_on_a_stale_entry_and_on_too_little_burn(ratchet_repo: Path) -> None:
+    (ratchet_repo / "verdict/orphan.py").unlink()
+    _commit_all(ratchet_repo)
+    errors = _ratchet(ratchet_repo, min_burn=1)
+    assert any("stale baseline entry verdict.orphan" in e for e in errors), errors
+    (ratchet_repo / "reachability-modules-baseline.json").write_text("[]", encoding="utf-8")
+    _commit_all(ratchet_repo)
+    assert _ratchet(ratchet_repo, min_burn=1) == []
+    assert any("must burn at least 2" in e for e in _ratchet(ratchet_repo, min_burn=2))
+
+
+def test_ratchet_seeds_a_baseline_absent_at_base(ratchet_repo: Path) -> None:
+    subprocess.run(
+        ["git", "rm", "-q", "reachability-modules-baseline.json"], cwd=ratchet_repo, check=True
+    )
+    _commit_all(ratchet_repo)
+    subprocess.run(["git", "branch", "-f", "base"], cwd=ratchet_repo, check=True)
+    (ratchet_repo / "reachability-modules-baseline.json").write_text(
+        json.dumps([{"qualified_name": "verdict.orphan", "reason": "WIRE: seeded"}]),
+        encoding="utf-8",
+    )
+    _commit_all(ratchet_repo)
+    assert _ratchet(ratchet_repo) == []
+
+
+def test_ratchet_rejects_growing_or_stale_forbidden_allowlists(ratchet_repo: Path) -> None:
+    def write(name: str, text: str) -> None:
+        (ratchet_repo / name).write_text(text, encoding="utf-8")
+
+    use = "from verdict.used import unused_a\nunused_a()\n"
+    rule = {"symbol": "verdict.used.unused_a", "allowed_modules": ["verdict.x"], "reason": "legacy"}
+    write("verdict/x.py", use)
+    write("verdict/__main__.py", "import verdict.used, verdict.x\n")
+    baseline = json.loads((ratchet_repo / "reachability-baseline.json").read_text())
+    baseline = [e for e in baseline if e["qualified_name"] != "verdict.used.unused_a"]
+    _write_baseline(ratchet_repo / "reachability-baseline.json", baseline)
+    write("reachability-forbidden.json", json.dumps([rule]))
+    _commit_all(ratchet_repo)
+    subprocess.run(["git", "branch", "-f", "base"], cwd=ratchet_repo, check=True)
+    assert _ratchet(ratchet_repo) == []
+
+    write("verdict/y.py", use)
+    write("verdict/__main__.py", "import verdict.used, verdict.x, verdict.y\n")
+    rule["allowed_modules"] = ["verdict.x", "verdict.y"]
+    write("reachability-forbidden.json", json.dumps([rule]))
+    _commit_all(ratchet_repo)
+    assert any("allowed_modules grew: verdict.y" in e for e in _ratchet(ratchet_repo))
+
+    write("verdict/y.py", "")
+    write("verdict/x.py", "")
+    write("verdict/z.py", use)
+    write("verdict/__main__.py", "import verdict.used, verdict.x, verdict.y, verdict.z\n")
+    rule["allowed_modules"] = ["verdict.x"]
+    write("reachability-forbidden.json", json.dumps([rule]))
+    _commit_all(ratchet_repo)
+    result = checker.check(ratchet_repo, use_vulture=False)
+    assert result.forbidden_references == ("verdict.used.unused_a in verdict.z",)
+    errors = checker.ratchet(ratchet_repo, result, "base")
+    assert any("no longer used by verdict.x" in e for e in errors), errors
