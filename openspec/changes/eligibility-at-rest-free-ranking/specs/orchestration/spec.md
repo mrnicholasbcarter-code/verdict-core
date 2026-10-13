@@ -84,3 +84,16 @@ next candidate. A provider-originated 5xx SHALL still count against the route.
 #### Scenario: Provider 503
 - **WHEN** a probe returns 503 with the provider's own error
 - **THEN** the route is recorded as `upstream`
+
+### Requirement: Availability failures do not revoke capability
+A probe failure SHALL revoke a route's agentic proof only when the model
+answered and failed the task (wrong or missing tool use, model mismatch). A
+timeout, 5xx, 429 or account error SHALL keep the proof; the route's own
+negative blocks it at HEALTHY until it expires. The prober SHALL retry the
+agentic probe of a route whose last failure was a timeout or 5xx once that
+negative expires.
+
+#### Scenario: 503 on a proven route
+- **WHEN** a route with an agentic proof from 2 hours ago gets a provider 503
+- **THEN** the route is negative for the backoff window and keeps its proof
+- **AND** it is eligible again once the negative expires

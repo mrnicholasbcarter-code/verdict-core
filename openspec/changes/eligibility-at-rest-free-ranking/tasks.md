@@ -14,6 +14,7 @@
 - [x] 3.1 Failing last, FREE first, then session score; frontier roles proven > unknown > failing first.
 - [x] 3.2 Inside FREE: gateway success rate, capability, context, latency; quota never ranks FREE.
 - [x] 3.3 Gateway overload writes nothing in the prober and the select-time check.
+- [x] 3.4 Only an answered failure revokes an agentic proof; a timeout/5xx is re-probed after its negative.
 
 ## 4. Live
 - [x] 4.1 `verdict eligibility --json` on the operator host lists the proven FREE routes without --probe.

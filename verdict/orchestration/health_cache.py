@@ -1227,6 +1227,15 @@ class HealthCache:
             # Carry forward the *original* agentic timestamp, NOT the
             # current single-call timestamp.
             agentic_checked_at = previous.agentic_checked_at
+        # Capability is stable; availability is not. Only an answered failure
+        # (wrong tool use, model mismatch) revokes an agentic proof. A timeout,
+        # 5xx, 429 or account error keeps it: the route's own negative blocks it
+        # at HEALTHY until it expires (live 2026-10-13: 503s under gateway load
+        # erased the proofs of gemma4, codestral and command-a for 24 h).
+        capability_failure = result.category in {"agentic_fail", CATEGORY_MODEL_MISMATCH} or (
+            result.chat_ok and not result.tool_ok and result.http_status == 200
+        )
+        keep_proof = previous is not None and previous.agentic_ok and not capability_failure
         if result.healthy:
             entry = HealthEntry(
                 route_id=route,
@@ -1291,9 +1300,11 @@ class HealthCache:
                 healthy=False,
                 identity=result.identity,
                 probe_class=probe_class,
-                agentic_ok=False,  # failure resets agentic qualification
+                agentic_ok=keep_proof,
                 agentic_checked_at=(
-                    agentic_checked_at
+                    previous.agentic_checked_at
+                    if keep_proof and previous is not None
+                    else agentic_checked_at
                     if agentic_checked_at is not None
                     else (previous.agentic_checked_at if previous is not None else None)
                 ),

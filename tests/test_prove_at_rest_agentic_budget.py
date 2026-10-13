@@ -502,3 +502,23 @@ def test_provider_503_still_counts_against_the_route(tmp_path: Path) -> None:
     ).run_once()
     entry = cache.entry("p/m")
     assert entry is not None and entry.category == "upstream" and not entry.healthy
+
+
+def test_transient_failure_is_reprobed_after_its_negative_not_a_day_later(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json")
+    route = _free("p/m")
+    cache.record(
+        "p/m",
+        ProbeResult(
+            category="upstream",
+            chat_ok=False,
+            tool_ok=False,
+            http_status=503,
+            probe_class="agentic",
+        ),
+        NOW,
+    )
+    prober = Prober(cache, lambda: [route], _dead_chat)
+    assert not prober._needs_agentic(route, NOW + timedelta(seconds=30))
+    later = cache.entry("p/m").until + timedelta(seconds=1)
+    assert prober._needs_agentic(route, later)

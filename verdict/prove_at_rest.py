@@ -1377,6 +1377,14 @@ class Prober:
             return True
         if entry.agentic_checked_at is None:
             return True
+        if (
+            not entry.agentic_ok
+            and entry.category in {CATEGORY_TIMEOUT, CATEGORY_UPSTREAM}
+            and entry.state_at(now) != STATE_NEGATIVE
+        ):
+            # A timeout or 5xx says nothing about capability: retry once the
+            # route's own short negative expires, not a day later.
+            return True
         # Use the agentic-specific timestamp (set on every agentic attempt,
         # pass or fail), so a failed route is retried once per interval
         # instead of on every cycle.
