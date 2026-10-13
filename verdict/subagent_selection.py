@@ -177,9 +177,10 @@ class HealthCache:
     ) -> None:
         """Persist candidate cooldowns and provider-scoped capacity/auth failures.
 
-        A context-length failure is request-scoped: nothing is persisted.
+        A context-length failure is request-scoped and a gateway overload is the
+        gateway's own shed: nothing is persisted for either.
         """
-        if result.category == CONTEXT_LENGTH_CATEGORY:
+        if result.category in {CONTEXT_LENGTH_CATEGORY, GATEWAY_OVERLOAD_CATEGORY}:
             return
         self._record_key(candidate.selector, result, now=now)
         if result.category in PROVIDER_SCOPE_FAILURE_CATEGORIES:
@@ -577,7 +578,9 @@ def classify_worker_failure(exc: BaseException, *, now: datetime | None = None) 
         return HealthResult(False, "malformed_response", retry_after_seconds=retry_after)
     if status is None and not timed_out and not isinstance(exc, OSError):
         return HealthResult(False, "worker_exception")
-    result = classify_probe_status(status, timed_out=timed_out, retry_after_seconds=retry_after)
+    result = classify_probe_status(
+        status, timed_out=timed_out, retry_after_seconds=retry_after, body=str(exc)
+    )
     return result if not result.healthy else HealthResult(False, "worker_exception", status)
 
 

@@ -411,12 +411,12 @@ def test_setup_check_refuses_other_actions(
     assert "--check checks Verdict services" in capsys.readouterr().err
 
 
-def test_daemon_reports_each_finished_cycle() -> None:
+def test_daemon_reports_each_finished_cycle(tmp_path: Path) -> None:
     from verdict.prove_at_rest import CycleStats, Prober
 
     done: list[CycleStats] = []
     prober = Prober(
-        cache=HealthCache.__new__(HealthCache),
+        cache=HealthCache(tmp_path / "cache.json"),
         routes_loader=lambda: [],
         transport=lambda *a: None,  # type: ignore[arg-type,return-value]
         interval_seconds=0.01,

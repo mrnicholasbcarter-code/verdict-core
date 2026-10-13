@@ -329,3 +329,28 @@ async def test_parent_fails_only_after_bounded_worker_replacements(tmp_path: Pat
 
     assert len(launched) == 2
     assert CONTROLLER_MODEL not in launched
+
+
+def test_gateway_overload_is_never_recorded_as_route_failure(tmp_path: Path) -> None:
+    """Review (kimi-k3): a gateway shed during a worker run must not cool the route."""
+    from verdict.subagent_selection import LaunchCandidate
+
+    class ShedError(Exception):
+        status_code = 503
+
+    shed = classify_worker_failure(
+        ShedError('{"error":{"code":"resource_pressure","message":"resource pressure"}}'), now=NOW
+    )
+    assert shed.category == "gateway_overload"
+    provider_503 = classify_worker_failure(ShedError("upstream model overloaded"), now=NOW)
+    assert provider_503.category == "upstream_temporary"
+
+    cache = _cache(tmp_path)
+    candidate = LaunchCandidate(
+        "free/m", _selector("free/m"), frozenset(), 0, 0.0, 0.0, True, False, 0, 0
+    )
+    cache.record_failure(candidate, shed, now=NOW)
+    assert (
+        not (tmp_path / "health.json").exists()
+        or "free/m" not in (tmp_path / "health.json").read_text()
+    )

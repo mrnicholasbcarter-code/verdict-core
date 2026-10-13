@@ -56,7 +56,6 @@ def test_select_returns_two_tuple(eligibility_ladder):
     )
 
     eligibility_ladder._assess_all = Mock(return_value=([mock_assessment], [mock_assessment]))
-    eligibility_ladder._probe_order = Mock(return_value=[mock_assessment])
 
     result = eligibility_ladder.select(requirements, now=now)
 
@@ -85,7 +84,6 @@ def test_last_select_stats_populated_after_select(eligibility_ladder):
     )
 
     eligibility_ladder._assess_all = Mock(return_value=([mock_assessment], [mock_assessment]))
-    eligibility_ladder._probe_order = Mock(return_value=[mock_assessment])
 
     assert eligibility_ladder.last_select_stats == {}
 
@@ -119,7 +117,6 @@ def test_last_select_stats_is_copy(eligibility_ladder):
     )
 
     eligibility_ladder._assess_all = Mock(return_value=([mock_assessment], [mock_assessment]))
-    eligibility_ladder._probe_order = Mock(return_value=[mock_assessment])
 
     eligibility_ladder.select(requirements, now=now)
 
@@ -148,7 +145,6 @@ def test_parity_select_return_vs_main(eligibility_ladder):
     mock_assessment.verdict = Mock(return_value=selected_verdict)
 
     eligibility_ladder._assess_all = Mock(return_value=([mock_assessment], [mock_assessment]))
-    eligibility_ladder._probe_order = Mock(return_value=[mock_assessment])
 
     result = eligibility_ladder.select(requirements, now=now)
 

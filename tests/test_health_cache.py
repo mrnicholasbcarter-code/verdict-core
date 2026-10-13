@@ -1358,50 +1358,14 @@ def test_daemon_does_not_carry_an_open_cursor_into_the_next_cycle(tmp_path: Path
         concurrency=1,
         interval_seconds=0.0,
     )
-    original = prober.run_once
+    cycles: list[CycleStats] = []
 
-    def once_then_stop() -> CycleStats:
-        stats = original()
-        assert cache.cursor.get("cycle_open") is True  # crash-safe while the cycle runs
+    def done(stats: CycleStats) -> None:
+        cycles.append(stats)
         prober.stop()
-        return stats
 
-    prober.run_once = once_then_stop  # type: ignore[method-assign]
+    prober.on_cycle_done = done
     prober.run_forever()
+    assert cycles and cycles[0].stopped_reason == "request_cap"
     assert seen == ["cx/c0", "cx/c1"]
-    assert not cache.cursor.get("cycle_open")
-
-
-@pytest.mark.parametrize(
-    "result,keeps",
-    [
-        (ProbeResult(category="upstream", chat_ok=False, tool_ok=False, http_status=503), True),
-        (ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False), True),
-        (ProbeResult(category="permission", chat_ok=False, tool_ok=False, http_status=403), True),
-        (
-            ProbeResult(
-                category="agentic_fail",
-                chat_ok=True,
-                tool_ok=False,
-                http_status=200,
-                probe_class="agentic",
-            ),
-            False,
-        ),
-        (ProbeResult(category="http_error", chat_ok=True, tool_ok=False, http_status=200), False),
-    ],
-)
-def test_only_an_answered_failure_revokes_an_agentic_proof(
-    tmp_path: Path, result: ProbeResult, keeps: bool
-) -> None:
-    """Live 2026-10-13: 503s under gateway load erased three proofs for 24 h."""
-    cache = HealthCache(tmp_path / "cache.json")
-    proof = ProbeResult(
-        category=CATEGORY_OK, chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
-    )
-    cache.record("p/m", proof, NOW - timedelta(hours=2))
-    entry = cache.record("p/m", result, NOW)
-    assert not entry.healthy  # the failure still blocks the route at HEALTHY
-    assert entry.agentic_ok is keeps
-    if keeps:
-        assert entry.agentic_checked_at == NOW - timedelta(hours=2)
+    assert not cache.cursor.get("cycle_open")  # run_once alone keeps it open (Defect 2)

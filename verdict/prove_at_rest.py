@@ -1621,13 +1621,11 @@ class Prober:
         while not self._stop.is_set():
             try:
                 last = self.run_once()
-                # The next cycle orders from the cache, which already holds every
-                # result of this one. A carried cursor made a capped pass skip
-                # its ~2,300 probed ids for hours. A crash still resumes: the
-                # cursor stays open on disk until a cycle finishes.
-                if self.cache.cursor.get("cycle_open"):
-                    self.cache.clear_cursor()
-                    self._save()
+                # The daemon's next cycle orders from the cache, which holds every
+                # result of this one; a carried cursor made a capped pass skip
+                # ~2,300 probed ids for hours. A crash mid-cycle still resumes.
+                self.cache.clear_cursor()
+                self._save()
             except Exception as exc:
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)
