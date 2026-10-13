@@ -82,7 +82,7 @@ jobs:
         run: uv sync --frozen --extra dev --extra server
       - name: Download independent rehearsal evidence
         if: inputs.rehearsal_run_id != ''
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: certify-rehearsals-${{ github.sha }}-${{ inputs.rehearsal_run_id }}
           run-id: ${{ inputs.rehearsal_run_id }}
