@@ -123,18 +123,16 @@ def test_old_or_unverified_failures_do_not_block(tmp_path: Path, days: int, veri
     assert ladder.select(REQ, now=NOW)[0] is not None
 
 
-def test_score_is_exposed_but_does_not_change_sort_order(tmp_path: Path) -> None:
+def test_session_stats_are_visible_before_ranking(tmp_path: Path) -> None:
     ladder, ledger, cache = setup_ladder(tmp_path)
-    other = "gl/glm-6"
-    ladder._rows[other] = row(other, owned_by="glm", pricing={"input": 0.0, "output": 0.0})
-    cache._routes[other] = replace(cache._routes[ROUTE], route_id=other)
-    ledger.append(outcome(True))
-    for day in range(3):
-        ledger.append(replace(outcome(True, days=day), route_id=other))
-    chosen, verdicts = ladder.select(REQ, now=NOW)
-    assert chosen is not None and chosen.route_id == ROUTE  # existing lexicographic tie break
-    by_id = {v.route_id: v for v in verdicts}
-    assert by_id[other].rank_components["session_score"] > chosen.rank_components["session_score"]
+    ledger.append(outcome(False))
+    cache._routes[ROUTE] = replace(cache._routes[ROUTE], agentic_ok=False)
+    verdict = ladder.evaluate(REQ, now=NOW)[0]
+    assert verdict.rank is None and verdict.reason == "no_agentic_probe"
+    assert verdict.rank_components is not None
+    assert verdict.rank_components["session_passes"] == 0
+    assert verdict.rank_components["session_fails"] == 1
+    assert verdict.rank_components["session_score"] == pytest.approx(1 / 3)
 
 
 def test_cli_json_exposes_attached_session_counts(

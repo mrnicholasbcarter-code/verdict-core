@@ -53,10 +53,11 @@ from verdict.metadata.sources import (
     parse_soft_score_table,
     skipped_p1,
 )
+from verdict.paths import verdict_home
 
 
 def default_store_path() -> Path:
-    return Path.home() / ".verdict" / "model-metadata.json"
+    return verdict_home() / "model-metadata.json"
 
 
 @dataclass(frozen=True)

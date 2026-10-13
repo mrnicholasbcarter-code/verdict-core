@@ -37,6 +37,7 @@ from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.patch_executor import DEFAULT_BASE_URL
+from verdict.paths import verdict_home
 from verdict.terminal_ui import TerminalUI
 
 if TYPE_CHECKING:
@@ -205,7 +206,7 @@ def cmd_setup(
     from verdict.setup_presentation import present_bootstrap
 
     if rollback:
-        resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
+        resolved = Path(state_dir) if state_dir else verdict_home() / "bootstrap"
         stage = rollback_bootstrap_actions(
             state_dir=resolved, action_ids=tuple(rollback_actions) if rollback_actions else None
         )
@@ -2571,7 +2572,7 @@ def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
     from verdict.actions.registry import run_action
 
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    db_path = getattr(args, "db_path", None) or str(verdict_home() / "memory.db")
     sub = getattr(args, "memory_command", None)
     if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
         from verdict import present
@@ -2929,7 +2930,7 @@ def cmd_hook(args: Any) -> None:
     from verdict.actions.registry import run_action
 
     hook_cmd = getattr(args, "hook_command", None)
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    db_path = getattr(args, "db_path", None) or str(verdict_home() / "memory.db")
 
     if hook_cmd != "claude-gate" and not (
         hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)

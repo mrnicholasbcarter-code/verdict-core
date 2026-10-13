@@ -10,10 +10,12 @@ from typing import Any
 import pytest
 
 from tests.test_orch_stages import _Classifier, _Executor, _repo, _Reviewer, _Selector
+from verdict.memory_plane import MemoryPlane
 from verdict.orchestration import improvement
 from verdict.orchestration.contracts import WorkerTerminal, WorkGraph, WorkNode
 from verdict.orchestration.receipt import EventLog, write_run_receipt
 from verdict.orchestration.run import run_golden_path
+from verdict.orchestration.session_evidence import SessionLedger
 
 GRAPH = WorkGraph(
     "g", (WorkNode("a", "write a", owned_files=("a.txt",), verification_command=("true",)),)
@@ -62,13 +64,24 @@ async def _cycle(
     )
 
 
-async def test_complete_run_meets_the_metric_and_verifies(tmp_path: Path) -> None:
+async def test_complete_run_meets_the_metric_and_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger_path = tmp_path / "session-evidence.jsonl"
+    monkeypatch.setenv("VERDICT_SESSION_EVIDENCE", str(ledger_path))
     repo, calls = _repo(tmp_path), []
     result = await _cycle(tmp_path, repo, _Executor(), calls)
     assert result.outcome == "MET", result.reason
     assert improvement.verify_cycles(tmp_path / "cycles", tmp_path / "runs") == []
     stages = [r["stage"] for r in improvement.read_cycles(tmp_path / "cycles")]
     assert stages == ["planned", "measured"]
+    outcomes = SessionLedger(ledger_path).load()
+    assert len(outcomes) == 2
+    by_kind = {outcome.kind: outcome for outcome in outcomes}
+    assert by_kind["orchestrate_node_attempt"].route_id == "cc/x"
+    assert by_kind["orchestrate_node_attempt"].outcome == "pass"
+    assert by_kind["orchestrate_review_attempt"].route_id == "cx/rev"
+    assert by_kind["orchestrate_review_attempt"].outcome == "pass"
 
 
 async def test_blocked_run_becomes_a_lesson_with_evidence(tmp_path: Path) -> None:
@@ -79,6 +92,24 @@ async def test_blocked_run_becomes_a_lesson_with_evidence(tmp_path: Path) -> Non
     assert learned and learned[0]["evidence"] and learned[0]["lesson"]
 
 
+async def test_blocked_cycle_writes_gated_lesson_cited_to_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory_path = tmp_path / "memory.db"
+    monkeypatch.setenv("VERDICT_MEMORY_PLANE_PATH", str(memory_path))
+    repo, calls = _repo(tmp_path), []
+    result = await _cycle(tmp_path, repo, _FailingExecutor(), calls)
+    with MemoryPlane(memory_path) as plane:
+        records = plane.records(namespace="lessons")
+    assert result.outcome == "NOT_MET" and len(records) == 1
+    record = records[0]
+    assert record.authority_verified is True
+    assert record.provenance["cycle_id"] == result.cycle_id
+    assert record.provenance["run_id"] == result.run_id
+    assert record.provenance["receipt_sha256"]
+    assert record.source.endswith("receipt.json")
+
+
 async def test_unchanged_relaunch_after_not_met_is_refused_without_running(tmp_path: Path) -> None:
     repo, calls = _repo(tmp_path), []
     first = await _cycle(tmp_path, repo, _FailingExecutor(), calls)
@@ -86,6 +117,9 @@ async def test_unchanged_relaunch_after_not_met_is_refused_without_running(tmp_p
     # The lesson changes the inputs, so the second cycle runs with it...
     second = await _cycle(tmp_path, repo, _FailingExecutor(), calls)
     assert second.outcome == "NOT_MET" and "--constraints-file" in calls[1]
+    constraints_path = Path(calls[1][calls[1].index("--constraints-file") + 1])
+    first_lesson = improvement._LAYER_LESSONS[first.layer]
+    assert first_lesson in constraints_path.read_text()
     # ...but the same lesson again leaves the inputs unchanged: refused, nothing runs.
     third = await _cycle(tmp_path, repo, _FailingExecutor(), calls)
     assert third.outcome == "REFUSED" and len(calls) == 2

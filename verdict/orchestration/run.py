@@ -63,6 +63,7 @@ from verdict.orchestration.receipt import (
     write_run_receipt,
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+from verdict.orchestration.session_evidence import SessionLedger
 
 # OpenSpec spec_changed marker
 SPEC_CHANGED = "spec_changed"
@@ -1141,6 +1142,7 @@ async def run_golden_path(
         reviewer=reviewer,
         policy=policy,
         inflight=inflight,
+        session_ledger=SessionLedger(),
     )
     # Attempts dispatched by an earlier controller life keep their numbers; the
     # next attempt continues after them so the receipt never merges two lives.

@@ -120,9 +120,11 @@ def test_json_counts_reconcile_without_filter(
     assert data["summary"]["selected"] == data["selected"]["route_id"]
     # The real selection path attaches the ledger; empty history has neutral score.
     components = data["selected"]["rank_components"]
+    expected_session = {"session_score": 0.5, "session_passes": 0, "session_fails": 0}
     assert {
         key: components[key] for key in ("session_score", "session_passes", "session_fails")
-    } == {"session_score": 0.5, "session_passes": 0, "session_fails": 0}
+    } == expected_session
+    assert {key: data["selected"][key] for key in expected_session} == expected_session
     # cc/* failed with 402 once; the rest of the claude provider was skipped, not probed
     assert data["selected"]["route_id"].startswith("kr/")
     assert sum(1 for p in wired if p.startswith("cc/")) == 1

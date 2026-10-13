@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+from verdict.paths import verdict_home
 from verdict.receipt_store import (
     ReceiptConflictError,
     ReceiptRecord,
@@ -1100,7 +1101,7 @@ def default_receipt_store(repo: Path | None = None) -> ReceiptStore:
     if repo is not None:
         path = Path(repo).expanduser().resolve() / ".verdict" / "receipts.db"
     else:
-        path = Path.home() / ".verdict" / "receipts.db"
+        path = verdict_home() / "receipts.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return ReceiptStore(path, strict_scope=True)
 

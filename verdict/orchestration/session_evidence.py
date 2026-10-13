@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Literal
 
 from verdict.orchestration.health_cache import format_datetime, parse_datetime
 from verdict.orchestration.provider_catalog import backend_pool
+from verdict.paths import verdict_home
 
 FAILURE_CLASSES = frozenset(
     {
@@ -42,6 +43,11 @@ class SessionOutcome:
     at: datetime
     source: str
     child_id: str | None = None
+    reported_model: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    wall_time_seconds: float | None = None
+    observed_failure_class: str | None = None
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or self.outcome not in ("pass", "fail"):
@@ -52,6 +58,12 @@ class SessionOutcome:
             raise ValueError("a session pass cannot have a failure_class")
         if not isinstance(self.verified_by_controller, bool):
             raise ValueError("verified_by_controller must be a bool")
+        if self.input_tokens is not None and self.input_tokens < 0:
+            raise ValueError("input_tokens must be non-negative")
+        if self.output_tokens is not None and self.output_tokens < 0:
+            raise ValueError("output_tokens must be non-negative")
+        if self.wall_time_seconds is not None and self.wall_time_seconds < 0:
+            raise ValueError("wall_time_seconds must be non-negative")
         format_datetime(self.at)  # Reuse the health cache's aware timestamp contract.
 
 
@@ -67,12 +79,12 @@ class SessionStats:
     score: float
 
 
-def _identity(item: SessionOutcome) -> tuple[str, datetime, str]:
-    return item.route_id, item.at, item.outcome
+def _identity(item: SessionOutcome) -> tuple[str, datetime, str, str, str | None]:
+    return item.route_id, item.at, item.outcome, item.kind, item.child_id
 
 
 def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
-    items: dict[tuple[str, datetime, str], SessionOutcome] = {}
+    items: dict[tuple[str, datetime, str, str, str | None], SessionOutcome] = {}
     skipped = 0
     for line in stream:
         if not line.strip():
@@ -92,6 +104,11 @@ def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
                 at=parse_datetime(raw["at"], "at"),
                 source=raw["source"],
                 child_id=raw.get("child_id"),
+                reported_model=str(raw.get("reported_model") or ""),
+                input_tokens=raw.get("input_tokens"),
+                output_tokens=raw.get("output_tokens"),
+                wall_time_seconds=raw.get("wall_time_seconds"),
+                observed_failure_class=raw.get("observed_failure_class"),
             )
             items.setdefault(_identity(item), item)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -107,7 +124,7 @@ class SessionLedger:
             path
             if path is not None
             else os.environ.get(
-                "VERDICT_SESSION_EVIDENCE", str(Path.home() / ".verdict" / "session-evidence.jsonl")
+                "VERDICT_SESSION_EVIDENCE", str(verdict_home() / "session-evidence.jsonl")
             )
         ).expanduser()
         self.last_load_skipped = 0
@@ -224,7 +241,7 @@ def import_worker_outcomes(jsonl_path: str | Path) -> list[SessionOutcome]:
     controller ledger, not a worker's self-reported result.
     """
     source = Path(jsonl_path)
-    items: dict[tuple[str, datetime, str], SessionOutcome] = {}
+    items: dict[tuple[str, datetime, str, str, str | None], SessionOutcome] = {}
     with source.open(encoding="utf-8") as stream:
         for line in stream:
             if not line.strip():

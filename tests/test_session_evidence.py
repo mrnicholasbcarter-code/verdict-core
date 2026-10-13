@@ -55,6 +55,21 @@ def test_round_trip_and_locked_concurrent_appends(
     assert json.loads(ledger.path.read_text().splitlines()[0])["verified_by_controller"] is True
 
 
+def test_native_attempt_metrics_round_trip(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    item = replace(
+        evidence(),
+        kind="orchestrate_node_attempt",
+        child_id="run-1:node:a1",
+        reported_model=ROUTE,
+        input_tokens=120,
+        output_tokens=30,
+        wall_time_seconds=1.25,
+    )
+    ledger.append(item)
+    assert ledger.load() == (item,)
+
+
 def test_score_weights_false_claims_and_bounds_window(tmp_path: Path) -> None:
     ledger = SessionLedger(tmp_path / "evidence.jsonl")
     for item in (
@@ -84,6 +99,8 @@ def test_default_path_and_env_override_are_tmp_only(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("VERDICT_SESSION_EVIDENCE", raising=False)
     assert SessionLedger().path == tmp_path / ".verdict" / "session-evidence.jsonl"
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "state"))
+    assert SessionLedger().path == tmp_path / "state" / "session-evidence.jsonl"
     override = tmp_path / "custom.jsonl"
     monkeypatch.setenv("VERDICT_SESSION_EVIDENCE", str(override))
     ledger = SessionLedger()

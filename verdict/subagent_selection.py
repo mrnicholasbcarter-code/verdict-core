@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.http_safety import open_no_redirect
+from verdict.paths import verdict_home
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
@@ -125,7 +126,7 @@ class HealthCache:
     """Small persistent probe cache with status-specific retry deadlines."""
 
     def __init__(self, path: Path | None = None, *, healthy_ttl_seconds: float = 300.0) -> None:
-        self.path = path or Path.home() / ".verdict" / "subagent-health.json"
+        self.path = path or verdict_home() / "subagent-health.json"
         self.healthy_ttl_seconds = healthy_ttl_seconds
         self._records = self._load()
 

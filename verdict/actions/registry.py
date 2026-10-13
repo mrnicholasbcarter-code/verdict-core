@@ -18,6 +18,7 @@ from verdict.actions.base import (
     ActionSpec,
     LaunchSpec,
 )
+from verdict.paths import verdict_home
 
 # ---------------------------------------------------------------------------
 # Registry storage
@@ -472,7 +473,7 @@ def _action_receipt_show(**kwargs: Any) -> ActionResult:
         db = _Path(db_path)
     else:
         repo_db = _Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (_Path.home() / ".verdict" / "receipts.db")
+        db = repo_db if repo_db.exists() else (verdict_home() / "receipts.db")
     store = (
         ReceiptStore(db, strict_scope=False)
         if action == "list" and scope is None
@@ -1066,7 +1067,6 @@ def _action_replay(**kwargs: Any) -> ActionResult:
       * ``{"status": "ok", "session_id": ..., "record": <session.to_dict()>}``
     """
     import os as _os
-    from pathlib import Path as _Path
 
     session_id: str = kwargs["session_id"]
     try:
@@ -1080,7 +1080,7 @@ def _action_replay(**kwargs: Any) -> ActionResult:
         return ActionResult(
             data={"status": "unavailable", "message": message}, ok=False, exit_code=3
         )
-    db_path = _os.environ.get("VERDICT_MEMORY_DB", str(_Path.home() / ".verdict" / "memory.db"))
+    db_path = _os.environ.get("VERDICT_MEMORY_DB", str(verdict_home() / "memory.db"))
     try:
         session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
     except ExecutionSessionError as exc:

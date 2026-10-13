@@ -76,3 +76,27 @@ def test_no_other_module_reads_verdict_home_directly() -> None:
         if isinstance(node, ast.Constant) and node.value == "VERDICT_HOME"
     ]
     assert offenders == [], f"use verdict.paths.verdict_home(): {offenders}"
+
+
+def test_no_other_module_hard_codes_home_dot_verdict() -> None:
+    """BOD-330: all Verdict state defaults must honor VERDICT_HOME."""
+    offenders: list[str] = []
+    for path in sorted(VERDICT_ROOT.rglob("*.py")):
+        if path == VERDICT_ROOT / "paths.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Div):
+                continue
+            if not isinstance(node.right, ast.Constant) or node.right.value != ".verdict":
+                continue
+            left = node.left
+            if (
+                isinstance(left, ast.Call)
+                and isinstance(left.func, ast.Attribute)
+                and left.func.attr == "home"
+                and isinstance(left.func.value, ast.Name)
+                and left.func.value.id == "Path"
+            ):
+                offenders.append(f"{path.relative_to(VERDICT_ROOT)}:{node.lineno}")
+    assert offenders == [], f"use verdict.paths.verdict_home(): {offenders}"

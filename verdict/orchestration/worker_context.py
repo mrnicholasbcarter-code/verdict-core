@@ -57,7 +57,7 @@ _CAPABILITIES = (
     "memory.search",
 )
 # Facts written through MemoryGate, never transcripts, docs chunks or gate events.
-_RECALL_NAMESPACES = ("decisions", "feedback", "patterns", "evidence")
+_RECALL_NAMESPACES = ("decisions", "feedback", "patterns", "evidence", "lessons")
 # Workers already receive internal repository source. Confidential, restricted and
 # unknown labels never enter a prompt.
 _RECALL_SENSITIVITIES = ("public", "standard", "internal")

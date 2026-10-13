@@ -31,6 +31,7 @@ from verdict.free_tier_admit import (
     omniroute_endpoint_from_env,
 )
 from verdict.model_passports import PASSPORT_TTL_SECONDS, ModelPassport
+from verdict.paths import verdict_home
 from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
 
 PROVE_AT_REST_SCHEMA_VERSION = "1"
@@ -53,7 +54,7 @@ def default_state_path() -> Path:
     configured = os.getenv(ENV_STATE_PATH)
     if configured and configured.strip():
         return Path(configured).expanduser().resolve()
-    return (Path.home() / ".verdict" / "prove-at-rest" / "state.json").resolve()
+    return (verdict_home() / "prove-at-rest" / "state.json").resolve()
 
 
 def _now() -> datetime:

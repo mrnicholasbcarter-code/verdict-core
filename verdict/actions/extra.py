@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.actions.base import ActionResult
+from verdict.paths import verdict_home
 
 # ---------------------------------------------------------------------------
 # Models
@@ -380,7 +381,7 @@ def _action_failover_proof(**kwargs: Any) -> ActionResult:
 def _memory_plane(kwargs: dict[str, Any]) -> Any:
     from verdict.memory_plane import MemoryPlane
 
-    db_path = kwargs.get("db_path") or str(Path.home() / ".verdict" / "memory.db")
+    db_path = kwargs.get("db_path") or str(verdict_home() / "memory.db")
     return MemoryPlane(db_path)
 
 
@@ -499,7 +500,7 @@ def _action_memory_docs(**kwargs: Any) -> ActionResult:
     from verdict.documentation_preflight import run_documentation_preflight
 
     repo_root = Path(kwargs.get("repo_root", Path.cwd()))
-    memory_path = Path(kwargs.get("db_path") or str(Path.home() / ".verdict" / "memory.db"))
+    memory_path = Path(kwargs.get("db_path") or str(verdict_home() / "memory.db"))
     report = run_documentation_preflight(
         repo_root=repo_root, memory_path=memory_path, fix=kwargs.get("fix", False)
     )
@@ -553,7 +554,7 @@ def _action_mcp_status(**kwargs: Any) -> ActionResult:
 
 
 def _action_hook_status(**kwargs: Any) -> ActionResult:
-    db_path = kwargs.get("db_path") or str(Path.home() / ".verdict" / "memory.db")
+    db_path = kwargs.get("db_path") or str(verdict_home() / "memory.db")
     # Parity with origin/main cmd_hook: the MemoryPlane is opened before any hook
     # subcommand runs, which initializes the DB file; status then reports it present.
     plane = _memory_plane(kwargs)
@@ -942,9 +943,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
     resolved_store = str(
-        Path(store_path).expanduser()
-        if store_path
-        else Path.home() / ".verdict" / "model-metadata.json"
+        Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
     )
     return ActionResult(
         data={
@@ -975,7 +974,7 @@ def _action_receipt_list(**kwargs: Any) -> ActionResult:
         db = Path(db_path)
     else:
         repo_db = Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (Path.home() / ".verdict" / "receipts.db")
+        db = repo_db if repo_db.exists() else (verdict_home() / "receipts.db")
     store = ReceiptStore(db, strict_scope=(scope is not None))
     rows = store.query_receipts(receipt_type="decision", scope=scope, limit=100)
     items: list[dict[str, Any]] = []

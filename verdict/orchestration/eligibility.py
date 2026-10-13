@@ -832,7 +832,7 @@ class EligibilityLadder:
             "probe_class": probe_class,
             "cache_checked_at": cache_checked_at,
             "cache_freshness": cache_freshness,
-            # Observational only in phase 1; _rank_key intentionally ignores these.
+            # Controller-verified real outcomes break otherwise equal cost/quota ties.
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
@@ -925,8 +925,9 @@ class EligibilityLadder:
     ) -> tuple[RouteVerdict, ...]:
         assessments, candidates = self._assess_all(requirements, now)
         ranks = {a.route_id: i for i, a in enumerate(candidates)}
-        # BOD-277: candidates already carry the assessment fields we expose.
-        components = {a.route_id: self._rank_components(a) for a in candidates}
+        # Session evidence is useful even when a route stops before ranking.
+        # Keep rank None, but expose its observed pass/fail/score in JSON.
+        components = {a.route_id: self._rank_components(a) for a in assessments}
         verdicts = tuple(
             a.verdict(
                 rank=ranks.get(a.route_id),
@@ -1088,9 +1089,9 @@ class EligibilityLadder:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
                 a.cooldown_until = blocked[a.provider]
         ranks = {c.route_id: i for i, c in enumerate(candidates)}
-        # BOD-277: same rank_components map the pre-probe evaluate() builds.
-        # Only candidates (routes that reached ranking) have components.
-        components = {a.route_id: self._rank_components(a) for a in candidates}
+        # Same evidence map as evaluate(): routes stopped before ranking still
+        # expose controller-verified session statistics, with rank=None.
+        components = {a.route_id: self._rank_components(a) for a in assessments}
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
         for a in assessments:

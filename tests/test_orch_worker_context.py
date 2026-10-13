@@ -571,6 +571,33 @@ def test_worker_pack_recalls_gated_facts_with_citations(
     assert path.exists()
 
 
+def test_worker_pack_recalls_gated_improvement_lesson(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+
+    memory_path = tmp_path / "memory.db"
+    monkeypatch.setenv("VERDICT_MEMORY_PLANE_PATH", str(memory_path))
+    with MemoryGate(db_path=memory_path) as gate:
+        result = gate.write(
+            MemoryWriteRequest(
+                namespace="lessons",
+                key="improve:c1",
+                value={
+                    "lesson": "compute_widget must keep each node focused and independently verified",
+                    "layer": "planning",
+                },
+                authority="verdict-core",
+                provenance={"cycle_id": "c1", "receipt": "/tmp/c1/receipt.json"},
+            )
+        )
+    assert result.allowed
+    node = _repo(tmp_path)
+    prompt = hydrate_node_prompt(node, repo=tmp_path, goal="ship widget", structured=True)
+    assert "compute_widget must keep each node focused" in prompt.text
+    assert any(source["path"].startswith("memory:gate_") for source in prompt.evidence()["sources"])
+
+
 def test_missing_or_broken_memory_plane_is_a_named_gap(tmp_path: Path) -> None:
     node = _repo(tmp_path)
     plane = Path(os.environ["HOME"]) / ".verdict" / "memory.db"

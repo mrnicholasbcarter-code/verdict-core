@@ -52,6 +52,7 @@ from verdict.capability_registry import (
     resolve_capability,
 )
 from verdict.mcp_config_discovery import discover_mcp_provider_configs, group_mcp_hits_by_provider
+from verdict.paths import verdict_home
 from verdict.setup_plan import SetupAction
 
 SCHEMA_VERSION = "capability-bootstrap/v1"
@@ -1816,9 +1817,7 @@ def run_bootstrap(
     _notify(observer, stages[-1].stage, stages[-1].status, stages[-1].summary)
     _notify(observer, "plan", "planned", "Review proposed actions", plan.to_dict())
     apply_payload: dict[str, object] = {"mutated": False, "actions": []}
-    resolved_state = (
-        Path(state_dir) if state_dir is not None else Path.home() / ".verdict" / "bootstrap"
-    )
+    resolved_state = Path(state_dir) if state_dir is not None else verdict_home() / "bootstrap"
 
     if mode_v is BootstrapMode.APPLY:
         # User answers feed the existing gate; unattended runs never prompt.

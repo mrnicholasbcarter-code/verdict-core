@@ -20,6 +20,14 @@ def request(**overrides: object) -> MemoryWriteRequest:
     return MemoryWriteRequest(**values)
 
 
+def test_default_path_honors_verdict_home(tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("VERDICT_HOME", str(state))
+    monkeypatch.delenv("VERDICT_MEMORY_PLANE_PATH", raising=False)
+    with MemoryGate() as gate:
+        assert gate.plane.path == state / "memory.db"
+
+
 def test_gate_persists_verified_redacted_write_and_restart_history(tmp_path: Path) -> None:
     path = tmp_path / "memory.db"
     with MemoryPlane(path) as plane:

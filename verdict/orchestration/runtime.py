@@ -26,7 +26,7 @@ import shlex
 import shutil
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -76,6 +76,7 @@ from verdict.orchestration.salvage import (
     restore_salvaged_files,
     salvage_owned_files,
 )
+from verdict.orchestration.session_evidence import SessionLedger, SessionOutcome
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import WorkerPrompt
@@ -300,12 +301,14 @@ class DagRuntime:
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         base_ref: str = "HEAD",
         inflight: dict[str, str] | None = None,
+        session_ledger: SessionLedger | None = None,
     ) -> None:
         self.repo, self.run_dir, self.graph = repo, run_dir, graph
         self.selector, self.executor, self.classifier = selector, executor, classifier
         self.events, self.prompt_for, self.reviewer = events, prompt_for, reviewer
         self.policy, self.runner, self.now = policy, runner, now
         self.base_ref = base_ref
+        self.session_ledger = session_ledger
         self.git = Git(repo, runner)
         self.nodes = {n.node_id: NodeRun(n) for n in graph.nodes}
         # node_id -> route_id. Shared with the selector's load callback so concurrent
@@ -1342,21 +1345,15 @@ class DagRuntime:
                 self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
                 blocked_line = _blocked_report(terminal.output) if terminal.ok else ""
                 if blocked_line:
-                    terminal = WorkerTerminal(
-                        ok=False,
-                        output=terminal.output,
-                        model=terminal.model,
-                        error="worker_blocked: " + blocked_line[:200],
-                        session_ref=terminal.session_ref,
-                        executor_kind=terminal.executor_kind,
-                        harness=terminal.harness,
+                    terminal = replace(
+                        terminal, ok=False, error="worker_blocked: " + blocked_line[:200]
                     )
                 if not terminal.ok or not terminal.output.strip():
                     return await self._fail(run, terminal, failures, worktree)
                 self._set(run, NodeState.TERMINAL_SUCCESS)
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
-                    failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    failed = replace(terminal, ok=False, error=verdict)
                     return await self._fail(run, failed, failures, worktree, validated=True)
                 run.commit = await self.git.commit_all(
                     worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
@@ -1371,6 +1368,13 @@ class DagRuntime:
                         "outcome": "validated",
                         "commit": run.commit,
                     }
+                )
+                self._append_session_outcome(
+                    route_id=run.route_id,
+                    outcome="pass",
+                    kind="orchestrate_node_attempt",
+                    terminal=terminal,
+                    attempt_id=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
                 )
                 self._set(run, NodeState.VALIDATED, commit=run.commit)
                 return True
@@ -1438,6 +1442,90 @@ class DagRuntime:
             return WorkerTerminal(
                 ok=False, model=route_id, error=f"transport: {type(exc).__name__}: {exc}"
             )
+
+    def _append_session_outcome(
+        self,
+        *,
+        route_id: str,
+        outcome: str,
+        kind: str,
+        terminal: WorkerTerminal | None = None,
+        failure: FailureClassification | None = None,
+        attempt_id: str,
+        attempt: Mapping[str, object] | None = None,
+    ) -> None:
+        """Persist controller-observed attempt evidence without blocking the run."""
+        if (
+            self.session_ledger is None
+            or not route_id
+            or (terminal is not None and terminal.executor_kind == "fault-injected")
+        ):
+            return
+        details = attempt or {}
+        usage = terminal.usage if terminal is not None else None
+        raw_usage = details.get("usage")
+        usage_map = raw_usage if isinstance(raw_usage, Mapping) else {}
+        observed = failure.category if failure is not None else str(details.get("category") or "")
+        failure_class = None
+        if outcome == "fail":
+            if observed in {"timeout", "review_timeout"}:
+                failure_class = "timeout"
+            elif observed in {
+                "rate_limited",
+                "quota_exhausted",
+                "authentication",
+                "payment_required",
+                "permission",
+                "upstream_temporary",
+                "transport_temporary",
+            }:
+                failure_class = "transport_error"
+            elif observed == "false_success_claim":
+                failure_class = "false_success_claim"
+            elif observed == "narrates_tool_calls":
+                failure_class = "narrates_tool_calls"
+            elif observed == "gave_up":
+                failure_class = "gave_up"
+            else:
+                failure_class = "wrong_result"
+        try:
+            self.session_ledger.append(
+                SessionOutcome(
+                    route_id=route_id,
+                    outcome=cast(Any, outcome),
+                    kind=kind,
+                    failure_class=failure_class,
+                    verified_by_controller=True,
+                    at=self.now(),
+                    source=str(self.run_dir / "events.jsonl"),
+                    child_id=attempt_id,
+                    reported_model=(
+                        terminal.model
+                        if terminal is not None
+                        else str(details.get("observed_model") or "")
+                    ),
+                    input_tokens=(
+                        usage.input_tokens
+                        if usage is not None
+                        else cast(Any, usage_map.get("input_tokens"))
+                    ),
+                    output_tokens=(
+                        usage.output_tokens
+                        if usage is not None
+                        else cast(Any, usage_map.get("output_tokens"))
+                    ),
+                    wall_time_seconds=(
+                        terminal.duration_seconds
+                        if terminal is not None
+                        else cast(Any, details.get("duration_seconds"))
+                    ),
+                    observed_failure_class=observed or None,
+                )
+            )
+        except (OSError, ValueError, TypeError):
+            # Session evidence is advisory ranking input. Its storage must never
+            # change the controller's authoritative run outcome.
+            return
 
     def _record_failure(
         self,
@@ -1514,6 +1602,14 @@ class DagRuntime:
                 "outcome": failure.category,
                 "fault_injected": terminal.executor_kind == "fault-injected",
             }
+        )
+        self._append_session_outcome(
+            route_id=run.route_id,
+            outcome="fail",
+            kind="orchestrate_node_attempt",
+            terminal=terminal,
+            failure=failure,
+            attempt_id=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
         )
 
     async def _fail(
@@ -1912,10 +2008,29 @@ class DagRuntime:
                 ):
                     break
             assert review is not None
-            for number, attempt in enumerate(review.attempts, 1):
+            review_attempts = review.attempts or (
+                {
+                    "route_id": review.route_id,
+                    "status": review.status,
+                    "observed_model": review.observed_model,
+                    "category": "" if review.passed else "review_failed",
+                },
+            )
+            for number, attempt in enumerate(review_attempts, 1):
                 # BOD-224: every reviewer attempt is evidence, not only the last.
                 record: dict[str, Any] = dict(attempt)
                 self.events.emit("review_attempt", attempt=number, **record)
+                route_id = str(record.get("route_id") or "")
+                status = str(record.get("status") or "").upper()
+                if status not in {"PASS", "FAIL", "ERROR"}:
+                    continue  # Pre-dispatch revocations are not model outcomes.
+                self._append_session_outcome(
+                    route_id=route_id,
+                    outcome="pass" if status == "PASS" else "fail",
+                    kind="orchestrate_review_attempt",
+                    attempt_id=f"{self.run_dir.name}:review:{number}",
+                    attempt=record,
+                )
             self.events.emit(
                 "review",
                 status=review.status,

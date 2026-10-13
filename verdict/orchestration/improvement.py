@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import re
+import sqlite3
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.memory_gate import MemoryGate, MemoryWriteRequest
 from verdict.orchestration.claims import derive_claims
 from verdict.orchestration.receipt import capture_producer, completion_verdict, verify_run_receipt
 from verdict.security import redact_text
@@ -99,6 +101,38 @@ def _append(cycles_dir: Path, record: Mapping[str, Any]) -> None:
     cycles_dir.mkdir(parents=True, exist_ok=True)
     with (cycles_dir / CYCLES_FILE).open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def write_cycle_lesson(
+    *, cycle_id: str, run_id: str, layer: str, lesson: str, evidence: str, run_dir: Path
+) -> bool:
+    """Write one measured lesson through ADR-009, cited to its verified receipt."""
+    receipt_path = run_dir / "receipt.json"
+    if not receipt_path.is_file() or verify_run_receipt(run_dir):
+        return False
+    receipt_sha256 = _sha256(receipt_path.read_bytes())
+    try:
+        with MemoryGate() as gate:
+            result = gate.write(
+                MemoryWriteRequest(
+                    namespace="lessons",
+                    key=f"improve:{cycle_id}",
+                    value={"lesson": lesson, "layer": layer, "evidence": evidence},
+                    authority="verdict-core",
+                    confidence=1.0,
+                    provenance={
+                        "cycle_id": cycle_id,
+                        "run_id": run_id,
+                        "receipt": str(receipt_path),
+                        "receipt_sha256": receipt_sha256,
+                    },
+                    tags=("improve", "measured-cycle", layer),
+                    source=f"receipt:{receipt_path}",
+                )
+            )
+    except (OSError, ValueError, sqlite3.Error):
+        return False
+    return result.allowed and result.record is not None
 
 
 def repo_head(repo: Path) -> str:
@@ -442,20 +476,27 @@ async def run_cycle(
         wait_until = reset.isoformat()
     else:
         wait_until = ""
-    _append(
-        cycles_dir,
-        {
-            "stage": "learned",
-            "cycle_id": cycle_id,
-            "at": _now(),
-            "run_id": run_id,
-            "layer": layer,
-            "evidence": evidence,
-            "lesson": _LAYER_LESSONS[layer],
-            "operator_action": layer in _OPERATOR_LAYERS,
-            "wait_until": wait_until,
-        },
+    lesson = _LAYER_LESSONS[layer]
+    learned = {
+        "stage": "learned",
+        "cycle_id": cycle_id,
+        "at": _now(),
+        "run_id": run_id,
+        "layer": layer,
+        "evidence": evidence,
+        "lesson": lesson,
+        "operator_action": layer in _OPERATOR_LAYERS,
+        "wait_until": wait_until,
+    }
+    learned["memory_written"] = write_cycle_lesson(
+        cycle_id=cycle_id,
+        run_id=run_id,
+        layer=layer,
+        lesson=lesson,
+        evidence=evidence,
+        run_dir=run_dir,
     )
+    _append(cycles_dir, learned)
     return CycleResult(
         cycle_id, "NOT_MET", str(measured.get("reason", "")), run_id, layer, wait_until
     )

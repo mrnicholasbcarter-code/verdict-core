@@ -396,6 +396,8 @@ class RouteVerdict:
             data["agentic_capability"] = dict(self.agentic_capability)
         if self.rank_components is not None:
             data["rank_components"] = dict(self.rank_components)
+            for key in ("session_score", "session_passes", "session_fails"):
+                data[key] = self.rank_components.get(key)
         if self.capability_tier is not None:
             data["capability_tier"] = self.capability_tier
         if self.context_window is not None:
