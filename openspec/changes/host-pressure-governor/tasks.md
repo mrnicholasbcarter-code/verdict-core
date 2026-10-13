@@ -7,4 +7,5 @@
 - [x] Scale the prover's agentic concurrency by the level.
 - [x] Add `verdict host pressure [--json]` and the doctor section.
 - [x] Write ADR-039 and the CLI reference.
-- [ ] Live acceptance on the operator host from merged main (evidence file).
+- [x] Live acceptance on the operator host from the branch (evidence.md).
+- [ ] Live acceptance from merged main (DoD 1), then archive the change.
