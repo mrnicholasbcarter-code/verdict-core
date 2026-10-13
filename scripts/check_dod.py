@@ -50,7 +50,7 @@ SCHEMA_PATH = Path("proof/dod.schema.json")
 EVIDENCE_DIR = Path("docs/proof/dod")
 ARCHIVE_DIR = Path("openspec/changes/archive")
 # Changes archived before the gate existed are not re-judged.
-GATE_START   =   '2026-10-13'
+GATE_START = "2026-10-13"
 ACTIONS_RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+")
 
 
