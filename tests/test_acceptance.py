@@ -302,6 +302,7 @@ def test_serve_check_gives_authenticated_serve_a_receipts_db(
 
         def __init__(self, argv: list[str], **kw: Any) -> None:
             seen.update(kw["env"])
+            kw["stderr"].write("boom")
 
         def poll(self) -> int:
             return 3
@@ -309,11 +310,31 @@ def test_serve_check_gives_authenticated_serve_a_receipts_db(
         def terminate(self) -> None:
             return None
 
-        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-            return "", "boom"
+        def wait(self, timeout: float | None = None) -> int:
+            return 3
 
     monkeypatch.setattr(acceptance.subprocess, "Popen", _Exited)
     check = acceptance.serve_check("http://gw", startup_seconds=1)
     assert check.passed is False and check.reason == "serve exited 3"
+    assert check.detail["stderr_tail"] == "boom"
     assert seen["VERDICT_RECEIPTS_DB"] == str(tmp_path / "acceptance" / "serve-receipts.db")
     assert seen["LLMGATE_AUTH_TOKEN"]
+
+
+def test_a_second_concurrent_run_exits_2_without_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import fcntl
+
+    from verdict.cli import cmd_acceptance_run
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    directory = tmp_path / "acceptance"
+    directory.mkdir()
+    with open(directory / ".lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(SystemExit) as exc:
+            cmd_acceptance_run()
+    assert exc.value.code == 2
+    assert "another acceptance run is active" in capsys.readouterr().err
+    assert acceptance_state.result_files(directory) == []

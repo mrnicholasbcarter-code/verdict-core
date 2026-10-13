@@ -19,6 +19,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -27,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from verdict.acceptance_state import ISSUE_PREFIX, acceptance_dir, prune, update_alert_state
 from verdict.http_safety import open_no_redirect
@@ -40,6 +41,10 @@ RED_EXIT = 3
 NOTIFY_MODES = ("off", "dry-run", "send")
 ROUTE_TASK = "Write a Python function that returns the sum of two integers."
 _ELIGIBLE_STAGES = {"TASK_ELIGIBLE", "SELECTED"}
+
+
+class AcceptanceBusyError(RuntimeError):
+    """Another run (the timer or a manual run) holds the lock."""
 
 
 @dataclass
@@ -275,6 +280,12 @@ def _free_port() -> int:
 
 def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     """Start ``verdict serve`` on a free loopback port, send one chat request, stop it."""
+    # A file, not a pipe: an unread pipe can fill and block serve mid-request.
+    with tempfile.TemporaryFile(mode="w+") as log:
+        return _serve_check(gateway, startup_seconds, log)
+
+
+def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
     port = _free_port()
     token = secrets.token_urlsafe(24)
     # Authenticated serve needs a durable receipts DB; the job's own file keeps
@@ -291,7 +302,7 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     process = subprocess.Popen(
         [sys.executable, "-m", "verdict", *args],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=log,
         text=True,
         env=env,
     )
@@ -345,11 +356,13 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     finally:
         process.terminate()
         try:
-            _, err = process.communicate(timeout=20)
+            process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             process.kill()
-            _, err = process.communicate()
-        check.stderr_sha256 = _digest(err or "")
+            process.wait()
+        log.seek(0)
+        err = log.read()
+        check.stderr_sha256 = _digest(err)
         if not check.passed and err:
             check.detail["stderr_tail"] = _tail(err)
         check.seconds = round(time.monotonic() - started, 1)
@@ -367,7 +380,7 @@ def _run_lock(directory: Path) -> Iterator[None]:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError("another acceptance run is active") from exc
+            raise AcceptanceBusyError("another acceptance run is active") from exc
         yield
 
 
@@ -450,6 +463,9 @@ def run_acceptance(
         path = directory / f"{stamp}.json"
         result["path"] = str(path)
         result["notification"] = update_alert_state(directory, result, notify=notify, email=email)
-        path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        # Doctor may read while we write: replace atomically.
+        pending = path.with_suffix(".tmp")
+        pending.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        pending.replace(path)
         prune(directory, keep)
     return result
