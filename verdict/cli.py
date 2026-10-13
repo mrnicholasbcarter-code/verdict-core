@@ -4296,12 +4296,17 @@ def cmd_acceptance_run(
     output_json: bool = False,
 ) -> None:
     """Run the live acceptance checks once; exit 3 when the recorded result is red."""
-    from verdict.acceptance import RED_EXIT, run_acceptance
+    from verdict.acceptance import RED_EXIT, AcceptanceBusyError, run_acceptance
     from verdict.acceptance_state import configured_email
 
-    result = run_acceptance(
-        gateway=gateway, notify=notify, email=email or configured_email(), keep=keep
-    )
+    try:
+        result = run_acceptance(
+            gateway=gateway, notify=notify, email=email or configured_email(), keep=keep
+        )
+    except AcceptanceBusyError as exc:
+        # The hourly timer and a manual run collided; the other run records a result.
+        print(f"verdict acceptance run: {exc}; see 'verdict acceptance status'", file=sys.stderr)
+        raise SystemExit(2) from exc
     if output_json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
