@@ -608,12 +608,12 @@ def test_recalled_fact_is_redacted_before_rendering(tmp_path: Path) -> None:
     assert "compute_widget deploy uses [redacted]" in context.text
 
 
-def _db_state(path: Path) -> tuple[bytes, int, list[str]]:
-    import sqlite3
-
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
-        tables = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master"))
-    return path.read_bytes(), path.stat().st_mtime_ns, tables
+def _db_state(path: Path) -> dict[str, tuple[bytes, int]]:
+    """Every file next to the plane (sidecars included) with its bytes and mtime."""
+    return {
+        item.name: (item.read_bytes(), item.stat().st_mtime_ns)
+        for item in sorted(path.parent.iterdir())
+    }
 
 
 @pytest.mark.parametrize("kind", ["plane", "unrelated"])
@@ -664,3 +664,20 @@ def test_secrets_in_any_recalled_record_field_never_reach_the_prompt(
     assert "compute_widget decision recorded for review" in prompt.text
     assert token not in prompt.text
     assert token not in json.dumps(prompt.evidence())
+
+
+def test_a_plane_with_pending_wal_frames_is_busy_and_untouched(tmp_path: Path) -> None:
+    from verdict.memory_plane import MemoryPlane, MemoryRecord
+
+    path = _plane(Path(os.environ["HOME"]))
+    writer = MemoryPlane(path)  # a live writer keeps committed frames in the WAL
+    writer._db.execute("PRAGMA wal_autocheckpoint=0")
+    writer.put(MemoryRecord("w1", "decisions", "w1", "compute_widget pending", "fixture"))
+    try:
+        before = _db_state(path)
+        context = build_worker_context(_repo(tmp_path), repo=tmp_path)
+        assert _db_state(path) == before
+        assert "memory.search:memory_plane_busy" in context.omissions
+        assert "must preserve integer input" in context.text
+    finally:
+        writer.close()

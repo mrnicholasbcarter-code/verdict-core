@@ -16,11 +16,11 @@ Goal: a worker sees gated facts relevant to its node, with citations, inside the
 4. Query with the distinct content words of the node (objective, acceptance, symbols), at most 12. MemoryPlane ORs the terms and ranks them with BM25.
 5. `memory.search` is the last capability, and the pack orders `required:` units first, so memory is cut first under budget pressure. At most two units are recalled.
 6. A memory unit is cited like a file excerpt, with `source=memory:<record_id>` and `span=null`. It is redacted with `redact_text` before the digest is taken.
-7. Open `shared_memory_path()` (`VERDICT_MEMORY_PLANE_PATH` or `~/.verdict/memory.db`) with the new `MemoryPlane.open_readonly` (SQLite `mode=ro`, `query_only`, schema version checked, no DDL and no journal-mode change), and close it after the query. If the file is missing, the provider reports `no_default_location`. A file that is not a current MemoryPlane produces `memory.search:memory_plane_unavailable` and is left unchanged. The `MemoryPlane(path)` constructor creates and migrates, so a reader must not use it.
+7. Open `shared_memory_path()` (`VERDICT_MEMORY_PLANE_PATH` or `~/.verdict/memory.db`) with the new `MemoryPlane.open_readonly`, and close it after the query. It opens an immutable snapshot (SQLite `mode=ro&immutable=1`, `query_only`, schema version checked), so no file is touched, not even the `-wal`/`-shm` sidecars. Such a snapshot cannot see committed frames still in a WAL, so a non-empty WAL is reported as `memory.search:memory_plane_busy` instead of returning a stale view. If the file is missing, the provider reports `no_default_location`. A file that is not a current MemoryPlane produces `memory.search:memory_plane_unavailable` and is left unchanged. The `MemoryPlane(path)` constructor creates and migrates, so a reader must not use it.
 
 ## Risks / Trade-offs
 
-A lexical OR query can recall a weakly related fact. Two units and the budget cap the cost. MemoryPlane FTS over a large plane takes about 20-300 ms per query on the operator's 157 MB plane, measured on a copy. A gated fact can still be wrong. It is labelled advisory evidence, never authority.
+A lexical OR query can recall a weakly related fact. Two units and the budget cap the cost. MemoryPlane FTS over a large plane takes about 20-300 ms per query on the operator's 157 MB plane, measured on a copy. While a writer holds uncheckpointed WAL frames, recall is skipped (`memory_plane_busy`). SQLite checkpoints on writer close, and the operator's plane has an empty WAL today. A gated fact can still be wrong. It is labelled advisory evidence, never authority.
 
 ## Security / trust implications
 

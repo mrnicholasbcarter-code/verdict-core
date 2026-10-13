@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from verdict.memory_outbox import MemoryOutbox
 
 SCHEMA_VERSION = 2
+
+
+class WalPendingError(RuntimeError):
+    """A read-only snapshot would miss committed WAL frames; read later or via a writer."""
+
+
 RecordStatus = Literal["active", "superseded", "tombstone"]
 
 
@@ -133,17 +139,23 @@ class MemoryPlane:
 
     @classmethod
     def open_readonly(cls, path: str | Path) -> MemoryPlane:
-        """Open an existing plane for reading only: no DDL, no mode change, no writes.
+        """Open an existing plane as an immutable snapshot: no DDL and no writes.
 
-        Raises ``sqlite3.Error`` or ``RuntimeError`` if the file is missing, is not
-        a MemoryPlane, or has another schema version. SQLite may still create the
-        ``-wal``/``-shm`` sidecars of a WAL database; the database file is unchanged.
+        SQLite ``immutable=1`` touches no file, not even ``-wal``/``-shm``. It
+        cannot see a WAL that holds committed frames, so a non-empty WAL raises
+        ``WalPendingError`` instead of returning a stale view. Raises
+        ``sqlite3.Error`` or ``RuntimeError`` if the file is missing, is not a
+        MemoryPlane, or has another schema version.
         """
+        source = Path(path).expanduser().resolve()
+        wal = source.with_name(source.name + "-wal")
+        if wal.exists() and wal.stat().st_size > 0:
+            raise WalPendingError("memory plane has uncheckpointed WAL frames")
         plane = cls.__new__(cls)
-        plane.path = Path(path).expanduser()
+        plane.path = source
         plane._outbox = None
         plane._db = sqlite3.connect(
-            f"{plane.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
+            f"{source.as_uri()}?mode=ro&immutable=1", uri=True, check_same_thread=False
         )
         plane._db.row_factory = sqlite3.Row
         try:

@@ -12,14 +12,14 @@
 - The recall query is built from this node's objective, acceptance criteria and target symbols only, never from the global goal.
 - Each recalled fact is redacted with `verdict.security.redact_text`. It is cited by its record id, excerpt digest, authority, trust and observed time, and appears in `WorkerPrompt.evidence()` sources.
 - `NativeMemoryProvider` accepts optional `namespaces`, `sensitivities` and `verified_only` hints. Without hints its behaviour is unchanged.
-- The plane is opened with a new `MemoryPlane.open_readonly` (SQLite `mode=ro`, no DDL). Nothing is written, and a missing plane is never created. A missing or unreadable plane becomes a named omission.
+- The plane is opened with a new `MemoryPlane.open_readonly`, an immutable SQLite snapshot that touches no file, including the WAL sidecars. Nothing is written, and a missing plane is never created. A missing, unreadable or WAL-busy plane becomes a named omission.
 - Every rendered field of a recalled record is redacted, because MemoryGate stores caller metadata such as `trust` unchanged.
 
 ## Acceptance criteria
 
 - A gated decision or operator correction that matches the node appears in the worker prompt with a `memory:<record_id>` citation, after the code evidence.
 - Unverified, confidential, transcript, session-history and unrelated records never appear.
-- A missing or broken plane is a named omission. No plane is created and nothing is written.
+- A missing, broken or WAL-busy plane is a named omission. No plane or sidecar file is created or changed.
 - A credential in a recalled fact is rendered as `[redacted]`.
 
 ## Capabilities

@@ -40,7 +40,7 @@ from verdict.context_sources import (
     ProviderResult,
 )
 from verdict.documentation_preflight import shared_memory_path
-from verdict.memory_plane import MemoryPlane
+from verdict.memory_plane import MemoryPlane, WalPendingError
 from verdict.orchestration.contracts import WorkNode
 from verdict.security import CREDENTIAL_SHAPES, redact_text
 
@@ -487,6 +487,9 @@ def _open_memory_plane(omissions: list[str]) -> MemoryPlane | None:
         return None  # the provider reports memory.search:no_default_location
     try:
         return MemoryPlane.open_readonly(path)
+    except WalPendingError:
+        omissions.append("memory.search:memory_plane_busy")
+        return None
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         omissions.append("memory.search:memory_plane_unavailable")
         return None

@@ -19,11 +19,11 @@ A worker pack SHALL include at most two active, unexpired, gate-verified MemoryP
 - **WHEN** the pack is built
 - **THEN** none of them appears in the prompt.
 
-#### Scenario: No plane or a broken plane
+#### Scenario: No plane, a broken plane, or pending WAL frames
 
-- **WHEN** the plane file is missing or cannot be opened
-- **THEN** the pack keeps its code evidence and reports `memory.search:no_default_location` or `memory.search:memory_plane_unavailable`
-- **AND** no plane file is created.
+- **WHEN** the plane file is missing, cannot be opened, or has uncheckpointed WAL frames
+- **THEN** the pack keeps its code evidence and reports `memory.search:no_default_location`, `memory.search:memory_plane_unavailable` or `memory.search:memory_plane_busy`
+- **AND** no file in the plane's directory is created or changed.
 
 #### Scenario: Recalled fact holds a credential
 
