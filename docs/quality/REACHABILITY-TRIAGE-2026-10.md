@@ -61,6 +61,33 @@ Files with the most findings:
 | `verdict/anthropic_messages_adapter.py` | 3 | **ALLOWLIST: public adapter API surface,** called by downstream integrations outside this repo's `verdict/` tree (the Anthropic Messages-compatible endpoint contract); kept test-covered pending a BOD number for the production wiring. |
 | `verdict/autodev_run.py` | 3 | **DELETE: defer to BOD-259**, same autodev-routing question as above. |
 
+## Deleted 2026-10-13 (truth audit, M6 core cut)
+
+The modules below had no caller from `verdict.cli`, `verdict.api`, `verdict/__init__.py`
+lazy exports, a `scripts/` file, a `python -m` command in docs, or a string import
+(`importlib`, `"pkg.module:func"` entry, `harness_{name}`). Their only importers were their
+own tests or another module in this list. They were deleted with those tests and their
+`reachability-baseline.json` entries; the full suite ran on the deletion head.
+
+`verdict/admission_with_subscription.py`, `anthropic_messages_adapter.py` (the "downstream
+integrations" reason above was checked: no sibling repo imports it),
+`capacity_adapters.py`, `capacity_aggregator.py`, `capacity_direct.py`,
+`capacity_gateway.py`, `capacity_live.py`, `capacity_project.py`, `capacity_resolve.py`,
+`delivery.py`, `delivery_ports.py`, `environment_discovery.py`, `execution_hosts.py`,
+`intelligence_adapter.py`, `memory_migration.py`, `memory_providers/` (the BOD-281 ai-memory
+POC; its report stays under `docs/proof/ai-memory-poc-2026-09-28/`), `optimized_dispatch.py`,
+`passport_eligibility.py`, `release/normalize.py`, `workflows/`.
+
+Kept because a script, a `python -m` doc command or a live decision still reaches them:
+`controller_selection.py` and `orchestration/supervisor_admission.py`
+(`scripts/prime_supervisor.py`), `decision_signals/calibration.py` (OpenJev calibration
+scripts), `dependency_ingest.py` (`scripts/ingest_dependency_docs.py`), `routing_demo.py`
+and `live_routing_run.py` (`python -m verdict.routing_demo`, live smoke tests),
+`context_lift.py` (BOD-306 task 3.3 names it as the recall metric), `compaction.py`
+(the Prime context extension names it as the canonical contract), `memory_mirror.py`
+(ADR-034 outbox mirror; wire or delete is a tracked story), `providers/codiv.py`
+(BOD-198 identity). The truth audit lists each with its story.
+
 ## What this story does NOT do
 
 Per BOD-316 scope ("TRIAGE + CHECK, not a wiring effort"): no code in

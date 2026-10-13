@@ -3,7 +3,7 @@
 **Status:** Approved (operational contract)
 **Date:** 2026-08-03 (revised for the Ruflo/swarm/hivemind removal: swarm/Ruflo coordination removed)
 **Applies to:** Every backlog issue worked by the Verdict autonomous development
-workflow (see `verdict/workflows/autodev.py`, `FEATURE_LIFECYCLE_GATE.md`).
+workflow (see `FEATURE_LIFECYCLE_GATE.md`).
 
 > Historical note: earlier revisions of this contract described a
 > queen/worker "swarm" coordination step backed by Ruflo/RuVector. That
@@ -59,8 +59,8 @@ after merge, it finds the next available issue and repeats.
 
 The execution step (6) may run as either:
 
-- **The 12-stage autodev workflow** (`verdict/workflows/autodev.py`,
-  `verdict autodev`) — for sequential stage-gated work.
+- **`verdict autodev`** (`verdict/autodev_run.py`) — decompose an objective,
+  run each unit on a cheap route and verify it.
 - **Goal-to-receipt orchestration** ([ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md),
   `verdict orchestrate`) — for goal decomposition into routed, receipted
   attempts. See [docs/guides/orchestration-golden-path.md](../guides/orchestration-golden-path.md)
@@ -85,7 +85,6 @@ If CI fails, fix and re-run until it passes. Then merge.
 | Doc | Role |
 |-----|------|
 | `FEATURE_LIFECYCLE_GATE.md` | Per-feature lifecycle (audit → … → verify) |
-| `verdict/workflows/autodev.py` | The 12-stage workflow implementation |
 | [`ADR-036`](../adr/ADR-036-goal-to-receipt-orchestration.md) | Goal-to-receipt orchestration (current coordination model) |
 | **`AUTONOMOUS_DEV_LOOP.md`** | The full operational loop incl. PR/CI/merge/repeat |
 | `RELEASE_CHECKLIST.md` (repo root) | Static/QA/security release gates |

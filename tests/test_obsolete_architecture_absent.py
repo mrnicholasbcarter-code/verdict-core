@@ -81,7 +81,6 @@ def test_forbidden_imports_fail(module_name: str) -> None:
 def test_canonical_memory_and_dispatcher_remain() -> None:
     assert (VERDICT / "dispatcher.py").is_file()
     assert (VERDICT / "memory_plane.py").is_file()
-    assert (VERDICT / "memory_migration.py").is_file()
     from verdict.dispatcher import SwarmDispatcher
 
     assert SwarmDispatcher.__name__ == "SwarmDispatcher"
