@@ -813,6 +813,16 @@ def _action_setup_services(**kwargs: Any) -> ActionResult:
     return _manage_units(verdict_units(), **kwargs)
 
 
+def _action_acceptance_status(**kwargs: Any) -> ActionResult:
+    """The newest live acceptance result; not ok when red, stale or missing."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    ok = not issues and row.get("state") == "green"
+    data = {"latest": row, "issues": issues, "warnings": warnings}
+    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+
+
 def _action_setup_check(**kwargs: Any) -> ActionResult:
     """Report each Verdict user unit; fail when one is missing, inactive or failed."""
     from verdict.user_services import check_units, verdict_units

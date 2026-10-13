@@ -123,6 +123,16 @@ ALIAS: dict[str, str] = {
 }
 
 LAUNCH: dict[str, LaunchSpec] = {
+    "acceptance.run": LaunchSpec(
+        reason=(
+            "cmd_acceptance_run (run_acceptance): runs doctor, eligibility with an "
+            "independent 2-turn tool check, choose, route, one serve request and the "
+            "Prime harness check against the live gateway for several minutes; "
+            "long-running scheduled job"
+        ),
+        entry="verdict.acceptance:run_acceptance",
+        section="Health",
+    ),
     "orchestrate": LaunchSpec(
         reason=(
             "_orchestrate (run_golden_path): plans a WorkGraph, dispatches "
@@ -1294,6 +1304,7 @@ def _register_builtins() -> None:
         register(ActionSpec(name, "orchestration", "mutation", summary, "Orchestration"), handler)
 
     from verdict.actions.extra import (
+        _action_acceptance_status,
         _action_autodev_packet_canary,
         _action_autodev_packet_canary_rollback,
         _action_autodev_packet_compare,
@@ -1673,6 +1684,16 @@ def _register_builtins() -> None:
                 "setup.check", "setup", "read", "Check Verdict's systemd user services", "Setup"
             ),
             _action_setup_check,
+        ),
+        (
+            ActionSpec(
+                "acceptance.status",
+                "health",
+                "read",
+                "Show the newest live acceptance result",
+                "Health",
+            ),
+            _action_acceptance_status,
         ),
         (
             ActionSpec(

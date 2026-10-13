@@ -243,10 +243,11 @@ def register(subparsers: Any) -> None:
     harness_prime_sub.add_parser(
         "disable", help="Restore the pre-enable ~/.prime/agent/models.json backup"
     )
-    harness_prime_sub.add_parser(
+    prime_status_p = harness_prime_sub.add_parser(
         "status",
         help="Show Prime Agent Verdict provider, base URL, and whether the token env is set",
     )
+    prime_status_p.add_argument("--json", action="store_true", help="Output JSON")
     prime_certify_p = harness_prime_sub.add_parser(
         "certify",
         help="Evidence-only Prime Agent certification (partial; not-installed when binary missing)",
