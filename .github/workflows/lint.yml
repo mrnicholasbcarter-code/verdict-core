@@ -41,6 +41,37 @@ jobs:
       - name: Definition of done (docs/proof/dod evidence; AGENTS.md)
         run: python scripts/check_dod.py --all
 
+  openspec:
+    # Structure: every change and spec validates strictly with the pinned CLI.
+    # Lifecycle: a change this pull request touches has every task ticked,
+    # unless the pull request carries the `wip` label.
+    runs-on: ubuntu-latest
+    env:
+      OPENSPEC_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: openspec validate --all --strict (pinned 1.13.2)
+        run: npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive
+      - name: Touched changes have no open tasks
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          WIP: ${{ contains(github.event.pull_request.labels.*.name, 'wip') }}
+        run: |
+          if [ "$WIP" = true ]; then
+            python scripts/check_openspec_tasks.py --base "$BASE_SHA" --wip
+          else
+            python scripts/check_openspec_tasks.py --base "$BASE_SHA"
+          fi
+
   actionlint:
     runs-on: ubuntu-latest
     steps:
