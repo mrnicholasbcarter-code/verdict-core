@@ -72,22 +72,6 @@ def test_measure_counts_unserved_listed_routes_against_precision() -> None:
     assert quality["recall_estimate"] == pytest.approx(0.5)
 
 
-def test_measure_removes_account_blocked_routes_from_recall() -> None:
-    listed = [_verdict("p/a", eligible=True)]
-    synced = {"p": [{"id": "a"}], "q": [{"id": "x"}]}
-    verdicts = [*listed, _verdict("q/x", eligible=False)]
-    quality = acceptance_toolcheck.measure(
-        listed,
-        verdicts,
-        synced=synced,
-        cooling=set(),
-        post=_good_tool_gateway(blocked=frozenset({"q/x"})),
-        seed="s",
-    )
-    assert quality["precision"] == 1.0
-    assert quality["recall_estimate"] == 1.0
-
-
 def test_cooling_providers_need_every_connection_cooling() -> None:
     later = (NOW + timedelta(hours=1)).isoformat()
     rows = [
@@ -338,3 +322,47 @@ def test_a_second_concurrent_run_exits_2_without_a_traceback(
     assert exc.value.code == 2
     assert "another acceptance run is active" in capsys.readouterr().err
     assert acceptance_state.result_files(directory) == []
+
+
+def test_a_crashing_check_is_a_recorded_failure_not_a_lost_result(
+    live: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {"verdicts": [_verdict("p/a", eligible=True)]}
+    monkeypatch.setattr(acceptance, "run_cli", _fake_cli(payload, choose_exit=0))
+
+    def boom(gateway: str) -> Check:
+        raise ConnectionResetError("serve went away")
+
+    monkeypatch.setattr(acceptance, "serve_check", boom)
+    result = acceptance.run_acceptance(gateway="http://gw")
+    serve = next(c for c in result["checks"] if c["name"] == "serve")
+    assert serve["passed"] is False and "ConnectionResetError" in serve["reason"]
+    assert result["status"] == "red"
+    assert Path(result["path"]).is_file()
+
+
+def test_recall_estimate_drops_account_blocked_share_of_the_population() -> None:
+    # 1 pass, 1 fail, 2 account-blocked among 4 unlisted samples; population 4.
+    listed = [_verdict("p/a", eligible=True)]
+    unlisted = ["q/1", "q/2", "q/3", "q/4"]
+    synced = {"p": [{"id": "a"}], "q": [{"id": u.split("/")[1]} for u in unlisted]}
+    verdicts = [*listed, *(_verdict(u, eligible=False) for u in unlisted)]
+    post = _good_tool_gateway(blocked=frozenset({"q/3", "q/4"}), bad=frozenset({"q/2"}))
+    quality = acceptance_toolcheck.measure(
+        listed, verdicts, synced=synced, cooling=set(), post=post, seed="s"
+    )
+    # Unblocked population 2, pass rate 1/2 -> 1 route missed; 1 found -> recall 0.5.
+    assert quality["estimated_missed"] == pytest.approx(1.0)
+    assert quality["recall_estimate"] == pytest.approx(0.5)
+
+
+def test_recall_is_unmeasured_when_every_unlisted_sample_is_account_blocked() -> None:
+    listed = [_verdict("p/a", eligible=True)]
+    synced = {"p": [{"id": "a"}], "q": [{"id": "1"}, {"id": "2"}]}
+    verdicts = [*listed, _verdict("q/1", eligible=False), _verdict("q/2", eligible=False)]
+    post = _good_tool_gateway(blocked=frozenset({"q/1", "q/2"}))
+    quality = acceptance_toolcheck.measure(
+        listed, verdicts, synced=synced, cooling=set(), post=post, seed="s"
+    )
+    assert quality["precision"] == 1.0
+    assert quality["recall_estimate"] is None
