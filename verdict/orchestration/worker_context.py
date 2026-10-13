@@ -495,6 +495,14 @@ def _open_memory_plane(omissions: list[str]) -> MemoryPlane | None:
         return None
 
 
+def _snapshot_held(plane: MemoryPlane) -> bool:
+    try:
+        plane.check_unchanged()
+    except (OSError, WalPendingError):
+        return False
+    return True
+
+
 def _cited_memory(unit: ContextUnit) -> ContextUnit | None:
     """A recalled fact is quoted advisory evidence with its record identity.
 
@@ -719,6 +727,12 @@ def build_worker_context(
     finally:
         if plane is not None:
             plane.close()
+    if retrieval is not None and plane is not None and not _snapshot_held(plane):
+        # A writer committed during the read: the immutable snapshot may be stale or torn.
+        retrieval = replace(
+            retrieval, units=tuple(u for u in retrieval.units if u.slot_type != "memory")
+        )
+        omissions.append("memory.search:memory_plane_busy")
     if retrieval is not None:
         units.extend(retrieval.units)
         omissions.extend(f"{gap.capability_id}:{gap.reason}" for gap in retrieval.coverage.omitted)

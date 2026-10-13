@@ -6,6 +6,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -681,3 +682,69 @@ def test_a_plane_with_pending_wal_frames_is_busy_and_untouched(tmp_path: Path) -
         assert "must preserve integer input" in context.text
     finally:
         writer.close()
+
+
+def _commit_now(path: Path, record_id: str) -> None:
+    import sqlite3
+
+    # A raw writer, so the test can patch the reader's sqlite3.connect.
+    writer = _REAL_CONNECT(path, isolation_level=None)
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "UPDATE memories SET updated_at = updated_at + 1 WHERE record_id = "
+        "(SELECT record_id FROM memories LIMIT 1)"
+    )
+    assert isinstance(writer, sqlite3.Connection)
+    # Left open on purpose: its committed frames stay in the WAL during the read.
+    _OPEN_WRITERS.append(writer)
+
+
+_OPEN_WRITERS: list[object] = []
+_REAL_CONNECT = __import__("sqlite3").connect
+
+
+@pytest.fixture(autouse=True)
+def _close_writers() -> Any:
+    yield
+    while _OPEN_WRITERS:
+        _OPEN_WRITERS.pop().close()  # type: ignore[attr-defined]
+
+
+def test_commit_between_check_and_open_is_busy_not_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    from verdict import memory_plane
+    from verdict.memory_plane import MemoryPlane, WalPendingError
+
+    path = _plane(Path(os.environ["HOME"]))
+    real_connect = sqlite3.connect
+
+    def connect_after_a_commit(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        _commit_now(path, "raced")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(memory_plane.sqlite3, "connect", connect_after_a_commit)
+    with pytest.raises(WalPendingError):
+        MemoryPlane.open_readonly(path)
+
+
+def test_commit_during_the_read_drops_recalled_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.context_sources import NativeMemoryProvider
+
+    path = _plane(Path(os.environ["HOME"]))
+    real_provide = NativeMemoryProvider.provide
+
+    def provide_then_commit(self: NativeMemoryProvider, **kwargs: Any) -> Any:
+        result = real_provide(self, **kwargs)
+        _commit_now(path, "during")
+        return result
+
+    monkeypatch.setattr(NativeMemoryProvider, "provide", provide_then_commit)
+    context = build_worker_context(_repo(tmp_path), repo=tmp_path)
+    assert "memory.search:memory_plane_busy" in context.omissions
+    assert "compute_widget keeps integer input" not in context.text
+    assert "must preserve integer input" in context.text
