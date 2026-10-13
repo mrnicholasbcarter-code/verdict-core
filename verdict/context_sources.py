@@ -537,6 +537,10 @@ class NativeMemoryProvider(CapabilityProvider):
         if plane is None:
             return ProviderResult(capability_id, self.provider_id, gap_reason="no_default_location")
         queries: list[str] = [query]
+        # Optional narrowing hints; absent hints keep the unfiltered behavior.
+        namespaces: tuple[str | None, ...] = (None,)
+        sensitivities: frozenset[str] | None = None
+        verified_only = False
         if hints:
             symbols = hints.get("symbols") or hints.get("target_symbols") or ()
             if isinstance(symbols, str) and symbols.strip():
@@ -546,14 +550,23 @@ class NativeMemoryProvider(CapabilityProvider):
                     text = str(item).strip()
                     if text:
                         queries.append(text)
+            if hints.get("namespaces"):
+                namespaces = tuple(str(item) for item in hints["namespaces"])
+            if hints.get("sensitivities"):
+                sensitivities = frozenset(str(item) for item in hints["sensitivities"])
+            verified_only = hints.get("verified_only") is True
         units: list[ContextUnit] = []
         seen: set[str] = set()
-        for search_query in queries:
+        for search_query, namespace in ((q, n) for q in queries for n in namespaces):
             if not search_query.strip():
                 continue
-            ranked = plane.search_ranked(search_query, limit=max_units)
+            ranked = plane.search_ranked(search_query, namespace=namespace, limit=max_units)
             for result in ranked:
                 if result.stale:
+                    continue
+                if verified_only and not result.record.authority_verified:
+                    continue
+                if sensitivities is not None and result.record.sensitivity not in sensitivities:
                     continue
                 if result.record.record_id in seen:
                     continue

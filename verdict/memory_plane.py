@@ -20,6 +20,30 @@ if TYPE_CHECKING:
     from verdict.memory_outbox import MemoryOutbox
 
 SCHEMA_VERSION = 2
+
+
+class WalPendingError(RuntimeError):
+    """A read-only snapshot would miss committed WAL frames; read later or via a writer."""
+
+
+_FileState = tuple[tuple[int, int, int, int], tuple[int, int, int, int] | None]
+
+
+def _file_state(source: Path) -> _FileState:
+    """Identity, size and change times of the database and its WAL (None if absent)."""
+
+    def stat(item: Path) -> tuple[int, int, int, int]:
+        info = item.stat()
+        return (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    wal = source.with_name(source.name + "-wal")
+    try:
+        wal_state: tuple[int, int, int, int] | None = stat(wal)
+    except FileNotFoundError:
+        wal_state = None
+    return stat(source), wal_state
+
+
 RecordStatus = Literal["active", "superseded", "tombstone"]
 
 
@@ -72,6 +96,7 @@ class MemoryPlane:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._outbox = outbox
+        self._snapshot_state: _FileState | None = None
         self._db = sqlite3.connect(
             self.path, timeout=10, isolation_level=None, check_same_thread=False
         )
@@ -130,6 +155,49 @@ class MemoryPlane:
         )
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported memory schema version: {version}")
+
+    @classmethod
+    def open_readonly(cls, path: str | Path) -> MemoryPlane:
+        """Open an existing plane as an immutable snapshot: no DDL and no writes.
+
+        SQLite ``immutable=1`` touches no file, not even ``-wal``/``-shm``, but it
+        also ignores the WAL and any concurrent writer. The snapshot is therefore
+        valid only while the files are unchanged: a non-empty WAL, or any change
+        to the database or WAL between the check and the open, raises
+        ``WalPendingError``. Callers that read must call ``check_unchanged()``
+        after reading and discard the results if it raises. Raises
+        ``sqlite3.Error`` or ``RuntimeError`` if the file is missing, is not a
+        MemoryPlane, or has another schema version.
+        """
+        source = Path(path).expanduser().resolve()
+        before = _file_state(source)
+        if before[1] is not None and before[1][1] > 0:
+            raise WalPendingError("memory plane has uncheckpointed WAL frames")
+        plane = cls.__new__(cls)
+        plane.path = source
+        plane._outbox = None
+        plane._snapshot_state = before
+        plane._db = sqlite3.connect(
+            f"{source.as_uri()}?mode=ro&immutable=1", uri=True, check_same_thread=False
+        )
+        plane._db.row_factory = sqlite3.Row
+        try:
+            plane._db.execute("PRAGMA query_only=ON")
+            row = plane._db.execute(
+                "SELECT value FROM memory_meta WHERE key='schema_version'"
+            ).fetchone()
+            if row is None or int(row[0]) != SCHEMA_VERSION:
+                raise RuntimeError("unsupported memory schema version")
+            plane.check_unchanged()
+        except BaseException:
+            plane._db.close()
+            raise
+        return plane
+
+    def check_unchanged(self) -> None:
+        """Raise ``WalPendingError`` if a snapshot's files changed since it was opened."""
+        if self._snapshot_state is not None and _file_state(self.path) != self._snapshot_state:
+            raise WalPendingError("memory plane changed while it was read")
 
     def close(self) -> None:
         self._db.close()

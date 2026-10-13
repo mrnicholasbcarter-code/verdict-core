@@ -1,7 +1,9 @@
 """Queen-owned advisory worker packs using Core's native retrieval and compiler.
 
 No model selection, provider probes, external adapter calls, or memory writes.
-The legacy byte allowance and an optional candidate plan both narrow the pack.
+Memory is read only: gated, unexpired facts from the local MemoryPlane, never
+transcripts. The legacy byte allowance and an optional candidate plan both
+narrow the pack.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import ast
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -36,6 +39,8 @@ from verdict.context_sources import (
     NativeGraphProvider,
     ProviderResult,
 )
+from verdict.documentation_preflight import shared_memory_path
+from verdict.memory_plane import MemoryPlane, WalPendingError
 from verdict.orchestration.contracts import WorkNode
 from verdict.security import CREDENTIAL_SHAPES, redact_text
 
@@ -48,6 +53,18 @@ _CAPABILITIES = (
     "tests.impact",
     "docs.project",
     "code.symbols",
+    # Last, so code evidence wins and memory is dropped first under budget pressure.
+    "memory.search",
+)
+# Facts written through MemoryGate, never transcripts, docs chunks or gate events.
+_RECALL_NAMESPACES = ("decisions", "feedback", "patterns", "evidence")
+# Workers already receive internal repository source. Confidential, restricted and
+# unknown labels never enter a prompt.
+_RECALL_SENSITIVITIES = ("public", "standard", "internal")
+_RECALL_TERM = re.compile(r"[A-Za-z][A-Za-z0-9_-]{3,}")
+_RECALL_STOPWORDS = frozenset(
+    {"that", "this", "with", "from", "into", "without", "must", "should", "when", "then"}
+    | {"update", "change", "changing", "keep", "make", "only", "each", "every", "their"}
 )
 
 _CREDENTIAL_URL_RE = re.compile(r"(?i)\b(https?://)([^/\s:@]+(?::[^/\s@]*)?@)")
@@ -456,9 +473,88 @@ def _required_units(
     return units, omissions
 
 
+def _recall_query(node: WorkNode, symbols: tuple[str, ...]) -> str:
+    """Distinct content words of this node only; MemoryPlane ORs and ranks them."""
+    text = " ".join((node.objective, *node.acceptance, *symbols))
+    terms = (t.lower() for t in _RECALL_TERM.findall(text))
+    return " ".join(list(dict.fromkeys(t for t in terms if t not in _RECALL_STOPWORDS))[:12])
+
+
+def _open_memory_plane(omissions: list[str]) -> MemoryPlane | None:
+    """Open the existing local plane read-only; never create or migrate one."""
+    path = shared_memory_path()
+    if not path.is_file():
+        return None  # the provider reports memory.search:no_default_location
+    try:
+        return MemoryPlane.open_readonly(path)
+    except WalPendingError:
+        omissions.append("memory.search:memory_plane_busy")
+        return None
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        omissions.append("memory.search:memory_plane_unavailable")
+        return None
+
+
+def _snapshot_held(plane: MemoryPlane) -> bool:
+    try:
+        plane.check_unchanged()
+    except (OSError, WalPendingError):
+        return False
+    return True
+
+
+def _cited_memory(unit: ContextUnit) -> ContextUnit | None:
+    """A recalled fact is quoted advisory evidence with its record identity.
+
+    Every rendered field comes from a caller-written record, so all of them are
+    redacted, and the rendered unit is checked once more before it is used.
+    """
+    if _contains_worker_context_secret(unit.source_uri + unit.key):
+        return None
+    raw_content = redact_text(unit.content)
+    content = truncate_utf8(raw_content, _MAX_EXCERPT_BYTES)
+    if not content.strip():
+        return None
+    digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+    trust, authority, revision = (
+        redact_text(value) for value in (unit.trust, unit.authority, unit.revision)
+    )
+    citation = json.dumps(
+        {
+            "source": unit.source_uri,
+            "span": None,
+            "excerpt_digest": digest,
+            "revision": revision,
+            "observed_at": unit.observed_at,
+            "trust": trust,
+            "authority": authority,
+        },
+        sort_keys=True,
+    )
+    rendered = f"CITE: {citation}\n{content}"
+    if redact_text(rendered) != rendered or _contains_worker_context_secret(rendered):
+        return None
+    return replace(
+        unit,
+        content=rendered,
+        source_digest=digest,
+        trust=trust,
+        authority=authority,
+        revision=revision,
+        token_count=None,
+        transform_lineage=(
+            *unit.transform_lineage,
+            *(("worker-redacted-secret",) if raw_content != unit.content else ()),
+            "worker-citation",
+        ),
+    )
+
+
 def _cited(
     unit: ContextUnit, repo: Path, filtered_aggregates: dict[int, ContextUnit]
 ) -> ContextUnit | None:
+    if unit.slot_type == "memory" and unit.source_uri.startswith("memory:"):
+        return _cited_memory(unit)
     if unit.slot_type in {"history", "memory"}:
         return None
     if unit.source_uri.startswith("code://") and filtered_aggregates.get(id(unit)) is not unit:
@@ -567,7 +663,8 @@ def build_worker_context(
         include_optional_graph=True,
     )
     # Reuse Core planning, but prioritize the node's definitions, callers,
-    # tests and design instead of generic task/git/memory units. No transcripts.
+    # tests and design over generic task/git units, then recall gated facts
+    # (decisions, operator feedback, patterns, evidence). No transcripts.
     requests = {r.capability_id: r for r in query.requests}
     source_checks: dict[str, bool] = {}
 
@@ -592,6 +689,17 @@ def build_worker_context(
                 max_units=2,
                 hints={**requests[c].hints, "source_filter": source_filter},
             )
+            if c != "memory.search"
+            else replace(
+                requests[c],
+                query=_recall_query(node, symbols),
+                max_units=2,
+                hints={
+                    "namespaces": _RECALL_NAMESPACES,
+                    "sensitivities": _RECALL_SENSITIVITIES,
+                    "verified_only": True,
+                },
+            )
             for c in _CAPABILITIES
         ),
     )
@@ -610,11 +718,21 @@ def build_worker_context(
     safe = NativeCapabilityResolver(
         tuple(_SafeNativeProvider(provider, filtered_aggregates) for provider in providers.values())
     )
+    plane = _open_memory_plane(omissions)
     try:
-        retrieval = execute_context_query(query, repo_root=repo, resolver=safe)
+        retrieval = execute_context_query(query, repo_root=repo, plane=plane, resolver=safe)
     except (OSError, ValueError, RuntimeError):
         retrieval = None
         omissions.append("native_query_error:required_excerpts_fallback")
+    finally:
+        if plane is not None:
+            plane.close()
+    if retrieval is not None and plane is not None and not _snapshot_held(plane):
+        # A writer committed during the read: the immutable snapshot may be stale or torn.
+        retrieval = replace(
+            retrieval, units=tuple(u for u in retrieval.units if u.slot_type != "memory")
+        )
+        omissions.append("memory.search:memory_plane_busy")
     if retrieval is not None:
         units.extend(retrieval.units)
         omissions.extend(f"{gap.capability_id}:{gap.reason}" for gap in retrieval.coverage.omitted)

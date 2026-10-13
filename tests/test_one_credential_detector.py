@@ -23,6 +23,11 @@ SECRETS = [
     "x-api-key: 0123456789abcdef0123456789abcdef",
     "secret_key_base: 3f9a8b7c6d5e4f30a1b2c3d4e5f60718",
     "github_pat_11ABCDEFG0123456789_abcdefghijklmnop",
+    "omniroute " + "oma_" + "live_" + "Xk3vQ9rT2mWp7LzN4bYc_8hJd-Qa1Ws2Ed3Rf4Tg5Y6",
+    "letters only " + "oma_" + "live_" + "XkvQrTmWpLzNbYchJdQaWsEdRfTgYhUjIkOlPzXcVbNm"[:43],
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA"
+    + "q1W2e3R4" * 8
+    + "\n-----END RSA PRIVATE KEY-----",
 ]
 
 
@@ -60,3 +65,23 @@ def test_diagnostics_keep_counters_that_mention_tokens(text: str) -> None:
 def test_an_authorization_bearer_value_is_always_redacted() -> None:
     text = "Authorization: Bearer abcdefghijklmno"
     assert redact_text(text) != text and _redact_worker_context_secrets(text) != text
+
+
+def test_pem_private_key_body_is_removed_and_text_after_it_kept() -> None:
+    body = "MIIEowIBAAKCAQEA" + "q1W2e3R4" * 8
+    text = f"key:\n-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\nnext line"
+    assert redact_text(text) == "key:\n-----BEGIN PRIVATE KEY-----[redacted]\nnext line"
+    assert body not in _redact_worker_context_secrets(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "oma_live_session_handler_name",  # identifier, not 43 characters
+        "oma_live_session_handler_name_v2",
+        "-----BEGIN PRIVATE KEY-----",  # a header alone carries no key
+        r"re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')",
+    ],
+)
+def test_token_and_pem_shapes_leave_non_secrets(text: str) -> None:
+    assert redact_text(text) == text
