@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -433,23 +433,39 @@ def check_health_cache(cycle_seconds: float, *, now: datetime | None = None) -> 
     return check
 
 
-def check_eligible_list(payload: dict[str, Any]) -> ServiceCheck:
-    """The user outcome: agentic-proven FREE routes exist, so some route must be eligible.
+def check_eligible_list(
+    payload: dict[str, Any], cooled_pools: Collection[str] = ()
+) -> ServiceCheck:
+    """The user outcome is free first: a proven FREE route must be eligible.
 
-    *payload* is the canonical ``eligibility`` action result. A list with proofs
-    but no eligible route means the evidence behind it went stale or a gate is
-    wrong; either way ``verdict eligibility`` shows the user nothing to run.
+    *payload* is the canonical ``eligibility`` action result. Proven FREE routes
+    in a cooled credential pool (for example a provider key limit) cannot run
+    now and are not counted. When some remain but no FREE route is eligible,
+    the list is stale or a gate is wrong, even if subscription routes are
+    eligible.
     """
     check = ServiceCheck()
-    summary = payload.get("summary") or {}
-    proven = (payload.get("health_cache") or {}).get("agentic_qualified_by_capacity_class") or {}
-    free_proven = int(proven.get("free", 0))
-    eligible = int(summary.get("eligible", 0))
-    check.rows.append({"eligible_list": {"eligible": eligible, "agentic_proven_free": free_proven}})
-    if free_proven > 0 and eligible == 0:
+    verdicts = [row for row in payload.get("verdicts") or [] if row.get("capacity_class") == "free"]
+    proven = [
+        row
+        for row in verdicts
+        if (row.get("agentic_capability") or {}).get("qualified")
+        and row.get("pool") not in cooled_pools
+    ]
+    eligible = [row for row in verdicts if row.get("reached") in {"TASK_ELIGIBLE", "SELECTED"}]
+    check.rows.append(
+        {
+            "eligible_list": {
+                "eligible": int((payload.get("summary") or {}).get("eligible", 0)),
+                "free_eligible": len(eligible),
+                "free_proven_runnable": len(proven),
+            }
+        }
+    )
+    if proven and not eligible:
         check.issues.append(
-            f"Eligibility list is stale: {free_proven} FREE routes have an agentic proof "
-            "but none is eligible; run: verdict eligibility"
+            f"Eligibility list is stale: {len(proven)} FREE routes outside cooled pools have "
+            "an agentic proof but no FREE route is eligible; run: verdict eligibility"
         )
     return check
 

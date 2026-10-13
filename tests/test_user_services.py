@@ -264,18 +264,42 @@ def test_cycle_seconds_read_from_installed_unit(home: Path) -> None:
 # -- doctor and setup --check -------------------------------------------------
 
 
-def _listed(eligible: int, proven: int) -> dict[str, object]:
+def _row(
+    route: str,
+    *,
+    reached: str = "ENTITLED",
+    proven: bool = True,
+    cls: str = "free",
+    pool: str = "p",
+) -> dict[str, object]:
     return {
-        "summary": {"eligible": eligible},
-        "health_cache": {"agentic_qualified_by_capacity_class": {"free": proven}},
+        "route_id": route,
+        "capacity_class": cls,
+        "reached": reached,
+        "pool": pool,
+        "agentic_capability": {"qualified": proven},
     }
 
 
-def test_eligible_list_check_fails_only_when_proofs_list_nothing() -> None:
-    assert user_services.check_eligible_list(_listed(0, 0)).issues == []
-    assert user_services.check_eligible_list(_listed(3, 13)).issues == []
-    stale = user_services.check_eligible_list(_listed(0, 13))
-    assert stale.issues and "13 FREE routes have an agentic proof" in stale.issues[0]
+def _listed(*rows: dict[str, object]) -> dict[str, object]:
+    eligible = sum(r["reached"] in {"TASK_ELIGIBLE", "SELECTED"} for r in rows)
+    return {"summary": {"eligible": eligible}, "verdicts": list(rows)}
+
+
+def test_eligible_list_check_requires_a_free_route_when_free_proofs_exist() -> None:
+    check = user_services.check_eligible_list
+    assert check(_listed()).issues == []
+    assert check(_listed(_row("free/a"), _row("free/b", reached="TASK_ELIGIBLE"))).issues == []
+    # Parent's run: subscription routes eligible, proven FREE routes not.
+    stale = check(
+        _listed(
+            _row("free/a"),
+            _row("devin/x", reached="TASK_ELIGIBLE", proven=False, cls="subscription"),
+        )
+    )
+    assert stale.issues and "1 FREE routes outside cooled pools" in stale.issues[0]
+    # A key-limited pool cannot run now: its proofs do not count.
+    assert check(_listed(_row("or/a", pool="openrouter-free")), {"openrouter-free"}).issues == []
 
 
 @pytest.fixture
@@ -283,7 +307,7 @@ def listed(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """The canonical eligibility action, answered from a mutable payload."""
     from verdict.actions.base import ActionResult
 
-    payload: dict[str, object] = _listed(2, 2)
+    payload: dict[str, object] = _listed(_row("free/a", reached="TASK_ELIGIBLE"))
     real = __import__("verdict.actions.registry", fromlist=["run_action"]).run_action
 
     def run_action(name: str, params: dict[str, object] | None = None) -> ActionResult:
@@ -316,7 +340,12 @@ def test_doctor_reports_a_stopped_timer_and_exits_non_zero(
     assert ("verdict-prove-at-rest.timer", "inactive") in [(s[0], s[1]) for s in red.sections]
 
     _healthy(fake, user_services.prover_unit())
-    listed.update(_listed(0, 13))  # proofs exist, the list is empty
+    # Proofs exist, only a subscription route is eligible.
+    listed.update(
+        _listed(
+            _row("free/a"), _row("sub/x", reached="TASK_ELIGIBLE", proven=False, cls="subscription")
+        )
+    )
     stale = DoctorDiagnostics()
     _doctor_services(stale)
     assert [i for i in stale.issues if "Eligibility list is stale" in i]
