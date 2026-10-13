@@ -12,6 +12,6 @@
 - [x] 2.3 One alert per regression streak and one on recovery; state-file dedupe.
 
 ## 3. Live
-- [ ] 3.1 Install on the operator host with `verdict setup services`; see a recorded run.
-- [ ] 3.2 Two red runs on the host: doctor red, notification state recorded, no email (never green).
+- [x] 3.1 Install on the operator host with `verdict setup services`; see a recorded run.
+- [x] 3.2 Two red runs on the host: doctor red, notification state recorded, no email (never green).
 - [ ] 3.3 Switch the unit to `--notify send` in the change that makes the job green (after M2).
