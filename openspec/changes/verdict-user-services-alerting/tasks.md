@@ -15,5 +15,6 @@
 - [x] 3.2 Tests: stopped timer, failed unit, missing unit, stale cache, no unit-readable key.
 
 ## 4. Live
-- [ ] 4.1 Install both units on the operator host with `verdict setup services`.
-- [ ] 4.2 Doctor green; stop the prober timer; doctor red and names the unit.
+- [x] 4.1 Install both units on the operator host with `verdict setup services` (evidence.md).
+- [x] 4.2 Stop the prober timer; doctor and `setup --check` exit 1 and name the unit (evidence.md).
+- [ ] 4.3 Merged-main run and the parent's own re-run (definition of done 1, 6, 7).
