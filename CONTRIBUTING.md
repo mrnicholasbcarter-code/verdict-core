@@ -23,8 +23,11 @@ uv run --extra dev --extra dashboard --extra server ruff format --check .
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
 ```
 
-The reachability gate runs in CI in `.github/workflows/lint.yml`.
-`vgate` is operator-owned and unchanged by BOD-316; this is a separate CI gate.
+The reachability, definition-of-done, proof-path and OpenSpec gates run in
+the required `lint` job of `.github/workflows/ci.yml`. That job also applies
+`ruff check --fix-only` and `ruff format` to same-repository pull requests and
+commits the result, so a formatting-only failure needs no extra turn.
+`vgate` is operator-owned and separate from these CI gates.
 Run the same report locally:
 
 ```bash
