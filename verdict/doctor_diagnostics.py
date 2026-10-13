@@ -141,6 +141,8 @@ class DoctorDiagnostics:
         self.config_loaded: bool = False
         #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
         self.gateway_lifecycle: dict[str, Any] = {}
+        #: The newest ``verdict acceptance run`` result (``acceptance_state.doctor_check``).
+        self.acceptance: dict[str, Any] = {}
 
 
 DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
@@ -302,6 +304,22 @@ def _census_result_stale(last: Any) -> str | None:
     if age > 3 * CENSUS_INTERVAL_SECONDS:
         return f"last census {int(age)}s ago is stale; check: systemctl --user status verdict-census.timer"
     return None
+
+
+def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
+    """The newest live acceptance result: red or older than 2 h is an issue."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    diag.acceptance = row
+    age = row.get("age_seconds")
+    detail = f"{row.get('state')}: " + row.get("path", "no result yet")
+    if age is not None:
+        detail += f", {age / 60:.0f} min old"
+    state = "failed" if issues else "warning" if warnings else "ok"
+    diag.sections.append(("Live acceptance", state, detail))
+    diag.issues.extend(issues)
+    diag.warnings.extend(warnings)
 
 
 def _collect_doctor_diagnostics(
@@ -684,6 +702,7 @@ def _collect_doctor_diagnostics(
                         f"Configured provider node '{name}' ({url}) is unreachable/offline."
                     )
 
+    _doctor_acceptance(diag)
     # Credentials check
     sections.append(("Credentials", "header", ""))
     from verdict.credentials_registry import CREDENTIALS

@@ -1169,6 +1169,10 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     verdict_dir.mkdir(parents=True, exist_ok=True)
     (verdict_dir / "memory.db").touch()
 
+    # The hourly live acceptance job's newest result is green.
+    monkeypatch.setattr(
+        "verdict.acceptance_state.doctor_check", lambda **_: ({"state": "green"}, [], [])
+    )
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

@@ -90,6 +90,7 @@ class FakeDiagnostics:
     gateway_lifecycle: dict[str, Any] = field(default_factory=dict)
     shared_memory: dict[str, Any] = field(default_factory=dict)
     capability_report: dict[str, Any] = field(default_factory=dict)
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
