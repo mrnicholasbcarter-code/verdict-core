@@ -87,8 +87,11 @@ jobs:
     # on a pull request from this repository it commits `ruff check --fix-only`
     # and `ruff format` to the branch, then dispatches the workflows that carry
     # the required checks, because a push made with GITHUB_TOKEN starts no
-    # workflow run. The job then fails only on what is left. Fork pull requests
-    # get the strict check without the fix.
+    # workflow run; the dispatched runs attach the required checks to the new
+    # head. GitHub also queues a pull_request run for the bot commit that waits
+    # for approval; leave it alone (cancelling it records cancelled checks).
+    # The job then fails only on what is left. Fork pull requests get the
+    # strict check without the fix.
     # The definition-of-done, OpenSpec, proof-path and reachability gates run
     # here so that they are part of a required check.
     runs-on: ubuntu-latest
@@ -141,11 +144,14 @@ jobs:
         id: base
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           if [ -n "$PR_BASE" ]; then
             echo "sha=$PR_BASE" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             echo "sha=$(git merge-base HEAD origin/main)" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            echo "sha=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
           fi
       - name: Reachability (symbols, orphan modules, forbidden symbols; baselines only shrink)
         env:

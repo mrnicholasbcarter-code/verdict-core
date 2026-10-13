@@ -71,7 +71,10 @@ def _time(value: str) -> datetime:
 
 
 def _artifact(root: Path, artifact: dict[str, str], where: str, errors: list[str]) -> str | None:
-    path = root / artifact["path"]
+    path = (root / artifact["path"]).resolve()
+    if not path.is_relative_to((root / EVIDENCE_DIR).resolve()):
+        errors.append(f"{where}: raw output {artifact['path']} is outside {EVIDENCE_DIR}")
+        return None
     try:
         data = path.read_bytes()
     except OSError:
@@ -144,7 +147,9 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     merged_at = _time(_git(root, "show", "-s", "--format=%cI", merged).stdout.strip())
 
     if evidence["kind"] == "repo-tooling":
-        changed = _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", merged).stdout
+        changed = _git(
+            root, "diff-tree", "-m", "--first-parent", "--no-commit-id", "--name-only", "-r", merged
+        ).stdout
         product = [name for name in changed.split() if name.startswith("verdict/")]
         if product:
             errors.append(f"repo-tooling story changed product code: {', '.join(product[:5])}")

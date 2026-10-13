@@ -96,3 +96,19 @@ def test_trailer_naming_one_file_still_verifies_its_bundle(repo: Path) -> None:
     _commit(repo, "edit\n\nProof: docs/proof/demo-run/events.jsonl")
     errors = proof_paths.check(repo, "base")
     assert errors == [errors[0]] and "docs/proof/demo-run: receipt does not verify" in errors[0]
+
+
+def test_bundle_changed_through_a_merge_commit_is_verified(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "-b", "side", "base")
+    events = repo / "docs/proof/demo-run/events.jsonl"
+    events.write_text(
+        events.read_text(encoding="utf-8").replace("quota_exhausted", "rate_limited", 1),
+        encoding="utf-8",
+    )
+    _commit(repo, "side edit")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "README.md").write_text("z\n", encoding="utf-8")
+    _commit(repo, "main edit")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    errors = proof_paths.check(repo, "base")
+    assert any(e.startswith("docs/proof/demo-run: receipt does not verify") for e in errors), errors

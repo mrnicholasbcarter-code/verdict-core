@@ -151,6 +151,7 @@ def _mutate(evidence: dict[str, Any], dotted: str, value: object) -> dict[str, A
         ("openspec.change", "other", "not in openspec/changes/archive"),
         ("kind", "product", "operator host"),
         ("story", "other", "does not match the file name"),
+        ("parent_confirmation.raw_output.path", "docs/proof/dod/../../../etc/passwd", "outside"),
     ],
 )
 def test_mismatched_field_fails(

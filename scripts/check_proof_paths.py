@@ -71,8 +71,10 @@ def check(root: Path, base: str) -> list[str]:
         outside = [p for p in proof if not any(p == n or p.startswith(n + "/") for n in named)]
         if outside:
             errors.append(f"{sha[:12]}: not under a named Proof: path: {', '.join(outside[:5])}")
-    # Every bundle that holds a changed file must still verify, whatever the trailer names.
-    for bundle in sorted(_bundles(root, changed_proof)):
+    # Every bundle that holds a changed file must still verify, whatever the trailer
+    # names; the three-dot diff also covers changes that arrive through merge commits.
+    merged = _git(root, "diff", "--name-only", f"{base}...HEAD", "--", PROOF_DIR).split()
+    for bundle in sorted(_bundles(root, changed_proof | set(merged))):
         problems = verify_run_receipt(root / bundle)
         if problems:
             errors.append(f"{bundle}: receipt does not verify: {'; '.join(problems)}")

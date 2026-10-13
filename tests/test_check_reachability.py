@@ -637,3 +637,27 @@ def test_ratchet_rejects_growing_or_stale_forbidden_allowlists(ratchet_repo: Pat
     assert result.forbidden_references == ("verdict.used.unused_a in verdict.z",)
     errors = checker.ratchet(ratchet_repo, result, "base")
     assert any("no longer used by verdict.x" in e for e in errors), errors
+
+
+def test_ratchet_compares_with_the_fork_point_not_a_newer_base(ratchet_repo: Path) -> None:
+    """A branch behind its base keeps an entry the base removed: not a new entry."""
+    subprocess.run(["git", "checkout", "-q", "-b", "story", "base"], cwd=ratchet_repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "base"], cwd=ratchet_repo, check=True)
+    (ratchet_repo / "verdict/used.py").write_text("def unused_a(): pass\n", encoding="utf-8")
+    baseline = json.loads((ratchet_repo / "reachability-baseline.json").read_text())
+    _write_baseline(
+        ratchet_repo / "reachability-baseline.json",
+        [e for e in baseline if e["qualified_name"] != "verdict.used.unused_b"],
+    )
+    _commit_all(ratchet_repo, "base removes unused_b")
+    subprocess.run(["git", "checkout", "-q", "story"], cwd=ratchet_repo, check=True)
+    (ratchet_repo / "scripts").mkdir(exist_ok=True)
+    (ratchet_repo / "scripts/tool.py").write_text("X = 1\n", encoding="utf-8")
+    _commit_all(ratchet_repo, "unrelated story change")
+    assert _ratchet(ratchet_repo) == []
+
+
+def test_unknown_ratchet_base_is_an_error(ratchet_repo: Path) -> None:
+    result = checker.check(ratchet_repo, use_vulture=False)
+    with pytest.raises(RuntimeError, match="unknown ratchet base"):
+        checker.ratchet(ratchet_repo, result, "no-such-ref")

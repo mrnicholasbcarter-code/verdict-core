@@ -626,16 +626,7 @@ def _load_at(root: Path, ref: str, name: str) -> str | None:
     shown = subprocess.run(
         ["git", "show", f"{ref}:{name}"], cwd=root, capture_output=True, text=True, check=False
     )
-    if shown.returncode == 0:
-        return shown.stdout
-    if subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-    ).returncode:
-        raise RuntimeError(f"unknown ratchet base {ref!r}")
-    return None
+    return shown.stdout if shown.returncode == 0 else None
 
 
 def ratchet(root: Path, result: CheckResult, base: str, *, min_burn: int = 0) -> list[str]:
@@ -645,10 +636,17 @@ def ratchet(root: Path, result: CheckResult, base: str, *, min_burn: int = 0) ->
     are accepted once. Every later change must remove entries, not add them.
     """
     root = root.resolve()
+    # Compare with the fork point: a branch that is behind its base must not be
+    # blamed for entries that the base removed after the branch started.
+    fork = subprocess.run(
+        ["git", "merge-base", base, "HEAD"], cwd=root, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if not fork:
+        raise RuntimeError(f"unknown ratchet base {base!r}")
     with tempfile.TemporaryDirectory() as scratch:
 
         def at_base(name: str, loader: Any) -> Any:
-            text = _load_at(root, base, name)
+            text = _load_at(root, fork, name)
             if text is None:
                 return None
             path = Path(scratch) / name
