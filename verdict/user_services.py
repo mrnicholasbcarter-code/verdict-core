@@ -31,6 +31,7 @@ Runner = Callable[[Sequence[str]], tuple[int, str]]
 
 PROVER = "verdict-prove-at-rest"
 PRIME_SYNC = "verdict-prime-sync"
+ACCEPTANCE = "verdict-acceptance"
 DEFAULT_PROVER_INTERVAL_SECONDS = 300.0
 _NO_KEY = (
     "no gateway key a user service can read: run 'verdict credentials set OMNIROUTE_API_KEY' "
@@ -132,6 +133,10 @@ class UserUnit:
     service_type: str
     args: tuple[str, ...]
     schedule: str
+    #: Extra ``[Service]`` lines, e.g. ``SuccessExitStatus=``.
+    service_extra: str = ""
+    #: A long oneshot is started without waiting for it on install.
+    long_running: bool = False
 
     @property
     def service(self) -> str:
@@ -154,7 +159,7 @@ class UserUnit:
                 "# No secret here: the command resolves the gateway key itself\n"
                 "# (credentials.env, ~/.config/verdict/omniroute-api-key, Prime auth.json).\n"
                 f"WorkingDirectory={_path_setting(str(Path(__file__).resolve().parent.parent))}\n"
-                f"ExecStart={command}\n{restart}"
+                f"ExecStart={command}\n{restart}{self.service_extra}"
             ),
             self.timer: (
                 f"[Unit]\nDescription=Start {self.description}\n"
@@ -186,13 +191,33 @@ def prime_sync_unit() -> UserUnit:
     )
 
 
+def acceptance_unit() -> UserUnit:
+    from verdict.acceptance import RED_EXIT
+
+    # A red result is the job working: exit RED_EXIT counts as success, so only
+    # a crash shows as a failed unit. The bound keeps one hung run from
+    # blocking the next hourly run. Notifications stay dry-run until the job
+    # has been green (operator decision 2026-10-13).
+    return UserUnit(
+        ACCEPTANCE,
+        "Verdict live acceptance checks",
+        "oneshot",
+        ("acceptance", "run", "--notify", "dry-run"),
+        "OnBootSec=10min\nOnCalendar=hourly\nPersistent=true\n",
+        service_extra=f"SuccessExitStatus={RED_EXIT}\nTimeoutStartSec=50min\n",
+        long_running=True,
+    )
+
+
 def verdict_units(budget: ProberBudget | None = None) -> tuple[UserUnit, ...]:
-    """Units this host needs: the prober always, Prime sync only when Prime is installed."""
+    """Units this host needs: the prober and the hourly acceptance job always, Prime
+    sync only when Prime is installed."""
     from verdict.harness_prime import resolve_paths
 
     units = [prover_unit(budget)]
     if resolve_paths().models.is_file():
         units.append(prime_sync_unit())
+    units.append(acceptance_unit())
     return tuple(units)
 
 
@@ -247,8 +272,11 @@ def manage_units(
             if unit.service in changed:
                 # Run a changed unit once now: a oneshot proves its fix (start
                 # waits for the run), a daemon picks up its new budgets.
-                verb = "start" if unit.service_type == "oneshot" else "restart"
-                commands.append(["systemctl", "--user", verb, unit.service])
+                if unit.long_running:
+                    commands.append(["systemctl", "--user", "start", "--no-block", unit.service])
+                else:
+                    verb = "start" if unit.service_type == "oneshot" else "restart"
+                    commands.append(["systemctl", "--user", verb, unit.service])
     if not dry_run and uninstall:
         for args in disable:
             _checked(runner, args)

@@ -187,11 +187,15 @@ def test_prober_budget_rejects_unbounded_values(options: dict[str, float]) -> No
 
 
 def test_prime_sync_unit_only_when_prime_is_installed(home: Path) -> None:
-    assert [u.name for u in user_services.verdict_units()] == ["verdict-prove-at-rest"]
+    assert [u.name for u in user_services.verdict_units()] == [
+        "verdict-prove-at-rest",
+        "verdict-acceptance",
+    ]
     _write_secret(home / ".prime/agent/models.json", "{}")
     assert [u.name for u in user_services.verdict_units()] == [
         "verdict-prove-at-rest",
         "verdict-prime-sync",
+        "verdict-acceptance",
     ]
 
 
@@ -328,6 +332,7 @@ def test_doctor_reports_a_stopped_timer_and_exits_non_zero(
     _cache(home, datetime.now(timezone.utc))
     fake = FakeSystemd()
     _healthy(fake, user_services.prover_unit())
+    _healthy(fake, user_services.acceptance_unit())
     monkeypatch.setattr(user_services, "run_systemctl", fake)
     green = DoctorDiagnostics()
     _doctor_services(green)
@@ -389,6 +394,7 @@ def test_setup_services_cli_installs_with_the_key_file(
     _write_secret(home / ".config/verdict/omniroute-api-key", "k")
     fake = FakeSystemd()
     _healthy(fake, user_services.prover_unit())
+    _healthy(fake, user_services.acceptance_unit())
     monkeypatch.setattr(user_services, "run_systemctl", fake)
     monkeypatch.setattr("sys.argv", ["verdict", "setup", "services", "--json"])
     main()
@@ -432,3 +438,21 @@ def test_daemon_reports_each_finished_cycle() -> None:
     prober.on_cycle_done = done.append
     prober.run_forever()
     assert done and done[0].requests == 3
+
+
+# -- acceptance unit ------------------------------------------------------------
+
+
+def test_acceptance_unit_is_hourly_dry_run_and_red_is_not_a_unit_failure(home: Path) -> None:
+    from verdict.acceptance import RED_EXIT
+
+    unit = user_services.acceptance_unit()
+    files = unit.files()
+    service, timer = files[unit.service], files[unit.timer]
+    assert "-m verdict acceptance run --notify dry-run" in service
+    assert f"SuccessExitStatus={RED_EXIT}" in service
+    assert "OnCalendar=hourly" in timer and "Persistent=true" in timer
+    _write_secret(home / ".config/verdict/omniroute-api-key", "k")
+    plan = user_services.manage_units([unit], unit_dir=home / "u", dry_run=True)
+    # Install never waits for the long first run.
+    assert ["systemctl", "--user", "start", "--no-block", unit.service] in plan["commands"]
