@@ -18,7 +18,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from verdict.orchestration.contracts import CapacityClass, ProbeClass, TaskRequirements
+from verdict.orchestration.contracts import (
+    CapacityClass,
+    EligibilityStage,
+    ProbeClass,
+    TaskRequirements,
+)
 from verdict.orchestration.eligibility import (
     _CAPACITY_ORDER,
     _WORKER_CAPACITY_ORDER,
@@ -1383,3 +1388,31 @@ def test_selected_is_rank_zero_when_a_lower_ranked_route_is_fresh(tmp_path: Path
     chosen, verdicts = ladder.select(WORKER_REQ, now=NOW + timedelta(seconds=1))
     assert chosen is not None and chosen.route_id == coder and chosen.rank == 0
     assert next(v for v in verdicts if v.route_id == best).rank is None
+
+
+def test_agentic_proven_served_free_route_is_eligible_with_liveness_at_select(
+    tmp_path: Path,
+) -> None:
+    """Plan A3 (2026-10-13): a FREE route with an agentic proof <= 24 h, served by
+    the gateway's synced catalog and not blocked is listed as eligible; its
+    liveness is checked just in time at select, not kept fresh by the prober."""
+    served, ghost, unproven = "ms/codestral-latest", "ms/ghost", "ms/new"
+    entries = [
+        _fresh_entry(rid, agentic_ok=True, probe_class="agentic", age_seconds=7200)
+        for rid in (served, ghost)
+    ]
+    cache = _build_cache(tmp_path, entries)
+    free = {"input": 0, "output": 0}
+    rows = [_row(rid, owned_by="ms", pricing=free) for rid in (served, ghost, unproven)]
+    conns = [_conn("ms", auth="apikey", plan="free", free_only=True)]
+    ladder, probe = _make(
+        tmp_path, rows, conns, health_cache=cache, served_routes=frozenset({served, unproven})
+    )
+    by_id = {v.route_id: v for v in ladder.evaluate(WORKER_REQ, now=NOW)}
+    assert by_id[served].reached is EligibilityStage.TASK_ELIGIBLE
+    assert by_id[served].reason == "liveness_at_select"
+    assert by_id[ghost].reached is EligibilityStage.ENTITLED  # not served: liveness unknown
+    assert by_id[ghost].reason == "unprobed"
+    assert by_id[unproven].reason == "no_agentic_probe"
+    assert ladder.summary()["eligible"] == 1
+    assert probe.calls == []  # listing never probes

@@ -566,15 +566,7 @@ class TestSummary:
         assert summary["entitled"] == 3  # zz has no account
         assert summary["healthy"] >= 1  # the selected route was probed healthy
         assert summary["eligible"] >= 1
-        assert set(summary) == {
-            "discovered",
-            "entitled",
-            "healthy",
-            "available",
-            "eligible",
-            "ranked",
-            "ranked_free",
-        }
+        assert set(summary) == {"discovered", "entitled", "healthy", "available", "eligible"}
 
 
 if __name__ == "__main__":

@@ -194,6 +194,10 @@ class _Assessment:
     agentic_capability: Mapping[str, Any] | None = None
     # Measured remaining subscription quota (percent), None when not reported.
     quota_percent: float | None = None
+    # "at_select": a FREE route with a current agentic proof, served by the
+    # gateway's synced catalog and not blocked. It counts as eligible; select
+    # checks its liveness just in time (plan A3/M1(d), 2026-10-13).
+    liveness: str = ""
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -208,7 +212,11 @@ class _Assessment:
         for stage in order:
             if self.failed_stage is stage:
                 break
-            if stage is EligibilityStage.HEALTHY and self.health != "healthy":
+            if (
+                stage is EligibilityStage.HEALTHY
+                and self.health != "healthy"
+                and self.liveness != "at_select"
+            ):
                 break
             reached = stage
         return reached
@@ -222,7 +230,10 @@ class _Assessment:
     ) -> RouteVerdict:
         reason = self.reason
         if not reason:
-            reason = "unprobed" if self.health != "healthy" else "ranked"
+            if self.health == "healthy":
+                reason = "ranked"
+            else:
+                reason = "liveness_at_select" if self.liveness == "at_select" else "unprobed"
         return RouteVerdict(
             route_id=self.route_id,
             provider=self.provider,
@@ -273,6 +284,7 @@ class EligibilityLadder:
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
         gateway_stats: Mapping[str, tuple[float, int]] | None = None,
+        served_routes: frozenset[str] | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -300,6 +312,9 @@ class EligibilityLadder:
         # ``provider/model`` -> (success rate, requests) from the gateway's
         # /api/usage/model-latency-stats; ranks FREE routes, never admits.
         self._gateway_stats = dict(gateway_stats or {})
+        # Route ids the gateway's synced live catalog serves; None = unknown, and
+        # then no route counts as eligible before its select-time liveness check.
+        self._served_routes = served_routes
         # UNKNOWN capacity opt-in: env override if not set explicitly.
         if allow_unknown_capacity is not None:
             self._allow_unknown = allow_unknown_capacity
@@ -611,6 +626,16 @@ class EligibilityLadder:
             a.slack = requirements.max_capability_tier - a.tier
         a.price, a.price_known = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
+        served = getattr(self, "_served_routes", None)
+        if (
+            a.health != "healthy"
+            and a.capacity is CapacityClass.FREE
+            and a.agentic_capability is not None
+            and a.agentic_capability.get("qualified")
+            and served is not None
+            and route_id in served
+        ):
+            a.liveness = "at_select"
         return a
 
     def _task_gate(
@@ -1278,18 +1303,12 @@ class EligibilityLadder:
                 if v.reached is not None and order.index(v.reached) >= order.index(stage)
             )
 
-        ranked = [v for v in self._last_verdicts if v.rank is not None]
         return {
             "discovered": at_least(EligibilityStage.DISCOVERED),
             "entitled": at_least(EligibilityStage.ENTITLED),
             "healthy": at_least(EligibilityStage.HEALTHY),
             "available": at_least(EligibilityStage.AVAILABLE),
             "eligible": at_least(EligibilityStage.TASK_ELIGIBLE),
-            # Passed every gate except current liveness, which selection checks
-            # just in time on the chosen route (plan M1(d)). ``eligible`` counts
-            # only routes with liveness proof from the last 15 minutes.
-            "ranked": len(ranked),
-            "ranked_free": sum(v.capacity_class is CapacityClass.FREE for v in ranked),
         }
 
 

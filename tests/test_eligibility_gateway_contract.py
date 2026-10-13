@@ -91,6 +91,8 @@ def offline_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str
             return {"connections": [conn("kiro"), conn("claude")]}
         if url.endswith("/api/usage/model-latency-stats"):
             return {"entries": []}
+        if url.endswith("/api/synced-available-models"):
+            return {"kiro": [{"id": "model"}]}
         raise AssertionError(f"unexpected endpoint: {url}")
 
     monkeypatch.setattr(orch_run, "_get_json", get_json)
@@ -130,6 +132,7 @@ def test_action_uses_origin_endpoints_and_never_probes(
         "http://x:20128/v1/models",
         "http://x:20128/api/providers",
         "http://x:20128/api/usage/model-latency-stats",
+        "http://x:20128/api/synced-available-models",
     ]
 
 
@@ -163,6 +166,7 @@ def test_action_default_uses_home_cli_gateway_env(
         "http://x:20128/v1/models",
         "http://x:20128/api/providers",
         "http://x:20128/api/usage/model-latency-stats",
+        "http://x:20128/api/synced-available-models",
     ]
 
 

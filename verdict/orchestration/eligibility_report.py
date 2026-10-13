@@ -246,6 +246,23 @@ def build_selector(
         health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         gateway_stats=fetch_gateway_success_rates(gateway, api_key=key),
+        served_routes=served_route_ids(gateway, rows, api_key=key),
+    )
+
+
+def served_route_ids(
+    gateway: str, rows: Sequence[Mapping[str, Any]], *, api_key: str | None
+) -> frozenset[str] | None:
+    """Ids of *rows* the gateway's synced live catalog serves; None when unreadable."""
+    from verdict.prove_at_rest import _served_by_gateway, fetch_live_catalog
+
+    catalog = fetch_live_catalog(gateway, api_key=api_key)
+    if catalog is None:
+        return None
+    return frozenset(
+        str(row.get("id"))
+        for row in rows
+        if _served_by_gateway(str(row.get("id", "")), row, catalog)
     )
 
 

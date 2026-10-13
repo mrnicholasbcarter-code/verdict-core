@@ -287,6 +287,9 @@ DEFAULT_AGENTIC_CONCURRENCY = 4
 # Free providers rate-limit per account: one agentic conversation per pool at a time.
 DEFAULT_AGENTIC_POOL_CONCURRENCY = 1
 AGENTIC_TURNS = 3
+# At most this share of a cycle's chat requests retries expired negatives
+# (live 2026-10-13: 3,067 half-open routes used every cycle's whole budget).
+HALF_OPEN_BUDGET_SHARE = 0.25
 ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
 
 # Old on-disk document. Ignored, never migrated, never deleted.
@@ -656,6 +659,7 @@ def order_cycle(
     now: datetime,
     *,
     epsilon: int = DEFAULT_EPSILON,
+    half_open_limit: int | None = None,
 ) -> list[tuple[AdmittedRoute, str]]:
     """Order one cycle. Each item is ``(route, kind)``.
 
@@ -759,6 +763,16 @@ def order_cycle(
             return "liveness"
         return "full"
 
+    if half_open_limit is not None:
+        # Thousands of expired negatives must not use every cycle's budget:
+        # retry the least recently tried first, the rest in later cycles.
+        tried = {
+            route.route_id: entry.checked_at
+            for route in half_open
+            if (entry := cache.entry(route.route_id))
+        }
+        half_open.sort(key=lambda route: tried[route.route_id])
+        half_open = half_open[: max(0, half_open_limit)]
     ordered.extend((route, _kind_for(route)) for route in half_open)
     ordered.extend((route, _kind_for(route)) for route in stale)
     for live in (True, None, False):
@@ -995,7 +1009,13 @@ class Prober:
         self, routes: Sequence[AdmittedRoute], started: float, stats: CycleStats
     ) -> None:
         now = self.clock()
-        ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
+        ordered = order_cycle(
+            routes,
+            self.cache,
+            now,
+            epsilon=self.epsilon,
+            half_open_limit=max(1, int(self.max_requests * HALF_OPEN_BUDGET_SHARE)),
+        )
         self._cycle_pools = {_pool_of(route) for route, _kind in ordered}
         # Defect 2 fix: resume by route_id set, not by index.
         # If routes reorder or disappear between cycles the index-based cursor
@@ -1547,6 +1567,13 @@ class Prober:
         while not self._stop.is_set():
             try:
                 last = self.run_once()
+                # The next cycle orders from the cache, which already holds every
+                # result of this one. A carried cursor made a capped pass skip
+                # its ~2,300 probed ids for hours. A crash still resumes: the
+                # cursor stays open on disk until a cycle finishes.
+                if self.cache.cursor.get("cycle_open"):
+                    self.cache.clear_cursor()
+                    self._save()
             except Exception as exc:
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)

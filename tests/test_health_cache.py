@@ -43,7 +43,14 @@ from verdict.orchestration.health_cache import (
     negative_seconds,
     next_backoff_seconds,
 )
-from verdict.prove_at_rest import AdmittedRoute, ProbeExchange, Prober, order_cycle, status_report
+from verdict.prove_at_rest import (
+    AdmittedRoute,
+    CycleStats,
+    ProbeExchange,
+    Prober,
+    order_cycle,
+    status_report,
+)
 
 NOW = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
 
@@ -1309,3 +1316,57 @@ def test_default_cache_path_follows_verdict_home(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("VERDICT_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
     assert default_cache_path() == (tmp_path / "user" / ".verdict" / "health-cache.json").resolve()
+
+
+def test_half_open_retries_use_at_most_their_share_of_the_cycle(tmp_path: Path) -> None:
+    """Live 2026-10-13: 3,067 expired negatives used every cycle's whole budget."""
+    from verdict.prove_at_rest import HALF_OPEN_BUDGET_SHARE
+
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1000)
+    dead = [_route(f"dead{i}/m", "free") for i in range(20)]
+    for i, route in enumerate(dead):
+        cache.record(
+            route.route_id,
+            ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False),
+            NOW - timedelta(hours=2, minutes=i),
+        )
+    fresh_free = _route("new/m", "free")
+    ordered = order_cycle([*dead, fresh_free], cache, NOW, epsilon=0, half_open_limit=5)
+    ids = [route.route_id for route, _kind in ordered]
+    assert ids[:5] == [f"dead{i}/m" for i in range(19, 14, -1)]  # least recently tried first
+    assert ids[5:] == ["new/m"]
+    assert 0 < HALF_OPEN_BUDGET_SHARE < 1
+
+
+def test_daemon_does_not_carry_an_open_cursor_into_the_next_cycle(tmp_path: Path) -> None:
+    routes = [_route(f"cx/c{i}", "free") for i in range(4)]
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    seen: list[str] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        seen.append(route_id)
+        return ProbeExchange(http_status=500, ok=False, error_category="upstream")
+
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=transport,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        max_requests=2,
+        epsilon=0,
+        concurrency=1,
+        interval_seconds=0.0,
+    )
+    original = prober.run_once
+
+    def once_then_stop() -> CycleStats:
+        stats = original()
+        assert cache.cursor.get("cycle_open") is True  # crash-safe while the cycle runs
+        prober.stop()
+        return stats
+
+    prober.run_once = once_then_stop  # type: ignore[method-assign]
+    prober.run_forever()
+    assert seen == ["cx/c0", "cx/c1"]
+    assert not cache.cursor.get("cycle_open")
