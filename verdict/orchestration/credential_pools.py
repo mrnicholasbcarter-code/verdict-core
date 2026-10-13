@@ -111,6 +111,17 @@ def pool_of(route_id: str) -> str:
     return ALIAS_FAMILIES.get(prefix, prefix)
 
 
+def backend_model(route_id: str) -> tuple[str, str]:
+    """``(credential pool, model id)`` that ``route_id`` reaches.
+
+    Alias prefixes of one pool (``cc/`` and ``claude/``) and the ``no-think/``
+    wrapper map to the same pair, so a caller can drop every way of reaching
+    one model on one credential.
+    """
+    inner = route_id.split("/", 1)[1] if route_id.lower().startswith("no-think/") else route_id
+    return pool_of(inner), inner.split("/", 1)[-1].lower()
+
+
 def canonical_route(route_id: str) -> str:
     """``route_id`` with its prefix collapsed onto the canonical pool name.
 
@@ -148,6 +159,7 @@ def base_route(route_id: str, inventory_ids: Collection[str]) -> str:
 
 __all__ = [
     "ALIAS_FAMILIES",
+    "backend_model",
     "base_route",
     "canonical_route",
     "collapse_alias_duplicates",
