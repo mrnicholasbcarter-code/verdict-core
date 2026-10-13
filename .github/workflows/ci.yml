@@ -129,22 +129,28 @@ jobs:
           git commit -qam "style: ruff autofix (pipeline)"
           git push origin "HEAD:$BRANCH"
           head=$(git rev-parse HEAD)
+          # GitHub creates the pull_request runs of the fix commit a few seconds
+          # apart, queued as "action_required". Approve them until no new run
+          # has appeared for two polls in a row.
           approved=0
+          quiet=0
+          last=-1
           for _ in $(seq 1 30); do
             sleep 10
             for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&status=action_required" --jq '.workflow_runs[].id'); do
               gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve" >/dev/null
               approved=$((approved + 1))
             done
-            if [ "$approved" -gt 0 ] && [ -z "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&status=action_required" --jq '.workflow_runs[].id')" ]; then
-              break
-            fi
+            seen=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head&event=pull_request" --jq '.total_count')
+            if [ "$seen" -eq "$last" ] && [ "$seen" -gt 0 ]; then quiet=$((quiet + 1)); else quiet=0; fi
+            last=$seen
+            if [ "$quiet" -ge 2 ]; then break; fi
           done
           if [ "$approved" -eq 0 ]; then
             echo "::error::Pushed ruff fixes as ${head:0:8}, but found no pull_request run to approve; re-run the checks on the new head."
             exit 1
           fi
-          echo "::notice::Pushed ruff fixes as ${head:0:8} and approved $approved pull_request run(s) for it."
+          echo "::notice::Pushed ruff fixes as ${head:0:8} and approved $approved of its $seen pull_request run(s)."
       - name: Run Ruff
         run: ruff check .
       - name: Run Ruff Format (check)
