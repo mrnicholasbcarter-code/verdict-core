@@ -510,6 +510,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 base_url=getattr(args, "base_url", PRIME_HARNESS_DEFAULT_BASE_URL),
                 token_env=getattr(args, "token_env", PRIME_HARNESS_DEFAULT_TOKEN_ENV),
                 force=getattr(args, "force", False),
+                output_json=getattr(args, "json", False),
             )
         elif args.harness_target == "opencode":
             legacy.cmd_harness_opencode(
@@ -534,6 +535,16 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             consent=getattr(args, "yes", False),
             service_ids=getattr(args, "service_ids", None),
             output_json=getattr(args, "json", False),
+        )
+    elif args.command == "acceptance" and args.acceptance_command == "status":
+        legacy.cmd_acceptance_status(output_json=args.json)
+    elif args.command == "acceptance":
+        legacy.cmd_acceptance_run(
+            gateway=args.gateway,
+            notify=args.notify,
+            email=args.email,
+            keep=args.keep,
+            output_json=args.json,
         )
     elif args.command == "prove-at-rest":
         legacy.cmd_prove_at_rest(

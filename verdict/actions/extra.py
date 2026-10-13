@@ -841,6 +841,16 @@ def _manage_prove_service(*, uninstall: bool, **kwargs: Any) -> ActionResult:
     return ActionResult(data=data)
 
 
+def _action_acceptance_status(**kwargs: Any) -> ActionResult:
+    """The newest live acceptance result; not ok when red, stale or missing."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    ok = not issues and row.get("state") == "green"
+    data = {"latest": row, "issues": issues, "warnings": warnings}
+    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+
+
 def _action_prove_at_rest_install_service(**kwargs: Any) -> ActionResult:
     """Render (dry-run) or install the bounded systemd user prober."""
     return _manage_prove_service(uninstall=False, **kwargs)
