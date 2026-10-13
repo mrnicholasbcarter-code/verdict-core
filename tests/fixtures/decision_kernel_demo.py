@@ -1,16 +1,14 @@
-"""Credential-free demo fixtures for the DecisionKernel facade (VER-002 #219).
+"""Credential-free test fixtures for the DecisionKernel facade (VER-002 #219).
 
 Every function here builds in-memory inputs and calls :func:`verdict.decision_kernel.decide`
 over them. There is no network, no provider credential, no wall-clock reliance
-(FR-009, NFR-001). The fixtures double as the acceptance-test seed source.
-
-The quickstart (``specs/003-deterministic-decision-kernel/quickstart.md``) exercises
-this module end to end.
+(FR-009, NFR-001). The fixtures are the acceptance-test seed source for
+``tests/test_decision_kernel.py``, ``tests/test_enforcement.py`` and
+``tests/test_memory_gate.py``. They live under ``tests/`` so they do not ship in the wheel.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
@@ -261,9 +259,3 @@ def build_demo_decision_with_advisory_promoting_excluded() -> Any:
             ranker=None, requested_tier=2, escalation=(None, None), label="demo-ranker"
         ),
     )
-
-
-def _inputs_repr(inputs: Mapping[str, Any]) -> Mapping[str, Any]:  # pragma: no cover
-    """Helper exposing the re-verify inputs for tests/debugging."""
-
-    return dict(inputs)

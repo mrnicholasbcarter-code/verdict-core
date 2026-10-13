@@ -216,34 +216,6 @@
     "reason": "UNTRIAGED: verify_decision has only non-production references; Deterministic DecisionKernel facade (VER-002 #219) (verdict/decision_kernel.py)."
   },
   {
-    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.build_demo_decision_with_advisory_promoting_excluded",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.degraded_decision",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.degraded_inputs",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.demo_inputs",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.denied_decision",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
-    "qualified_name": "verdict.decision_kernel_demo.denied_inputs",
-    "reason": "Credential-free DecisionKernel demo/fixture API for tests and docs (verdict/decision_kernel_demo.py)."
-  },
-  {
     "qualified_name": "verdict.decision_signals.advisory.AdvisoryRanker",
     "reason": "UNTRIAGED: AdvisoryRanker has only non-production references; Pure advisory reordering for OpenJev ADVISORY mode (verdict/decision_signals/advisory.py)."
   },

@@ -346,6 +346,8 @@ def _service(workspace_root: Path) -> IntelligenceService:
         context_roots=DEFAULT_CONTEXT_ROOTS,
         mcp_root="",
         metadata_snapshot=_metadata(),
+        # The workspace is a packaged fixture; a receipt store there would ship in the wheel.
+        persist_routing_receipts=False,
     )
 
 

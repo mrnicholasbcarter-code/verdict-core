@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,22 @@ def test_simulation_is_labeled_and_never_claims() -> None:
     assert "claims_allowed: false" in rendered
     assert "savings_claimed: 0" in rendered
     assert "NOTE: simulation" in rendered
+
+
+def test_simulation_writes_nothing_into_the_packaged_workspace(tmp_path: Path) -> None:
+    """benchmarks/fixtures ships in the wheel, so the offline run must not leave a receipt DB."""
+    fixtures = tmp_path / "fixtures"
+    shutil.copytree(
+        DEFAULT_SAVINGS_FIXTURE_PATH.parent / "legit_workspace",
+        fixtures / "legit_workspace",
+        ignore=shutil.ignore_patterns(".verdict"),
+    )
+    shutil.copy(DEFAULT_SAVINGS_FIXTURE_PATH, fixtures / DEFAULT_SAVINGS_FIXTURE_PATH.name)
+    before = sorted(fixtures.rglob("*"))
+
+    run_savings_bench(fixtures / DEFAULT_SAVINGS_FIXTURE_PATH.name)
+
+    assert sorted(fixtures.rglob("*")) == before
 
 
 def test_simulation_still_labels_quality_miss_and_cache_hit_as_secondary_reasons() -> None:

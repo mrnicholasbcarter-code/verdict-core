@@ -98,7 +98,7 @@ def _enforcement_context(record):
 
 def test_gate_enforcement_blocks_excluded_provider(tmp_path: Path) -> None:
     """SC-001 / FR-001: a write from an excluded provider is denied on the decision bound."""
-    from verdict.decision_kernel_demo import denied_decision
+    from tests.fixtures.decision_kernel_demo import denied_decision
 
     record = denied_decision()
     excluded = record.exclusions[0]["model_id"]
@@ -116,7 +116,7 @@ def test_gate_enforcement_blocks_excluded_provider(tmp_path: Path) -> None:
 
 def test_gate_enforcement_blocks_non_admitted_provider_on_degraded(tmp_path: Path) -> None:
     """FR-007: degraded outcome admits only the surviving provider; others fail closed."""
-    from verdict.decision_kernel_demo import degraded_decision
+    from tests.fixtures.decision_kernel_demo import degraded_decision
 
     record = degraded_decision()
     not_admitted = "omniroute/opus"
@@ -130,7 +130,7 @@ def test_gate_enforcement_blocks_non_admitted_provider_on_degraded(tmp_path: Pat
 
 def test_gate_enforcement_allows_admitted_provider(tmp_path: Path) -> None:
     """FR-001: a writer whose provider is in the admitted set passes the decision-bound guard."""
-    from verdict.decision_kernel_demo import build_demo_decision
+    from tests.fixtures.decision_kernel_demo import build_demo_decision
 
     record = build_demo_decision()
     admitted = record.admitted[0].id
@@ -145,7 +145,7 @@ def test_gate_enforcement_allows_admitted_provider(tmp_path: Path) -> None:
 
 def test_gate_enforcement_passthrough_without_context(tmp_path: Path) -> None:
     """Backwards-compat: with no context the gate behaves exactly like pre-004."""
-    from verdict.decision_kernel_demo import denied_decision
+    from tests.fixtures.decision_kernel_demo import denied_decision
 
     record = denied_decision()
     excluded = record.exclusions[0]["model_id"]
@@ -160,7 +160,7 @@ def test_gate_enforcement_passthrough_without_context(tmp_path: Path) -> None:
 
 def test_gate_enforcement_denial_is_audited(tmp_path: Path) -> None:
     """NFR-005: every enforcement denial persists a MemoryGateEvent carrying the decision_id."""
-    from verdict.decision_kernel_demo import denied_decision
+    from tests.fixtures.decision_kernel_demo import denied_decision
 
     record = denied_decision()
     excluded = record.exclusions[0]["model_id"]
