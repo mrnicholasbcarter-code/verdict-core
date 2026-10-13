@@ -14,6 +14,7 @@ from verdict.capability_bootstrap import (
     DiscoveredProvider,
     ProviderKind,
     ProviderLifecycle,
+    discover_providers,
     run_bootstrap,
 )
 from verdict.setup_plan import build_setup_plan
@@ -953,3 +954,41 @@ def test_scoped_setup_plan_actions_stay_in_gateway_scope(
     ]
     assert bootstrap_actions
     assert all("harness" not in action["action_id"] for action in bootstrap_actions)
+
+
+def test_setup_plan_from_multi_harness_mcp_configs_has_no_duplicate_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serena configured in Claude, Prime and Hermes yields one provider and no install."""
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    serena = {"mcpServers": {"serena": {"command": "serena"}}}
+    for path in (
+        home / ".claude.json",
+        home / ".prime" / "agent" / "settings.json",
+        home / ".hermes" / "mcp.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(serena), encoding="utf-8")
+
+    def plan_actions() -> list[dict[str, object]]:
+        providers = discover_providers(
+            path_resolver=lambda _name: None,
+            probe_gateway=lambda _pid: {"reachable": False, "health_ok": False},
+            home=home,
+            cwd=cwd,
+        )
+        assert [item.provider_id for item in providers].count("adapter.serena_lsp") == 1
+        serena_row = next(item for item in providers if item.provider_id == "adapter.serena_lsp")
+        assert len(serena_row.config_sources) == 3
+        plan = build_setup_plan(bootstrap_providers=providers, include_bootstrap=True)
+        return [action.to_dict() for action in plan.actions]
+
+    first, second = plan_actions(), plan_actions()
+    assert first == second
+    action_ids = [action["action_id"] for action in first]
+    assert len(action_ids) == len(set(action_ids))
+    assert "bootstrap:install:adapter.serena_lsp" not in action_ids
