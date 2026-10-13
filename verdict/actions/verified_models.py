@@ -15,7 +15,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -478,6 +478,8 @@ def consume_verified_models(
     config: RefreshConfig | None = None,
     no_refresh: bool = False,
     manual: bool = False,
+    interactive: bool = True,
+    opt_in: Collection[str] = (),
     read_line: Callable[[str], Any] = input,
     write: Callable[[str], None] = lambda _s: None,
     cancel: Callable[[], bool] | None = None,
@@ -489,6 +491,10 @@ def consume_verified_models(
     on_projection: Callable[[Mapping[str, Any], VerifiedSnapshotAdapter], None] | None = None,
 ) -> ActionResult:
     """Snapshot, wait, reload, final projection, then optional convenience callback.
+
+    A ``manual`` refresh confirms each capacity group of the plan separately.
+    Without a terminal (``interactive`` False) nothing is asked: FREE and
+    SUBSCRIPTION run, and UNKNOWN/METERED run only when listed in ``opt_in``.
 
     ``on_projection`` observes exactly the final render payload and actual adapter,
     never initial/provisional rows. Its failure adds only a sanitized warning;
@@ -552,8 +558,12 @@ def consume_verified_models(
         if not plan.ok:
             return plan
         write(render_refresh_plan(plan.data))
-        consent = controller.confirm("Execute this exact refresh plan?")
-        if not consent.granted:
+        consent = controller.confirm_capacity_groups(
+            plan.data["capacity_groups"], interactive=interactive, opt_in=opt_in
+        )
+        if not plan.data["routes"]:
+            summary = {"outcome": "nothing_eligible", "last_known": True, "requests_made": 0}
+        elif not consent.granted:
             summary = {
                 "outcome": "cancelled" if consent.cancelled else "not_confirmed",
                 "last_known": True,
@@ -568,6 +578,7 @@ def consume_verified_models(
                     {
                         "confirmed": True,
                         "plan": plan.data,
+                        "approved_classes": consent.approved,
                         "snapshot": current_snapshot,
                         "cache": HealthCache(adapter.paths.health_cache),
                         "transport": transport

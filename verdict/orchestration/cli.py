@@ -248,8 +248,25 @@ def add_parsers(subparsers: Any) -> None:
     elig.add_argument(
         "--page-size", type=int, default=50, help="Verified model page size (max 200)"
     )
-    elig.add_argument(
+    refresh = elig.add_mutually_exclusive_group()
+    refresh.add_argument(
         "--no-refresh", action="store_true", help="Read verified evidence without automatic refresh"
+    )
+    refresh.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Plan a manual refresh of the verified page and approve each capacity class; "
+        "without a terminal only FREE and SUBSCRIPTION run",
+    )
+    elig.add_argument(
+        "--include-unknown",
+        action="store_true",
+        help="With --refresh and no terminal, also probe UNKNOWN-capacity routes (may cost money)",
+    )
+    elig.add_argument(
+        "--allow-metered",
+        action="store_true",
+        help="With --refresh and no terminal, also probe METERED routes (billed usage)",
     )
     elig.add_argument("--json", action="store_true")
     elig.add_argument(
@@ -1125,6 +1142,29 @@ def _verified_error(args: argparse.Namespace, message: str, *, exit_code: int) -
     return exit_code
 
 
+def _verified_opt_in_without_refresh(args: argparse.Namespace) -> bool:
+    opted_in = getattr(args, "include_unknown", False) or getattr(args, "allow_metered", False)
+    return bool(opted_in) and not getattr(args, "refresh", False)
+
+
+def verified_refresh_options(args: argparse.Namespace) -> dict[str, Any]:
+    """Manual refresh options for the verified view.
+
+    Without a terminal nothing is asked, so UNKNOWN and METERED routes are
+    probed only when their own flag was passed.
+    """
+    opt_in = [
+        capacity
+        for capacity, flag in (("unknown", "include_unknown"), ("metered", "allow_metered"))
+        if getattr(args, flag, False)
+    ]
+    return {
+        "manual": bool(getattr(args, "refresh", False)),
+        "interactive": sys.stdin.isatty(),
+        "opt_in": tuple(opt_in),
+    }
+
+
 def _eligibility_verified(args: argparse.Namespace) -> int:
     """Validate before I/O, then wait for the shared consumer's final evidence."""
     incompatible = []
@@ -1143,6 +1183,10 @@ def _eligibility_verified(args: argparse.Namespace) -> int:
     if incompatible:
         return _verified_error(
             args, "--verified cannot be combined with " + ", ".join(incompatible), exit_code=2
+        )
+    if _verified_opt_in_without_refresh(args):
+        return _verified_error(
+            args, "--include-unknown and --allow-metered need --refresh", exit_code=2
         )
 
     from verdict.orchestration.verified_models import (
@@ -1173,7 +1217,9 @@ def _eligibility_verified(args: argparse.Namespace) -> int:
             gateway=args.gateway,
             query=query,
             no_refresh=bool(getattr(args, "no_refresh", False)),
-            read_line=input,
+            **verified_refresh_options(args),
+            # The prompt is already written to stderr; keep stdout for the view.
+            read_line=lambda _prompt: input(),
             write=lambda line: print(line, file=sys.stderr),
             live=True,
         )

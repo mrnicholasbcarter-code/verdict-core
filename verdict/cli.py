@@ -3242,6 +3242,7 @@ def cmd_verified_completion_view(args: argparse.Namespace) -> int:
             getattr(args, "provider_family", []),
             getattr(args, "_prefer_explicit", False),
             getattr(args, "prefer", "claude") != "claude",
+            orchestration_cli._verified_opt_in_without_refresh(args),
         )
     )
     if incompatible:
@@ -3267,7 +3268,9 @@ def cmd_verified_completion_view(args: argparse.Namespace) -> int:
         on_projection=capture,
         query=query,
         no_refresh=bool(getattr(args, "no_refresh", False)),
-        read_line=input,
+        **orchestration_cli.verified_refresh_options(args),
+        # The prompt is already written to stderr; keep stdout for the view.
+        read_line=lambda _prompt: input(),
         write=lambda line: print(line, file=sys.stderr),
         live=True,
     )

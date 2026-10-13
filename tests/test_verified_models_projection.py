@@ -967,6 +967,7 @@ _ROW_KEYS = {
     "agentic_ok",
     "agentic_checked_at",
     "capacity_class",
+    "price",
     "refreshable",
     "refresh_reason",
     "hints",

@@ -85,7 +85,15 @@ CAPACITY_FREE = "free"
 CAPACITY_SUBSCRIPTION = "subscription"
 CAPACITY_METERED = "metered"
 CAPACITY_UNKNOWN = "unknown"
-_PREPAID = frozenset({CAPACITY_FREE, CAPACITY_SUBSCRIPTION})
+PREPAID_CAPACITY_CLASSES = frozenset({CAPACITY_FREE, CAPACITY_SUBSCRIPTION})
+# Consent order for a manual plan: prepaid groups first, possible charges last.
+CAPACITY_ORDER = (CAPACITY_FREE, CAPACITY_SUBSCRIPTION, CAPACITY_UNKNOWN, CAPACITY_METERED)
+
+
+def capacity_group(capacity_class: str) -> str:
+    """The consent group for a row's capacity; an unrecognised class is UNKNOWN."""
+    value = capacity_class.lower()
+    return value if value in CAPACITY_ORDER else CAPACITY_UNKNOWN
 
 
 @runtime_checkable
@@ -392,7 +400,7 @@ def _is_refreshable(row: RowInput, *, authorized: bool = False) -> bool:
         return False
     if authorized and row.refresh_reason == "requires_confirmation":
         return True
-    if not authorized and row.capacity_class not in _PREPAID:
+    if not authorized and row.capacity_class not in PREPAID_CAPACITY_CLASSES:
         return False
     return bool(row.refreshable)
 
@@ -577,7 +585,7 @@ def _probe_requests_for(row: RowInput) -> int:
     request): it is never auto-probed, and even under consent it must not burn
     the second (tool) request.
     """
-    return 1 if row.capacity_class not in _PREPAID else REQUESTS_PER_FULL_PROBE
+    return 1 if row.capacity_class not in PREPAID_CAPACITY_CLASSES else REQUESTS_PER_FULL_PROBE
 
 
 class _Scopes:
@@ -998,7 +1006,7 @@ class RefreshCoordinator:
 
         # Prepaid routes get the full chat+tool coding proof; a consented
         # METERED/UNKNOWN route gets a chat-only liveness probe (one request).
-        prober = probe_full if row.capacity_class in _PREPAID else probe_liveness
+        prober = probe_full if row.capacity_class in PREPAID_CAPACITY_CLASSES else probe_liveness
         return prober(
             _admitted_route(row),
             self.transport,
@@ -1586,6 +1594,7 @@ def refresh_for_consumer(
 __all__ = [
     "CAPACITY_FREE",
     "CAPACITY_METERED",
+    "CAPACITY_ORDER",
     "CAPACITY_SUBSCRIPTION",
     "CAPACITY_UNKNOWN",
     "CONSUMER_PICKER",
@@ -1615,6 +1624,7 @@ __all__ = [
     "OUTCOME_LOCK_TIMEOUT",
     "OUTCOME_NOTHING_ELIGIBLE",
     "OUTCOME_REUSED_FRESH",
+    "PREPAID_CAPACITY_CLASSES",
     "REASON_BUCKET",
     "REASON_CANCELLED",
     "REASON_JOINED_NOT_COVERED",
@@ -1634,6 +1644,7 @@ __all__ = [
     "RouteOutcome",
     "RowInput",
     "VerifiedRow",
+    "capacity_group",
     "config_from_env",
     "refresh_for_consumer",
     "select_candidates",

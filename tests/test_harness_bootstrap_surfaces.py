@@ -302,14 +302,17 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
 
     result = consume(fixture, read_line=answer, transport=transport, preview_only=True)
     if consent == "y":
+        # "y" to the plan, then "y" to the one costly group (its default is no).
         assert sorted(calls) == sorted((rid, "chat") for rid in IDS)
         assert result.ok, result.data
         assert all(item["status"] == "VERIFIED" for item in result.data["rows"])
         assert all(not item["coding_ok"] for item in result.data["rows"])
+        assert len(prompts) == 2 and "[y/N]" in prompts[1]
     else:
         assert not calls
         assert not result.ok
-    assert len(prompts) == 1 and "manual refresh plan" in prompts[0]
+        assert len(prompts) == 1
+    assert "f = free only" in prompts[0]
     assert fixture["paths"].settings.read_bytes() == fixture["old"]
 
 
