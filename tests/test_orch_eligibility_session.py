@@ -263,3 +263,51 @@ def test_pool_alias_cannot_bypass_worker_evidence_gate(tmp_path: Path, false_cla
     assert selected is not None
     assert selected.rank_components["session_passes"] == 0
     assert selected.rank_components["session_fails"] == (6 if false_claim else 3)
+
+
+SUB = "cc/claude-sonnet-5"
+
+
+def _with_subscription(tmp_path: Path) -> tuple[EligibilityLadder, SessionLedger]:
+    ladder, ledger, _ = setup_ladder(tmp_path)
+    ladder._rows[SUB] = row(SUB, owned_by="claude")
+    ladder._connections.append(conn("claude"))
+    return ladder, ledger
+
+
+def _ranks(ladder: EligibilityLadder, req: TaskRequirements) -> dict[str, int | None]:
+    return {v.route_id: v.rank for v in ladder.evaluate(req, now=NOW)}
+
+
+def test_free_route_without_history_beats_subscription_with_one_pass(tmp_path: Path) -> None:
+    """Free-first, not free-only: an unknown FREE route is an exploration candidate."""
+    ladder, ledger = _with_subscription(tmp_path)
+    ledger.append(replace(outcome(True), route_id=SUB))
+    assert _ranks(ladder, REQ) == {ROUTE: 0, SUB: 1}
+
+
+def test_failing_free_route_loses_to_proven_subscription(tmp_path: Path) -> None:
+    ladder, ledger = _with_subscription(tmp_path)
+    for day in range(3):
+        ledger.append(outcome(False, days=day))
+        ledger.append(replace(outcome(True, days=day), route_id=SUB))
+    ranks = _ranks(ladder, REQ)
+    assert ranks[SUB] == 0
+    assert ranks[ROUTE] is None or ranks[ROUTE] > 0
+
+
+def test_frontier_work_ranks_proven_before_capacity_class(tmp_path: Path) -> None:
+    ladder, ledger = _with_subscription(tmp_path)
+    ledger.append(replace(outcome(True), route_id=SUB))
+    frontier = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
+    ranks = _ranks(ladder, frontier)
+    assert ranks[SUB] == 0 and ranks[ROUTE] == 1
+
+
+def test_session_tiers() -> None:
+    from verdict.orchestration.eligibility import _session_tier
+
+    assert _session_tier(None, None, None) == 1  # unknown
+    assert _session_tier(2 / 3, 1, 0) == 0  # proven
+    assert _session_tier(1 / 3, 0, 1) == 1  # one failure is not yet failing
+    assert _session_tier(1 / 5, 0, 3) == 2  # failing

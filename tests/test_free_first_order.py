@@ -1351,7 +1351,7 @@ def test_free_ranking_does_not_reorder_paid_capacity(tmp_path: Path) -> None:
     rows = [_row("cc/claude-opus-5"), _row("cc/claude-haiku-5")]
     ladder, _ = _make(tmp_path, rows, [_conn("cc")])
     a, b = (ladder._assess(r["id"], WORKER_REQ, NOW) for r in rows)
-    assert ladder._rank_key(a)[2:6] == ladder._rank_key(b)[2:6] == (0, 0, 0, 0.0)
+    assert ladder._rank_key(a)[3:7] == ladder._rank_key(b)[3:7] == (0, 0, 0, 0.0)
 
 
 def test_selected_is_rank_zero_when_a_lower_ranked_route_is_fresh(tmp_path: Path) -> None:
@@ -1416,3 +1416,31 @@ def test_agentic_proven_served_free_route_is_eligible_with_liveness_at_select(
     assert by_id[unproven].reason == "no_agentic_probe"
     assert ladder.summary()["eligible"] == 1
     assert probe.calls == []  # listing never probes
+
+
+def test_gateway_overload_at_select_records_nothing_and_falls_through(tmp_path: Path) -> None:
+    from verdict.subagent_selection import classify_probe_status
+
+    shed = classify_probe_status(
+        503, body='{"error":{"code":"resource_pressure","message":"resource pressure"}}'
+    )
+    assert shed.category == "gateway_overload"
+    first, second = "ms/codestral-latest", "co/command-a"
+    entries = [
+        _fresh_entry(rid, agentic_ok=True, probe_class="agentic", age_seconds=7200)
+        for rid in (first, second)
+    ]
+    cache = _build_cache(tmp_path, entries)
+    free = {"input": 0, "output": 0}
+    rows = [
+        _row(first, owned_by="ms", pricing=free, context=256_000),
+        _row(second, owned_by="co", pricing=free),
+    ]
+    conns = [_conn(p, auth="apikey", plan="free", free_only=True) for p in ("ms", "co")]
+    ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+    ladder._probe = lambda rid: shed if rid == first else HealthResult(True, "healthy")
+    chosen, verdicts = ladder.select(WORKER_REQ, now=NOW)
+    assert chosen is not None and chosen.route_id == second
+    assert first not in ladder._state["health"]
+    assert f"route:{first}" not in ladder._state["cooldowns"]
+    assert next(v for v in verdicts if v.route_id == first).reason == "gateway_overload"

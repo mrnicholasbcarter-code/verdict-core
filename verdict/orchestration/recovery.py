@@ -13,7 +13,11 @@ from datetime import datetime
 from typing import Any
 
 from verdict.orchestration.contracts import FailureClassification, WorkerTerminal
-from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY, is_context_length_error
+from verdict.subagent_selection import (
+    CONTEXT_LENGTH_CATEGORY,
+    GATEWAY_OVERLOAD_RE,
+    is_context_length_error,
+)
 
 CLASSIFIER_VERSION = "v1"
 
@@ -31,11 +35,7 @@ _MODEL_SCOPED_403_MARKERS = (
     "model is blocked",
 )
 
-_GATEWAY_BUSY_RE = re.compile(
-    r"chat_admission_busy|admission capacity is (?:temporarily unavailable|busy)"
-    r"|Structurally heavy chat request capacity is busy",
-    re.IGNORECASE,
-)
+_GATEWAY_BUSY_RE = GATEWAY_OVERLOAD_RE
 
 # Maximum cooldown cap (24 hours in seconds)
 MAX_COOLDOWN_SECONDS = 86400

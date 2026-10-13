@@ -461,3 +461,44 @@ def test_model_scoped_failure_leaves_the_pool_probing(tmp_path: Path) -> None:
     assert stats.agentic_probed == 2 and stats.agentic_passed == 1
     assert cache.cooldown_for("pool:openrouter-free", NOW) is None
     assert cache.entry("openrouter/thinkingmachines/inkling-small:free").failure_scope == "route"
+
+
+_PRESSURE = (
+    b'{"error":{"message":"Service temporarily unavailable due to resource pressure. '
+    b'Retry shortly.","type":"server_error","code":"resource_pressure"}}'
+)
+_PROVIDER_503 = b'{"error":{"message":"[nvidia/x] [503]: upstream model overloaded"}}'
+
+
+def test_gateway_overload_is_not_a_route_failure(tmp_path: Path) -> None:
+    """Live 2026-10-13 12:41-12:54: prober 503s under host load cooled gemma4,
+    codestral and command-a for 15 min. A gateway shed records nothing."""
+    shed = _http(503, _PRESSURE)
+    assert shed.error_category == "gateway_overload"
+    assert _http(503, _PROVIDER_503).error_category == "upstream"
+
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free(f"p{i}/m") for i in range(8)]
+    calls: list[str] = []
+
+    def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        return shed
+
+    stats = Prober(
+        cache, lambda: routes, chat, clock=lambda: NOW, epsilon=0, concurrency=1
+    ).run_once()
+    assert cache.routes() == {}
+    assert cache.active_cooldowns(NOW) == ()
+    assert stats.gateway_overload == 5 and len(calls) == 5  # a burst ends the cycle
+    assert stats.stopped_reason == "gateway_overload"
+
+
+def test_provider_503_still_counts_against_the_route(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    route = _free("p/m")
+    Prober(
+        cache, lambda: [route], lambda *a: _http(503, _PROVIDER_503), clock=lambda: NOW, epsilon=0
+    ).run_once()
+    entry = cache.entry("p/m")
+    assert entry is not None and entry.category == "upstream" and not entry.healthy

@@ -37,7 +37,7 @@ from verdict.orchestration.provider_catalog import (
     resolve_provider,
     sanitized_plan_label,
 )
-from verdict.subagent_selection import HealthResult
+from verdict.subagent_selection import GATEWAY_OVERLOAD_CATEGORY, HealthResult
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
@@ -837,29 +837,36 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[float, int, int, int, int, float, int, float, int, int, int, int, str]:
-        """Build the sort tuple from :meth:`_rank_components`.
+    ) -> tuple[int, int, float, int, int, int, float, int, float, int, int, int, int, str]:
+        """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
         Hard eligibility and task sufficiency filter candidates before this key.
-        Controller-verified session outcomes rank first for every class (as on
-        story/outcome-lesson-writers); routes without outcomes score 0.5 and
-        keep free-first. Negates ``fit`` so stronger routes rank lower.
+        Operator rule, free-first not free-only (2026-10-09/13):
 
-        Inside FREE capacity, routes rank by expected agent-task quality
-        (operator 2026-10-13): the gateway's measured success rate (24 h of
-        real traffic, coarse bucket, unknown is neutral), then inventory
-        capability metadata, then context, then probe latency. Free capacity
-        costs nothing per call, so the cheapest-sufficient rule (slack) cannot
-        pick among FREE routes; quota is a filter, never a FREE rank signal.
-        Other classes get neutral values there and keep slack, price and quota.
+        - Implementation work: routes with real failure evidence go last, then
+          capacity class (FREE first), then session score. A FREE route with no
+          history is an exploration candidate and beats a subscription route
+          with one pass, so FREE routes can earn evidence at all.
+        - frontier_worthy work (plan, review): proven > unknown > failing
+          before capacity class.
+
+        Inside FREE capacity, the gateway's measured success rate (24 h of real
+        traffic, coarse bucket, unknown is neutral), capability metadata,
+        context and probe latency follow. Quota never ranks FREE routes. Other
+        classes keep slack, price, quota and provider preference.
         """
         c = self._rank_components(a)
         free = a.capacity == CapacityClass.FREE
         session = c["session_score"]
+        evidence = _session_tier(session, c["session_passes"], c["session_fails"])
+        frontier = bool(
+            getattr(getattr(self, "_current_requirements", None), "frontier_worthy", False)
+        )
         latency = c["latency_ms"]
         return (
-            -float(session if session is not None else 0.5),
+            evidence if frontier else int(evidence == _FAILING),
             c["capacity_order"],
+            -float(session if session is not None else 0.5),
             _reliability_bucket(c["gateway_success_rate"]) if free else 0,
             -c["capability_score"] if free else 0,
             -(a.context_window or 0) if free else 0,
@@ -1086,6 +1093,11 @@ class EligibilityLadder:
                     continue
                 probes_used += 1
                 result = self._probe(a.route_id)
+                if result.category == GATEWAY_OVERLOAD_CATEGORY:
+                    # The gateway shed the check: nothing is known about this
+                    # route, so nothing is recorded; it stays a candidate.
+                    a.reason = GATEWAY_OVERLOAD_CATEGORY
+                    continue
                 self._record_health(a.route_id, result, now, provider=a.provider)
                 if confirming:
                     self._record_confirmation(a.route_id, result, now)
@@ -1314,6 +1326,20 @@ class EligibilityLadder:
 
 # Fewer requests than this in the gateway's 24 h window are no evidence.
 _MIN_GATEWAY_REQUESTS = 5
+# Session evidence tiers: proven, unknown, failing (Laplace score, see
+# session_evidence). Failing needs this many outcomes and a score under 0.5,
+# the same floor the task gate uses for recent evidence.
+_PROVEN, _UNKNOWN, _FAILING = 0, 1, 2
+_MIN_SESSION_SAMPLES = 3
+
+
+def _session_tier(score: float | None, passes: int | None, fails: int | None) -> int:
+    samples = (passes or 0) + (fails or 0)
+    if score is None or samples == 0:
+        return _UNKNOWN
+    if score >= 0.5:
+        return _PROVEN
+    return _FAILING if samples >= _MIN_SESSION_SAMPLES else _UNKNOWN
 
 
 def _reliability_bucket(rate: float | None) -> int:

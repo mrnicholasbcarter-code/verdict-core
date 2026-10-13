@@ -118,7 +118,11 @@ from verdict.prove_at_rest_legacy import (
     load_healthy_passports,
     passport_from_probe,
 )
-from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
+from verdict.subagent_selection import (
+    CONTEXT_LENGTH_CATEGORY,
+    GATEWAY_OVERLOAD_CATEGORY,
+    is_gateway_overload,
+)
 
 CHAT_PROBE_MESSAGE = "Reply with exactly: OK"
 TOOL_NAME = "verdict_probe_ping"
@@ -287,6 +291,8 @@ DEFAULT_AGENTIC_CONCURRENCY = 4
 # Free providers rate-limit per account: one agentic conversation per pool at a time.
 DEFAULT_AGENTIC_POOL_CONCURRENCY = 1
 AGENTIC_TURNS = 3
+# Consecutive gateway sheds (503 resource pressure, admission busy) that end a cycle.
+GATEWAY_OVERLOAD_STOP = 5
 # At most this share of a cycle's chat requests retries expired negatives
 # (live 2026-10-13: 3,067 half-open routes used every cycle's whole budget).
 HALF_OPEN_BUDGET_SHARE = 0.25
@@ -369,6 +375,8 @@ class CycleStats:
     agentic_probed: int = 0
     agentic_passed: int = 0
     agentic_stopped_reason: str = ""
+    # Probes the gateway shed (overload); they record nothing.
+    gateway_overload: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -382,6 +390,7 @@ class CycleStats:
             "agentic_probed": self.agentic_probed,
             "agentic_passed": self.agentic_passed,
             "agentic_stopped_reason": self.agentic_stopped_reason,
+            "gateway_overload": self.gateway_overload,
         }
 
 
@@ -391,6 +400,8 @@ def category_for(exchange: ProbeExchange) -> str:
     if exchange.ok:
         return CATEGORY_OK
     named = exchange.error_category or ""
+    if named == GATEWAY_OVERLOAD_CATEGORY:
+        return GATEWAY_OVERLOAD_CATEGORY
     if status == 429 or named in {"rate_limited", "rate_limit"}:
         return CATEGORY_RATE_LIMITED
     if status == 401 or named in {"auth", "unauthorized", "authentication"}:
@@ -940,6 +951,8 @@ class Prober:
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     # Pools cooled during this cycle; running conversations stop before their next turn.
     _blocked_pools: set[str] = field(default_factory=set, init=False, repr=False)
+    _shed_streak: int = field(default=0, init=False, repr=False)
+    _stop_cycle: bool = field(default=False, init=False, repr=False)
     _auth_fail_pools: list[str] = field(default_factory=list, init=False, repr=False)
     _auth_fail_buffer: list[tuple[str, ProbeResult, datetime]] = field(
         default_factory=list, init=False, repr=False
@@ -984,6 +997,8 @@ class Prober:
         self._auth_fail_pools = []  # fresh auth-outage window per cycle
         self._auth_fail_buffer = []
         self._blocked_pools = set()
+        self._shed_streak = 0
+        self._stop_cycle = False
         self._gateway_auth_result = None
         self._cycle_started = started
         self._request_cap = self.max_requests
@@ -992,7 +1007,7 @@ class Prober:
             self._run_chat_phase(routes, started, stats)
         except HealthCacheLockTimeoutError:
             stats.stopped_reason = stats.stopped_reason or "lock_timeout"
-        if stats.auth_outage:
+        if stats.auth_outage or self._stop_cycle:
             return stats
         try:
             # Keep the outage window across both phases; a broken gateway key
@@ -1058,6 +1073,23 @@ class Prober:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
             self._save()
+
+    def _gateway_shed(self, exchange: ProbeExchange, stats: CycleStats) -> bool:
+        """True when the gateway shed *exchange*: record nothing for the route.
+
+        A burst of sheds stops the cycle (``gateway_overload``) so the prober
+        does not add load to a gateway that is already shedding.
+        """
+        if exchange.error_category != GATEWAY_OVERLOAD_CATEGORY:
+            self._shed_streak = 0
+            return False
+        stats.gateway_overload += 1
+        self._shed_streak += 1
+        if self._shed_streak >= GATEWAY_OVERLOAD_STOP:
+            stats.stopped_reason = stats.stopped_reason or GATEWAY_OVERLOAD_CATEGORY
+            stats.agentic_stopped_reason = stats.agentic_stopped_reason or GATEWAY_OVERLOAD_CATEGORY
+            self._stop_cycle = True
+        return True
 
     def _write(self, route_id: str, result: ProbeResult, now: datetime) -> HealthEntry:
         """Record one probe; a pool-scoped failure also cools the whole credential pool."""
@@ -1152,6 +1184,8 @@ class Prober:
         """
         probed: set[str] = set()
         for route, kind in batch:
+            if self._stop_cycle:
+                return probed
             if stats.requests >= self.max_requests:
                 stats.stopped_reason = stats.stopped_reason or "request_cap"
                 return probed
@@ -1202,6 +1236,8 @@ class Prober:
             chat = self.transport(route.route_id, "chat", self.probe_timeout_seconds)
         except TimeoutError:
             chat = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+        if self._gateway_shed(chat, stats):
+            return True  # the gateway shed it: entry unchanged, retried next cycle
         self._note_rate_limit(route, chat, now)
         chat_ok = bool(chat.ok and chat.chat_exact and chat.http_status == 200)
         tool_ok = False
@@ -1239,6 +1275,8 @@ class Prober:
                     tool = self.transport(route.route_id, "tool", self.probe_timeout_seconds)
                 except TimeoutError:
                     tool = ProbeExchange(http_status=None, ok=False, error_category="timeout")
+                if self._gateway_shed(tool, stats):
+                    return True
                 self._note_rate_limit(route, tool, now_tool)
                 tool_ok = bool(tool.ok and tool.tool_called and tool.http_status == 200)
                 if tool.latency_ms is not None:
@@ -1388,7 +1426,7 @@ class Prober:
             while pending or running:
                 limit = 1 if self._auth_fail_buffer else self.agentic_concurrency
                 if not stats.agentic_stopped_reason:
-                    if self._stop.is_set():
+                    if self._stop.is_set() or self._stop_cycle:
                         stats.agentic_stopped_reason = "stopped"
                     elif self.monotonic() >= deadline:
                         stats.agentic_stopped_reason = "wall_cap"
@@ -1484,7 +1522,12 @@ class Prober:
         exchanges: list[ProbeExchange] = []
         for payload_fn in (agentic_turn1_payload, agentic_turn2_payload, agentic_turn3_payload):
             remaining = deadline - self.monotonic()
-            if self._stop.is_set() or remaining <= 0 or pool in self._blocked_pools:
+            if (
+                self._stop.is_set()
+                or self._stop_cycle
+                or remaining <= 0
+                or pool in self._blocked_pools
+            ):
                 return exchanges, fake_file, False
             payload = payload_fn(route_id, conversation)
             try:
@@ -1513,6 +1556,8 @@ class Prober:
     ) -> None:
         now = self.clock()
         last = exchanges[-1]
+        if self._gateway_shed(last, stats):
+            return
         self._note_rate_limit(route, last, now)
         if category_for(last) == CATEGORY_RATE_LIMITED:
             # A 429 says nothing about capability: not tested, retried after the bucket reopens.
@@ -1762,6 +1807,8 @@ def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> Prob
         body = ""
     if exc.code == 400 and is_catalog_stale_error(body):
         named = CATEGORY_CATALOG_STALE
+    if is_gateway_overload(exc.code, body):
+        named = GATEWAY_OVERLOAD_CATEGORY
     return ProbeExchange(
         http_status=exc.code,
         ok=False,

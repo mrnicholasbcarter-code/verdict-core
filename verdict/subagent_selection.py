@@ -221,6 +221,23 @@ def is_context_length_error(text: str) -> bool:
     return any(marker in lowered for marker in _CONTEXT_LENGTH_MARKERS)
 
 
+# The gateway shed the request itself; no provider was contacted, so it says
+# nothing about the route, its pool or its provider (OmniRoute admission shed,
+# upstream #13648; live 2026-10-13: 503 "resource pressure" under host load).
+GATEWAY_OVERLOAD_CATEGORY = "gateway_overload"
+GATEWAY_OVERLOAD_RE = re.compile(
+    r"chat_admission_busy|admission capacity is (?:temporarily unavailable|busy)"
+    r"|Structurally heavy chat request capacity is busy"
+    r"|resource[ _]pressure|heap[ _]pressure",
+    re.IGNORECASE,
+)
+
+
+def is_gateway_overload(status_code: int | None, body: str) -> bool:
+    """A gateway-side shed: 503/429 whose body is the gateway's own overload message."""
+    return status_code in {429, 503} and bool(GATEWAY_OVERLOAD_RE.search(body))
+
+
 def classify_probe_status(
     status_code: int | None,
     *,
@@ -246,6 +263,10 @@ def classify_probe_status(
         429: "rate_limited",
     }
     bounded_body = body[:500]
+    if is_gateway_overload(status_code, body):
+        return HealthResult(
+            False, GATEWAY_OVERLOAD_CATEGORY, status_code, retry_after_seconds, bounded_body
+        )
     if status_code == 400 and any(m in body.lower() for m in _UNSERVABLE_MARKERS):
         return HealthResult(False, "unservable", status_code, retry_after_seconds, bounded_body)
     if status_code in {400, 413} and is_context_length_error(body):
