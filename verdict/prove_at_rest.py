@@ -930,6 +930,7 @@ class Prober:
     monotonic: Callable[[], float] = field(default=time.monotonic)
     sleep: Callable[[float], None] = field(default=time.sleep)
     on_cycle_error: Callable[[Exception], None] | None = None
+    on_cycle_done: Callable[[CycleStats], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
     # The agentic phase has its own budget: it runs even when the chat phase
@@ -1630,6 +1631,9 @@ class Prober:
             except Exception as exc:
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)
+            else:
+                if self.on_cycle_done is not None:
+                    self.on_cycle_done(last)
             remaining = float(self.interval_seconds)
             while remaining > 0 and not self._stop.is_set():
                 step = min(0.25, remaining)

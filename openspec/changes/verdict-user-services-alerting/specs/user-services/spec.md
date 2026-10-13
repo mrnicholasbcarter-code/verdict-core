@@ -50,3 +50,17 @@ non-zero when a unit is missing, inactive or failed.
 #### Scenario: No systemd
 - **WHEN** `systemctl` is not installed
 - **THEN** doctor reports a warning, not a passing services check
+
+### Requirement: Doctor fails when proven FREE routes are not eligible
+`verdict doctor` SHALL exit non-zero when the canonical eligibility result has
+FREE routes with a current agentic proof outside cooled credential pools, but no
+FREE route is eligible. Eligible subscription routes do not satisfy the check.
+
+#### Scenario: Only subscription routes are eligible
+- **WHEN** 7 FREE routes outside cooled pools hold a current agentic proof
+- **AND** `verdict eligibility` lists only a subscription route as eligible
+- **THEN** doctor reports "Eligibility list is stale" and exits 1
+
+#### Scenario: Proofs only in a cooled pool
+- **WHEN** every proven FREE route is in a pool cooled by a provider key limit
+- **THEN** the check reports no issue

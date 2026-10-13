@@ -264,9 +264,39 @@ def _doctor_services(diag: DoctorDiagnostics) -> None:
     from verdict.user_services import check_services
 
     check = check_services()
+    if check.rows:
+        from datetime import datetime, timezone
+
+        from verdict.actions.registry import run_action
+        from verdict.orchestration.health_cache import HealthCache, default_cache_path
+        from verdict.prove_at_rest import _cooled_pools
+        from verdict.user_services import check_eligible_list
+
+        listed = run_action("eligibility", {})
+        if listed.ok:
+            cooled = _cooled_pools(HealthCache(default_cache_path()), datetime.now(timezone.utc))
+            outcome = check_eligible_list(listed.data, cooled)
+            check.rows += outcome.rows
+            check.issues += outcome.issues
+        else:
+            check.issues.append(
+                f"verdict eligibility failed: {listed.data.get('error', 'unknown error')}"
+            )
     diag.services = check.rows
     diag.sections.append(("Verdict services", "header", ""))
     for row in check.rows:
+        if "eligible_list" in row:
+            listed_row = row["eligible_list"]
+            diag.sections.append(
+                (
+                    "Eligible routes",
+                    "info",
+                    f"eligible {listed_row['eligible']}, FREE eligible "
+                    f"{listed_row['free_eligible']}, proven FREE outside cooled pools "
+                    f"{listed_row['free_proven_runnable']}",
+                )
+            )
+            continue
         if "health_cache" in row:
             cache = row["health_cache"]
             diag.sections.append(
