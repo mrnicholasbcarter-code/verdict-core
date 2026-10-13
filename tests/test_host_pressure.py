@@ -170,6 +170,17 @@ def test_new_oom_kill_is_red_host_wide_or_in_cgroup(tmp_path: Path) -> None:
     assert d.level is Level.RED and d.metrics["oom_kills"] == 2.0
 
 
+@pytest.mark.parametrize(("zram_gib", "level"), [(5.2, Level.GREEN), (7.0, Level.YELLOW)])
+def test_zram_fill_has_a_narrow_calm_band(tmp_path: Path, zram_gib: float, level: Level) -> None:
+    # Live 2026-10-13: after a stress ZRAM stayed 65% full on a calm host; a halved
+    # band (45%) held YELLOW for hours. 0.85 (0.90 - 0.05) is the calm limit.
+    roots = fake_host(tmp_path, zram_orig=int(zram_gib * GIB))
+    state: dict[str, Any] = {"level": "YELLOW", "since": 0.0, "calm": 0}
+    for t in (120.0, 150.0, 180.0):
+        state, d = govern(sample(roots, now=t), state)
+    assert d.level is level
+
+
 def test_zram_nearly_full_is_yellow(tmp_path: Path) -> None:
     _, d = govern(
         sample(fake_host(tmp_path, zram_orig=int(7.5 * GIB)), now=0.0),

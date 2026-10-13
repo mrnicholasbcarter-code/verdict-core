@@ -31,9 +31,9 @@ metric              YELLOW  RED    meaning
 ==================  ======  =====  ============================================
 
 A worse level applies at once. A better level needs ``CALM_SAMPLES`` samples, at
-least ``CALM_SAMPLE_GAP_S`` apart, in which every metric is calm at ``RELAX``
-times its threshold (half the pressure; for ``avail_frac`` twice the free
-fraction), and ``MIN_DWELL_S`` at the current level. It then steps down one
+least ``CALM_SAMPLE_GAP_S`` apart, in which every metric is calm (stall and swap
+rates below ``RELAX`` times their threshold; ``avail_frac`` and ``zram_fill``
+``FRACTION_MARGIN`` inside theirs), and ``MIN_DWELL_S`` at the current level. It then steps down one
 level. The first sample (no saved state) starts at YELLOW. Missing PSI or meminfo evidence holds the level at YELLOW or
 worse, and admission treats it as full pressure.
 
@@ -87,7 +87,13 @@ RED_AT: Mapping[str, float] = {
 }
 #: Metrics where a lower value is worse.
 BELOW = frozenset({"avail_frac"})
+#: Calm band. Stall and swap rates are calm below ``RELAX`` x threshold. The two
+#: capacity fractions move slowly (ZRAM keeps its pages long after a stall ends),
+#: so halving them would hold a calm host at YELLOW for hours; they are calm
+#: ``FRACTION_MARGIN`` inside their threshold instead.
 RELAX = 0.5
+FRACTIONS = frozenset({"avail_frac", "zram_fill"})
+FRACTION_MARGIN = 0.05
 CALM_SAMPLES = 3
 CALM_SAMPLE_GAP_S = 20.0
 MIN_DWELL_S = 120.0
@@ -310,24 +316,28 @@ def _metrics(sample: HostSample, state: dict[str, Any]) -> dict[str, float]:
     return m
 
 
-def _hits(m: Mapping[str, float], table: Mapping[str, float], scale: float) -> list[str]:
+def _hits(m: Mapping[str, float], table: Mapping[str, float], calm: bool) -> list[str]:
+    """Metrics at or past *table*; with *calm*, past the calm band instead (see RELAX)."""
     hits = []
     for key, threshold in table.items():
         if key not in m:
             continue
-        if (key in BELOW and m[key] < threshold / scale) or (
-            key not in BELOW and m[key] >= threshold * scale
-        ):
+        if key in FRACTIONS:
+            band = FRACTION_MARGIN if calm else 0.0
+            past = m[key] < threshold + band if key in BELOW else m[key] >= threshold - band
+        else:
+            past = m[key] >= threshold * (RELAX if calm else 1.0)
+        if past:
             hits.append(key)
     return hits
 
 
-def level_for(m: Mapping[str, float], scale: float = 1.0) -> tuple[Level, list[str]]:
-    """The level the metrics alone call for, and the metrics that set it."""
-    red = _hits(m, RED_AT, scale) + (["oom_kill"] if m.get("oom_kills", 0) > 0 else [])
+def level_for(m: Mapping[str, float], *, calm: bool = False) -> tuple[Level, list[str]]:
+    """The level the metrics call for (with *calm*, inside the calm band) and why."""
+    red = _hits(m, RED_AT, calm) + (["oom_kill"] if m.get("oom_kills", 0) > 0 else [])
     if red:
         return Level.RED, red
-    yellow = _hits(m, YELLOW_AT, scale)
+    yellow = _hits(m, YELLOW_AT, calm)
     return (Level.YELLOW, yellow) if yellow else (Level.GREEN, [])
 
 
@@ -421,7 +431,7 @@ def govern(
     if _ORDER[target] > _ORDER[current]:
         new.update(level=target.value, since=sample.t, calm=0, calm_at=None)
     elif _ORDER[target] < _ORDER[current]:
-        relaxed, _ = level_for(m, scale=RELAX)
+        relaxed, _ = level_for(m, calm=True)
         if _ORDER[relaxed] >= _ORDER[current]:
             new.update(calm=0, calm_at=None)
         elif new.get("calm_at") is None or sample.t - float(new["calm_at"]) >= CALM_SAMPLE_GAP_S:

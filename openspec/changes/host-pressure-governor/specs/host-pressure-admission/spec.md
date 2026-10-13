@@ -21,8 +21,9 @@ ZRAM SHALL NOT count as RAM and swap size SHALL NOT be an input.
 ### Requirement: Hysteresis
 
 A worse level SHALL apply at once. A better level SHALL need three calm samples
-at half the thresholds, at least 20 seconds apart, and 120 seconds at the
-current level, and SHALL step down one level at a time.
+(stall and swap rates below half their thresholds, MemAvailable and ZRAM fill
+0.05 inside theirs), at least 20 seconds apart, and 120 seconds at the current
+level, and SHALL step down one level at a time.
 
 #### Scenario: Recovery after RED
 

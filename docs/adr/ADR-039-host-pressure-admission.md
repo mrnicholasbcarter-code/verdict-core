@@ -53,8 +53,11 @@ and swap size is never an input.
 | new OOM kill | - | any |
 
 **Hysteresis.** A worse level applies at once. A better level needs 3 samples,
-at least 20 s apart, that are calm at half of every threshold (twice the free
-RAM fraction), plus 120 s at the current level; it then steps down one level.
+at least 20 s apart, that are calm, plus 120 s at the current level; it then
+steps down one level. A stall or swap rate is calm below half its threshold. The
+two capacity fractions are calm 0.05 inside theirs (MemAvailable above 0.25 of
+RAM for GREEN, ZRAM fill below 0.85): ZRAM keeps its pages long after a stall
+ends, and a halved band held a calm host at YELLOW (live drill, 2026-10-13).
 Without saved state the level starts at YELLOW. Missing PSI or meminfo evidence
 never improves the level and admission treats it as full pressure.
 
