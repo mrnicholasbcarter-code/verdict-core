@@ -59,7 +59,8 @@ def test_proof_change_without_trailer_fails(repo: Path) -> None:
     (repo / "docs/proof/demo-run/graph.json").write_text("{}\n", encoding="utf-8")
     _commit(repo, "regenerate")
     errors = proof_paths.check(repo, "base")
-    assert len(errors) == 1 and "without a 'Proof: <path>' line" in errors[0]
+    assert "without a 'Proof: <path>' line" in errors[0]
+    assert errors[1].startswith("docs/proof/demo-run: receipt does not verify")
 
 
 def test_tampered_bundle_with_trailer_fails_receipt_check(repo: Path) -> None:
@@ -84,3 +85,14 @@ def test_declared_valid_bundle_passes(repo: Path) -> None:
     (repo / "docs/proof/notes.md").write_text("x\n", encoding="utf-8")
     _commit(repo, "add notes\n\nProof: docs/proof/notes.md")
     assert proof_paths.check(repo, "base") == []
+
+
+def test_trailer_naming_one_file_still_verifies_its_bundle(repo: Path) -> None:
+    events = repo / "docs/proof/demo-run/events.jsonl"
+    events.write_text(
+        events.read_text(encoding="utf-8").replace("quota_exhausted", "rate_limited", 1),
+        encoding="utf-8",
+    )
+    _commit(repo, "edit\n\nProof: docs/proof/demo-run/events.jsonl")
+    errors = proof_paths.check(repo, "base")
+    assert errors == [errors[0]] and "docs/proof/demo-run: receipt does not verify" in errors[0]

@@ -147,6 +147,9 @@ schema [`proof/dod.schema.json`](proof/dod.schema.json)):
 Not done: tests pass on fixtures, CI green, review approved, merged, or a worker
 saying "implemented". These are necessary, never sufficient. Do not archive an
 OpenSpec change or move a ticket to Done before the evidence file passes.
+Build the evidence file outside the repository and commit it, with the
+archived change, only when `scripts/check_dod.py <file>` passes; CI runs
+`--all`, so an incomplete file in `docs/proof/dod/` fails every pull request.
 
 ## Safety rules
 

@@ -196,13 +196,15 @@ def test_all_flags_an_archive_without_evidence(
 ) -> None:
     root, evidence = repo
     (root / "openspec/changes/archive/2026-10-14-unproven").mkdir(parents=True)
-    (root / "openspec/changes/archive/2026-10-01-before-gate").mkdir(parents=True)
+    (root / "openspec/changes/archive/2026-10-01-backdated").mkdir(parents=True)
+    (root / "openspec/changes/archive/2026-10-09-bod-198-codiv-candidate").mkdir(parents=True)
     (root / "docs/proof/dod/gate.json").write_text(json.dumps(evidence), encoding="utf-8")
     assert check_dod.main(["--all", "--root", str(root)]) == 1
     out = capsys.readouterr().out
     assert "DONE: " in out
     assert "openspec change unproven was archived without DoD evidence" in out
-    assert "before-gate" not in out
+    assert "openspec change backdated was archived without DoD evidence" in out
+    assert "bod-198-codiv-candidate" not in out
 
 
 def test_repository_evidence_passes() -> None:

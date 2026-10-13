@@ -19,7 +19,8 @@ The check fails on any missing or mismatched field:
   the acceptance commands and shows the expected output.
 
 ``--all`` checks every evidence file, and fails when an OpenSpec change was
-archived on or after ``GATE_START`` without an evidence file that names it.
+archived after this gate (not in ``PRE_GATE_ARCHIVES``) without an evidence
+file that names it.
 
 Usage:
     scripts/check_dod.py --all
@@ -49,8 +50,11 @@ from verdict.security import redact_text  # noqa: E402
 SCHEMA_PATH = Path("proof/dod.schema.json")
 EVIDENCE_DIR = Path("docs/proof/dod")
 ARCHIVE_DIR = Path("openspec/changes/archive")
-# Changes archived before the gate existed are not re-judged.
-GATE_START = "2026-10-13"
+# Changes archived before this gate existed are not re-judged. Every later
+# archive needs an evidence file, whatever date its directory name carries.
+PRE_GATE_ARCHIVES = frozenset(
+    {"2026-10-08-bod-288-review-coverage-fail-closed", "2026-10-09-bod-198-codiv-candidate"}
+)
 ACTIONS_RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+")
 
 
@@ -192,7 +196,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
 
 
 def unproven_archives(root: Path, evidence_files: list[Path]) -> list[str]:
-    """Changes archived since GATE_START that no evidence file names."""
+    """Changes archived after this gate that no evidence file names."""
     named = set()
     for path in evidence_files:
         try:
@@ -201,8 +205,8 @@ def unproven_archives(root: Path, evidence_files: list[Path]) -> list[str]:
             continue
     missing = []
     for archived in sorted((root / ARCHIVE_DIR).glob("????-??-??-*")):
-        date, change = archived.name[:10], archived.name[11:]
-        if date >= GATE_START and change not in named:
+        change = archived.name[11:]
+        if archived.name not in PRE_GATE_ARCHIVES and change not in named:
             missing.append(change)
     return missing
 

@@ -21,7 +21,7 @@ import argparse
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -36,19 +36,32 @@ def _git(root: Path, *args: str) -> str:
     ).stdout
 
 
+def _bundles(root: Path, paths: set[str]) -> set[str]:
+    """The run bundles (directories with ``receipt.json``) that contain ``paths``."""
+    bundles = set()
+    for path in paths:
+        parent = PurePosixPath(path).parent
+        while str(parent).startswith(PROOF_DIR):
+            if (root / parent / "receipt.json").is_file():
+                bundles.add(str(parent))
+                break
+            parent = parent.parent
+    return bundles
+
+
 def check(root: Path, base: str) -> list[str]:
     """Return every proof change in ``base..HEAD`` that is not declared or does not verify."""
     from verdict.orchestration.receipt import verify_run_receipt
 
     errors: list[str] = []
-    named_bundles: set[str] = set()
+    changed_proof: set[str] = set()
     for sha in _git(root, "rev-list", "--no-merges", f"{base}..HEAD").split():
         changed = _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", sha).split()
         proof = [path for path in changed if path.startswith(PROOF_DIR)]
         if not proof:
             continue
+        changed_proof.update(proof)
         named = TRAILER.findall(_git(root, "log", "-1", "--format=%B", sha))
-        named_bundles.update(named)
         if not named:
             errors.append(
                 f"{sha[:12]} changes {len(proof)} file(s) under {PROOF_DIR} without a "
@@ -58,11 +71,11 @@ def check(root: Path, base: str) -> list[str]:
         outside = [p for p in proof if not any(p == n or p.startswith(n + "/") for n in named)]
         if outside:
             errors.append(f"{sha[:12]}: not under a named Proof: path: {', '.join(outside[:5])}")
-    for bundle in sorted(named_bundles):
-        if (root / bundle / "receipt.json").is_file():
-            problems = verify_run_receipt(root / bundle)
-            if problems:
-                errors.append(f"{bundle}: receipt does not verify: {'; '.join(problems)}")
+    # Every bundle that holds a changed file must still verify, whatever the trailer names.
+    for bundle in sorted(_bundles(root, changed_proof)):
+        problems = verify_run_receipt(root / bundle)
+        if problems:
+            errors.append(f"{bundle}: receipt does not verify: {'; '.join(problems)}")
     return errors
 
 
