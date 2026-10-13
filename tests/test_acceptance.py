@@ -103,6 +103,8 @@ def test_cooling_providers_need_every_connection_cooling() -> None:
 
 def _fake_cli(eligibility: dict[str, Any], *, choose_exit: int = 2):
     def run_cli(args: list[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        # Every check is pointed at the gateway the job measures.
+        assert env is not None and env["OMNIROUTE_BASE_URL"] == "http://gw"
         name = args[0]
         if name == "doctor":
             return 0, json.dumps({"status": "ok", "issues": []}), ""

@@ -85,9 +85,14 @@ def run_cli(
 Judge = Callable[[int, str, str], tuple[bool, str, dict[str, Any]]]
 
 
-def _cli_check(name: str, args: list[str], timeout: float, judge: Judge) -> Check:
+def gateway_env(gateway: str) -> dict[str, str]:
+    """Every check runs against the one gateway this job measures."""
+    return {**os.environ, "OMNIROUTE_BASE_URL": gateway}
+
+
+def _cli_check(name: str, args: list[str], timeout: float, judge: Judge, gateway: str) -> Check:
     started = time.monotonic()
-    code, out, err = run_cli(args, timeout)
+    code, out, err = run_cli(args, timeout, gateway_env(gateway))
     passed, reason, detail = judge(code, out, err)
     if not passed and err.strip():
         detail.setdefault("stderr_tail", _tail(err))
@@ -188,7 +193,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
 
     args = ["eligibility", "--json", "--gateway", gateway]
     started = time.monotonic()
-    code, out, err = run_cli(args, 900)
+    code, out, err = run_cli(args, 900, gateway_env(gateway))
     check = Check(
         "eligibility",
         ["verdict", *args],
@@ -276,9 +281,8 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     # its receipts out of the operator's ledger.
     receipts = acceptance_dir() / "serve-receipts.db"
     env = {
-        **os.environ,
+        **gateway_env(gateway),
         "LLMGATE_AUTH_TOKEN": token,
-        "OMNIROUTE_BASE_URL": gateway,
         "VERDICT_RECEIPTS_DB": str(receipts),
     }
     args = ["serve", "--port", str(port), "--host", "127.0.0.1"]
@@ -384,12 +388,16 @@ def _source_sha() -> str | None:
 
 def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
     return [
-        _cli_check("doctor", ["doctor", "--json"], 600, judge_doctor),
+        _cli_check("doctor", ["doctor", "--json"], 600, judge_doctor, gateway),
         eligibility_check(gateway, api_key, seed=seed),
-        _cli_check("choose", ["choose", "--role", "implement", "--json"], 180, judge_choose),
-        _cli_check("route", ["route", "--terse", ROUTE_TASK], 300, judge_route),
+        _cli_check(
+            "choose", ["choose", "--role", "implement", "--json"], 180, judge_choose, gateway
+        ),
+        _cli_check("route", ["route", "--terse", ROUTE_TASK], 300, judge_route, gateway),
         serve_check(gateway),
-        _cli_check("harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime),
+        _cli_check(
+            "harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime, gateway
+        ),
     ]
 
 
