@@ -152,10 +152,13 @@ def test_swap_rate_needs_a_window_and_keeps_its_baseline(tmp_path: Path) -> None
     state: dict[str, Any] = {"level": "GREEN", "since": -999.0, "calm": 0}
     state, d = govern(sample(fake_host(tmp_path), now=0.0), state)
     assert "disk_swap_pps" not in d.metrics
-    state, d = govern(sample(fake_host(tmp_path, pswp=(5_000, 5_000)), now=5.0), state)
-    assert "disk_swap_pps" not in d.metrics  # 5 s is too short; baseline kept at t=0
-    state, d = govern(sample(fake_host(tmp_path, pswp=(10_000, 10_000)), now=25.0), state)
+    state, d = govern(sample(fake_host(tmp_path, pswp=(15_000, 15_000)), now=20.0), state)
+    assert "disk_swap_pps" not in d.metrics  # 20 s is too short; baseline kept at t=0
+    state, d = govern(sample(fake_host(tmp_path, pswp=(24_000, 24_000)), now=60.0), state)
     assert d.metrics["disk_swap_pps"] == pytest.approx(800.0) and d.level is Level.YELLOW
+    # Until the next full window the last rate is carried, not recomputed.
+    state, d = govern(sample(fake_host(tmp_path, pswp=(24_000, 24_000)), now=90.0), state)
+    assert d.metrics["disk_swap_pps"] == pytest.approx(800.0)
 
 
 def test_new_oom_kill_is_red_host_wide_or_in_cgroup(tmp_path: Path) -> None:

@@ -91,8 +91,9 @@ RELAX = 0.5
 CALM_SAMPLES = 3
 CALM_SAMPLE_GAP_S = 20.0
 MIN_DWELL_S = 120.0
-#: The disk swap rate is measured over a window of at least this many seconds...
-RATE_WINDOW_S = 20.0
+#: The disk swap rate is measured over a window of at least this many seconds
+#: (20 s windows on this host swung between 5 and 2350 pages/s, 2026-10-13)...
+RATE_WINDOW_S = 60.0
 #: ...and at most this many; an older baseline is replaced instead of averaged.
 MAX_RATE_WINDOW_S = 300.0
 #: Admission pressure per level (``ResourcePressure`` scale). YELLOW halves the

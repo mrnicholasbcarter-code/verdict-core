@@ -32,7 +32,8 @@ file lock, so every Verdict process steps the same hysteresis).
 `MemAvailable / MemTotal` (`/proc/meminfo`), swap devices (`/proc/swaps`,
 classified `zram` or `disk` by device name), the disk swap I/O rate (pages
 swapped in and out in `/proc/vmstat` minus ZRAM block I/O from
-`/sys/block/zram*/stat`, at 8 sectors of 512 bytes per 4 KiB page), ZRAM fill
+`/sys/block/zram*/stat`, at 8 sectors of 512 bytes per 4 KiB page, over a window of
+60 to 300 s), ZRAM fill
 (`mm_stat` stored data / `disksize`), and new OOM kills (`oom_kill` in
 `/proc/vmstat` and in `user.slice/memory.events`). ZRAM is never counted as RAM,
 and swap size is never an input.
