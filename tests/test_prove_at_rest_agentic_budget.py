@@ -33,6 +33,7 @@ from verdict.prove_at_rest import (
     _http_error_exchange,
     agentic_candidates,
     order_cycle,
+    probe_failure_scope,
     routes_from_evidence,
 )
 
@@ -336,3 +337,127 @@ def test_agentic_phase_waits_for_bucket_refill_within_its_budget(tmp_path: Path)
     assert stats.agentic_passed == 2
     assert stats.agentic_stopped_reason == "bucket_empty"
     assert stats.skipped_bucket == 1
+
+
+# Live gateway bodies, 2026-10-13 (keys and ids shortened).
+_KEY_LIMIT = (
+    b'{"error":{"message":"[openrouter/aion-labs/aion-2.0] [403]: Key limit exceeded '
+    b"(total limit). Manage it using https://openrouter.ai/workspaces/default/keys/x "
+    b'$0.00 of $0.00 used; does not reset. (reset after 12s)"}}'
+)
+_HARNESS_ONLY = (
+    b'{"error":{"message":"[openrouter/thinkingmachines/inkling-small:free] [403]: '
+    b"thinkingmachines/inkling-small:free is only available on agentic harnesses. "
+    b'(reset after 1s)"}}'
+)
+_NO_KEY = (
+    b'{"error":{"message":"[opencode-zen/jev-1.13] [402]: This model requires an opencode '
+    b'API key \xe2\x80\x94 add one in Settings \xe2\x86\x92 Providers. (reset after 2m)"}}'
+)
+
+
+def _http(status: int, body: bytes) -> ProbeExchange:
+    exc = urllib.error.HTTPError("http://gw", status, "x", Message(), io.BytesIO(body))
+    return _http_error_exchange(exc, 5.0)
+
+
+@pytest.mark.parametrize(
+    "route_id,status,body,answered,pool_live,scope",
+    [
+        ("openrouter/aion-labs/aion-2.0", 403, _KEY_LIMIT, False, True, "pool"),
+        ("opencode/jev-1.13", 402, _NO_KEY, False, False, "pool"),
+        (
+            "openrouter/thinkingmachines/inkling-small:free",
+            403,
+            _HARNESS_ONLY,
+            False,
+            False,
+            "route",
+        ),
+        (
+            "nvidia/meta/muse-glimmer-30b",
+            401,
+            b'{"error":{"message":"[401]: missing"}}',
+            True,
+            False,
+            "route",
+        ),
+        ("nvidia/x", 401, b'{"error":{"message":"[401]: missing"}}', False, True, "route"),
+        ("nvidia/x", 401, b'{"error":{"message":"[401]: missing"}}', False, False, "pool"),
+        ("p/x", 500, b"{}", False, False, "route"),
+    ],
+)
+def test_failure_scope_reads_the_provider_message(
+    route_id: str, status: int, body: bytes, answered: bool, pool_live: bool, scope: str
+) -> None:
+    exchange = _http(status, body)
+    assert "[" not in exchange.detail[:1], "gateway tags are stripped"
+    category = exchange.error_category or ""
+    got = probe_failure_scope(
+        category, exchange.detail, route_id, answered=answered, pool_live=pool_live
+    )
+    assert got == scope
+
+
+def test_account_error_cools_the_pool_and_no_more_probes_hit_it(tmp_path: Path) -> None:
+    """A4: one account-level error marks pool:<id>; 0 later probes reach that pool."""
+    calls: list[str] = []
+
+    def agentic(route_id: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        calls.append(route_id)
+        if route_id.startswith("openrouter/"):
+            return _http(403, _KEY_LIMIT)
+        return _turn(route_id, payload)
+
+    routes = [_free(f"openrouter/m{i}") for i in range(5)] + [_free("ok/m")]
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    prober = Prober(
+        cache,
+        lambda: routes,
+        _dead_chat,
+        agentic_transport=agentic,
+        agentic_max_routes=10,
+        agentic_concurrency=1,
+        clock=lambda: NOW,
+        # The live daemon confirms the gateway key after the first 401/403.
+        gateway_auth_check=lambda timeout: ProbeExchange(http_status=200, ok=True),
+    )
+    stats = CycleStats()
+    prober.run_agentic_probes(stats, routes=routes)
+    assert [c for c in calls if c.startswith("openrouter/")] == ["openrouter/m0"]
+    cooldown = cache.cooldown_for("pool:openrouter", NOW)
+    assert cooldown is not None and cooldown.category == "permission"
+    assert cache.entry("openrouter/m0").failure_scope == "pool"
+    assert stats.agentic_passed == 1
+    # The next cycle skips the pool too.
+    assert not [
+        r for r, _ in order_cycle(routes, cache, NOW) if r.route_id.startswith("openrouter/")
+    ]
+
+
+def test_model_scoped_failure_leaves_the_pool_probing(tmp_path: Path) -> None:
+    """Live run 3 (0/19): one model-only 403 had hidden every openrouter-free route."""
+
+    def agentic(route_id: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        if route_id.endswith("inkling-small:free"):
+            return _http(403, _HARNESS_ONLY)
+        return _turn(route_id, payload)
+
+    routes = [
+        _free("openrouter/thinkingmachines/inkling-small:free"),
+        _free("openrouter/poolside/laguna-s-2.1:free"),
+    ]
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    prober = Prober(
+        cache,
+        lambda: routes,
+        _dead_chat,
+        agentic_transport=agentic,
+        agentic_concurrency=1,
+        clock=lambda: NOW,
+    )
+    stats = CycleStats()
+    prober.run_agentic_probes(stats, routes=routes)
+    assert stats.agentic_probed == 2 and stats.agentic_passed == 1
+    assert cache.cooldown_for("pool:openrouter-free", NOW) is None
+    assert cache.entry("openrouter/thinkingmachines/inkling-small:free").failure_scope == "route"

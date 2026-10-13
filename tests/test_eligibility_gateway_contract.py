@@ -89,6 +89,8 @@ def offline_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str
             return {"data": [row("kr/model", owned_by="kiro"), row("cc/model", owned_by="claude")]}
         if url.endswith("/api/providers"):
             return {"connections": [conn("kiro"), conn("claude")]}
+        if url.endswith("/api/usage/model-latency-stats"):
+            return {"entries": []}
         raise AssertionError(f"unexpected endpoint: {url}")
 
     monkeypatch.setattr(orch_run, "_get_json", get_json)
@@ -124,7 +126,11 @@ def test_action_uses_origin_endpoints_and_never_probes(
     result = run_action("eligibility", vars(_args()))
     assert result.ok, result.data
     assert result.data["evaluated_count"] == 1
-    assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
+    assert offline_gateway == [
+        "http://x:20128/v1/models",
+        "http://x:20128/api/providers",
+        "http://x:20128/api/usage/model-latency-stats",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -153,7 +159,11 @@ def test_action_default_uses_home_cli_gateway_env(
     )
     result = run_action("eligibility")
     assert result.ok, result.data
-    assert offline_gateway == ["http://x:20128/v1/models", "http://x:20128/api/providers"]
+    assert offline_gateway == [
+        "http://x:20128/v1/models",
+        "http://x:20128/api/providers",
+        "http://x:20128/api/usage/model-latency-stats",
+    ]
 
 
 def test_verified_action_default_uses_home_cli_gateway_env(

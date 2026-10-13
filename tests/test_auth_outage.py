@@ -177,7 +177,13 @@ def test_pool_cooldown_expires_and_route_failure_stays_local(tmp_path: Path) -> 
     cache = HealthCache(tmp_path / "cache.json")
     entry = cache.record(
         "af/a",
-        ProbeResult(category="authentication", http_status=401, chat_ok=False, tool_ok=False),
+        ProbeResult(
+            category="authentication",
+            http_status=401,
+            chat_ok=False,
+            tool_ok=False,
+            failure_scope="pool",
+        ),
         NOW,
     )
     sibling = AdmittedRoute("api-airforce/new", "api-airforce", "free")
@@ -189,6 +195,20 @@ def test_pool_cooldown_expires_and_route_failure_stays_local(tmp_path: Path) -> 
         NOW,
     )
     assert order_cycle([sibling], cache, NOW)
+
+
+def test_unscoped_credential_negative_blocks_only_its_route(tmp_path: Path) -> None:
+    """Live 2026-10-13: one model-local 401/403 must not hide a whole pool of working routes."""
+    cache = HealthCache(tmp_path / "cache.json")
+    cache.record(
+        "af/a",
+        ProbeResult(category="permission", http_status=403, chat_ok=False, tool_ok=False),
+        NOW,
+    )
+    sibling = AdmittedRoute("api-airforce/new", "api-airforce", "free")
+    assert [route.route_id for route, _kind in order_cycle([sibling], cache, NOW)] == [
+        "api-airforce/new"
+    ]
 
 
 @pytest.mark.parametrize("base_url", ["https://gateway.invalid", "https://gateway.invalid/v1"])

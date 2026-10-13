@@ -1170,7 +1170,9 @@ class Prober:
         self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
     ) -> bool:
         now = self.clock()
-        if _pool_of(route) in _cooled_pools(self.cache, now):
+        if _pool_of(route) in self._blocked_pools or _pool_of(route) in _cooled_pools(
+            self.cache, now
+        ):
             return True
         if not self.cache.consume(route.provider, now, pool=route.pool):
             stats.skipped_bucket += 1
@@ -1380,7 +1382,9 @@ class Prober:
                     if route_pool in empty_pools:
                         continue
                     now = self.clock()
-                    if route_pool in _cooled_pools(self.cache, now):
+                    if route_pool in self._blocked_pools or route_pool in _cooled_pools(
+                        self.cache, now
+                    ):
                         pending.remove(route)
                         continue
                     # Reserve every turn up front; an empty bucket keeps the

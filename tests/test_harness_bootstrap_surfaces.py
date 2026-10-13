@@ -16,6 +16,7 @@ from verdict.actions.registry import get_action, run_action
 from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter
 from verdict.harness_prime_compat import PrimeCompatibilityContext
 from verdict.harness_prime_selection import PrimeDependencies, SelectionPaths
+from verdict.orchestration.health_cache import FRESH_SECONDS
 from verdict.orchestration.verified_refresh import RefreshConfig
 from verdict.tui_bootstrap_controls import consume_prime, parse_bootstrap_args
 
@@ -464,7 +465,7 @@ def test_expired_original_preview_refuses_after_confirmation(fixture: dict[str, 
     fixture["clock"] = lambda: clock[0]
 
     def answer(_prompt: str) -> str:
-        clock[0] = NOW + timedelta(minutes=10)
+        clock[0] = NOW + timedelta(seconds=FRESH_SECONDS)
         return "y"
 
     result = consume(fixture, read_line=answer)

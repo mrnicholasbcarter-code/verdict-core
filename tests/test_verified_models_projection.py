@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from verdict.orchestration.health_cache import FRESH_SECONDS
 from verdict.orchestration.verified_models import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -353,27 +354,27 @@ def test_excluded_policy():
 # ---------------------------------------------------------------------------
 
 
-def test_boundary_600s_exact_is_stale():
+def test_boundary_fresh_seconds_exact_is_stale():
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=600))
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=FRESH_SECONDS))
         ),
         now=NOW,
     )
     r = only_row(project_one(inv, conns, snaps))
-    # age >= 600 is STALE (design: VERIFIED is age < 600s)
+    # age >= FRESH_SECONDS (the one 15-minute liveness window) is STALE
     assert r.status is VerifiedStatus.STALE
     assert r.freshness == "stale"
 
 
-def test_boundary_just_under_600s_is_verified():
+def test_boundary_just_under_fresh_seconds_is_verified():
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=599))
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=FRESH_SECONDS - 1))
         ),
         now=NOW,
     )
@@ -2496,7 +2497,7 @@ def test_expired_binding_cooldowns_are_not_ambiguous(deadline):
         ("last_success_at", iso(NOW)),
         ("checked_at", iso(NOW)),
         ("evidence_source", "health_cache"),
-        ("fresh_until", iso(NOW + timedelta(seconds=600))),
+        ("fresh_until", iso(NOW + timedelta(seconds=FRESH_SECONDS))),
         ("expires_at", iso(NOW + timedelta(seconds=1800))),
         ("freshness", "fresh"),
         ("capabilities", {"context_window": 200_000, "tools": True, "structured": False}),

@@ -7,6 +7,7 @@ reporting without depending on the CLI argument parsing layer.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -244,7 +245,40 @@ def build_selector(
         refresh_hook=refresh_hook,
         health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
+        gateway_stats=fetch_gateway_success_rates(gateway, api_key=key),
     )
+
+
+def fetch_gateway_success_rates(
+    gateway: str, *, api_key: str | None, timeout: float = 15.0
+) -> dict[str, tuple[float, int]]:
+    """``provider/model`` -> (success rate, requests) from 24 h of real gateway traffic.
+
+    ``/api/usage/model-latency-stats``. Ranking evidence only, so an unreadable
+    endpoint gives no evidence instead of failing selection.
+    """
+    from verdict.orchestration.run import _get_json
+
+    try:
+        raw = _get_json(
+            gateway.rstrip("/") + "/api/usage/model-latency-stats", api_key=api_key, timeout=timeout
+        )
+    except (OSError, ValueError, http.client.HTTPException):
+        return {}
+    entries = raw.get("entries") if isinstance(raw, Mapping) else None
+    out: dict[str, tuple[float, int]] = {}
+    for item in entries if isinstance(entries, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        key, rate, total = item.get("key"), item.get("successRate"), item.get("totalRequests")
+        if (
+            isinstance(key, str)
+            and isinstance(rate, (int, float))
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+        ):
+            out[key] = (float(rate), total)
+    return out
 
 
 _STAGE_ORDER = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE", "TASK_ELIGIBLE", "SELECTED")

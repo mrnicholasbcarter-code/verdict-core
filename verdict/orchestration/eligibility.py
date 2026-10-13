@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -78,6 +79,9 @@ _DEFAULT_COOLDOWN_SECONDS = 60.0
 # one route: every sibling route would fail the same way, so the whole provider
 # is cooled down and its remaining candidates are skipped without probing.
 _PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authentication"})
+# Failed live confirmations of one provider in one select before its other
+# routes wait behind every other provider's routes.
+_FAILURES_BEFORE_DEFER = 2
 
 
 # Source recorded on an admission record confirmed by the ladder's own probe.
@@ -808,28 +812,29 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[int, float, int, int, int, float, int, float, int, int, int, int, str]:
+    ) -> tuple[float, int, int, int, int, float, int, float, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components`.
 
-        Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
-        Among equally sufficient, equally priced routes, more measured quota left
-        ranks first, ahead of static provider preference.
+        Hard eligibility and task sufficiency filter candidates before this key.
+        Controller-verified session outcomes rank first for every class (as on
+        story/outcome-lesson-writers); routes without outcomes score 0.5 and
+        keep free-first. Negates ``fit`` so stronger routes rank lower.
 
-        FREE routes rank by expected agent-task quality (operator 2026-10-13):
-        real session score, then the gateway's measured success rate (24 h of
+        Inside FREE capacity, routes rank by expected agent-task quality
+        (operator 2026-10-13): the gateway's measured success rate (24 h of
         real traffic, coarse bucket, unknown is neutral), then inventory
         capability metadata, then context, then probe latency. Free capacity
         costs nothing per call, so the cheapest-sufficient rule (slack) cannot
-        pick among FREE routes, and quota is a filter, never a FREE rank signal.
-        Other capacity classes get neutral quality values and keep their order.
+        pick among FREE routes; quota is a filter, never a FREE rank signal.
+        Other classes get neutral values there and keep slack, price and quota.
         """
         c = self._rank_components(a)
         free = a.capacity == CapacityClass.FREE
         session = c["session_score"]
         latency = c["latency_ms"]
         return (
+            -float(session if session is not None else 0.5),
             c["capacity_order"],
-            -(session if session is not None else 0.5) if free else 0.0,
             _reliability_bucket(c["gateway_success_rate"]) if free else 0,
             -c["capability_score"] if free else 0,
             -(a.context_window or 0) if free else 0,
@@ -980,12 +985,15 @@ class EligibilityLadder:
                     elif candidate.health == "healthy":
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
-        rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
-        chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
-        probe_order = self._probe_order(candidates)
+        # Confirm in rank order, so the route chosen is the best-ranked route
+        # that is live now. A provider whose routes failed twice in this select
+        # waits until every other provider's routes were tried (no starvation
+        # by one provider's dead aliases).
+        failures: Counter[str] = Counter()
+        probe_order = list(candidates)
         # Keep one exact-confirmation slot for a fresh prepaid fallback. Cold
         # FREE catalog aliases must not starve a known-live subscription route.
         # Earlier FREE successes still win; neither ranking nor admission widens.
@@ -1017,16 +1025,21 @@ class EligibilityLadder:
 
         def _ordered() -> Iterator[_Assessment]:
             nonlocal fallback_tried
-            for item in probe_order:
-                if (
-                    reserved_route
-                    and not fallback_tried
-                    and fallback is not None
-                    and probes_used >= self._max_probes - 1
-                ):
-                    fallback_tried = True
-                    yield fallback
-                yield item
+            deferred: list[_Assessment] = []
+            for queue, last_pass in ((probe_order, False), (deferred, True)):
+                for item in queue:
+                    if not last_pass and failures[item.provider] >= _FAILURES_BEFORE_DEFER:
+                        deferred.append(item)
+                        continue
+                    if (
+                        reserved_route
+                        and not fallback_tried
+                        and fallback is not None
+                        and probes_used >= self._max_probes - 1
+                    ):
+                        fallback_tried = True
+                        yield fallback
+                    yield item
             if reserved_route and not fallback_tried and fallback is not None:
                 fallback_tried = True
                 yield fallback
@@ -1052,6 +1065,7 @@ class EligibilityLadder:
                 if confirming:
                     self._record_confirmation(a.route_id, result, now)
                 if not result.healthy:
+                    failures[a.provider] += 1
                     a.health = "unhealthy"
                     a.failed_stage = EligibilityStage.HEALTHY
                     a.reason = result.category
@@ -1066,13 +1080,19 @@ class EligibilityLadder:
             if self._admitted is not None:
                 # Asserted precondition: admitted AND (proven healthy OR confirmed).
                 self._admitted.require_launchable(a.route_id, surface="EligibilityLadder.select")
-            chosen, chosen_rank = a, rank_of[a.route_id]
+            chosen = a
             break
         for a in candidates:  # routes not reached before the break still inherit the block
             if a.provider in blocked and a.failed_stage is None and a is not chosen:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:provider"
                 a.cooldown_until = blocked[a.provider]
-        ranks = {c.route_id: i for i, c in enumerate(candidates)}
+        # Final ranks: routes that failed confirmation drop out; the confirmed
+        # route is rank 0; routes left unconfirmed (budget, deferred provider)
+        # follow in their quality order.
+        still_ranked = [c for c in candidates if c.failed_stage is None]
+        still_ranked.sort(key=lambda c: c is not chosen)
+        ranks = {c.route_id: i for i, c in enumerate(still_ranked)}
+        chosen_rank = ranks.get(chosen.route_id) if chosen is not None else None
         # BOD-277: same rank_components map the pre-probe evaluate() builds.
         # Only candidates (routes that reached ranking) have components.
         components = {a.route_id: self._rank_components(a) for a in candidates}
@@ -1142,30 +1162,6 @@ class EligibilityLadder:
             "eligible_after_probe": eligible_after,
         }
         return selected, final_verdicts
-
-    def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
-        """Rank order, but round-robin across providers within each capacity class.
-
-        One provider's failing top routes can no longer consume the whole probe
-        budget. Capacity classes stay in order, so spreading never trades a
-        SUBSCRIPTION route for a METERED one.
-        """
-        order: list[_Assessment] = []
-        tiers: dict[CapacityClass, dict[str, list[_Assessment]]] = {}
-        for a in candidates:  # already rank-sorted; dicts keep first-seen order
-            tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
-        for by_provider in tiers.values():
-            # Fresh cache evidence changes confirmation scheduling, never
-            # launch authority. These routes still pass the exact live probe.
-            for fresh in (True, False):
-                queues = [
-                    [a for a in queue if (a.health == "healthy") == fresh]
-                    for queue in by_provider.values()
-                ]
-                depth = max((len(q) for q in queues), default=0)
-                for i in range(depth):
-                    order.extend(q[i] for q in queues if i < len(q))
-        return order
 
     def _record_health(
         self, route_id: str, result: HealthResult, now: datetime, *, provider: str = ""
@@ -1282,12 +1278,18 @@ class EligibilityLadder:
                 if v.reached is not None and order.index(v.reached) >= order.index(stage)
             )
 
+        ranked = [v for v in self._last_verdicts if v.rank is not None]
         return {
             "discovered": at_least(EligibilityStage.DISCOVERED),
             "entitled": at_least(EligibilityStage.ENTITLED),
             "healthy": at_least(EligibilityStage.HEALTHY),
             "available": at_least(EligibilityStage.AVAILABLE),
             "eligible": at_least(EligibilityStage.TASK_ELIGIBLE),
+            # Passed every gate except current liveness, which selection checks
+            # just in time on the chosen route (plan M1(d)). ``eligible`` counts
+            # only routes with liveness proof from the last 15 minutes.
+            "ranked": len(ranked),
+            "ranked_free": sum(v.capacity_class is CapacityClass.FREE for v in ranked),
         }
 
 

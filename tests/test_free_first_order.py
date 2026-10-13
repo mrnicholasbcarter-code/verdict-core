@@ -1346,4 +1346,40 @@ def test_free_ranking_does_not_reorder_paid_capacity(tmp_path: Path) -> None:
     rows = [_row("cc/claude-opus-5"), _row("cc/claude-haiku-5")]
     ladder, _ = _make(tmp_path, rows, [_conn("cc")])
     a, b = (ladder._assess(r["id"], WORKER_REQ, NOW) for r in rows)
-    assert ladder._rank_key(a)[1:5] == ladder._rank_key(b)[1:5] == (0.0, 0, 0, 0.0)
+    assert ladder._rank_key(a)[2:6] == ladder._rank_key(b)[2:6] == (0, 0, 0, 0.0)
+
+
+def test_selected_is_rank_zero_when_a_lower_ranked_route_is_fresh(tmp_path: Path) -> None:
+    """Live 2026-10-13: the provider of rank 0 also owned a fresh low-ranked vision
+    route, and select() confirmed it first (SELECTED rank 15 over gemma4/codestral).
+    Confirmation follows rank: the best route that is live now is chosen, as rank 0."""
+    best = "bm/nvidia/nemotron-3-ultra-550b-a55b"  # rank 0, liveness not fresh
+    small = "bm/meta/llama-3.2-11b-vision-instruct"  # fresh, ranks last
+    coder = "ms/codestral-latest"
+    entries = [
+        _fresh_entry(best, agentic_ok=True, probe_class="agentic", age_seconds=7200),
+        _fresh_entry(small, agentic_ok=True, probe_class="agentic"),
+        _fresh_entry(coder, agentic_ok=True, probe_class="agentic", age_seconds=7200),
+    ]
+    cache = _build_cache(tmp_path, entries)
+    assert cache.lookup(best, NOW).state == "unprobed"
+    free = {"input": 0, "output": 0}
+    rows = [
+        _row(best, owned_by="bm", pricing=free, context=1_000_000),
+        _row(small, owned_by="bm", pricing=free, context=128_000),
+        _row(coder, owned_by="ms", pricing=free, context=256_000),
+    ]
+    conns = [_conn(p, auth="apikey", plan="free", free_only=True) for p in ("bm", "ms")]
+    ladder, probe = _make(tmp_path, rows, conns, health_cache=cache)
+    ranked = {v.route_id: v.rank for v in ladder.evaluate(WORKER_REQ, now=NOW)}
+    assert ranked == {best: 0, coder: 1, small: 2}
+
+    chosen, _ = ladder.select(WORKER_REQ, now=NOW)
+    assert chosen is not None and chosen.route_id == best and chosen.rank == 0
+    assert probe.calls == [best]  # just-in-time liveness on the chosen route only
+
+    ladder._probe = lambda rid: HealthResult(rid != best, "" if rid != best else "timeout")
+    ladder._state["health"].pop(best, None)
+    chosen, verdicts = ladder.select(WORKER_REQ, now=NOW + timedelta(seconds=1))
+    assert chosen is not None and chosen.route_id == coder and chosen.rank == 0
+    assert next(v for v in verdicts if v.route_id == best).rank is None
