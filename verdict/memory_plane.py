@@ -131,6 +131,33 @@ class MemoryPlane:
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported memory schema version: {version}")
 
+    @classmethod
+    def open_readonly(cls, path: str | Path) -> MemoryPlane:
+        """Open an existing plane for reading only: no DDL, no mode change, no writes.
+
+        Raises ``sqlite3.Error`` or ``RuntimeError`` if the file is missing, is not
+        a MemoryPlane, or has another schema version. SQLite may still create the
+        ``-wal``/``-shm`` sidecars of a WAL database; the database file is unchanged.
+        """
+        plane = cls.__new__(cls)
+        plane.path = Path(path).expanduser()
+        plane._outbox = None
+        plane._db = sqlite3.connect(
+            f"{plane.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
+        )
+        plane._db.row_factory = sqlite3.Row
+        try:
+            plane._db.execute("PRAGMA query_only=ON")
+            row = plane._db.execute(
+                "SELECT value FROM memory_meta WHERE key='schema_version'"
+            ).fetchone()
+            if row is None or int(row[0]) != SCHEMA_VERSION:
+                raise RuntimeError("unsupported memory schema version")
+        except BaseException:
+            plane._db.close()
+            raise
+        return plane
+
     def close(self) -> None:
         self._db.close()
 

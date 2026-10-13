@@ -481,19 +481,23 @@ def _recall_query(node: WorkNode, symbols: tuple[str, ...]) -> str:
 
 
 def _open_memory_plane(omissions: list[str]) -> MemoryPlane | None:
-    """Open the existing local plane for reading; never create one."""
+    """Open the existing local plane read-only; never create or migrate one."""
     path = shared_memory_path()
     if not path.is_file():
         return None  # the provider reports memory.search:no_default_location
     try:
-        return MemoryPlane(path)
-    except (OSError, sqlite3.Error, RuntimeError):
+        return MemoryPlane.open_readonly(path)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
         omissions.append("memory.search:memory_plane_unavailable")
         return None
 
 
 def _cited_memory(unit: ContextUnit) -> ContextUnit | None:
-    """A recalled fact is quoted advisory evidence with its record identity."""
+    """A recalled fact is quoted advisory evidence with its record identity.
+
+    Every rendered field comes from a caller-written record, so all of them are
+    redacted, and the rendered unit is checked once more before it is used.
+    """
     if _contains_worker_context_secret(unit.source_uri + unit.key):
         return None
     raw_content = redact_text(unit.content)
@@ -501,22 +505,31 @@ def _cited_memory(unit: ContextUnit) -> ContextUnit | None:
     if not content.strip():
         return None
     digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+    trust, authority, revision = (
+        redact_text(value) for value in (unit.trust, unit.authority, unit.revision)
+    )
     citation = json.dumps(
         {
             "source": unit.source_uri,
             "span": None,
             "excerpt_digest": digest,
-            "revision": unit.revision,
+            "revision": revision,
             "observed_at": unit.observed_at,
-            "trust": unit.trust,
-            "authority": unit.authority,
+            "trust": trust,
+            "authority": authority,
         },
         sort_keys=True,
     )
+    rendered = f"CITE: {citation}\n{content}"
+    if redact_text(rendered) != rendered or _contains_worker_context_secret(rendered):
+        return None
     return replace(
         unit,
-        content=f"CITE: {citation}\n{content}",
+        content=rendered,
         source_digest=digest,
+        trust=trust,
+        authority=authority,
+        revision=revision,
         token_count=None,
         transform_lineage=(
             *unit.transform_lineage,

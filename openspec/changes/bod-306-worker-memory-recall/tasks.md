@@ -2,12 +2,13 @@
 
 ## 1. Recall gated facts into worker packs
 
-Owned files: `verdict/orchestration/worker_context.py`, `verdict/context_sources.py`, `tests/test_orch_worker_context.py`. Verification: `uv run python -m pytest -q tests/test_orch_worker_context.py tests/test_orch_planner.py tests/test_orch_selected_context.py tests/test_worker_context_precision.py tests/test_context_intelligence.py tests/test_context_intelligence_fabric.py`.
+Owned files: `verdict/orchestration/worker_context.py`, `verdict/context_sources.py`, `verdict/memory_plane.py`, `tests/test_orch_worker_context.py`. Verification: `uv run python -m pytest -q tests/test_orch_worker_context.py tests/test_orch_planner.py tests/test_orch_selected_context.py tests/test_worker_context_precision.py tests/test_context_intelligence.py tests/test_context_intelligence_fabric.py`.
 
 - [x] 1.1 Add optional namespace, sensitivity and verified-only hints to `NativeMemoryProvider`.
 - [x] 1.2 Add `memory.search` last in worker packs with a node-scoped query and cited, redacted memory units.
 - [x] 1.3 Report a missing or unreadable plane as a named omission and never create or write a plane.
-- [x] 1.4 Add regressions for recall, exclusions, citations, ordering, redaction and missing or broken planes.
+- [x] 1.4 Open the plane with `MemoryPlane.open_readonly`, and redact every rendered record field (review findings).
+- [x] 1.5 Add regressions for recall, exclusions, citations, ordering, redaction of content and metadata, unchanged database bytes, and missing or broken planes.
 
 ## 2. Validate the slice
 

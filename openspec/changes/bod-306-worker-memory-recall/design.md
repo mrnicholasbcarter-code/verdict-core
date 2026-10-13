@@ -16,7 +16,7 @@ Goal: a worker sees gated facts relevant to its node, with citations, inside the
 4. Query with the distinct content words of the node (objective, acceptance, symbols), at most 12. MemoryPlane ORs the terms and ranks them with BM25.
 5. `memory.search` is the last capability, and the pack orders `required:` units first, so memory is cut first under budget pressure. At most two units are recalled.
 6. A memory unit is cited like a file excerpt, with `source=memory:<record_id>` and `span=null`. It is redacted with `redact_text` before the digest is taken.
-7. Open `shared_memory_path()` (`VERDICT_MEMORY_PLANE_PATH` or `~/.verdict/memory.db`) only if the file exists, and close it after the query. If the file is missing, the provider reports `no_default_location`. Errors opening it produce `memory.search:memory_plane_unavailable`.
+7. Open `shared_memory_path()` (`VERDICT_MEMORY_PLANE_PATH` or `~/.verdict/memory.db`) with the new `MemoryPlane.open_readonly` (SQLite `mode=ro`, `query_only`, schema version checked, no DDL and no journal-mode change), and close it after the query. If the file is missing, the provider reports `no_default_location`. A file that is not a current MemoryPlane produces `memory.search:memory_plane_unavailable` and is left unchanged. The `MemoryPlane(path)` constructor creates and migrates, so a reader must not use it.
 
 ## Risks / Trade-offs
 
@@ -24,7 +24,7 @@ A lexical OR query can recall a weakly related fact. Two units and the budget ca
 
 ## Security / trust implications
 
-Only records the gate verified are rendered. Record content is redacted again before rendering, and key/source URIs that look like secrets are dropped. Content stays quoted evidence under the existing injection sanitizer. No exception text is rendered.
+Only records the gate verified are rendered. MemoryGate stores caller-supplied `trust`, `source`, tags and provenance as given, so every rendered field (content, trust, authority, revision) is redacted. The whole rendered citation is then checked once more, and the unit is dropped if anything still matches a credential shape. Key and source URIs that look like secrets are dropped. Content stays quoted evidence under the existing injection sanitizer. No exception text is rendered.
 
 ## Routing / context / memory implications
 

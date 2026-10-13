@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -605,3 +606,61 @@ def test_recalled_fact_is_redacted_before_rendering(tmp_path: Path) -> None:
     context = build_worker_context(_repo(tmp_path), repo=tmp_path)
     assert key not in context.text
     assert "compute_widget deploy uses [redacted]" in context.text
+
+
+def _db_state(path: Path) -> tuple[bytes, int, list[str]]:
+    import sqlite3
+
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        tables = sorted(row[0] for row in conn.execute("SELECT name FROM sqlite_master"))
+    return path.read_bytes(), path.stat().st_mtime_ns, tables
+
+
+@pytest.mark.parametrize("kind", ["plane", "unrelated"])
+def test_recall_never_writes_or_migrates_the_database(tmp_path: Path, kind: str) -> None:
+    import sqlite3
+
+    home = Path(os.environ["HOME"])
+    if kind == "plane":
+        path = _plane(home)
+    else:
+        path = home / ".verdict" / "memory.db"
+        path.parent.mkdir(parents=True)
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE unrelated(a)")
+    before = _db_state(path)
+    context = build_worker_context(_repo(tmp_path), repo=tmp_path)
+    assert _db_state(path) == before
+    if kind == "unrelated":
+        assert "memory.search:memory_plane_unavailable" in context.omissions
+
+
+@pytest.mark.parametrize("field", ["trust", "source", "tags", "provenance"])
+def test_secrets_in_any_recalled_record_field_never_reach_the_prompt(
+    tmp_path: Path, field: str
+) -> None:
+    from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+    from verdict.memory_plane import MemoryPlane
+
+    token = "oma_" + "live_" + "Q7rT2mWp7LzN4bYc8hJdQa1Ws2Ed3Rf4Tg5Yh6Uj7Ik"
+    values: dict[str, object] = {
+        "trust": token,
+        "source": token,
+        "tags": (token,),
+        "provenance": {"source": "fixture", "note": token},
+    }
+    path = Path(os.environ["HOME"]) / ".verdict" / "memory.db"
+    with MemoryPlane(path) as plane:
+        request = MemoryWriteRequest(
+            "decisions",
+            "widget-decision",
+            "compute_widget decision recorded for review",
+            "verdict-core",
+            provenance={"source": "fixture"},
+        )
+        request = replace(request, **{field: values[field]})
+        assert MemoryGate(plane).write(request).allowed
+    prompt = hydrate_node_prompt(_repo(tmp_path), repo=tmp_path, goal="g", structured=True)
+    assert "compute_widget decision recorded for review" in prompt.text
+    assert token not in prompt.text
+    assert token not in json.dumps(prompt.evidence())
