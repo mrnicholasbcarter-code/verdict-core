@@ -145,7 +145,9 @@ def test_run_is_never_green_while_no_free_route_is_eligible(
     assert result["status"] == "red"
     assert result["eligible_free"] == 0
     assert eligibility["passed"] is False
-    assert eligibility["reason"] == "0 FREE tool-capable routes eligible"
+    assert eligibility["reason"].startswith("0 FREE tool-capable routes eligible")
+    # The independent check still runs and shows what the empty list misses.
+    assert eligibility["detail"]["independent_check"]["recall_estimate"] == 0.0
     assert Path(result["path"]).parent == live / "acceptance"
     assert json.loads(Path(result["path"]).read_text())["status"] == "red"
 
@@ -285,3 +287,31 @@ def test_doctor_section_shows_the_newest_result_and_fails_on_red(
     assert (label, state) == ("Live acceptance", "failed")
     assert detail.startswith("red: ") and "min old" in detail
     assert repair_command(diag.issues[0]) == "verdict acceptance status"
+
+
+def test_serve_check_gives_authenticated_serve_a_receipts_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    seen: dict[str, Any] = {}
+
+    class _Exited:
+        returncode = 3
+
+        def __init__(self, argv: list[str], **kw: Any) -> None:
+            seen.update(kw["env"])
+
+        def poll(self) -> int:
+            return 3
+
+        def terminate(self) -> None:
+            return None
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return "", "boom"
+
+    monkeypatch.setattr(acceptance.subprocess, "Popen", _Exited)
+    check = acceptance.serve_check("http://gw", startup_seconds=1)
+    assert check.passed is False and check.reason == "serve exited 3"
+    assert seen["VERDICT_RECEIPTS_DB"] == str(tmp_path / "acceptance" / "serve-receipts.db")
+    assert seen["LLMGATE_AUTH_TOKEN"]

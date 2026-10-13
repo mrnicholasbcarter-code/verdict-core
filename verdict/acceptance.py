@@ -215,40 +215,40 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
             "eligible_free": len(listed),
             "listed_without_agentic_proof": unproven,
         }
-        if not listed:
-            check.reason = "0 FREE tool-capable routes eligible"
+        try:
+            synced = gateway_get(gateway, api_key, "/api/synced-available-models")
+            providers = gateway_get(gateway, api_key, "/api/providers")
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            check.reason = f"gateway evidence unavailable: {type(exc).__name__}"
         else:
-            try:
-                synced = gateway_get(gateway, api_key, "/api/synced-available-models")
-                providers = gateway_get(gateway, api_key, "/api/providers")
-            except (OSError, ValueError, urllib.error.URLError) as exc:
-                check.reason = f"gateway evidence unavailable: {type(exc).__name__}"
-            else:
-                connections = providers.get("connections") if isinstance(providers, dict) else []
-                cooling = cooling_providers(connections or [], datetime.now(timezone.utc))
-                quality = measure(
-                    listed,
-                    verdicts,
-                    synced=synced if isinstance(synced, dict) else {},
-                    cooling=cooling,
-                    post=gateway_post(gateway, api_key, timeout=60),
-                    seed=seed,
-                )
-                check.detail["independent_check"] = quality
-                precision, recall = quality["precision"], quality["recall_estimate"]
-                failures = []
-                if unproven:
-                    failures.append(f"{len(unproven)} listed without agentic proof")
-                if precision is None or precision < quality["precision_min"]:
-                    failures.append(
-                        f"precision {_pct(precision)} < {_pct(quality['precision_min'])}"
-                    )
-                if recall is None or recall < quality["recall_min"]:
-                    failures.append(f"recall {_pct(recall)} < {_pct(quality['recall_min'])}")
-                check.passed = not failures
-                check.reason = "; ".join(failures) or (
-                    f"{len(listed)} eligible; precision {_pct(precision)}, recall {_pct(recall)}"
-                )
+            connections = providers.get("connections") if isinstance(providers, dict) else []
+            cooling = cooling_providers(connections or [], datetime.now(timezone.utc))
+            # Runs even with nothing listed: the sample shows what Verdict misses.
+            quality = measure(
+                listed,
+                verdicts,
+                synced=synced if isinstance(synced, dict) else {},
+                cooling=cooling,
+                post=gateway_post(gateway, api_key, timeout=60),
+                seed=seed,
+            )
+            check.detail["independent_check"] = quality
+            precision, recall = quality["precision"], quality["recall_estimate"]
+            failures = []
+            if not listed:
+                failures.append("0 FREE tool-capable routes eligible")
+            if unproven:
+                failures.append(f"{len(unproven)} listed without agentic proof")
+            if precision is None or precision < quality["precision_min"]:
+                failures.append(f"precision {_pct(precision)} < {_pct(quality['precision_min'])}")
+            if recall is None or recall < quality["recall_min"]:
+                failures.append(f"recall {_pct(recall)} < {_pct(quality['recall_min'])}")
+            check.passed = not failures
+            check.reason = "; ".join(failures) or (
+                f"{len(listed)} eligible; precision {_pct(precision)}, recall {_pct(recall)}"
+            )
+        if not listed and not check.reason.startswith("0 FREE"):
+            check.reason = "0 FREE tool-capable routes eligible; " + check.reason
     check.seconds = round(time.monotonic() - started, 1)
     return check
 
@@ -272,7 +272,15 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
     """Start ``verdict serve`` on a free loopback port, send one chat request, stop it."""
     port = _free_port()
     token = secrets.token_urlsafe(24)
-    env = {**os.environ, "LLMGATE_AUTH_TOKEN": token, "OMNIROUTE_BASE_URL": gateway}
+    # Authenticated serve needs a durable receipts DB; the job's own file keeps
+    # its receipts out of the operator's ledger.
+    receipts = acceptance_dir() / "serve-receipts.db"
+    env = {
+        **os.environ,
+        "LLMGATE_AUTH_TOKEN": token,
+        "OMNIROUTE_BASE_URL": gateway,
+        "VERDICT_RECEIPTS_DB": str(receipts),
+    }
     args = ["serve", "--port", str(port), "--host", "127.0.0.1"]
     started = time.monotonic()
     check = Check("serve", ["verdict", *args, "+ POST /v1/chat/completions"], False, "")

@@ -214,8 +214,9 @@ def measure(
     if on_unlisted:
         missed = unlisted_pass / len(on_unlisted) * len(population)
     recall: float | None = None
-    if precision is not None and missed is not None:
-        found = precision * len(listed_ids)
+    if missed is not None:
+        # Nothing listed finds nothing: recall is 0 when the sample shows passes.
+        found = precision * len(listed_ids) if precision is not None else 0.0
         recall = found / (found + missed) if found + missed else None
     return {
         "listed": len(listed_ids),
