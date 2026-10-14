@@ -34,6 +34,12 @@ from verdict.work_unit import WorkUnit, WorkUnitError, parse_work_units
 
 DEFAULT_ORCHESTRATOR_MODEL = "mistral/codestral-latest"
 
+# Climbed in order after a plan is rejected twice on the default route: codestral
+# fails the same way (code and test split, or test omitted) more often than it
+# self-corrects, so the third attempt moves to a stronger cheap route instead of
+# repeating the same prompt against the same model.
+PLANNER_LADDER = ("cc/claude-haiku-5-5",)
+
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 DECOMPOSITION_SYSTEM_PROMPT = (
@@ -50,9 +56,18 @@ DECOMPOSITION_SYSTEM_PROMPT = (
     '  "context": optional extra detail for the executor, or ""\n\n'
     "Every code change must own a test file and run that test in verification_command. "
     "Write the test first, then implement the change. Only pure ruff fixes may use lint alone. "
-    "Prefer small vertical units containing code plus its test. Every unit must be "
+    "Prefer small vertical units containing code plus its test: one unit owning both "
+    "the code file and its test file, not two separate units. Every unit must be "
     "executable without reading another unit's output. If you cannot state a "
     "runnable verification command for a unit, do not emit that unit."
+)
+
+_REPLAN_EXAMPLE = (
+    "Required shape, one unit owning both files:\n"
+    '{"unit_id": "add-feature", "objective": "implement and test the feature", '
+    '"owned_files": ["verdict/feature.py", "tests/test_feature.py"], '
+    '"verification_command": ["python", "-m", "pytest", "tests/test_feature.py"], '
+    '"context": ""}'
 )
 
 
@@ -115,21 +130,35 @@ class Decomposer:
     def decompose(
         self, objective: str, *, repo_root: str | Path, evidence: str = ""
     ) -> DecompositionResult:
-        """Try the planner, then re-plan once with the concrete failure."""
+        """Try the planner, then re-plan, then climb the planner ladder.
+
+        The default cheap route gets one retry with the concrete failure fed
+        back as evidence. If both tries of the default route fail, the next
+        attempts move down :data:`PLANNER_LADDER` to a stronger cheap route,
+        because a planner that fails the same way twice is not going to
+        self-correct a third time on the same model. A caller-configured
+        frontier model (``cc/...``) still gets exactly its documented two
+        attempts and is never climbed past.
+        """
+        first_model = self.config.model
+        if first_model.startswith("cc/"):
+            first_model = DEFAULT_ORCHESTRATOR_MODEL
+        model_sequence = [first_model, self.config.model]
+        if not self.config.model.startswith("cc/"):
+            model_sequence += list(PLANNER_LADDER)
+
         attempts: list[dict[str, Any]] = []
-        for attempt in range(2):
-            model = self.config.model
-            if attempt == 0 and model.startswith("cc/"):
-                model = DEFAULT_ORCHESTRATOR_MODEL
+        for index, model in enumerate(model_sequence):
+            is_last = index == len(model_sequence) - 1
             try:
                 result = self._decompose_once(
                     objective, repo_root=repo_root, evidence=evidence, model=model
                 )
             except DecompositionError as exc:
                 attempts.append({"model": model, "error": str(exc)})
-                if attempt or not objective.strip() or isinstance(exc.__cause__, RedirectRefused):
+                if is_last or not objective.strip() or isinstance(exc.__cause__, RedirectRefused):
                     raise
-                evidence += f"\nPrevious plan rejected: {exc}. Emit a corrected test-first plan."
+                evidence = _replan_evidence(evidence, exc)
             else:
                 attempts.append({"model": result.model, "error": ""})
                 return DecompositionResult(
@@ -237,6 +266,8 @@ def parse_decomposition(content: str, *, max_units: int = 64) -> tuple[WorkUnit,
     except WorkUnitError as exc:
         raise DecompositionError(f"invalid work unit in decomposition: {exc}") from exc
 
+    units = _merge_paired_test_units(units)
+
     owners: dict[str, str] = {}
     for unit in units:
         for path in unit.owned_files:
@@ -261,6 +292,50 @@ def parse_decomposition(content: str, *, max_units: int = 64) -> tuple[WorkUnit,
         if tests and not any(path in " ".join(command) for path in tests):
             raise DecompositionError(f"unit {unit.unit_id!r} verification must run its test file")
     return units
+
+
+def _is_test_path(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return name.startswith("test_") or name.endswith(
+        ("_test.py", ".test.js", ".test.ts", ".spec.ts")
+    )
+
+
+def _merge_paired_test_units(units: tuple[WorkUnit, ...]) -> tuple[WorkUnit, ...]:
+    """Fold a unit that owns only test files into the one code unit it pairs with.
+
+    Codestral routinely emits the code and its test as two separate units
+    instead of one unit owning both files. When exactly one code unit is
+    missing a test and exactly one other unit owns only test files, they are
+    merged into a single unit before the "must own a test file" check runs,
+    because that shape is a decomposition mechanics slip, not a content
+    failure worth replanning for.
+    """
+    test_only = [u for u in units if u.owned_files and all(_is_test_path(p) for p in u.owned_files)]
+    missing_test = [
+        u
+        for u in units
+        if not all(_is_test_path(p) for p in u.owned_files)
+        and not any(_is_test_path(p) for p in u.owned_files)
+    ]
+    if len(test_only) != 1 or len(missing_test) != 1:
+        return units
+    test_unit, code_unit = test_only[0], missing_test[0]
+    merged = WorkUnit(
+        unit_id=code_unit.unit_id,
+        objective=code_unit.objective,
+        owned_files=code_unit.owned_files + test_unit.owned_files,
+        verification_command=code_unit.verification_command,
+        context=code_unit.context,
+    )
+    return tuple(merged if u is code_unit else u for u in units if u is not test_unit)
+
+
+def _replan_evidence(evidence: str, exc: DecompositionError) -> str:
+    return (
+        f"{evidence}\nPrevious plan rejected: {exc}. Emit a corrected test-first plan.\n\n"
+        f"{_REPLAN_EXAMPLE}"
+    )
 
 
 def build_decomposition_prompt(objective: str, repo_root: str | Path, evidence: str = "") -> str:

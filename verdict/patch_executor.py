@@ -255,6 +255,8 @@ class PatchExecutor:
                 started=started,
             )
 
+        diff = repair_new_file_diff(diff, self.repo_root)
+
         try:
             diff = repair_bare_hunks(diff, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError) as exc:
@@ -454,13 +456,28 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
+def _repair_missing_hunk_prefixes(body: list[str]) -> list[str]:
+    """Add the missing leading ``' '`` to a hunk body line with no diff prefix.
+
+    nemotron sometimes drops the required leading space on an unchanged
+    context line (e.g. emits ``def f():`` instead of `` def f():``). Such a
+    line is treated as context, the cheapest and only lossless reading: a
+    line with no prefix was never marked ``+`` or ``-``, so the model did not
+    intend to change it. If that reading is wrong, ``git apply`` still
+    rejects the patch on a context mismatch; this only fixes the line's
+    syntax, never its content.
+    """
+    return [line if line[:1] in ("+", "-", " ") else f" {line}" for line in body]
+
+
 def _recount_hunks(diff: str) -> str:
     """Rewrite hunk headers with counts recomputed from actual hunk bodies.
 
     Models routinely emit miscounted ``@@ -a,b +c,d @@`` headers; git rejects
     those as corrupt even when every line of the change itself is correct.
     Trailing pure-context blank lines are dropped because models also add a
-    phantom EOF newline context that no file contains.
+    phantom EOF newline context that no file contains. A body line missing
+    its ``' '``/``'-'``/``'+'`` prefix is repaired as context before counting.
     """
     lines = diff.split("\n")
     if lines and lines[-1] == "":
@@ -484,12 +501,73 @@ def _recount_hunks(diff: str) -> str:
             j += 1
         while body and body[-1].strip() == "":
             body.pop()
+        body = _repair_missing_hunk_prefixes(body)
         old = sum(1 for line in body if not line.startswith("+"))
         new = sum(1 for line in body if not line.startswith("-"))
         out.append(f"@@ -{match.group(1)},{old} +{match.group(3)},{new} @@")
         out.extend(body)
         i = j
     return "\n".join(out) + "\n"
+
+
+_DIFF_SECTION_RE = re.compile(r"(?m)^--- (.+)\n\+\+\+ (.+)\n")
+
+
+def _diff_section_path(header_field: str) -> str | None:
+    """Return the repo-relative path a ``---``/``+++`` header names, or ``None`` for /dev/null."""
+    candidate = header_field.strip()
+    if candidate.startswith('"') and candidate.endswith('"'):
+        try:
+            candidate = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+    candidate = candidate.split("\t", 1)[0]
+    if candidate == "/dev/null":
+        return None
+    if candidate.startswith(("a/", "b/")):
+        candidate = candidate[2:]
+    return candidate
+
+
+def repair_new_file_diff(diff: str, repo_root: Path) -> str:
+    """Rewrite a diff section for a non-existent file into a clean new-file add.
+
+    Models sometimes emit a modify-style diff (an ``a/`` source header, removed
+    lines, or a non-``/dev/null`` old path) for a file that does not exist in
+    the repository yet. Git refuses that as "depends on old contents" or "bad
+    git-diff" because a modify has nothing to modify. When the diff's own
+    destination path is absent from the repository, the section is rebuilt as
+    a plain new-file hunk: every ``-`` line is dropped, every other line's
+    content becomes an addition, and the header points at ``/dev/null``. A
+    diff for a file that does exist is left untouched.
+    """
+    matches = list(_DIFF_SECTION_RE.finditer(diff))
+    if not matches:
+        return diff
+    out: list[str] = []
+    pos = 0
+    for index, match in enumerate(matches):
+        section_end = matches[index + 1].start() if index + 1 < len(matches) else len(diff)
+        out.append(diff[pos : match.start()])
+        source = _diff_section_path(match.group(1))
+        dest = _diff_section_path(match.group(2))
+        path = dest or source
+        if source is None or path is None or (repo_root / path).exists():
+            out.append(diff[match.start() : section_end])
+        else:
+            body = diff[match.end() : section_end].split("\n")
+            if body and body[-1] == "":
+                body.pop()
+            added = [
+                line[1:] if line[:1] in ("+", " ") else line
+                for line in body
+                if not line.startswith("-") and _HUNK_RE.match(line) is None
+            ]
+            header = f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(added)} @@\n"
+            out.append(header + "".join(f"+{line}\n" for line in added))
+        pos = section_end
+    out.append(diff[pos:])
+    return "".join(out)
 
 
 def repair_bare_hunks(diff: str, repo_root: Path) -> str:

@@ -190,3 +190,75 @@ def test_frontier_planner_only_after_recorded_cheap_failure() -> None:
     ).decompose("fix", repo_root=".")
     assert calls == ["mistral/codestral-latest", "cc/claude-opus-5"]
     assert "HTTP 503" in result.attempts[0]["error"]
+
+
+def test_code_and_test_split_into_two_units_is_merged_before_rejecting() -> None:
+    """The common codestral failure: code and its test come back as separate units."""
+    split = [
+        dict(
+            TWO_UNITS[0],
+            unit_id="implement-feature",
+            objective="implement the feature",
+            owned_files=["verdict/feature.py"],
+            verification_command=["python", "-m", "pytest", "tests/test_feature.py"],
+        ),
+        dict(
+            TWO_UNITS[0],
+            unit_id="test-feature",
+            objective="test the feature",
+            owned_files=["tests/test_feature.py"],
+            verification_command=["python", "-m", "pytest", "tests/test_feature.py"],
+        ),
+    ]
+
+    units = parse_decomposition(json.dumps(split))
+
+    assert len(units) == 1
+    assert set(units[0].owned_files) == {"verdict/feature.py", "tests/test_feature.py"}
+
+
+def test_replan_evidence_includes_a_one_unit_json_example() -> None:
+    unit = dict(
+        TWO_UNITS[0],
+        objective="add validation",
+        verification_command=["python", "-m", "pytest", "tests/test_cli.py"],
+    )
+    valid = dict(unit, owned_files=["verdict/cli.py", "tests/test_cli.py"])
+    prompts: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        prompts.append(payload["messages"][1]["content"])
+        content = json.dumps([unit if len(prompts) == 1 else valid])
+        return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
+
+    Decomposer(transport=transport).decompose("validation", repo_root=".")
+    assert len(prompts) == 2
+    assert '"owned_files"' in prompts[1]
+    assert "tests/test_" in prompts[1]
+    assert "one unit owning both" in prompts[1].lower()
+
+
+def test_planner_climbs_the_ladder_after_two_cheap_failures() -> None:
+    calls: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
+        if len(calls) < 3:
+            return {"status_code": 503, "body": {}}
+        return {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
+        }
+
+    result = Decomposer(transport=transport).decompose("fix", repo_root=".")
+    assert calls == ["mistral/codestral-latest", "mistral/codestral-latest", "cc/claude-haiku-5-5"]
+    assert result.model == "cc/claude-haiku-5-5"
+    assert len(result.attempts) == 3
+
+
+def test_two_cheap_failures_without_ladder_success_raise_with_three_attempts() -> None:
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {"status_code": 503, "body": {}}
+
+    with pytest.raises(DecompositionError, match="HTTP 503"):
+        Decomposer(transport=transport).decompose("fix", repo_root=".")
