@@ -282,3 +282,31 @@ def test_unavailable_passive_endpoint_fails_closed(status):
     )
     assert not result.observations
     assert not result.consulted
+
+
+def test_non_json_passive_body_fails_closed():
+    import httpx
+
+    from verdict.omniroute_health import load_omniroute_health
+
+    result = load_omniroute_health(
+        "http://127.0.0.1:20128",
+        api_key="test",
+        now=NOW,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, content=b"<html>not json</html>")
+        ),
+    )
+    assert not result.observations
+
+
+def test_non_list_entries_fail_closed():
+    stats, resilience = payloads()
+    stats["entries"] = tuple(stats["entries"])
+    assert not evidence_from_omniroute_health(stats, resilience, now=NOW).observations
+
+
+def test_non_list_connections_fail_closed():
+    stats, resilience = payloads()
+    resilience["connections"] = tuple(resilience["connections"])
+    assert not evidence_from_omniroute_health(stats, resilience, now=NOW).observations
