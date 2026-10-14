@@ -190,10 +190,21 @@ class PatchExecutor:
         if not (self.repo_root / ".git").exists():
             raise PatchExecutorError(f"not a git repository: {self.repo_root}")
         self.config = config
+        self.response_headers: dict[str, str] = {}
+
+        def opener(request: Any, *, timeout: float) -> Any:
+            response = open_no_redirect(request, timeout=timeout)
+            self.response_headers = {
+                k.lower(): v
+                for k, v in response.headers.items()
+                if k.lower().startswith("x-omniroute-")
+            }
+            return response
+
         self._transport = transport or openai_probe_transport(
             config.base_url,
             api_key=config.api_key,
-            opener=open_no_redirect,
+            opener=opener,
             max_response_bytes=config.max_response_bytes,
             session_id=config.session_id,
         )
@@ -204,6 +215,7 @@ class PatchExecutor:
     def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
         """Request a patch for ``unit`` and apply it if it stays in bounds."""
         self._last_observation = None
+        self.response_headers = {}
         started = time.monotonic()
         try:
             content, usage = self._request_patch(unit)
@@ -241,6 +253,11 @@ class PatchExecutor:
                 usage=usage,
                 started=started,
             )
+
+        try:
+            diff = repair_bare_hunks(diff, self.repo_root)
+        except (PatchExecutorError, UnsafeRepositoryPathError, OSError) as exc:
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
 
         check = self._git_apply(diff, check_only=True)
         if check.returncode != 0:
@@ -472,6 +489,35 @@ def _recount_hunks(diff: str) -> str:
         out.extend(body)
         i = j
     return "\n".join(out) + "\n"
+
+
+def repair_bare_hunks(diff: str, repo_root: Path) -> str:
+    """Locate an unnumbered hunk by its unique, exact old source lines."""
+    lines = diff.splitlines(keepends=True)
+    path: str | None = None
+    offset = 0
+    for index, line in enumerate(lines):
+        if line.startswith("--- a/"):
+            path = normalize_owned_path(line[6:].strip())
+            offset = 0
+        if line.strip() != "@@":
+            continue
+        if path is None:
+            raise PatchExecutorError("bare hunk requires an existing repository file")
+        end = index + 1
+        while end < len(lines) and not lines[end].startswith(("@@", "diff --git ", "--- ")):
+            end += 1
+        body = lines[index + 1 : end]
+        old = "".join(item[1:] for item in body if item.startswith((" ", "-")))
+        source = read_repository_text(repo_root, path)
+        if not old or source.count(old) != 1:
+            raise PatchExecutorError("bare hunk old lines must match source exactly once")
+        start = source[: source.index(old)].count("\n") + 1
+        old_count = sum(item.startswith((" ", "-")) for item in body)
+        new_count = sum(item.startswith((" ", "+")) for item in body)
+        lines[index] = f"@@ -{start},{old_count} +{start + offset},{new_count} @@\n"
+        offset += new_count - old_count
+    return "".join(lines)
 
 
 def extract_diff(content: str) -> str:

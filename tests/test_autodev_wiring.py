@@ -495,3 +495,87 @@ def test_resolver_main_launches_from_public_request_file(
     payload = json.loads(capsys.readouterr().out)
     assert payload["model_id"] == "provider/model"
     assert payload["provider"] == "provider-a"
+
+
+@pytest.mark.parametrize("output_json", [False, True])
+def test_cli_dry_run_plans_without_launch_authority(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_json: bool,
+) -> None:
+    import verdict.autodev_run as autodev
+    import verdict.cli as cli
+
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr("verdict.decomposer.Decomposer", lambda config: planner)
+
+    def forbid_execution(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("dry-run must not authorize or execute a worker")
+
+    monkeypatch.setattr(autodev, "_require_launch_decision", forbid_execution)
+    monkeypatch.setattr(autodev, "run_autodev", forbid_execution)
+    cli.cmd_autodev(
+        "fix ruff errors",
+        str(repo),
+        orchestrator_model="cheap/model",
+        executor_model=None,
+        base_url="http://127.0.0.1:20128/v1",
+        dry_run=True,
+        output_json=output_json,
+    )
+    output = capsys.readouterr().out
+    if output_json:
+        plan = json.loads(output)
+        assert plan["unit_count"] == 2
+        assert plan["units"][0]["owned_files"] == ["a.py"]
+        assert plan["units"][0]["verification_command"] == PLAN[0]["verification_command"]
+    else:
+        assert "fix-a" in output and "fix-b" in output
+        assert "a.py" in output and "b.py" in output
+    assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+    assert (repo / "b.py").read_text() == "import os\ny = 2\n"
+
+
+@pytest.mark.parametrize("probe_ok", [True, False])
+def test_live_bootstrap_requires_observed_probe_and_binds_plan(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, probe_ok: bool
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.autodev_run import _require_launch_decision
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": "model:free", "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {
+                "status_code": 200,
+                "body": {"choices": [{"message": {"content": "OK" if probe_ok else "not OK"}}]},
+            }
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+    if not probe_ok:
+        with pytest.raises(AutodevError, match="probe failed"):
+            autodev.prepare_live_autodev(
+                "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+            )
+        return
+    decision, plan, headers = autodev.prepare_live_autodev(
+        "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+    )
+    assert (
+        _require_launch_decision(decision, surface="test").selected_route.model
+        == "provider/model:free"
+    )
+    assert decision.task_slice_id == "fix-a,fix-b"
+    assert len(plan.units) == 2
+    assert headers["x-omniroute-response-cost"] == "0"

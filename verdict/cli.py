@@ -1301,9 +1301,9 @@ def cmd_autodev(
 ) -> None:
     """Decompose an objective, execute each unit, verify it, and record the outcome.
 
-    This edits the working tree and calls live models, so it requires explicit
-    consent via ``--allow-live``.  ``--dry-run`` shows the plan and its measured
-    cost without executing any unit.
+    Execution edits the working tree and requires ``--allow-live`` plus launch
+    authority. ``--dry-run`` itself consents to the planner model call and shows
+    its measured cost, but never authorizes or executes a worker.
     """
     from verdict.autodev_run import (
         AutodevError,
@@ -1314,23 +1314,44 @@ def cmd_autodev(
     )
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
-    decision = _require_launch_decision(execution_path_decision, surface="autodev CLI")
-    selected_route = decision.selected_route
-    assert selected_route is not None
-    _assert_exact_model(executor_model, selected_route.model, surface="autodev CLI executor")
-    _assert_exact_model(
-        orchestrator_model, selected_route.model, surface="autodev CLI orchestrator"
-    )
-    executor_model = selected_route.model
-    orchestrator_model = selected_route.model
-    if base_url is not None and base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
-        raise AutodevError(
-            "autodev CLI: --base-url must match the BOD-104 selected gateway "
-            f"{selected_route.gateway!r}"
+    prepared_plan = None
+    probe_headers = None
+    if not dry_run and execution_path_decision is None and allow_live and executor_model:
+        from verdict.autodev_run import prepare_live_autodev
+        from verdict.patch_executor import DEFAULT_BASE_URL
+
+        execution_path_decision, prepared_plan, probe_headers = prepare_live_autodev(
+            objective,
+            Path(repo).resolve(),
+            model=executor_model,
+            base_url=base_url or DEFAULT_BASE_URL,
+            api_key=os.getenv("OMNIROUTE_API_KEY"),
         )
-    base_url = selected_route.gateway
+    decision = None
+    if not dry_run or execution_path_decision is not None:
+        decision = _require_launch_decision(execution_path_decision, surface="autodev CLI")
+        selected_route = decision.selected_route
+        assert selected_route is not None
+        _assert_exact_model(executor_model, selected_route.model, surface="autodev CLI executor")
+        _assert_exact_model(
+            orchestrator_model, selected_route.model, surface="autodev CLI orchestrator"
+        )
+        executor_model = selected_route.model
+        orchestrator_model = selected_route.model
+        if base_url is not None and base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+            raise AutodevError(
+                "autodev CLI: --base-url must match the BOD-104 selected gateway "
+                f"{selected_route.gateway!r}"
+            )
+        base_url = selected_route.gateway
+    else:
+        from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
+        from verdict.patch_executor import DEFAULT_BASE_URL
+
+        orchestrator_model = orchestrator_model or DEFAULT_ORCHESTRATOR_MODEL
+        base_url = base_url or DEFAULT_BASE_URL
     repo_path = Path(repo).resolve()
-    if not allow_live:
+    if not allow_live and not dry_run:
         message = (
             "autodev calls live models and edits the working tree; pass --allow-live to consent"
         )
@@ -1387,6 +1408,7 @@ def cmd_autodev(
             api_key=api_key,
             evidence=evidence,
             mechanical=not no_mechanical,
+            plan=prepared_plan,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable
@@ -1395,7 +1417,10 @@ def cmd_autodev(
         raise SystemExit(1) from exc
 
     if output_json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if probe_headers is not None:
+            payload["route_probe_headers"] = probe_headers
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         from verdict import present
 
