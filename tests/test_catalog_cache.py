@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -87,10 +88,18 @@ def test_cache_no_credential_storage(tmp_path: Path) -> None:
     raw_text = cache_path.read_text()
     assert api_key not in raw_text
     assert "super-sensitive" not in raw_text
-    # Not even a plain (unkeyed) hash of the key: that would let an attacker
-    # with cache-file read access brute-force the raw key offline.
-    assert hashlib.sha256(api_key.encode()).hexdigest() not in raw_text
     assert "auth_hash" not in raw_text
+    salt = (cache_path.parent / "catalog-cache-salt.bin").read_bytes()
+    assert _expected_fingerprint(api_key, salt) in _fingerprints(cache_path)
+
+
+def _expected_fingerprint(api_key: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac("sha256", api_key.encode("utf-8"), salt, 20_000).hex()
+
+
+def _fingerprints(cache_path: Path) -> set[str]:
+    entries = json.loads(cache_path.read_text())["entries"]
+    return {key.split("#", 1)[1] for key in entries}
 
 
 def test_cache_salt_file_is_private_and_stable(tmp_path: Path) -> None:
@@ -112,8 +121,6 @@ def test_cache_salt_file_is_private_and_stable(tmp_path: Path) -> None:
 def test_cache_fingerprint_is_keyed_not_plain_hash(tmp_path: Path) -> None:
     """The on-disk scope key must not equal a plain sha256 of the raw key,
     and must differ from installation to installation (different salt)."""
-    import json
-
     cache_path_a = tmp_path / "a" / "catalog-cache.json"
     cache_path_b = tmp_path / "b" / "catalog-cache.json"
     api_key = "shared-key-across-installs"
@@ -126,8 +133,9 @@ def test_cache_fingerprint_is_keyed_not_plain_hash(tmp_path: Path) -> None:
     assert keys_a and keys_b
     assert keys_a.isdisjoint(keys_b)  # different per-install salt -> different fingerprint
 
-    plain_hash = hashlib.sha256(api_key.encode()).hexdigest()
-    assert not any(plain_hash in key for key in keys_a)
+    for cache_path in (cache_path_a, cache_path_b):
+        salt = (cache_path.parent / "catalog-cache-salt.bin").read_bytes()
+        assert _expected_fingerprint(api_key, salt) in _fingerprints(cache_path)
 
 
 def test_cache_expiry(tmp_path: Path) -> None:

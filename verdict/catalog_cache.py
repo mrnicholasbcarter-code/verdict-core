@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import math
 import os
@@ -19,6 +18,8 @@ ENV_CATALOG_CACHE = "VERDICT_CATALOG_CACHE"
 ENV_CATALOG_TTL_S = "VERDICT_CATALOG_TTL_S"
 DEFAULT_CATALOG_TTL_SECONDS = 300.0
 _SALT_FILE_NAME = "catalog-cache-salt.bin"
+_FINGERPRINT_ITERATIONS = 20_000
+_FINGERPRINT_MEMO: dict[tuple[bytes, str], str] = {}
 _SALT_BYTES = 32
 
 
@@ -71,11 +72,19 @@ def _load_or_create_salt(cache_path: Path) -> bytes:
 def _auth_fingerprint(api_key: str | None, cache_path: Path) -> str:
     """Keyed, non-reversible fingerprint of the API key for cache scoping.
 
-    Never the raw key and never a plain unkeyed hash of it: HMAC-SHA256
-    under a per-install random salt that only exists on this host.
+    Never the raw key and never a plain unkeyed hash of it: a salted
+    PBKDF2-SHA256 under a per-install random salt that only exists on this host.
     """
     salt = _load_or_create_salt(cache_path)
-    return hmac.new(salt, (api_key or "").encode("utf-8"), hashlib.sha256).hexdigest()
+    key = api_key or ""
+    memo_key = (salt, key)
+    fingerprint = _FINGERPRINT_MEMO.get(memo_key)
+    if fingerprint is None:
+        fingerprint = hashlib.pbkdf2_hmac(
+            "sha256", key.encode("utf-8"), salt, _FINGERPRINT_ITERATIONS
+        ).hex()
+        _FINGERPRINT_MEMO[memo_key] = fingerprint
+    return fingerprint
 
 
 def _scope_key(origin: str, api_key: str | None, cache_path: Path) -> str:
