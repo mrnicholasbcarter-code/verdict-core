@@ -750,7 +750,8 @@ def test_account_quota_nonblocking_evidence(quota):
 
 
 @pytest.mark.parametrize(
-    "failure", ["invalid provider response: missing completion content", "http 429"]
+    "failure",
+    ["invalid provider response: missing completion content", "http 429", "quota_exhausted"],
 )
 @pytest.mark.parametrize("recover", [True, False])
 def test_offload_reselects_once_and_persists_cooling(tmp_path, monkeypatch, failure, recover):
@@ -798,3 +799,32 @@ def test_offload_reselects_once_and_persists_cooling(tmp_path, monkeypatch, fail
     if not recover:
         assert decision.model == NO_ELIGIBLE_TARGET
         assert "fail_closed" in decision.reason.lower()
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_quota_fence_requires_all_accounts_exhausted(available):
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [_catalog_row("cx/code", "codex")]},
+        free_tier={"perModel": [{"provider": "codex", "modelId": "code"}]},
+        providers={
+            "connections": [{"provider": "codex", "isActive": True, "testStatus": "active"}]
+        },
+        account_status={
+            "accountQuotas": [
+                {
+                    "provider": "codex",
+                    "connectionId": "exhausted",
+                    "quotas": {"weekly": {"usedPercentage": 100}},
+                },
+                {
+                    "provider": "codex",
+                    "connectionId": "other",
+                    "available": available,
+                    "quotas": {"weekly": {"usedPercentage": 11}},
+                },
+            ]
+        },
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert bool(receipt.admitted) is available
+    assert bool(snapshot.quota_blocks) is not available

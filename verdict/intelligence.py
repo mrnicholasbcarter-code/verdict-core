@@ -1269,7 +1269,7 @@ class IntelligenceService:
         retryable = _admit_dec.transport_outcome == "error" and (
             error.startswith("invalid provider response:")
             or error == "http 429"
-            or error in {"JSONDecodeError", "route cooling before dispatch"}
+            or error in {"JSONDecodeError", "route cooling before dispatch", "quota_exhausted"}
         )
         if retryable:
             from verdict.orchestration.health_cache import ProbeResult

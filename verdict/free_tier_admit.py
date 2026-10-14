@@ -1148,18 +1148,23 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
 
 
 def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
-    """Conservatively fence a provider when an account quota is exhausted."""
+    """Fence a provider only when every reported account is exhausted.
+
+    Provider routes cannot pin a connection; OmniRoute selects an available account.
+    """
     if not isinstance(payload, Mapping):
         return ()
     rows = payload.get("accountQuotas", [])
     if not isinstance(rows, list):
         return ()
     blocks: list[NamedDrop] = []
+    available_providers: set[str] = set()
     now = datetime.now(timezone.utc)
     for row in rows:
         if not isinstance(row, Mapping) or not isinstance(row.get("provider"), str):
             continue
         provider = row["provider"]
+        before = len(blocks)
         account = row.get("connectionId", "unknown")
         if row.get("available") is False and row.get("reason") != "not_supported":
             blocks.append(
@@ -1171,7 +1176,7 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
             )
         quotas = row.get("quotas", {})
         if not isinstance(quotas, Mapping):
-            continue
+            quotas = {}
         for window, quota in quotas.items():
             if not isinstance(quota, Mapping):
                 continue
@@ -1193,7 +1198,9 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
                     f"account={account} window={window} used={used}% resetAt={reset}",
                 )
             )
-    return tuple(blocks)
+        if len(blocks) == before:
+            available_providers.add(provider)
+    return tuple(block for block in blocks if block.model_id not in available_providers)
 
 
 def snapshot_from_payloads(
