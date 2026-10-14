@@ -37,7 +37,8 @@ from verdict.work_unit import WorkUnit, WorkUnitError, normalize_owned_path
 DEFAULT_BASE_URL = "http://localhost:20128/v1"
 DEFAULT_SESSION_ID = "verdict-operational-loop"
 
-_FENCE_RE = re.compile(r"```(?:diff|patch)?\s*\n(.*?)(?:\n```|\Z)", re.DOTALL)
+_FENCE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)\n```", re.DOTALL)
+_BARE_FENCE_LINE_RE = re.compile(r"^```[ \t]*\S*[ \t]*$\n?", re.MULTILINE)
 _DIFF_HEADER_RE = re.compile(
     r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$", re.MULTILINE
 )
@@ -520,15 +521,30 @@ def repair_bare_hunks(diff: str, repo_root: Path) -> str:
     return "".join(lines)
 
 
+def _looks_like_diff(text: str) -> bool:
+    return ("--- " in text and "+++ " in text) or "diff --git" in text
+
+
 def extract_diff(content: str) -> str:
-    """Pull a unified diff out of a model response, tolerating a code fence."""
+    """Pull a unified diff out of a model response, tolerating Markdown fences.
+
+    A response may wrap its diff in a ```diff``` / ```patch``` fence, with
+    prose before or after it; that single fenced block is unwrapped. Several
+    fenced blocks that each look like a diff are ambiguous and refused rather
+    than guessed at. A lone, unmatched fence line (the model closed a fence it
+    never opened, or vice versa) is stripped so the diff beneath it still
+    parses; this is what produced git apply's "corrupt patch" on an otherwise
+    valid diff.
+    """
     if not isinstance(content, str) or not content.strip():
         raise PatchExecutorError("model returned an empty response")
     text = content.strip()
-    fenced = _FENCE_RE.search(text)
-    if fenced:
-        text = fenced.group(1).strip()
-    if not ("--- " in text and "+++ " in text) and "diff --git" not in text:
+    blocks = [block.strip() for block in _FENCE_BLOCK_RE.findall(text)]
+    diff_blocks = [block for block in blocks if _looks_like_diff(block)]
+    if len(diff_blocks) > 1:
+        raise PatchExecutorError("model response contains multiple conflicting diff blocks")
+    text = diff_blocks[0] if diff_blocks else _BARE_FENCE_LINE_RE.sub("", text).strip()
+    if not _looks_like_diff(text):
         raise PatchExecutorError("model response is not a unified diff")
     return _recount_hunks(text)
 
