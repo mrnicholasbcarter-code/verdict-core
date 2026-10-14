@@ -44,7 +44,7 @@ from verdict.context_pack import (
     ContextUnit,
     SlotType,
 )
-from verdict.decomposer import Decomposer, DecompositionConfig
+from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionResult
 from verdict.execution_packet import ExecutionPacket, capture_source_binding
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
@@ -1895,6 +1895,88 @@ def _assert_exact_model(configured: str | None, selected: str, *, surface: str) 
         )
 
 
+def prepare_live_autodev(
+    objective: str, repo: Path, *, model: str, base_url: str, api_key: str | None
+) -> tuple[Any, DecompositionResult, dict[str, str]]:
+    """Probe an explicitly selected free route, plan, and mint launch authority."""
+    from verdict.execution_path import optimize_execution_path
+    from verdict.http_safety import open_no_redirect
+    from verdict.patch_executor import extract_content
+    from verdict.probes import openai_probe_transport
+    from verdict.subagent_resolver import public_execution_path_request
+
+    if not model.endswith(":free") or "/" not in model:
+        raise AutodevError("autodev bootstrap requires an explicit provider/model:free route")
+    headers: dict[str, str] = {}
+
+    def opener(request: Any, *, timeout: float) -> Any:
+        response = open_no_redirect(request, timeout=timeout)
+        headers.update(
+            {
+                k.lower(): v
+                for k, v in response.headers.items()
+                if k.lower().startswith("x-omniroute-")
+            }
+        )
+        return response
+
+    transport = openai_probe_transport(base_url, api_key=api_key, opener=opener)
+    probe = transport(
+        model,
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with exactly OK. No explanation."}],
+            "max_tokens": 1024,
+            "temperature": 0,
+        },
+        120.0,
+    )
+    served = headers.get("x-omniroute-model")
+    cost = headers.get("x-omniroute-response-cost")
+    if (
+        probe.get("status_code") != 200
+        or extract_content(probe["body"]).strip() != "OK"
+        or served != model.split("/", 1)[1]
+        or cost is None
+        or float(cost) != 0
+    ):
+        raise AutodevError("autodev free-route probe failed content, identity, or zero-cost check")
+    observed = time.time()
+    plan = Decomposer(
+        DecompositionConfig(model=model, base_url=base_url, api_key=api_key)
+    ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
+    if time.time() - observed > 3600:
+        raise AutodevError("autodev probe expired while planning (one-hour maximum)")
+    binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
+    request = {
+        "schema_version": "1",
+        "trajectory_id": f"autodev:{binding}",
+        "slice_id": ",".join(unit.unit_id for unit in plan.units),
+        "acceptance_criteria": [unit.objective for unit in plan.units],
+        "proof_criteria": [" ".join(unit.verification_command) for unit in plan.units],
+        "candidates": [
+            {
+                "strategy": "direct_cheap",
+                "route_id": model,
+                "gateway": base_url,
+                "provider": model.split("/", 1)[0],
+                "model": model,
+                "eligible": True,
+                "is_free": True,
+                "certification_state": "ready",
+                "certification_freshness": "fresh",
+                "probe_observed_at": observed,
+                "probe_headers": headers,
+            }
+        ],
+    }
+    return (
+        optimize_execution_path(public_execution_path_request(request, task=objective)),
+        plan,
+        headers,
+    )
+
+
 def run_autodev(
     objective: str,
     repo_path: str | Path,
@@ -1906,6 +1988,7 @@ def run_autodev(
     api_key: str | None = None,
     store: ReceiptStore | None = None,
     decomposer: Decomposer | None = None,
+    plan: DecompositionResult | None = None,
     executor: PatchExecutor | None = None,
     evidence: str = "",
     mechanical: bool = True,
@@ -1946,7 +2029,7 @@ def run_autodev(
     decomposer = decomposer or Decomposer(
         DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
     )
-    plan = decomposer.decompose(objective, repo_root=repo, evidence=evidence)
+    plan = plan or decomposer.decompose(objective, repo_root=repo, evidence=evidence)
 
     executor = executor or PatchExecutor(
         repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)
@@ -1971,6 +2054,7 @@ def run_autodev(
                 "execution_path_strategy": decision.selected_strategy,
                 "execution_path_selected_route": decision.selected_route.to_dict(),
                 **outcome.to_dict(),
+                "served_headers": executor.response_headers,
                 "verification_command": list(unit.verification_command),
                 "owned_files": list(unit.owned_files),
             },

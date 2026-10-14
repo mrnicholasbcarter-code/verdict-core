@@ -1314,6 +1314,19 @@ def cmd_autodev(
     )
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
+    prepared_plan = None
+    probe_headers = None
+    if not dry_run and execution_path_decision is None and allow_live and executor_model:
+        from verdict.autodev_run import prepare_live_autodev
+        from verdict.patch_executor import DEFAULT_BASE_URL
+
+        execution_path_decision, prepared_plan, probe_headers = prepare_live_autodev(
+            objective,
+            Path(repo).resolve(),
+            model=executor_model,
+            base_url=base_url or DEFAULT_BASE_URL,
+            api_key=os.getenv("OMNIROUTE_API_KEY"),
+        )
     decision = None
     if not dry_run or execution_path_decision is not None:
         decision = _require_launch_decision(execution_path_decision, surface="autodev CLI")
@@ -1395,6 +1408,7 @@ def cmd_autodev(
             api_key=api_key,
             evidence=evidence,
             mechanical=not no_mechanical,
+            plan=prepared_plan,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable
@@ -1403,7 +1417,10 @@ def cmd_autodev(
         raise SystemExit(1) from exc
 
     if output_json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if probe_headers is not None:
+            payload["route_probe_headers"] = probe_headers
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         from verdict import present
 

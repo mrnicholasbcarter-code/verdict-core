@@ -535,3 +535,47 @@ def test_cli_dry_run_plans_without_launch_authority(
         assert "a.py" in output and "b.py" in output
     assert (repo / "a.py").read_text() == "import os\nx = 1\n"
     assert (repo / "b.py").read_text() == "import os\ny = 2\n"
+
+
+@pytest.mark.parametrize("probe_ok", [True, False])
+def test_live_bootstrap_requires_observed_probe_and_binds_plan(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, probe_ok: bool
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.autodev_run import _require_launch_decision
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": "model:free", "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {
+                "status_code": 200,
+                "body": {"choices": [{"message": {"content": "OK" if probe_ok else "not OK"}}]},
+            }
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+    if not probe_ok:
+        with pytest.raises(AutodevError, match="probe failed"):
+            autodev.prepare_live_autodev(
+                "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+            )
+        return
+    decision, plan, headers = autodev.prepare_live_autodev(
+        "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+    )
+    assert (
+        _require_launch_decision(decision, surface="test").selected_route.model
+        == "provider/model:free"
+    )
+    assert decision.task_slice_id == "fix-a,fix-b"
+    assert len(plan.units) == 2
+    assert headers["x-omniroute-response-cost"] == "0"

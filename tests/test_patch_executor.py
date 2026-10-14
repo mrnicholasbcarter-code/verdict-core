@@ -254,6 +254,10 @@ def test_default_openai_transport_sends_operational_loop_session_header(
     class Response:
         status = 200
 
+        @property
+        def headers(self):
+            return {"x-omniroute-model": "cheap/model"}
+
         def __enter__(self):
             return self
 
@@ -416,3 +420,19 @@ def test_owned_symlink_is_never_inlined_into_the_model_prompt(tmp_path: Path) ->
 
     with pytest.raises(PatchExecutorError, match="symlink"):
         build_unit_prompt(_unit(), repo)
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_bare_hunk_uses_unique_source_match(tmp_path: Path, ambiguous: bool) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    source = "before\nold\nafter\n"
+    (tmp_path / "owned.py").write_text(source * (2 if ambiguous else 1))
+    diff = "--- a/owned.py\n+++ b/owned.py\n@@\n before\n-old\n+new\n after\n"
+    executor = PatchExecutor(
+        tmp_path, PatchExecutorConfig(model="cheap/model"), transport=lambda *args: _response(diff)
+    )
+    attempt = executor.execute_unit(_unit())
+    assert attempt.applied is not ambiguous
+    assert (tmp_path / "owned.py").read_text() == (
+        source * 2 if ambiguous else "before\nnew\nafter\n"
+    )
