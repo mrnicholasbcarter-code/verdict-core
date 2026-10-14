@@ -561,3 +561,5 @@ def test_parse_patch_paths_ignores_unreadable_prompt_markers_and_banners() -> No
         verification_command=("pytest", "tests/test_demo_safe_div.py"),
     )
     assert unit.out_of_bounds(paths) == ()
+    outside = parse_patch_paths(raw_diff + "--- outside.py (unreadable: FileNotFoundError) ---\n")
+    assert unit.out_of_bounds(outside) == ("outside.py",)

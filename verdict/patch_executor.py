@@ -635,10 +635,9 @@ def parse_patch_paths(diff: str) -> tuple[str, ...]:
     """
     paths: set[str] = set()
     for raw in _DIFF_HEADER_RE.findall(diff):
-        if raw.endswith(" (unreadable: FileNotFoundError) ---"):
-            # Missing owned files are described with this banner in the prompt.
-            continue
-        candidate = raw
+        # Missing files are described with this banner in the prompt. Keep the
+        # path in the boundary check even when the model echoes the banner.
+        candidate = raw.removesuffix(" (unreadable: FileNotFoundError) ---")
         if candidate.startswith('"') and candidate.endswith('"'):
             try:
                 decoded = ast.literal_eval(candidate)
