@@ -840,6 +840,41 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
     return ActionResult(data=stats.to_dict(), ok=True, exit_code=0)
 
 
+def _action_census(**kwargs: Any) -> ActionResult:
+    """Run the budgeted background census (refresh free-route passports), or
+    install/render its systemd/cron timer."""
+    import io
+    from contextlib import redirect_stdout
+
+    from verdict.census_passports import cmd_census
+
+    passport_store_path = kwargs.get("passport_store_path")
+    health_cache_path = kwargs.get("health_cache_path")
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            cmd_census(
+                max_candidates=int(kwargs.get("max_candidates", 3)),
+                max_tokens=int(kwargs.get("max_tokens", 768)),
+                passport_store_path=(
+                    Path(passport_store_path).expanduser() if passport_store_path else None
+                ),
+                health_cache_path=(
+                    Path(health_cache_path).expanduser() if health_cache_path else None
+                ),
+                output_json=bool(kwargs.get("output_json", False)),
+                install=bool(kwargs.get("install", False)),
+                dry_run=bool(kwargs.get("dry_run", False)),
+            )
+    except (OSError, ValueError) as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+    try:
+        data = json.loads(buf.getvalue())
+    except (json.JSONDecodeError, ValueError):
+        data = {"output": buf.getvalue()}
+    return ActionResult(data=data)
+
+
 # ---------------------------------------------------------------------------
 # Metadata family
 # ---------------------------------------------------------------------------

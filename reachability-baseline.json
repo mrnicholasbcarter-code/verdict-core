@@ -5,7 +5,7 @@
   },
   {
     "qualified_name": "verdict.actions.registry.get_action",
-    "reason": "UNTRIAGED: get_action has only non-production references; Action registry \u2014 the single lookup table for CLI + TUI convergence (verdict/actions/registry.py)."
+    "reason": "KEEP: public lookup API for the action registry (CLI/TUI convergence layer); test_only_caller. Exercised only by tests today but is the documented read accessor alongside register()/run_action(); retained as the registry's public surface, not dead code."
   },
   {
     "qualified_name": "verdict.adaptive_ranker.RankerInput",
@@ -177,7 +177,7 @@
   },
   {
     "qualified_name": "verdict.context_sources.CapabilityProviderProtocol",
-    "reason": "UNTRIAGED: CapabilityProviderProtocol has no resolved reference; Native Context Intelligence source providers (Wave-1 baseline) (verdict/context_sources.py)."
+    "reason": "KEEP: structural typing Protocol documenting the CapabilityProvider contract for external/MCP adapters (see module docstring); uncalled. No concrete subclass needs to reference it by name under duck typing, but it is the documented extension point for future providers."
   },
   {
     "qualified_name": "verdict.context_sources.SharedMemoryCapabilityProvider",
@@ -597,7 +597,7 @@
   },
   {
     "qualified_name": "verdict.routing_receipt.link_recovery_attempt",
-    "reason": "UNTRIAGED: link_recovery_attempt has only non-production references; One versioned routing receipt with the full decision/evidence chain (verdict/routing_receipt.py)."
+    "reason": "KEEP: recovery-attempt linking helper for the routing receipt chain; test_only_caller. Not yet wired into a production recovery path; tracked as a BOD-350-adjacent follow-up, not removed here to avoid scope creep."
   },
   {
     "qualified_name": "verdict.runtime_certification.register_detector",
@@ -902,10 +902,6 @@
   {
     "qualified_name": "verdict.present.reset",
     "reason": "UNTRIAGED: reset has only non-production references; Shared human-output helpers for `verdict` commands (verdict/present.py)."
-  },
-  {
-    "qualified_name": "verdict.prove_at_rest_legacy.load_healthy_passports",
-    "reason": "UNTRIAGED: load_healthy_passports has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
   },
   {
     "qualified_name": "verdict.runtime_contract.ProcfsInspector",

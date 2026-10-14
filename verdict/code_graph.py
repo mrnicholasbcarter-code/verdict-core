@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from verdict.ast_cache import parse_cached, read_source_cached
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 
 NodeKind = Literal["File", "Class", "Function", "Type", "Test"]
@@ -80,8 +81,8 @@ class CodeGraphEngine:
         except ValueError:
             rel_path = str(file_path)
 
-        code = file_path.read_text(encoding="utf-8", errors="ignore")
-        lines = code.splitlines()
+        source = read_source_cached(file_path)
+        lines = source.splitlines() if source is not None else []
 
         file_node_id = f"file:{rel_path}"
         self.add_node(
@@ -94,10 +95,10 @@ class CodeGraphEngine:
             )
         )
 
-        try:
-            tree = ast.parse(code, filename=str(file_path))
-        except SyntaxError:
+        parsed = parse_cached(file_path)
+        if parsed is None:
             return
+        _, tree = parsed
 
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):

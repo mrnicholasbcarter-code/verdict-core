@@ -3221,6 +3221,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     from verdict.commands import (
         parsers_autodev,
+        parsers_census,
         parsers_config,
         parsers_credentials,
         parsers_harness,
@@ -3243,6 +3244,9 @@ def main() -> None:
         parsers_openspec,
     ):
         registrar.register(subparsers)
+    # Direct call (not through the tuple-driven loop above) so the static
+    # reachability scanner's attribute-chain tracer resolves this registrar.
+    parsers_census.register(subparsers)
 
     from verdict.commands.dispatch import dispatch
 

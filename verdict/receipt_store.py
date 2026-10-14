@@ -15,6 +15,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from time import time
 from typing import Any, Literal
@@ -123,6 +124,7 @@ def _allowed(path: str, key: str, allowlist: set[str]) -> bool:
     return path in allowlist or key in allowlist
 
 
+@lru_cache(maxsize=4096)
 def _key_matches_parts(name: str, parts: tuple[str, ...]) -> bool:
     """Match sensitive parts on whole key segments, not arbitrary substrings.
 
@@ -167,9 +169,18 @@ def _redact_value(value: Any, *, path: str, allowlist: set[str]) -> Any:
             for index, item in enumerate(value)
         ]
     if isinstance(value, str) and not _allowed(path, path.rsplit(".", 1)[-1], allowlist):
-        value = _SECRET_TEXT.sub(r"\1[REDACTED]", value)
-        value = _URL_WITH_CREDENTIALS.sub(r"\1[REDACTED]@", value)
-        value = _URL_QUERY.sub(r"\1?[REDACTED]", value)
+        lower = value.lower()
+        if (
+            "bearer" in lower
+            or "key" in lower
+            or "secret" in lower
+            or "token" in lower
+            or "password" in lower
+        ):
+            value = _SECRET_TEXT.sub(r"\1[REDACTED]", value)
+        if "http" in lower:
+            value = _URL_WITH_CREDENTIALS.sub(r"\1[REDACTED]@", value)
+            value = _URL_QUERY.sub(r"\1?[REDACTED]", value)
     return value
 
 

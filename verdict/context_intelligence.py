@@ -299,7 +299,12 @@ def plan_context_query(
     query = task.strip() or "context retrieval"
     symbols = tuple(item for item in target_symbols if str(item).strip())
     if not symbols:
-        # Seed from task / errors when caller did not name symbols.
+        # Seed from task / errors when caller did not name symbols. Plain
+        # English words (no snake_case/camelCase/acronym shape) never seed a
+        # code scan, so a bare instruction like "Reply with just: ok" skips
+        # the code-graph capabilities entirely instead of parsing the repo.
+        from verdict.context_sources import _is_code_identifier
+
         blob = " ".join([query, *errors])
         symbols = tuple(
             name
@@ -316,6 +321,7 @@ def plan_context_query(
                 "error",
                 "nameerror",
             }
+            and _is_code_identifier(name)
         )[:4]
 
     ordered = list(WAVE1_BASELINE_ORDER)

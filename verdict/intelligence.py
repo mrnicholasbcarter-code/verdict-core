@@ -913,8 +913,11 @@ class IntelligenceService:
         confirm_live = bool(
             live and confirm_transport is not None and self.confirm_transport is None
         )
+        from verdict.orchestration.health_cache import default_cache_path
+
         confirmed = gate_admit_prove_confirm(
             receipt,
+            health_cache_path=default_cache_path() if confirm_live else None,
             passports=self.passports,
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
@@ -1128,8 +1131,11 @@ class IntelligenceService:
         confirm_live = bool(
             live and confirm_transport is not None and self.confirm_transport is None
         )
+        from verdict.orchestration.health_cache import default_cache_path
+
         receipt = gate_admit_prove_confirm(
             receipt,
+            health_cache_path=default_cache_path() if confirm_live else None,
             passports=self.passports,
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
