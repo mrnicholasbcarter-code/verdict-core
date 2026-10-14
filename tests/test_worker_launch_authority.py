@@ -116,7 +116,7 @@ def test_autodev_launch_uses_decision_model_and_records_authority(tmp_path: Path
         "candidate", "http://gateway.test/v1", "provider-a", "provider/model", "pool", 1, True
     )
     decision = _decision(route)
-    plan = '[{"unit_id":"change","objective":"change x","owned_files":["a.py"],"verification_command":["python3","-c","pass"],"context":""}]'
+    plan = '[{"unit_id":"change","objective":"change x","owned_files":["a.py","test_a.py"],"verification_command":["python3","test_a.py"],"context":""}]'
     diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
     called: list[str] = []
 

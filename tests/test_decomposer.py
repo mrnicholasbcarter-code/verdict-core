@@ -141,3 +141,52 @@ def test_prompt_carries_the_objective_and_evidence() -> None:
     assert "fix ruff errors" in prompt
     assert "F401 verdict/cli.py:3" in prompt
     assert "/repo" in prompt
+
+
+def test_code_plan_requires_owned_test_and_scoped_command() -> None:
+    unit = dict(
+        TWO_UNITS[0],
+        objective="add validation",
+        verification_command=["python", "-m", "pytest", "tests/test_cli.py"],
+    )
+    with pytest.raises(DecompositionError, match="test file"):
+        parse_decomposition(json.dumps([unit]))
+
+
+def test_invalid_code_plan_is_replanned_once() -> None:
+    calls: list[str] = []
+    unit = dict(
+        TWO_UNITS[0],
+        objective="add validation",
+        verification_command=["python", "-m", "pytest", "tests/test_cli.py"],
+    )
+    valid = dict(unit, owned_files=["verdict/cli.py", "tests/test_cli.py"])
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
+        content = json.dumps([unit if len(calls) == 1 else valid])
+        return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
+
+    result = Decomposer(transport=transport).decompose("validation", repo_root=".")
+    assert calls == ["mistral/codestral-latest", "mistral/codestral-latest"]
+    assert result.units[0].owned_files == tuple(valid["owned_files"])
+    assert result.to_dict()["attempts"][0]["error"]
+
+
+def test_frontier_planner_only_after_recorded_cheap_failure() -> None:
+    calls: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
+        if len(calls) == 1:
+            return {"status_code": 503, "body": {}}
+        return {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
+        }
+
+    result = Decomposer(
+        DecompositionConfig(model="cc/claude-opus-5"), transport=transport
+    ).decompose("fix", repo_root=".")
+    assert calls == ["mistral/codestral-latest", "cc/claude-opus-5"]
+    assert "HTTP 503" in result.attempts[0]["error"]
