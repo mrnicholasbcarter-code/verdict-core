@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -614,3 +615,66 @@ def test_census_matches_aliased_passive_health(tmp_path):
     )
     assert result["candidates"] == 1
     assert result["updated"] == 1
+
+
+def test_census_service_working_directory_is_unquoted(tmp_path):
+    """WorkingDirectory= takes a literal path, not a shell-quoted one (unlike
+    ExecStart=): a quoted value is parsed as part of the path itself and
+    systemd refuses to start the unit ("path is not absolute")."""
+    from verdict.census_passports_service import manage_census_service
+
+    report = manage_census_service(unit_dir=tmp_path / "units", dry_run=True)
+    service_body = report["files"]["verdict-census.service"]
+    working_dir_line = next(
+        line for line in service_body.splitlines() if line.startswith("WorkingDirectory=")
+    )
+    value = working_dir_line.removeprefix("WorkingDirectory=")
+    assert not value.startswith('"')
+    assert Path(value).is_absolute()
+
+
+def test_census_service_unit_files_pass_systemd_analyze_verify(tmp_path):
+    """Real systemd parser must accept the rendered units, not just our own
+    string checks."""
+    import shutil
+    import subprocess
+
+    from verdict.census_passports_service import manage_census_service
+
+    if shutil.which("systemd-analyze") is None:
+        pytest.skip("systemd-analyze not available on this host")
+
+    unit_dir = tmp_path / "units"
+    report = manage_census_service(unit_dir=unit_dir, dry_run=True)
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    for name, body in report["files"].items():
+        (unit_dir / name).write_text(body)
+
+    result = subprocess.run(
+        ["systemd-analyze", "verify", str(unit_dir / "verdict-census.service")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "WorkingDirectory" not in result.stderr
+    assert "not absolute" not in result.stderr
+
+
+def test_census_service_working_directory_escapes_percent_specifier(monkeypatch, tmp_path):
+    """WorkingDirectory= has no quoting, but systemd still expands "%"
+    specifiers in it; a literal "%" in the path must be doubled."""
+    from verdict import census_passports_service
+
+    fake_module_dir = tmp_path / "a%b" / "verdict"
+    fake_module_dir.mkdir(parents=True)
+    monkeypatch.setattr(census_passports_service, "__file__", str(fake_module_dir / "mod.py"))
+
+    report = census_passports_service.manage_census_service(
+        unit_dir=tmp_path / "units", dry_run=True
+    )
+    service_body = report["files"]["verdict-census.service"]
+    working_dir_line = next(
+        line for line in service_body.splitlines() if line.startswith("WorkingDirectory=")
+    )
+    assert "%%" in working_dir_line
+    assert "a%b" not in working_dir_line.replace("%%", "")

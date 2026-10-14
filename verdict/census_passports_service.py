@@ -19,6 +19,13 @@ def _quote(value: str) -> str:
     return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _escape_specifiers(value: str) -> str:
+    # Every unit value (quoted or not) still goes through systemd's "%"
+    # specifier expansion; WorkingDirectory= has no quoting of its own, so
+    # a literal "%" in the path must be escaped here even without _quote.
+    return value.replace("%", "%%")
+
+
 def _systemctl(args: list[str]) -> None:
     subprocess.run(args, check=True, capture_output=True, text=True, timeout=30)
 
@@ -51,7 +58,7 @@ def manage_census_service(
             SERVICE: (
                 "[Unit]\nDescription=Verdict bounded background route proof\n"
                 "[Service]\nType=oneshot\n"
-                f"WorkingDirectory={_quote(str(Path(__file__).resolve().parent.parent))}\n"
+                f"WorkingDirectory={_escape_specifiers(str(Path(__file__).resolve().parent.parent))}\n"
                 f"ExecStart={command}\n"
             ),
             TIMER: (
