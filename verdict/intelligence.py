@@ -916,6 +916,7 @@ class IntelligenceService:
         confirmed = gate_admit_prove_confirm(
             receipt,
             passports=self.passports,
+            passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
             now=self.admit_now,
@@ -1130,6 +1131,7 @@ class IntelligenceService:
         receipt = gate_admit_prove_confirm(
             receipt,
             passports=self.passports,
+            passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
             now=self.admit_now,

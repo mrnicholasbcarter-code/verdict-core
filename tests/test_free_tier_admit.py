@@ -424,6 +424,11 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
                     "choices": [{"message": {"content": "hello from omniroute"}}],
                 },
             )
+        if request.url.path == "/api/usage/model-latency-stats":
+            assert request.url.params["windowHours"] == "168"
+            return httpx.Response(200, json={"entries": []})
+        if request.url.path == "/api/resilience/connections":
+            return httpx.Response(200, json={"connections": []})
         raise AssertionError(request.url.path)
 
     transport = httpx.MockTransport(handler)

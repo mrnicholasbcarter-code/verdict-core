@@ -162,6 +162,7 @@ def build_selector(
         admit,
         default_runtime_evidence,
     )
+    from verdict.omniroute_health import load_omniroute_health
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import HealthResult, LaunchCandidate, openai_health_probe
@@ -185,7 +186,9 @@ def build_selector(
         connections,
         # Evidence comes from the ladder state file this ladder reads, so the
         # admitted set and the ladder cannot disagree about cached health.
-        default_runtime_evidence(now=now, state_dir=state_path.parent, ladder_state=state_path),
+        default_runtime_evidence(
+            now=now, state_dir=state_path.parent, ladder_state=state_path
+        ).merged(load_omniroute_health(gateway, api_key=key, now=now)),
         now=now,
         required_capabilities=required_capabilities,
         min_context_tokens=min_context_tokens,

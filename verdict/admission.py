@@ -858,7 +858,13 @@ def _judge(
                     until=_iso(until),
                 )
 
-    route_obs = runtime.for_key(f"route:{route_id}")
+    route_obs = tuple(
+        obs
+        for obs in runtime.for_key(f"route:{route_id}")
+        if obs.state != "healthy"
+        or obs.until is None
+        or ((expires := _parse_iso(obs.until)) is not None and expires > now)
+    )
     provider_obs_all = tuple(
         o for name in {owned, prefix} if name for o in runtime.for_key(f"provider:{name}")
     )
@@ -1220,6 +1226,7 @@ def load_live_admission(
     Any fetch failure is ``AdmissionUnavailableError``: authoritative callers
     fail closed instead of falling back to catalog truth.
     """
+    from verdict.omniroute_health import load_omniroute_health
     from verdict.orchestration.run import fetch_connections, fetch_inventory
 
     base = gateway.rstrip("/")
@@ -1240,7 +1247,9 @@ def load_live_admission(
     return admit(
         rows,
         connections,
-        default_runtime_evidence(now=now, state_dir=state_dir),
+        default_runtime_evidence(now=now, state_dir=state_dir).merged(
+            load_omniroute_health(base, api_key=api_key, now=now, timeout=timeout)
+        ),
         now=now,
         required_capabilities=required_capabilities,
         min_context_tokens=min_context_tokens,

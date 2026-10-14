@@ -27,10 +27,13 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+if TYPE_CHECKING:
+    from verdict.admission import RuntimeEvidence
 
 from verdict.availability import is_opaque_route_id
 from verdict.classifier import classify
@@ -185,6 +188,7 @@ class OmniRouteAdmitSnapshot:
     catalog: tuple[CatalogIdentity, ...]
     free_tier: tuple[FreeTierModel, ...]
     connections: tuple[ProviderConnection, ...]
+    passive_health: RuntimeEvidence | None = None
 
     @property
     def active_providers(self) -> frozenset[str]:
@@ -1363,10 +1367,23 @@ def load_omniroute_admit_snapshot(
         raise LiveAdmitError("timeout", "timed out reading OmniRoute admit surfaces") from exc
     except httpx.HTTPError as exc:
         raise LiveAdmitError("transport", type(exc).__name__) from exc
-    return snapshot_from_payloads(
-        catalog=payloads["catalog"],
-        free_tier=payloads["free_tier"],
-        providers=payloads["providers"],
+    from datetime import datetime, timezone
+
+    from verdict.omniroute_health import load_omniroute_health
+
+    return replace(
+        snapshot_from_payloads(
+            catalog=payloads["catalog"],
+            free_tier=payloads["free_tier"],
+            providers=payloads["providers"],
+        ),
+        passive_health=load_omniroute_health(
+            origin,
+            api_key=api_key,
+            now=datetime.now(timezone.utc),
+            timeout=timeout,
+            transport=transport,
+        ),
     )
 
 

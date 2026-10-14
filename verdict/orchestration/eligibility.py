@@ -467,6 +467,8 @@ class EligibilityLadder:
                 expired_negative = lookup.entry
             elif lookup.state == "fresh" and lookup.entry is not None and lookup.entry.healthy:
                 return "healthy", ""
+        if self._admitted is not None and self._admitted.proven_healthy(route_id):
+            return "healthy", ""
         entry = self._state["health"].get(route_id)
         if not isinstance(entry, dict):
             category = expired_negative.category if expired_negative is not None else ""

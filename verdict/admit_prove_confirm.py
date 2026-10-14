@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.admission import RuntimeEvidence
 from verdict.free_tier_admit import FreeTierAdmitReceipt, NamedDrop, _choose_sort
 from verdict.model_passports import ModelPassport
 from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
@@ -33,6 +34,8 @@ REASON_CONFIRM_UNAVAILABLE = "confirm_unavailable"
 
 DEFAULT_CONFIRM_MAX_CANDIDATES = 3
 DEFAULT_CONFIRM_TIMEOUT_SECONDS = 5.0
+# ProbeBudget counts prompt plus completion usage, not just max_tokens=1 output.
+DEFAULT_CONFIRM_TOKEN_BUDGET_PER_REQUEST = 128
 _CONFIRM_PROVIDER = "admit_confirm"
 
 FAIL_CLOSED_PROVE_CONFIRM = (
@@ -220,6 +223,7 @@ def gate_admit_prove_confirm(
     receipt: FreeTierAdmitReceipt,
     *,
     passports: Mapping[str, ModelPassport] | None = None,
+    passive_health: RuntimeEvidence | None = None,
     passport_store_path: Path | None = None,
     confirm_transport: ProbeTransport | None = None,
     confirm_budget: ProbeBudget | None = None,
@@ -248,6 +252,14 @@ def gate_admit_prove_confirm(
 
     loaded = load_healthy_passports(passport_store_path) if passports is None else dict(passports)
 
+    passive_ids = {
+        obs.key.removeprefix("route:")
+        for obs in (passive_health or RuntimeEvidence()).observations
+        if obs.key.startswith("route:")
+        and obs.state == "healthy"
+        and obs.until is not None
+        and datetime.fromisoformat(obs.until) > current
+    }
     exclusions = list(receipt.exclusions)
     passport_rows: list[PassportEvidence] = []
     fresh_ids: list[str] = []
@@ -256,7 +268,7 @@ def gate_admit_prove_confirm(
         passport = loaded.get(identity_id)
         evidence = _passport_evidence(identity_id, passport, now=current)
         passport_rows.append(evidence)
-        if evidence.fresh:
+        if evidence.fresh or identity_id in passive_ids:
             fresh_ids.append(identity_id)
             continue
         if live and consented and confirm_transport is not None and _passport_can_refresh(passport):
@@ -291,7 +303,11 @@ def gate_admit_prove_confirm(
         ]
         ordered_ids = sorted(
             set(fresh_ids) | set(refreshable),
-            key=lambda item: _choose_sort(item, healthy, free_set),
+            key=lambda item: (
+                _choose_sort(item, healthy, free_set)[0],
+                item not in passive_ids,
+                _choose_sort(item, healthy, free_set),
+            ),
         )
     else:
         ordered_ids = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
@@ -369,7 +385,7 @@ def gate_admit_prove_confirm(
     budget = confirm_budget or ProbeBudget(
         provider=_CONFIRM_PROVIDER,
         max_requests=len(shortlist),
-        max_tokens=len(shortlist),
+        max_tokens=DEFAULT_CONFIRM_TOKEN_BUDGET_PER_REQUEST * len(shortlist),
         max_response_bytes=65_536,
         max_duration_seconds=max(
             float(confirm_timeout_seconds) * len(shortlist), float(confirm_timeout_seconds)
