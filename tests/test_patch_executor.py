@@ -563,3 +563,25 @@ def test_parse_patch_paths_ignores_unreadable_prompt_markers_and_banners() -> No
     assert unit.out_of_bounds(paths) == ()
     outside = parse_patch_paths(raw_diff + "--- outside.py (unreadable: FileNotFoundError) ---\n")
     assert unit.out_of_bounds(outside) == ("outside.py",)
+
+
+@pytest.mark.parametrize("prefix", ["+", " "])
+def test_bare_hunk_for_new_file_is_added(tmp_path: Path, prefix: str) -> None:
+    from verdict.patch_executor import repair_bare_hunks
+
+    diff = "--- /dev/null\n+++ b/new.py\n@@\n" + prefix + "value = 1\n"
+    repaired = repair_bare_hunks(diff, tmp_path)
+    assert repaired == "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,1 @@\n+value = 1\n"
+    result = subprocess.run(
+        ["git", "apply", "-"], cwd=tmp_path, input=repaired, text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "new.py").read_text() == "value = 1\n"
+
+
+def test_bare_hunk_for_new_file_rejects_removals(tmp_path: Path) -> None:
+    from verdict.patch_executor import repair_bare_hunks
+
+    diff = "--- /dev/null\n+++ b/new.py\n@@\n-old\n+new\n"
+    with pytest.raises(PatchExecutorError):
+        repair_bare_hunks(diff, tmp_path)

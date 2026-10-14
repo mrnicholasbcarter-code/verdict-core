@@ -576,9 +576,13 @@ def repair_bare_hunks(diff: str, repo_root: Path) -> str:
     path: str | None = None
     offset = 0
     for index, line in enumerate(lines):
+        if line.startswith("--- "):
+            path = None
+            offset = 0
         if line.startswith("--- a/"):
             path = normalize_owned_path(line[6:].strip())
-            offset = 0
+        if line.startswith("+++ b/"):
+            path = normalize_owned_path(line[6:].strip())
         if line.strip() != "@@":
             continue
         if path is None:
@@ -587,6 +591,14 @@ def repair_bare_hunks(diff: str, repo_root: Path) -> str:
         while end < len(lines) and not lines[end].startswith(("@@", "diff --git ", "--- ")):
             end += 1
         body = lines[index + 1 : end]
+        if not (repo_root / path).exists():
+            if not body or any(not item.startswith(("+", " ")) for item in body):
+                raise PatchExecutorError(
+                    "bare new-file hunk must contain only additions or context"
+                )
+            lines[index] = f"@@ -0,0 +1,{len(body)} @@\n"
+            lines[index + 1 : end] = ["+" + item[1:] for item in body]
+            continue
         old = "".join(item[1:] for item in body if item.startswith((" ", "-")))
         source = read_repository_text(repo_root, path)
         if not old or source.count(old) != 1:
