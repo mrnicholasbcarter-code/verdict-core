@@ -367,3 +367,61 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
         max_confirm_candidates=1,
     )
     assert probed == [paid], "sanity: the fix is the authoritative free_admitted set"
+
+
+# --- no-passport candidates reach live confirm probe (BOD-349) --------
+
+
+def test_no_passport_candidate_admitted_via_live_confirm() -> None:
+    """A candidate with NO existing passport must reach the budgeted confirm probe.
+
+    When live=True, consented=True, and confirm_transport succeeds, a candidate
+    with zero prior passport must survive gate_admit_prove_confirm and appear in
+    the returned receipt.admitted — not be dropped as no_passport.
+    """
+    base = admit_free_tier_active(_snapshot())
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    assert identity in base.admitted
+
+    probed: list[str] = []
+
+    def spy(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        probed.append(model_id)
+        return _ok_transport()(model_id, payload, timeout)
+
+    # passports={} -> identity has NO passport at all
+    gated = gate_admit_prove_confirm(
+        base,
+        passports={},
+        confirm_transport=spy,
+        now=NOW,
+        live=True,
+        consented=True,
+    )
+    assert identity in probed, "no-passport candidate must be probed by budgeted confirm"
+    assert identity in gated.admitted, "successful confirm must admit the no-passport candidate"
+    assert gated.chosen is not None
+    assert gated.empty_intersection is False
+    # The confirm evidence must show confirmed
+    confirmed_ids = {row.identity_id for row in gated.confirm if row.confirmed}
+    assert identity in confirmed_ids
+
+
+def test_no_passport_candidate_excluded_when_confirm_fails() -> None:
+    """Fail-closed: a no-passport candidate whose confirm probe fails is excluded."""
+    base = admit_free_tier_active(_snapshot())
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+
+    gated = gate_admit_prove_confirm(
+        base,
+        passports={},
+        confirm_transport=_ok_transport(fail={identity, "opencode/hy3-free"}),
+        now=NOW,
+        live=True,
+        consented=True,
+    )
+    assert identity not in gated.admitted
+    assert gated.chosen is None
+    assert gated.empty_intersection is True
+    reasons = {item.reason for item in gated.exclusions}
+    assert REASON_CONFIRM_FAILED in reasons

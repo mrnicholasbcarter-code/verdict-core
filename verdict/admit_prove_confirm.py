@@ -117,14 +117,18 @@ def passport_is_fresh(passport: ModelPassport, *, now: datetime | None = None) -
 
 
 def _passport_can_refresh(passport: ModelPassport | None) -> bool:
-    """True when a stored passport may be refreshed by one budgeted live confirm.
+    """True when a candidate may be refreshed by one budgeted live confirm.
 
-    Expiry is operational. Authorization and a non-denied availability state are
-    stable enough to justify one bounded probe. Missing, unauthorized, or denied
-    passports stay fail-closed and are not probed.
+    A missing passport (None) is eligible: the candidate was already admitted
+    by ``admit_free_tier_active`` and the bounded confirm probe is the only
+    path to establish an initial passport for a cold/empty store.
+
+    For an existing passport, expiry is operational; authorization and a
+    non-denied availability state justify one bounded probe.  Unauthorized or
+    denied passports stay fail-closed.
     """
     if passport is None:
-        return False
+        return True
     if passport.auth_state != "authorized":
         return False
     return passport.availability_state in {"eligible", "degraded", "quarantined"}
@@ -156,10 +160,10 @@ def _record_refreshed_passport(
     *,
     now: datetime,
 ) -> None:
-    """Replace stale passport evidence when the budgeted confirm just succeeded."""
-    if previous is None or passport_is_fresh(previous, now=now):
+    """Replace stale/missing passport evidence when the budgeted confirm just succeeded."""
+    if previous is not None and passport_is_fresh(previous, now=now):
         return
-    provider = previous.provider or identity_id.split("/", 1)[0]
+    provider = (previous.provider if previous is not None else None) or identity_id.split("/", 1)[0]
     refreshed = passport_from_probe(
         provider=provider, identity_id=identity_id, observation=observation
     )
