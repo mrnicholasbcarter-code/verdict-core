@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -189,6 +190,7 @@ class OmniRouteAdmitSnapshot:
     free_tier: tuple[FreeTierModel, ...]
     connections: tuple[ProviderConnection, ...]
     passive_health: RuntimeEvidence | None = None
+    quota_blocks: tuple[NamedDrop, ...] = ()
 
     @property
     def active_providers(self) -> frozenset[str]:
@@ -1145,13 +1147,63 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
     return tuple(out)
 
 
+def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
+    """Conservatively fence a provider when an account quota is exhausted."""
+    if not isinstance(payload, Mapping):
+        return ()
+    rows = payload.get("accountQuotas", [])
+    if not isinstance(rows, list):
+        return ()
+    blocks: list[NamedDrop] = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if not isinstance(row, Mapping) or not isinstance(row.get("provider"), str):
+            continue
+        provider = row["provider"]
+        account = row.get("connectionId", "unknown")
+        if row.get("available") is False and row.get("reason") != "not_supported":
+            blocks.append(
+                NamedDrop(
+                    provider,
+                    "quota_exhausted",
+                    f"account={account}: {row.get('reason', 'unavailable')}",
+                )
+            )
+        quotas = row.get("quotas", {})
+        if not isinstance(quotas, Mapping):
+            continue
+        for window, quota in quotas.items():
+            if not isinstance(quota, Mapping):
+                continue
+            used = _number(quota.get("usedPercentage"))
+            if used is None or used < 100:
+                continue
+            reset = quota.get("resetAt")
+            if isinstance(reset, str):
+                try:
+                    reset_time = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                    if reset_time.tzinfo is not None and reset_time <= now:
+                        continue
+                except ValueError:
+                    pass
+            blocks.append(
+                NamedDrop(
+                    provider,
+                    "quota_exhausted",
+                    f"account={account} window={window} used={used}% resetAt={reset}",
+                )
+            )
+    return tuple(blocks)
+
+
 def snapshot_from_payloads(
-    *, catalog: object, free_tier: object, providers: object
+    *, catalog: object, free_tier: object, providers: object, account_status: object = None
 ) -> OmniRouteAdmitSnapshot:
     return OmniRouteAdmitSnapshot(
         catalog=parse_catalog_identities(catalog),
         free_tier=parse_free_tier_models(free_tier),
         connections=parse_provider_connections(providers),
+        quota_blocks=_quota_blocks(account_status),
     )
 
 
@@ -1247,6 +1299,9 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
     connections = _provider_connections_by_name(snapshot.connections)
 
     def provider_reason(provider: str) -> tuple[str, str] | None:
+        block = next((row for row in snapshot.quota_blocks if row.model_id == provider), None)
+        if block is not None:
+            return block.reason, block.detail or "account quota exhausted"
         return _provider_rejection(connections.get(provider))
 
     def admit(identity_id: str) -> None:
@@ -1352,6 +1407,7 @@ def load_omniroute_admit_snapshot(
         paths["catalog"] = "/v1/models"
     paths["free_tier"] = "/api/free-tier/summary"
     paths["providers"] = "/api/providers"
+    paths["account_status"] = "/api/v1/me/status"
 
     payloads: dict[str, object] = {}
     if cached_catalog is not None:
@@ -1388,6 +1444,7 @@ def load_omniroute_admit_snapshot(
             catalog=payloads["catalog"],
             free_tier=payloads["free_tier"],
             providers=payloads["providers"],
+            account_status=payloads["account_status"],
         ),
         passive_health=load_omniroute_health(
             origin,
@@ -1447,7 +1504,7 @@ def execute_offload_chat(
         return "error", "invalid provider response: missing choices"
     message = (choices[0] or {}).get("message") if isinstance(choices[0], Mapping) else {}
     content = message.get("content") if isinstance(message, Mapping) else ""
-    if not isinstance(content, str) or not content:
+    if not isinstance(content, str) or not content.strip():
         return "error", "invalid provider response: missing completion content"
     return "sent", content
 
@@ -1509,7 +1566,14 @@ def _catalog_paid_identities(
                 NamedDrop(identity_id, REASON_OPAQUE_ROUTE_DISALLOWED, "route is not concrete")
             )
             continue
-        blocked = _provider_rejection(connections.get(identity.provider))
+        quota_block = next(
+            (row for row in snapshot.quota_blocks if row.model_id == identity.provider), None
+        )
+        blocked = (
+            (quota_block.reason, quota_block.detail or "account quota exhausted")
+            if quota_block
+            else _provider_rejection(connections.get(identity.provider))
+        )
         if blocked is not None:
             drops.append(NamedDrop(identity_id, blocked[0], blocked[1]))
             continue

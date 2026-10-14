@@ -5,7 +5,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -1037,6 +1037,8 @@ class IntelligenceService:
         escalated: bool,
         esc_reason: str,
         context: dict[str, Any] | None = None,
+        *,
+        attempts: tuple[dict[str, Any], ...] = (),
     ) -> RoutingDecision | None:
         """Admit free-tier ∩ active-provider identities for offloadable work.
 
@@ -1091,6 +1093,27 @@ class IntelligenceService:
         # replayable and never inferred from model names.
         profile = profile_task(task, context=context, requirements=requirements)
         receipt = admit_free_tier_active(snapshot)
+        from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+        cache = HealthCache(default_cache_path())
+        current = self.admit_now or datetime.now(timezone.utc)
+        cooled = {
+            route for route in receipt.admitted if cache.lookup(route, current).state == "negative"
+        }
+        cooled.update(str(attempt["selected_model"]) for attempt in attempts)
+        remaining = tuple(route for route in receipt.admitted if route not in cooled)
+        receipt = replace(
+            receipt,
+            admitted=remaining,
+            chosen=remaining[0] if remaining else None,
+            empty_intersection=not remaining,
+            execution_attempts=attempts,
+            exclusions=receipt.exclusions
+            + tuple(
+                NamedDrop(route, "route_cooling", "prior execution failure")
+                for route in sorted(cooled)
+            ),
+        )
         receipt = expand_admit_for_worthiness(
             receipt,
             snapshot,
@@ -1099,6 +1122,13 @@ class IntelligenceService:
             frontier_allowlist=self.frontier_allowlist,
             spend_policy=profile.spend_policy,
             task_profile_digest=profile.digest,
+        )
+        remaining = tuple(route for route in receipt.admitted if route not in cooled)
+        receipt = replace(
+            receipt,
+            admitted=remaining,
+            chosen=remaining[0] if remaining else None,
+            empty_intersection=not remaining,
         )
         metadata_snapshot, identity_map = self._load_metadata()
         explicit_metadata = (
@@ -1233,6 +1263,48 @@ class IntelligenceService:
             task_class=classification.task_class,
             context=context,
         )
+        result_receipt = _admit_dec.admit_receipt or {}
+        all_attempts = tuple(result_receipt.get("execution_attempts", ()))
+        error = _admit_dec.execute_preview or ""
+        retryable = _admit_dec.transport_outcome == "error" and (
+            error.startswith("invalid provider response:")
+            or error == "http 429"
+            or error in {"JSONDecodeError", "route cooling before dispatch"}
+        )
+        if retryable:
+            from verdict.orchestration.health_cache import ProbeResult
+
+            failed_route = _admit_dec.model
+
+            def record_failure(store: HealthCache) -> None:
+                store.record(
+                    failed_route,
+                    ProbeResult(
+                        category="rate_limited" if error == "http 429" else "upstream",
+                        chat_ok=False,
+                        tool_ok=False,
+                        http_status=429 if error == "http 429" else None,
+                        failure_scope="route",
+                        capacity_evidence=error,
+                    ),
+                    current,
+                )
+
+            cache.merge_and_save(record_failure)
+            if len(all_attempts) < 2:
+                self._admit_snapshot_lkg = None
+                self._admit_snapshot_loaded_at = 0
+                return self._offload_free_tier(
+                    task, final_tier, escalated, esc_reason, context, attempts=all_attempts
+                )
+            _admit_dec = replace(
+                _admit_dec,
+                model=NO_ELIGIBLE_TARGET,
+                provider="none",
+                decision="denied",
+                reason=f"fail_closed — 2 execution attempts exhausted: {error}",
+                safety_flags=[*(_admit_dec.safety_flags or []), "fail_closed_attempts_exhausted"],
+            )
         if _admit_path_advisory_flags:
             from dataclasses import replace as _dr
 
@@ -1476,23 +1548,35 @@ class IntelligenceService:
         transport_outcome = "not_sent"
         preview: str | None = None
         attempt: dict[str, Any] = {
-            "attempt": 1,
+            "attempt": len(receipt.execution_attempts) + 1,
             "selected_model": chosen,
             "executed_model": None,
             "transport_outcome": "not_sent",
         }
         if should_execute or self.offload_executor is not None:
-            if self.offload_executor is not None:
+            from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+            dispatch_cache = HealthCache(default_cache_path())
+            if (
+                dispatch_cache.lookup(chosen, self.admit_now or datetime.now(timezone.utc)).state
+                == "negative"
+            ):
+                transport_outcome, preview = "error", "route cooling before dispatch"
+            elif self.offload_executor is not None:
                 transport_outcome, preview = self.offload_executor(chosen, packed_task)
             elif endpoint is not None:
                 transport_outcome, preview = execute_offload_chat(
                     endpoint[0], chosen, packed_task, api_key=endpoint[1]
                 )
             attempt["transport_outcome"] = transport_outcome
+            if transport_outcome == "error":
+                attempt["error"] = preview
             attempt["executed_model"] = chosen if transport_outcome == "sent" else None
         verification: dict[str, Any] = {
-            "status": "unknown",
-            "reason": "no verification strategy executed",
+            "status": "failed" if transport_outcome == "error" else "unknown",
+            "reason": preview
+            if transport_outcome == "error"
+            else "no verification strategy executed",
         }
         expected = contract.get("expected_output_contains")
         proof_criteria = tuple(
@@ -1518,7 +1602,7 @@ class IntelligenceService:
         )
         receipt = replace(
             receipt,
-            execution_attempts=(attempt,),
+            execution_attempts=(*receipt.execution_attempts, attempt),
             verification=verification,
             receipt_id="vrct_" + hashlib.sha256(receipt_seed.encode()).hexdigest()[:24],
         )

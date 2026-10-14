@@ -42,6 +42,8 @@ def _mock_transport(models_calls: list[str]) -> httpx.BaseTransport:
                     ]
                 },
             )
+        elif url_path == "/api/v1/me/status":
+            return httpx.Response(200, json={"accountQuotas": []})
         elif url_path == "/api/providers":
             return httpx.Response(
                 200,
