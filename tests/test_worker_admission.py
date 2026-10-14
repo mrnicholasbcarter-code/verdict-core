@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from verdict import worker_runtime
+from verdict import omniroute_health, worker_runtime
 from verdict.admission import (
     AdmissionStage,
     AdmissionUnavailableError,
@@ -240,6 +240,11 @@ def _patch_gateway(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, fail: boo
         return CONNECTIONS
 
     monkeypatch.setattr(orch_run, "fetch_connections", fetch_connections)
+    monkeypatch.setattr(
+        omniroute_health,
+        "load_omniroute_health",
+        lambda *a, **kw: RuntimeEvidence((), ("omniroute:absent",)),
+    )
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     (tmp_path / "orchestration-health.json").write_text(
         json.dumps(

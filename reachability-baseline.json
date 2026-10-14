@@ -13,7 +13,7 @@
   },
   {
     "qualified_name": "verdict.admission.evidence_from_quota_rows",
-    "reason": "UNTRIAGED: evidence_from_quota_rows has only non-production references; Canonical live route admission (verdict/admission.py)."
+    "reason": "Deferred (BOD-345): quota-row adapter has only test callers; passive-health admission consumes exact-route runtime evidence instead. Retain until quota-row ingestion is wired or removed; no availability authority is inferred from this helper."
   },
   {
     "qualified_name": "verdict.admission_with_subscription.admit_with_subscription",
@@ -297,7 +297,7 @@
   },
   {
     "qualified_name": "verdict.free_tier_admit.why_not_model",
-    "reason": "UNTRIAGED: why_not_model has only non-production references; Admit free-tier \u2229 active-provider concrete identities for offloadable work (verdict/free_tier_admit.py)."
+    "reason": "Deferred (BOD-345): bounded rejection-query helper has only test callers; production emits exclusions directly from FreeTierAdmitReceipt. Retain pending CLI query wiring or removal; it cannot affect admission."
   },
   {
     "qualified_name": "verdict.gateway_conformance.run_gateway_adapter_conformance",

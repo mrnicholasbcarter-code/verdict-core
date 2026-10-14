@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from verdict import omniroute_health
+from verdict.admission import RuntimeEvidence
 from verdict.orchestration import cli, run
 from verdict.orchestration.eligibility_report import GatewayDiscoveryError, _gateway_fetch_error
 from verdict.orchestration.receipt import EventLog, verify_run_receipt
@@ -40,6 +42,12 @@ def _offline_supervisor(
 ) -> tuple[ControllerSupervisor, list[list[str]]]:
     monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "fixture-only-never-send")
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "state"))
+    # Passive health is an optional live source; the offline fixture has none.
+    monkeypatch.setattr(
+        omniroute_health,
+        "load_omniroute_health",
+        lambda *a, **kw: RuntimeEvidence((), ("omniroute:absent",)),
+    )
     parser = argparse.ArgumentParser()
     cli.add_parsers(parser.add_subparsers(dest="command"))
     spawned: list[list[str]] = []
