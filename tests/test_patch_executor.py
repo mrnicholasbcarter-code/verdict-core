@@ -324,6 +324,35 @@ def test_fenced_diff_is_unwrapped() -> None:
     assert extract_diff(f"```diff\n{IN_BOUNDS_DIFF}```").startswith("diff --git")
 
 
+def test_extract_diff_fenced_plain() -> None:
+    fenced = f"```diff\n{IN_BOUNDS_DIFF}```"
+    assert extract_diff(fenced).startswith("diff --git")
+
+
+def test_extract_diff_fenced_with_surrounding_prose() -> None:
+    wrapped = f"Here is the patch:\n\n```diff\n{IN_BOUNDS_DIFF}```\n\nThat should apply cleanly."
+    assert extract_diff(wrapped).startswith("diff --git")
+
+
+def test_extract_diff_refuses_multiple_conflicting_diff_blocks() -> None:
+    two_blocks = f"```diff\n{IN_BOUNDS_DIFF}```\nsome commentary\n```diff\n{OUT_OF_BOUNDS_DIFF}```"
+    with pytest.raises(PatchExecutorError, match="multiple"):
+        extract_diff(two_blocks)
+
+
+def test_extract_diff_refuses_non_diff_fenced_block() -> None:
+    not_a_diff = "```text\njust some notes, no diff here\n```"
+    with pytest.raises(PatchExecutorError, match="not a unified diff"):
+        extract_diff(not_a_diff)
+
+
+def test_extract_diff_unmatched_trailing_fence_still_applies() -> None:
+    """Reproduces the live 'corrupt patch' failure: the model closes a fence
+    it never opened. The diff beneath the stray fence must still parse."""
+    stray_fence = IN_BOUNDS_DIFF + "```"
+    assert extract_diff(stray_fence).startswith("diff --git")
+
+
 def test_observer_records_requested_alias_distinct_from_served_identity(repo: Path) -> None:
     runner = RecordingRunner()
     seen: list[RouteObservation] = []
