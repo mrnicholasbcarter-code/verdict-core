@@ -40,7 +40,7 @@ DEFAULT_SESSION_ID = "verdict-operational-loop"
 _FENCE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)\n```", re.DOTALL)
 _BARE_FENCE_LINE_RE = re.compile(r"^```[ \t]*\S*[ \t]*$\n?", re.MULTILINE)
 _DIFF_HEADER_RE = re.compile(
-    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$", re.MULTILINE
+    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)[ \t]+(.+?)(?:\t.*)?$", re.MULTILINE
 )
 
 SYSTEM_PROMPT = (
@@ -635,6 +635,9 @@ def parse_patch_paths(diff: str) -> tuple[str, ...]:
     """
     paths: set[str] = set()
     for raw in _DIFF_HEADER_RE.findall(diff):
+        if raw.endswith(" (unreadable: FileNotFoundError) ---"):
+            # Missing owned files are described with this banner in the prompt.
+            continue
         candidate = raw
         if candidate.startswith('"') and candidate.endswith('"'):
             try:

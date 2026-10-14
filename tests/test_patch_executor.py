@@ -511,3 +511,53 @@ def test_repaired_missing_prefix_still_rejected_when_content_does_not_match(tmp_
     attempt = executor.execute_unit(_unit())
     assert not attempt.applied
     assert attempt.outcome == "rejected"
+
+
+def test_parse_patch_paths_ignores_unreadable_prompt_markers_and_banners() -> None:
+    """AC 2 regression test from the safe_div raw output (/tmp/v835-2.json).
+
+    A new-file diff (/dev/null -> path) where the model echoes prompt markers
+    like '--- path (unreadable: FileNotFoundError) ---' must ignore those markers
+    and pass the boundary check.
+    """
+    raw_diff = (
+        "diff --git a/verdict/demo_safe_div.py b/verdict/demo_safe_div.py\n"
+        "new file mode 100644\n"
+        "index 0000000..e69de29\n"
+        "--- /dev/null\n"
+        "+++ b/verdict/demo_safe_div.py\n"
+        "@@ -0,0 +1,4 @@\n"
+        "+def safe_div(a, b):\n"
+        "+    if b == 0:\n"
+        "+        return None\n"
+        "+    return a / b\n"
+        "diff --git a/tests/test_demo_safe_div.py b/tests/test_demo_safe_div.py\n"
+        "new file mode 100644\n"
+        "index 0000000..e69de29\n"
+        "--- /dev/null\n"
+        "+++ b/tests/test_demo_safe_div.py\n"
+        "@@ -0,0 +1,8 @@\n"
+        "+import sys\n"
+        "+sys.path.insert(0, '.')\n"
+        "+from verdict.demo_safe_div import safe_div\n"
+        "+\n"
+        "+def test_safe_div_normal():\n"
+        "+    assert safe_div(10, 2) == 5.0\n"
+        "+    assert safe_div(5, 2) == 2.5\n"
+        "+\n"
+        "+def test_safe_div_zero():\n"
+        "+    assert safe_div(5, 0) is None\n"
+        "+    assert safe_div(0, 0) is None\n"
+        "--- verdict/demo_safe_div.py (unreadable: FileNotFoundError) ---\n\n"
+        "--- tests/test_demo_safe_div.py (unreadable: FileNotFoundError) ---\n"
+    )
+    paths = parse_patch_paths(raw_diff)
+    assert paths == ("tests/test_demo_safe_div.py", "verdict/demo_safe_div.py")
+
+    unit = WorkUnit(
+        unit_id="implement-safe-div",
+        objective="Add safe_div",
+        owned_files=("verdict/demo_safe_div.py", "tests/test_demo_safe_div.py"),
+        verification_command=("pytest", "tests/test_demo_safe_div.py"),
+    )
+    assert unit.out_of_bounds(paths) == ()
