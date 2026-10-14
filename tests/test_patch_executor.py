@@ -465,3 +465,49 @@ def test_bare_hunk_uses_unique_source_match(tmp_path: Path, ambiguous: bool) -> 
     assert (tmp_path / "owned.py").read_text() == (
         source * 2 if ambiguous else "before\nnew\nafter\n"
     )
+
+
+def test_missing_prefix_context_line_is_repaired_for_existing_file(tmp_path: Path) -> None:
+    """Observed nemotron failure: a context line drops its leading space."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "owned.py").write_text("def f():\n    pass\n", encoding="utf-8")
+    diff = "--- a/owned.py\n+++ b/owned.py\n@@ -1,2 +1,2 @@\ndef f():\n-    pass\n+    return 1\n"
+    executor = PatchExecutor(
+        tmp_path, PatchExecutorConfig(model="cheap/model"), transport=lambda *args: _response(diff)
+    )
+    attempt = executor.execute_unit(_unit())
+    assert attempt.applied
+    assert (tmp_path / "owned.py").read_text() == "def f():\n    return 1\n"
+
+
+def test_new_file_diff_with_old_content_markers_is_repaired(tmp_path: Path) -> None:
+    """Observed failure: a diff for a file that does not exist yet still carries a
+    modify-style header and removal lines, so git refuses it as depending on old
+    contents that are not there. The destination does not exist, so the diff is
+    rewritten to a clean new-file hunk: dropped removals, /dev/null source."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    diff = (
+        "diff --git a/owned.py b/owned.py\nnew file mode 100644\n"
+        "--- a/owned.py\n+++ b/owned.py\n@@ -0,0 +1,2 @@\n"
+        "def f():\n-    pass\n+    return 1\n"
+    )
+    executor = PatchExecutor(
+        tmp_path, PatchExecutorConfig(model="cheap/model"), transport=lambda *args: _response(diff)
+    )
+    attempt = executor.execute_unit(_unit())
+    assert attempt.applied
+    assert (tmp_path / "owned.py").read_text() == "def f():\n    return 1\n"
+
+
+def test_repaired_missing_prefix_still_rejected_when_content_does_not_match(tmp_path: Path) -> None:
+    """Treating a missing-prefix line as context is a guess; a wrong guess is a
+    refusal, not a silently mis-applied patch."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "owned.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    diff = "--- a/owned.py\n+++ b/owned.py\n@@ -1,3 +1,3 @@\nzero\ntwo\n-three\n+four\n"
+    executor = PatchExecutor(
+        tmp_path, PatchExecutorConfig(model="cheap/model"), transport=lambda *args: _response(diff)
+    )
+    attempt = executor.execute_unit(_unit())
+    assert not attempt.applied
+    assert attempt.outcome == "rejected"
