@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import RedirectRefused, open_no_redirect
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
     PatchExecutorError,
@@ -127,7 +127,7 @@ class Decomposer:
                 )
             except DecompositionError as exc:
                 attempts.append({"model": model, "error": str(exc)})
-                if attempt or not objective.strip():
+                if attempt or not objective.strip() or isinstance(exc.__cause__, RedirectRefused):
                     raise
                 evidence += f"\nPrevious plan rejected: {exc}. Emit a corrected test-first plan."
             else:
