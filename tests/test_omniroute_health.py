@@ -64,6 +64,35 @@ def test_live_passive_health_reaches_ladder_without_local_probe(tmp_path):
     assert ladder._health_status(ROUTE, NOW) == ("healthy", "")
 
 
+def test_429_after_fetch_time_passive_success_stays_blocked():
+    """A 429 seen after the real last success must still block, even with
+    current (fetch-time-stamped) passive success evidence for the same route.
+    Regression for BOD-345 PR831 review: passive rows stamped observed_at=now
+    must not look newer than a current rate limit.
+    """
+    from datetime import timedelta
+
+    stats, resilience = payloads()
+    stats["entries"][0]["totalRequests"] = 3
+    stats["entries"][0]["successRate"] = 0.95
+    stats["entries"][0]["windowHours"] = 168
+    runtime = evidence_from_omniroute_health(stats, resilience, now=NOW)
+
+    rows = [{"id": ROUTE, "owned_by": "mistral"}]
+    connections = [
+        {
+            "provider": "mistral",
+            "isActive": True,
+            "testStatus": "active",
+            "lastError": "429 rate limited",
+            "lastErrorAt": (NOW - timedelta(seconds=30)).isoformat(),
+        }
+    ]
+    admitted = admit(rows, connections, runtime, now=NOW)
+    assert not admitted.launchable(ROUTE)
+    assert not admitted.proven_healthy(ROUTE)
+
+
 @pytest.mark.parametrize(
     "change",
     [
