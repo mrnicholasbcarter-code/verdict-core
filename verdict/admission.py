@@ -878,6 +878,11 @@ def _judge(
                 success_at
                 for o in route_obs
                 if o.state in {"healthy", "success_hint"}
+                # Passive rows are stamped observed_at=fetch-time, not the real
+                # last-success time (OmniRoute's stats API gives no such
+                # field). A fetch-time stamp must never look newer than a
+                # current rate limit, so passive rows never clear a cooldown.
+                if o.category != "passive_success"
                 if (success_at := _parse_iso(o.observed_at)) is not None
             ),
             default=None,
