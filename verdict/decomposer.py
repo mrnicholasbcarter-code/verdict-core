@@ -18,10 +18,10 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import RedirectRefused, open_no_redirect
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
     PatchExecutorError,
@@ -32,7 +32,7 @@ from verdict.patch_executor import (
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.work_unit import WorkUnit, WorkUnitError, parse_work_units
 
-DEFAULT_ORCHESTRATOR_MODEL = "cc/claude-opus-5"
+DEFAULT_ORCHESTRATOR_MODEL = "mistral/codestral-latest"
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -48,7 +48,9 @@ DECOMPOSITION_SYSTEM_PROMPT = (
     "exits zero exactly when this unit is done, and is scoped to this unit's "
     "files so it cannot pass on another unit's work.\n"
     '  "context": optional extra detail for the executor, or ""\n\n'
-    "Prefer many small single-file units over few large ones. Every unit must be "
+    "Every code change must own a test file and run that test in verification_command. "
+    "Write the test first, then implement the change. Only pure ruff fixes may use lint alone. "
+    "Prefer small vertical units containing code plus its test. Every unit must be "
     "executable without reading another unit's output. If you cannot state a "
     "runnable verification command for a unit, do not emit that unit."
 )
@@ -83,6 +85,7 @@ class DecompositionResult:
     model: str
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    attempts: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +94,7 @@ class DecompositionResult:
             "units": [unit.to_dict() for unit in self.units],
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
+            "attempts": list(self.attempts),
         }
 
 
@@ -111,6 +115,35 @@ class Decomposer:
     def decompose(
         self, objective: str, *, repo_root: str | Path, evidence: str = ""
     ) -> DecompositionResult:
+        """Try the planner, then re-plan once with the concrete failure."""
+        attempts: list[dict[str, Any]] = []
+        for attempt in range(2):
+            model = self.config.model
+            if attempt == 0 and model.startswith("cc/"):
+                model = DEFAULT_ORCHESTRATOR_MODEL
+            try:
+                result = self._decompose_once(
+                    objective, repo_root=repo_root, evidence=evidence, model=model
+                )
+            except DecompositionError as exc:
+                attempts.append({"model": model, "error": str(exc)})
+                if attempt or not objective.strip() or isinstance(exc.__cause__, RedirectRefused):
+                    raise
+                evidence += f"\nPrevious plan rejected: {exc}. Emit a corrected test-first plan."
+            else:
+                attempts.append({"model": result.model, "error": ""})
+                return DecompositionResult(
+                    units=result.units,
+                    model=result.model,
+                    usage=result.usage,
+                    latency_ms=result.latency_ms,
+                    attempts=tuple(attempts),
+                )
+        raise AssertionError("bounded planning loop exhausted")
+
+    def _decompose_once(
+        self, objective: str, *, repo_root: str | Path, evidence: str = "", model: str
+    ) -> DecompositionResult:
         """Return validated work units for ``objective``, or raise.
 
         Raises:
@@ -122,7 +155,7 @@ class Decomposer:
 
         started = time.monotonic()
         payload = {
-            "model": self.config.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": DECOMPOSITION_SYSTEM_PROMPT},
                 {
@@ -134,7 +167,7 @@ class Decomposer:
             "temperature": self.config.temperature,
         }
         try:
-            response = self._transport(self.config.model, payload, self.config.timeout_seconds)
+            response = self._transport(model, payload, self.config.timeout_seconds)
         except Exception as exc:
             raise DecompositionError(
                 f"orchestrator transport error: {type(exc).__name__}: {exc}"
@@ -158,7 +191,7 @@ class Decomposer:
         units = parse_decomposition(content, max_units=self.config.max_units)
         return DecompositionResult(
             units=units,
-            model=self.config.model,
+            model=model,
             usage=usage,
             latency_ms=int((time.monotonic() - started) * 1000),
         )
@@ -214,6 +247,19 @@ def parse_decomposition(content: str, *, max_units: int = 64) -> tuple[WorkUnit,
                     "work units must own disjoint files"
                 )
             owners[path] = unit.unit_id
+    for unit in units:
+        command = unit.verification_command
+        lint_only = command[0] == "ruff" or (len(command) >= 3 and command[1:3] == ("-m", "ruff"))
+        tests = [
+            path
+            for path in unit.owned_files
+            if PurePosixPath(path).name.startswith("test_")
+            or PurePosixPath(path).name.endswith(("_test.py", ".test.js", ".test.ts", ".spec.ts"))
+        ]
+        if not lint_only and not tests:
+            raise DecompositionError(f"unit {unit.unit_id!r} must own a test file")
+        if tests and not any(path in " ".join(command) for path in tests):
+            raise DecompositionError(f"unit {unit.unit_id!r} verification must run its test file")
     return units
 
 

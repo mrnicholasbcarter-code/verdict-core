@@ -1686,6 +1686,7 @@ class UnitOutcome:
             "tier": self.tier,
             "model": self.model,
             "verified": self.verified,
+            "status": "verified" if self.verified else "unverified",
             "reason": self.reason,
             "changed_files": list(self.changed_files),
             "usage": self.usage.to_dict(),
@@ -1706,6 +1707,7 @@ class AutodevReport:
     orchestrator_usage: TokenUsage
     decomposition_latency_ms: int = 0
     receipt_ids: tuple[str, ...] = ()
+    planner_attempts: tuple[dict[str, Any], ...] = ()
 
     @property
     def verified(self) -> tuple[UnitOutcome, ...]:
@@ -1755,6 +1757,7 @@ class AutodevReport:
                 "units_without_reported_usage": list(self.unreported_units),
             },
             "decomposition_latency_ms": self.decomposition_latency_ms,
+            "planner_attempts": list(self.planner_attempts),
             "outcomes": [o.to_dict() for o in self.outcomes],
             "receipt_ids": list(self.receipt_ids),
         }
@@ -1942,9 +1945,9 @@ def prepare_live_autodev(
     ):
         raise AutodevError("autodev free-route probe failed content, identity, or zero-cost check")
     observed = time.time()
-    plan = Decomposer(
-        DecompositionConfig(model=model, base_url=base_url, api_key=api_key)
-    ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
+    plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
+        objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
+    )
     if time.time() - observed > 3600:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
@@ -2047,6 +2050,7 @@ def run_autodev(
             {
                 "objective": objective,
                 "orchestrator_model": plan.model,
+                "planner_attempts": list(plan.attempts),
                 "strategy_authority": "verdict.execution_path.optimize_execution_path",
                 "execution_path_decision_digest": decision.decision_digest,
                 "execution_path_trajectory_id": decision.trajectory_id,
@@ -2072,6 +2076,7 @@ def run_autodev(
         outcomes=tuple(outcomes),
         orchestrator_usage=plan.usage,
         decomposition_latency_ms=plan.latency_ms,
+        planner_attempts=plan.attempts,
         receipt_ids=tuple(receipt_ids),
     )
 
@@ -2166,6 +2171,8 @@ def _verify(
     actually shows, so an escape is still caught if a patch landed a path the
     header did not name.
     """
+    if not unit.verification_command:
+        return False, "unverified: missing verification command"
     escaped = unit.out_of_bounds(touched)
     if escaped:
         return False, f"changed files outside the unit boundary: {list(escaped)}"
