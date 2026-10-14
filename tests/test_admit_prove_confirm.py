@@ -391,12 +391,7 @@ def test_no_passport_candidate_admitted_via_live_confirm() -> None:
 
     # passports={} -> identity has NO passport at all
     gated = gate_admit_prove_confirm(
-        base,
-        passports={},
-        confirm_transport=spy,
-        now=NOW,
-        live=True,
-        consented=True,
+        base, passports={}, confirm_transport=spy, now=NOW, live=True, consented=True
     )
     assert identity in probed, "no-passport candidate must be probed by budgeted confirm"
     assert identity in gated.admitted, "successful confirm must admit the no-passport candidate"
