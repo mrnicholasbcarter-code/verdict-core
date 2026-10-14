@@ -1301,6 +1301,7 @@ def _register_builtins() -> None:
         _action_autodev_packet_resume,
         _action_autodev_packet_shadow,
         _action_autodev_packet_validate,
+        _action_census,
         _action_certify,
         _action_check,
         _action_choose,
@@ -1845,6 +1846,18 @@ def _register_builtins() -> None:
                 "Runtime",
             ),
             _action_runtime_reconcile,
+        ),
+        # census: budgeted background passport refresh (BOD-350); mutation
+        # because --install writes a systemd/cron timer unit.
+        (
+            ActionSpec(
+                "census",
+                "health",
+                "mutation",
+                "Refresh free-route passports, or install the background timer",
+                "Health",
+            ),
+            _action_census,
         ),
         # prove-at-rest family (daemon is MACHINE_ONLY)
         (

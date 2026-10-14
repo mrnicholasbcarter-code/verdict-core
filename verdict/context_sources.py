@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from verdict.ast_cache import parse_cached
 from verdict.context_pack import ContextUnit
 from verdict.memory_plane import MemoryPlane
 from verdict.shared_memory import (
@@ -163,6 +164,135 @@ def make_unit(
     )
 
 
+# Common English words that show up in a plain-English task sentence and must
+# never seed a code-graph scan on their own. This is deliberately NOT a
+# shape check (snake_case/camelCase/etc): a bare lowercase word like "parse",
+# "router", or "config" is a common and legitimate symbol name, so rejecting
+# it by shape would silently drop code context for real code tasks. Only an
+# explicit stopword is excluded; everything else is still a candidate symbol,
+# same as before this filter existed.
+_ENGLISH_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "def",
+        "class",
+        "return",
+        "from",
+        "import",
+        "the",
+        "and",
+        "for",
+        "reply",
+        "with",
+        "just",
+        "ok",
+        "please",
+        "only",
+        "this",
+        "that",
+        "these",
+        "those",
+        "where",
+        "when",
+        "what",
+        "which",
+        "who",
+        "how",
+        "why",
+        "does",
+        "did",
+        "doing",
+        "done",
+        "work",
+        "works",
+        "working",
+        "explain",
+        "describe",
+        "show",
+        "tell",
+        "give",
+        "help",
+        "need",
+        "want",
+        "like",
+        "make",
+        "made",
+        "take",
+        "took",
+        "get",
+        "got",
+        "say",
+        "said",
+        "ask",
+        "asked",
+        "use",
+        "used",
+        "using",
+        "task",
+        "query",
+        "question",
+        "answer",
+        "response",
+        "message",
+        "text",
+        "word",
+        "words",
+        "sentence",
+        "about",
+        "into",
+        "onto",
+        "over",
+        "under",
+        "between",
+        "through",
+        "before",
+        "after",
+        "while",
+        "then",
+        "than",
+        "there",
+        "here",
+        "now",
+        "today",
+        "thanks",
+        "thank",
+        "sure",
+        "okay",
+        "yes",
+        "no",
+        "not",
+        "all",
+        "some",
+        "any",
+        "each",
+        "every",
+        "both",
+        "either",
+        "neither",
+        "more",
+        "most",
+        "less",
+        "least",
+        "very",
+        "really",
+        "defined",
+        "hello",
+        "world",
+    }
+)
+
+
+def _is_code_identifier(token: str) -> bool:
+    """Whether a bare query word is a plausible symbol name.
+
+    Rejects only common English sentence words (case-insensitive). A bare
+    lowercase identifier (``parse``, ``router``, ``config``) is accepted,
+    same as the pre-filter behavior; only explicit stopwords are excluded.
+    """
+    if len(token) < 2:
+        return False
+    return token.lower() not in _ENGLISH_STOPWORDS
+
+
 def _symbols_from_hints(hints: Mapping[str, Any] | None, query: str) -> tuple[str, ...]:
     symbols: list[str] = []
     if hints:
@@ -173,7 +303,7 @@ def _symbols_from_hints(hints: Mapping[str, Any] | None, query: str) -> tuple[st
             symbols.extend(str(item) for item in raw if str(item).strip())
     if not symbols:
         found = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\b", query)
-        symbols.extend(found[:6])
+        symbols.extend(t for t in found[:6] if _is_code_identifier(t))
     seen: set[str] = set()
     ordered: list[str] = []
     stop = {"def", "class", "return", "from", "import", "the", "and", "for"}
@@ -253,14 +383,10 @@ def _iter_py_files(
 
 
 def _extract_definitions(path: Path, root: Path, symbols: Sequence[str]) -> list[_SymbolHit]:
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    parsed = parse_cached(path)
+    if parsed is None:
         return []
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        return []
+    source, tree = parsed
     lines = source.splitlines()
     rel = _rel(path, root)
     wanted = set(symbols)
@@ -287,14 +413,10 @@ def _extract_definitions(path: Path, root: Path, symbols: Sequence[str]) -> list
 
 
 def _extract_references(path: Path, root: Path, symbols: Sequence[str]) -> list[_SymbolHit]:
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    parsed = parse_cached(path)
+    if parsed is None:
         return []
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        return []
+    source, tree = parsed
     lines = source.splitlines()
     rel = _rel(path, root)
     wanted = set(symbols)

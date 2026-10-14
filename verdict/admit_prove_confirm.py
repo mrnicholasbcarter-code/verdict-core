@@ -224,6 +224,7 @@ def gate_admit_prove_confirm(
     *,
     passports: Mapping[str, ModelPassport] | None = None,
     passive_health: RuntimeEvidence | None = None,
+    health_cache_path: Path | None = None,
     passport_store_path: Path | None = None,
     confirm_transport: ProbeTransport | None = None,
     confirm_budget: ProbeBudget | None = None,
@@ -252,6 +253,71 @@ def gate_admit_prove_confirm(
 
     loaded = load_healthy_passports(passport_store_path) if passports is None else dict(passports)
 
+    if health_cache_path is not None and passports is None:
+        from verdict.orchestration.credential_pools import canonical_route
+        from verdict.orchestration.health_cache import STATE_FRESH, HealthCache
+        from verdict.prove_at_rest import passport_from_probe
+
+        cache = HealthCache(health_cache_path)
+        cached_ids = [
+            identity_id
+            for identity_id in receipt.admitted
+            if (
+                entry := (
+                    cache.routes().get(identity_id)
+                    or cache.routes().get(canonical_route(identity_id))
+                )
+            )
+            is not None
+            and entry.state_at(current) == STATE_FRESH
+            and entry.chat_ok
+            and entry.tool_ok
+            and entry.capacity_evidence == "free"
+            and (
+                passive_health is None
+                or any(
+                    (
+                        row.key == "route:" + identity_id
+                        or row.key == "route:" + canonical_route(identity_id)
+                    )
+                    and row.state == "healthy"
+                    and row.until is not None
+                    and datetime.fromisoformat(row.until) > current
+                    for row in passive_health.observations
+                )
+            )
+        ]
+        if cached_ids:
+            rows = []
+            for identity_id in cached_ids:
+                entry = cache.routes().get(identity_id) or cache.routes().get(
+                    canonical_route(identity_id)
+                )
+                assert entry is not None
+                probe_passport = passport_from_probe(
+                    provider=identity_id.split("/", 1)[0],
+                    identity_id=identity_id,
+                    observation=ProbeObservation(
+                        model_id=identity_id,
+                        availability_state="ready",
+                        status="ok",
+                        observed_at=entry.checked_at,
+                        latency_ms=entry.latency_ms,
+                    ),
+                )
+                if passport_is_fresh(probe_passport, now=current):
+                    rows.append(_passport_evidence(identity_id, probe_passport, now=current))
+            if rows:
+                return _finalize(
+                    receipt,
+                    admitted=[row.identity_id for row in rows],
+                    exclusions=list(receipt.exclusions),
+                    passport_evidence=rows,
+                    confirm_evidence=(),
+                )
+
+    from verdict.orchestration.credential_pools import canonical_route
+
     passive_ids = {
         obs.key.removeprefix("route:")
         for obs in (passive_health or RuntimeEvidence()).observations
@@ -260,15 +326,35 @@ def gate_admit_prove_confirm(
         and obs.until is not None
         and datetime.fromisoformat(obs.until) > current
     }
+    passive_canonical = {canonical_route(r) for r in passive_ids} | passive_ids
+
     exclusions = list(receipt.exclusions)
     passport_rows: list[PassportEvidence] = []
     fresh_ids: list[str] = []
 
     for identity_id in receipt.admitted:
-        passport = loaded.get(identity_id)
+        passport = loaded.get(identity_id) or loaded.get(canonical_route(identity_id))
         evidence = _passport_evidence(identity_id, passport, now=current)
         passport_rows.append(evidence)
-        if evidence.fresh or identity_id in passive_ids:
+        if evidence.fresh:
+            fresh_ids.append(identity_id)
+            continue
+        if passport is not None and not evidence.fresh:
+            if (
+                live
+                and consented
+                and confirm_transport is not None
+                and _passport_can_refresh(passport)
+            ):
+                continue
+            reason = evidence.reason or REASON_PASSPORT_STALE
+            exclusions.append(
+                NamedDrop(
+                    identity_id, reason, "prove-at-rest passport expired or not authorized/eligible"
+                )
+            )
+            continue
+        if identity_id in passive_canonical or canonical_route(identity_id) in passive_canonical:
             fresh_ids.append(identity_id)
             continue
         if live and consented and confirm_transport is not None and _passport_can_refresh(passport):

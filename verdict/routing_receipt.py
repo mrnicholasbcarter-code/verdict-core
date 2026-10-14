@@ -22,7 +22,6 @@ from verdict.receipt_store import (
     ReceiptRecord,
     ReceiptStore,
     ReceiptStoreError,
-    redact_sensitive_dict,
 )
 
 ROUTING_RECEIPT_SCHEMA_VERSION = "routing-receipt/v1"
@@ -1167,7 +1166,7 @@ def persist_routing_receipt(
     )
     raw_payload = receipt.to_dict()
     merged_allowlist = set(allowlist) | routing_receipt_allowlist(raw_payload)
-    payload = redact_sensitive_dict(raw_payload, allowlist=merged_allowlist)
+    payload = raw_payload
     idem = str(receipt.attempt_id or receipt.receipt_id)
     # Create-once root: if this attempt already has a decision root, return it.
     matches = store.query_receipts(receipt_type="decision", scope=scope_value, limit=100)
@@ -1219,7 +1218,7 @@ def append_routing_receipt_event(
     )
     raw_payload = receipt.to_dict()
     merged_allowlist = routing_receipt_allowlist(raw_payload)
-    payload = redact_sensitive_dict(raw_payload, allowlist=merged_allowlist)
+    payload = raw_payload
     eid = (
         event_id
         or f"routing-{event_type}:{receipt.attempt_id or receipt.receipt_id}:{receipt.state}"

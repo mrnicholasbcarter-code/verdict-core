@@ -554,6 +554,18 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             ledger=getattr(args, "ledger", None),
             dry_run=getattr(args, "dry_run", False),
         )
+    elif args.command == "census":
+        from verdict.census_passports import cmd_census
+
+        cmd_census(
+            max_candidates=args.max_candidates,
+            max_tokens=args.max_tokens,
+            passport_store_path=args.passport_store_path,
+            health_cache_path=args.health_cache_path,
+            output_json=args.output_json,
+            install=args.install,
+            dry_run=args.dry_run,
+        )
     elif args.command == "uninstall":
         legacy.cmd_uninstall(purge_data=getattr(args, "purge_data", False))
     elif args.command == "check":

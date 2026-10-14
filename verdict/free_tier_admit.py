@@ -1341,12 +1341,22 @@ def load_omniroute_admit_snapshot(
     headers = {"accept": "application/json"}
     if api_key and api_key.strip():
         headers["authorization"] = f"Bearer {api_key.strip()}"
-    paths = {
-        "catalog": "/v1/models",
-        "free_tier": "/api/free-tier/summary",
-        "providers": "/api/providers",
-    }
+    from datetime import datetime, timezone
+
+    from verdict.catalog_cache import get_cached_catalog, put_cached_catalog
+
+    now_utc = datetime.now(timezone.utc)
+    cached_catalog = get_cached_catalog(origin, api_key, now=now_utc)
+    paths: dict[str, str] = {}
+    if cached_catalog is None:
+        paths["catalog"] = "/v1/models"
+    paths["free_tier"] = "/api/free-tier/summary"
+    paths["providers"] = "/api/providers"
+
     payloads: dict[str, object] = {}
+    if cached_catalog is not None:
+        payloads["catalog"] = cached_catalog
+
     try:
         with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
             for name, path in paths.items():
@@ -1361,6 +1371,8 @@ def load_omniroute_admit_snapshot(
                     payloads[name] = response.json()
                 except ValueError as exc:
                     raise LiveAdmitError("malformed", f"{path} is not JSON") from exc
+        if cached_catalog is None and "catalog" in payloads:
+            put_cached_catalog(origin, api_key, payloads["catalog"], now=now_utc)
     except LiveAdmitError:
         raise
     except httpx.TimeoutException as exc:
