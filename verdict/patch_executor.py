@@ -40,7 +40,7 @@ DEFAULT_SESSION_ID = "verdict-operational-loop"
 _FENCE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)\n```", re.DOTALL)
 _BARE_FENCE_LINE_RE = re.compile(r"^```[ \t]*\S*[ \t]*$\n?", re.MULTILINE)
 _DIFF_HEADER_RE = re.compile(
-    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)\s+(.+?)(?:\t.*)?$", re.MULTILINE
+    r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)[ \t]+(.+?)(?:\t.*)?$", re.MULTILINE
 )
 
 SYSTEM_PROMPT = (
@@ -576,9 +576,13 @@ def repair_bare_hunks(diff: str, repo_root: Path) -> str:
     path: str | None = None
     offset = 0
     for index, line in enumerate(lines):
+        if line.startswith("--- "):
+            path = None
+            offset = 0
         if line.startswith("--- a/"):
             path = normalize_owned_path(line[6:].strip())
-            offset = 0
+        if line.startswith("+++ b/"):
+            path = normalize_owned_path(line[6:].strip())
         if line.strip() != "@@":
             continue
         if path is None:
@@ -587,6 +591,14 @@ def repair_bare_hunks(diff: str, repo_root: Path) -> str:
         while end < len(lines) and not lines[end].startswith(("@@", "diff --git ", "--- ")):
             end += 1
         body = lines[index + 1 : end]
+        if not (repo_root / path).exists():
+            if not body or any(not item.startswith(("+", " ")) for item in body):
+                raise PatchExecutorError(
+                    "bare new-file hunk must contain only additions or context"
+                )
+            lines[index] = f"@@ -0,0 +1,{len(body)} @@\n"
+            lines[index + 1 : end] = ["+" + item[1:] for item in body]
+            continue
         old = "".join(item[1:] for item in body if item.startswith((" ", "-")))
         source = read_repository_text(repo_root, path)
         if not old or source.count(old) != 1:
@@ -635,7 +647,9 @@ def parse_patch_paths(diff: str) -> tuple[str, ...]:
     """
     paths: set[str] = set()
     for raw in _DIFF_HEADER_RE.findall(diff):
-        candidate = raw
+        # Missing files are described with this banner in the prompt. Keep the
+        # path in the boundary check even when the model echoes the banner.
+        candidate = raw.removesuffix(" (unreadable: FileNotFoundError) ---")
         if candidate.startswith('"') and candidate.endswith('"'):
             try:
                 decoded = ast.literal_eval(candidate)

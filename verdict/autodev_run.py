@@ -2142,6 +2142,29 @@ def _is_ruff_command(cmd: Sequence[str]) -> bool:
     return cmd[0] == "ruff" or (len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff")
 
 
+def _resolve_verification_command(command: Sequence[str], repo: Path) -> list[str]:
+    """Resolve verification commands to the repository environment.
+
+    Bare ``python``, ``python3``, and ``pytest`` run with the repo's ``.venv``
+    interpreter if present, else fall back to ``uv run`` so verification uses
+    the repo's installed dependencies.
+    """
+    if not command:
+        return []
+    cmd = list(command)
+    head = cmd[0]
+    venv_python = repo / ".venv" / "bin" / "python"
+    if head in ("python", "python3"):
+        if venv_python.exists():
+            return [str(venv_python), *cmd[1:]]
+        return ["uv", "run", "python", *cmd[1:]]
+    if head == "pytest":
+        if venv_python.exists():
+            return [str(venv_python), "-m", "pytest", *cmd[1:]]
+        return ["uv", "run", "pytest", *cmd[1:]]
+    return cmd
+
+
 def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     """Attempt a deterministic fix, returning whether the tier claims the unit.
 
@@ -2155,10 +2178,13 @@ def _try_mechanical(unit: WorkUnit, repo: Path, *, runner: Any) -> bool:
     # Build fixer argv using the same interpreter as the verification command
     cmd = unit.verification_command
     prefix = list(cmd[:3]) if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "ruff" else ["ruff"]
-    fix = _run([*prefix, "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
+    resolved_prefix = _resolve_verification_command(prefix, repo)
+    fix = _run([*resolved_prefix, "check", "--fix", "--", *unit.owned_files], repo, runner=runner)
     if fix.get("returncode") == 127:
         return False
-    check = _run(list(unit.verification_command), repo, runner=runner)
+    check = _run(
+        _resolve_verification_command(unit.verification_command, repo), repo, runner=runner
+    )
     return bool(check.get("returncode") == 0)
 
 
@@ -2176,7 +2202,8 @@ def _verify(
     escaped = unit.out_of_bounds(touched)
     if escaped:
         return False, f"changed files outside the unit boundary: {list(escaped)}"
-    result = _run(list(unit.verification_command), repo, runner=runner)
+    command = _resolve_verification_command(unit.verification_command, repo)
+    result = _run(command, repo, runner=runner)
     code = result.get("returncode")
     if code != 0:
         detail = (result.get("stderr") or result.get("stdout") or "").strip()[-300:]
