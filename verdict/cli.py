@@ -1312,22 +1312,40 @@ def cmd_autodev(
         collect_ruff_evidence,
         run_autodev,
     )
+    from verdict.credentials_store import resolve_api_key
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
     prepared_plan = None
     probe_headers = None
-    if not dry_run and execution_path_decision is None and allow_live and executor_model:
-        from verdict.autodev_run import prepare_live_autodev
+    selected_candidates: tuple[dict[str, Any], ...] = ()
+    if not dry_run and execution_path_decision is None and allow_live:
         from verdict.patch_executor import DEFAULT_BASE_URL
 
-        execution_path_decision, prepared_plan, probe_headers = prepare_live_autodev(
-            objective,
-            Path(repo).resolve(),
-            model=executor_model,
-            base_url=base_url or DEFAULT_BASE_URL,
-            api_key=os.getenv("OMNIROUTE_API_KEY"),
-        )
+        if executor_model:
+            from verdict.autodev_run import prepare_live_autodev
+
+            execution_path_decision, prepared_plan, probe_headers = prepare_live_autodev(
+                objective,
+                Path(repo).resolve(),
+                model=executor_model,
+                base_url=base_url or DEFAULT_BASE_URL,
+                api_key=resolve_api_key(),
+            )
+        else:
+            # No --executor-model pin: autodev selects its own free executor from
+            # the live eligibility ladder and never falls back to a paid route.
+            from verdict.autodev_run import prepare_live_autodev_selected
+
+            execution_path_decision, prepared_plan, probe_headers, selected_candidates = (
+                prepare_live_autodev_selected(
+                    objective,
+                    Path(repo).resolve(),
+                    base_url=base_url or DEFAULT_BASE_URL,
+                    api_key=resolve_api_key(),
+                )
+            )
     decision = None
+    selection_payload: dict[str, Any] | None = None
     if not dry_run or execution_path_decision is not None:
         decision = _require_launch_decision(execution_path_decision, surface="autodev CLI")
         selected_route = decision.selected_route
@@ -1344,6 +1362,13 @@ def cmd_autodev(
                 f"{selected_route.gateway!r}"
             )
         base_url = selected_route.gateway
+        # The selection is the evidence: why this route won, and what it beat.
+        selection_payload = {
+            "why_selected": decision.why_selected,
+            "selected": selected_route.route_id,
+            "rejected": [item.to_dict() for item in decision.rejected],
+            "probed": [candidate["route_id"] for candidate in selected_candidates],
+        }
     else:
         from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
         from verdict.patch_executor import DEFAULT_BASE_URL
@@ -1364,7 +1389,7 @@ def cmd_autodev(
             present.fail("consent", message)
         raise SystemExit(2)
 
-    api_key = os.getenv("OMNIROUTE_API_KEY")
+    api_key = resolve_api_key()
     evidence = collect_ruff_evidence(repo_path)
 
     if dry_run:
@@ -1420,6 +1445,8 @@ def cmd_autodev(
         payload = report.to_dict()
         if probe_headers is not None:
             payload["route_probe_headers"] = probe_headers
+        if selection_payload is not None:
+            payload["executor_selection"] = selection_payload
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         from verdict import present
@@ -1447,6 +1474,13 @@ def cmd_autodev(
         if share is not None:
             rows["expensive share"] = f"{share:.1%} of {tokens['total']} measured tokens"
         present.kv(rows)
+        if selection_payload is not None:
+            present.ok(
+                "executor",
+                f"{selection_payload['selected']}, "
+                f"{len(selection_payload['rejected'])} candidate(s) rejected",
+            )
+            present.note(str(selection_payload["why_selected"]))
         if report.unreported_units:
             present.warn(
                 "usage",

@@ -1980,6 +1980,175 @@ def prepare_live_autodev(
     )
 
 
+#: Ladder stages that mean "task-eligible": the same predicate
+#: ``EligibilityLadder.select`` uses for its ``eligible_after_probe`` count and
+#: ``routing_render`` uses for "admitted" (TASK_ELIGIBLE includes the winner).
+_ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
+
+
+def prepare_live_autodev_selected(
+    objective: str, repo: Path, *, base_url: str, api_key: str | None, top_n: int = 3
+) -> tuple[Any, DecompositionResult, dict[str, str], tuple[dict[str, Any], ...]]:
+    """Select free executor candidates from the live eligibility ladder, probe them, plan, mint authority.
+
+    :func:`prepare_live_autodev` probes one explicitly pinned route. This asks
+    the live ladder for its best free routes, probes the top ``top_n`` of them,
+    and offers every route that answered correctly to the optimizer, so the
+    decision carries ``why_selected`` and the losing candidates in ``rejected``.
+    Candidates stay in ladder order for the caller's retry order. There is no
+    paid or frontier fallback: without a free route that answers correctly this
+    raises instead of launching anything.
+    """
+    from verdict.actions.verified_models import selection_refresh_hook
+    from verdict.execution_path import optimize_execution_path
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.http_safety import open_no_redirect
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements
+    from verdict.orchestration.eligibility_report import build_selector
+    from verdict.patch_executor import extract_content
+    from verdict.probes import openai_probe_transport
+    from verdict.subagent_resolver import public_execution_path_request
+
+    gateway = normalize_omniroute_origin(base_url)
+    requirements = TaskRequirements(
+        required_capabilities=frozenset({"tools"}),
+        coding=True,
+        reasoning=False,
+        frontier_worthy=False,
+    )
+    refresh_hook = selection_refresh_hook(gateway)
+    extra: dict[str, Any] = {}
+    if refresh_hook is not None:
+        extra["refresh_hook"] = refresh_hook
+    # ``prefer=""`` leaves ``prefer_providers`` empty, so no provider family wins
+    # by name: capacity class, capability slack, price and quota decide the rank.
+    selector = build_selector(
+        gateway,
+        scope="",
+        prefer="",
+        required_capabilities=requirements.required_capabilities,
+        sync_visibility=False,
+        **extra,
+    )
+    _chosen, verdicts = selector.select(
+        requirements, now=datetime.datetime.now(datetime.timezone.utc)
+    )
+    # ``select`` probes and returns every assessed route; the ladder order is the
+    # rank it assigned (lower is better, ``None`` = never ranked).
+    ordered = sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0))
+    ladder: list[Any] = []
+    for verdict in ordered:
+        reached = getattr(verdict.reached, "value", None)
+        route_id = str(verdict.route_id)
+        # A concrete route is provider/model, exactly as the pinned path requires.
+        is_free = route_id.endswith(":free") or verdict.capacity_class is CapacityClass.FREE
+        if reached in _ELIGIBLE_STAGES and is_free and "/" in route_id:
+            ladder.append(verdict)
+            if len(ladder) == top_n:
+                break
+    if not ladder:
+        raise AutodevError(
+            "autodev selection found no eligible free executor route (no paid or frontier fallback)"
+        )
+
+    started = time.time()
+    candidates: list[dict[str, Any]] = []
+    dropped: list[dict[str, str]] = []
+    for route in ladder:
+        route_id = str(route.route_id)
+        headers: dict[str, str] = {}
+
+        def opener(request: Any, *, timeout: float, _sink: dict[str, str] = headers) -> Any:
+            response = open_no_redirect(request, timeout=timeout)
+            _sink.update(
+                {
+                    k.lower(): v
+                    for k, v in response.headers.items()
+                    if k.lower().startswith("x-omniroute-")
+                }
+            )
+            return response
+
+        transport = openai_probe_transport(base_url, api_key=api_key, opener=opener)
+        probe = transport(
+            route_id,
+            {
+                "model": route_id,
+                "messages": [{"role": "user", "content": "Reply with exactly OK. No explanation."}],
+                "max_tokens": 1024,
+                "temperature": 0,
+            },
+            120.0,
+        )
+        served = headers.get("x-omniroute-model")
+        cost = headers.get("x-omniroute-response-cost")
+        try:
+            zero_cost = cost is not None and float(cost) == 0
+        except ValueError:
+            zero_cost = False
+        reason = ""
+        if probe.get("status_code") != 200:
+            reason = f"http_{probe.get('status_code')}"
+        elif extract_content(probe["body"]).strip() != "OK":
+            reason = "content"
+        elif served != route_id.split("/", 1)[1]:
+            reason = "identity"
+        elif cost is None:
+            reason = "missing_cost_header"
+        elif not zero_cost:
+            reason = f"cost_{cost}"
+        if reason:
+            dropped.append({"route_id": route_id, "reason": reason})
+            continue
+        candidates.append(
+            {
+                "strategy": "direct_cheap",
+                "route_id": route_id,
+                "gateway": base_url,
+                "provider": route_id.split("/", 1)[0],
+                "model": route_id,
+                "eligible": True,
+                "is_free": True,
+                "certification_state": "ready",
+                "certification_freshness": "fresh",
+                "probe_observed_at": time.time(),
+                "probe_headers": headers,
+            }
+        )
+    if not candidates:
+        detail = ", ".join(f"{item['route_id']}={item['reason']}" for item in dropped)
+        raise AutodevError(
+            f"autodev selection probed {len(dropped)} free route(s) and none answered "
+            f"correctly: {detail}"
+        )
+
+    plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
+        objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
+    )
+    if time.time() - started > 3600:
+        raise AutodevError("autodev probe expired while planning (one-hour maximum)")
+    binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
+    request = {
+        "schema_version": "1",
+        "trajectory_id": f"autodev:{binding}",
+        "slice_id": ",".join(unit.unit_id for unit in plan.units),
+        "acceptance_criteria": [unit.objective for unit in plan.units],
+        "proof_criteria": [" ".join(unit.verification_command) for unit in plan.units],
+        "candidates": candidates,
+    }
+    decision = optimize_execution_path(public_execution_path_request(request, task=objective))
+    ladder_order = tuple(candidates)
+    selected_headers = next(
+        (
+            dict(item["probe_headers"])
+            for item in ladder_order
+            if item["route_id"] == decision.selected_candidate_id
+        ),
+        {},
+    )
+    return decision, plan, selected_headers, ladder_order
+
+
 def run_autodev(
     objective: str,
     repo_path: str | Path,
@@ -2057,6 +2226,8 @@ def run_autodev(
                 "execution_path_task_slice_id": decision.task_slice_id,
                 "execution_path_strategy": decision.selected_strategy,
                 "execution_path_selected_route": decision.selected_route.to_dict(),
+                "execution_path_why_selected": decision.why_selected,
+                "execution_path_rejected": [item.to_dict() for item in decision.rejected],
                 **outcome.to_dict(),
                 "served_headers": executor.response_headers,
                 "verification_command": list(unit.verification_command),

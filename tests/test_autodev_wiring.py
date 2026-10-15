@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ import pytest
 from verdict.autodev_run import AUTODEV_SCOPE, AutodevError
 from verdict.autodev_run import run_autodev as _run_autodev
 from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
+from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
 from verdict.patch_executor import PatchExecutor, PatchExecutorConfig
 from verdict.receipt_store import ReceiptStore
 from verdict.session_economics import ConcreteRoute
@@ -83,7 +84,13 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _decomposer(plan: Any, *, usage: dict[str, int] | None = None) -> Decomposer:
+def _decomposer(
+    plan: Any,
+    *,
+    usage: dict[str, int] | None = None,
+    model: str = "cheap/model",
+    base_url: str = "http://127.0.0.1:20128/v1",
+) -> Decomposer:
     content = plan if isinstance(plan, str) else json.dumps(plan)
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
@@ -92,13 +99,16 @@ def _decomposer(plan: Any, *, usage: dict[str, int] | None = None) -> Decomposer
             body["usage"] = usage
         return {"status_code": 200, "body": body}
 
-    return Decomposer(
-        DecompositionConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
-        transport=transport,
-    )
+    return Decomposer(DecompositionConfig(model=model, base_url=base_url), transport=transport)
 
 
-def _executor(repo: Path, diffs: dict[str, str]) -> PatchExecutor:
+def _executor(
+    repo: Path,
+    diffs: dict[str, str],
+    *,
+    model: str = "cheap/model",
+    base_url: str = "http://127.0.0.1:20128/v1",
+) -> PatchExecutor:
     """Serve a diff per unit, keyed by the owned file named in the prompt."""
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
@@ -113,9 +123,7 @@ def _executor(repo: Path, diffs: dict[str, str]) -> PatchExecutor:
         }
 
     return PatchExecutor(
-        repo,
-        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
-        transport=transport,
+        repo, PatchExecutorConfig(model=model, base_url=base_url), transport=transport
     )
 
 
@@ -579,3 +587,325 @@ def test_live_bootstrap_requires_observed_probe_and_binds_plan(
     assert decision.task_slice_id == "fix-a,fix-b"
     assert len(plan.units) == 2
     assert headers["x-omniroute-response-cost"] == "0"
+
+
+# AD-03: without an --executor-model pin, autodev selects its own free executor.
+
+FREE_A = "free/alpha:free"
+FREE_B = "free/beta:free"
+GATEWAY = "http://127.0.0.1:20128/v1"
+
+
+def _route_verdict(
+    route_id: str,
+    *,
+    rank: int | None,
+    capacity: CapacityClass = CapacityClass.FREE,
+    reached: EligibilityStage | None = EligibilityStage.TASK_ELIGIBLE,
+    failed_stage: EligibilityStage | None = None,
+    reason: str = "ranked",
+) -> RouteVerdict:
+    return RouteVerdict(
+        route_id=route_id,
+        provider=route_id.split("/", 1)[0],
+        reached=reached,
+        failed_stage=failed_stage,
+        reason=reason,
+        capacity_class=capacity,
+        rank=rank,
+    )
+
+
+def _ladder(verdicts: Sequence[RouteVerdict], built: dict[str, Any] | None = None) -> Any:
+    """Fake ``build_selector`` result whose ``select`` returns ``verdicts``."""
+
+    class _Selector:
+        def select(self, requirements: Any, *, now: Any) -> Any:
+            return None, tuple(verdicts)
+
+    def build_selector(gateway: str, **kwargs: Any) -> Any:
+        if built is not None:
+            built["gateway"] = gateway
+            built.update(kwargs)
+        return _Selector()
+
+    return build_selector
+
+
+def _scripted_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    answers: Mapping[str, str] | None = None,
+    costs: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Scripted probe transport per route; returns the list of probed route ids."""
+    probed: list[str] = []
+    served: dict[str, str] = {}
+    reply = dict(answers or {})
+    price = dict(costs or {})
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = dict(served)
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            probed.append(model)
+            served["x-omniroute-model"] = model.split("/", 1)[1]
+            served["x-omniroute-response-cost"] = price.get(model, "0")
+            kwargs["opener"](None, timeout=1)
+            content = reply.get(model, "OK")
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    return probed
+
+
+def _two_candidate_decision() -> Any:
+    """A real optimizer decision over two probed-OK free routes."""
+    from verdict.execution_path import optimize_execution_path
+    from verdict.subagent_resolver import public_execution_path_request
+
+    def candidate(route_id: str) -> dict[str, Any]:
+        return {
+            "strategy": "direct_cheap",
+            "route_id": route_id,
+            "gateway": GATEWAY,
+            "provider": route_id.split("/", 1)[0],
+            "model": route_id,
+            "eligible": True,
+            "is_free": True,
+            "certification_state": "ready",
+            "certification_freshness": "fresh",
+            "probe_observed_at": 1_760_000_000.0,
+            "probe_headers": {"x-omniroute-response-cost": "0"},
+        }
+
+    request = {
+        "schema_version": "1",
+        "trajectory_id": "traj-ad03-selection",
+        "slice_id": "fix-a",
+        "acceptance_criteria": ["drop the unused import in a.py"],
+        "proof_criteria": ["ruff check --select F401 a.py"],
+        "candidates": [candidate(FREE_A), candidate(FREE_B)],
+    }
+    return optimize_execution_path(public_execution_path_request(request, task="fix ruff errors"))
+
+
+def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    # Deliberately out of rank order: rank, not list order, is the ladder.
+    verdicts = [
+        _route_verdict(FREE_B, rank=1, reached=EligibilityStage.SELECTED, reason="selected"),
+        _route_verdict("cc/paid-model", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=0),
+        _route_verdict(
+            "free/dead:free",
+            rank=3,
+            reached=EligibilityStage.ENTITLED,
+            failed_stage=EligibilityStage.HEALTHY,
+            reason="unhealthy",
+        ),
+    ]
+    built: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts, built)
+    )
+    probed = _scripted_probe(monkeypatch)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, plan, headers, candidates = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    # Only free, task-eligible routes are probed, in rank order.
+    assert probed == [FREE_A, FREE_B]
+    assert built["prefer"] == ""
+    assert built["required_capabilities"] == frozenset({"tools"})
+    assert [item["route_id"] for item in candidates] == [FREE_A, FREE_B]
+    assert len({item["route_id"] for item in candidates}) == 2
+    assert all(item["probe_headers"]["x-omniroute-response-cost"] == "0" for item in candidates)
+    assert decision.selected_route.model in {FREE_A, FREE_B}
+    loser = {FREE_A, FREE_B} - {decision.selected_route.model}
+    assert {item.candidate_id for item in decision.rejected} == loser
+    assert decision.why_selected.strip()
+    assert headers["x-omniroute-response-cost"] == "0"
+    assert len(plan.units) == 2
+
+
+def test_prepare_live_autodev_selected_fails_closed_without_free_route(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("cc/paid-model", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "free/dead:free",
+            rank=1,
+            reached=EligibilityStage.ENTITLED,
+            failed_stage=EligibilityStage.HEALTHY,
+            reason="unhealthy",
+        ),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+
+    def forbid_planning(config: Any) -> Any:
+        pytest.fail("without a free route there is nothing to plan")
+
+    monkeypatch.setattr(autodev, "Decomposer", forbid_planning)
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+
+    message = str(excinfo.value)
+    assert "no paid or frontier fallback" in message
+    assert probed == []
+    assert "cc/" not in message
+    assert "anthropic/" not in message
+
+
+def test_prepare_live_autodev_selected_drops_route_that_fails_probe(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch, answers={FREE_A: "not OK"})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == [FREE_A, FREE_B]
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+    assert decision.selected_route.model == FREE_B
+    # A route that failed its probe never becomes a candidate.
+    assert {item.candidate_id for item in decision.rejected} == set()
+
+    # The recorded drop reason is reported when nothing survives probing.
+    both_bad = _scripted_probe(monkeypatch, costs={FREE_A: "0.02", FREE_B: "0.02"})
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+    message = str(excinfo.value)
+    assert both_bad == [FREE_A, FREE_B]
+    assert "probed 2 free route" in message
+    assert f"{FREE_A}=" in message and f"{FREE_B}=" in message
+
+
+def test_run_autodev_receipt_records_why_selected_and_rejected(repo: Path, tmp_path: Path) -> None:
+    db = tmp_path / "receipts.db"
+    decision = _two_candidate_decision()
+    selected = decision.selected_route.model
+    dropped = [item.candidate_id for item in decision.rejected]
+
+    run_autodev(
+        "fix ruff errors",
+        repo,
+        execution_path_decision=decision,
+        store=ReceiptStore(db),
+        decomposer=_decomposer([PLAN[0]], model=selected),
+        executor=_executor(repo, {"a.py": A_DIFF}, model=selected),
+        mechanical=False,
+    )
+
+    payload = ReceiptStore(db).query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    why = payload["execution_path_why_selected"]
+    rejected = payload["execution_path_rejected"]
+    assert isinstance(why, str) and why.strip()
+    assert why != "[REDACTED]"
+    assert rejected != "[REDACTED]"
+    assert [item["candidate_id"] for item in rejected] == dropped
+    assert all(item["reason"] and item["reason"] != "[REDACTED]" for item in rejected)
+
+
+def test_cmd_autodev_without_pin_uses_selected_route(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import verdict.autodev_run as autodev
+    import verdict.cli as cli
+
+    decision = _two_candidate_decision()
+    selected = decision.selected_route.model
+    planner = _decomposer(PLAN, model=selected)
+    prepared = planner.decompose("fix ruff errors", repo_root=repo)
+    calls: dict[str, Any] = {}
+
+    def fake_selected(objective: str, repo_path: Path, **kwargs: Any) -> Any:
+        calls["objective"] = objective
+        calls["repo"] = repo_path
+        calls.update(kwargs)
+        headers = {"x-omniroute-response-cost": "0"}
+        candidates = (
+            {"route_id": FREE_A, "probe_headers": headers},
+            {"route_id": FREE_B, "probe_headers": headers},
+        )
+        return decision, prepared, headers, candidates
+
+    monkeypatch.setattr(autodev, "prepare_live_autodev_selected", fake_selected)
+    monkeypatch.setattr("verdict.credentials_store.resolve_api_key", lambda: "fake-key")
+    configs: dict[str, Any] = {}
+
+    def decomposer_factory(config: Any) -> Any:
+        configs["decomposer"] = config
+        return _decomposer(PLAN, model=config.model, base_url=config.base_url)
+
+    def executor_factory(repo_path: Path, config: Any) -> Any:
+        configs["executor"] = config
+        return _executor(
+            repo_path,
+            {"a.py": A_DIFF, "b.py": ESCAPING_DIFF},
+            model=config.model,
+            base_url=config.base_url,
+        )
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+    monkeypatch.setattr(autodev, "PatchExecutor", executor_factory)
+
+    cli.cmd_autodev(
+        "fix ruff errors",
+        str(repo),
+        orchestrator_model=None,
+        executor_model=None,
+        base_url=None,
+        output_json=True,
+        allow_live=True,
+        dry_run=False,
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    selection = payload["executor_selection"]
+    assert selection["why_selected"].strip()
+    assert selection["selected"] == decision.selected_route.route_id
+    assert selection["probed"] == [FREE_A, FREE_B]
+    assert [item["candidate_id"] for item in selection["rejected"]] == [
+        item.candidate_id for item in decision.rejected
+    ]
+    # The command line carried no pin: the SELECTED route built both models.
+    assert calls["api_key"] == "fake-key"
+    assert configs["executor"].model == selected
+    assert configs["decomposer"].model == selected
+    assert configs["executor"].base_url == GATEWAY
