@@ -82,11 +82,18 @@ def _resolve_default_orchestrator_model() -> str:
 
 
 AUTODEV_SCOPE = "autodev"
+EXECUTOR_RETRIES_PER_UNIT = 1
 _STABLE_CONTEXT_OBSERVED_AT = "1970-01-01T00:00:00Z"
 # Measured token counts, not secrets: without this the receipt store's
 # ``token``/``prompt``/``completion`` key patterns redact the very numbers the
 # expensive/cheap split is supposed to be evidence for.
-_USAGE_ALLOWLIST = ("usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens")
+_USAGE_ALLOWLIST = (
+    "usage.prompt_tokens",
+    "usage.completion_tokens",
+    "usage.total_tokens",
+    "executor_retry",
+    "retry_served_headers",
+)
 _PACKET_RECEIPT_ALLOWLIST = (
     *_USAGE_ALLOWLIST,
     "token_budget",
@@ -2190,6 +2197,8 @@ def run_autodev(
     probe_dropped: Sequence[Mapping[str, str]] = (),
     mechanical: bool = True,
     runner: Any = subprocess.run,
+    retry_routes: Sequence[Mapping[str, Any]] | None = None,
+    retry_executor_factory: Callable[[Mapping[str, Any]], PatchExecutor] | None = None,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
     # execution-path authority is the only strategy/route authority for automatic worker launch.
@@ -2233,32 +2242,87 @@ def run_autodev(
     )
     ledger = store if store is not None else ReceiptStore(repo / ".verdict" / "receipts.db")
 
+    # Normalize and validate the retry ladder
+    retry_ladder = tuple(retry_routes or ())
+    _retry_executors: dict[str, PatchExecutor] = {}
+
+    if retry_ladder:
+        if retry_executor_factory is None:
+
+            def _default_retry_executor_factory(route: Mapping[str, Any]) -> PatchExecutor:
+                return PatchExecutor(
+                    repo,
+                    replace(
+                        executor.config, model=str(route["model"]), base_url=str(route["gateway"])
+                    ),
+                )
+
+            retry_executor_factory = _default_retry_executor_factory
+
+        # Validate each entry: fail closed on malformed ladder entries
+        for entry in retry_ladder:
+            if not isinstance(entry, Mapping):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+            model = entry.get("model")
+            gateway = entry.get("gateway")
+            if not model or not isinstance(model, str):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+            if not gateway or not isinstance(gateway, str):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+
+        # Drop entries matching the selected model
+        retry_ladder = tuple(r for r in retry_ladder if str(r["model"]) != executor.config.model)
     outcomes: list[UnitOutcome] = []
     receipt_ids: list[str] = []
     for unit in plan.units:
-        outcome = _run_unit(unit, repo, executor, mechanical=mechanical, runner=runner)
+        outcome, executor_failed = _run_unit_once(
+            unit, repo, executor, mechanical=mechanical, runner=runner
+        )
+        retry_note: dict[str, Any] | None = None
+        if executor_failed and retry_ladder:
+            route = next(iter(retry_ladder), None)
+            if route is not None:
+                key = str(route["model"])
+                if key not in _retry_executors:
+                    _retry_executors[key] = cast(
+                        Callable[[Mapping[str, Any]], PatchExecutor], retry_executor_factory
+                    )(route)
+                retry_executor = _retry_executors[key]
+                retry_outcome, _ = _run_unit_once(
+                    unit, repo, retry_executor, mechanical=False, runner=runner
+                )
+                retry_note = {
+                    "failed_model": executor.config.model,
+                    "failed_reason": outcome.reason,
+                    "retry_model": retry_executor.config.model,
+                }
+                outcome = retry_outcome
         outcomes.append(outcome)
+        record_payload: dict[str, Any] = {
+            "objective": objective,
+            "orchestrator_model": plan.model,
+            "planner_attempts": list(plan.attempts),
+            "strategy_authority": "verdict.execution_path.optimize_execution_path",
+            "execution_path_decision_digest": decision.decision_digest,
+            "execution_path_trajectory_id": decision.trajectory_id,
+            "execution_path_task_slice_id": decision.task_slice_id,
+            "execution_path_strategy": decision.selected_strategy,
+            "execution_path_selected_route": decision.selected_route.to_dict(),
+            "execution_path_why_selected": decision.why_selected,
+            "execution_path_rejected": [item.to_dict() for item in decision.rejected],
+            "executor_probe_dropped": [dict(item) for item in probe_dropped],
+            **outcome.to_dict(),
+            "served_headers": executor.response_headers,
+            "verification_command": list(unit.verification_command),
+            "owned_files": list(unit.owned_files),
+        }
+        if retry_note is not None:
+            record_payload["executor_retry"] = retry_note
+            record_payload["retry_served_headers"] = retry_executor.response_headers
         record = ledger.put_receipt(
             "outcome",
             AUTODEV_SCOPE,
-            {
-                "objective": objective,
-                "orchestrator_model": plan.model,
-                "planner_attempts": list(plan.attempts),
-                "strategy_authority": "verdict.execution_path.optimize_execution_path",
-                "execution_path_decision_digest": decision.decision_digest,
-                "execution_path_trajectory_id": decision.trajectory_id,
-                "execution_path_task_slice_id": decision.task_slice_id,
-                "execution_path_strategy": decision.selected_strategy,
-                "execution_path_selected_route": decision.selected_route.to_dict(),
-                "execution_path_why_selected": decision.why_selected,
-                "execution_path_rejected": [item.to_dict() for item in decision.rejected],
-                "executor_probe_dropped": [dict(item) for item in probe_dropped],
-                **outcome.to_dict(),
-                "served_headers": executor.response_headers,
-                "verification_command": list(unit.verification_command),
-                "owned_files": list(unit.owned_files),
-            },
+            record_payload,
             provenance={"source": "verdict.autodev", "authority": "observed"},
             allowlist=_USAGE_ALLOWLIST,
         )
@@ -2278,10 +2342,13 @@ def run_autodev(
     )
 
 
-def _run_unit(
+def _run_unit_once(
     unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
-) -> UnitOutcome:
-    """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
+) -> tuple[UnitOutcome, bool]:
+    """Try one tier and return (outcome, executor_failed).
+
+    executor_failed is True if the model tier failed (attempt not applied or exception).
+    """
     started = time.monotonic()
     # Units run in sequence against one tree, so earlier units leave it dirty.
     # Attribution is the delta against this snapshot, not the whole dirty set.
@@ -2290,31 +2357,57 @@ def _run_unit(
     if mechanical and _try_mechanical(unit, repo, runner=runner):
         touched = _touched_since(repo, before, runner=runner)
         ok, reason = _verify(unit, repo, touched, runner=runner)
-        return UnitOutcome(
-            unit_id=unit.unit_id,
-            tier="mechanical",
-            model="none",
-            verified=ok,
-            reason=reason,
-            changed_files=touched,
-            latency_ms=int((time.monotonic() - started) * 1000),
+        return (
+            UnitOutcome(
+                unit_id=unit.unit_id,
+                tier="mechanical",
+                model="none",
+                verified=ok,
+                reason=reason,
+                changed_files=touched,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            ),
+            False,
         )
 
     # The mechanical tier may have written a partial repair before declining the
     # unit. Those edits are on disk either way, so they belong in this unit's
     # attribution rather than going unreported or landing on a later unit.
-    attempt = executor.execute_unit(unit)
-    if not attempt.applied:
-        return _from_attempt(
-            attempt,
+    try:
+        attempt = executor.execute_unit(unit)
+    except Exception as exc:
+        outcome = UnitOutcome(
+            unit_id=unit.unit_id,
+            tier="model",
+            model=executor.config.model,
             verified=False,
-            reason=attempt.reason,
+            reason=f"executor error: {type(exc).__name__}: {exc}",
             changed_files=_touched_since(repo, before, runner=runner),
+        )
+        return (outcome, True)
+
+    if not attempt.applied:
+        return (
+            _from_attempt(
+                attempt,
+                verified=False,
+                reason=attempt.reason,
+                changed_files=_touched_since(repo, before, runner=runner),
+            ),
+            True,
         )
 
     touched = _touched_since(repo, before, runner=runner)
     ok, reason = _verify(unit, repo, touched, runner=runner)
-    return _from_attempt(attempt, verified=ok, reason=reason, changed_files=touched)
+    return (_from_attempt(attempt, verified=ok, reason=reason, changed_files=touched), False)
+
+
+def _run_unit(
+    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
+) -> UnitOutcome:
+    """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
+    outcome, _ = _run_unit_once(unit, repo, executor, mechanical=mechanical, runner=runner)
+    return outcome
 
 
 def _from_attempt(
