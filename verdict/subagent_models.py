@@ -50,6 +50,9 @@ SUBAGENT_ROLE_REQUIREMENTS: dict[str, CandidateRequirements] = {
         required=frozenset({"tools", "reasoning"}),
         budget_remaining=5.00,
         max_concurrency=3,
+        # The gateway publishes no token headroom; a fresh census passport is
+        # the measured substitute (BOD-387, D23). Without one the row stays DEGRADED.
+        passport_waives_unmeasured_tokens=True,
         estimated_tokens=50000,
         estimated_cost=1.00,
     ),
@@ -57,6 +60,7 @@ SUBAGENT_ROLE_REQUIREMENTS: dict[str, CandidateRequirements] = {
         required=frozenset({"tools", "reasoning"}),
         budget_remaining=10.00,
         max_concurrency=2,
+        passport_waives_unmeasured_tokens=True,  # see "worker"
         estimated_tokens=80000,
         estimated_cost=2.00,
     ),
@@ -158,12 +162,15 @@ class SubagentModelSelector:
             api_key=api_key,
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
+            runtime_sources={"health", "connections"} if management_token else {"health"},
             allow_private_hosts={"127.0.0.1", "::1"},
             max_response_bytes=16_777_216,
         )
 
+        from verdict.prove_at_rest_legacy import load_healthy_passports
+
         adapter: Callable[[CandidateRequirements], AvailabilityReport] = (
-            OmniRouteAvailabilityAdapter(transport).evaluate
+            OmniRouteAvailabilityAdapter(transport, passports=load_healthy_passports).evaluate
         )
 
         # Enable probe-enriched adapter in production
@@ -184,7 +191,7 @@ class SubagentModelSelector:
                 probe_base_url, api_key=os.getenv("LLMGATE_PROBE_API_KEY") or api_key
             )
             adapter = ProbeEnrichedAdapter(
-                OmniRouteAvailabilityAdapter(transport),
+                OmniRouteAvailabilityAdapter(transport, passports=load_healthy_passports),
                 probe_transport=probe_transport,
                 enabled=True,
                 live=True,
