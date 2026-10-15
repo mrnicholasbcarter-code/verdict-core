@@ -491,9 +491,9 @@ def _merge_connections(
             for lockout in record.get("lockouts") or ():
                 if not isinstance(lockout, Mapping) or not isinstance(lockout.get("model"), str):
                     continue
-                remaining = _integer(lockout.get("remainingMs"))
-                if remaining:
-                    current[lockout["model"]] = remaining
+                lockout_ms = _integer(lockout.get("remainingMs"))
+                if lockout_ms:
+                    current[lockout["model"]] = lockout_ms
             locked = (
                 current
                 if locked is None
