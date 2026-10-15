@@ -176,7 +176,7 @@ def sanitize_evidence(item: dict[str, Any]) -> dict[str, Any]:
         "rateLimitedUntil", item["rateLimitedUntil"]
     ):
         item["rateLimitedUntil"] = _UNPARSABLE_UNTIL
-    item["plan_label"] = "free" if "free" in item.get("plan_label", "").lower() else ""
+    item["plan_label"] = "free" if "free" in (item.get("plan_label") or "").lower() else ""
     return {field: value if _valid(field, value) else None for field, value in item.items()}
 
 
