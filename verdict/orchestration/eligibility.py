@@ -285,7 +285,8 @@ class EligibilityLadder:
         # not race on the shared state dict or its on-disk persistence.
         self._persist_lock = threading.Lock()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
-        self._last_select_stats: dict[str, int] = {}
+        # Per thread: concurrent select() calls (BOD-341) must each read their own stats.
+        self._select_stats = threading.local()
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
@@ -959,7 +960,7 @@ class EligibilityLadder:
         Keys: ``probed``, ``stale``, ``healthy_after_probe``,
         ``eligible_after_probe``.  Empty dict before the first call.
         """
-        return dict(self._last_select_stats)
+        return dict(getattr(self._select_stats, "value", {}))
 
     def select(
         self, requirements: TaskRequirements, *, now: datetime
@@ -1161,7 +1162,7 @@ class EligibilityLadder:
             for v in final_verdicts
             if v.reached is not None and v.reached.value in ("TASK_ELIGIBLE", "SELECTED")
         )
-        self._last_select_stats = {
+        self._select_stats.value = {
             "probed": probes_used,
             "stale": stale,
             "healthy_after_probe": healthy_after,
