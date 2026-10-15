@@ -59,7 +59,11 @@ def default_model_catalog() -> list[Any]:
 
 
 #: Interactive-CLI default provider set.
-_CLI_DEFAULT_PROVIDERS = {"public_ollama": "http://localhost:11434/v1"}
+# The local gateway is the default so free-tier admission runs.
+_CLI_DEFAULT_PROVIDERS = {
+    "omniroute": "http://localhost:20128/v1",
+    "public_ollama": "http://localhost:11434/v1",
+}
 
 
 def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
