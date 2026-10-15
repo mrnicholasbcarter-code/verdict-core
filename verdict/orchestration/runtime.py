@@ -49,6 +49,7 @@ from verdict.orchestration.contracts import (
     OrchestrationError,
     Reviewer,
     ReviewResult,
+    RouteVerdict,
     RunOutcome,
     TaskRequirements,
     WorkerExecutor,
@@ -345,6 +346,13 @@ class DagRuntime:
             attempt=run.attempt,
             **data,
         )
+
+    def _select_with_stats(
+        self, requirements: TaskRequirements, now: datetime
+    ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...], dict[str, int]]:
+        """Select and read post-probe stats (BOD-203) on the same worker thread."""
+        choice, considered = self.selector.select(requirements, now=now)
+        return choice, considered, getattr(self.selector, "last_select_stats", {})
 
     def route_load(self, route_id: str) -> int:
         return sum(1 for r in self.inflight.values() if r == route_id)
@@ -683,10 +691,14 @@ class DagRuntime:
                 exclude_routes=frozenset(tried),
                 exclude_pools=frozenset(run.excluded_pools),
             )
-            choice, considered = self.selector.select(requirements, now=self.now())
+            # BOD-341: selection reads the health cache/inventory and can take
+            # seconds. Running it inline here would block the whole event loop
+            # (dispatch, slot release, other nodes' driving) for that long, so
+            # --max-parallel is never reached. Run it in a thread instead.
+            choice, considered, _post = await asyncio.to_thread(
+                self._select_with_stats, requirements, self.now()
+            )
             counts = _ladder_counts(considered)
-            # Post-probe statistics for eligibility events (BOD-203).
-            _post: dict[str, int] = getattr(self.selector, "last_select_stats", {})
             if _post:
                 counts = {**counts, **_post}
             # BOD-277: per-route eligibility verdicts for trace drill-down.

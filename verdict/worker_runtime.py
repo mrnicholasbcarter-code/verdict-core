@@ -858,7 +858,9 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             or os.environ.get("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get("VERDICT_OMNIROUTE_API_KEY")
+        from verdict.credentials_store import resolve_api_key
+
+        api_key = resolve_api_key()
         management_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
         usage_api_key_id = os.environ.get("OMNIROUTE_USAGE_API_KEY_ID")
         transport = OmniRouteHTTPTransport(

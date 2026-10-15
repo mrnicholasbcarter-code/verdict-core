@@ -644,7 +644,7 @@ described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
 | Reviewer exclusion from final contributing implementer routes | [`verdict/orchestration/runtime.py`](verdict/orchestration/runtime.py); recorded PASS alone may lack raw non-skipped coverage | No competitor-wide absence asserted |
 | Fallback / retry chains across providers | **Bounded, admitted-only.** The relay tries at most 3 gate-admitted alternatives on a retryable failure ([`verdict/relay.py`](verdict/relay.py) `build_attempts`, ADR-016); orchestration recovery reassigns within the node's eligible pool ([`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py)). There is no configured static fallback chain, and an excluded model is never tried | Other products need dated documentation for a feature-by-feature comparison |
 | Load balancing across providers | No request-level load balancing. The orchestration selector spreads probes round-robin across providers within a capacity tier and caps concurrent nodes per route | No claim about specific gateway implementations |
-| OpenTelemetry tracing | **Optional.** `verdict[tracing]` + `VERDICT_TRACING=1` enables OTLP span export. Metadata keys exclude prompt/header/key fields; producers must sanitize free-text `detail` values. | Available gateway support varies |
+| OpenTelemetry tracing | **Optional.** `verdict-core[tracing]` + `VERDICT_TRACING=1` enables OTLP span export. Metadata keys exclude prompt/header/key fields; producers must sanitize free-text `detail` values. | Available gateway support varies |
 | Multi-provider inventory / transport | Delegated to OmniRoute (`verdict/omniroute.py`) — Verdict is transport-and-inventory-agnostic on purpose, not a from-scratch gateway | Gateway capabilities vary by product/version |
 
 **Three explicit non-goals, stated rather than left ambiguous:**
@@ -653,7 +653,7 @@ described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#admission-boundary).
   the relay tries at most 3 admitted alternatives when the request is safe to retry, and
   [`verdict/orchestration/recovery.py`](verdict/orchestration/recovery.py) reassigns within the
   same node's eligible pool. Verdict does not walk a configured list of providers hoping one answers.
-- **OpenTelemetry is optional.** Install `verdict[tracing]` and set `VERDICT_TRACING=1`.
+- **OpenTelemetry is optional.** Install `verdict-core[tracing]` and set `VERDICT_TRACING=1`.
   See `verdict/tracing.py`.
 - **Metadata authority differs by path.** Verdict owns an independent metadata store
   ([ADR-032](docs/adr/ADR-032-core-model-metadata-store.md)) on the metadata-aware single-route
@@ -958,7 +958,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log
   changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage.
   Neither the receipt nor the log is signed or externally anchored against replacing both files.
-- **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict[tracing]`).** See
+- **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See
   [How Verdict differs](#how-verdict-differs).
 - **Version 0.5.0, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR.

@@ -896,12 +896,14 @@ def openai_probe_transport(
     opener: Any = open_no_redirect,
     max_response_bytes: int = 1_048_576,
     session_id: str | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> ProbeTransport:
     """Create a small stdlib OpenAI-compatible transport.
 
     ``api_key`` is supplied explicitly and never logged.  This helper does not
     read environment variables, making credential flow auditable at the caller.
     ``session_id`` is sent as ``X-Session-Id`` when provided.
+    ``extra_headers`` are sent as given on every request.
     """
     if max_response_bytes < 1:
         raise ValueError("max_response_bytes must be positive")
@@ -915,6 +917,8 @@ def openai_probe_transport(
             headers["Authorization"] = f"Bearer {api_key}"
         if session_id:
             headers["X-Session-Id"] = session_id
+        if extra_headers:
+            headers.update(extra_headers)
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(dict(payload), separators=(",", ":")).encode("utf-8"),

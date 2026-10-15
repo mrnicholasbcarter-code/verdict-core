@@ -145,7 +145,9 @@ class SubagentModelSelector:
             or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        api_key = os.getenv("OMNIROUTE_API_KEY")
+        from verdict.credentials_store import resolve_api_key
+
+        api_key = resolve_api_key()
         management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
         usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
 

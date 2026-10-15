@@ -152,10 +152,11 @@ def _task_profile(goal: str, repo: Path, graph: WorkGraph | None) -> dict[str, A
     }
 
 
-def resolve_api_key(env_name: str = "VERDICT_OMNIROUTE_API_KEY") -> str | None:
-    """Gateway key from the environment; never logged, never persisted by Verdict."""
-    value = os.environ.get(env_name, "").strip()
-    return value or None
+def resolve_api_key() -> str | None:
+    """Gateway key with the credentials_store precedence; never logged or persisted."""
+    from verdict.credentials_store import resolve_api_key as resolve_gateway_api_key
+
+    return resolve_gateway_api_key()
 
 
 def _get_json(url: str, *, api_key: str | None, timeout: float) -> Any:

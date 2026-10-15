@@ -60,7 +60,10 @@ def test_http_transport_fetches_exact_catalog_and_health_operations() -> None:
         CandidateRequirements(required=frozenset({"tools"})), now=NOW
     )
 
-    assert requests == [("/v1/models", "Bearer catalog-secret"), ("/api/monitoring/health", None)]
+    assert requests == [
+        ("/v1/models", "Bearer catalog-secret"),
+        ("/api/monitoring/health", "Bearer management-secret"),
+    ]
     assert report.candidates[0].state is AvailabilityState.READY
     assert [candidate.model.id for candidate in report.eligible] == ["p/model"]
 
@@ -71,7 +74,7 @@ def test_management_sources_are_allowlisted_and_minimize_runtime_records() -> No
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
         if request.url.path == "/api/monitoring/health":
-            assert request.headers.get("authorization") is None
+            assert request.headers["authorization"] == "Bearer management-secret"
             return httpx.Response(
                 200,
                 json={
@@ -598,3 +601,69 @@ def test_runtime_unauthorized_and_malformed_fail_as_explicit_candidate_states() 
 
     assert broken.candidates[0].state is AvailabilityState.MALFORMED
     assert broken.errors == ("runtime transport: malformed",)
+
+
+def test_health_detail_is_fetched_with_management_token_when_configured() -> None:
+    """BOD-385: OmniRoute 3.8.51 returns only a liveness stub to anonymous health reads."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": "p/ok", "provider": "p", "capabilities": ["tool-calling"]},
+                        {"id": "p/locked", "provider": "p", "capabilities": ["tool-calling"]},
+                    ]
+                },
+            )
+        if request.url.path == "/api/monitoring/health":
+            if request.headers.get("authorization") != "Bearer management-secret":
+                return httpx.Response(200, json={"status": "healthy", "setupComplete": True})
+            return httpx.Response(
+                200,
+                json={
+                    "status": "healthy",
+                    "setupComplete": True,
+                    "timestamp": NOW.isoformat(),
+                    "providerHealth": {"p": {"state": "closed", "failures": 0}},
+                    "providerBreakers": [],
+                    "lockouts": [{"provider": "p", "model": "locked", "remainingMs": 60_000}],
+                    "learnedLimits": [],
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    transport = OmniRouteHTTPTransport(
+        "https://router.example.test",
+        api_key="catalog-secret",
+        management_token="management-secret",
+        allow_private_hosts=MOCK_ALLOWLIST,
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    report = OmniRouteAvailabilityAdapter(transport).evaluate(
+        CandidateRequirements(required=frozenset({"tools"})), now=NOW
+    )
+
+    states = {candidate.model.id: candidate.state for candidate in report.candidates}
+    assert states == {"p/ok": AvailabilityState.ELIGIBLE, "p/locked": AvailabilityState.LOCKED_OUT}
+
+
+def test_health_is_read_anonymously_without_management_token() -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(200, json={"status": "healthy", "setupComplete": True})
+
+    transport = OmniRouteHTTPTransport(
+        "https://router.example.test",
+        api_key="catalog-secret",
+        allow_private_hosts=MOCK_ALLOWLIST,
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    transport.runtime()
+
+    assert seen == [None]

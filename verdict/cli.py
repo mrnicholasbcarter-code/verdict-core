@@ -1441,6 +1441,7 @@ def cmd_autodev(
             mechanical=not no_mechanical,
             plan=prepared_plan,
             probe_dropped=probe_dropped,
+            retry_routes=selected_candidates,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable
