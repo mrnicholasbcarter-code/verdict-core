@@ -879,3 +879,58 @@ def test_probe_account_failure_cools_credential_aliases(tmp_path):
         routes[0], HealthResult(healthy=False, category="authentication"), NOW, provider="claude"
     )
     assert ladder.dispatch_blocker(routes[1], now=NOW) == "pool:claude"
+
+
+def test_concurrent_state_writes_keep_every_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-341: select() runs on worker threads, so record_* calls can overlap.
+    No call may fail, and every update must survive in memory and on disk.
+
+    All threads write at once, and a slow os.replace keeps several snapshots in
+    flight. Without serialization an older snapshot can land last and drop
+    other threads' updates from the persisted file.
+    """
+    import json
+    import os
+    import random
+    import threading
+    import time
+
+    from verdict.orchestration import eligibility as eligibility_module
+
+    n, rounds = 8, 5
+    ladder, _ = make_ladder(tmp_path, [row("p0/model")], [conn("p0")])
+    real_replace = os.replace
+
+    def slow_replace(src: Any, dst: Any) -> None:
+        time.sleep(random.uniform(0, 0.02))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(eligibility_module.os, "replace", slow_replace)
+    barrier = threading.Barrier(n)
+    errors: list[BaseException] = []
+
+    def work(t: int) -> None:
+        try:
+            for k in range(rounds):
+                barrier.wait()
+                route = f"p{t}/model-{k}"
+                ladder.record_failure(
+                    route, FailureClassification("rate_limited", "REASSIGN", 60, "route"), now=NOW
+                )
+                ladder._record_health(route, HealthResult(healthy=True, category=""), NOW)
+        except BaseException as exc:  # surfaced below; a thread must not swallow it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(t,)) for t in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    expected = {f"p{t}/model-{k}" for t in range(n) for k in range(rounds)}
+    on_disk = json.loads((tmp_path / "state.json").read_text())
+    for state in (ladder._state, on_disk):
+        assert {f"route:{r}" for r in expected} <= set(state["cooldowns"])
+        assert expected <= set(state["health"])

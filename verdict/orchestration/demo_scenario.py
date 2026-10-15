@@ -231,10 +231,9 @@ async def _run_serial_selection(run: Awaitable[Any]) -> Any:
     thread keeps the submission order, so the recorded story is reproducible.
     Workers are async and unaffected; this is the scenario boundary only.
     """
-    asyncio.get_running_loop().set_default_executor(
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="offline-scenario-select")
-    )
-    return await run
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="offline-scenario-select") as pool:
+        asyncio.get_running_loop().set_default_executor(pool)
+        return await run
 
 
 def run_flagship_scenario(
