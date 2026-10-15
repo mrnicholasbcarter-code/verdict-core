@@ -95,8 +95,12 @@ def run_census(
     max_candidates: int = 6,
     max_tokens: int = 1536,
     cooling_providers: frozenset[str] = frozenset(),
+    role_routes: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Refresh free, connected routes, preferring recent successful traffic.
+
+    ``role_routes`` are routes whose catalog capabilities meet the worker and
+    reviewer requirements; they are kept fresh before other proven routes.
 
     Each full probe reserves 256 tokens for the fixed chat/tool prompts and
     their capped outputs (8 + 64). The candidate cap bounds requests to 2*N.
@@ -136,6 +140,8 @@ def run_census(
         and cache.lookup(r, now).state != STATE_NEGATIVE
     ]
 
+    roles = role_routes or frozenset()
+
     def tier(route: str) -> int:
         # Keep routes that already passed a census probe alive first, then
         # gateway-observed healthy traffic, then routes never proven.
@@ -145,15 +151,19 @@ def run_census(
             return 1
         return 2
 
+    def rank_key(route: str) -> tuple[int, bool]:
+        # Worker/reviewer-capable routes lead their tier (BOD-387).
+        return tier(route), route not in roles
+
     # Within a tier, take one route per family before a second from any
     # family, so the budget keeps several families fresh at once.
     family_rank: dict[str, int] = {}
-    seen: dict[tuple[int, str], int] = {}
-    for route in sorted(eligible, key=lambda r: (tier(r), r)):
-        slot = (tier(route), route.split("/", 1)[0])
+    seen: dict[tuple[int, bool, str], int] = {}
+    for route in sorted(eligible, key=lambda r: (rank_key(r), r)):
+        slot = (*rank_key(route), route.split("/", 1)[0])
         family_rank[route] = seen.get(slot, 0)
         seen[slot] = family_rank[route] + 1
-    candidates = sorted(eligible, key=lambda r: (tier(r), family_rank[r], r))
+    candidates = sorted(eligible, key=lambda r: (rank_key(r), family_rank[r], r))
     refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
     passports = load_healthy_passports(passport_store_path)
     # Renew any passport that would lapse before the tick after next can
@@ -165,8 +175,18 @@ def run_census(
         if model not in passports or passports[model].expires_at <= renew_before
     ]
     limit = min(max_candidates - refreshed["updated"], max_tokens // 256)
+    # One probe in three explores routes the census has not proven, so proven
+    # routes can never starve discovery. The explored route rotates per tick.
+    keep = [model for model in pending if tier(model) == 0]
+    explore = [model for model in pending if tier(model) != 0]
+    reserved: list[str] = []
+    if explore and limit >= 3:
+        start = int(now.timestamp() // CENSUS_INTERVAL_SECONDS) % len(explore)
+        reserved = (explore[start:] + explore[:start])[: limit // 3]
+    chosen = keep[: limit - len(reserved)] + reserved
+    chosen += [model for model in explore if model not in chosen][: limit - len(chosen)]
     probed = 0
-    for model in pending[:limit]:
+    for model in chosen:
         outcome = probe_full(
             AdmittedRoute(model, model.split("/", 1)[0], "free", capacity_evidence="free"),
             transport,
@@ -215,6 +235,26 @@ def load_census_cooldowns(
     )
 
 
+def _worker_capable_routes(base_url: str, api_key: str | None) -> frozenset[str]:
+    """Catalog routes with the capabilities worker and reviewer roles require.
+
+    Reads the catalog the admit snapshot just cached; no extra gateway call.
+    """
+    from verdict.availability import normalize_catalog
+    from verdict.catalog_cache import get_cached_catalog
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.subagent_models import SUBAGENT_ROLE_REQUIREMENTS
+
+    catalog = get_cached_catalog(normalize_omniroute_origin(base_url), api_key)
+    required = (
+        SUBAGENT_ROLE_REQUIREMENTS["worker"].required
+        | SUBAGENT_ROLE_REQUIREMENTS["reviewer"].required
+    )
+    return frozenset(
+        model.id for model in normalize_catalog(catalog) if required <= set(model.capabilities)
+    )
+
+
 def cmd_census(
     *,
     max_candidates: int = 6,
@@ -246,6 +286,7 @@ def cmd_census(
         if key_path.is_file():
             key = key_path.read_text().strip()
         snapshot = load_omniroute_admit_snapshot(base_url, api_key=key)
+        role_routes = _worker_capable_routes(base_url, key)
         # A cooldown-endpoint outage must not kill the timer's census run; the
         # census then just spends its probe budget without cooldown hints.
         import httpx
@@ -264,6 +305,7 @@ def cmd_census(
             max_candidates=max_candidates,
             max_tokens=max_tokens,
             cooling_providers=cooling,
+            role_routes=role_routes,
         )
         from verdict.census_passports_service import write_census_last_result
 

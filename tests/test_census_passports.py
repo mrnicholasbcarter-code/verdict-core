@@ -1085,3 +1085,51 @@ def test_census_spends_budget_on_previously_proven_routes_across_families(tmp_pa
 
     assert result["probed"] == 2
     assert set(calls) == {"n/agnes", "v/gemma"}
+
+
+def _proven_cache(tmp_path, routes):
+    cache = HealthCache(tmp_path / "health.json")
+    for route in routes:
+        # Proven by an earlier tick; too old to copy, so its passport is due.
+        cache.record(route, _free_result(), NOW - timedelta(minutes=12))
+    return cache
+
+
+TEN_PROVEN = [f"{family}/m" for family in "abcdefgh"] + ["y/worker", "z/worker"]
+
+
+def test_census_reserves_an_exploration_slot_for_a_never_proven_route(tmp_path):
+    from verdict.census_passports import run_census
+
+    calls: list[str] = []
+    run_census(
+        _census_snapshot([*TEN_PROVEN, "q/new"]),
+        _ok_transport(calls),
+        cache=_proven_cache(tmp_path, TEN_PROVEN),
+        passport_store_path=tmp_path / "state.json",
+        now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+    )
+
+    assert len(set(calls)) == 6
+    assert "q/new" in calls
+
+
+def test_census_probes_due_worker_capable_routes_before_other_proven_routes(tmp_path):
+    from verdict.census_passports import run_census
+
+    calls: list[str] = []
+    run_census(
+        _census_snapshot([*TEN_PROVEN, "q/new"]),
+        _ok_transport(calls),
+        cache=_proven_cache(tmp_path, TEN_PROVEN),
+        passport_store_path=tmp_path / "state.json",
+        now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+        role_routes=frozenset({"y/worker", "z/worker"}),
+    )
+
+    assert {"y/worker", "z/worker"} <= set(calls)
+    assert "q/new" in calls
