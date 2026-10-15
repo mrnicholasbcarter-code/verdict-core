@@ -1292,8 +1292,6 @@ class IntelligenceService:
 
             cache.merge_and_save(record_failure)
             if len(all_attempts) < 2:
-                self._admit_snapshot_lkg = None
-                self._admit_snapshot_loaded_at = 0
                 return self._offload_free_tier(
                     task, final_tier, escalated, esc_reason, context, attempts=all_attempts
                 )
