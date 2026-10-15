@@ -92,7 +92,10 @@ _USAGE_ALLOWLIST = (
     "usage.completion_tokens",
     "usage.total_tokens",
     "executor_retry",
+    "repair_attempt",
     "retry_served_headers",
+    "context_pack_used_tokens",
+    "context_pack_token_budget",
 )
 _PACKET_RECEIPT_ALLOWLIST = (
     *_USAGE_ALLOWLIST,
@@ -1687,6 +1690,7 @@ class UnitOutcome:
     changed_files: tuple[str, ...] = ()
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    repair_attempt: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1699,6 +1703,7 @@ class UnitOutcome:
             "changed_files": list(self.changed_files),
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
+            "repair_attempt": self.repair_attempt,
         }
 
 
@@ -2274,7 +2279,12 @@ def run_autodev(
         retry_ladder = tuple(r for r in retry_ladder if str(r["model"]) != executor.config.model)
     outcomes: list[UnitOutcome] = []
     receipt_ids: list[str] = []
-    for unit in plan.units:
+    for planned_unit in plan.units:
+        # One pack per unit: the primary and any retry executor receive identical bytes.
+        pack = compile_unit_context(
+            planned_unit, repo, prior_failures=_prior_unit_failures(ledger, planned_unit)
+        )
+        unit = replace(planned_unit, context=pack.compiled_prompt)
         outcome, executor_failed = _run_unit_once(
             unit, repo, executor, mechanical=mechanical, runner=runner
         )
@@ -2295,6 +2305,7 @@ def run_autodev(
                     "failed_model": executor.config.model,
                     "failed_reason": outcome.reason,
                     "retry_model": retry_executor.config.model,
+                    "failed_repair_attempt": outcome.repair_attempt,
                 }
                 outcome = retry_outcome
         outcomes.append(outcome)
@@ -2315,6 +2326,10 @@ def run_autodev(
             "served_headers": executor.response_headers,
             "verification_command": list(unit.verification_command),
             "owned_files": list(unit.owned_files),
+            "context_pack_digest": "sha256:"
+            + hashlib.sha256(pack.compiled_prompt.encode("utf-8")).hexdigest(),
+            "context_pack_used_tokens": pack.used_tokens,
+            "context_pack_token_budget": pack.token_budget,
         }
         if retry_note is not None:
             record_payload["executor_retry"] = retry_note
@@ -2340,6 +2355,73 @@ def run_autodev(
         planner_attempts=plan.attempts,
         receipt_ids=tuple(receipt_ids),
     )
+
+
+def compile_unit_context(
+    unit: WorkUnit, repo: Path, *, prior_failures: Sequence[str] = (), token_budget: int = 4096
+) -> ContextPack:
+    """Compile the worker context for one ``run_autodev`` unit (BOD-303).
+
+    The default objective path uses the same compiler as packet autodev: repository
+    instructions, governing ADRs, native code-intelligence retrieval and prior failed
+    outcomes, all inside one token budget. Owned-file contents are left out because
+    :func:`verdict.patch_executor.build_unit_prompt` inlines them fresh at send time.
+    """
+    from verdict.context_intelligence import (
+        ContextIntelligenceError,
+        execute_context_query,
+        plan_context_query,
+    )
+
+    def read_optional(paths: Sequence[str]) -> tuple[str, ...]:
+        found: list[str] = []
+        for path in paths:
+            with suppress(OSError, UnicodeDecodeError, UnsafeRepositoryPathError):
+                found.append(read_repository_text(repo, path))
+        return tuple(found)
+
+    try:
+        fabric = execute_context_query(
+            plan_context_query(
+                unit.objective,
+                proof_criteria=(" ".join(unit.verification_command),),
+                token_budget=max(256, token_budget // 2),
+                max_units=8,
+            ),
+            repo_root=repo,
+        )
+        intelligence = tuple(item.content for item in fabric.units)
+    except (OSError, ValueError, ContextIntelligenceError):
+        intelligence = ()
+    return compile_worker_context(
+        objective=unit.objective,
+        non_goals=("do not modify files outside the owned files",),
+        acceptance=(" ".join(unit.verification_command),),
+        authority={"owned_paths": list(unit.owned_files)},
+        owned_source={},
+        repository_instructions=read_optional(("AGENTS.md",)),
+        relevant_examples=(unit.context, *intelligence),
+        governing_docs=read_optional(discover_governing_docs(repo)),
+        prior_verified_outcomes=tuple(prior_failures),
+        token_budget=token_budget,
+    )
+
+
+def _prior_unit_failures(ledger: ReceiptStore, unit: WorkUnit, *, limit: int = 3) -> list[str]:
+    """Recent unverified autodev outcomes that touched this unit's owned files."""
+    owned = set(unit.owned_files)
+    failures: list[str] = []
+    for record in ledger.query_receipts("outcome", scope=AUTODEV_SCOPE, limit=200):
+        payload = record.payload
+        if payload.get("verified") or not owned.intersection(payload.get("owned_files") or ()):
+            continue
+        failures.append(
+            f"prior attempt {payload.get('unit_id')} by {payload.get('model')} "
+            f"failed: {payload.get('reason')}"
+        )
+        if len(failures) >= limit:
+            break
+    return failures
 
 
 def _run_unit_once(
@@ -2422,6 +2504,7 @@ def _from_attempt(
         changed_files=changed_files,
         usage=attempt.usage,
         latency_ms=attempt.latency_ms,
+        repair_attempt=attempt.repair_attempt,
     )
 
 

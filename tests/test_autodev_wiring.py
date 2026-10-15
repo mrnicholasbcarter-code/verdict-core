@@ -1465,3 +1465,207 @@ def test_run_autodev_malformed_retry_route_raises_autodevarror(repo: Path, tmp_p
             mechanical=False,
             retry_routes=({"model": "prov/other:free"},),  # Missing gateway
         )
+
+
+# BOD-303: the default ``run_autodev`` path builds each unit's worker context through the
+# real context compiler, once per unit, and records the digest of the exact pack sent.
+
+ADR_LINE = "Widgets must stay pure and side-effect free."
+AGENTS_LINE = "Always run ruff before committing."
+
+
+def _context_repo(repo: Path) -> Path:
+    (repo / "docs" / "adr").mkdir(parents=True)
+    (repo / "docs" / "adr" / "0001-widgets.md").write_text(
+        f"# ADR 0001: widgets\n\n{ADR_LINE}\n", encoding="utf-8"
+    )
+    (repo / "AGENTS.md").write_text(f"# Rules\n\n{AGENTS_LINE}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "docs"],
+        cwd=repo,
+        check=True,
+    )
+    return repo
+
+
+def _sent_context(payload: Mapping[str, Any]) -> str:
+    prompt = str(payload["messages"][-1]["content"])
+    after = prompt.split("Additional context:\n", 1)[1]
+    return after.split("\n\n--- current contents of ", 1)[0]
+
+
+def _recording_executor(
+    repo: Path, sent: list[Mapping[str, Any]], content: str, *, model: str = "cheap/model"
+) -> PatchExecutor:
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        sent.append(payload)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    return PatchExecutor(
+        repo,
+        PatchExecutorConfig(model=model, base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+
+
+def test_run_autodev_worker_request_carries_the_compiled_context_pack(
+    repo: Path, tmp_path: Path
+) -> None:
+    import hashlib
+
+    _context_repo(repo)
+    store = ReceiptStore(tmp_path / "receipts.db")
+    sent: list[Mapping[str, Any]] = []
+
+    run_autodev(
+        "drop unused imports",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_recording_executor(repo, sent, A_DIFF),
+        mechanical=False,
+    )
+
+    assert len(sent) == 1
+    prompt = str(sent[0]["messages"][-1]["content"])
+    # Owned source still reaches the worker, and the compiled pack adds the governing
+    # ADR and repository instructions the bare prompt never carried.
+    assert "x = 1" in prompt
+    context = _sent_context(sent[0])
+    assert ADR_LINE in context
+    assert AGENTS_LINE in context
+    assert "drop the unused import in a.py" in context
+
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    expected = "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
+    assert payload["context_pack_digest"] == expected
+    assert 0 < payload["context_pack_used_tokens"] <= payload["context_pack_token_budget"]
+
+
+def test_run_autodev_retry_executor_receives_the_identical_pack_compiled_once(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    import verdict.autodev_run as autodev_run
+
+    _context_repo(repo)
+    calls: list[str] = []
+    real_compile = autodev_run.compile_worker_context
+
+    def counting_compile(**kwargs: Any) -> Any:
+        calls.append(str(kwargs["objective"]))
+        return real_compile(**kwargs)
+
+    monkeypatch.setattr(autodev_run, "compile_worker_context", counting_compile)
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary_sent: list[Mapping[str, Any]] = []
+    retry_sent: list[Mapping[str, Any]] = []
+
+    run_autodev(
+        "drop unused imports",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_recording_executor(repo, primary_sent, "no diff"),
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=lambda route: _recording_executor(
+            repo, retry_sent, A_DIFF, model=str(route["model"])
+        ),
+    )
+
+    assert len(primary_sent) == 1 and len(retry_sent) == 1
+    assert _sent_context(retry_sent[0]) == _sent_context(primary_sent[0])
+    assert calls == ["drop the unused import in a.py"]
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    digest = "sha256:" + hashlib.sha256(_sent_context(retry_sent[0]).encode("utf-8")).hexdigest()
+    assert payload["context_pack_digest"] == digest
+    assert payload["executor_retry"]["retry_model"] == "prov/other:free"
+
+
+BAD_A_DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1 @@
+-import sys
+ x = 1
+"""
+
+
+def _replies_executor(repo: Path, replies: list[str], *, model: str = "cheap/model") -> Any:
+    calls: list[Mapping[str, Any]] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(payload)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": replies[min(len(calls), len(replies)) - 1]}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model=model, base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+    return executor, calls
+
+
+def test_run_autodev_repairs_a_rejected_patch_and_records_it(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, calls = _replies_executor(repo, [BAD_A_DIFF, "```file:a.py\nx = 1\n```"])
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+    )
+
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "cheap/model"
+    assert len(calls) == 2
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["repair_attempt"]["repaired"] is True
+    assert payload["repair_attempt"]["format"] == "full_file"
+    assert "patch failed" in payload["repair_attempt"]["first_error"]
+    assert "executor_retry" not in payload
+
+
+def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, primary_calls = _replies_executor(repo, [BAD_A_DIFF, BAD_A_DIFF])
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        executor, _ = _replies_executor(repo, [A_DIFF], model=str(route["model"]))
+        return executor
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    assert len(primary_calls) == 2
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["executor_retry"]["failed_repair_attempt"]["repaired"] is False
+    assert payload["executor_retry"]["failed_reason"].startswith("patch repair failed:")
