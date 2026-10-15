@@ -153,14 +153,16 @@ class Decomposer:
         model. A transport failure, an HTTP error (5xx, 429, ...) or an
         unreadable response moves to the next model at once instead of
         re-sending to the same one. The raised error carries every attempt.
-        A caller-configured frontier ``cc/...`` model with no planner list is
-        tried only after the default cheap route failed.
+        A ``cc/...`` planner is refused before anything is sent (BOD-342 D22).
         """
         if not isinstance(objective, str) or not objective.strip():
             raise DecompositionError("objective must be a non-empty string")
         models = self.config.planner_models or (self.config.model,)
-        if not self.config.planner_models and self.config.model.startswith("cc/"):
-            models = (DEFAULT_ORCHESTRATOR_MODEL, self.config.model)
+        excluded = [model for model in models if model.startswith("cc/")]
+        if excluded:
+            raise DecompositionError(
+                f"cc/* planner routes are excluded (BOD-342 D22); refused {excluded}"
+            )
 
         attempts: list[dict[str, Any]] = []
         last: DecompositionError | None = None

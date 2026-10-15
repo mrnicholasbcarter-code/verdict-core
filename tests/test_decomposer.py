@@ -173,23 +173,23 @@ def test_invalid_code_plan_is_replanned_once() -> None:
     assert result.to_dict()["attempts"][0]["error"]
 
 
-def test_frontier_planner_only_after_recorded_cheap_failure() -> None:
+def test_cc_planner_is_refused_and_never_called() -> None:
     calls: list[str] = []
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
         calls.append(model_id)
-        if len(calls) == 1:
-            return {"status_code": 503, "body": {}}
         return {
             "status_code": 200,
             "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
         }
 
-    result = Decomposer(
-        DecompositionConfig(model="cc/claude-opus-5"), transport=transport
-    ).decompose("fix", repo_root=".")
-    assert calls == ["mistral/codestral-latest", "cc/claude-opus-5"]
-    assert "HTTP 503" in result.attempts[0]["error"]
+    for config in (
+        DecompositionConfig(model="cc/claude-opus-5"),
+        DecompositionConfig(model="free/alpha:free", planner_models=("cc/claude-haiku-5-5",)),
+    ):
+        with pytest.raises(DecompositionError, match="cc/\\* planner routes are excluded"):
+            Decomposer(config, transport=transport).decompose("fix", repo_root=".")
+    assert calls == []
 
 
 def test_code_and_test_split_into_two_units_is_merged_before_rejecting() -> None:
@@ -345,9 +345,15 @@ def test_units_editing_one_file_with_one_check_are_merged() -> None:
     assert "rename dashboard" in units[0].objective and "rename all" in units[0].objective
 
 
-def test_two_cheap_failures_without_ladder_success_raise_with_three_attempts() -> None:
+def test_transient_503_on_the_only_planner_raises_after_one_attempt() -> None:
+    calls: list[str] = []
+
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
         return {"status_code": 503, "body": {}}
 
-    with pytest.raises(DecompositionError, match="HTTP 503"):
+    with pytest.raises(DecompositionError, match="HTTP 503") as excinfo:
         Decomposer(transport=transport).decompose("fix", repo_root=".")
+    # A transient error is not re-sent to the same model and there is no hidden fallback.
+    assert calls == ["mistral/codestral-latest"]
+    assert len(excinfo.value.attempts) == 1
