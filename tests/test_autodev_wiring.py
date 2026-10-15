@@ -868,8 +868,8 @@ def test_cmd_autodev_without_pin_uses_selected_route(
         calls.update(kwargs)
         headers = {"x-omniroute-response-cost": "0"}
         candidates = (
-            {"route_id": FREE_A, "probe_headers": headers},
-            {"route_id": FREE_B, "probe_headers": headers},
+            {"route_id": FREE_A, "gateway": GATEWAY, "model": FREE_A, "probe_headers": headers},
+            {"route_id": FREE_B, "gateway": GATEWAY, "model": FREE_B, "probe_headers": headers},
         )
         dropped = ({"route_id": "free/gamma:free", "reason": "identity"},)
         return decision, prepared, headers, candidates, dropped
@@ -988,3 +988,480 @@ def test_prepare_live_autodev_selected_fails_closed_when_the_ladder_raises(
         )
     assert "could not read the eligibility ladder" in str(excinfo.value)
     assert "ConnectionError" in str(excinfo.value)
+
+
+def test_run_autodev_retries_next_ranked_candidate_when_executor_attempt_fails(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Primary executor fails; retry with next model succeeds."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def primary_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=primary_transport,
+    )
+
+    def retry_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": A_DIFF}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=retry_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Unit should be verified with the retry model
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+
+    # Receipt should record both attempts
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) == 1
+    payload = records[0].payload
+    assert "executor_retry" in payload
+    assert payload["executor_retry"]["failed_model"] == "cheap/model"
+    assert payload["executor_retry"]["retry_model"] == "prov/other:free"
+
+
+def test_run_autodev_executor_exception_is_recorded_and_retried_once(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Primary executor raises exception; retry succeeds."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def primary_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        raise RuntimeError("boom")
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=primary_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=lambda m, p, t: {
+                "status_code": 200,
+                "body": {
+                    "choices": [{"message": {"content": A_DIFF}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                },
+            },
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Unit should be verified after retry
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+
+    # Receipt should show executor error in failed_reason
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    payload = records[0].payload
+    # The error message may be wrapped by transport layer
+    assert "RuntimeError: boom" in payload["executor_retry"]["failed_reason"]
+
+
+def test_run_autodev_retry_is_bounded_to_one_attempt(repo: Path, tmp_path: Path) -> None:
+    """Primary fails, retry also fails; outcome is from retry, no further attempts."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer(PLAN),  # two units
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units should fail but not crash; outcome is from retry model
+    assert len(report.failed) == 2
+    assert all(u.model == "prov/other:free" for u in report.failed)
+
+    # Receipt should show the retry was attempted
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) == 2
+    for payload in [r.payload for r in records]:
+        assert "executor_retry" in payload
+
+
+def test_run_autodev_skips_retry_route_equal_to_selected_model(repo: Path, tmp_path: Path) -> None:
+    """Retry route with model equal to primary is silently dropped; no retry happens."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # Include a route that matches the primary model (should be skipped)
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=(
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+            {"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},
+        ),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Should fail (primary failed)
+    assert len(report.failed) == 1
+
+    # Factory should be called only for the non-matching route (cheap/model is filtered out before calling factory)
+    # Actually, after filtering, only prov/other:free remains, so factory is called once for it
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["model"] == "prov/other:free"
+
+
+def test_autodev_cli_passes_selection_ladder_as_retry_routes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI passes selected_candidates as retry_routes to run_autodev."""
+    import verdict.autodev_run as autodev
+    import verdict.cli as cli
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_autodev(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return autodev.AutodevReport(
+            objective="fix ruff errors",
+            repo_path=str(args[1]),
+            orchestrator_model="cheap/model",
+            executor_model="cheap/model",
+            units_planned=0,
+            outcomes=(),
+            orchestrator_usage=autodev.TokenUsage(),
+        )
+
+    monkeypatch.setattr(autodev, "run_autodev", fake_run_autodev)
+
+    # Mock the selection process
+    def fake_selected(objective: str, repo_path: Any, **kwargs: Any) -> Any:
+        from tests.test_autodev_wiring import _decomposer, _two_candidate_decision
+
+        decision = _two_candidate_decision()
+        prepared = _decomposer([PLAN[0]], model=decision.selected_route.model).decompose(
+            "fix ruff errors", repo_root=repo_path
+        )
+        # Candidates must match what prepare_live_autodev_selected returns:
+        # with route_id, gateway, model, probe_headers, etc.
+        candidates = (
+            {
+                "route_id": "free/a:free",
+                "gateway": GATEWAY,
+                "model": "free/a:free",
+                "probe_headers": {"x-omniroute-response-cost": "0"},
+            },
+            {
+                "route_id": "free/b:free",
+                "gateway": GATEWAY,
+                "model": "free/b:free",
+                "probe_headers": {"x-omniroute-response-cost": "0"},
+            },
+        )
+        return decision, prepared, {}, candidates, ()
+
+    monkeypatch.setattr(autodev, "prepare_live_autodev_selected", fake_selected)
+    monkeypatch.setattr("verdict.credentials_store.resolve_api_key", lambda: "fake-key")
+
+    # Call the CLI with live selection
+    cli.cmd_autodev(
+        "fix ruff errors",
+        str(repo),
+        orchestrator_model=None,
+        executor_model=None,
+        base_url=None,
+        allow_live=True,
+        dry_run=False,
+        output_json=False,
+    )
+
+    # Verify retry_routes was passed
+    assert "retry_routes" in captured
+    # The retry_routes should be exactly the selected candidates
+    retry_routes = captured["retry_routes"]
+    assert isinstance(retry_routes, (list, tuple))
+    assert len(retry_routes) == 2
+    # Verify the routes match what fake_selected returned
+    assert retry_routes[0]["route_id"] == "free/a:free"
+    assert retry_routes[1]["route_id"] == "free/b:free"
+
+
+def test_run_autodev_no_retry_when_all_routes_equal_primary(repo: Path, tmp_path: Path) -> None:
+    """All retry_routes entries have model == primary executor's model; no retry happens."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # All retry routes have the same model as primary (should all be filtered)
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=(
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+        ),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Should fail (primary failed, no retry routes available after filtering)
+    assert len(report.failed) == 1
+
+    # Factory should never be called since all routes were filtered out
+    assert len(factory_calls) == 0
+
+
+def test_run_autodev_retry_executor_built_once_per_model(repo: Path, tmp_path: Path) -> None:
+    """Two failing units with same retry model call factory exactly once (lazy cache)."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # Single retry route; both units will fail primary and hit the same retry route
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer((PLAN[0], PLAN[1])),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units should fail (all executors return "no diff")
+    assert len(report.failed) == 2
+
+    # Factory should be called exactly once: the lazy cache reuses the executor for the second unit
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["model"] == "prov/other:free"
+
+
+def test_run_autodev_receipt_retry_served_headers(repo: Path, tmp_path: Path) -> None:
+    """Retry_served_headers in receipt: present when retry happened, absent when no retry."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+            "headers": {"x-test-header": "value"} if "retry" in model_id else {},
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer((PLAN[0], PLAN[1])),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/retry:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units fail; both should have retry attempted
+    assert len(report.failed) == 2
+
+    # Get receipts from store
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) >= 2
+
+    # Both receipts should have retry_served_headers present (from retry executor)
+    for record in records:
+        payload = record.payload
+        # When retry happened, retry_served_headers key should be present
+        assert "retry_served_headers" in payload
+        # The value should be empty dict (from failing_transport for retry model)
+        assert payload["retry_served_headers"] == {}
+
+
+def test_run_autodev_malformed_retry_route_raises_autodevarror(repo: Path, tmp_path: Path) -> None:
+    """Malformed retry_routes entry (missing gateway) raises AutodevError."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=lambda m, p, t: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        },
+    )
+
+    with pytest.raises(AutodevError, match="autodev retry route entry missing model/gateway"):
+        run_autodev(
+            "fix ruff errors",
+            repo,
+            store=store,
+            decomposer=_decomposer([PLAN[0]]),
+            executor=primary,
+            mechanical=False,
+            retry_routes=({"model": "prov/other:free"},),  # Missing gateway
+        )
