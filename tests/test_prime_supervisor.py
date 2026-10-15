@@ -2076,3 +2076,271 @@ def test_select_only_blocks_cleanly_when_no_eligible_controller_route(
     out = json.loads(capsys.readouterr().out)
     assert "no_eligible_route" in out["controller"]["error"]
     assert not (state / "run.json").exists()
+
+
+def test_select_only_production_path_writes_no_receipts_outside_state_dir(
+    tmp_path, monkeypatch, capsys
+):
+    """--select-only on the real production factory path never writes under repo/.verdict.
+
+    Drives build_production_controller_selection_bundle (not an injected
+    CONTROLLER_SELECTOR) with a stubbed admission/network layer, so this
+    exercises the actual receipt_store wiring BOD-313 claims is read-only.
+    """
+    m = module()
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    from verdict.free_tier_admit import (
+        CatalogIdentity,
+        FreeTierModel,
+        OmniRouteAdmitSnapshot,
+        ProviderConnection,
+    )
+    from verdict.metadata.records import (
+        METADATA_SCHEMA_VERSION,
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.model_passports import ModelPassport
+
+    now = datetime.now(timezone.utc)
+    identity = "omniroute/gc/selected"
+
+    snapshot = OmniRouteAdmitSnapshot(
+        catalog=(CatalogIdentity(identity, "omniroute"),),
+        free_tier=(FreeTierModel("gc/selected", "omniroute", "keyless"),),
+        connections=(ProviderConnection("omniroute", True, "active"),),
+    )
+    passport = ModelPassport(
+        provider="omniroute",
+        model_id=identity,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=now - timedelta(minutes=1),
+        last_verified_timestamp=now - timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=30),
+        tool_support=True,
+        token_cost_per_1k=0.001,
+    )
+    prov = FieldProvenance(source="test", fetched_at=now.isoformat())
+    caps = CapabilityCaps(
+        tools=ProvenancedField(True, prov),
+        input_cost_per_million=ProvenancedField(0.0, prov),
+        output_cost_per_million=ProvenancedField(0.0, prov),
+    )
+    record = ModelMetadataRecord(id=identity, caps=caps, omniroute_ids=(identity,))
+    metadata = MetadataSnapshot(
+        schema_version=METADATA_SCHEMA_VERSION,
+        refreshed_at=now.isoformat(),
+        sources={},
+        records=(record,),
+    )
+
+    from verdict.intelligence import IntelligenceService
+    from verdict.models import ProviderConfig
+
+    service = IntelligenceService(
+        primary_model=identity,
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:1/v1")},
+        profile="production",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=snapshot,
+        metadata_snapshot=metadata,
+        passports={identity: passport},
+        admit_now=now,
+        workspace_root=repo,
+        receipt_store=None,
+        persist_routing_receipts=True,
+    )
+
+    target_map_path = tmp_path / "prime-target-map.json"
+    target_map_path.write_text(
+        json.dumps(
+            {
+                "targets": {
+                    identity: {
+                        "upstream_provider": "omniroute",
+                        "upstream_model": "gc/selected",
+                        "prime_provider": "omniroute",
+                        "prime_model": "gc/selected",
+                        "binding_digest": "trusted-binding",
+                    }
+                }
+            }
+        )
+    )
+
+    home = tmp_path / "home"
+    (home / ".config" / "verdict").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("VERDICT_PRIME_TARGET_MAP", str(target_map_path))
+    for name in ("OMNIROUTE_BASE_URL", "OMNIROUTE_API_KEY", "LLMGATE_PRIMARY"):
+        monkeypatch.delenv(name, raising=False)
+    (home / ".config" / "verdict" / "verdict.yaml").write_text(
+        "primary_model: omniroute/gc/selected\n"
+        "gateway_url: http://127.0.0.1:1\n"
+        "providers:\n"
+        "  omniroute:\n"
+        "    base_url: http://127.0.0.1:1/v1\n"
+        "    api_key_env: OMNIROUTE_API_KEY\n",
+        encoding="utf-8",
+    )
+
+    import verdict.admission as adm
+
+    def fake_load_live_admission(gateway, **kwargs):
+        from verdict.admission import RuntimeEvidence, RuntimeObservation, canonical_route_id
+        from verdict.admission import admit as _admit
+
+        when = kwargs.get("now") or now
+        runtime = RuntimeEvidence(
+            observations=(
+                RuntimeObservation(
+                    f"route:{canonical_route_id(identity)}",
+                    "healthy",
+                    "probe",
+                    "probe",
+                    when.isoformat(),
+                ),
+            ),
+            sources=("probe",),
+        )
+        return _admit(
+            [{"id": identity, "owned_by": "omniroute", "context_length": 200_000}],
+            [{"provider": "omniroute", "isActive": True, "testStatus": "ok"}],
+            runtime,
+            now=when,
+        )
+
+    monkeypatch.setattr(adm, "load_live_admission", fake_load_live_admission)
+    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", None)
+    monkeypatch.setattr(m, "CONTROLLER_SELECTION_HOOKS", None)
+
+    def fake_factory(**kwargs):
+        kwargs["intelligence_service"] = service
+        kwargs["healthy_passports"] = {identity: passport}
+        kwargs["metadata_snapshot"] = metadata
+        kwargs["free_identity_ids"] = frozenset({identity})
+        kwargs.pop("certify_runtime_fn", None)
+        return m.build_production_controller_selection_bundle(**kwargs)
+
+    monkeypatch.setattr(m, "CONTROLLER_SELECTION_FACTORY", fake_factory)
+    monkeypatch.setattr(
+        m,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {
+            "worker": {"model_id": "cc/claude-sonnet", "provider": "cc", "family": "claude"},
+            "reviewer": {"model_id": "gc/grok-4.5", "provider": "gc", "family": "grok"},
+        },
+    )
+
+    def boom_run_attempt(*a, **k):
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(m, "run_attempt", boom_run_attempt)
+    monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prime_supervisor.py",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
+            "--select-only",
+        ],
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+
+    assert m.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["controller"].get("error") is None, report["controller"]
+    assert not (repo / ".verdict").exists()
+    for produced in state.rglob("*"):
+        if produced.is_file():
+            assert produced.is_relative_to(state)
+
+
+@pytest.mark.parametrize(
+    "worker, reviewer, expected",
+    [
+        (
+            {"model_id": "cc/claude-sonnet", "provider": "cc", "family": "claude"},
+            {"model_id": "cc/claude-opus", "provider": "cc", "family": "claude"},
+            False,
+        ),
+        (
+            {"error": "no_eligible_route"},
+            {"model_id": "gc/grok-4.5", "provider": "gc", "family": "grok"},
+            False,
+        ),
+        (
+            {"model_id": "cc/claude-sonnet", "provider": "cc", "family": "claude"},
+            {"error": "no_eligible_route"},
+            False,
+        ),
+        ({"error": "no_eligible_route"}, {"error": "role_resolution_failed: boom"}, False),
+    ],
+)
+def test_reviewer_family_differs_from_worker_concrete_values(
+    tmp_path, monkeypatch, capsys, worker, reviewer, expected
+):
+    """Same family, and any missing/error role, must report False -- never invented True."""
+    m = module()
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    class FakeSelector:
+        def select_controller_launch(self, mission, *, override=None, session_state=None, now=None):
+            decision_path = _write_controller_decision(
+                tmp_path / "sel.json", provider="omniroute", model="cc/claude-opus", reasoning=None
+            )
+            persisted = m.load_persisted_authoritative_decision(decision_path)
+            return m.decide_controller_launch(
+                mission, persisted=persisted, override=override, now=now
+            )
+
+    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", FakeSelector())
+    monkeypatch.setattr(
+        m,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {"worker": worker, "reviewer": reviewer},
+    )
+
+    def boom_run_attempt(*a, **k):
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(m, "run_attempt", boom_run_attempt)
+    monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prime_supervisor.py",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
+            "--select-only",
+        ],
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    assert m.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["reviewer_family_differs_from_worker"] is expected

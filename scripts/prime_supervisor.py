@@ -1956,7 +1956,15 @@ def _run_select_only(
     (``CONTROLLER_SELECTOR`` injection point, then the production factory) so
     this is proof of the real selection pipeline, not a parallel one. Writes
     no run.json/session dir -- this is a read-only report.
+
+    ``--select-only`` claims to be read-only. The production factory's default
+    receipt store writes to ``{repo}/.verdict/receipts.db`` when no store is
+    injected (``ControllerSelectionHooks.receipt_store is None``), which is a
+    write outside ``--state-dir``. This passes an explicit ``ReceiptStore``
+    rooted under ``--state-dir`` so a select-only run never touches the repo.
     """
+    from verdict.receipt_store import ReceiptStore
+
     token = f"select-only-{uuid.uuid4()}"
     decision_path = (
         args.controller_decision.resolve() if args.controller_decision is not None else None
@@ -1968,6 +1976,7 @@ def _run_select_only(
     try:
         if needs_production:
             factory = CONTROLLER_SELECTION_FACTORY or build_production_controller_selection_bundle
+            select_only_receipt_store = ReceiptStore(state / "select-only-receipts.db")
             production_bundle = factory(
                 repo=repo,
                 state_dir=state,
@@ -1977,6 +1986,7 @@ def _run_select_only(
                 timeout=args.timeout,
                 story_id=args.story,
                 controller_scope_prefixes=controller_scope_prefixes,
+                receipt_store=select_only_receipt_store,
             )
             selection_hooks = production_bundle.hooks
         decision = resolve_controller_decision(
