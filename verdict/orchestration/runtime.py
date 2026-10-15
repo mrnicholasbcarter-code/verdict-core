@@ -683,7 +683,13 @@ class DagRuntime:
                 exclude_routes=frozenset(tried),
                 exclude_pools=frozenset(run.excluded_pools),
             )
-            choice, considered = self.selector.select(requirements, now=self.now())
+            # BOD-341: selection reads the health cache/inventory and can take
+            # seconds. Running it inline here would block the whole event loop
+            # (dispatch, slot release, other nodes' driving) for that long, so
+            # --max-parallel is never reached. Run it in a thread instead.
+            choice, considered = await asyncio.to_thread(
+                self.selector.select, requirements, now=self.now()
+            )
             counts = _ladder_counts(considered)
             # Post-probe statistics for eligibility events (BOD-203).
             _post: dict[str, int] = getattr(self.selector, "last_select_stats", {})

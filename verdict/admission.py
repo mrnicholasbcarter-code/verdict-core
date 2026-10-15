@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import InitVar, dataclass, replace
 from datetime import datetime, timezone
@@ -743,7 +744,10 @@ class AdmittedSet:
 
     def write_receipt(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        # BOD-341: selection (and its confirmations) can now run concurrently
+        # on worker threads, so concurrent writers to the same receipt path
+        # must not collide on one shared tmp name and race os.replace.
+        tmp = path.with_suffix(f"{path.suffix}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(self.receipt(), indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, path)
         return path

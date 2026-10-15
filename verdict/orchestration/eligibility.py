@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import re
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -278,6 +279,11 @@ class EligibilityLadder:
         self._max_per_route = max_per_route
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
+        # BOD-341: select() can now run concurrently on worker threads (the
+        # orchestrator no longer serializes selection on the event loop), so
+        # concurrent record_health/record_failure/record_success calls must
+        # not race on the shared state dict or its on-disk persistence.
+        self._persist_lock = threading.Lock()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
         self._last_select_stats: dict[str, int] = {}
         # Canonical admitted set: a route it excludes fails before any ladder
@@ -356,7 +362,10 @@ class EligibilityLadder:
 
     def _persist(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+        # BOD-341: a unique tmp name per call avoids concurrent select() calls
+        # (now running on separate threads) colliding on the same tmp path
+        # and racing os.replace with FileNotFoundError.
+        tmp = self._state_path.with_suffix(f"{self._state_path.suffix}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(self._state, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self._state_path)
 
