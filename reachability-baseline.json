@@ -61,11 +61,11 @@
   },
   {
     "qualified_name": "verdict.availability.CallableOmniRouteTransport",
-    "reason": "UNTRIAGED: CallableOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
+    "reason": "KEEP: public OmniRouteTransport adapter re-exported from the package root (verdict/__init__.py:20,487); lets callers wrap catalog/runtime callables as a transport for OmniRouteAvailabilityAdapter. test_only_caller (tests/test_availability_adapter.py); documented extension surface alongside StaticOmniRouteTransport, not dead code."
   },
   {
     "qualified_name": "verdict.availability.MappingOmniRouteTransport",
-    "reason": "UNTRIAGED: MappingOmniRouteTransport has only non-production references; Protocol-based OmniRoute runtime availability and eligibility adapter (verdict/availability.py)."
+    "reason": "KEEP: public OmniRouteTransport adapter re-exported from the package root (verdict/__init__.py:22,573); exposes a mapping of documented operations as a transport for OmniRouteAvailabilityAdapter. test_only_caller (tests/test_availability_adapter.py); documented extension surface alongside StaticOmniRouteTransport, not dead code."
   },
   {
     "qualified_name": "verdict.availability_cache.build_cache_report",

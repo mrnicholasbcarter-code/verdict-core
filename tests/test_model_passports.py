@@ -249,7 +249,8 @@ class TestAvailabilityStateParity:
         )
 
     def test_passport_ttl_constant(self) -> None:
-        assert PASSPORT_TTL_SECONDS == 300
+        # BOD-387: two census intervals (2 x 240 s) plus margin.
+        assert PASSPORT_TTL_SECONDS == 600
         assert MODEL_PASSPORT_SCHEMA_VERSION == "1"
 
 

@@ -99,6 +99,9 @@ class CandidateRequirements:
     # that the evidence was never observed. Keeping these separate stops
     # "we measured a problem" and "we measured nothing" sharing one switch.
     allow_unmeasured_evidence: bool = False
+    # Accept an unpublished token headroom only for a route holding a fresh
+    # census passport (a real successful call inside the passport TTL).
+    passport_waives_unmeasured_tokens: bool = False
     estimated_tokens: int | None = None
     estimated_cost: float | None = None
 
@@ -130,6 +133,7 @@ class CandidateRequirements:
                 self.unknown_is_eligible,
                 self.allow_degraded,
                 self.allow_unmeasured_evidence,
+                self.passport_waives_unmeasured_tokens,
             )
         ):
             raise ValueError("candidate requirement flags must be booleans")
@@ -1337,11 +1341,17 @@ class OmniRouteAvailabilityAdapter:
     """Fetch and normalize runtime truth using an injected documented transport."""
 
     def __init__(
-        self, transport: OmniRouteTransport, *, ttl_seconds: int = 60, clock: Any = None
+        self,
+        transport: OmniRouteTransport,
+        *,
+        ttl_seconds: int = 60,
+        clock: Any = None,
+        passports: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self.transport = transport
         self.ttl_seconds = ttl_seconds
         self.clock = clock
+        self.passports = passports
         self.transport_capabilities = discover_transport_capabilities(transport)
 
     def evaluate(
@@ -1445,6 +1455,14 @@ class OmniRouteAvailabilityAdapter:
                 )
                 continue
             states.append(normalize_observation(model, _raw_observation(value), now=current))
+        fresh_passports: frozenset[str] = frozenset()
+        if requirements.passport_waives_unmeasured_tokens and self.passports is not None:
+            fresh_passports = frozenset(
+                route
+                for route, passport in self.passports().items()
+                if getattr(passport, "expires_at", None) is not None
+                and passport.expires_at > current
+            )
         # Request capacity and concurrency are hard runtime gates, not ranking hints.
         for index, item in enumerate(states):
             if item.state is AvailabilityState.UNKNOWN:
@@ -1475,7 +1493,8 @@ class OmniRouteAvailabilityAdapter:
                 reasons.append("budget headroom unknown")
             if requirements.estimated_tokens is not None:
                 if raw.token_headroom is None:
-                    reasons.append("token headroom unknown")
+                    if item.model.id not in fresh_passports:
+                        reasons.append("token headroom unknown")
                 elif requirements.estimated_tokens > raw.token_headroom:
                     reasons.append("token headroom exceeded")
             if (
