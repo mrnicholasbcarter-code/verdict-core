@@ -72,7 +72,7 @@ def run_setup_wizard(
             "Key: "
             + (
                 "configured (hidden)"
-                if resolve_api_key() or resolve_api_key("OMNIROUTE_API_KEY")
+                if resolve_api_key()
                 else "not configured; use verdict credentials set OMNIROUTE_API_KEY"
             )
         )
