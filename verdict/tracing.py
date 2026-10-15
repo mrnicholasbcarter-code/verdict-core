@@ -1,6 +1,6 @@
 """Optional OpenTelemetry tracing for orchestration runs.
 
-Enable by installing ``verdict[tracing]`` **and** setting
+Enable by installing ``verdict-core[tracing]`` **and** setting
 ``VERDICT_TRACING=1`` (or ``on`` / ``true``).  When either condition is
 missing every public function is a zero-cost no-op and the
 ``opentelemetry`` package is never imported.

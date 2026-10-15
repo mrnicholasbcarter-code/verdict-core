@@ -7,7 +7,26 @@ from pathlib import Path
 
 import pytest
 
-from verdict.credentials_registry import CREDENTIALS
+from verdict.credentials_registry import CREDENTIALS, DEPENDENCIES
+
+
+def test_dependency_install_hints_use_verdict_core_package() -> None:
+    """Install hints for this package must name verdict-core on PyPI.
+
+    `verdict` is an unrelated PyPI project, so a bare `uv pip install
+    verdict[...]` hint sends users to install the wrong package (the shape
+    of a dependency-confusion trap). Any install_command that targets an
+    extra of this project must say `uv pip install verdict-core[...]`.
+    """
+    offenders = [
+        dep.install_command
+        for dep in DEPENDENCIES
+        if dep.install_command.startswith("uv pip install")
+        and not dep.install_command.startswith("uv pip install verdict-core[")
+    ]
+    assert not offenders, "Found install hint(s) not naming verdict-core:\n" + "\n".join(
+        f"  - {cmd}" for cmd in offenders
+    )
 
 
 def test_all_credentials_are_registered() -> None:
