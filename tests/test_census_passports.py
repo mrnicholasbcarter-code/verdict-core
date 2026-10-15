@@ -444,6 +444,7 @@ def test_census_fake_gateway_integration(tmp_path):
         path = request.url.path
         data = {
             "/v1/models": {"data": [{"id": "good/a", "owned_by": "good"}]},
+            "/api/v1/me/status": {"accountQuotas": []},
             "/api/free-tier/summary": {
                 "perModel": [{"provider": "good", "modelId": "a", "freeType": "keyless"}]
             },

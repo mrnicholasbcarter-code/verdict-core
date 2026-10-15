@@ -248,6 +248,8 @@ def test_http_snapshot_carries_passive_evidence_into_confirm():
             body = {
                 "connections": [{"provider": "mistral", "isActive": True, "testStatus": "active"}]
             }
+        elif path == "/api/v1/me/status":
+            body = {"accountQuotas": []}
         elif path == "/api/free-tier/summary":
             body = {
                 "perModel": [
@@ -269,7 +271,8 @@ def test_http_snapshot_carries_passive_evidence_into_confirm():
     assert snapshot.passive_health is not None
     assert snapshot.passive_health.observations[0].key == f"route:{ROUTE}"
     assert admit_free_tier_active(snapshot).chosen == ROUTE
-    assert len(visited) == 5
+    assert len(visited) == 6
+    assert "/api/v1/me/status" in visited
 
 
 def test_build_selector_joins_passive_health(monkeypatch, tmp_path):

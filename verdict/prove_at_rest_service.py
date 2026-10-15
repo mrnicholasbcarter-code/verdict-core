@@ -19,6 +19,11 @@ def _quote(value: str) -> str:
     return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _escape_path(value: str) -> str:
+    # systemd rejects quoted WorkingDirectory values; spaces need \x20 and % needs %%.
+    return value.replace("%", "%%").replace("\\", "\\\\").replace(" ", r"\x20")
+
+
 def _systemctl(args: list[str]) -> None:
     subprocess.run(args, check=True, capture_output=True, text=True, timeout=30)
 
@@ -53,7 +58,7 @@ def manage_service(
             SERVICE: (
                 "[Unit]\nDescription=Verdict bounded background route proof\n"
                 "[Service]\nType=simple\n"
-                f"WorkingDirectory={_quote(str(Path(__file__).resolve().parent.parent))}\n"
+                f"WorkingDirectory={_escape_path(str(Path(__file__).resolve().parent.parent))}\n"
                 f"ExecStart={command}\nRestart=on-failure\nRestartSec=30\n"
             ),
             TIMER: (

@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -373,3 +374,13 @@ def test_invalid_capability_ttl_fails_closed(tmp_path, monkeypatch, value):
     cache = HealthCache(tmp_path / "health.json")
     import_sessions(source, cache, now=NOW)
     assert agentic_capability(cache.entry("kc/model:free"), NOW)["qualified"] is False
+
+
+def test_prove_at_rest_unit_working_directory_is_unquoted(tmp_path) -> None:
+    import verdict.prove_at_rest_service as service
+
+    report = service.manage_service(unit_dir=tmp_path / "units", dry_run=True)
+    unit = report["files"][service.SERVICE]
+    repo = str(Path(service.__file__).resolve().parent.parent)
+    assert f"WorkingDirectory={service._escape_path(repo)}\n" in unit
+    assert 'WorkingDirectory="' not in unit

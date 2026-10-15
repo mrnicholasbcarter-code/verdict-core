@@ -9,6 +9,7 @@ drop before select. Empty intersection fails closed.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -398,8 +399,8 @@ def gate_admit_prove_confirm(
     else:
         ordered_ids = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
     ordered = ordered_ids
-    shortlist = ordered[:max_confirm_candidates]
-    deferred = ordered[max_confirm_candidates:]
+    shortlist = ordered
+    deferred: list[str] = []
     covered = set(shortlist) | set(deferred)
     for index, evidence in enumerate(passport_rows):
         if evidence.fresh or evidence.reason is not None or evidence.identity_id in covered:
@@ -471,31 +472,67 @@ def gate_admit_prove_confirm(
     budget = confirm_budget or ProbeBudget(
         provider=_CONFIRM_PROVIDER,
         max_requests=len(shortlist),
-        max_tokens=DEFAULT_CONFIRM_TOKEN_BUDGET_PER_REQUEST * len(shortlist),
+        max_tokens=DEFAULT_CONFIRM_TOKEN_BUDGET_PER_REQUEST * max_confirm_candidates,
         max_response_bytes=65_536,
         max_duration_seconds=max(
-            float(confirm_timeout_seconds) * len(shortlist), float(confirm_timeout_seconds)
+            float(confirm_timeout_seconds) * max_confirm_candidates, float(confirm_timeout_seconds)
         ),
     )
-    runner = ProbeRunner(
-        ProbePolicy(
-            max_models_per_run=len(shortlist),
-            timeout_seconds=float(confirm_timeout_seconds),
-            max_duration_seconds=budget.max_duration_seconds,
-            cooldown_seconds=0.0,
-            max_cooldown_seconds=0.0,
-            quarantine_seconds=0.0,
+    observations: list[ProbeObservation] = []
+    deadline = time.monotonic() + budget.max_duration_seconds
+    tokens_left = budget.max_tokens
+    bytes_left = budget.max_response_bytes
+    requests_left = budget.max_requests
+    successes = 0
+    for identity_id in shortlist:
+        remaining = deadline - time.monotonic()
+        if (
+            successes >= max_confirm_candidates
+            or requests_left <= 0
+            or tokens_left <= 0
+            or bytes_left <= 0
+            or remaining <= 0
+        ):
+            observations.append(
+                ProbeObservation(
+                    model_id=identity_id,
+                    availability_state="unknown",
+                    status="skipped",
+                    observed_at=current,
+                    error="budget_exhausted",
+                )
+            )
+            continue
+        runner = ProbeRunner(
+            ProbePolicy(
+                max_models_per_run=1,
+                timeout_seconds=min(float(confirm_timeout_seconds), remaining),
+                max_duration_seconds=remaining,
+                cooldown_seconds=0.0,
+                max_cooldown_seconds=0.0,
+                quarantine_seconds=0.0,
+            )
         )
-    )
-    observations = runner.run(
-        shortlist,
-        confirm_transport,
-        now=current,
-        live=live,
-        consented=consented,
-        provider=_CONFIRM_PROVIDER,
-        budget=budget,
-    )
+        result = runner.run_with_diagnostics(
+            [identity_id],
+            confirm_transport,
+            now=current,
+            live=live,
+            consented=consented,
+            provider=_CONFIRM_PROVIDER,
+            budget=ProbeBudget(
+                provider=_CONFIRM_PROVIDER,
+                max_requests=1,
+                max_tokens=tokens_left,
+                max_response_bytes=bytes_left,
+                max_duration_seconds=remaining,
+            ),
+        )
+        observations.extend(result.observations)
+        requests_left -= result.diagnostics.transport_calls
+        tokens_left -= result.diagnostics.observed_tokens
+        bytes_left -= result.diagnostics.response_bytes
+        successes += sum(_confirm_ok(item) for item in result.observations)
     by_id = {item.model_id: item for item in observations}
     _persist_confirm_observations(
         by_id,

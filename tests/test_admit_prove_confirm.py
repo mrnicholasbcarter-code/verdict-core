@@ -420,3 +420,54 @@ def test_no_passport_candidate_excluded_when_confirm_fails() -> None:
     assert gated.empty_intersection is True
     reasons = {item.reason for item in gated.exclusions}
     assert REASON_CONFIRM_FAILED in reasons
+
+
+def test_failed_confirm_shortlist_reaches_next_candidate_with_same_token_budget():
+    from dataclasses import replace
+
+    base = admit_free_tier_active(_snapshot())
+    ids = ("kiro/a-mini", "kiro/b-mini", "kiro/c-mini", "mistral/codestral-latest")
+    base = replace(base, admitted=ids, free_admitted=ids)
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        assert payload["max_tokens"] == 1
+        if len(calls) < 3:
+            return {"status_code": [429, 499][len(calls) - 1], "body": {"error": "busy"}}
+        if len(calls) == 3:
+            return {"status_code": 200, "body": {"choices": []}}
+        return _ok_transport()(model, payload, timeout)
+
+    result = gate_admit_prove_confirm(
+        base, passports={}, confirm_transport=transport, now=NOW, live=True, consented=True
+    )
+    assert calls == list(ids)
+    assert result.chosen == ids[-1]
+    assert {d.model_id for d in result.exclusions if d.reason == REASON_CONFIRM_FAILED} == set(
+        ids[:3]
+    )
+
+
+def test_confirm_replacements_obey_explicit_request_budget():
+    from verdict.probes import ProbeBudget
+
+    base = admit_free_tier_active(_snapshot())
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return {"status_code": 429, "body": {"error": "busy"}}
+
+    result = gate_admit_prove_confirm(
+        base,
+        passports={},
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        confirm_budget=ProbeBudget(provider="admit_confirm", max_requests=1, max_tokens=128),
+    )
+    assert len(calls) == 1
+    assert result.chosen is None
+    assert any(d.reason == "confirm_budget_exhausted" for d in result.exclusions)

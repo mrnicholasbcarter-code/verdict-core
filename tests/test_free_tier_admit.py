@@ -403,6 +403,8 @@ def test_load_snapshot_and_execute_use_omniroute_paths() -> None:
                     ]
                 },
             )
+        if request.url.path == "/api/v1/me/status":
+            return httpx.Response(200, json={"accountQuotas": []})
         if request.url.path == "/api/providers":
             return httpx.Response(
                 200,
@@ -702,3 +704,127 @@ def test_omniroute_endpoint_defaults_to_local_gateway(monkeypatch: pytest.Monkey
         "http://127.0.0.1:25000/v1",
         "test-key",
     )
+
+
+@pytest.mark.parametrize(
+    "quota",
+    [
+        {"quotas": {"weekly": {"usedPercentage": 100, "resetAt": "2099-01-01T00:00:00Z"}}},
+        {"available": False, "reason": "quota_exhausted"},
+    ],
+)
+def test_account_quota_excludes_owned_alias(quota):
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [_catalog_row("agy/flash", "antigravity")]},
+        free_tier={"perModel": [{"provider": "antigravity", "modelId": "flash"}]},
+        providers={
+            "connections": [{"provider": "antigravity", "isActive": True, "testStatus": "active"}]
+        },
+        account_status={"accountQuotas": [{"provider": "antigravity", **quota}]},
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert not receipt.admitted
+    assert any(
+        d.model_id == "agy/flash" and d.reason == "quota_exhausted" for d in receipt.exclusions
+    )
+
+
+@pytest.mark.parametrize(
+    "quota",
+    [
+        {"available": False, "reason": "not_supported"},
+        {"quotas": {"weekly": {"usedPercentage": 100, "resetAt": "2020-01-01T00:00:00Z"}}},
+        {"quotas": {"weekly": {"usedPercentage": 99}}},
+    ],
+)
+def test_account_quota_nonblocking_evidence(quota):
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [_catalog_row("agy/flash", "antigravity")]},
+        free_tier={"perModel": [{"provider": "antigravity", "modelId": "flash"}]},
+        providers={
+            "connections": [{"provider": "antigravity", "isActive": True, "testStatus": "active"}]
+        },
+        account_status={"accountQuotas": [{"provider": "antigravity", **quota}]},
+    )
+    assert admit_free_tier_active(snapshot).admitted == ("agy/flash",)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["invalid provider response: missing completion content", "http 429", "quota_exhausted"],
+)
+@pytest.mark.parametrize("recover", [True, False])
+def test_offload_reselects_once_and_persists_cooling(tmp_path, monkeypatch, failure, recover):
+    from verdict.orchestration.health_cache import HealthCache
+
+    cache_path = tmp_path / "health.json"
+    monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(cache_path))
+    identities = ("openrouter/mini:free", "opencode/small-free")
+    snapshot = _snapshot(
+        catalog=[_catalog_row(i) for i in identities],
+        free_tier=[
+            {"provider": i.split("/", 1)[0], "modelId": i.split("/", 1)[1]} for i in identities
+        ],
+        providers=[
+            {"provider": p, "isActive": True, "testStatus": "active"}
+            for p in ("openrouter", "opencode")
+        ],
+    )
+    calls = []
+
+    def executor(model, task):
+        calls.append(model)
+        return ("sent", "ok") if recover and len(calls) == 2 else ("error", failure)
+
+    svc = _service(
+        snapshot,
+        executor=executor,
+        passports={i: _fresh_passport(i) for i in identities},
+        confirm_transport=_ok_confirm_transport(),
+    )
+    loads = []
+    original_load = svc._load_admit_snapshot
+
+    def load():
+        loads.append(True)
+        return original_load()
+
+    monkeypatch.setattr(svc, "_load_admit_snapshot", load)
+    decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
+    assert len(calls) == 2 and calls[0] != calls[1]
+    assert len(loads) == 2
+    assert HealthCache(cache_path).lookup(calls[0], svc.admit_now).state == "negative"
+    assert len(decision.admit_receipt["execution_attempts"]) == 2
+    assert decision.decision == ("selected" if recover else "denied")
+    if not recover:
+        assert decision.model == NO_ELIGIBLE_TARGET
+        assert "fail_closed" in decision.reason.lower()
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_quota_fence_requires_all_accounts_exhausted(available):
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [_catalog_row("cx/code", "codex")]},
+        free_tier={"perModel": [{"provider": "codex", "modelId": "code"}]},
+        providers={
+            "connections": [{"provider": "codex", "isActive": True, "testStatus": "active"}]
+        },
+        account_status={
+            "accountQuotas": [
+                {
+                    "provider": "codex",
+                    "connectionId": "exhausted",
+                    "quotas": {"weekly": {"usedPercentage": 100}},
+                },
+                {
+                    "provider": "codex",
+                    "connectionId": "other",
+                    "available": available,
+                    "quotas": {"weekly": {"usedPercentage": 11}},
+                },
+            ]
+        },
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert bool(receipt.admitted) is available
+    assert bool(snapshot.quota_blocks) is not available
