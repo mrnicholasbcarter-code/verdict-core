@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +56,8 @@ def passive_refresh(
         )
         if passport.expires_at <= now:
             continue
-        if route in passports and passports[route].expires_at > now:
+        # A newer health proof renews the passport; an equal or older one does not.
+        if route in passports and passports[route].expires_at >= passport.expires_at:
             skipped_fresh += 1
             continue
         eligible.append(
@@ -119,23 +120,49 @@ def run_census(
 
     healthy_canonical = {canonical_route(r) for r in healthy} | healthy
     cooling = {canonical_route(f"{provider}/_").split("/", 1)[0] for provider in cooling_providers}
+    from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
     from verdict.orchestration.health_cache import STATE_NEGATIVE
 
-    candidates = sorted(
-        (
-            r
-            for r in receipt.free_admitted
-            if canonical_route(r).split("/", 1)[0] not in cooling
-            and cache.lookup(r, now).state != STATE_NEGATIVE
-        ),
-        key=lambda r: (r not in healthy and canonical_route(r) not in healthy_canonical, r),
-    )
+    routes = cache.routes()
+
+    def proven(route: str) -> bool:
+        entry = routes.get(route)
+        return entry is not None and entry.healthy and entry.chat_ok and entry.tool_ok
+
+    eligible = [
+        r
+        for r in receipt.free_admitted
+        if canonical_route(r).split("/", 1)[0] not in cooling
+        and cache.lookup(r, now).state != STATE_NEGATIVE
+    ]
+
+    def tier(route: str) -> int:
+        # Keep routes that already passed a census probe alive first, then
+        # gateway-observed healthy traffic, then routes never proven.
+        if proven(route):
+            return 0
+        if route in healthy or canonical_route(route) in healthy_canonical:
+            return 1
+        return 2
+
+    # Within a tier, take one route per family before a second from any
+    # family, so the budget keeps several families fresh at once.
+    family_rank: dict[str, int] = {}
+    seen: dict[tuple[int, str], int] = {}
+    for route in sorted(eligible, key=lambda r: (tier(r), r)):
+        slot = (tier(route), route.split("/", 1)[0])
+        family_rank[route] = seen.get(slot, 0)
+        seen[slot] = family_rank[route] + 1
+    candidates = sorted(eligible, key=lambda r: (tier(r), family_rank[r], r))
     refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
     passports = load_healthy_passports(passport_store_path)
+    # Renew any passport that would lapse before the tick after next can
+    # prove it again, so a slow or late tick never leaves a gap.
+    renew_before = now + timedelta(seconds=2 * CENSUS_INTERVAL_SECONDS)
     pending = [
         model
         for model in candidates
-        if model not in passports or passports[model].expires_at <= now
+        if model not in passports or passports[model].expires_at <= renew_before
     ]
     limit = min(max_candidates - refreshed["updated"], max_tokens // 256)
     probed = 0
