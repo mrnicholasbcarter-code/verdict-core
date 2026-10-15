@@ -1151,6 +1151,8 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
     """Fence a provider only when every reported account is exhausted.
 
     Provider routes cannot pin a connection; OmniRoute selects an available account.
+    Availability requires positive evidence (explicit flag or reported capacity), not the absence of a block.
+    `available: True` alone (no quota data) is sufficient positive evidence.
     """
     if not isinstance(payload, Mapping):
         return ()
@@ -1165,6 +1167,7 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
             continue
         provider = row["provider"]
         before = len(blocks)
+        has_capacity = False
         account = row.get("connectionId", "unknown")
         if row.get("available") is False and row.get("reason") != "not_supported":
             blocks.append(
@@ -1182,12 +1185,15 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
                 continue
             used = _number(quota.get("usedPercentage"))
             if used is None or used < 100:
+                if used is not None:
+                    has_capacity = True
                 continue
             reset = quota.get("resetAt")
             if isinstance(reset, str):
                 try:
                     reset_time = datetime.fromisoformat(reset.replace("Z", "+00:00"))
                     if reset_time.tzinfo is not None and reset_time <= now:
+                        has_capacity = True
                         continue
                 except ValueError:
                     pass
@@ -1198,7 +1204,7 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
                     f"account={account} window={window} used={used}% resetAt={reset}",
                 )
             )
-        if len(blocks) == before:
+        if len(blocks) == before and (row.get("available") is True or has_capacity):
             available_providers.add(provider)
     return tuple(block for block in blocks if block.model_id not in available_providers)
 
