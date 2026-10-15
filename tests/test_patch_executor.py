@@ -190,9 +190,8 @@ def test_failing_git_apply_check_rejects_without_mutating(repo: Path) -> None:
 
     assert attempt.outcome == "rejected"
     assert "does not apply" in attempt.reason
-    # One --check probe per turn (first diff + one repair); git apply proper never ran.
-    assert len(runner.calls) == 2
-    assert all("--check" in call for call in runner.calls)
+    assert len(runner.calls) == 1  # only the --check probe ran
+    assert "--check" in runner.calls[0]
 
 
 def test_missing_usage_is_recorded_as_unreported_not_estimated(repo: Path) -> None:
@@ -272,6 +271,8 @@ def test_default_openai_transport_sends_operational_loop_session_header(
     def opener(request, timeout):
         del timeout
         captured["session"] = request.get_header("X-session-id")
+        captured["no_cache"] = request.get_header("X-omniroute-no-cache")
+        captured["cache_control"] = request.get_header("Cache-control")
         captured["url"] = request.full_url
         return Response()
 
@@ -285,6 +286,9 @@ def test_default_openai_transport_sends_operational_loop_session_header(
     assert attempt.outcome == "rejected"
     assert captured["url"].endswith("/chat/completions")
     assert captured["session"] == "verdict-operational-loop"
+    # Executor calls must be real samples, never a gateway cache replay.
+    assert captured["no_cache"] == "true"
+    assert captured["cache_control"] == "no-cache"
 
 
 def test_api_key_is_never_placed_in_the_prompt(repo: Path) -> None:
@@ -628,11 +632,17 @@ BAD_CONTEXT_DIFF = """diff --git a/owned.py b/owned.py
 +new
 """
 
+LARGE_LINES = 301
 
-def _git_repo(tmp_path: Path) -> Path:
+
+def _git_repo(tmp_path: Path, text: str = "old\n") -> Path:
     subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
-    (tmp_path / "owned.py").write_text("old\n", encoding="utf-8")
+    (tmp_path / "owned.py").write_text(text, encoding="utf-8")
     return tmp_path
+
+
+def _large_text() -> str:
+    return "old\n" + "".join(f"line{n}\n" for n in range(2, LARGE_LINES + 1))
 
 
 def _sequenced_executor(
@@ -652,15 +662,18 @@ def _sequenced_executor(
     return executor, seen
 
 
-def test_rejected_diff_gets_one_repair_turn_that_applies(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path)
-    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, IN_BOUNDS_DIFF])
+def test_small_file_repair_asks_for_full_content_and_applies(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, "import os\nimport sys\n\n\nx = 1\n")
+    full = "```file:owned.py\nimport sys\n\n\nx = 1\n```"
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, full])
 
     attempt = executor.execute_unit(_unit())
 
     assert attempt.applied
-    assert (repo / "owned.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "import sys\n\n\nx = 1\n"
+    assert attempt.changed_files == ("owned.py",)
     assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "full_file"
     assert attempt.repair_attempt["repaired"] is True
     assert "patch failed" in attempt.repair_attempt["first_error"]
     assert attempt.usage.total_tokens == 30  # both turns are counted
@@ -670,11 +683,73 @@ def test_rejected_diff_gets_one_repair_turn_that_applies(tmp_path: Path) -> None
     assert repair_messages[2] == {"role": "assistant", "content": BAD_CONTEXT_DIFF}
     repair_prompt = repair_messages[3]["content"]
     assert attempt.repair_attempt["first_error"] in repair_prompt
-    assert "   1| old" in repair_prompt
+    assert "```file:owned.py" in repair_prompt
+
+
+def test_full_file_repair_keeps_a_missing_final_newline(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, "old\nkeep")
+    full = "```file:owned.py\nnew\nkeep\n```"
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, full])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "new\nkeep"
+
+
+def test_truncated_full_file_repair_is_rejected_by_name(tmp_path: Path) -> None:
+    original = "".join(f"value_{n} = {n}\n" for n in range(20))
+    repo = _git_repo(tmp_path, original)
+    executor, seen = _sequenced_executor(
+        repo, [BAD_CONTEXT_DIFF, "```file:owned.py\nvalue_0 = 0\n```"]
+    )
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert attempt.reason.startswith("patch repair failed: truncated full-file reply for owned.py")
+    assert attempt.repair_attempt == {
+        "format": "full_file",
+        "first_error": attempt.repair_attempt["first_error"],
+        "repaired": False,
+    }
+    assert len(seen) == 2
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original
+
+
+def test_full_file_repair_outside_the_boundary_is_rejected(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    (repo / "secrets.env").write_text("old\n", encoding="utf-8")
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, "```file:secrets.env\nnew\n```"])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "outside the unit boundary" in attempt.reason
+    assert (repo / "secrets.env").read_text(encoding="utf-8") == "old\n"
+
+
+def test_large_file_keeps_the_diff_repair(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, _large_text())
+    # A hunk with no trailing context only matches at EOF, so the fixture keeps one.
+    repaired_diff = (
+        "diff --git a/owned.py b/owned.py\n--- a/owned.py\n+++ b/owned.py\n"
+        "@@ -1,2 +1,2 @@\n-old\n+new\n line2\n"
+    )
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, repaired_diff])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert (repo / "owned.py").read_text(encoding="utf-8").startswith("new\nline2\n")
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "diff"
+    assert attempt.repair_attempt["repaired"] is True
+    assert "   1| old" in seen[1]["messages"][3]["content"]
 
 
 def test_failed_repair_is_rejected_by_name_and_tree_is_untouched(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path)
+    repo = _git_repo(tmp_path, _large_text())
     executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, BAD_CONTEXT_DIFF])
 
     attempt = executor.execute_unit(_unit())
@@ -684,7 +759,7 @@ def test_failed_repair_is_rejected_by_name_and_tree_is_untouched(tmp_path: Path)
     assert attempt.repair_attempt is not None
     assert attempt.repair_attempt["repaired"] is False
     assert len(seen) == 2  # exactly one repair turn, never more
-    assert (repo / "owned.py").read_text(encoding="utf-8") == "old\n"
+    assert (repo / "owned.py").read_text(encoding="utf-8") == _large_text()
 
 
 def test_non_apply_rejection_gets_no_repair_turn(repo: Path) -> None:

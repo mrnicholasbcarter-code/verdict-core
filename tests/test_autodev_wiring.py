@@ -1623,7 +1623,7 @@ def _replies_executor(repo: Path, replies: list[str], *, model: str = "cheap/mod
 
 def test_run_autodev_repairs_a_rejected_patch_and_records_it(repo: Path, tmp_path: Path) -> None:
     store = ReceiptStore(tmp_path / "receipts.db")
-    primary, calls = _replies_executor(repo, [BAD_A_DIFF, A_DIFF])
+    primary, calls = _replies_executor(repo, [BAD_A_DIFF, "```file:a.py\nx = 1\n```"])
 
     report = run_autodev(
         "fix ruff errors",
@@ -1639,6 +1639,7 @@ def test_run_autodev_repairs_a_rejected_patch_and_records_it(repo: Path, tmp_pat
     assert len(calls) == 2
     payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
     assert payload["repair_attempt"]["repaired"] is True
+    assert payload["repair_attempt"]["format"] == "full_file"
     assert "patch failed" in payload["repair_attempt"]["first_error"]
     assert "executor_retry" not in payload
 
