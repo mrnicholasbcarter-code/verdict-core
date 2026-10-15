@@ -966,3 +966,25 @@ def test_prepare_live_autodev_selected_drops_route_whose_probe_raises_http_error
     assert [item["route_id"] for item in candidates] == [FREE_B]
     assert decision.selected_route.model == FREE_B
     assert dropped == ({"route_id": FREE_A, "reason": "http_401"},)
+
+
+def test_prepare_live_autodev_selected_fails_closed_when_the_ladder_raises(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    class _Broken:
+        def select(self, requirements: Any, *, now: Any) -> Any:
+            raise ConnectionError("gateway unreachable")
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda gateway, **kw: _Broken()
+    )
+    _scripted_probe(monkeypatch)
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+    assert "could not read the eligibility ladder" in str(excinfo.value)
+    assert "ConnectionError" in str(excinfo.value)
