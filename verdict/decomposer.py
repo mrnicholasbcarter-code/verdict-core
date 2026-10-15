@@ -34,11 +34,8 @@ from verdict.work_unit import WorkUnit, WorkUnitError, parse_work_units
 
 DEFAULT_ORCHESTRATOR_MODEL = "mistral/codestral-latest"
 
-# Climbed in order after a plan is rejected twice on the default route: codestral
-# fails the same way (code and test split, or test omitted) more often than it
-# self-corrects, so the third attempt moves to a stronger cheap route instead of
-# repeating the same prompt against the same model.
-PLANNER_LADDER = ("cc/claude-haiku-5-5",)
+# A rejected plan gets one corrected retry on the same model before moving on.
+_PLAN_TRIES_PER_MODEL = 2
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -72,7 +69,23 @@ _REPLAN_EXAMPLE = (
 
 
 class DecompositionError(RuntimeError):
-    """Raised when an objective could not be decomposed into valid work units."""
+    """Raised when an objective could not be decomposed into valid work units.
+
+    ``attempts`` lists every planner call as ``{"model", "error"}`` in order.
+    ``rejected_plan`` is true when the model answered but its plan failed
+    validation, the only failure worth a corrected retry on the same model.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: Sequence[Mapping[str, Any]] = (),
+        rejected_plan: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.attempts: tuple[dict[str, Any], ...] = tuple(dict(a) for a in attempts)
+        self.rejected_plan = rejected_plan
 
 
 @dataclass(frozen=True)
@@ -83,6 +96,9 @@ class DecompositionConfig:
     """
 
     model: str = DEFAULT_ORCHESTRATOR_MODEL
+    # Planner routes tried in order (live-selected by the caller). Empty means
+    # ``model`` alone; it never falls back to a hard-coded route.
+    planner_models: tuple[str, ...] = ()
     base_url: str = DEFAULT_BASE_URL
     api_key: str | None = None
     timeout_seconds: float = 180.0
@@ -130,45 +146,52 @@ class Decomposer:
     def decompose(
         self, objective: str, *, repo_root: str | Path, evidence: str = ""
     ) -> DecompositionResult:
-        """Try the planner, then re-plan, then climb the planner ladder.
+        """Plan on each planner model in order until one plan validates.
 
-        The default cheap route gets one retry with the concrete failure fed
-        back as evidence. If both tries of the default route fail, the next
-        attempts move down :data:`PLANNER_LADDER` to a stronger cheap route,
-        because a planner that fails the same way twice is not going to
-        self-correct a third time on the same model. A caller-configured
-        frontier model (``cc/...``) still gets exactly its documented two
-        attempts and is never climbed past.
+        A rejected plan is retried once on the same model with the concrete
+        failure fed back as evidence; a second rejection moves to the next
+        model. A transport failure, an HTTP error (5xx, 429, ...) or an
+        unreadable response moves to the next model at once instead of
+        re-sending to the same one. The raised error carries every attempt.
+        A ``cc/...`` planner is refused before anything is sent (BOD-342 D22).
         """
-        first_model = self.config.model
-        if first_model.startswith("cc/"):
-            first_model = DEFAULT_ORCHESTRATOR_MODEL
-        model_sequence = [first_model, self.config.model]
-        if not self.config.model.startswith("cc/"):
-            model_sequence += list(PLANNER_LADDER)
+        if not isinstance(objective, str) or not objective.strip():
+            raise DecompositionError("objective must be a non-empty string")
+        models = self.config.planner_models or (self.config.model,)
+        excluded = [model for model in models if model.startswith("cc/")]
+        if excluded:
+            raise DecompositionError(
+                f"cc/* planner routes are excluded (BOD-342 D22); refused {excluded}"
+            )
 
         attempts: list[dict[str, Any]] = []
-        for index, model in enumerate(model_sequence):
-            is_last = index == len(model_sequence) - 1
-            try:
-                result = self._decompose_once(
-                    objective, repo_root=repo_root, evidence=evidence, model=model
-                )
-            except DecompositionError as exc:
-                attempts.append({"model": model, "error": str(exc)})
-                if is_last or not objective.strip() or isinstance(exc.__cause__, RedirectRefused):
-                    raise
-                evidence = _replan_evidence(evidence, exc)
-            else:
-                attempts.append({"model": result.model, "error": ""})
-                return DecompositionResult(
-                    units=result.units,
-                    model=result.model,
-                    usage=result.usage,
-                    latency_ms=result.latency_ms,
-                    attempts=tuple(attempts),
-                )
-        raise AssertionError("bounded planning loop exhausted")
+        last: DecompositionError | None = None
+        for model in models:
+            for _try in range(_PLAN_TRIES_PER_MODEL):
+                try:
+                    result = self._decompose_once(
+                        objective, repo_root=repo_root, evidence=evidence, model=model
+                    )
+                except DecompositionError as exc:
+                    attempts.append({"model": model, "error": str(exc)})
+                    last = exc
+                    if isinstance(exc.__cause__, RedirectRefused):
+                        raise DecompositionError(
+                            _attempts_message(attempts), attempts=attempts
+                        ) from exc
+                    if not exc.rejected_plan:
+                        break
+                    evidence = _replan_evidence(evidence, exc)
+                else:
+                    attempts.append({"model": result.model, "error": ""})
+                    return DecompositionResult(
+                        units=result.units,
+                        model=result.model,
+                        usage=result.usage,
+                        latency_ms=result.latency_ms,
+                        attempts=tuple(attempts),
+                    )
+        raise DecompositionError(_attempts_message(attempts), attempts=attempts) from last
 
     def _decompose_once(
         self, objective: str, *, repo_root: str | Path, evidence: str = "", model: str
@@ -217,7 +240,10 @@ class Decomposer:
         except PatchExecutorError as exc:
             raise DecompositionError(str(exc)) from exc
 
-        units = parse_decomposition(content, max_units=self.config.max_units)
+        try:
+            units = parse_decomposition(content, max_units=self.config.max_units)
+        except DecompositionError as exc:
+            raise DecompositionError(str(exc), rejected_plan=True) from exc
         return DecompositionResult(
             units=units,
             model=model,
@@ -266,6 +292,7 @@ def parse_decomposition(content: str, *, max_units: int = 64) -> tuple[WorkUnit,
     except WorkUnitError as exc:
         raise DecompositionError(f"invalid work unit in decomposition: {exc}") from exc
 
+    units = _merge_same_file_units(units)
     units = _merge_paired_test_units(units)
 
     owners: dict[str, str] = {}
@@ -301,6 +328,32 @@ def _is_test_path(path: str) -> bool:
     )
 
 
+def _merge_same_file_units(units: tuple[WorkUnit, ...]) -> tuple[WorkUnit, ...]:
+    """Fold units with the same owned files and the same check into the first one.
+
+    Live codestral splits one edit of one file into a unit per changed line
+    (BOD-393), each owning the same files and running the same command. That is
+    one unit written several times, not a file conflict, so it is merged before
+    the disjoint-ownership check. Units that share a file but differ in files or
+    check still fail that check.
+    """
+    merged: dict[tuple[frozenset[str], tuple[str, ...]], WorkUnit] = {}
+    for unit in units:
+        key = (frozenset(unit.owned_files), tuple(unit.verification_command))
+        first = merged.get(key)
+        if first is None:
+            merged[key] = unit
+            continue
+        merged[key] = WorkUnit(
+            unit_id=first.unit_id,
+            objective=f"{first.objective}; {unit.objective}",
+            owned_files=first.owned_files,
+            verification_command=first.verification_command,
+            context="\n".join(part for part in (first.context, unit.context) if part),
+        )
+    return tuple(merged.values())
+
+
 def _merge_paired_test_units(units: tuple[WorkUnit, ...]) -> tuple[WorkUnit, ...]:
     """Fold a unit that owns only test files into the one code unit it pairs with.
 
@@ -329,6 +382,11 @@ def _merge_paired_test_units(units: tuple[WorkUnit, ...]) -> tuple[WorkUnit, ...
         context=code_unit.context,
     )
     return tuple(merged if u is code_unit else u for u in units if u is not test_unit)
+
+
+def _attempts_message(attempts: Sequence[Mapping[str, Any]]) -> str:
+    detail = "; ".join(f"{a['model']}: {a['error']}" for a in attempts)
+    return f"planning failed after {len(attempts)} attempt(s): {detail}"
 
 
 def _replan_evidence(evidence: str, exc: DecompositionError) -> str:
