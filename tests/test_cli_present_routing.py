@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import verdict.cli as cli
+from verdict.free_tier_admit import LiveAdmitError
 
 
 @pytest.fixture()
@@ -56,7 +57,19 @@ def test_cmd_simulate_present_header(capsys: pytest.CaptureFixture[str]) -> None
     assert "Risk score" in out
 
 
-def test_cmd_route_verbose_present_header(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cmd_route_verbose_present_header(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Pin both network hops the default-gateway fallback would otherwise take
+    # so the legacy fallback's "error" outcome never depends on whether a
+    # real OmniRoute happens to be listening on this host (BOD-354).
+    monkeypatch.setattr(
+        "verdict.intelligence.load_omniroute_admit_snapshot",
+        lambda *a, **k: (_ for _ in ()).throw(LiveAdmitError("transport", "ConnectError")),
+    )
+    monkeypatch.setattr(
+        "verdict.cli.execute_offload_chat", lambda *a, **k: ("error", "ConnectError")
+    )
     with pytest.raises(SystemExit) as exc:
         cli.cmd_route("format docs", "low", terse=False, allow_legacy_selector=True)
     assert exc.value.code == 1
