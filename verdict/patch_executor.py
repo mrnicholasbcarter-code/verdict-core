@@ -219,9 +219,17 @@ class PatchExecutor:
         self.response_headers = {}
         started = time.monotonic()
         try:
-            content, usage = self._request_patch(unit)
+            content, usage, finish_reason = self._request_patch(unit)
         except PatchExecutorError as exc:
             return self._attempt(unit, "error", str(exc), started=started)
+        if finish_reason == "length":
+            return self._attempt(
+                unit,
+                "rejected",
+                f"truncated: the reply hit max_tokens={self.config.max_tokens} (finish_reason=length)",
+                usage=usage,
+                started=started,
+            )
         observation = self._last_observation
         if observation is not None and fatal_identity_mismatch(
             observation.model, observation.resolved_model
@@ -334,7 +342,7 @@ class PatchExecutor:
         )
         return PatchExecutorError(reason)
 
-    def _request_patch(self, unit: WorkUnit) -> tuple[str, TokenUsage]:
+    def _request_patch(self, unit: WorkUnit) -> tuple[str, TokenUsage, str | None]:
         """Return the raw model text and its measured usage, or raise on transport failure."""
         payload = {
             "model": self.config.model,
@@ -376,7 +384,15 @@ class PatchExecutor:
         )
 
         usage = parse_usage(body.get("usage"))
-        return extract_content(body), usage
+        finish_reason: str | None = None
+        choices = body.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, Mapping):
+                fr = first.get("finish_reason")
+                if isinstance(fr, str):
+                    finish_reason = fr
+        return extract_content(body), usage, finish_reason
 
     def _git_apply(self, diff: str, *, check_only: bool) -> subprocess.CompletedProcess[str]:
         # Models frequently emit hunks with miscounted context lines;

@@ -585,3 +585,35 @@ def test_bare_hunk_for_new_file_rejects_removals(tmp_path: Path) -> None:
     diff = "--- /dev/null\n+++ b/new.py\n@@\n-old\n+new\n"
     with pytest.raises(PatchExecutorError):
         repair_bare_hunks(diff, tmp_path)
+
+
+def test_truncated_reply_is_rejected_by_name(repo: Path) -> None:
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "model": "m/x",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "--- a/owned.py\n+++ b/owned.py\n@@ -1 +1 @@\n-old\n+ne"
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4096, "total_tokens": 4106},
+            },
+        }
+
+    runner = RecordingRunner()
+    executor = PatchExecutor(
+        repo, PatchExecutorConfig(model="m/x"), transport=transport, runner=runner
+    )
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "truncated" in attempt.reason
+    assert "max_tokens=4096" in attempt.reason
+    assert attempt.changed_files == ()
+    assert runner.calls == []  # git apply never ran on a cut-off diff
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "old\n"
