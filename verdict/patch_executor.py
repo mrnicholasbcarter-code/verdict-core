@@ -24,7 +24,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -157,6 +157,7 @@ class PatchAttempt:
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
     resolved_model: str | None = None
+    repair_attempt: dict[str, Any] | None = None
 
     @property
     def applied(self) -> bool:
@@ -172,6 +173,7 @@ class PatchAttempt:
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
             "resolved_model": self.resolved_model,
+            "repair_attempt": self.repair_attempt,
         }
 
 
@@ -212,87 +214,104 @@ class PatchExecutor:
         self._runner = runner
         self._observer = observer
         self._last_observation: RouteObservation | None = None
+        self.last_repair_attempt: dict[str, Any] | None = None
 
     def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
-        """Request a patch for ``unit`` and apply it if it stays in bounds."""
+        """Request a patch for ``unit`` and apply it if it stays in bounds.
+
+        When the first diff fails ``git apply --check``, the same route gets one
+        repair turn: the exact git error plus the owned files with line numbers.
+        The repaired diff goes through every check the first one did.
+        """
         self._last_observation = None
         self.response_headers = {}
+        self.last_repair_attempt = None
         started = time.monotonic()
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_unit_prompt(unit, self.repo_root)},
+        ]
+        attempt, content, check_failed = self._request_and_apply(unit, messages, started)
+        if not check_failed:
+            return attempt
+        first_error = attempt.reason
+        messages = [
+            *messages,
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": build_repair_prompt(unit, self.repo_root, first_error)},
+        ]
+        repaired, _, _ = self._request_and_apply(unit, messages, started)
+        self.last_repair_attempt = {"first_error": first_error, "repaired": repaired.applied}
+        usage = _add_usage(attempt.usage, repaired.usage)
+        reason = "" if repaired.applied else f"patch repair failed: {repaired.reason}"
+        return replace(
+            repaired, reason=reason, usage=usage, repair_attempt=self.last_repair_attempt
+        )
+
+    def _request_and_apply(
+        self, unit: WorkUnit, messages: list[dict[str, str]], started: float
+    ) -> tuple[PatchAttempt, str, bool]:
+        """Run one model turn and apply its diff.
+
+        Returns the attempt, the raw reply, and whether the only problem was a
+        failed ``git apply --check`` (the one failure a repair turn can address).
+        """
         try:
-            content, usage, finish_reason = self._request_patch(unit)
+            content, usage, finish_reason = self._request_patch(messages)
         except PatchExecutorError as exc:
-            return self._attempt(unit, "error", str(exc), started=started)
+            return self._attempt(unit, "error", str(exc), started=started), "", False
         if finish_reason == "length":
-            return self._attempt(
-                unit,
-                "rejected",
-                f"truncated: the reply hit max_tokens={self.config.max_tokens} (finish_reason=length)",
-                usage=usage,
-                started=started,
+            reason = (
+                f"truncated: the reply hit max_tokens={self.config.max_tokens} "
+                "(finish_reason=length)"
             )
+            return self._attempt(unit, "rejected", reason, usage=usage, started=started), "", False
         observation = self._last_observation
         if observation is not None and fatal_identity_mismatch(
             observation.model, observation.resolved_model
         ):
-            return self._attempt(
-                unit,
-                "error",
-                (
-                    "provider identity mismatch: "
-                    f"selected {observation.model!r}, served {observation.resolved_model!r}"
-                ),
-                usage=usage,
-                started=started,
+            reason = (
+                "provider identity mismatch: "
+                f"selected {observation.model!r}, served {observation.resolved_model!r}"
             )
+            return self._attempt(unit, "error", reason, usage=usage, started=started), "", False
 
         # From here the call succeeded, so anything wrong is the model's output:
         # a refusal to apply, not an infrastructure error.
+        def rejected(reason: str, check_failed: bool = False) -> tuple[PatchAttempt, str, bool]:
+            attempt = self._attempt(unit, "rejected", reason, usage=usage, started=started)
+            return attempt, content, check_failed
+
         try:
             diff = extract_diff(content)
             paths = parse_patch_paths(diff)
         except PatchExecutorError as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+            return rejected(str(exc))
 
         outside = unit.out_of_bounds(paths)
         if outside:
-            return self._attempt(
-                unit,
-                "rejected",
-                f"patch touches files outside the unit boundary: {list(outside)}",
-                usage=usage,
-                started=started,
-            )
+            return rejected(f"patch touches files outside the unit boundary: {list(outside)}")
 
         diff = repair_new_file_diff(diff, self.repo_root)
 
         try:
             diff = repair_bare_hunks(diff, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError) as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+            return rejected(str(exc))
 
         check = self._git_apply(diff, check_only=True)
         if check.returncode != 0:
-            return self._attempt(
-                unit,
-                "rejected",
-                f"git apply --check failed: {_tail(check.stderr)}",
-                usage=usage,
-                started=started,
-            )
+            return rejected(f"git apply --check failed: {_tail(check.stderr)}", True)
 
         applied = self._git_apply(diff, check_only=False)
         if applied.returncode != 0:
-            return self._attempt(
-                unit,
-                "error",
-                f"git apply failed after a passing check: {_tail(applied.stderr)}",
-                usage=usage,
-                started=started,
-            )
+            reason = f"git apply failed after a passing check: {_tail(applied.stderr)}"
+            return self._attempt(unit, "error", reason, usage=usage, started=started), "", False
 
-        return self._attempt(
+        attempt = self._attempt(
             unit, "applied", "", changed_files=tuple(sorted(paths)), usage=usage, started=started
         )
+        return attempt, content, False
 
     def for_unit(self, unit: WorkUnit) -> BoundUnitExecutor:
         """Return a :class:`~verdict.dispatcher.SubagentExecutor` bound to ``unit``."""
@@ -342,14 +361,11 @@ class PatchExecutor:
         )
         return PatchExecutorError(reason)
 
-    def _request_patch(self, unit: WorkUnit) -> tuple[str, TokenUsage, str | None]:
+    def _request_patch(self, messages: list[dict[str, str]]) -> tuple[str, TokenUsage, str | None]:
         """Return the raw model text and its measured usage, or raise on transport failure."""
         payload = {
             "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_unit_prompt(unit, self.repo_root)},
-            ],
+            "messages": messages,
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
         }
@@ -430,8 +446,6 @@ class BoundUnitExecutor:
         model = getattr(candidate, "model", None) or getattr(candidate, "runtime_id", None)
         executor = self.executor
         if model and model != executor.config.model:
-            from dataclasses import replace
-
             executor = PatchExecutor(
                 executor.repo_root,
                 replace(executor.config, model=model, timeout_seconds=timeout_seconds),
@@ -467,6 +481,44 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
         sections += ["", f"--- current contents of {path} ---", text]
     sections += ["", "Reply with the unified diff only."]
     return "\n".join(sections)
+
+
+def build_repair_prompt(unit: WorkUnit, repo_root: str | Path, error: str) -> str:
+    """Render the follow-up turn after ``git apply --check`` refused a diff.
+
+    Line numbers let the model write hunk headers and context that match the
+    file exactly; the git error says which hunk did not apply.
+    """
+    root = Path(repo_root)
+    sections = [
+        "Your diff was rejected and nothing was changed.",
+        f"Exact error: {error}",
+        "",
+        "Write a corrected unified diff against the files exactly as shown below.",
+        "Line numbers are for reference only; they are not part of the file.",
+        "Context and removed lines must match the file byte for byte.",
+    ]
+    for path in unit.owned_files:
+        try:
+            text = read_repository_text(root, path)
+        except UnsafeRepositoryPathError as exc:
+            raise PatchExecutorError(str(exc)) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            sections += ["", f"--- {path} (unreadable: {type(exc).__name__}) ---"]
+            continue
+        numbered = [f"{n:>4}| {line}" for n, line in enumerate(text.splitlines(), start=1)]
+        sections += ["", f"--- current contents of {path} (with line numbers) ---", *numbered]
+    sections += ["", "Reply with the unified diff only."]
+    return "\n".join(sections)
+
+
+def _add_usage(first: TokenUsage, second: TokenUsage) -> TokenUsage:
+    """Sum two turns' usage; the total is reported only if both turns reported it."""
+    return TokenUsage(
+        prompt_tokens=first.prompt_tokens + second.prompt_tokens,
+        completion_tokens=first.completion_tokens + second.completion_tokens,
+        reported=first.reported and second.reported,
+    )
 
 
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -762,6 +814,7 @@ __all__ = [
     "RouteObservation",
     "RouteObserver",
     "TokenUsage",
+    "build_repair_prompt",
     "build_unit_prompt",
     "extract_content",
     "extract_diff",

@@ -190,8 +190,9 @@ def test_failing_git_apply_check_rejects_without_mutating(repo: Path) -> None:
 
     assert attempt.outcome == "rejected"
     assert "does not apply" in attempt.reason
-    assert len(runner.calls) == 1  # only the --check probe ran
-    assert "--check" in runner.calls[0]
+    # One --check probe per turn (first diff + one repair); git apply proper never ran.
+    assert len(runner.calls) == 2
+    assert all("--check" in call for call in runner.calls)
 
 
 def test_missing_usage_is_recorded_as_unreported_not_estimated(repo: Path) -> None:
@@ -617,3 +618,80 @@ def test_truncated_reply_is_rejected_by_name(repo: Path) -> None:
     assert attempt.changed_files == ()
     assert runner.calls == []  # git apply never ran on a cut-off diff
     assert (repo / "owned.py").read_text(encoding="utf-8") == "old\n"
+
+
+BAD_CONTEXT_DIFF = """diff --git a/owned.py b/owned.py
+--- a/owned.py
++++ b/owned.py
+@@ -1 +1 @@
+-not the real line
++new
+"""
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
+    (tmp_path / "owned.py").write_text("old\n", encoding="utf-8")
+    return tmp_path
+
+
+def _sequenced_executor(
+    repo: Path, replies: list[str]
+) -> tuple[PatchExecutor, list[Mapping[str, Any]]]:
+    seen: list[Mapping[str, Any]] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        seen.append(payload)
+        return _response(
+            replies[len(seen) - 1], usage={"prompt_tokens": 10, "completion_tokens": 5}
+        )
+
+    executor = PatchExecutor(
+        repo, PatchExecutorConfig(model="cheap/model", api_key=None), transport=transport
+    )
+    return executor, seen
+
+
+def test_rejected_diff_gets_one_repair_turn_that_applies(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, IN_BOUNDS_DIFF])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "new\n"
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["repaired"] is True
+    assert "patch failed" in attempt.repair_attempt["first_error"]
+    assert attempt.usage.total_tokens == 30  # both turns are counted
+    assert len(seen) == 2
+    repair_messages = seen[1]["messages"]
+    assert repair_messages[:2] == seen[0]["messages"]
+    assert repair_messages[2] == {"role": "assistant", "content": BAD_CONTEXT_DIFF}
+    repair_prompt = repair_messages[3]["content"]
+    assert attempt.repair_attempt["first_error"] in repair_prompt
+    assert "   1| old" in repair_prompt
+
+
+def test_failed_repair_is_rejected_by_name_and_tree_is_untouched(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, BAD_CONTEXT_DIFF])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert attempt.reason.startswith("patch repair failed: git apply --check failed")
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["repaired"] is False
+    assert len(seen) == 2  # exactly one repair turn, never more
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "old\n"
+
+
+def test_non_apply_rejection_gets_no_repair_turn(repo: Path) -> None:
+    executor, seen = _sequenced_executor(repo, [OUT_OF_BOUNDS_DIFF, IN_BOUNDS_DIFF])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert attempt.repair_attempt is None
+    assert len(seen) == 1

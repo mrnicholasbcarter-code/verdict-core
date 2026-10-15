@@ -1589,3 +1589,82 @@ def test_run_autodev_retry_executor_receives_the_identical_pack_compiled_once(
     digest = "sha256:" + hashlib.sha256(_sent_context(retry_sent[0]).encode("utf-8")).hexdigest()
     assert payload["context_pack_digest"] == digest
     assert payload["executor_retry"]["retry_model"] == "prov/other:free"
+
+
+BAD_A_DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1 @@
+-import sys
+ x = 1
+"""
+
+
+def _replies_executor(repo: Path, replies: list[str], *, model: str = "cheap/model") -> Any:
+    calls: list[Mapping[str, Any]] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(payload)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": replies[min(len(calls), len(replies)) - 1]}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model=model, base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+    return executor, calls
+
+
+def test_run_autodev_repairs_a_rejected_patch_and_records_it(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, calls = _replies_executor(repo, [BAD_A_DIFF, A_DIFF])
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+    )
+
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "cheap/model"
+    assert len(calls) == 2
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["repair_attempt"]["repaired"] is True
+    assert "patch failed" in payload["repair_attempt"]["first_error"]
+    assert "executor_retry" not in payload
+
+
+def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, primary_calls = _replies_executor(repo, [BAD_A_DIFF, BAD_A_DIFF])
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        executor, _ = _replies_executor(repo, [A_DIFF], model=str(route["model"]))
+        return executor
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    assert len(primary_calls) == 2
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["executor_retry"]["failed_repair_attempt"]["repaired"] is False
+    assert payload["executor_retry"]["failed_reason"].startswith("patch repair failed:")

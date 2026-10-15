@@ -92,6 +92,7 @@ _USAGE_ALLOWLIST = (
     "usage.completion_tokens",
     "usage.total_tokens",
     "executor_retry",
+    "repair_attempt",
     "retry_served_headers",
     "context_pack_used_tokens",
     "context_pack_token_budget",
@@ -1689,6 +1690,7 @@ class UnitOutcome:
     changed_files: tuple[str, ...] = ()
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    repair_attempt: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1701,6 +1703,7 @@ class UnitOutcome:
             "changed_files": list(self.changed_files),
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
+            "repair_attempt": self.repair_attempt,
         }
 
 
@@ -2302,6 +2305,7 @@ def run_autodev(
                     "failed_model": executor.config.model,
                     "failed_reason": outcome.reason,
                     "retry_model": retry_executor.config.model,
+                    "failed_repair_attempt": outcome.repair_attempt,
                 }
                 outcome = retry_outcome
         outcomes.append(outcome)
@@ -2500,6 +2504,7 @@ def _from_attempt(
         changed_files=changed_files,
         usage=attempt.usage,
         latency_ms=attempt.latency_ms,
+        repair_attempt=attempt.repair_attempt,
     )
 
 
