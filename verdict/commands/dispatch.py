@@ -655,6 +655,33 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         legacy.cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
     elif args.command == "metadata":
         legacy.cmd_metadata(args)
+    elif args.command == "outcome":
+        if args.outcome_command == "record":
+            legacy.cmd_outcome_record(
+                task_kind=args.task_kind,
+                harness=args.harness,
+                model=args.model,
+                outcome=args.outcome,
+                failure_class=args.failure_class,
+                source=args.source,
+                effort=args.effort,
+                duration_s=args.duration_s,
+                tokens_in=args.tokens_in,
+                tokens_out=args.tokens_out,
+                cost_usd=args.cost_usd,
+                story_id=args.story_id,
+                store_dir=args.store_dir,
+                output_json=args.json,
+            )
+        elif args.outcome_command == "import":
+            legacy.cmd_outcome_import(
+                jsonl_path=args.jsonl_path,
+                source=args.source,
+                store_dir=args.store_dir,
+                output_json=args.json,
+            )
+        else:
+            raise SystemExit(f"unknown outcome command: {args.outcome_command}")
     elif args.command == "cost-report":
         legacy.cmd_cost_report()
     elif args.command == "resume":
