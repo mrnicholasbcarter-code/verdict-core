@@ -20,7 +20,10 @@
 
 - [x] 3.1 `cmd_autodev` uses the selection path when no pin is given and reports
       `executor_selection`; verify with the in-process CLI test
-- [x] 3.2 Record `execution_path_why_selected` and `execution_path_rejected` in
-      the autodev outcome receipt; verify by reading the persisted receipt back
+- [x] 3.2 Record `execution_path_why_selected`, `execution_path_rejected` and
+      `executor_probe_dropped` in the autodev outcome receipt; verify by reading
+      the persisted receipt back
+- [x] 3.4 Return the probe-dropped routes from the selection call and report them
+      in `executor_selection.dropped`; verify with the probe-drop and CLI tests
 - [x] 3.3 Run the focused and neighbour suites plus ruff and mypy --strict on the
       touched files as the proof gate

@@ -1988,7 +1988,9 @@ _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 
 def prepare_live_autodev_selected(
     objective: str, repo: Path, *, base_url: str, api_key: str | None, top_n: int = 3
-) -> tuple[Any, DecompositionResult, dict[str, str], tuple[dict[str, Any], ...]]:
+) -> tuple[
+    Any, DecompositionResult, dict[str, str], tuple[dict[str, Any], ...], tuple[dict[str, str], ...]
+]:
     """Select free executor candidates from the live eligibility ladder, probe them, plan, mint authority.
 
     :func:`prepare_live_autodev` probes one explicitly pinned route. This asks
@@ -1998,6 +2000,11 @@ def prepare_live_autodev_selected(
     Candidates stay in ladder order for the caller's retry order. There is no
     paid or frontier fallback: without a free route that answers correctly this
     raises instead of launching anything.
+
+    Returns ``(decision, plan, probe headers of the selected route, candidates in
+    ladder order, routes dropped at probe time)``. The last element holds one
+    ``{"route_id": ..., "reason": ...}`` per route that failed its probe, in
+    probe order, so a drop stays visible even when another route survives.
     """
     from verdict.actions.verified_models import selection_refresh_hook
     from verdict.execution_path import optimize_execution_path
@@ -2146,7 +2153,7 @@ def prepare_live_autodev_selected(
         ),
         {},
     )
-    return decision, plan, selected_headers, ladder_order
+    return decision, plan, selected_headers, ladder_order, tuple(dropped)
 
 
 def run_autodev(
@@ -2163,6 +2170,7 @@ def run_autodev(
     plan: DecompositionResult | None = None,
     executor: PatchExecutor | None = None,
     evidence: str = "",
+    probe_dropped: Sequence[Mapping[str, str]] = (),
     mechanical: bool = True,
     runner: Any = subprocess.run,
 ) -> AutodevReport:
@@ -2228,6 +2236,7 @@ def run_autodev(
                 "execution_path_selected_route": decision.selected_route.to_dict(),
                 "execution_path_why_selected": decision.why_selected,
                 "execution_path_rejected": [item.to_dict() for item in decision.rejected],
+                "executor_probe_dropped": [dict(item) for item in probe_dropped],
                 **outcome.to_dict(),
                 "served_headers": executor.response_headers,
                 "verification_command": list(unit.verification_command),

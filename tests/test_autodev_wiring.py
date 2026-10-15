@@ -725,12 +725,13 @@ def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
     planner = _decomposer(PLAN)
     monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
 
-    decision, plan, headers, candidates = autodev.prepare_live_autodev_selected(
+    decision, plan, headers, candidates, dropped = autodev.prepare_live_autodev_selected(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
     # Only free, task-eligible routes are probed, in rank order.
     assert probed == [FREE_A, FREE_B]
+    assert dropped == ()  # both probes answered correctly
     assert built["prefer"] == ""
     assert built["required_capabilities"] == frozenset({"tools"})
     assert [item["route_id"] for item in candidates] == [FREE_A, FREE_B]
@@ -794,15 +795,16 @@ def test_prepare_live_autodev_selected_drops_route_that_fails_probe(
     planner = _decomposer(PLAN)
     monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
 
-    decision, _plan, _headers, candidates = autodev.prepare_live_autodev_selected(
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
     assert probed == [FREE_A, FREE_B]
     assert [item["route_id"] for item in candidates] == [FREE_B]
     assert decision.selected_route.model == FREE_B
-    # A route that failed its probe never becomes a candidate.
+    # A route that failed its probe never becomes a candidate, but it stays visible.
     assert {item.candidate_id for item in decision.rejected} == set()
+    assert dropped == ({"route_id": FREE_A, "reason": "content"},)
 
     # The recorded drop reason is reported when nothing survives probing.
     both_bad = _scripted_probe(monkeypatch, costs={FREE_A: "0.02", FREE_B: "0.02"})
@@ -830,6 +832,7 @@ def test_run_autodev_receipt_records_why_selected_and_rejected(repo: Path, tmp_p
         decomposer=_decomposer([PLAN[0]], model=selected),
         executor=_executor(repo, {"a.py": A_DIFF}, model=selected),
         mechanical=False,
+        probe_dropped=({"route_id": "free/gamma:free", "reason": "identity"},),
     )
 
     payload = ReceiptStore(db).query_receipts(scope=AUTODEV_SCOPE)[0].payload
@@ -840,6 +843,11 @@ def test_run_autodev_receipt_records_why_selected_and_rejected(repo: Path, tmp_p
     assert rejected != "[REDACTED]"
     assert [item["candidate_id"] for item in rejected] == dropped
     assert all(item["reason"] and item["reason"] != "[REDACTED]" for item in rejected)
+    # A route dropped at probe time stays visible in the same receipt.
+    probe_dropped = payload["executor_probe_dropped"]
+    assert probe_dropped != "[REDACTED]"
+    assert probe_dropped == [{"route_id": "free/gamma:free", "reason": "identity"}]
+    assert all(value != "[REDACTED]" for item in probe_dropped for value in item.values())
 
 
 def test_cmd_autodev_without_pin_uses_selected_route(
@@ -863,7 +871,8 @@ def test_cmd_autodev_without_pin_uses_selected_route(
             {"route_id": FREE_A, "probe_headers": headers},
             {"route_id": FREE_B, "probe_headers": headers},
         )
-        return decision, prepared, headers, candidates
+        dropped = ({"route_id": "free/gamma:free", "reason": "identity"},)
+        return decision, prepared, headers, candidates, dropped
 
     monkeypatch.setattr(autodev, "prepare_live_autodev_selected", fake_selected)
     monkeypatch.setattr("verdict.credentials_store.resolve_api_key", lambda: "fake-key")
@@ -901,8 +910,14 @@ def test_cmd_autodev_without_pin_uses_selected_route(
     assert selection["why_selected"].strip()
     assert selection["selected"] == decision.selected_route.route_id
     assert selection["probed"] == [FREE_A, FREE_B]
+    assert selection["dropped"] == [{"route_id": "free/gamma:free", "reason": "identity"}]
     assert [item["candidate_id"] for item in selection["rejected"]] == [
         item.candidate_id for item in decision.rejected
+    ]
+    # The same drop reaches the persisted receipt through cmd_autodev.
+    stored = ReceiptStore(repo / ".verdict" / "receipts.db").query_receipts(scope=AUTODEV_SCOPE)
+    assert stored[0].payload["executor_probe_dropped"] == [
+        {"route_id": "free/gamma:free", "reason": "identity"}
     ]
     # The command line carried no pin: the SELECTED route built both models.
     assert calls["api_key"] == "fake-key"

@@ -22,10 +22,12 @@ model name.
   losing candidates in `rejected`. Return the ladder order for retry use.
 - `cmd_autodev` takes that path when no pin is given; the selected route becomes
   the executor and orchestrator model, and `--output-json` gains
-  `executor_selection` (`why_selected`, `selected`, `rejected`, `probed`), with
-  the same facts in the human summary.
-- The autodev outcome receipt records `execution_path_why_selected` and
-  `execution_path_rejected` next to `execution_path_selected_route`.
+  `executor_selection` (`why_selected`, `selected`, `rejected`, `probed`,
+  `dropped`), with the same facts in the human summary.
+- The autodev outcome receipt records `execution_path_why_selected`,
+  `execution_path_rejected` and `executor_probe_dropped` next to
+  `execution_path_selected_route`, so a route that failed its probe stays
+  visible even when another route survived.
 - Both gateway-key lookups in `cmd_autodev` use
   `verdict.credentials_store.resolve_api_key()` instead of reading
   `OMNIROUTE_API_KEY` from the environment directly.
@@ -43,8 +45,8 @@ model name.
 - `verdict autodev "<objective>" --repo <path> --allow-live` with no
   `--executor-model` runs a free route the ladder chose, and the JSON report
   shows `executor_selection.why_selected` plus the rejected candidates.
-- The persisted autodev receipt holds `execution_path_why_selected` and
-  `execution_path_rejected` unredacted.
+- The persisted autodev receipt holds `execution_path_why_selected`,
+  `execution_path_rejected` and `executor_probe_dropped` unredacted.
 - With no eligible free route, or when every probed free route fails its
   identity/content/zero-cost check, the command raises before planning and
   launches nothing; no paid or frontier route is offered as a fallback.

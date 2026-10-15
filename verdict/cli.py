@@ -1318,6 +1318,7 @@ def cmd_autodev(
     prepared_plan = None
     probe_headers = None
     selected_candidates: tuple[dict[str, Any], ...] = ()
+    probe_dropped: tuple[dict[str, str], ...] = ()
     if not dry_run and execution_path_decision is None and allow_live:
         from verdict.patch_executor import DEFAULT_BASE_URL
 
@@ -1336,13 +1337,17 @@ def cmd_autodev(
             # the live eligibility ladder and never falls back to a paid route.
             from verdict.autodev_run import prepare_live_autodev_selected
 
-            execution_path_decision, prepared_plan, probe_headers, selected_candidates = (
-                prepare_live_autodev_selected(
-                    objective,
-                    Path(repo).resolve(),
-                    base_url=base_url or DEFAULT_BASE_URL,
-                    api_key=resolve_api_key(),
-                )
+            (
+                execution_path_decision,
+                prepared_plan,
+                probe_headers,
+                selected_candidates,
+                probe_dropped,
+            ) = prepare_live_autodev_selected(
+                objective,
+                Path(repo).resolve(),
+                base_url=base_url or DEFAULT_BASE_URL,
+                api_key=resolve_api_key(),
             )
     decision = None
     selection_payload: dict[str, Any] | None = None
@@ -1368,6 +1373,7 @@ def cmd_autodev(
             "selected": selected_route.route_id,
             "rejected": [item.to_dict() for item in decision.rejected],
             "probed": [candidate["route_id"] for candidate in selected_candidates],
+            "dropped": [dict(item) for item in probe_dropped],
         }
     else:
         from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
@@ -1434,6 +1440,7 @@ def cmd_autodev(
             evidence=evidence,
             mechanical=not no_mechanical,
             plan=prepared_plan,
+            probe_dropped=probe_dropped,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable

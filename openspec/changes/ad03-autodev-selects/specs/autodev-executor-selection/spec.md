@@ -41,11 +41,13 @@ probed it SHALL name each dropped route with its reason.
 - **THEN** the command raises an error that lists each dropped route with its reason
 
 ### Requirement: The selection SHALL be visible in the report and the receipt
-The autodev outcome receipt SHALL record `execution_path_why_selected` and
-`execution_path_rejected` beside `execution_path_selected_route`, unredacted.
-The `--output-json` report SHALL include `executor_selection` holding
-`why_selected`, the selected route id, the rejected candidates and the probed
-route ids, and the human summary SHALL name the selected route.
+The autodev outcome receipt SHALL record `execution_path_why_selected`,
+`execution_path_rejected` and `executor_probe_dropped` beside
+`execution_path_selected_route`, unredacted. The `--output-json` report SHALL
+include `executor_selection` holding `why_selected`, the selected route id, the
+rejected candidates, the probed route ids and the routes dropped at probe time
+with their reasons, and the human summary SHALL name the selected route. A route
+that failed its probe SHALL stay visible when another route survives.
 
 #### Scenario: Reading the receipt back
 - **WHEN** an unpinned autodev run finishes a unit and the receipt store is reopened
@@ -54,3 +56,7 @@ route ids, and the human summary SHALL name the selected route.
 #### Scenario: Reading the JSON report
 - **WHEN** an unpinned autodev run is reported with `--output-json`
 - **THEN** `executor_selection.why_selected` is non-empty and `executor_selection.selected` is the route the optimizer chose
+
+#### Scenario: A probe drop stays visible next to a survivor
+- **WHEN** one ranked free route fails its probe and a later one is selected
+- **THEN** the dropped route and its reason appear in `executor_selection.dropped` and in the receipt's `executor_probe_dropped`

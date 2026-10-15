@@ -71,7 +71,9 @@ path's planning-only window.
   and a route that fails is dropped with its reason instead of being retried.
 - A ladder that ranks a route first but whose probe fails now falls to the next
   free route rather than failing the run. That is the intended behaviour and it
-  is recorded: the drop reason is reported when nothing survives.
+  stays auditable: every dropped route and reason is returned to the caller,
+  reported in `executor_selection.dropped` and persisted as
+  `executor_probe_dropped`, and the error lists them all when nothing survives.
 - Ties between two zero-cash free routes are broken by
   `expected_cost.strategy_id` (verdict/expected_cost.py `compare_strategies`),
   so the winner is deterministic but not operator-chosen. The receipt shows the
