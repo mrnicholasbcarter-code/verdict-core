@@ -14,6 +14,7 @@ import verdict.actions.helpers as _action_helpers
 from verdict import cli
 from verdict import doctor_diagnostics as dd
 from verdict.execution_packet import ExecutionPacket
+from verdict.free_tier_admit import LiveAdmitError
 from verdict.models import RoutingDecision
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
@@ -529,7 +530,19 @@ def test_autodev_packet_create_refuses_existing_path(
     assert exc.value.code == 1
 
 
-def test_cmd_route_verbose_without_config(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cmd_route_verbose_without_config(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Pin both network hops the default-gateway fallback would otherwise take
+    # so the legacy fallback's "error" outcome never depends on whether a
+    # real OmniRoute happens to be listening on this host (BOD-354).
+    monkeypatch.setattr(
+        "verdict.intelligence.load_omniroute_admit_snapshot",
+        lambda *a, **k: (_ for _ in ()).throw(LiveAdmitError("transport", "ConnectError")),
+    )
+    monkeypatch.setattr(
+        "verdict.cli.execute_offload_chat", lambda *a, **k: ("error", "ConnectError")
+    )
     with pytest.raises(SystemExit) as exc:
         cli.cmd_route("format docs", "low", terse=False, allow_legacy_selector=True)
     assert exc.value.code == 1
@@ -698,6 +711,18 @@ def test_main_dispatches_help_route_stats_detect(
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "verdict.yaml").write_text(
         "primary_model: anthropic/claude-opus-5\nproviders: {}\nlog_path: ''\n"
+    )
+    # Pin both network hops the default-gateway fallback would otherwise take
+    # (admit-snapshot fetch, then completion send) so the legacy fallback's
+    # "error" outcome never depends on whether a real OmniRoute happens to be
+    # listening on this host's 127.0.0.1:20128 (BOD-354 unauthorized-vs-dead
+    # ambiguity).
+    monkeypatch.setattr(
+        "verdict.intelligence.load_omniroute_admit_snapshot",
+        lambda *a, **k: (_ for _ in ()).throw(LiveAdmitError("transport", "ConnectError")),
+    )
+    monkeypatch.setattr(
+        "verdict.cli.execute_offload_chat", lambda *a, **k: ("error", "ConnectError")
     )
     monkeypatch.setattr(cli.sys, "argv", ["verdict", "route", "hello", "--terse"])
     with pytest.raises(SystemExit) as exc:
