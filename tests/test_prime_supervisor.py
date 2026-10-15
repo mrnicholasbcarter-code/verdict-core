@@ -1961,3 +1961,118 @@ def test_supervisor_production_bundle_certifies_loaded_passports(tmp_path, injec
         assert seeds[0].certification_freshness == "fresh"
         assert seeds[0].route.eligible is False
         assert not calls  # default real certify_runtime path, no injected hook
+
+
+def test_select_only_reports_controller_worker_reviewer_without_launch(
+    tmp_path, monkeypatch, capsys
+):
+    """--select-only prints controller/worker/reviewer routes and never launches Prime."""
+    m = module()
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    state = tmp_path / "state"
+    state.mkdir()
+    launched: list[list[str]] = []
+
+    class FakeSelector:
+        def select_controller_launch(self, mission, *, override=None, session_state=None, now=None):
+            decision_path = _write_controller_decision(
+                tmp_path / "sel.json", provider="omniroute", model="cc/claude-opus", reasoning=None
+            )
+            persisted = m.load_persisted_authoritative_decision(decision_path)
+            return m.decide_controller_launch(
+                mission, persisted=persisted, override=override, now=now
+            )
+
+    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", FakeSelector())
+    monkeypatch.setattr(
+        m,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {
+            "worker": {"model_id": "cc/claude-sonnet", "provider": "cc", "family": "claude"},
+            "reviewer": {"model_id": "gc/grok-4.5", "provider": "gc", "family": "grok"},
+        },
+    )
+
+    def boom_run_attempt(*a, **k):
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(m, "run_attempt", boom_run_attempt)
+    monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prime_supervisor.py",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
+            "--select-only",
+        ],
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    assert m.main() == 0
+    assert launched == []
+    out = json.loads(capsys.readouterr().out)
+    assert out["mode"] == "select-only"
+    assert out["controller"]["route_id"] == "omniroute/cc/claude-opus"
+    assert out["controller"]["family"] == "claude"
+    assert out["worker"]["family"] == "claude"
+    assert out["reviewer"]["family"] == "grok"
+    assert out["reviewer_family_differs_from_worker"] is True
+    # No session/run state is written for a select-only report.
+    assert not (state / "run.json").exists()
+    assert not list((state / "sessions").glob("*")) if (state / "sessions").exists() else True
+
+
+def test_select_only_blocks_cleanly_when_no_eligible_controller_route(
+    tmp_path, monkeypatch, capsys
+):
+    """--select-only fails closed (exit 2) and never launches when nothing qualifies."""
+    m = module()
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    class BlockingSelector:
+        def select_controller_launch(self, mission, *, override=None, session_state=None, now=None):
+            raise m.ControllerLaunchError("no_eligible_route", "nothing qualifies")
+
+    monkeypatch.setattr(m, "CONTROLLER_SELECTOR", BlockingSelector())
+    monkeypatch.setattr(
+        m,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {
+            "worker": {"error": "no_eligible_route"},
+            "reviewer": {"error": "no_eligible_route"},
+        },
+    )
+
+    def boom_run_attempt(*a, **k):
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(m, "run_attempt", boom_run_attempt)
+    monkeypatch.setattr(m, "stop_owned_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prime_supervisor.py",
+            "--repo",
+            str(repo),
+            "--state-dir",
+            str(state),
+            "--prime",
+            "prime-agent",
+            "--select-only",
+        ],
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    assert m.main() == 2
+    out = json.loads(capsys.readouterr().out)
+    assert "no_eligible_route" in out["controller"]["error"]
+    assert not (state / "run.json").exists()
