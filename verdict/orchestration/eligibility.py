@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import re
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -278,8 +279,12 @@ class EligibilityLadder:
         self._max_per_route = max_per_route
         self._max_probes = max_probes_per_select
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
+        # BOD-341: select() runs concurrently on worker threads. Every _state
+        # mutation and its _persist hold this lock (never across a probe).
+        self._persist_lock = threading.RLock()
         self._last_verdicts: tuple[RouteVerdict, ...] = ()
-        self._last_select_stats: dict[str, int] = {}
+        # Per thread: concurrent select() calls (BOD-341) must each read their own stats.
+        self._select_stats = threading.local()
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
@@ -355,10 +360,18 @@ class EligibilityLadder:
         }
 
     def _persist(self) -> None:
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self._state, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, self._state_path)
+        # Callers hold _persist_lock across their state mutation; holding it here
+        # too keeps snapshot and replace atomic, so an older snapshot never lands last.
+        with self._persist_lock:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            # BOD-341: a unique tmp name per call avoids concurrent select() calls
+            # (now running on separate threads) colliding on the same tmp path
+            # and racing os.replace with FileNotFoundError.
+            tmp = self._state_path.with_suffix(
+                f"{self._state_path.suffix}.{threading.get_ident()}.tmp"
+            )
+            tmp.write_text(json.dumps(self._state, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, self._state_path)
 
     def _connection_for(self, provider: str) -> Mapping[str, Any] | None:
         # One pass over the connections per provider, not one per route: a
@@ -498,12 +511,13 @@ class EligibilityLadder:
         if cache is not None and cache.path.exists():
             cache.reload()
         fresh = self._load_state()["cooldowns"]
-        for key, entry in fresh.items():
-            current = self._state["cooldowns"].get(key)
-            if not isinstance(current, dict) or str(entry.get("until", "")) > str(
-                current.get("until", "")
-            ):
-                self._state["cooldowns"][key] = entry
+        with self._persist_lock:
+            for key, entry in fresh.items():
+                current = self._state["cooldowns"].get(key)
+                if not isinstance(current, dict) or str(entry.get("until", "")) > str(
+                    current.get("until", "")
+                ):
+                    self._state["cooldowns"][key] = entry
         raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
         provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
@@ -950,7 +964,7 @@ class EligibilityLadder:
         Keys: ``probed``, ``stale``, ``healthy_after_probe``,
         ``eligible_after_probe``.  Empty dict before the first call.
         """
-        return dict(self._last_select_stats)
+        return dict(getattr(self._select_stats, "value", {}))
 
     def select(
         self, requirements: TaskRequirements, *, now: datetime
@@ -1152,7 +1166,7 @@ class EligibilityLadder:
             for v in final_verdicts
             if v.reached is not None and v.reached.value in ("TASK_ELIGIBLE", "SELECTED")
         )
-        self._last_select_stats = {
+        self._select_stats.value = {
             "probed": probes_used,
             "stale": stale,
             "healthy_after_probe": healthy_after,
@@ -1196,56 +1210,60 @@ class EligibilityLadder:
             and is_catalog_stale_error(result.error_message)
         ):
             category = "catalog_stale"
-        self._state["health"][route_id] = {
-            "healthy": result.healthy,
-            "category": category,
-            "checked_at": _iso(now),
-        }
-        if not result.healthy:
-            seconds = cooldown_seconds_for(category, result.retry_after_seconds)
-            entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
-            self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-            if provider and category in _PROVIDER_SCOPE_CATEGORIES:
-                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
-                self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
-            # Live-evidence not-free override: mark the route and pool so
-            # capacity classification reflects the override (design §B, item 3).
-            if is_not_free_signal(
-                category=category, status_code=getattr(result, "status_code", None)
-            ):
-                pool = backend_pool(route_id)
-                until = _iso(
-                    now
-                    + timedelta(seconds=cooldown_seconds_for(category, result.retry_after_seconds))
-                )
-                record_not_free_override(
-                    self._state, route_id, pool=pool, until_iso=until, reason=category
-                )
-        self._persist()
+        with self._persist_lock:
+            self._state["health"][route_id] = {
+                "healthy": result.healthy,
+                "category": category,
+                "checked_at": _iso(now),
+            }
+            if not result.healthy:
+                seconds = cooldown_seconds_for(category, result.retry_after_seconds)
+                entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
+                self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
+                if provider and category in _PROVIDER_SCOPE_CATEGORIES:
+                    self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
+                    self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
+                # Live-evidence not-free override: mark the route and pool so
+                # capacity classification reflects the override (design §B, item 3).
+                if is_not_free_signal(
+                    category=category, status_code=getattr(result, "status_code", None)
+                ):
+                    pool = backend_pool(route_id)
+                    until = _iso(
+                        now
+                        + timedelta(
+                            seconds=cooldown_seconds_for(category, result.retry_after_seconds)
+                        )
+                    )
+                    record_not_free_override(
+                        self._state, route_id, pool=pool, until_iso=until, reason=category
+                    )
+            self._persist()
 
     def record_failure(
         self, route_id: str, failure: FailureClassification, *, now: datetime
     ) -> None:
-        retry_after = failure.cooldown_seconds if failure.cooldown_seconds > 0 else None
-        seconds = cooldown_seconds_for(failure.category, retry_after)
-        entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
-        if failure.scope in {"route", "provider"}:
-            # Only credential-pool exhaustion or account failures cool the whole
-            # pool (SH-1). A bad model id, a 400 or a timeout is about this route
-            # and must not block healthy sibling models on the same credential.
-            if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
-                self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
-            self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-        if failure.scope == "provider" and failure.category not in POOL_COOLDOWN_CATEGORIES:
-            # Credential failures already have a canonical pool blocker above.
-            # A second provider blocker would spread a FREE-pool failure onto
-            # unrelated pools owned by the same provider (e.g. OpenRouter).
-            raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
-            provider = resolve_provider(raw_provider) if raw_provider else raw_provider
-            if not provider:
-                provider = route_id.split("/", 1)[0].lower()
-            self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
-        self._persist()
+        with self._persist_lock:
+            retry_after = failure.cooldown_seconds if failure.cooldown_seconds > 0 else None
+            seconds = cooldown_seconds_for(failure.category, retry_after)
+            entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": failure.category}
+            if failure.scope in {"route", "provider"}:
+                # Only credential-pool exhaustion or account failures cool the whole
+                # pool (SH-1). A bad model id, a 400 or a timeout is about this route
+                # and must not block healthy sibling models on the same credential.
+                if failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES:
+                    self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
+                self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
+            if failure.scope == "provider" and failure.category not in POOL_COOLDOWN_CATEGORIES:
+                # Credential failures already have a canonical pool blocker above.
+                # A second provider blocker would spread a FREE-pool failure onto
+                # unrelated pools owned by the same provider (e.g. OpenRouter).
+                raw_provider = str(self._rows.get(route_id, {}).get("owned_by", "")).lower()
+                provider = resolve_provider(raw_provider) if raw_provider else raw_provider
+                if not provider:
+                    provider = route_id.split("/", 1)[0].lower()
+                self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
+            self._persist()
 
     def record_session_failure(
         self,
@@ -1276,18 +1294,23 @@ class EligibilityLadder:
         )
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
-        pool_key = f"pool:{pool_of(route_id)}"
-        entry = self._state["cooldowns"].get(pool_key)
-        if not (
-            isinstance(entry, dict)
-            and entry.get("category") in POOL_COOLDOWN_CATEGORIES
-            and self._active_cooldown(pool_key, now) is not None
-        ):
-            self._state["cooldowns"].pop(pool_key, None)
-        # Exact-route success supersedes a model-local throttle, not pool capacity.
-        self._state["cooldowns"].pop(f"route:{route_id}", None)
-        self._state["health"][route_id] = {"healthy": True, "category": "", "checked_at": _iso(now)}
-        self._persist()
+        with self._persist_lock:
+            pool_key = f"pool:{pool_of(route_id)}"
+            entry = self._state["cooldowns"].get(pool_key)
+            if not (
+                isinstance(entry, dict)
+                and entry.get("category") in POOL_COOLDOWN_CATEGORIES
+                and self._active_cooldown(pool_key, now) is not None
+            ):
+                self._state["cooldowns"].pop(pool_key, None)
+            # Exact-route success supersedes a model-local throttle, not pool capacity.
+            self._state["cooldowns"].pop(f"route:{route_id}", None)
+            self._state["health"][route_id] = {
+                "healthy": True,
+                "category": "",
+                "checked_at": _iso(now),
+            }
+            self._persist()
 
     def summary(self) -> dict[str, int]:
         order = list(EligibilityStage)

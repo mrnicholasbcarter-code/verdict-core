@@ -6,6 +6,8 @@ import asyncio
 import json
 import shlex
 import subprocess
+import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -472,16 +474,34 @@ async def test_concurrent_selection_spreads_load_across_routes(repo: Path) -> No
     inflight: dict[str, str] = {}
 
     class Spreading(Selector):
+        def __init__(self, routes: list[str]) -> None:
+            super().__init__(routes)
+            self._lock = threading.Lock()
+            # BOD-341: select() now runs via asyncio.to_thread and can execute
+            # concurrently for sibling nodes, so DagRuntime.inflight is not
+            # necessarily updated between one call finishing and the next
+            # starting (unlike the old inline-on-the-loop selection, which was
+            # implicitly serialized). Track reservations made inside this
+            # selector so concurrent calls still see each other's choice.
+            self._reserved: dict[str, int] = {r: 0 for r in routes}
+
         def select(
             self, requirements: TaskRequirements, *, now: datetime
         ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
-            load = {r: sum(1 for v in inflight.values() if v == r) for r in self.routes}
-            ordered = sorted(self.routes, key=lambda r: (load[r], self.routes.index(r)))
-            original, self.routes = self.routes, ordered
-            try:
-                return super().select(requirements, now=now)
-            finally:
-                self.routes = original
+            with self._lock:
+                load = {
+                    r: self._reserved[r] + sum(1 for v in inflight.values() if v == r)
+                    for r in self.routes
+                }
+                ordered = sorted(self.routes, key=lambda r: (load[r], self.routes.index(r)))
+                original, self.routes = self.routes, ordered
+                try:
+                    choice, considered = super().select(requirements, now=now)
+                finally:
+                    self.routes = original
+                if choice is not None:
+                    self._reserved[choice.route_id] += 1
+                return choice, considered
 
     events = Events()
     ex = Executor({}, delay=0.2)
@@ -1717,3 +1737,58 @@ async def test_worker_escalation_excludes_failed_credential_pool(repo: Path):
     result = await runtime.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert seen[1].exclude_pools == frozenset({"claude"})
+
+
+async def test_slow_selector_reaches_full_concurrency_fast(repo: Path) -> None:
+    """BOD-341: selection must not block the event loop. A selector whose
+    select() takes 0.5s must let 4 ready nodes reach 4 concurrent dispatches
+    within about 1s, not run the 4 selections back to back (~2s) while the
+    rest of the runtime is frozen."""
+    graph = WorkGraph("g", (node("a"), node("b"), node("c"), node("d")), max_parallel=4)
+
+    class SlowSelector(Selector):
+        def __init__(self, routes: list[str]) -> None:
+            super().__init__(routes)
+            self.active = 0
+            self.max_active = 0
+            self._lock = threading.Lock()
+
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+            with self._lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.5)
+                return super().select(requirements, now=now)
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+    events = Events()
+    ex = Executor({}, delay=0.3)
+    selector = SlowSelector(["cc/a"])
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run1",
+        graph=graph,
+        selector=selector,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_parallel=4),
+        now=lambda: NOW,
+    )
+    started = time.monotonic()
+    result = await rt.run()
+    elapsed = time.monotonic() - started
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert selector.max_active == 4, (
+        f"expected 4 overlapping select() calls, saw max {selector.max_active} "
+        "concurrently; selection is still running inline on the event loop"
+    )
+    assert ex.max_active == 4, f"expected 4 concurrent dispatches, saw max {ex.max_active}"
+    assert elapsed < 1.5, f"expected ~1s total, took {elapsed:.2f}s"

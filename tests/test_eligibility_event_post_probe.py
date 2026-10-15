@@ -5,6 +5,7 @@ Verifies that:
 - last_select_stats exposes post-probe counts without changing any signature
 """
 
+import threading
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
@@ -29,7 +30,7 @@ def eligibility_ladder():
         "eligibility_policy": {},
     }
     ladder._last_verdicts = ()
-    ladder._last_select_stats = {}
+    ladder._select_stats = threading.local()
     ladder._probe = Mock(return_value=Mock(healthy=True, category="ok"))
     ladder._record_health = Mock()
     ladder._record_confirmation = Mock()
