@@ -767,6 +767,20 @@ class IntelligenceService:
                 cannot_fit.add(candidate_id)
         return tuple(plans), frozenset(cannot_fit)
 
+    def _route_passports(self) -> dict[str, ModelPassport]:
+        """Injected passports, else one read of the prove-at-rest store.
+
+        Chooser-side only: the gate must keep ``None`` so its health-cache
+        reuse branch and store write-back stay live.  The fresh-passport fast
+        path returns no confirm probes, so the stored passport's measured
+        latency is the only ranking evidence left for the chooser.
+        """
+        if self.passports is not None:
+            return dict(self.passports)
+        from verdict.prove_at_rest_legacy import load_healthy_passports
+
+        return load_healthy_passports(self.passport_store_path)
+
     def _apply_candidate_pool(
         self,
         receipt: FreeTierAdmitReceipt,
@@ -1070,6 +1084,42 @@ class IntelligenceService:
                     else "cannot enforce authoritative eligibility without a valid OmniRoute snapshot"
                 )
                 raise TaskProfileError(message + (f" ({_fetch_error})" if _fetch_error else ""))
+            if (
+                _fetch_error is not None
+                and isinstance(_fetch_error, str)
+                and _fetch_error.startswith("unauthorized:")
+            ):
+                key_source = None
+                if os.getenv("OMNIROUTE_API_KEY"):
+                    key_source = "env OMNIROUTE_API_KEY"
+                else:
+                    omni_config = self.providers.get("omniroute")
+                    env_name = str(getattr(omni_config, "api_key_env", None) or "")
+                    if env_name:
+                        if os.getenv(env_name):
+                            key_source = f"env {env_name}"
+                        else:
+                            key_source = f"no key configured (set {env_name})"
+                    else:
+                        key_source = "no key configured (set OMNIROUTE_API_KEY)"
+                return RoutingDecision(
+                    model=NO_ELIGIBLE_TARGET,
+                    provider="none",
+                    tier=final_tier,
+                    reason=f"fail_closed — OmniRoute rejected the API key from {key_source} ({_fetch_error}); no fallback",
+                    escalated=escalated,
+                    escalation_reason=esc_reason or None,
+                    policy_version=self._policy_version,
+                    degraded_mode=False,
+                    managed_backend_status=self.managed_backend_status,
+                    protected=False,
+                    task_class="ordinary",
+                    decision="denied",
+                    transport_outcome="not_sent",
+                    quality_outcome="unknown",
+                    candidate_states=[],
+                    safety_flags=["fail_closed_omniroute_unauthorized"],
+                )
             # Compatibility-only offline callers may use the historical path.
             return None
         classification = classify_worthiness(
@@ -1231,7 +1281,7 @@ class IntelligenceService:
             try:
                 receipt = apply_best_of_admitted(
                     receipt,
-                    passports=self.passports,
+                    passports=self._route_passports(),
                     now=self.admit_now,
                     task_class=classification.protected_ranker_class,
                 )
@@ -1292,8 +1342,6 @@ class IntelligenceService:
 
             cache.merge_and_save(record_failure)
             if len(all_attempts) < 2:
-                self._admit_snapshot_lkg = None
-                self._admit_snapshot_loaded_at = 0
                 return self._offload_free_tier(
                     task, final_tier, escalated, esc_reason, context, attempts=all_attempts
                 )

@@ -10,7 +10,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -258,6 +258,50 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
     diag.sections.append(("Gateway lifecycle", state, outcome.describe()))
     if outcome.diagnostic is not None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
+
+
+def census_runtime_section(status: Mapping[str, Any]) -> tuple[str, str, str]:
+    """One doctor row: census runtime version and its last result."""
+    version = status.get("version")
+    if not version:
+        return (
+            "Census runtime",
+            "warn",
+            "runtime copy not installed (run: verdict census --install)",
+        )
+    last = status.get("last_result")
+    if not last:
+        detail = "no census result recorded yet"
+    else:
+        detail = ", ".join(
+            f"{key}={value}"
+            for key, value in sorted(last.items())
+            if isinstance(value, (str, int, float, bool))
+        )
+    stale = _census_result_stale(last)
+    if stale:
+        return ("Census runtime", "warn", f"version {version} ({stale})")
+    return ("Census runtime", "ok", f"version {version} ({detail})")
+
+
+def _census_result_stale(last: Any) -> str | None:
+    """Warn when the last census result is older than three timer intervals."""
+    from datetime import datetime, timezone
+
+    from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
+
+    if not isinstance(last, Mapping):
+        return None
+    finished = last.get("finished_at")
+    if not isinstance(finished, str):
+        return None
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(finished)).total_seconds()
+    except ValueError:
+        return None
+    if age > 3 * CENSUS_INTERVAL_SECONDS:
+        return f"last census {int(age)}s ago is stale; check: systemctl --user status verdict-census.timer"
+    return None
 
 
 def _collect_doctor_diagnostics(
@@ -665,5 +709,15 @@ def _collect_doctor_diagnostics(
             sections.append(("Required credentials", "ok", "all set"))
     except Exception as e:
         issues_found.append(f"Credential check failed: {e}")
+
+    # Background census runtime (BOD-350): the systemd timer probes from a
+    # runtime copy; doctor must show which version it runs and its last result.
+    sections.append(("Background census", "header", ""))
+    try:
+        from verdict.census_passports_service import census_status
+
+        sections.append(census_runtime_section(census_status()))
+    except Exception as e:
+        issues_found.append(f"Census runtime check failed: {e}")
 
     return diag

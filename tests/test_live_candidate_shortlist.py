@@ -97,15 +97,15 @@ def _snapshot():
     )
 
 
-def _passport(model_id: str, *, latency_ms: float) -> ModelPassport:
+def _passport(model_id: str, *, latency_ms: float, stale: bool = False) -> ModelPassport:
     return ModelPassport(
         provider=model_id.split("/", 1)[0],
         model_id=model_id,
         auth_state="authorized",
         availability_state="eligible",
-        qualified_at=NOW - timedelta(minutes=1),
-        last_verified_timestamp=NOW - timedelta(minutes=1),
-        expires_at=NOW + timedelta(minutes=10),
+        qualified_at=NOW - timedelta(minutes=20 if stale else 1),
+        last_verified_timestamp=NOW - timedelta(minutes=20 if stale else 1),
+        expires_at=NOW + timedelta(minutes=-10 if stale else 10),
         latency_p95=latency_ms,
         tool_support=model_id != NO_TOOLS,
     )
@@ -207,7 +207,7 @@ def _request(*model_ids: str) -> ExecutionPathRequest:
     )
 
 
-def _service(probed: list[str], *, top_k: int = 2) -> IntelligenceService:
+def _service(probed: list[str], *, top_k: int = 2, stale: bool = False) -> IntelligenceService:
     def transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
         probed.append(model_id)
         return {
@@ -228,10 +228,10 @@ def _service(probed: list[str], *, top_k: int = 2) -> IntelligenceService:
         admit_snapshot=_snapshot(),
         metadata_snapshot=_metadata(),
         passports={
-            STRONG: _passport(STRONG, latency_ms=5_000.0),
-            FAST: _passport(FAST, latency_ms=1.0),
-            NEW: _passport(NEW, latency_ms=2_000.0),
-            NO_TOOLS: _passport(NO_TOOLS, latency_ms=0.5),
+            STRONG: _passport(STRONG, latency_ms=5_000.0, stale=stale),
+            FAST: _passport(FAST, latency_ms=1.0, stale=stale),
+            NEW: _passport(NEW, latency_ms=2_000.0, stale=stale),
+            NO_TOOLS: _passport(NO_TOOLS, latency_ms=0.5, stale=stale),
         },
         confirm_transport=transport,
         admit_now=NOW,
@@ -251,9 +251,16 @@ def _context(request: ExecutionPathRequest) -> dict[str, object]:
     }
 
 
-def test_live_confirm_only_touches_candidate_pool_shortlist() -> None:
+def test_live_confirm_only_touches_candidate_pool_shortlist(monkeypatch, tmp_path) -> None:
     probed: list[str] = []
-    service = _service(probed, top_k=2)
+    service = _service(probed, top_k=2, stale=True)
+    transport = service.confirm_transport
+    service.confirm_transport = None
+    monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (_snapshot(), "", True, None))
+    monkeypatch.setattr(service, "_resolve_confirm_transport", lambda endpoint: transport)
+    monkeypatch.setattr(
+        "verdict.orchestration.health_cache.default_cache_path", lambda: tmp_path / "health.json"
+    )
     prepared = service._prepare_execution_path_request(
         "fix code",
         "low",
@@ -266,6 +273,21 @@ def test_live_confirm_only_touches_candidate_pool_shortlist() -> None:
     assert len(probed) == 2
     assert NO_TOOLS not in probed
     assert all(offer.route.route_id in shortlist for offer in prepared.offers)
+
+
+def test_fresh_shortlist_needs_no_confirm_probes() -> None:
+    probed: list[str] = []
+    service = _service(probed, top_k=2)
+    request = _request(STRONG, FAST, NEW, NO_TOOLS)
+    prepared = service._prepare_execution_path_request(
+        "fix code", "low", _context(request), request
+    )
+    assert prepared.pool_receipt is not None
+    shortlist = {item.route_id for item in prepared.pool_receipt.shortlist}
+    assert shortlist == {STRONG, NEW}
+    assert probed == []
+    assert {offer.route.route_id for offer in prepared.offers} == shortlist
+    assert NO_TOOLS not in shortlist
 
 
 def test_missing_hard_capability_is_named_drop_and_cannot_return() -> None:

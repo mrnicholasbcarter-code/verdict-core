@@ -99,15 +99,22 @@ def test_passport_is_fresh_respects_expiry() -> None:
     assert passport_is_fresh(stale, now=NOW) is False
 
 
-def test_gate_requires_fresh_passport_and_confirm() -> None:
+def test_gate_reuses_fresh_passport_without_confirm_probes() -> None:
+    """BOD-350: one eligible fresh stored passport is sufficient; no confirm probes."""
     base = admit_free_tier_active(_snapshot())
     assert "openrouter/nvidia/nemotron-3-nano-30b-a3b:free" in base.admitted
 
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    probed: list[str] = []
+
+    def spy(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        probed.append(model_id)
+        return _ok_transport()(model_id, payload, timeout)
+
     gated = gate_admit_prove_confirm(
         base,
         passports={identity: _passport(identity)},
-        confirm_transport=_ok_transport(),
+        confirm_transport=spy,
         now=NOW,
         live=False,
         consented=False,
@@ -115,12 +122,12 @@ def test_gate_requires_fresh_passport_and_confirm() -> None:
     assert gated.chosen == identity
     assert gated.empty_intersection is False
     assert any(row.fresh for row in gated.passport)
-    assert any(row.confirmed for row in gated.confirm)
+    assert probed == []
+    assert gated.confirm == ()
     payload = gated.to_dict()
     assert payload.get("passport")
-    assert payload.get("confirm")
+    assert not payload.get("confirm")
     assert any(row["identity_id"] == identity and row["fresh"] for row in payload["passport"])
-    assert any(row["identity_id"] == identity and row["confirmed"] for row in payload["confirm"])
 
 
 def test_gate_named_drop_no_passport_fail_closed() -> None:
@@ -239,11 +246,14 @@ def test_gate_named_drop_confirm_failed() -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
     other = "opencode/hy3-free"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     gated = gate_admit_prove_confirm(
         base,
-        passports={identity: _passport(identity), other: _passport(other)},
+        passports={identity: _passport(identity, **expired), other: _passport(other, **expired)},
         confirm_transport=_ok_transport(fail={identity, other}),
         now=NOW,
+        live=True,
+        consented=True,
     )
     assert gated.chosen is None
     reasons = {item.reason for item in gated.exclusions}
@@ -254,14 +264,15 @@ def test_gate_named_drop_confirm_failed() -> None:
 def test_gate_confirm_unavailable_fail_closed() -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    other = "opencode/hy3-free"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     gated = gate_admit_prove_confirm(
         base,
-        passports={
-            identity: _passport(identity),
-            "opencode/hy3-free": _passport("opencode/hy3-free"),
-        },
+        passports={identity: _passport(identity, **expired), other: _passport(other, **expired)},
         confirm_transport=None,
         now=NOW,
+        live=True,
+        consented=True,
     )
     assert gated.chosen is None
     reasons = {item.reason for item in gated.exclusions}
@@ -346,10 +357,19 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
 
     gated = gate_admit_prove_confirm(
         ordinary,
-        passports={free_plain: _passport(free_plain), paid: _passport(paid)},
+        passports={
+            identity: _passport(
+                identity,
+                qualified_at=NOW - timedelta(minutes=30),
+                expires_at=NOW - timedelta(minutes=1),
+            )
+            for identity in (free_plain, paid)
+        },
         confirm_transport=spy,
         now=NOW,
         max_confirm_candidates=1,
+        live=True,
+        consented=True,
     )
     assert probed == [free_plain], "free candidate must be confirmed before any paid fallback"
     assert gated.chosen == free_plain
@@ -361,10 +381,19 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
     probed.clear()
     gate_admit_prove_confirm(
         heuristic_only,
-        passports={free_plain: _passport(free_plain), paid: _passport(paid)},
+        passports={
+            identity: _passport(
+                identity,
+                qualified_at=NOW - timedelta(minutes=30),
+                expires_at=NOW - timedelta(minutes=1),
+            )
+            for identity in (free_plain, paid)
+        },
         confirm_transport=spy,
         now=NOW,
         max_confirm_candidates=1,
+        live=True,
+        consented=True,
     )
     assert probed == [paid], "sanity: the fix is the authoritative free_admitted set"
 
@@ -425,6 +454,8 @@ def test_no_passport_candidate_excluded_when_confirm_fails() -> None:
 def test_failed_confirm_shortlist_reaches_next_candidate_with_same_token_budget():
     from dataclasses import replace
 
+    from verdict.probes import ProbeBudget
+
     base = admit_free_tier_active(_snapshot())
     ids = ("kiro/a-mini", "kiro/b-mini", "kiro/c-mini", "mistral/codestral-latest")
     base = replace(base, admitted=ids, free_admitted=ids)
@@ -440,7 +471,14 @@ def test_failed_confirm_shortlist_reaches_next_candidate_with_same_token_budget(
         return _ok_transport()(model, payload, timeout)
 
     result = gate_admit_prove_confirm(
-        base, passports={}, confirm_transport=transport, now=NOW, live=True, consented=True
+        base,
+        passports={},
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=4,
+        confirm_budget=ProbeBudget(provider="admit_confirm", max_requests=4, max_tokens=384),
     )
     assert calls == list(ids)
     assert result.chosen == ids[-1]
@@ -471,3 +509,160 @@ def test_confirm_replacements_obey_explicit_request_budget():
     assert len(calls) == 1
     assert result.chosen is None
     assert any(d.reason == "confirm_budget_exhausted" for d in result.exclusions)
+
+
+def test_confirm_gate_does_not_probe_fresh_passports() -> None:
+    from dataclasses import replace
+
+    base = admit_free_tier_active(_snapshot())
+    ids = tuple(sorted(base.admitted))
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return _ok_transport()(model, payload, timeout)
+
+    result = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity) for identity in ids},
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=2,
+    )
+    assert calls == []
+    assert result.chosen in ids
+    assert result.admitted == ids
+    assert result.exclusions == base.exclusions
+    assert result.confirm == ()
+
+    # A fresh timestamp does not override revoked authorization.
+    unauthorized = replace(_passport(ids[0]), auth_state="unauthorized")
+    denied = gate_admit_prove_confirm(
+        base,
+        passports={ids[0]: unauthorized, ids[1]: _passport(ids[1])},
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=1,
+    )
+    assert denied.admitted == (ids[1],)
+    assert calls == []
+
+
+def test_confirm_gate_bounds_refresh_probes_when_passports_are_stale(monkeypatch) -> None:
+    from dataclasses import replace
+
+    ids = tuple(f"opencode/model-{i}" for i in range(6))
+    base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
+    calls = []
+    persisted = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return _ok_transport(fail={ids[0]})(model, payload, timeout)
+
+    def persist(observations, **kwargs):
+        persisted.extend(observations.values())
+
+    monkeypatch.setattr("verdict.admit_prove_confirm._persist_confirm_observations", persist)
+    result = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity, **expired) for identity in ids},
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=2,
+    )
+    assert calls == list(ids[:2])
+    assert result.admitted == (ids[1],)
+    assert any(
+        d.model_id == ids[0] and d.reason == REASON_CONFIRM_FAILED for d in result.exclusions
+    )
+    assert any(
+        d.model_id == ids[-1] and d.reason == REASON_PASSPORT_STALE for d in result.exclusions
+    )
+    assert {o.model_id for o in persisted} == set(calls)
+    assert all(o.status != "skipped" for o in persisted)
+
+
+def test_expired_health_cache_bounds_sparse_passport_refresh(tmp_path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    from verdict.orchestration.health_cache import HealthCache, ProbeResult
+
+    ids = tuple(f"opencode/model-{i}" for i in range(6))
+    base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
+    cache.record(
+        ids[0],
+        ProbeResult(category="ok", chat_ok=True, tool_ok=True, capacity_evidence="free"),
+        NOW,
+    )
+    cache.save()
+    monkeypatch.setattr("verdict.admit_prove_confirm.load_healthy_passports", lambda path: {})
+    monkeypatch.setattr(
+        "verdict.admit_prove_confirm._persist_confirm_observations", lambda *args, **kwargs: None
+    )
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return _ok_transport(fail={ids[0]})(model, payload, timeout)
+
+    fresh = gate_admit_prove_confirm(
+        base,
+        health_cache_path=path,
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=2,
+    )
+    assert fresh.admitted == (ids[0],)
+    assert calls == []
+    expired = gate_admit_prove_confirm(
+        base,
+        health_cache_path=path,
+        confirm_transport=transport,
+        now=NOW + timedelta(hours=1),
+        live=True,
+        consented=True,
+        max_confirm_candidates=2,
+    )
+    assert calls == list(ids[:2])
+    assert expired.admitted == (ids[1],)
+
+
+def test_one_fresh_passport_skips_three_stale_candidates() -> None:
+    from dataclasses import replace
+
+    ids = tuple(f"opencode/model-{i}" for i in range(4))
+    base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
+    stale = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=1))
+    passports = {identity: _passport(identity, **stale) for identity in ids}
+    passports[ids[-1]] = _passport(ids[-1])
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return _ok_transport()(model, payload, timeout)
+
+    result = gate_admit_prove_confirm(
+        base,
+        passports=passports,
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=4,
+    )
+    assert calls == []
+    assert result.admitted == (ids[-1],)
+    assert result.chosen == ids[-1]
+    assert result.confirm == ()

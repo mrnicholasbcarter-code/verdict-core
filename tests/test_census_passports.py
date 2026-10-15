@@ -666,9 +666,8 @@ def test_census_service_working_directory_escapes_percent_specifier(monkeypatch,
     specifiers in it; a literal "%" in the path must be doubled."""
     from verdict import census_passports_service
 
-    fake_module_dir = tmp_path / "a%b" / "verdict"
-    fake_module_dir.mkdir(parents=True)
-    monkeypatch.setattr(census_passports_service, "__file__", str(fake_module_dir / "mod.py"))
+    # The runtime copy path carries the "%"; the source path only feeds the copy.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "a%b"))
 
     report = census_passports_service.manage_census_service(
         unit_dir=tmp_path / "units", dry_run=True
@@ -679,3 +678,264 @@ def test_census_service_working_directory_escapes_percent_specifier(monkeypatch,
     )
     assert "%%" in working_dir_line
     assert "a%b" not in working_dir_line.replace("%%", "")
+
+
+def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
+    import httpx
+
+    from verdict.census_passports import load_census_cooldowns, run_census
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.prove_at_rest import ProbeExchange
+
+    ids = ["kiro/cooled"] + [f"good/model-{i}" for i in range(7)] + ["paid/model", "dead/model"]
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": model, "owned_by": model.split("/")[0]} for model in ids]},
+        free_tier={
+            "perModel": [
+                {
+                    "provider": model.split("/")[0],
+                    "modelId": model.split("/")[1],
+                    "freeType": "keyless",
+                }
+                for model in ids
+                if not model.startswith("paid/")
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": provider, "isActive": provider != "dead", "testStatus": "active"}
+                for provider in ("kiro", "good", "paid", "dead")
+            ]
+        },
+    )
+    requests = []
+
+    def gateway(request):
+        requests.append(request.url.path)
+        assert request.url.path == "/api/resilience/model-cooldowns"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "provider": "kiro",
+                        "model": "another-model",
+                        "reason": "rate_limit",
+                        "remainingMs": 60000,
+                    },
+                    {
+                        "provider": "good",
+                        "model": "model-0",
+                        "reason": "rate_limit",
+                        "remainingMs": 0,
+                    },
+                ]
+            },
+        )
+
+    cooldowns = load_census_cooldowns("http://gateway", transport=httpx.MockTransport(gateway))
+    calls = []
+
+    def probe(model, phase, timeout):
+        calls.append((model, phase))
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    report = run_census(
+        snapshot,
+        probe,
+        cache=HealthCache(tmp_path / "health.json"),
+        passport_store_path=tmp_path / "passports.json",
+        now=NOW,
+        cooling_providers=cooldowns,
+    )
+    assert requests == ["/api/resilience/model-cooldowns"]
+    assert report["probed"] == 6
+    assert report["updated"] == 6
+    assert report["reserved_tokens"] == 1536
+    assert {model for model, phase in calls} == {f"good/model-{i}" for i in range(6)}
+    assert len(calls) == 12
+    assert len(load_healthy_passports(tmp_path / "passports.json")) == 6
+
+
+def test_census_install_updates_runtime_and_reports_last_result(tmp_path, monkeypatch):
+    from verdict.census_passports_service import census_status, manage_census_service
+
+    source = tmp_path / "installed"
+    (source / "verdict").mkdir(parents=True)
+    (source / "verdict" / "__init__.py").write_text('VERSION = "one"\n')
+    (source / "pyproject.toml").write_text('[project]\nname="verdict"\nversion="1"\n')
+    (source / "uv.lock").write_text("version = 1\n")
+    runtime = tmp_path / "runtime"
+    calls = []
+    first = manage_census_service(
+        unit_dir=tmp_path / "units", source_root=source, runtime_root=runtime, run=calls.append
+    )
+    assert (runtime / "repo/verdict/__init__.py").read_text() == 'VERSION = "one"\n'
+    assert str(runtime / "repo") in first["files"]["verdict-census.service"]
+    (runtime / "last-result.json").write_text(json.dumps({"updated": 4, "probed": 6}))
+    (source / "verdict/__init__.py").write_text('VERSION = "two"\n')
+    second = manage_census_service(
+        unit_dir=tmp_path / "units", source_root=source, runtime_root=runtime, run=calls.append
+    )
+    assert (runtime / "repo/verdict/__init__.py").read_text() == 'VERSION = "two"\n'
+    assert second["runtime_version"] != first["runtime_version"]
+    status = census_status(runtime_root=runtime)
+    assert status["version"] == second["runtime_version"]
+    assert status["last_result"] == {"updated": 4, "probed": 6}
+
+
+def test_doctor_census_section_shows_version_and_last_result():
+    from verdict.doctor_diagnostics import census_runtime_section
+
+    row = census_runtime_section(
+        {"version": "0.5.0+abc123", "last_result": {"updated": 4, "probed": 6}}
+    )
+    assert row[0] == "Census runtime"
+    assert row[1] == "ok"
+    assert "0.5.0+abc123" in row[2]
+    assert "updated=4" in row[2]
+    assert "probed=6" in row[2]
+    missing = census_runtime_section({"version": None, "last_result": None})
+    assert missing[1] == "warn"
+    assert "not installed" in missing[2]
+
+
+def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, capsys):
+    from verdict import census_passports, free_tier_admit, prove_at_rest
+    from verdict.census_passports import cmd_census
+    from verdict.census_passports_service import census_status
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    monkeypatch.setattr(free_tier_admit, "load_omniroute_admit_snapshot", lambda *a, **k: object())
+    monkeypatch.setattr(prove_at_rest, "live_transport", lambda *a, **k: object())
+    monkeypatch.setattr(
+        census_passports,
+        "run_census",
+        lambda *a, **k: {"updated": 4, "probed": 6, "candidates": 6, "reserved_tokens": 1536},
+    )
+    monkeypatch.setattr(census_passports, "load_census_cooldowns", lambda *a, **k: frozenset())
+
+    cmd_census(health_cache_path=tmp_path / "h.json", passport_store_path=tmp_path / "p.json")
+
+    status = census_status()
+    assert status["version"] is None
+    assert status["last_result"]["updated"] == 4
+    assert status["last_result"]["probed"] == 6
+    assert status["last_result"]["finished_at"]
+
+
+def test_census_command_survives_cooldown_endpoint_failures(tmp_path, monkeypatch):
+    """A cooldown-endpoint outage or malformed payload must not kill the census."""
+    import httpx
+
+    from verdict import census_passports, free_tier_admit, prove_at_rest
+    from verdict.census_passports import cmd_census
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    monkeypatch.setattr(free_tier_admit, "load_omniroute_admit_snapshot", lambda *a, **k: object())
+    monkeypatch.setattr(prove_at_rest, "live_transport", lambda *a, **k: object())
+    seen = []
+    monkeypatch.setattr(
+        census_passports,
+        "run_census",
+        lambda *a, **k: (
+            seen.append(k["cooling_providers"])
+            or {"updated": 0, "probed": 0, "candidates": 0, "reserved_tokens": 0}
+        ),
+    )
+
+    failures = [
+        httpx.ConnectError("down"),
+        httpx.HTTPStatusError("500", request=None, response=None),
+        KeyError("items"),
+        ValueError("invalid json"),
+        TypeError("wrong shape"),
+    ]
+    for failure in failures:
+        monkeypatch.setattr(
+            census_passports,
+            "load_census_cooldowns",
+            lambda *a, _failure=failure, **k: (_ for _ in ()).throw(_failure),
+        )
+        cmd_census(health_cache_path=tmp_path / "h.json", passport_store_path=tmp_path / "p.json")
+    assert seen == [frozenset()] * len(failures)
+
+
+def test_census_install_refuses_runtime_copy_as_source(tmp_path):
+    """Installing from the runtime copy itself must not delete its own source."""
+    from verdict.census_passports_service import manage_census_service
+
+    runtime = tmp_path / "runtime"
+    repo = runtime / "repo"
+    (repo / "verdict").mkdir(parents=True)
+    (repo / "verdict" / "__init__.py").write_text('VERSION = "x"\n')
+    with pytest.raises(ValueError, match="runtime copy"):
+        manage_census_service(
+            unit_dir=tmp_path / "units", source_root=repo, runtime_root=runtime, run=lambda *a: None
+        )
+    assert (repo / "verdict" / "__init__.py").is_file()
+
+
+def test_census_install_copies_only_the_verdict_package(tmp_path):
+    """A site-packages source must not duplicate every dependency into runtime."""
+    from verdict.census_passports_service import manage_census_service
+
+    source = tmp_path / "site-packages"
+    (source / "verdict").mkdir(parents=True)
+    (source / "verdict" / "__init__.py").write_text('VERSION = "new"\n')
+    (source / "httpx").mkdir()
+    (source / "httpx" / "__init__.py").write_text("")
+    runtime = tmp_path / "runtime"
+    old_repo = runtime / "repo"
+    (old_repo / "verdict").mkdir(parents=True)
+    (old_repo / "verdict" / "__init__.py").write_text('VERSION = "old"\n')
+
+    manage_census_service(
+        unit_dir=tmp_path / "units", source_root=source, runtime_root=runtime, run=lambda *a: None
+    )
+
+    assert (runtime / "repo/verdict/__init__.py").read_text() == 'VERSION = "new"\n'
+    assert not (runtime / "repo/httpx").exists()
+    assert not (runtime / ".repo.staging").exists()
+    assert not (runtime / ".repo.old").exists()
+    with pytest.raises(ValueError, match="no verdict package"):
+        manage_census_service(
+            unit_dir=tmp_path / "units",
+            source_root=tmp_path / "elsewhere",
+            runtime_root=runtime,
+            run=lambda *a: None,
+        )
+
+
+def test_load_census_cooldowns_tolerates_payload_shapes():
+    """Unknown keys, mapping values and non-mapping rows mean no hints, never a crash."""
+    import httpx
+
+    from verdict.census_passports import load_census_cooldowns
+
+    payloads = [
+        ({"items": {"a": {"provider": "p1", "remainingMs": 5}}}, {"p1"}),
+        ({"lockouts": [{"provider": "p2", "remainingMs": 10}]}, {"p2"}),
+        ({"data": [{"provider": "p3", "remainingMs": True}]}, set()),
+        ({"items": ["x", {"provider": "p4", "remainingMs": 1}]}, {"p4"}),
+        ({"unexpected": 1}, set()),
+        (["x"], set()),
+    ]
+    for payload, expected in payloads:
+        transport = httpx.MockTransport(
+            lambda request, _payload=payload: httpx.Response(200, json=_payload)
+        )
+        assert load_census_cooldowns("http://gw", transport=transport) == expected
+
+
+def test_doctor_census_section_warns_when_last_result_is_stale():
+    from verdict.doctor_diagnostics import census_runtime_section
+
+    fresh = {"finished_at": datetime.now(timezone.utc).isoformat(), "updated": 4}
+    assert census_runtime_section({"version": "v", "last_result": fresh})[1] == "ok"
+    stale = {"finished_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}
+    row = census_runtime_section({"version": "v", "last_result": stale})
+    assert row[1] == "warn"
+    assert "stale" in row[2]

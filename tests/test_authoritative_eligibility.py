@@ -407,3 +407,105 @@ def test_default_runtime_evidence_merges_at_rest_negatives(tmp_path):
     evidence = default_runtime_evidence(now=now, state_dir=tmp_path)
     keys = {o.key for o in evidence.observations}
     assert "route:cc/dead" in keys
+
+
+def test_reselect_reuses_snapshot_and_does_not_refetch(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from verdict.model_passports import ModelPassport
+    from verdict.orchestration.health_cache import HealthCache
+
+    now = datetime.now(timezone.utc)
+    ids = ("opencode/a", "opencode/b")
+    snapshot = snap(
+        catalog=[CatalogIdentity(identity, "opencode") for identity in ids],
+        free=[FreeTierModel(identity.split("/", 1)[1], "opencode", "keyless") for identity in ids],
+        connections=[ProviderConnection("opencode", True, "active")],
+    )
+    loads = []
+    executed = []
+    health_path = tmp_path / "health.json"
+    monkeypatch.setattr(
+        "verdict.orchestration.health_cache.default_cache_path", lambda: health_path
+    )
+
+    def loader(*args, **kwargs):
+        loads.append(True)
+        return snapshot
+
+    def execute(model, task):
+        executed.append(model)
+        return "error", "invalid provider response: missing completion content"
+
+    monkeypatch.setattr("verdict.intelligence.load_omniroute_admit_snapshot", loader)
+    service = IntelligenceService(
+        primary_model="opencode/a",
+        log_full_task=False,
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="production",
+        log_path="",
+        discovery_ttl=60,
+        passports={
+            identity: ModelPassport(
+                provider="opencode",
+                model_id=identity,
+                auth_state="authorized",
+                availability_state="eligible",
+                qualified_at=now - timedelta(minutes=1),
+                last_verified_timestamp=now - timedelta(minutes=1),
+                expires_at=now + timedelta(minutes=10),
+            )
+            for identity in ids
+        },
+        confirm_transport=lambda *args: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {"total_tokens": 2},
+            },
+        },
+        offload_executor=execute,
+        persist_routing_receipts=False,
+        admit_now=now,
+    )
+    decision = service._offload_free_tier("Reply with just: ok", 2, False, "", None)
+    assert decision is not None
+    assert len(loads) == 1
+    assert len(executed) == 2 and executed[0] != executed[1], decision.admit_receipt
+    assert len(decision.admit_receipt["execution_attempts"]) == 2
+    assert decision.decision == "denied"
+    assert "fail_closed_attempts_exhausted" in decision.safety_flags
+    assert all(
+        HealthCache(health_path).lookup(route, now).state == "negative" for route in executed
+    )
+
+
+def test_unauthorized_gateway_key_denies_without_premium_fallback(monkeypatch) -> None:
+    import asyncio
+
+    service = IntelligenceService(
+        primary_model="anthropic/claude-opus-5",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "bogus-key-value")
+
+    def raise_live_admit_error(*args, **kwargs):
+        raise LiveAdmitError("unauthorized", "/api/free-tier/summary returned 401")
+
+    monkeypatch.setattr(
+        "verdict.intelligence.load_omniroute_admit_snapshot", raise_live_admit_error
+    )
+
+    decision = asyncio.run(service.route("Reply with just: ok"))
+
+    assert decision.model == "no_eligible_target"
+    assert decision.decision == "denied"
+    assert decision.transport_outcome == "not_sent"
+    assert "anthropic" not in decision.model
+    assert "env OMNIROUTE_API_KEY" in decision.reason
+    assert "bogus-key-value" not in decision.reason
+    assert "fail_closed_omniroute_unauthorized" in decision.safety_flags
