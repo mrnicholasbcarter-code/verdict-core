@@ -939,3 +939,51 @@ def test_doctor_census_section_warns_when_last_result_is_stale():
     row = census_runtime_section({"version": "v", "last_result": stale})
     assert row[1] == "warn"
     assert "stale" in row[2]
+
+
+def test_census_skips_routes_with_unexpired_negative_health(tmp_path):
+    from verdict.census_passports import run_census
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.prove_at_rest import ProbeExchange
+
+    ids = ["bad/model-0", "bad/model-1", "good/model-0", "good/model-1"]
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": model, "owned_by": model.split("/")[0]} for model in ids]},
+        free_tier={
+            "perModel": [
+                {
+                    "provider": model.split("/")[0],
+                    "modelId": model.split("/")[1],
+                    "freeType": "keyless",
+                }
+                for model in ids
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": provider, "isActive": True, "testStatus": "active"}
+                for provider in ("bad", "good")
+            ]
+        },
+    )
+    calls = []
+
+    def probe(model, phase, timeout):
+        calls.append((model, phase))
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("bad/model-0", _bad_result(), NOW)
+    cache.record("bad/model-1", _bad_result(), NOW)
+
+    report = run_census(
+        snapshot,
+        probe,
+        cache=cache,
+        passport_store_path=tmp_path / "passports.json",
+        now=NOW,
+        cooling_providers=frozenset(),
+    )
+    assert {model for model, phase in calls} == {"good/model-0", "good/model-1"}
+    assert report["probed"] == 2
+    assert report["updated"] == 2

@@ -119,8 +119,15 @@ def run_census(
 
     healthy_canonical = {canonical_route(r) for r in healthy} | healthy
     cooling = {canonical_route(f"{provider}/_").split("/", 1)[0] for provider in cooling_providers}
+    from verdict.orchestration.health_cache import STATE_NEGATIVE
+
     candidates = sorted(
-        (r for r in receipt.free_admitted if canonical_route(r).split("/", 1)[0] not in cooling),
+        (
+            r
+            for r in receipt.free_admitted
+            if canonical_route(r).split("/", 1)[0] not in cooling
+            and cache.lookup(r, now).state != STATE_NEGATIVE
+        ),
         key=lambda r: (r not in healthy and canonical_route(r) not in healthy_canonical, r),
     )
     refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
