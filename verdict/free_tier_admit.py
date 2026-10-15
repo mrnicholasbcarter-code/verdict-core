@@ -1152,6 +1152,7 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
 
     Provider routes cannot pin a connection; OmniRoute selects an available account.
     Availability requires positive evidence (explicit flag or reported capacity), not the absence of a block.
+    `available: True` alone (no quota data) is sufficient positive evidence.
     """
     if not isinstance(payload, Mapping):
         return ()
