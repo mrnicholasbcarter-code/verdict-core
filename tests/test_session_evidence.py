@@ -171,6 +171,32 @@ def test_importer_normalizes_timestamp_identity_and_ignores_unknown_prefixes(
     assert len(import_worker_outcomes(source)) == 1
 
 
+def test_importer_skips_malformed_row_missing_route_or_ts(tmp_path: Path) -> None:
+    source = tmp_path / "worker.jsonl"
+    base = {
+        "route": ROUTE,
+        "kind": "session_canary_v1",
+        "ts": NOW.isoformat(),
+        "outcome": "SESSION_CANARY_PASS",
+        "error": None,
+    }
+    other_ts = (NOW + timedelta(seconds=1)).isoformat()
+    source.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in [
+                base,
+                {"kind": "session_canary_v1", "outcome": "SESSION_CANARY_FAIL"},
+                {**base, "ts": other_ts},
+            ]
+        )
+        + "\n"
+    )
+    imported = import_worker_outcomes(source)
+    assert len(imported) == 2
+    assert all(item.route_id == ROUTE for item in imported)
+
+
 def test_invalid_outcomes_and_naive_timestamps_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="failure_class"):
         evidence("fail", failure_class="invented")

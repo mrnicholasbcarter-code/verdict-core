@@ -260,6 +260,8 @@ def import_worker_outcomes(jsonl_path: str | Path) -> list[SessionOutcome]:
                 )
             else:
                 continue
+            if "route" not in raw or "ts" not in raw:
+                continue
             item = SessionOutcome(
                 route_id=raw["route"],
                 outcome=outcome,
