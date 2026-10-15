@@ -1336,6 +1336,8 @@ def _register_builtins() -> None:
         _action_metadata_refresh,
         _action_metadata_show,
         _action_openspec_admit,
+        _action_outcome_import,
+        _action_outcome_record,
         _action_prove_at_rest_census,
         _action_prove_at_rest_import_sessions,
         _action_prove_at_rest_install_service,
@@ -1966,6 +1968,27 @@ def _register_builtins() -> None:
                 "Configuration",
             ),
             _action_openspec_admit,
+        ),
+        # outcome family (BOD-353 cross-surface attempt writer)
+        (
+            ActionSpec(
+                "outcome.record",
+                "health",
+                "mutation",
+                "Record one classified model attempt",
+                "Health",
+            ),
+            _action_outcome_record,
+        ),
+        (
+            ActionSpec(
+                "outcome.import",
+                "health",
+                "mutation",
+                "Import legacy model-decisions.jsonl rows as attempt records",
+                "Health",
+            ),
+            _action_outcome_import,
         ),
         # autodev packet family (execute is LAUNCH)
         (

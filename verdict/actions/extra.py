@@ -333,6 +333,53 @@ def _action_simulate(**kwargs: Any) -> ActionResult:
     return ActionResult(data=forecast.to_dict())
 
 
+def _action_outcome_record(**kwargs: Any) -> ActionResult:
+    """Record one classified model attempt (BOD-353 outcome writer)."""
+    from verdict.outcome_records import build_attempt_record, write_attempt_record
+    from verdict.paths import verdict_home
+
+    store_dir = kwargs.get("store_dir")
+    resolved_store = Path(store_dir).expanduser() if store_dir else verdict_home()
+    try:
+        record = build_attempt_record(
+            task_kind=kwargs["task_kind"],
+            harness=kwargs["harness"],
+            model=kwargs["model"],
+            outcome=kwargs["outcome"],
+            failure_class=kwargs["failure_class"],
+            source=kwargs["source"],
+            effort=kwargs.get("effort"),
+            duration_s=kwargs.get("duration_s"),
+            tokens_in=kwargs.get("tokens_in"),
+            tokens_out=kwargs.get("tokens_out"),
+            cost_usd=kwargs.get("cost_usd"),
+            story_id=kwargs.get("story_id"),
+        )
+    except ValueError as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+
+    target = write_attempt_record(record, store_dir=resolved_store)
+    return ActionResult(data={"stored": str(target), **record.to_dict()})
+
+
+def _action_outcome_import(**kwargs: Any) -> ActionResult:
+    """Import legacy ``work/model-decisions.jsonl`` rows (best-effort mapping, BOD-353)."""
+    from verdict.outcome_records import attempt_records_path, import_decision_jsonl
+    from verdict.paths import verdict_home
+
+    store_dir = kwargs.get("store_dir")
+    resolved_store = Path(store_dir).expanduser() if store_dir else verdict_home()
+    jsonl_path = kwargs["jsonl_path"]
+    source = kwargs.get("source", "model-decisions-import")
+    try:
+        count = import_decision_jsonl(jsonl_path, store_dir=resolved_store, source=source)
+    except OSError as exc:
+        return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
+
+    target = attempt_records_path(resolved_store)
+    return ActionResult(data={"imported": count, "source": jsonl_path, "stored": str(target)})
+
+
 def _action_resume(**kwargs: Any) -> ActionResult:
     """Reconstruct durable resume state for a Linear story."""
     from verdict.resume import resume_story
