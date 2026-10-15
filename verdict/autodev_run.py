@@ -29,6 +29,7 @@ import os
 import subprocess
 import tempfile
 import time
+import urllib.error
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -2077,16 +2078,27 @@ def prepare_live_autodev_selected(
             return response
 
         transport = openai_probe_transport(base_url, api_key=api_key, opener=opener)
-        probe = transport(
-            route_id,
-            {
-                "model": route_id,
-                "messages": [{"role": "user", "content": "Reply with exactly OK. No explanation."}],
-                "max_tokens": 1024,
-                "temperature": 0,
-            },
-            120.0,
-        )
+        try:
+            probe = transport(
+                route_id,
+                {
+                    "model": route_id,
+                    "messages": [
+                        {"role": "user", "content": "Reply with exactly OK. No explanation."}
+                    ],
+                    "max_tokens": 1024,
+                    "temperature": 0,
+                },
+                120.0,
+            )
+        except urllib.error.HTTPError as exc:
+            # One route's upstream rejection (401 from a provider, 429, 5xx) drops
+            # that route; it must not abort selection of the remaining candidates.
+            dropped.append({"route_id": route_id, "reason": f"http_{exc.code}"})
+            continue
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            dropped.append({"route_id": route_id, "reason": type(exc).__name__})
+            continue
         served = headers.get("x-omniroute-model")
         cost = headers.get("x-omniroute-response-cost")
         try:

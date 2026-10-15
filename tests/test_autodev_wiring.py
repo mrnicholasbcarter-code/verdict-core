@@ -924,3 +924,45 @@ def test_cmd_autodev_without_pin_uses_selected_route(
     assert configs["executor"].model == selected
     assert configs["decomposer"].model == selected
     assert configs["executor"].base_url == GATEWAY
+
+
+def test_prepare_live_autodev_selected_drops_route_whose_probe_raises_http_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.error
+
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    import verdict.probes as probes
+
+    real_factory = probes.openai_probe_transport
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        inner = real_factory(base_url, **kwargs)
+
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            if model == FREE_A:
+                probed.append(model)
+                raise urllib.error.HTTPError(GATEWAY, 401, "Unauthorized", {}, None)
+            return inner(model, payload, timeout_seconds)
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    # A provider-side 401 on one route drops that route instead of aborting selection.
+    assert probed == [FREE_A, FREE_B]
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+    assert decision.selected_route.model == FREE_B
+    assert dropped == ({"route_id": FREE_A, "reason": "http_401"},)
