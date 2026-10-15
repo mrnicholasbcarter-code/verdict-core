@@ -478,6 +478,21 @@ def test_gate_still_builds_the_builtin_set_outside_production(
     assert set(gate.providers) == {"omniroute", "public_ollama"}
 
 
+def test_cli_route_gate_default_includes_local_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI route gate includes the local gateway as default provider."""
+    from verdict.cli import _build_route_gate
+
+    _config_home(tmp_path, monkeypatch, None)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    gate = _build_route_gate(allow_offline=True)
+
+    assert "omniroute" in gate.providers
+    assert gate.providers["omniroute"].base_url == "http://localhost:20128/v1"
+    assert "public_ollama" in gate.providers
+
+
 # --- API serve path ---------------------------------------------------------
 
 
