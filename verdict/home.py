@@ -200,7 +200,7 @@ def probe_gateway(url: str, *, timeout: float = 3.0) -> ProbeResult:
     if scheme not in {"http", "https"}:
         return None, None, None
     try:
-        key = resolve_api_key() or resolve_api_key("OMNIROUTE_API_KEY")
+        key = resolve_api_key()
         headers = {"Authorization": f"Bearer {key}"} if key else {}
         request = urllib.request.Request(
             f"{url.rstrip('/')}/v1/models", headers=headers, method="GET"

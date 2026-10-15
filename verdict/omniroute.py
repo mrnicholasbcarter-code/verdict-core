@@ -29,6 +29,9 @@ _RUNTIME_SOURCE_PATHS = {
     "token_limits": "/api/usage/token-limits",
 }
 _MANAGEMENT_SOURCES = frozenset({"rate_limits", "model_cooldowns", "budget", "token_limits"})
+# Health is public liveness without a token; OmniRoute 3.8.51+ returns the
+# provider health, breaker, lockout and learned-limit detail only with it.
+_MANAGEMENT_DETAIL_SOURCES = _MANAGEMENT_SOURCES | {"health"}
 _USAGE_SCOPED_SOURCES = frozenset({"budget", "token_limits"})
 _DEFAULT_RUNTIME_SOURCES = frozenset({"health"})
 _MAX_JSON_CONTAINER_DEPTH = 64
@@ -142,7 +145,7 @@ class OmniRouteHTTPTransport:
             payload = self._get_json(
                 operation="runtime",
                 path=path,
-                token=self.management_token if source in _MANAGEMENT_SOURCES else None,
+                token=self.management_token if source in _MANAGEMENT_DETAIL_SOURCES else None,
                 params=params,
             )
             _merge_source(
