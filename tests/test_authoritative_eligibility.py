@@ -478,3 +478,34 @@ def test_reselect_reuses_snapshot_and_does_not_refetch(monkeypatch, tmp_path):
     assert all(
         HealthCache(health_path).lookup(route, now).state == "negative" for route in executed
     )
+
+
+def test_unauthorized_gateway_key_denies_without_premium_fallback(monkeypatch) -> None:
+    import asyncio
+
+    service = IntelligenceService(
+        primary_model="anthropic/claude-opus-5",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "bogus-key-value")
+
+    def raise_live_admit_error(*args, **kwargs):
+        raise LiveAdmitError("unauthorized", "/api/free-tier/summary returned 401")
+
+    monkeypatch.setattr(
+        "verdict.intelligence.load_omniroute_admit_snapshot", raise_live_admit_error
+    )
+
+    decision = asyncio.run(service.route("Reply with just: ok"))
+
+    assert decision.model == "no_eligible_target"
+    assert decision.decision == "denied"
+    assert decision.transport_outcome == "not_sent"
+    assert "anthropic" not in decision.model
+    assert "env OMNIROUTE_API_KEY" in decision.reason
+    assert "bogus-key-value" not in decision.reason
+    assert "fail_closed_omniroute_unauthorized" in decision.safety_flags

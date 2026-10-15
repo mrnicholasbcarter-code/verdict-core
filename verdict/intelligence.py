@@ -1084,6 +1084,42 @@ class IntelligenceService:
                     else "cannot enforce authoritative eligibility without a valid OmniRoute snapshot"
                 )
                 raise TaskProfileError(message + (f" ({_fetch_error})" if _fetch_error else ""))
+            if (
+                _fetch_error is not None
+                and isinstance(_fetch_error, str)
+                and _fetch_error.startswith("unauthorized:")
+            ):
+                key_source = None
+                if os.getenv("OMNIROUTE_API_KEY"):
+                    key_source = "env OMNIROUTE_API_KEY"
+                else:
+                    omni_config = self.providers.get("omniroute")
+                    env_name = str(getattr(omni_config, "api_key_env", None) or "")
+                    if env_name:
+                        if os.getenv(env_name):
+                            key_source = f"env {env_name}"
+                        else:
+                            key_source = f"no key configured (set {env_name})"
+                    else:
+                        key_source = "no key configured (set OMNIROUTE_API_KEY)"
+                return RoutingDecision(
+                    model=NO_ELIGIBLE_TARGET,
+                    provider="none",
+                    tier=final_tier,
+                    reason=f"fail_closed — OmniRoute rejected the API key from {key_source} ({_fetch_error}); no fallback",
+                    escalated=escalated,
+                    escalation_reason=esc_reason or None,
+                    policy_version=self._policy_version,
+                    degraded_mode=False,
+                    managed_backend_status=self.managed_backend_status,
+                    protected=False,
+                    task_class="ordinary",
+                    decision="denied",
+                    transport_outcome="not_sent",
+                    quality_outcome="unknown",
+                    candidate_states=[],
+                    safety_flags=["fail_closed_omniroute_unauthorized"],
+                )
             # Compatibility-only offline callers may use the historical path.
             return None
         classification = classify_worthiness(
