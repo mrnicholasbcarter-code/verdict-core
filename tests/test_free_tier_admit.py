@@ -828,3 +828,62 @@ def test_quota_fence_requires_all_accounts_exhausted(available):
     receipt = admit_free_tier_active(snapshot)
     assert bool(receipt.admitted) is available
     assert bool(snapshot.quota_blocks) is not available
+
+
+def _two_account_snapshot(other_row):
+    return snapshot_from_payloads(
+        catalog={"data": [_catalog_row("cx/code", "codex")]},
+        free_tier={"perModel": [{"provider": "codex", "modelId": "code"}]},
+        providers={
+            "connections": [{"provider": "codex", "isActive": True, "testStatus": "active"}]
+        },
+        account_status={
+            "accountQuotas": [
+                {
+                    "provider": "codex",
+                    "connectionId": "exhausted",
+                    "quotas": {
+                        "weekly": {"usedPercentage": 100, "resetAt": "2099-01-01T00:00:00Z"}
+                    },
+                },
+                {"provider": "codex", **other_row},
+            ]
+        },
+    )
+
+
+def test_quota_fence_not_cancelled_by_not_supported_account():
+    snapshot = _two_account_snapshot(
+        {"connectionId": "other", "available": False, "reason": "not_supported"}
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert not receipt.admitted
+    assert snapshot.quota_blocks
+
+
+def test_quota_fence_not_cancelled_by_unknown_account_row():
+    snapshot = _two_account_snapshot({"connectionId": "other"})
+    receipt = admit_free_tier_active(snapshot)
+    assert not receipt.admitted
+    assert snapshot.quota_blocks
+
+
+def test_quota_fence_cancelled_by_account_with_capacity():
+    snapshot = _two_account_snapshot(
+        {"connectionId": "other", "quotas": {"weekly": {"usedPercentage": 11}}}
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert receipt.admitted == ("cx/code",)
+    assert not snapshot.quota_blocks
+
+
+def test_quota_fence_cancelled_by_reset_window():
+    snapshot = _two_account_snapshot(
+        {
+            "connectionId": "other",
+            "quotas": {"weekly": {"usedPercentage": 100, "resetAt": "2020-01-01T00:00:00Z"}},
+        }
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert receipt.admitted == ("cx/code",)
+    assert not snapshot.quota_blocks
