@@ -767,6 +767,20 @@ class IntelligenceService:
                 cannot_fit.add(candidate_id)
         return tuple(plans), frozenset(cannot_fit)
 
+    def _route_passports(self) -> dict[str, ModelPassport]:
+        """Injected passports, else one read of the prove-at-rest store.
+
+        Chooser-side only: the gate must keep ``None`` so its health-cache
+        reuse branch and store write-back stay live.  The fresh-passport fast
+        path returns no confirm probes, so the stored passport's measured
+        latency is the only ranking evidence left for the chooser.
+        """
+        if self.passports is not None:
+            return dict(self.passports)
+        from verdict.prove_at_rest_legacy import load_healthy_passports
+
+        return load_healthy_passports(self.passport_store_path)
+
     def _apply_candidate_pool(
         self,
         receipt: FreeTierAdmitReceipt,
@@ -1231,7 +1245,7 @@ class IntelligenceService:
             try:
                 receipt = apply_best_of_admitted(
                     receipt,
-                    passports=self.passports,
+                    passports=self._route_passports(),
                     now=self.admit_now,
                     task_class=classification.protected_ranker_class,
                 )

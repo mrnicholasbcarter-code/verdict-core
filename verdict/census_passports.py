@@ -91,10 +91,11 @@ def run_census(
     cache: HealthCache,
     passport_store_path: Path,
     now: datetime,
-    max_candidates: int = 3,
-    max_tokens: int = 768,
+    max_candidates: int = 6,
+    max_tokens: int = 1536,
+    cooling_providers: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
-    """Refresh only free, connected, passively healthy routes; never probe paid ones.
+    """Refresh free, connected routes, preferring recent successful traffic.
 
     Each full probe reserves 256 tokens for the fixed chat/tool prompts and
     their capped outputs (8 + 64). The candidate cap bounds requests to 2*N.
@@ -117,8 +118,10 @@ def run_census(
     from verdict.orchestration.credential_pools import canonical_route
 
     healthy_canonical = {canonical_route(r) for r in healthy} | healthy
+    cooling = {canonical_route(f"{provider}/_").split("/", 1)[0] for provider in cooling_providers}
     candidates = sorted(
-        r for r in receipt.free_admitted if r in healthy or canonical_route(r) in healthy_canonical
+        (r for r in receipt.free_admitted if canonical_route(r).split("/", 1)[0] not in cooling),
+        key=lambda r: (r not in healthy and canonical_route(r) not in healthy_canonical, r),
     )
     refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
     passports = load_healthy_passports(passport_store_path)
@@ -139,19 +142,49 @@ def run_census(
         if outcome.result is not None:
             cache.record(model, outcome.result, now)
     cache.save()
-    refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
+    after = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
+    after["updated"] += refreshed["updated"]
     return {
-        **refreshed,
+        **after,
         "candidates": len(candidates),
         "probed": probed,
         "reserved_tokens": probed * 256,
     }
 
 
+def load_census_cooldowns(
+    base_url: str, api_key: str | None = None, *, transport: Any = None
+) -> frozenset[str]:
+    """Avoid spending probes on providers with an active gateway cooldown."""
+    import httpx
+
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.omniroute import _records
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    with httpx.Client(transport=transport, timeout=10, follow_redirects=False) as client:
+        response = client.get(
+            f"{normalize_omniroute_origin(base_url)}/api/resilience/model-cooldowns",
+            headers=headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    # Same payload-shape tolerance as the passive-health cooldown merge:
+    # unknown keys or non-mapping rows mean "no cooldown hints", never a crash.
+    return frozenset(
+        row["provider"]
+        for row in _records(payload, "items", "lockouts", "cooldowns", "data")
+        if isinstance(row.get("provider"), str)
+        and isinstance(row.get("remainingMs"), (int, float))
+        and not isinstance(row.get("remainingMs"), bool)
+        and row["remainingMs"] > 0
+    )
+
+
 def cmd_census(
     *,
-    max_candidates: int = 3,
-    max_tokens: int = 768,
+    max_candidates: int = 6,
+    max_tokens: int = 1536,
     passport_store_path: Path | None = None,
     health_cache_path: Path | None = None,
     output_json: bool = False,
@@ -179,6 +212,15 @@ def cmd_census(
         if key_path.is_file():
             key = key_path.read_text().strip()
         snapshot = load_omniroute_admit_snapshot(base_url, api_key=key)
+        # A cooldown-endpoint outage must not kill the timer's census run; the
+        # census then just spends its probe budget without cooldown hints.
+        import httpx
+
+        # ValueError covers an invalid-JSON 200 body; none of these may kill it.
+        try:
+            cooling = load_census_cooldowns(base_url, key)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            cooling = frozenset()
         report = run_census(
             snapshot,
             live_transport(base_url, api_key=key),
@@ -187,5 +229,9 @@ def cmd_census(
             now=datetime.now(timezone.utc),
             max_candidates=max_candidates,
             max_tokens=max_tokens,
+            cooling_providers=cooling,
         )
+        from verdict.census_passports_service import write_census_last_result
+
+        write_census_last_result(report)
     print(json.dumps(report, indent=2, sort_keys=True))
