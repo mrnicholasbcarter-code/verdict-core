@@ -1669,3 +1669,70 @@ def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_p
     payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
     assert payload["executor_retry"]["failed_repair_attempt"]["repaired"] is False
     assert payload["executor_retry"]["failed_reason"].startswith("patch repair failed:")
+
+
+def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-393: planner candidates come from the live ladder, never cc/*, cx/* or paid."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict(FREE_A, rank=0),
+        _route_verdict("kilocode/alpha:free", rank=1),  # same family as FREE_A
+        _route_verdict("cc/claude-haiku-5-5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=3, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("anthropic/claude-sonnet-5", rank=4, capacity=CapacityClass.METERED),
+        _route_verdict("agy/gemini-x", rank=5, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_B, rank=6),
+    ]
+    built: dict[str, Any] = {}
+    requirements: list[Any] = []
+
+    class _Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            requirements.append(req)
+            return None, tuple(verdicts)
+
+    def build_selector(gateway: str, **kwargs: Any) -> Any:
+        built.update(kwargs)
+        return _Selector()
+
+    monkeypatch.setattr("verdict.orchestration.eligibility_report.build_selector", build_selector)
+    _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    planners = configs[0].planner_models
+    assert planners == (FREE_A, "agy/gemini-x", FREE_B)
+    assert configs[0].model == FREE_A
+    assert any(req.reasoning and "reasoning" in req.required_capabilities for req in requirements)
+
+
+def test_prepare_live_autodev_selected_needs_two_planner_families(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict("kilocode/alpha:free", rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    _scripted_probe(monkeypatch)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: pytest.fail("must not plan"))
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+    assert "planner" in str(excinfo.value)
+    assert "cc/" not in str(excinfo.value)

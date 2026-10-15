@@ -1999,6 +1999,64 @@ def prepare_live_autodev(
 _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 
 
+#: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
+_PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
+
+
+def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
+    """Planner routes from the live eligibility ladder, one per model family (BOD-393).
+
+    Planning is one reasoning call that must return JSON, so it needs a
+    reasoning-capable route but not the agentic tool-use proof an executor
+    needs (``frontier_worthy`` selects the single-call qualification; the
+    capacity filter below still keeps it off paid routes). Only free or
+    prepaid subscription routes outside the D22-excluded pools qualify, and
+    at least two families are required so one provider's outage cannot end
+    planning.
+    """
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
+    from verdict.orchestration.credential_pools import pool_of
+
+    requirements = TaskRequirements(
+        required_capabilities=frozenset({"reasoning"}),
+        coding=True,
+        reasoning=True,
+        frontier_worthy=True,
+    )
+    try:
+        _chosen, verdicts = selector.select(
+            requirements, now=datetime.datetime.now(datetime.timezone.utc)
+        )
+    except Exception as exc:  # live gateway state; fail closed, named
+        raise AutodevError(
+            f"autodev planner selection could not read the eligibility ladder: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    planners: list[str] = []
+    families: set[str] = set()
+    for verdict in sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0)):
+        route_id = str(verdict.route_id)
+        if (
+            getattr(verdict.reached, "value", None) not in _ELIGIBLE_STAGES
+            or "/" not in route_id
+            or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
+            or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
+            or route_family(route_id) in families
+        ):
+            continue
+        planners.append(route_id)
+        families.add(route_family(route_id))
+        if len(planners) == top_n:
+            break
+    if len(planners) < 2:
+        raise AutodevError(
+            "autodev planner selection needs eligible free/subscription planner routes from "
+            f"at least two model families; found {planners or 'none'} "
+            "(no paid or frontier fallback)"
+        )
+    return tuple(planners)
+
+
 def prepare_live_autodev_selected(
     objective: str, repo: Path, *, base_url: str, api_key: str | None, top_n: int = 3
 ) -> tuple[
@@ -2158,9 +2216,12 @@ def prepare_live_autodev_selected(
             f"correctly: {detail}"
         )
 
-    plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
-        objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
-    )
+    planners = _live_planner_models(selector, top_n=top_n)
+    plan = Decomposer(
+        DecompositionConfig(
+            model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
+        )
+    ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
     if time.time() - started > 3600:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
