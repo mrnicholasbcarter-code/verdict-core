@@ -8,7 +8,6 @@ never re-admitted, and the receipt explains selected_because.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from verdict.admit_prove_confirm import ConfirmEvidence, PassportEvidence, gate_admit_prove_confirm
@@ -173,23 +172,18 @@ def test_stronger_proven_beats_weaker_free_ghost_when_both_admitted() -> None:
 def test_gate_then_chooser_does_not_re_admit_named_drop() -> None:
     base = admit_free_tier_active(_snapshot())
     assert NAMED_DROP not in base.admitted
+    # Fresh passports are reused without confirm probes (BOD-350), so the
+    # chooser ranks on passport latency_p95 instead of confirm latency.
+    passports = {
+        GHOST: _passport(GHOST, latency_p95=4000.0),
+        PROVEN: _passport(PROVEN, latency_p95=40.0),
+    }
     gated = gate_admit_prove_confirm(
-        base,
-        passports={GHOST: _passport(GHOST), PROVEN: _passport(PROVEN)},
-        confirm_transport=_ok_transport(),
-        now=NOW,
+        base, passports=passports, confirm_transport=_ok_transport(), now=NOW
     )
     assert NAMED_DROP not in gated.admitted
-    with_latencies = replace(
-        gated,
-        confirm=tuple(
-            replace(row, latency_ms=40.0 if row.identity_id == PROVEN else 4000.0)
-            for row in gated.confirm
-        ),
-    )
-    ranked = apply_best_of_admitted(
-        with_latencies, passports={GHOST: _passport(GHOST), PROVEN: _passport(PROVEN)}, now=NOW
-    )
+    assert gated.confirm == ()
+    ranked = apply_best_of_admitted(gated, passports=passports, now=NOW)
     assert ranked.chosen == PROVEN
     assert ranked.chosen in ranked.admitted
     assert NAMED_DROP not in ranked.admitted
@@ -361,3 +355,53 @@ def test_best_of_admitted_selected_because_survives_evidence_embed() -> None:
     assert receipt["selected_because"] == because
     assert receipt.get("chooser_ranked_admitted") is True
     assert payload["selected_route"]["selected_because"] == because
+
+
+def test_route_passports_fall_back_to_prove_at_rest_store(tmp_path) -> None:
+    """passports=None reads the store once so the chooser keeps latency evidence."""
+    from verdict.prove_at_rest import (
+        STATUS_HEALTHY,
+        ProofResult,
+        ProveAtRestCycle,
+        ProveAtRestStore,
+    )
+
+    passport = _passport(PROVEN, latency_p95=40.0)
+    store_path = tmp_path / "store.json"
+    ProveAtRestStore(path=store_path).write(
+        ProveAtRestCycle(
+            cycle_id="c1",
+            started_at=NOW,
+            finished_at=NOW,
+            results=(
+                ProofResult(
+                    identity_id=PROVEN,
+                    provider=PROVEN.split("/", 1)[0],
+                    status=STATUS_HEALTHY,
+                    proved_at=NOW,
+                    latency_ms=40.0,
+                    passport=passport,
+                ),
+            ),
+        )
+    )
+    svc = IntelligenceService(
+        primary_model=NAMED_DROP,
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=_snapshot(),
+        execute_offload=False,
+        passports=None,
+        passport_store_path=store_path,
+        admit_now=NOW,
+        context_roots=(),
+        mcp_root="",
+    )
+    loaded = svc._route_passports()
+    assert loaded[PROVEN].latency_p95 == 40.0
+    injected = {GHOST: _passport(GHOST)}
+    svc_injected = _service(_snapshot(), passports=injected, confirm_transport=None)
+    assert svc_injected._route_passports() == injected

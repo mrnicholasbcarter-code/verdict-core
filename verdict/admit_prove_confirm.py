@@ -239,7 +239,8 @@ def gate_admit_prove_confirm(
 
     Named drops are appended for ``no_passport``, ``passport_stale``,
     ``confirm_failed``, ``confirm_budget_exhausted``, and ``confirm_unavailable``.
-    A sufficient fresh shortlist reuses its proof without transport calls.
+    Any fresh stored passport reuses its proof without transport calls; a
+    passively-healthy route without one still gets a single bounded confirm.
     Otherwise, missing confirm transport drops the shortlist fail-closed.
     """
     if (
@@ -332,6 +333,7 @@ def gate_admit_prove_confirm(
     exclusions = list(receipt.exclusions)
     passport_rows: list[PassportEvidence] = []
     fresh_ids: list[str] = []
+    passive_fresh_ids: list[str] = []
 
     for identity_id in receipt.admitted:
         passport = loaded.get(identity_id) or loaded.get(canonical_route(identity_id))
@@ -341,12 +343,7 @@ def gate_admit_prove_confirm(
             fresh_ids.append(identity_id)
             continue
         if passport is not None and not evidence.fresh:
-            if (
-                live
-                and consented
-                and confirm_transport is not None
-                and _passport_can_refresh(passport)
-            ):
+            if live and consented and _passport_can_refresh(passport):
                 continue
             reason = evidence.reason or REASON_PASSPORT_STALE
             exclusions.append(
@@ -356,9 +353,9 @@ def gate_admit_prove_confirm(
             )
             continue
         if identity_id in passive_canonical or canonical_route(identity_id) in passive_canonical:
-            fresh_ids.append(identity_id)
+            passive_fresh_ids.append(identity_id)
             continue
-        if live and consented and confirm_transport is not None and _passport_can_refresh(passport):
+        if live and consented and _passport_can_refresh(passport):
             # Operational TTL elapsed. Keep the candidate for the bounded
             # confirm refresh; a failed or unattempted refresh still drops it.
             continue
@@ -377,7 +374,7 @@ def gate_admit_prove_confirm(
     # free-tier ordering: free candidates are confirmed before paid fallbacks, keyed on the
     # authoritative free_admitted set rather than an ID-suffix heuristic.
     free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
-    if len(fresh_ids) >= max_confirm_candidates:
+    if fresh_ids:
         ordered_fresh = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
         confirmed = ordered_fresh[:max_confirm_candidates]
         for identity_id in ordered_fresh[max_confirm_candidates:]:
@@ -408,14 +405,14 @@ def gate_admit_prove_confirm(
     # dropping the whole pool because the background prover is stale. Stable
     # capability metadata is not re-probed here. Without live consent, an
     # expired passport still fails closed as passport_stale.
-    if live and consented and confirm_transport is not None:
+    if live and consented:
         refreshable = [
             identity_id
             for identity_id in receipt.admitted
             if _passport_can_refresh(loaded.get(identity_id))
         ]
         ordered_ids = sorted(
-            set(fresh_ids) | set(refreshable),
+            set(fresh_ids) | set(passive_fresh_ids) | set(refreshable),
             key=lambda item: (
                 _choose_sort(item, healthy, free_set)[0],
                 item not in passive_ids,
@@ -423,7 +420,10 @@ def gate_admit_prove_confirm(
             ),
         )
     else:
-        ordered_ids = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
+        ordered_ids = sorted(
+            set(fresh_ids) | set(passive_fresh_ids),
+            key=lambda item: _choose_sort(item, healthy, free_set),
+        )
     ordered = ordered_ids
     shortlist = ordered[:max_confirm_candidates]
     deferred = ordered[max_confirm_candidates:]

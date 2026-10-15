@@ -309,11 +309,18 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
         return "sent", "ok from offload"
 
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    confirm_calls: list[str] = []
+    base_confirm = _ok_confirm_transport()
+
+    def spy_confirm(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        confirm_calls.append(model_id)
+        return base_confirm(model_id, payload, timeout)
+
     svc = _service(
         snapshot,
         executor=executor,
         passports={identity: _fresh_passport(identity)},
-        confirm_transport=_ok_confirm_transport(),
+        confirm_transport=spy_confirm,
     )
     decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
     assert decision.model == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
@@ -330,8 +337,9 @@ def test_intelligence_offload_selects_free_active_not_opus() -> None:
     assert isinstance(decision.admit_receipt["omissions"], list)
     assert decision.admit_receipt["passport"]
     assert any(row["fresh"] for row in decision.admit_receipt["passport"])
-    assert decision.admit_receipt["confirm"]
-    assert any(row["confirmed"] for row in decision.admit_receipt["confirm"])
+    # A fresh stored passport is reused without confirm probes (BOD-350).
+    assert decision.admit_receipt["confirm"] == []
+    assert confirm_calls == []
     assert decision.admit_receipt["selected_because"]
     assert str(decision.admit_receipt["selected_because"]).startswith("selected because")
     assert "chooser_ranked_admitted" in decision.safety_flags

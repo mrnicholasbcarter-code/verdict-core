@@ -854,8 +854,8 @@ def _action_census(**kwargs: Any) -> ActionResult:
     try:
         with redirect_stdout(buf):
             cmd_census(
-                max_candidates=int(kwargs.get("max_candidates", 3)),
-                max_tokens=int(kwargs.get("max_tokens", 768)),
+                max_candidates=int(kwargs.get("max_candidates", 6)),
+                max_tokens=int(kwargs.get("max_tokens", 1536)),
                 passport_store_path=(
                     Path(passport_store_path).expanduser() if passport_store_path else None
                 ),

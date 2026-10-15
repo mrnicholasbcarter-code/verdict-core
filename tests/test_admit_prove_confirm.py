@@ -99,15 +99,22 @@ def test_passport_is_fresh_respects_expiry() -> None:
     assert passport_is_fresh(stale, now=NOW) is False
 
 
-def test_gate_requires_fresh_passport_and_confirm() -> None:
+def test_gate_reuses_fresh_passport_without_confirm_probes() -> None:
+    """BOD-350: one eligible fresh stored passport is sufficient; no confirm probes."""
     base = admit_free_tier_active(_snapshot())
     assert "openrouter/nvidia/nemotron-3-nano-30b-a3b:free" in base.admitted
 
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    probed: list[str] = []
+
+    def spy(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+        probed.append(model_id)
+        return _ok_transport()(model_id, payload, timeout)
+
     gated = gate_admit_prove_confirm(
         base,
         passports={identity: _passport(identity)},
-        confirm_transport=_ok_transport(),
+        confirm_transport=spy,
         now=NOW,
         live=False,
         consented=False,
@@ -115,12 +122,12 @@ def test_gate_requires_fresh_passport_and_confirm() -> None:
     assert gated.chosen == identity
     assert gated.empty_intersection is False
     assert any(row.fresh for row in gated.passport)
-    assert any(row.confirmed for row in gated.confirm)
+    assert probed == []
+    assert gated.confirm == ()
     payload = gated.to_dict()
     assert payload.get("passport")
-    assert payload.get("confirm")
+    assert not payload.get("confirm")
     assert any(row["identity_id"] == identity and row["fresh"] for row in payload["passport"])
-    assert any(row["identity_id"] == identity and row["confirmed"] for row in payload["confirm"])
 
 
 def test_gate_named_drop_no_passport_fail_closed() -> None:
@@ -239,11 +246,14 @@ def test_gate_named_drop_confirm_failed() -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
     other = "opencode/hy3-free"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     gated = gate_admit_prove_confirm(
         base,
-        passports={identity: _passport(identity), other: _passport(other)},
+        passports={identity: _passport(identity, **expired), other: _passport(other, **expired)},
         confirm_transport=_ok_transport(fail={identity, other}),
         now=NOW,
+        live=True,
+        consented=True,
     )
     assert gated.chosen is None
     reasons = {item.reason for item in gated.exclusions}
@@ -254,14 +264,15 @@ def test_gate_named_drop_confirm_failed() -> None:
 def test_gate_confirm_unavailable_fail_closed() -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    other = "opencode/hy3-free"
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     gated = gate_admit_prove_confirm(
         base,
-        passports={
-            identity: _passport(identity),
-            "opencode/hy3-free": _passport("opencode/hy3-free"),
-        },
+        passports={identity: _passport(identity, **expired), other: _passport(other, **expired)},
         confirm_transport=None,
         now=NOW,
+        live=True,
+        consented=True,
     )
     assert gated.chosen is None
     reasons = {item.reason for item in gated.exclusions}
@@ -626,3 +637,32 @@ def test_expired_health_cache_bounds_sparse_passport_refresh(tmp_path, monkeypat
     )
     assert calls == list(ids[:2])
     assert expired.admitted == (ids[1],)
+
+
+def test_one_fresh_passport_skips_three_stale_candidates() -> None:
+    from dataclasses import replace
+
+    ids = tuple(f"opencode/model-{i}" for i in range(4))
+    base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
+    stale = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=1))
+    passports = {identity: _passport(identity, **stale) for identity in ids}
+    passports[ids[-1]] = _passport(ids[-1])
+    calls = []
+
+    def transport(model, payload, timeout):
+        calls.append(model)
+        return _ok_transport()(model, payload, timeout)
+
+    result = gate_admit_prove_confirm(
+        base,
+        passports=passports,
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=4,
+    )
+    assert calls == []
+    assert result.admitted == (ids[-1],)
+    assert result.chosen == ids[-1]
+    assert result.confirm == ()
