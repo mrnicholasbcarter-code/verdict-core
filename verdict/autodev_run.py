@@ -2038,9 +2038,14 @@ def prepare_live_autodev_selected(
         sync_visibility=False,
         **extra,
     )
-    _chosen, verdicts = selector.select(
-        requirements, now=datetime.datetime.now(datetime.timezone.utc)
-    )
+    try:
+        _chosen, verdicts = selector.select(
+            requirements, now=datetime.datetime.now(datetime.timezone.utc)
+        )
+    except Exception as exc:  # the ladder reads live gateway state; fail closed, named
+        raise AutodevError(
+            f"autodev selection could not read the eligibility ladder: {type(exc).__name__}: {exc}"
+        ) from exc
     # ``select`` probes and returns every assessed route; the ladder order is the
     # rank it assigned (lower is better, ``None`` = never ranked).
     ordered = sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0))
