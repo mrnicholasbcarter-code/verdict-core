@@ -377,21 +377,23 @@ def gate_admit_prove_confirm(
     if fresh_ids:
         ordered_fresh = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
         confirmed = ordered_fresh[:max_confirm_candidates]
+        excluded_ids = {drop.model_id for drop in exclusions}
         for identity_id in ordered_fresh[max_confirm_candidates:]:
-            exclusions.append(
-                NamedDrop(identity_id, REASON_CONFIRM_BUDGET, "outside budgeted confirm shortlist")
+            drop = NamedDrop(
+                identity_id, REASON_CONFIRM_BUDGET, "outside budgeted confirm shortlist"
             )
+            exclusions.append(drop)
+            excluded_ids.add(drop.model_id)
+        fresh_set = set(fresh_ids)
         for evidence in passport_rows:
-            if evidence.identity_id not in fresh_ids and not any(
-                drop.model_id == evidence.identity_id for drop in exclusions
-            ):
-                exclusions.append(
-                    NamedDrop(
-                        evidence.identity_id,
-                        evidence.reason or REASON_PASSPORT_STALE,
-                        "passport not refreshed; fresh shortlist is sufficient",
-                    )
+            if evidence.identity_id not in fresh_set and evidence.identity_id not in excluded_ids:
+                drop = NamedDrop(
+                    evidence.identity_id,
+                    evidence.reason or REASON_PASSPORT_STALE,
+                    "passport not refreshed; fresh shortlist is sufficient",
                 )
+                exclusions.append(drop)
+                excluded_ids.add(drop.model_id)
         return _finalize(
             receipt,
             admitted=confirmed,
