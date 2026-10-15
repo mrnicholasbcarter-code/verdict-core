@@ -77,7 +77,7 @@ jobs:
           PY
       - name: Download certified bundle from selected run
         if: steps.locate.outputs.found == 'true'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.locate.outputs.artifact_id }}
           run-id: ${{ steps.locate.outputs.run_id }}
