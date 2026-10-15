@@ -128,3 +128,43 @@ def test_passport_waiver_is_off_for_roles_that_did_not_opt_in() -> None:
     passports = {"p/ok": _passport(NOW + timedelta(minutes=5))}
     report = _adapter(passports).evaluate(SUBAGENT_ROLE_REQUIREMENTS["oracle"], now=NOW)
     assert _states(report)["p/ok"].state is AvailabilityState.DEGRADED
+
+
+def test_from_environment_accepts_gateway_cached_health_but_not_stale(tmp_path, monkeypatch):
+    """BOD-387: the gateway caches health ~20 s; 50 s is current, 120 s is stale."""
+    from verdict.availability import CandidateRequirements
+    from verdict.subagent_models import SubagentModelSelector
+
+    for name in ("LLMGATE_AVAILABILITY_PROFILE", "LLMGATE_UPSTREAM_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/v1")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "catalog-secret")
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "management-secret")
+    monkeypatch.setenv("VERDICT_PROVE_AT_REST_STATE", str(tmp_path / "state.json"))
+    adapter = SubagentModelSelector.from_environment().availability_cache.source.__self__
+
+    def report_at(age_seconds: int):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/models":
+                return httpx.Response(200, json={"data": MODELS[:1]})
+            if request.url.path == "/api/monitoring/health":
+                stamp = NOW - timedelta(seconds=age_seconds)
+                # The provider row comes from health, so it carries the gateway's stamp.
+                return httpx.Response(
+                    200,
+                    json={
+                        "timestamp": stamp.isoformat(),
+                        "providerHealth": {"p": {"state": "closed"}},
+                    },
+                )
+            return httpx.Response(200, json={"connections": [_connection("p")]})
+
+        adapter.transport.transport = httpx.MockTransport(handler)
+        adapter.transport.clock = lambda: NOW
+        report = adapter.evaluate(CandidateRequirements(required=frozenset({"tools"})), now=NOW)
+        return report.candidates[0]
+
+    assert report_at(50).state is AvailabilityState.ELIGIBLE
+    stale = report_at(120)
+    assert stale.state is AvailabilityState.UNKNOWN
+    assert stale.reasons == ("stale observation",)

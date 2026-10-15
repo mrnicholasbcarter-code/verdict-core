@@ -165,6 +165,8 @@ class SubagentModelSelector:
             runtime_sources={"health", "connections"} if management_token else {"health"},
             allow_private_hosts={"127.0.0.1", "::1"},
             max_response_bytes=16_777_216,
+            # OmniRoute caches its health stamp ~20 s; 30 s left late reads stale (BOD-387).
+            ttl_seconds=90,
         )
 
         from verdict.prove_at_rest_legacy import load_healthy_passports
