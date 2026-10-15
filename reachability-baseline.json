@@ -389,11 +389,11 @@
   },
   {
     "qualified_name": "verdict.home.palette_actions",
-    "reason": "UNTRIAGED: palette_actions has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+    "reason": "KEEP: public PALETTE accessor exercised by the CLI/TUI parity suite (tests/test_actions_parity.py, tests/test_actions_f2_parity.py assert every palette_actions() entry has a registered action); same role as actions.registry.get_action, not dead code."
   },
   {
     "qualified_name": "verdict.home.palette_launches",
-    "reason": "UNTRIAGED: palette_launches has only non-production references; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+    "reason": "KEEP: public LAUNCH-mapped PALETTE accessor exercised directly by tests/test_home_palette_exec.py (test_palette_launches_returns_launch_entries, test_palette_launches_monkeypatched); validates PALETTE/LAUNCH registry consistency, not dead code."
   },
   {
     "qualified_name": "verdict.intelligence_adapter.build_intelligence_adapter",
@@ -637,11 +637,11 @@
   },
   {
     "qualified_name": "verdict.subagent_models.select_model_for_role",
-    "reason": "UNTRIAGED: select_model_for_role has no resolved reference; Subagent Role-Aware Model Selection via OmniRoute/Verdict Eligibility Pipeline (verdict/subagent_models.py)."
+    "reason": "DELETE candidate: BOD-259 review select_model_for_role before removal; its only caller, verdict/subagent_resolver.py, switched to BOD-104 execution-path authority (optimize_execution_path/legacy_selector_must_yield) in #580 (c9828a3c) and never adopted a replacement caller; only tests/test_subagent_models.py exercises SubagentModelSelector.select_for_role directly."
   },
   {
     "qualified_name": "verdict.subagent_models.select_models_for_parallel_roles",
-    "reason": "UNTRIAGED: select_models_for_parallel_roles has no resolved reference; Subagent Role-Aware Model Selection via OmniRoute/Verdict Eligibility Pipeline (verdict/subagent_models.py)."
+    "reason": "DELETE candidate: BOD-259 review select_models_for_parallel_roles before removal; same BOD-104 supersession as select_model_for_role -- no production caller remains after subagent_resolver.py moved to execution-path authority in #580 (c9828a3c)."
   },
   {
     "qualified_name": "verdict.subagent_selection.execute_with_worker_failover",
@@ -861,7 +861,7 @@
   },
   {
     "qualified_name": "verdict.home.main",
-    "reason": "UNTRIAGED: main has no resolved reference; ``verdict`` with no subcommand: the Verdict home screen (verdict/home.py)."
+    "reason": "DELETE candidate: BOD-259 review home.main before removal; verdict/commands/dispatch.py (the real `verdict` with no subcommand path) calls run_home() directly and no pyproject entry point or test references this wrapper -- zero callers of any kind."
   },
   {
     "qualified_name": "verdict.live_routing_run.utc_now",
