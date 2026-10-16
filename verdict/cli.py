@@ -3284,7 +3284,6 @@ def main() -> None:
         parsers_config,
         parsers_credentials,
         parsers_routing,
-        parsers_autodev,
         parsers_harness,
         parsers_runtime,
         parsers_models,
@@ -3293,6 +3292,7 @@ def main() -> None:
         registrar.register(subparsers)
     # Direct calls (not through the tuple-driven loop above) so the static
     # reachability scanner's attribute-chain tracer resolves these registrars.
+    parsers_autodev.register(subparsers)
     parsers_census.register(subparsers)
     parsers_outcome.register(subparsers)
 

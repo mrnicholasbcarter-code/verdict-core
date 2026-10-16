@@ -997,7 +997,8 @@ def _action_metadata_lookup(**kwargs: Any) -> ActionResult:
 def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     from datetime import datetime, timezone
 
-    from verdict.metadata import ModelMetadataError, file_transport, refresh_metadata
+    from verdict.metadata import ModelMetadataError
+    from verdict.metadata.store import file_transport, refresh_metadata
 
     store_path = kwargs.get("store_path")
     mapping_path = kwargs.get("mapping_path")

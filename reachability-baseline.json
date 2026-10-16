@@ -612,10 +612,6 @@
     "reason": "UNTRIAGED: human_summary has no resolved reference; Evidence-based model chooser (verdict/chooser.py)."
   },
   {
-    "qualified_name": "verdict.commands.parsers_autodev.register",
-    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict autodev command family (verdict/commands/parsers_autodev.py)."
-  },
-  {
     "qualified_name": "verdict.commands.parsers_config.register",
     "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict config command family (verdict/commands/parsers_config.py)."
   },
@@ -758,14 +754,6 @@
   {
     "qualified_name": "verdict.memory_session_adapter.poll_discovered_sessions",
     "reason": "UNTRIAGED: poll_discovered_sessions has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
-  },
-  {
-    "qualified_name": "verdict.metadata.store.file_transport",
-    "reason": "UNTRIAGED: file_transport has no resolved reference; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
-  },
-  {
-    "qualified_name": "verdict.metadata.store.refresh_metadata",
-    "reason": "UNTRIAGED: refresh_metadata has only non-production references; On-disk Core metadata store and refresh job (verdict/metadata/store.py)."
   },
   {
     "qualified_name": "verdict.orchestration.cockpit_nav.run_cockpit",
