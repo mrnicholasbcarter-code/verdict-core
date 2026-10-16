@@ -12,12 +12,13 @@ that payload directly. The legacy hooks used `/tmp/codex_last_prompt` and
 ## Events and evidence levels
 
 `verdict.harness_codex.certify()` reports a level for each event in `CertifyReport.hook_events`. An event
-is `supported` only after an isolated live smoke run records it firing. That hasn't happened yet.
+is `supported` only after an isolated live smoke run records it firing; those payloads are kept, redacted,
+as `tests/fixtures/codex/v0_161_0/live_*.json`.
 
 | Event | Level |
 | --- | --- |
-| SessionStart | partial |
-| UserPromptSubmit | partial |
+| SessionStart | supported |
+| UserPromptSubmit | supported |
 | PreToolUse | partial |
 | PostToolUse | partial |
 | PreCompact | partial |
@@ -26,8 +27,9 @@ is `supported` only after an isolated live smoke run records it firing. That has
 | PermissionRequest | unknown |
 | PostCompact | unknown |
 | SubagentStop | unknown |
-| SessionEnd | unknown |
+| SessionEnd | supported |
 
+- `supported`: observed live on 2026-10-16 (one isolated smoke; the model turn did not complete, so tool events were not reached).
 - `partial`: the event name appears in the 0.161.0 binary, and a working hooks.json on the same host uses it.
 - `unknown`: only the name is known.
 

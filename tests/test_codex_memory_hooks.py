@@ -62,14 +62,38 @@ def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return ch
 
 
-def test_fixtures_are_marked_synthetic() -> None:
+LIVE_EVENTS = {"SessionStart", "UserPromptSubmit", "SessionEnd"}
+
+
+def test_fixtures_are_marked_synthetic_or_live() -> None:
     files = sorted(FIXTURES.glob("*.json"))
     assert files
     for f in files:
         payload = json.loads(f.read_text("utf-8"))
-        assert payload["_synthetic"] is True, f.name
-        for key in ("session_id", "cwd", "hook_event_name", "transcript_path", "turn_id"):
+        live = f.name.startswith("live_")
+        assert payload.get("_live" if live else "_synthetic") is True, f.name
+        for key in ("session_id", "cwd", "hook_event_name", "transcript_path"):
             assert key in payload, (f.name, key)
+        assert "/home/nick" not in f.read_text("utf-8")
+
+
+def test_live_fixtures_cover_supported_events() -> None:
+    seen = {
+        json.loads(f.read_text("utf-8"))["hook_event_name"] for f in FIXTURES.glob("live_*.json")
+    }
+    assert seen == LIVE_EVENTS
+    report = _certify_levels()
+    assert {e for e, lvl in report.items() if lvl == "supported"} == LIVE_EVENTS
+
+
+def test_live_payloads_translate_with_shared_session() -> None:
+    records = [
+        codex_installer.event_provenance(json.loads(f.read_text("utf-8")))
+        for f in FIXTURES.glob("live_*.json")
+    ]
+    assert len({r["session_id"] for r in records}) == 1
+    assert len({r["event_hash"] for r in records}) == len(records)
+    assert {r["event"] for r in records} == LIVE_EVENTS
 
 
 def test_installer_reads_stdin_not_tmp_files(codex_home: Path, tmp_path: Path) -> None:
@@ -178,8 +202,9 @@ def test_certify_reports_per_event_levels(codex_home: Path) -> None:
     report = _certify(codex_home)
     levels = report.hook_events
     assert set(levels) == set(CODEX_EVENTS)
-    # Nothing has been observed live yet, so nothing may claim "supported".
-    assert set(levels.values()) <= {"partial", "unknown"}
+    # Only live-observed events may claim "supported".
+    assert {e for e, lvl in levels.items() if lvl == "supported"} == LIVE_EVENTS
+    assert set(levels.values()) <= {"supported", "partial", "unknown"}
     assert "Hook events:" in harness_codex.format_certify(report)
 
 
@@ -236,3 +261,8 @@ def test_entrypoint_rejects_payload_without_session(tmp_path: Path) -> None:
     assert proc.returncode == codex_installer.EXIT_GATE_BLOCKED
     assert "missing session_id" in proc.stderr
     assert not outbox.exists()
+
+
+def _certify_levels() -> dict[str, str]:
+    report = harness_codex.certify(force=True, which=lambda _name: "/usr/bin/codex")
+    return dict(report.hook_events)
