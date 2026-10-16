@@ -625,29 +625,14 @@ def _pool_of(route: AdmittedRoute) -> str:
 
 
 def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
-    """Derive pool cooldowns from existing active negatives, never a second store.
-
-    A later validated success in the same pool supersedes the negative: the
-    account answered after the failure, so the failure was not account-wide.
-    """
-    entries = cache.routes().values()
-    last_success: dict[str, datetime] = {}
-    for entry in entries:
-        if entry.last_success_at is not None:
-            pool = entry.pool or pool_of(entry.route_id)
-            if pool not in last_success or entry.last_success_at > last_success[pool]:
-                last_success[pool] = entry.last_success_at
-    cooled: set[str] = set()
-    for entry in entries:
-        pool = entry.pool or pool_of(entry.route_id)
-        if (
-            entry.state_at(now) == STATE_NEGATIVE
-            and entry.category in POOL_COOLDOWN_CATEGORIES
-            and entry.failure_scope != "route"
-            and (pool not in last_success or entry.checked_at > last_success[pool])
-        ):
-            cooled.add(pool)
-    return cooled
+    """Derive pool cooldowns from existing active negatives, never a second store."""
+    return {
+        entry.pool or pool_of(entry.route_id)
+        for entry in cache.routes().values()
+        if entry.state_at(now) == STATE_NEGATIVE
+        and entry.category in POOL_COOLDOWN_CATEGORIES
+        and entry.failure_scope != "route"
+    }
 
 
 def order_cycle(
