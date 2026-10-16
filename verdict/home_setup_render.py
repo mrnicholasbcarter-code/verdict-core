@@ -259,12 +259,18 @@ def _warm_cache(
     current = timer_state(PROVE_AT_REST_TIMER)["state"]
     choice = _choice(tui, reader, "5 / Warm-cache daemon", current, "on", ["off", "on"])
     tui.console.print(Text(f"Enables: background health cache. Current timer state: {current}."))
-    tui.console.print(Text("Live probes may spend credits. 'on' installs and starts the systemd user timer."))
+    tui.console.print(
+        Text("Live probes may spend credits. 'on' installs and starts the systemd user timer.")
+    )
     if choice == "on":
         try:
             result = manage_service(dry_run=False)
             new_state = timer_state(PROVE_AT_REST_TIMER)["state"]
-            tui.console.print(Text(f"Service installer: ran (changed={result['changed']}); timer is now {new_state}."))
+            tui.console.print(
+                Text(
+                    f"Service installer: ran (changed={result['changed']}); timer is now {new_state}."
+                )
+            )
             notes.append(f"Warm-cache: {PROVE_AT_REST_TIMER} is {new_state}.")
         except Exception as exc:
             tui.console.print(Text(f"Service installer failed: {exc}"))

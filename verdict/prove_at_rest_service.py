@@ -113,12 +113,12 @@ def manage_service(
     }
 
 
-def _systemctl_show(unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> dict[str, str]:
+def _systemctl_show(
+    unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]]
+) -> dict[str, str]:
     """``LoadState``/``ActiveState``/``SubState`` for one unit. Never raises."""
     try:
-        result = run(
-            ["systemctl", "--user", "show", "-p", "LoadState,ActiveState,SubState", unit]
-        )
+        result = run(["systemctl", "--user", "show", "-p", "LoadState,ActiveState,SubState", unit])
     except (OSError, subprocess.SubprocessError):
         return {}
     values: dict[str, str] = {}
@@ -134,9 +134,7 @@ def _run_systemctl_show(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def timer_state(
-    unit: str,
-    *,
-    run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show,
+    unit: str, *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show
 ) -> dict[str, Any]:
     """Installed/failed/active state of a systemd user timer, for doctor and setup.
 

@@ -12,10 +12,13 @@ import re
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.prompt import Prompt
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # _cli_bootstrap is canonical in verdict.actions.helpers; import it here so
@@ -733,14 +736,14 @@ def _collect_doctor_diagnostics(
     return diag
 
 
-def installed_service_rows() -> list[dict[str, str]]:
+def installed_service_rows(*, now: datetime | None = None) -> list[dict[str, str]]:
     """Doctor rows for each background systemd unit and the health cache.
 
     A missing or inactive timer, an ``is-failed`` unit, or a health cache
     that is too stale or empty to be useful are all reported with ``status:
     "failed"`` and named by unit/file so the drill
     (``systemctl --user stop verdict-prove-at-rest.timer; verdict doctor``)
-    exits non-zero and names the unit.
+    exits non-zero and names the unit. ``now`` is injectable for tests.
     """
     from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
     from verdict.prove_at_rest_service import timer_state
@@ -764,17 +767,20 @@ def installed_service_rows() -> list[dict[str, str]]:
         else:
             rows.append({"label": label, "status": "ok", "detail": f"{unit} is active"})
 
-    rows.append(health_cache_row())
+    rows.append(health_cache_row(now=now))
     return rows
 
 
-def health_cache_row() -> dict[str, str]:
+def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
     """Doctor row for ``health-cache.json`` staleness and emptiness.
 
     Failed when the cache is missing, when its newest entry is older than
     2x the probe interval, or when it has no fresh and no stale route
     (``fresh + stale == 0``): either state means the background prober is
     not keeping eligibility current, whatever the timers report.
+
+    ``now`` is injectable so tests can exercise staleness with a fake clock
+    instead of racing the real one.
     """
     from datetime import datetime, timezone
 
@@ -796,7 +802,7 @@ def health_cache_row() -> dict[str, str]:
         cache = HealthCache(path)
     except Exception as exc:
         return {"label": "Health cache", "status": "failed", "detail": f"unreadable: {exc}"}
-    now = datetime.now(timezone.utc)
+    now = now if now is not None else datetime.now(timezone.utc)
     routes = cache.routes()
     fresh = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_FRESH)
     stale = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_STALE)
