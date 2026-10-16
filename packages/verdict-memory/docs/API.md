@@ -1,3 +1,11 @@
+## SECURITY HOLD (parent 2026-10-16)
+**STOP live backend writes/proof** until Sol backend-security findings are fixed in ONE bounded pass.
+Provisional `AiMemoryClient` is **NOT safe** for E/D consume or live install.
+Event contracts (`LifecycleEvent` / vectors / FakeProvider / outbox enqueue semantics) may continue.
+Findings (c92efa4e mock repros): foreign query overwrites configured project; unscoped hit relabel;
+distinct harness/session share remote raw source-id path; empty write RPC accepted without persisted digest;
+nested metadata secrets durable clear; malformed RPC `{}` → available empty; proof any-hit not exact ref/digest.
+
 # BOD80 P — provisional public API (experimental 0.1.0a1)
 
 **Status:** experimental / compatible within `lifecycle-event/v1`. Not a frozen 1.0.

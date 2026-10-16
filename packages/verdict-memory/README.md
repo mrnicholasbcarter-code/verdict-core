@@ -1,5 +1,8 @@
 # verdict-memory
 
+> **SECURITY HOLD:** `AiMemoryClient` is not approved for live consume until backend-security fix pass. Contracts/FakeProvider/outbox unit surface may be used for adapter scaffolding.
+
+
 Independently installable lifecycle/memory capability package for Verdict and
 other harnesses. Provides:
 
