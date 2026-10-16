@@ -4,6 +4,7 @@
 
 | Command | Action | TUI Section | Kind | Status |
 |---------|--------|-------------|------|--------|
+| `acceptance` | `acceptance.status` | Health | read | ✅ action |
 | `autodev` | `autodev.packet.create` | Development | mutation | ✅ action |
 | `autodev-golden-path` | — | Development | launch | 🚀 launch: cmd_autodev_golden_path (golden_path.run_golden_path): three-stage offline autodev acceptance path that edits a repo and runs verification commands; long-running interactive pipeline |
 | `benchmark` | — | Development | launch | 🚀 launch: cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): runs the reproducible or paired-live routing benchmark suite over many scenarios; long-running batch benchmark |
@@ -55,5 +56,5 @@
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 40 actions, 8 launch, 2 machine-only, 0 gaps
+**Summary:** 41 actions, 8 launch, 2 machine-only, 0 gaps
 

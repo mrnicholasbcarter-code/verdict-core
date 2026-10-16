@@ -3905,6 +3905,7 @@ def cmd_harness_prime(
     base_url: str = PRIME_HARNESS_DEFAULT_BASE_URL,
     token_env: str = PRIME_HARNESS_DEFAULT_TOKEN_ENV,
     force: bool = False,
+    output_json: bool = False,
 ) -> None:
     """Discover, enable, disable, status, or certify Prime Agent → Verdict."""
     from verdict import present
@@ -3970,6 +3971,11 @@ def cmd_harness_prime(
         return
     if command == "status":
         result = run_action("harness.prime.status", {"harness": "prime"})
+        if output_json:
+            print(json.dumps(result.data, indent=2, sort_keys=True, default=str))
+            if not result.ok:
+                raise SystemExit(result.exit_code or 1)
+            return
         if not result.ok:
             present.header("Prime Agent harness")
             present.fail("Prime Agent harness", str(result.data.get("error", "status failed")))
@@ -4279,6 +4285,64 @@ def cmd_harness_cline(
                 present.note(item)
         return
     raise SystemExit(f"unknown harness cline command: {command}")
+
+
+def cmd_acceptance_run(
+    *,
+    gateway: str | None = None,
+    notify: str = "off",
+    email: str | None = None,
+    keep: int = 48,
+    output_json: bool = False,
+) -> None:
+    """Run the live acceptance checks once; exit 3 when the recorded result is red."""
+    from verdict.acceptance import RED_EXIT, AcceptanceBusyError, run_acceptance
+    from verdict.acceptance_state import configured_email
+
+    try:
+        result = run_acceptance(
+            gateway=gateway, notify=notify, email=email or configured_email(), keep=keep
+        )
+    except AcceptanceBusyError as exc:
+        # The hourly timer and a manual run collided; the other run records a result.
+        print(f"verdict acceptance run: {exc}; see 'verdict acceptance status'", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if output_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        ui = TerminalUI(console)
+        ui.header("Live acceptance")
+        for check in result["checks"]:
+            ui.doctor_finding(check["name"], "ok" if check["passed"] else "failed", check["reason"])
+        ui.status("result", result["status"], result["path"])
+        notification = result.get("notification") or {}
+        if notification.get("event"):
+            ui.status("notification", notification["event"], json.dumps(notification))
+    if result["status"] != "green":
+        raise SystemExit(RED_EXIT)
+
+
+def cmd_acceptance_status(*, output_json: bool = False) -> None:
+    """Show the newest acceptance result; exit 1 when it is red, stale or missing."""
+    from verdict.actions.registry import run_action
+
+    result = run_action("acceptance.status", {})
+    data = result.data
+    if output_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        ui = TerminalUI(console)
+        ui.header("Live acceptance")
+        row = data["latest"]
+        age = row.get("age_seconds")
+        detail = f"{row.get('path', 'no result')}" + (f", {age / 60:.0f} min old" if age else "")
+        ui.status("newest result", str(row.get("state")), detail)
+        for item in data["issues"]:
+            ui.doctor_finding("acceptance", "failed", item)
+        for item in data["warnings"]:
+            ui.doctor_finding("acceptance", "warning", item)
+    if not result.ok:
+        raise SystemExit(result.exit_code or 1)
 
 
 def cmd_prove_at_rest(

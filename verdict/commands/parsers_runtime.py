@@ -149,6 +149,46 @@ def register(subparsers: Any) -> None:
             default=None,
             help="Wall-time cap for the agentic phase (default: --max-wall-seconds)",
         )
+    acceptance_p = subparsers.add_parser(
+        "acceptance", help="Run the live acceptance checks and record the result"
+    )
+    acceptance_sub = acceptance_p.add_subparsers(dest="acceptance_command", required=True)
+    acceptance_run_p = acceptance_sub.add_parser(
+        "run",
+        help="Run doctor, eligibility, choose, route, serve and Prime checks once; "
+        "write $VERDICT_HOME/acceptance/<ts>.json",
+    )
+    acceptance_run_p.add_argument(
+        "--gateway", default=None, help="OmniRoute origin (default: OMNIROUTE_BASE_URL)"
+    )
+    acceptance_run_p.add_argument(
+        "--notify",
+        choices=["off", "dry-run", "send"],
+        default="off",
+        help="Email once when a green job is red for two runs, and once on recovery; "
+        "dry-run writes the email next to the result instead of sending",
+    )
+    acceptance_run_p.add_argument(
+        "--email", default=None, help="Recipient (default: notify_email in verdict.yaml)"
+    )
+    acceptance_run_p.add_argument(
+        "--keep", type=int, default=48, help="Result files to keep (default 48)"
+    )
+    acceptance_run_p.add_argument("--json", action="store_true", help="Output JSON")
+    acceptance_status_p = acceptance_sub.add_parser(
+        "status", help="Show the newest acceptance result; exit 1 when it is red or stale"
+    )
+    acceptance_status_p.add_argument("--json", action="store_true", help="Output JSON")
+    acceptance_install_p = acceptance_sub.add_parser(
+        "install-service",
+        help="Install the hourly verdict-acceptance user timer from this checkout",
+    )
+    acceptance_install_p.add_argument(
+        "--dry-run", action="store_true", help="Render the units; write nothing"
+    )
+    acceptance_install_p.add_argument(
+        "--uninstall", action="store_true", help="Disable and remove the units"
+    )
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )
