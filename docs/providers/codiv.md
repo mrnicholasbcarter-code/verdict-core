@@ -12,13 +12,9 @@ Codiv is an **optional** provider. Missing credentials or inventory do not impac
 
 ## Provider Identity
 
-**Hermetic capability** (proven in CI fixtures):
-
-- Codiv routes are identified by **exact provider prefix matching** (default: `"codiv"`)
-- Provider + model form the identity (e.g., `codiv/diffusiongemma-26b-a4b-it`)
-- Same model name under a different provider (e.g., `nvidia/diffusiongemma-26b-a4b-it`) is NOT Codiv
-
-Test fixture: Inventory with only `nvidia/diffusiongemma-26b-a4b-it` → 0 Codiv candidates.
+The unused `verdict.providers.codiv` prefix-matching helper was removed.
+A Codiv route is an ordinary inventory route whose provider field is `codiv`.
+Eligibility applies the same gates as every other provider and does not special-case that name.
 
 ## Eligibility Gates
 

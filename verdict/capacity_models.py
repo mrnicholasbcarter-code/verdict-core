@@ -1,8 +1,6 @@
 """Live capacity evidence contracts.
 
 Evidence producers only — never routing, economics, or recovery authority.
-Projects into runtime-certification, expected-cost, and execution-path consumer
-shapes via capacity_project.
 """
 
 from __future__ import annotations
@@ -11,10 +9,9 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from types import MappingProxyType
 from typing import Any, Literal
 
 CAPACITY_CONTRACT_VERSION = "1"
@@ -90,18 +87,6 @@ class EvidenceAuthority(str, Enum):
             EvidenceAuthority.UNKNOWN,
         )
         return order.index(self)
-
-
-class CapacitySignal(str, Enum):
-    """Signals an adapter may claim via capabilities()."""
-
-    QUOTA_WINDOWS = "quota_windows"
-    BALANCES = "balances"
-    RESET_TIMES = "reset_times"
-    COOLDOWNS = "cooldowns"
-    RETRY_AFTER = "retry_after"
-    SHARED_POOLS = "shared_pools"
-    HEALTH = "health"
 
 
 class CapacityFailureClass(str, Enum):
@@ -517,73 +502,6 @@ class CapacitySnapshot:
         )
 
 
-@dataclass(frozen=True)
-class RefreshPolicy:
-    """TTL / reset / backoff hints — evidence only."""
-
-    ttl_seconds: int | None = None
-    prefer_reset_at: bool = True
-    honor_retry_after: bool = True
-    min_refresh_seconds: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ttl_seconds": self.ttl_seconds,
-            "prefer_reset_at": self.prefer_reset_at,
-            "honor_retry_after": self.honor_retry_after,
-            "min_refresh_seconds": self.min_refresh_seconds,
-        }
-
-
-@dataclass(frozen=True)
-class DiagnoseReport:
-    """Explain unavailable / auth-expired / unsupported state without secrets."""
-
-    adapter_id: str
-    available: bool
-    status: str
-    details: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "adapter_id", _non_empty("adapter_id", self.adapter_id))
-        details = dict(self.details)
-        _reject_secrets(details, "diagnose")
-        object.__setattr__(self, "details", MappingProxyType(details))
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "adapter_id": self.adapter_id,
-            "available": self.available,
-            "status": self.status,
-            "details": dict(self.details),
-        }
-
-
-@dataclass(frozen=True)
-class ConflictResolution:
-    """Preserves both observations and records an explainable winner."""
-
-    preferred: CapacitySnapshot
-    alternate: CapacitySnapshot
-    reason: str
-    averaged: bool = False
-
-    def __post_init__(self) -> None:
-        if self.averaged:
-            raise CapacityEvidenceError("capacity conflicts must never be averaged")
-        if not str(self.reason).strip():
-            raise CapacityEvidenceError("conflict reason must be non-empty")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "preferred": self.preferred.to_dict(),
-            "alternate": self.alternate.to_dict(),
-            "reason": self.reason,
-            "averaged": False,
-            "both_retained": True,
-        }
-
-
 __all__ = [
     "CAPACITY_CONTRACT_VERSION",
     "AccessMode",
@@ -593,14 +511,10 @@ __all__ = [
     "CapacityFailureClass",
     "CapacityObservationError",
     "CapacityPool",
-    "CapacitySignal",
     "CapacitySnapshot",
-    "ConflictResolution",
     "ConnectionIdentity",
-    "DiagnoseReport",
     "EvidenceAuthority",
     "PoolStatus",
     "PoolUnit",
-    "RefreshPolicy",
     "SourceKind",
 ]

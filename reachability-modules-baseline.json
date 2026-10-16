@@ -1,39 +1,7 @@
 [
   {
-    "qualified_name": "verdict.admission_with_subscription",
-    "reason": "UNTRIAGED: orphan module (67 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
     "qualified_name": "verdict.anthropic_messages_adapter",
     "reason": "Public SDK/library API: Anthropic Messages adapter helpers for library users; local callers are tests."
-  },
-  {
-    "qualified_name": "verdict.capacity_adapters",
-    "reason": "UNTRIAGED: orphan module (146 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_aggregator",
-    "reason": "UNTRIAGED: orphan module (219 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_direct",
-    "reason": "UNTRIAGED: orphan module (222 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_gateway",
-    "reason": "UNTRIAGED: orphan module (152 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_live",
-    "reason": "UNTRIAGED: orphan module (901 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_project",
-    "reason": "UNTRIAGED: orphan module (165 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.capacity_resolve",
-    "reason": "UNTRIAGED: orphan module (228 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
   },
   {
     "qualified_name": "verdict.compaction",
@@ -44,24 +12,8 @@
     "reason": "KEEP: paired cheaper-model lift. No production importer; the live lift test and benchmark doc call it. Catalog fetch now comes from verdict.live_routing."
   },
   {
-    "qualified_name": "verdict.delivery",
-    "reason": "UNTRIAGED: orphan module (813 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.delivery_ports",
-    "reason": "UNTRIAGED: orphan module (241 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.environment_discovery",
-    "reason": "UNTRIAGED: orphan module (321 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
     "qualified_name": "verdict.execution_hosts",
     "reason": "UNTRIAGED: orphan module (316 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.intelligence_adapter",
-    "reason": "UNTRIAGED: orphan module (330 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
   },
   {
     "qualified_name": "verdict.live_routing",
@@ -82,22 +34,6 @@
   {
     "qualified_name": "verdict.memory_providers.ai_memory_experimental",
     "reason": "UNTRIAGED: orphan module (397 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.optimized_dispatch",
-    "reason": "UNTRIAGED: orphan module (570 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.passport_eligibility",
-    "reason": "UNTRIAGED: orphan module (101 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.providers",
-    "reason": "UNTRIAGED: orphan module (1 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.providers.codiv",
-    "reason": "UNTRIAGED: orphan module (31 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
   },
   {
     "qualified_name": "verdict.release.normalize",
