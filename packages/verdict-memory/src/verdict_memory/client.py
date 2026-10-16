@@ -9,11 +9,11 @@ Token loaded from file in-process only; never printed.
 
 from __future__ import annotations
 
-import json
-import re
 import fcntl
 import hashlib
+import json
 import math
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -24,7 +24,6 @@ import httpx
 from verdict_memory.contracts import (
     SHARED_MEMORY_PROTOCOL_VERSION,
     CertificationState,
-    EventIdentity,
     ExternalMemoryRef,
     LifecycleEvent,
     MemoryHit,
@@ -35,8 +34,9 @@ from verdict_memory.contracts import (
     RecallQuery,
     RecallResult,
     canonicalize,
-    sanitize_event,
+    redact_mapping,
     redact_secrets,
+    sanitize_event,
 )
 from verdict_memory.policy import MemoryCapturePolicy
 
@@ -46,19 +46,23 @@ DEFAULT_TIMEOUT = 5.0
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
-
 def validate_endpoint(endpoint: str) -> str:
     """Allow loopback HTTP or verified HTTPS; reject URL credentials/query/fragment."""
     raw = (endpoint or "").strip().rstrip("/")
-    if raw.endswith("/mcp"):
-        raw = raw[: -len("/mcp")]
+    raw = raw.removesuffix("/mcp")
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"}:
-        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint scheme must be http or https")
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST, "endpoint scheme must be http or https"
+        )
     if parsed.username or parsed.password:
-        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint must not embed credentials")
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST, "endpoint must not embed credentials"
+        )
     if parsed.query or parsed.fragment:
-        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint must not include query or fragment")
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST, "endpoint must not include query or fragment"
+        )
     host = (parsed.hostname or "").lower()
     if parsed.scheme == "http" and host not in {"127.0.0.1", "localhost", "::1"}:
         raise MemoryProviderError(
@@ -68,7 +72,6 @@ def validate_endpoint(endpoint: str) -> str:
     if not host:
         raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint host missing")
     return raw
-
 
 
 class AiMemoryClientConfig:
@@ -97,9 +100,15 @@ class AiMemoryClientConfig:
         self.timeout = timeout
         self.transport = transport
         if urlparse(self.endpoint).scheme == "https" and not verify:
-            raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "HTTPS verification required")
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST, "HTTPS verification required"
+            )
         self.verify = verify
-        self.writer_lock_dir = Path(writer_lock_dir) if writer_lock_dir else Path.home() / ".cache/verdict-memory/locks"
+        self.writer_lock_dir = (
+            Path(writer_lock_dir)
+            if writer_lock_dir
+            else Path.home() / ".cache/verdict-memory/locks"
+        )
 
     def load_token(self) -> str | None:
         if self._token_override is not None:
@@ -111,7 +120,9 @@ class AiMemoryClientConfig:
         try:
             return self.token_file.read_text("utf-8").strip() or None
         except OSError as exc:
-            raise MemoryProviderError(ProviderErrorCode.AUTH_FAILED, "auth token file unreadable") from exc
+            raise MemoryProviderError(
+                ProviderErrorCode.AUTH_FAILED, "auth token file unreadable"
+            ) from exc
 
 
 class AiMemoryClient:
@@ -162,9 +173,13 @@ class AiMemoryClient:
 
     def _raise_http(self, response: httpx.Response) -> None:
         if response.status_code in {401, 403}:
-            raise MemoryProviderError(ProviderErrorCode.AUTH_FAILED, "ai-memory authentication failed")
+            raise MemoryProviderError(
+                ProviderErrorCode.AUTH_FAILED, "ai-memory authentication failed"
+            )
         if response.status_code == 429:
-            raise MemoryProviderError(ProviderErrorCode.RATE_LIMITED, "ai-memory rate limited the request")
+            raise MemoryProviderError(
+                ProviderErrorCode.RATE_LIMITED, "ai-memory rate limited the request"
+            )
         if response.status_code >= 500:
             raise MemoryProviderError(ProviderErrorCode.SERVER_ERROR, "ai-memory server error")
         if 300 <= response.status_code < 400:
@@ -175,7 +190,9 @@ class AiMemoryClient:
                 f"ai-memory rejected request ({response.status_code})",
             )
 
-    def _mcp(self, method: str, params: dict[str, Any] | None = None, *, notify: bool = False) -> Any:
+    def _mcp(
+        self, method: str, params: dict[str, Any] | None = None, *, notify: bool = False
+    ) -> Any:
         token = self.config.load_token()
         if not token:
             err = MemoryProviderError(ProviderErrorCode.AUTH_FAILED, "auth token missing")
@@ -209,20 +226,22 @@ class AiMemoryClient:
                     self._raise_http(init)
                     init_data = init.json()
                     init_result = self._rpc_result(init_data, init_id)
-                    if (not isinstance(init_result, dict)
-                            or not isinstance(init_result.get("capabilities"), dict)
-                            or not isinstance(init_result.get("serverInfo"), dict)
-                            or init_result.get("protocolVersion") != MCP_PROTOCOL_VERSION):
-                        raise MemoryProviderError(ProviderErrorCode.MALFORMED, "initialize malformed")
+                    if (
+                        not isinstance(init_result, dict)
+                        or not isinstance(init_result.get("capabilities"), dict)
+                        or not isinstance(init_result.get("serverInfo"), dict)
+                        or init_result.get("protocolVersion") != MCP_PROTOCOL_VERSION
+                    ):
+                        raise MemoryProviderError(
+                            ProviderErrorCode.MALFORMED, "initialize malformed"
+                        )
                     client.post(
                         f"{self.config.endpoint}/mcp",
                         headers=headers,
                         json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                     )
                     self._initialized = True
-                response = client.post(
-                    f"{self.config.endpoint}/mcp", headers=headers, json=payload
-                )
+                response = client.post(f"{self.config.endpoint}/mcp", headers=headers, json=payload)
         except MemoryProviderError as exc:
             self._record_error(method, exc)
             raise
@@ -231,7 +250,9 @@ class AiMemoryClient:
             self._record_error(method, err)
             raise err from exc
         except httpx.RequestError as exc:
-            err = MemoryProviderError(ProviderErrorCode.UNREACHABLE, "ai-memory service is unreachable")
+            err = MemoryProviderError(
+                ProviderErrorCode.UNREACHABLE, "ai-memory service is unreachable"
+            )
             self._record_error(method, err)
             raise err from exc
         except ValueError as exc:
@@ -257,12 +278,22 @@ class AiMemoryClient:
 
     @staticmethod
     def _rpc_result(data: Any, req_id: int | None) -> Any:
-        if (not isinstance(data, dict) or data.get("jsonrpc") != "2.0"
-                or type(data.get("id")) is not int or data["id"] != req_id):
-            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "mcp response identity malformed")
+        if (
+            not isinstance(data, dict)
+            or data.get("jsonrpc") != "2.0"
+            or type(data.get("id")) is not int
+            or data["id"] != req_id
+        ):
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED, "mcp response identity malformed"
+            )
         if "error" in data:
             error = data["error"]
-            if not isinstance(error, dict) or type(error.get("code")) is not int or not isinstance(error.get("message"), str):
+            if (
+                not isinstance(error, dict)
+                or type(error.get("code")) is not int
+                or not isinstance(error.get("message"), str)
+            ):
                 raise MemoryProviderError(ProviderErrorCode.MALFORMED, "mcp error malformed")
             # Preserve the exact absence signal privately. Never echo remote text to logs.
             exc = MemoryProviderError(ProviderErrorCode.SERVER_ERROR, "ai-memory RPC failed")
@@ -290,9 +321,13 @@ class AiMemoryClient:
         try:
             parsed = json.loads(text)
         except ValueError as exc:
-            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result text is not JSON") from exc
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED, "tool result text is not JSON"
+            ) from exc
         if not isinstance(parsed, dict):
-            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result JSON must be an object")
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED, "tool result JSON must be an object"
+            )
         return parsed
 
     def health(self) -> ProviderHealth:
@@ -357,7 +392,9 @@ class AiMemoryClient:
             elif isinstance(error, httpx.TimeoutException):
                 exc = MemoryProviderError(ProviderErrorCode.TIMEOUT, "ai-memory health timed out")
             elif isinstance(error, httpx.RequestError):
-                exc = MemoryProviderError(ProviderErrorCode.UNREACHABLE, "ai-memory health unreachable")
+                exc = MemoryProviderError(
+                    ProviderErrorCode.UNREACHABLE, "ai-memory health unreachable"
+                )
             else:
                 exc = MemoryProviderError(ProviderErrorCode.MALFORMED, "ai-memory health malformed")
             self._record_error("health", exc)
@@ -403,27 +440,45 @@ class AiMemoryClient:
 
     @staticmethod
     def _validate_path(path: str) -> None:
-        if not isinstance(path, str) or not re.fullmatch(r"verdict-memory/events/[0-9a-f]{64}\.md", path):
-            raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "not a canonical package path")
+        if not isinstance(path, str) or not re.fullmatch(
+            r"verdict-memory/events/[0-9a-f]{64}\.md", path
+        ):
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST, "not a canonical package path"
+            )
 
     def _validate_scope(self, event: LifecycleEvent) -> None:
-        if (event.identity.project != self.config.project
-                or event.identity.workspace != self.config.workspace):
-            raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "event scope differs from config")
+        if (
+            event.identity.project != self.config.project
+            or event.identity.workspace != self.config.workspace
+        ):
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST, "event scope differs from config"
+            )
 
     def _prepare(self, event: LifecycleEvent) -> LifecycleEvent:
         self._validate_scope(event)
         decision = self._policy.evaluate(event)
         if not decision.eligible:
-            raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, f"capture denied: {decision.reason}")
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST, f"capture denied: {decision.reason}"
+            )
         return sanitize_event(event)
 
     @staticmethod
     def _body(event: LifecycleEvent) -> str:
-        return "# Verdict memory event\n\n" + canonicalize({
-            "schema": "verdict-memory-page/v1", "event": event.to_dict(),
-            "event_digest": event.digest(), "content_fingerprint": event.content_fingerprint(),
-        }) + "\n"
+        return (
+            "# Verdict memory event\n\n"
+            + canonicalize(
+                {
+                    "schema": "verdict-memory-page/v1",
+                    "event": event.to_dict(),
+                    "event_digest": event.digest(),
+                    "content_fingerprint": event.content_fingerprint(),
+                }
+            )
+            + "\n"
+        )
 
     def _read(self, path: str) -> LifecycleEvent | None:
         self._validate_path(path)
@@ -431,36 +486,54 @@ class AiMemoryClient:
             page = self._tool("memory_read_page", {"path": path, **self._scope_args()})
         except MemoryProviderError as exc:
             rpc = getattr(exc, "rpc_error", {})
-            if (rpc.get("code") == -32603 and isinstance(rpc.get("message"), str)
-                    and rpc["message"].startswith(f"page {path} not found in resolved scope ")):
+            if (
+                rpc.get("code") == -32603
+                and isinstance(rpc.get("message"), str)
+                and rpc["message"].startswith(f"page {path} not found in resolved scope ")
+            ):
+                return None
+            if (
+                rpc.get("code") == -32602
+                and rpc.get("message")
+                == f"project '{self.config.project}' not found in workspace '{self.config.workspace}'"
+            ):
                 return None
             raise
         try:
-            if (page.get("path") != path or not isinstance(page.get("frontmatter"), dict)
-                    or not isinstance(page.get("body"), str)):
+            if (
+                page.get("path") != path
+                or not isinstance(page.get("frontmatter"), dict)
+                or not isinstance(page.get("body"), str)
+            ):
                 raise ValueError("page shape")
             prefix = "# Verdict memory event\n\n"
             body = page["body"]
             if not body.startswith(prefix):
                 raise ValueError("page format")
-            envelope = json.loads(body[len(prefix):])
+            envelope = json.loads(body[len(prefix) :])
             if not isinstance(envelope, dict) or envelope.get("schema") != "verdict-memory-page/v1":
                 raise ValueError("envelope schema")
             event = LifecycleEvent.from_dict(envelope["event"])
             raw = event.to_dict()
             raw["idempotency_key"] = ""
             computed = LifecycleEvent.from_dict(raw)
-            if (computed.idempotency_key != event.idempotency_key or self._page_path(event) != path
-                    or envelope.get("event_digest") != event.digest()
-                    or envelope.get("content_fingerprint") != event.content_fingerprint()
-                    or body != self._body(event) or sanitize_event(event).to_dict() != event.to_dict()):
+            if (
+                computed.idempotency_key != event.idempotency_key
+                or self._page_path(event) != path
+                or envelope.get("event_digest") != event.digest()
+                or envelope.get("content_fingerprint") != event.content_fingerprint()
+                or body != self._body(event)
+                or sanitize_event(event).to_dict() != event.to_dict()
+            ):
                 raise ValueError("envelope integrity")
             self._validate_scope(event)
             if not self._policy.evaluate(event).eligible:
                 raise ValueError("capture denied")
             return event
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "stored memory envelope invalid") from exc
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED, "stored memory envelope invalid"
+            ) from exc
 
     def put(self, event: LifecycleEvent) -> ExternalMemoryRef:
         event = self._prepare(event)
@@ -469,14 +542,27 @@ class AiMemoryClient:
             existing = self._read(path)
             if existing is not None:
                 if existing.content_fingerprint() != event.content_fingerprint():
-                    raise MemoryProviderError(ProviderErrorCode.CONFLICT, "source identity payload conflict")
+                    raise MemoryProviderError(
+                        ProviderErrorCode.CONFLICT, "source identity payload conflict"
+                    )
                 return ExternalMemoryRef(self.provider_id, path, existing.digest())
-            page = self._tool("memory_write_page", {
-                "path": path, "body": self._body(event), "kind": event.memory_kind,
-                **self._scope_args(),
-            })
-            if page.get("path") != path or not isinstance(page.get("page_id"), str) or not page["page_id"]:
-                raise MemoryProviderError(ProviderErrorCode.MALFORMED, "write acknowledgement path or page id mismatch")
+            page = self._tool(
+                "memory_write_page",
+                {
+                    "path": path,
+                    "body": self._body(event),
+                    "kind": event.memory_kind,
+                    **self._scope_args(),
+                },
+            )
+            if (
+                page.get("path") != path
+                or not isinstance(page.get("page_id"), str)
+                or not page["page_id"]
+            ):
+                raise MemoryProviderError(
+                    ProviderErrorCode.MALFORMED, "write acknowledgement path or page id mismatch"
+                )
             persisted = self._read(path)
             if persisted is None or persisted.to_dict() != event.to_dict():
                 raise MemoryProviderError(ProviderErrorCode.MALFORMED, "write readback mismatch")
@@ -485,31 +571,61 @@ class AiMemoryClient:
     def search(self, query: RecallQuery) -> RecallResult:
         try:
             if query.project != self.config.project or query.workspace != self.config.workspace:
-                raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "query scope differs from config")
-            data = self._tool("memory_query", {
-                "query": query.query, "limit": query.limit, "answer": False, **self._scope_args(),
-            })
+                raise MemoryProviderError(
+                    ProviderErrorCode.INVALID_REQUEST, "query scope differs from config"
+                )
+            data = self._tool(
+                "memory_query",
+                {
+                    "query": query.query,
+                    "limit": query.limit,
+                    "answer": False,
+                    **self._scope_args(),
+                },
+            )
             if not isinstance(data.get("hits"), list):
-                raise MemoryProviderError(ProviderErrorCode.MALFORMED, "search hits missing or malformed")
+                raise MemoryProviderError(
+                    ProviderErrorCode.MALFORMED, "search hits missing or malformed"
+                )
             hits: list[MemoryHit] = []
             seen: set[str] = set()
-            for candidate in data["hits"][:query.limit]:
+            for candidate in data["hits"][: query.limit]:
                 if not isinstance(candidate, dict) or not isinstance(candidate.get("path"), str):
                     raise MemoryProviderError(ProviderErrorCode.MALFORMED, "search hit malformed")
                 path = candidate["path"]
-                if (candidate.get("project", self.config.project) != self.config.project
-                        or candidate.get("workspace", self.config.workspace) != self.config.workspace):
+                if (
+                    candidate.get("project", self.config.project) != self.config.project
+                    or candidate.get("workspace", self.config.workspace) != self.config.workspace
+                ):
                     continue
-                if not re.fullmatch(r"verdict-memory/events/[0-9a-f]{64}\.md", path) or path in seen:
+                if (
+                    not re.fullmatch(r"verdict-memory/events/[0-9a-f]{64}\.md", path)
+                    or path in seen
+                ):
                     continue
                 seen.add(path)
                 event = self._read(path)
-                if event is None or event.scope != query.scope or event.identity.tenant != query.tenant:
+                if (
+                    event is None
+                    or event.scope != query.scope
+                    or event.identity.tenant != query.tenant
+                    or (
+                        query.session_id is not None
+                        and event.identity.session_id != query.session_id
+                    )
+                ):
                     continue
                 score = candidate.get("rank", 0.0)
                 if type(score) not in (int, float) or not math.isfinite(score):
                     raise MemoryProviderError(ProviderErrorCode.MALFORMED, "search rank malformed")
-                hits.append(MemoryHit(ExternalMemoryRef(self.provider_id, path, event.digest()), event, float(score), untrusted=True))
+                hits.append(
+                    MemoryHit(
+                        ExternalMemoryRef(self.provider_id, path, event.digest()),
+                        event,
+                        float(score),
+                        untrusted=True,
+                    )
+                )
             self.clear_error()
             return RecallResult(ProviderResultStatus.AVAILABLE, tuple(hits), capability="partial")
         except MemoryProviderError as exc:
@@ -520,7 +636,9 @@ class AiMemoryClient:
                 ProviderErrorCode.MALFORMED: ProviderResultStatus.MALFORMED,
                 ProviderErrorCode.INVALID_REQUEST: ProviderResultStatus.MALFORMED,
             }.get(exc.code, ProviderResultStatus.UNAVAILABLE)
-            return RecallResult(status, error_code=exc.code, message=exc.safe_message, capability="partial")
+            return RecallResult(
+                status, error_code=exc.code, message=exc.safe_message, capability="partial"
+            )
 
     def delete(self, ref: ExternalMemoryRef) -> bool:
         if ref.provider_id != self.provider_id:
@@ -542,12 +660,12 @@ class AiMemoryClient:
 
 
 __all__ = [
-    "AiMemoryClient",
-    "AiMemoryClientConfig",
     "DEFAULT_ENDPOINT",
     "DEFAULT_TIMEOUT",
     "DEFAULT_TOKEN_FILE",
     "MCP_PROTOCOL_VERSION",
+    "AiMemoryClient",
+    "AiMemoryClientConfig",
     "redact_mapping",
     "validate_endpoint",
 ]

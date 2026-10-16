@@ -96,7 +96,9 @@ class MemoryOutbox:
             return None
         event = sanitize_event(event)
         now = float(self._clock())
-        payload = json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        payload = json.dumps(
+            event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
         content_fp = event.content_fingerprint()
         with sqlite3.connect(self.path, timeout=10) as db:
             db.row_factory = sqlite3.Row
@@ -133,7 +135,6 @@ class MemoryOutbox:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
-    
     def get(self, idempotency_key: str) -> OutboxEvent | None:
         with sqlite3.connect(self.path, timeout=10) as db:
             db.row_factory = sqlite3.Row
@@ -143,7 +144,9 @@ class MemoryOutbox:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
-    def due(self, *, limit: int = DEFAULT_DUE_LIMIT, now: float | None = None) -> tuple[OutboxEvent, ...]:
+    def due(
+        self, *, limit: int = DEFAULT_DUE_LIMIT, now: float | None = None
+    ) -> tuple[OutboxEvent, ...]:
         if limit <= 0:
             return ()
         cutoff = float(self._clock() if now is None else now)

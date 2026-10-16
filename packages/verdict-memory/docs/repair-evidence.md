@@ -19,3 +19,20 @@ Existing tests' assertions retained/strengthened; two old mock-only handlers now
 use the same real-shape HTTP fixture because put requires pre/post scoped reads.
 
 No merged-main, real harness pair, setup/doctor or hourly acceptance claim.
+
+Final full package command (after formatter, absence fixtures and proof-script regressions):
+`timeout 120 .venv/bin/pytest -q`
+
+```text
+........................................................................ [ 87%]
+..........                                                               [100%]
+82 passed in 16.71s
+```
+
+Known mechanical collection error during finalization: ambiguous cached basename restored
+vector __init__.py over public __init__.py; corrected from committed HEAD immediately,
+then reran all tests. No assertion changed/removed.
+
+Default writer lock is always enabled at ~/.cache/verdict-memory/locks; optional
+writer_lock_dir only changes location. Host writes/deletes serialize with nonblocking flock.
+Cross-host/uncooperative writers remain unsupported because ai-memory has no CAS.

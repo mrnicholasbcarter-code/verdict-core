@@ -20,14 +20,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig
 from verdict_memory.contracts import (
     EventIdentity,
     LifecycleEvent,
     ProviderResultStatus,
     RecallQuery,
-    redact_secrets,
 )
 from verdict_memory.outbox import MemoryOutbox
 
@@ -166,8 +164,12 @@ def test_red_remote_path_must_include_full_namespaced_identity():
 
     server = Server()
     client = server.client()
-    e1 = event(identity=EventIdentity("harness-a", "allowed", "sess-1", source_event_id="same-raw-id"))
-    e2 = event(identity=EventIdentity("harness-b", "allowed", "sess-2", source_event_id="same-raw-id"))
+    e1 = event(
+        identity=EventIdentity("harness-a", "allowed", "sess-1", source_event_id="same-raw-id")
+    )
+    e2 = event(
+        identity=EventIdentity("harness-b", "allowed", "sess-2", source_event_id="same-raw-id")
+    )
     client.put(e1)
     client.put(e2)
     paths = [args["path"] for args in server.writes]
@@ -193,9 +195,12 @@ def test_red_empty_write_rpc_must_not_ack_without_persisted_digest():
     with pytest.raises(Exception) as ei:
         client.put(_event())
     # Must fail typed — not invent a local path ack
-    assert "digest" in str(ei.value).lower() or "path" in str(ei.value).lower() or "malformed" in str(
-        ei.value
-    ).lower() or "invalid" in str(ei.value).lower()
+    assert (
+        "digest" in str(ei.value).lower()
+        or "path" in str(ei.value).lower()
+        or "malformed" in str(ei.value).lower()
+        or "invalid" in str(ei.value).lower()
+    )
 
 
 def test_red_nested_metadata_secret_redacted_before_durable_outbox(tmp_path: Path):
@@ -237,9 +242,7 @@ def test_red_malformed_rpc_object_must_be_typed_failure_not_healthy_empty():
         )
 
     client = AiMemoryClient(_cfg(transport=_mcp_ok_init_then(handler)))
-    result = client.search(
-        RecallQuery(query="x", project="bod80-memory-test", workspace="default")
-    )
+    result = client.search(RecallQuery(query="x", project="bod80-memory-test", workspace="default"))
     assert result.status is not ProviderResultStatus.AVAILABLE or result.error_code is not None, (
         "malformed {} was treated as healthy-empty AVAILABLE"
     )
@@ -251,7 +254,9 @@ def test_red_search_hit_exact_ref_and_digest_contract():
 
     server = Server()
     client = server.client()
-    first = client.put(event(identity=EventIdentity("prime", "allowed", "old", source_event_id="old")))
+    first = client.put(
+        event(identity=EventIdentity("prime", "allowed", "old", source_event_id="old"))
+    )
     exact = event()
     ref = client.put(exact)
     result = client.search(RecallQuery(query="safe", project="allowed"))

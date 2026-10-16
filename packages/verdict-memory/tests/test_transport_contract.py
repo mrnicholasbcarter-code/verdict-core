@@ -1,28 +1,38 @@
 """Actual ai-memory 2.6.6 MCP shapes; no live network or server-only fake fields."""
+
 import json
 from dataclasses import replace
 
 import httpx
 import pytest
-
 from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig
 from verdict_memory.contracts import (
-    EventIdentity, ExternalMemoryRef, LifecycleEvent, MemoryProviderError,
-    ProviderErrorCode, ProviderResultStatus, RecallQuery,
+    EventIdentity,
+    ExternalMemoryRef,
+    LifecycleEvent,
+    MemoryProviderError,
+    ProviderErrorCode,
+    ProviderResultStatus,
+    RecallQuery,
 )
-from verdict_memory.outbox import MemoryOutbox
 from verdict_memory.mirror import MemoryMirrorWorker
+from verdict_memory.outbox import MemoryOutbox
 
 
 def event(**kwargs):
-    base = dict(kind="after_edit", content="safe marker", created_at=1.0,
-                identity=EventIdentity("prime", "allowed", "session", source_event_id="source"))
+    base = dict(
+        kind="after_edit",
+        content="safe marker",
+        created_at=1.0,
+        identity=EventIdentity("prime", "allowed", "session", source_event_id="source"),
+    )
     base.update(kwargs)
     return LifecycleEvent(**base)
 
 
 class Server:
     """Stateful HTTP MCP fixture implementing only documented tool fields."""
+
     def __init__(self):
         self.pages = {}
         self.calls = []
@@ -40,8 +50,11 @@ class Server:
         if rpc["method"] == "notifications/initialized":
             return httpx.Response(202)
         if rpc["method"] == "initialize":
-            result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "ai-memory", "version": "2.6.6"}}
+            result = {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "ai-memory", "version": "2.6.6"},
+            }
         else:
             name, args = rpc["params"]["name"], rpc["params"]["arguments"]
             self.calls.append((name, args))
@@ -50,30 +63,66 @@ class Server:
             path = args.get("path")
             if name == "memory_write_page":
                 assert set(args) <= {"path", "body", "workspace", "project", "kind"}
-                self.pages[path] = {"path": path, "title": "Verdict memory event",
-                                    "body": args["body"], "frontmatter": {"kind": args["kind"]}}
-                data = self.write_ack if self.write_ack is not None else {"path": path, "page_id": "page-uuid", "checkpoint": None}
+                self.pages[path] = {
+                    "path": path,
+                    "title": "Verdict memory event",
+                    "body": args["body"],
+                    "frontmatter": {"kind": args["kind"]},
+                }
+                data = (
+                    self.write_ack
+                    if self.write_ack is not None
+                    else {"path": path, "page_id": "page-uuid", "checkpoint": None}
+                )
             elif name == "memory_read_page":
                 if path not in self.pages:
-                    return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc["id"], "error": {
-                        "code": -32603, "message": f"page {path} not found in resolved scope default/allowed"}})
+                    return httpx.Response(
+                        200,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": rpc["id"],
+                            "error": {
+                                "code": -32603,
+                                "message": f"page {path} not found in resolved scope default/allowed",
+                            },
+                        },
+                    )
                 data = self.read_transform(dict(self.pages[path]))
             elif name == "memory_query":
                 assert args["answer"] is False
-                data = self.query_result if self.query_result is not None else {
-                    "hits": [{"path": p, "rank": 1.0, "snippet": "<mark>safe</mark>"} for p in self.pages],
-                    "raw_hits": [], "global_scope_hits": []}
+                data = (
+                    self.query_result
+                    if self.query_result is not None
+                    else {
+                        "hits": [
+                            {"path": p, "rank": 1.0, "snippet": "<mark>safe</mark>"}
+                            for p in self.pages
+                        ],
+                        "raw_hits": [],
+                        "global_scope_hits": [],
+                    }
+                )
             elif name == "memory_delete_page":
                 self.pages.pop(path, None)
-                data = self.delete_ack if self.delete_ack is not None else {"path": path, "deleted": True, "checkpoint": None}
+                data = (
+                    self.delete_ack
+                    if self.delete_ack is not None
+                    else {"path": path, "deleted": True, "checkpoint": None}
+                )
             else:
                 raise AssertionError(name)
             result = {"content": [{"type": "text", "text": json.dumps(data)}]}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc["id"], "result": result})
 
     def client(self):
-        return AiMemoryClient(AiMemoryClientConfig(project="allowed", token="fake", token_file=None,
-                              transport=httpx.MockTransport(self.handle)))
+        return AiMemoryClient(
+            AiMemoryClientConfig(
+                project="allowed",
+                token="fake",
+                token_file=None,
+                transport=httpx.MockTransport(self.handle),
+            )
+        )
 
     @property
     def writes(self):
@@ -81,7 +130,9 @@ class Server:
 
 
 def test_persisted_envelope_and_exact_readback_before_ack():
-    s = Server(); c = s.client(); e = event()
+    s = Server()
+    c = s.client()
+    e = event()
     ref = c.put(e)
     assert ref.revision == e.digest()
     assert e.digest() in s.writes[0]["body"]
@@ -94,25 +145,35 @@ def test_persisted_envelope_and_exact_readback_before_ack():
 
 
 def test_direct_replay_and_conflict_even_with_changed_kind():
-    s = Server(); c = s.client(); e = event()
+    s = Server()
+    c = s.client()
+    e = event()
     first = c.put(e)
     assert s.client().put(replace(e, created_at=99.0, observed_at=100.0)) == first
-    for changed in (replace(e, content="changed", content_hash=""), replace(e, memory_kind="other")):
+    for changed in (
+        replace(e, content="changed", content_hash=""),
+        replace(e, memory_kind="other"),
+    ):
         with pytest.raises(MemoryProviderError) as err:
             s.client().put(changed)
         assert err.value.code.value == "conflict"
     assert len(s.writes) == 1
 
 
-@pytest.mark.parametrize("change", [
-    lambda p: {**p, "path": "elsewhere/" + p["path"].split("/")[-1]},
-    lambda p: {**p, "body": p["body"].replace("safe marker", "tampered")},
-    lambda p: {**p, "body": p["body"].replace('"event_digest":"', '"event_digest":"wrong')},
-    lambda p: {**p, "body": "{}"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: {**p, "path": "elsewhere/" + p["path"].split("/")[-1]},
+        lambda p: {**p, "body": p["body"].replace("safe marker", "tampered")},
+        lambda p: {**p, "body": p["body"].replace('"event_digest":"', '"event_digest":"wrong')},
+        lambda p: {**p, "body": "{}"},
+    ],
+)
 def test_corrupt_readback_never_mirror_acks(tmp_path, change):
-    s = Server(); s.read_transform = change
-    box = MemoryOutbox(tmp_path / "o.db"); box.enqueue(event())
+    s = Server()
+    s.read_transform = change
+    box = MemoryOutbox(tmp_path / "o.db")
+    box.enqueue(event())
     result = MemoryMirrorWorker(box, s.client()).run_once()
     assert result.acked == 0 and box.count("acked") == 0
     assert box.count("pending") == 1
@@ -120,16 +181,25 @@ def test_corrupt_readback_never_mirror_acks(tmp_path, change):
 
 @pytest.mark.parametrize("ack", [{}, {"path": "other.md"}, {"path": "prefix/" + "x" * 64 + ".md"}])
 def test_write_ack_must_name_exact_object(ack):
-    s = Server(); s.write_ack = ack
+    s = Server()
+    s.write_ack = ack
     with pytest.raises(MemoryProviderError):
         s.client().put(event())
 
 
 def test_private_and_tenant_scope_not_relabelled():
-    s = Server(); c = s.client()
-    c.put(event(scope="private-b", identity=EventIdentity("prime", "allowed", "s", source_event_id="s", tenant="tenant-b")))
-    for query in (RecallQuery("safe", project="allowed", scope="private-a", tenant="tenant-b"),
-                  RecallQuery("safe", project="allowed", scope="private-b", tenant="tenant-a")):
+    s = Server()
+    c = s.client()
+    c.put(
+        event(
+            scope="private-b",
+            identity=EventIdentity("prime", "allowed", "s", source_event_id="s", tenant="tenant-b"),
+        )
+    )
+    for query in (
+        RecallQuery("safe", project="allowed", scope="private-a", tenant="tenant-b"),
+        RecallQuery("safe", project="allowed", scope="private-b", tenant="tenant-a"),
+    ):
         result = c.search(query)
         assert result.status is ProviderResultStatus.AVAILABLE and result.hits == ()
     result = c.search(RecallQuery("safe", project="allowed", scope="private-b", tenant="tenant-b"))
@@ -137,7 +207,15 @@ def test_private_and_tenant_scope_not_relabelled():
     assert result.hits[0].event.scope == "private-b"
 
 
-@pytest.mark.parametrize("path", ["verdict-memory/../operator.md", "verdict-memory/events/../a.md", "verdict-memory/events/" + "a"*64 + ".md/extra", "/verdict-memory/events/" + "a"*64 + ".md"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "verdict-memory/../operator.md",
+        "verdict-memory/events/../a.md",
+        "verdict-memory/events/" + "a" * 64 + ".md/extra",
+        "/verdict-memory/events/" + "a" * 64 + ".md",
+    ],
+)
 def test_delete_rejects_noncanonical_paths_before_rpc(path):
     s = Server()
     with pytest.raises(MemoryProviderError):
@@ -145,24 +223,40 @@ def test_delete_rejects_noncanonical_paths_before_rpc(path):
     assert s.calls == []
 
 
-@pytest.mark.parametrize("ack", [{}, {"unrelated": True}, {"path": "foreign.md", "deleted": True}, {"deleted": "true"}])
+@pytest.mark.parametrize(
+    "ack", [{}, {"unrelated": True}, {"path": "foreign.md", "deleted": True}, {"deleted": "true"}]
+)
 def test_delete_semantic_ack_and_pre_read(ack):
-    s = Server(); c = s.client(); ref = c.put(event()); s.delete_ack = ack
+    s = Server()
+    c = s.client()
+    ref = c.put(event())
+    s.delete_ack = ack
     assert c.delete(ref) is False
 
 
 def test_delete_verified_object_and_absence():
-    s = Server(); c = s.client(); ref = c.put(event())
+    s = Server()
+    c = s.client()
+    ref = c.put(event())
     assert c.delete(ref) is True
     assert c.delete(ref) is False
-    assert [n for n, _ in s.calls][-3:] == ["memory_delete_page", "memory_read_page", "memory_read_page"]
+    assert [n for n, _ in s.calls][-3:] == [
+        "memory_delete_page",
+        "memory_read_page",
+        "memory_read_page",
+    ]
 
 
 def test_nested_secrets_never_remote_or_outbox_and_replay_consistent(tmp_path):
-    s = Server(); c = s.client()
-    e = event(metadata={"nested": {"api_key": "canary-a"}}, payload={"authorization": ["canary-b"]},
-              provenance={"password": {"v": "canary-c"}})
-    box = MemoryOutbox(tmp_path / "o.db"); row = box.enqueue(e)
+    s = Server()
+    c = s.client()
+    e = event(
+        metadata={"nested": {"api_key": "canary-a"}},
+        payload={"authorization": ["canary-b"]},
+        provenance={"password": {"v": "canary-c"}},
+    )
+    box = MemoryOutbox(tmp_path / "o.db")
+    row = box.enqueue(e)
     assert row is not None
     assert box.enqueue(e).event.digest() == row.event.digest()
     assert MemoryMirrorWorker(box, c).run_once().acked == 1
@@ -173,22 +267,40 @@ def test_nested_secrets_never_remote_or_outbox_and_replay_consistent(tmp_path):
     assert len(s.writes) == 1
 
 
-@pytest.mark.parametrize("malformed", [{}, {"jsonrpc": "2.0", "id": None, "result": {}},
-    {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": '{"hits":null}'}]}},
-    {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": '{"hits":[7]}'}]}}])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {},
+        {"jsonrpc": "2.0", "id": None, "result": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"content": [{"type": "text", "text": '{"hits":null}'}]},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {"content": [{"type": "text", "text": '{"hits":[7]}'}]},
+        },
+    ],
+)
 def test_malformed_rpc_search_not_healthy_empty(malformed):
-    s = Server(); s.malformed = malformed
+    s = Server()
+    s.malformed = malformed
     result = s.client().search(RecallQuery("safe", project="allowed"))
     assert result.status is not ProviderResultStatus.AVAILABLE
     assert result.error_code is not None
 
 
 def test_outage_restart_bounded_drain_conflict(tmp_path):
-    s = Server(); s.outage = True
+    s = Server()
+    s.outage = True
     clock = lambda: 100.0
     box = MemoryOutbox(tmp_path / "o.db", clock=clock, max_pending=2)
-    box.enqueue(event()); box.enqueue(event(identity=EventIdentity("prime", "allowed", "s", source_event_id="2")))
-    with pytest.raises(RuntimeError): box.enqueue(event(identity=EventIdentity("prime", "allowed", "s", source_event_id="3")))
+    box.enqueue(event())
+    box.enqueue(event(identity=EventIdentity("prime", "allowed", "s", source_event_id="2")))
+    with pytest.raises(RuntimeError):
+        box.enqueue(event(identity=EventIdentity("prime", "allowed", "s", source_event_id="3")))
     assert MemoryMirrorWorker(box, s.client(), clock=clock).run_once(limit=1).retried == 1
     box = MemoryOutbox(tmp_path / "o.db", clock=lambda: 102.0)
     s.outage = False
@@ -230,7 +342,8 @@ def test_partial_write_timeout_retries_by_verified_read_without_second_write(tmp
 
 
 def test_conflicting_remote_source_dead_letters_without_overwrite(tmp_path):
-    s = Server(); s.client().put(event())
+    s = Server()
+    s.client().put(event())
     box = MemoryOutbox(tmp_path / "o.db")
     box.enqueue(event(content="different content"))
     result = MemoryMirrorWorker(box, s.client()).run_once()
@@ -239,7 +352,9 @@ def test_conflicting_remote_source_dead_letters_without_overwrite(tmp_path):
 
 
 def test_host_writer_lock_prevents_concurrent_mutation():
-    s = Server(); first = s.client(); second = s.client()
+    s = Server()
+    first = s.client()
+    second = s.client()
     with first._writer_lock():
         with pytest.raises(MemoryProviderError) as error:
             second.put(event())
@@ -250,10 +365,15 @@ def test_host_writer_lock_prevents_concurrent_mutation():
 
 @pytest.mark.parametrize("field", ["project", "workspace"])
 def test_foreign_returned_scope_not_used(field):
-    s = Server(); c = s.client(); c.put(event())
+    s = Server()
+    c = s.client()
+    c.put(event())
     path = next(iter(s.pages))
-    s.query_result = {"hits": [{"path": path, field: "foreign", "rank": 1.0}],
-                      "global_scope_hits": [{"path": path}], "raw_hits": [{"path": path}]}
+    s.query_result = {
+        "hits": [{"path": path, field: "foreign", "rank": 1.0}],
+        "global_scope_hits": [{"path": path}],
+        "raw_hits": [{"path": path}],
+    }
     s.calls.clear()
     result = c.search(RecallQuery("safe", project="allowed"))
     assert result.status is ProviderResultStatus.AVAILABLE and result.hits == ()
@@ -261,32 +381,49 @@ def test_foreign_returned_scope_not_used(field):
 
 
 def test_only_global_or_raw_hits_never_promoted():
-    s = Server(); c = s.client(); c.put(event())
+    s = Server()
+    c = s.client()
+    c.put(event())
     path = next(iter(s.pages))
-    s.query_result = {"hits": [], "global_scope_hits": [{"path": path}], "raw_hits": [{"path": path}]}
+    s.query_result = {
+        "hits": [],
+        "global_scope_hits": [{"path": path}],
+        "raw_hits": [{"path": path}],
+    }
     assert c.search(RecallQuery("safe", project="allowed")).hits == ()
 
 
-@pytest.mark.parametrize("response", [
-    {"hits": None}, {"hits": ""}, {"hits": {}}, {"hits": [4]},
-    {"hits": [{"path": None}]},
-])
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"hits": None},
+        {"hits": ""},
+        {"hits": {}},
+        {"hits": [4]},
+        {"hits": [{"path": None}]},
+    ],
+)
 def test_malformed_search_shapes(response):
-    s = Server(); s.query_result = response
+    s = Server()
+    s.query_result = response
     result = s.client().search(RecallQuery("safe", project="allowed"))
     assert result.status is ProviderResultStatus.MALFORMED
 
 
 def test_denied_sensitivity_never_durable(tmp_path):
-    s = Server(); e = event(sensitivity="private")
+    s = Server()
+    e = event(sensitivity="private")
     box = MemoryOutbox(tmp_path / "o.db")
     assert box.enqueue(e) is None and box.count() == 0
-    with pytest.raises(MemoryProviderError): s.client().put(e)
+    with pytest.raises(MemoryProviderError):
+        s.client().put(e)
     assert s.calls == []
 
 
 def test_delete_mismatched_revision_and_foreign_body_never_mutates():
-    s = Server(); c = s.client(); ref = c.put(event())
+    s = Server()
+    c = s.client()
+    ref = c.put(event())
     s.calls.clear()
     assert c.delete(replace(ref, revision="wrong")) is False
     assert all(name != "memory_delete_page" for name, _ in s.calls)
@@ -299,6 +436,7 @@ def test_live_proof_compares_exact_envelope_and_cleans_only_own_ref(tmp_path, mo
     import runpy
     import sys
     from pathlib import Path
+
     import verdict_memory.client as client_module
     from verdict_memory.contracts import CertificationState, ProviderHealth
 
@@ -308,15 +446,23 @@ def test_live_proof_compares_exact_envelope_and_cleans_only_own_ref(tmp_path, mo
 
     def factory(config):
         config.transport = httpx.MockTransport(s.handle)
+        config._token_override = "fake-test-token"
+        config.token_file = None
         client = real_client(config)
-        client.health = lambda: ProviderHealth("ai-memory", ProviderResultStatus.AVAILABLE, CertificationState.HEALTHY)
+        client.health = lambda: ProviderHealth(
+            "ai-memory", ProviderResultStatus.AVAILABLE, CertificationState.HEALTHY
+        )
         created.append(client)
         return client
 
     monkeypatch.setattr(client_module, "AiMemoryClient", factory)
     script = Path(__file__).resolve().parents[1] / "scripts/live_ai_memory_proof.py"
     main = runpy.run_path(str(script))["main"]
-    monkeypatch.setattr(sys, "argv", [str(script), "--allow-live-write", "--project", "isolated", "--marker", "proof"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(script), "--allow-live-write", "--project", "isolated", "--marker", "proof"],
+    )
     assert main() == 0
     assert s.pages == {} and len(s.writes) == 1
     assert created[0].config.project.startswith("isolated-")
@@ -328,6 +474,7 @@ def test_live_proof_rejects_any_old_hit_and_still_cleans(tmp_path, monkeypatch, 
     import runpy
     import sys
     from pathlib import Path
+
     import verdict_memory.client as client_module
     from verdict_memory.contracts import CertificationState, ProviderHealth, RecallResult
 
@@ -336,8 +483,12 @@ def test_live_proof_rejects_any_old_hit_and_still_cleans(tmp_path, monkeypatch, 
 
     def factory(config):
         config.transport = httpx.MockTransport(s.handle)
+        config._token_override = "fake-test-token"
+        config.token_file = None
         client = real_client(config)
-        client.health = lambda: ProviderHealth("ai-memory", ProviderResultStatus.AVAILABLE, CertificationState.HEALTHY)
+        client.health = lambda: ProviderHealth(
+            "ai-memory", ProviderResultStatus.AVAILABLE, CertificationState.HEALTHY
+        )
         client.search = lambda query: RecallResult(ProviderResultStatus.AVAILABLE, ())
         return client
 
@@ -356,15 +507,88 @@ def test_redirect_never_forwards_bearer():
         requests.append(request)
         return httpx.Response(307, headers={"Location": "https://evil.example/mcp"})
 
-    client = AiMemoryClient(AiMemoryClientConfig(project="allowed", token="fake", token_file=None,
-                            transport=httpx.MockTransport(handler)))
-    assert client.search(RecallQuery("q", project="allowed")).status is not ProviderResultStatus.AVAILABLE
+    client = AiMemoryClient(
+        AiMemoryClientConfig(
+            project="allowed", token="fake", token_file=None, transport=httpx.MockTransport(handler)
+        )
+    )
+    assert (
+        client.search(RecallQuery("q", project="allowed")).status
+        is not ProviderResultStatus.AVAILABLE
+    )
     assert len(requests) == 1 and requests[0].url.host == "127.0.0.1"
 
 
 def test_malformed_health_and_outage_typed():
-    client = AiMemoryClient(AiMemoryClientConfig(project="allowed", token="fake", token_file=None,
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="not-json"))))
+    client = AiMemoryClient(
+        AiMemoryClientConfig(
+            project="allowed",
+            token="fake",
+            token_file=None,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, text="not-json")),
+        )
+    )
     assert client.health().status is not ProviderResultStatus.AVAILABLE
-    s = Server(); s.outage = True
+    s = Server()
+    s.outage = True
     assert s.client().health().status is not ProviderResultStatus.AVAILABLE
+
+
+def test_requested_session_filter_is_not_relabelled():
+    s = Server()
+    c = s.client()
+    c.put(event())
+    assert c.search(RecallQuery("safe", project="allowed", session_id="other")).hits == ()
+    hit = c.search(RecallQuery("safe", project="allowed", session_id="session")).hits[0]
+    assert hit.event.identity.session_id == "session"
+
+
+def test_new_project_exact_absence_allows_first_write_only():
+    s = Server()
+    original = s.handle
+
+    def handler(request):
+        rpc = json.loads(request.content)
+        if rpc.get("params", {}).get("name") == "memory_read_page" and not s.pages:
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": rpc["id"],
+                    "error": {
+                        "code": -32602,
+                        "message": "project 'allowed' not found in workspace 'default'",
+                    },
+                },
+            )
+        return original(request)
+
+    s.handle = handler
+    assert s.client().put(event()).revision == event().digest()
+    assert len(s.writes) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": -32602, "message": "project 'foreign' not found in workspace 'default'"},
+        {"code": -32602, "message": "permission denied for project 'allowed'"},
+        {"code": -32603, "message": "forbidden"},
+        {"code": "-32602", "message": "project 'allowed' not found in workspace 'default'"},
+        {"code": -32602, "message": None},
+    ],
+)
+def test_scope_error_other_than_exact_missing_project_never_writes(error):
+    s = Server()
+    original = s.handle
+
+    def handler(request):
+        rpc = json.loads(request.content)
+        if rpc.get("params", {}).get("name") == "memory_read_page":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc["id"], "error": {**error}})
+        return original(request)
+
+    s.handle = handler
+    with pytest.raises(MemoryProviderError):
+        s.client().put(event())
+    assert s.writes == []
