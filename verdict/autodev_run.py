@@ -47,6 +47,7 @@ from verdict.context_pack import (
 )
 from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionResult
 from verdict.execution_packet import ExecutionPacket, capture_source_binding
+from verdict.outcome_records import build_attempt_record, write_attempt_record
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
     PatchAttempt,
@@ -55,6 +56,7 @@ from verdict.patch_executor import (
     TokenUsage,
     _add_usage,
 )
+from verdict.paths import verdict_home
 from verdict.receipt_store import ReceiptConflictError, ReceiptStore
 from verdict.relay import fatal_identity_mismatch
 from verdict.repository_files import (
@@ -991,6 +993,193 @@ def _default_failure_class(attempt: PacketAttempt) -> str | None:
     if attempt.reason:
         return "worker_failed"
     return "unknown_failure"
+
+
+_STORY_ID_RE = __import__("re").compile(r"\b([A-Z]{2,}-\d+)\b")
+
+
+def _story_id_from(objective: str) -> str | None:
+    """Best-effort Linear story id (e.g. ``BOD-353``) found in the objective text."""
+    match = _STORY_ID_RE.search(objective or "")
+    return match.group(1) if match else None
+
+
+def _classify_unit_failure_class(outcome: UnitOutcome) -> str:
+    """Map one unit outcome's reason onto the fixed BOD-353 taxonomy (autodev executor)."""
+    if outcome.verified:
+        return "success"
+    reason = outcome.reason or ""
+    if reason.startswith("truncated:"):
+        return "other"
+    if "provider identity mismatch" in reason:
+        return "false_report"
+    if reason.startswith("executor error:"):
+        if "Timeout" in reason or "timeout" in reason:
+            return "timeout"
+        return "tool_error"
+    if "transport error" in reason:
+        return "tool_error"
+    if "provider returned HTTP 429" in reason:
+        return "quota_429"
+    if any(f"provider returned HTTP {code}" in reason for code in (500, 502, 503, 504)):
+        return "provider_5xx"
+    if "git apply --check failed" in reason or "patch repair failed" in reason:
+        return "spec_violation"
+    if "outside the unit boundary" in reason:
+        return "spec_violation"
+    if reason.startswith("verification exited"):
+        return "test_failed"
+    return "other"
+
+
+def _write_one_attempt_record(
+    *,
+    unit_id: str,
+    model: str,
+    outcome_label: str,
+    failure_class: str,
+    duration_s: float | None,
+    tokens_in: int | None,
+    tokens_out: int | None,
+    story_id: str | None,
+) -> None:
+    """Build and write one executor attempt record; log and swallow write failures."""
+    try:
+        record = build_attempt_record(
+            task_kind="autodev_unit",
+            harness="verdict-autodev-executor",
+            model=model,
+            outcome=outcome_label,
+            failure_class=failure_class,
+            source="verdict.autodev_run.run_autodev",
+            duration_s=duration_s,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            story_id=story_id,
+        )
+        write_attempt_record(record, store_dir=verdict_home())
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "autodev: outcome attempt record write failed for unit %s", unit_id, exc_info=True
+        )
+
+
+def _classify_repair_first_error(first_error: str) -> str:
+    """Classify the pre-repair error that triggered a repair turn.
+
+    A repair turn only ever follows a patch-shape rejection (an unparseable
+    diff, a bare-hunk mismatch, or a failed ``git apply --check``; see
+    ``PatchExecutor._apply_diff_reply``), so every pre-repair error is a
+    ``spec_violation``: the model's reply did not conform to the diff
+    contract, independent of the repair's own outcome.
+    """
+    del first_error  # kept for call-site symmetry and future differentiation
+    return "spec_violation"
+
+
+def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: str | None) -> None:
+    """Write BOD-353 attempt record(s) for an autodev executor turn.
+
+    A unit's own executor turn may itself contain a repair sub-turn
+    (``outcome.repair_attempt``): the first (patch-shape-rejected) turn and
+    the repair turn are each one model attempt, so each gets its own record.
+    A write failure is logged and never fails the run: the receipt already
+    holds the ground truth.
+    """
+    served = outcome.served_model or outcome.model
+    repair = outcome.repair_attempt
+    if repair is None:
+        outcome_label = "accepted" if outcome.verified else "failed"
+        _write_one_attempt_record(
+            unit_id=unit_id,
+            model=served,
+            outcome_label=outcome_label,
+            failure_class=_classify_unit_failure_class(outcome),
+            duration_s=outcome.latency_ms / 1000 if outcome.latency_ms else None,
+            tokens_in=outcome.usage.prompt_tokens or None,
+            tokens_out=outcome.usage.completion_tokens or None,
+            story_id=story_id,
+        )
+        return
+
+    # The primary turn was rejected for a patch-shape reason and got a repair turn.
+    first_error = str(repair.get("first_error") or "")
+    _write_one_attempt_record(
+        unit_id=unit_id,
+        model=served,
+        outcome_label="failed",
+        failure_class=_classify_repair_first_error(first_error),
+        duration_s=None,
+        tokens_in=None,
+        tokens_out=None,
+        story_id=story_id,
+    )
+    # The repair turn's own outcome is what the unit landed on: the patch may
+    # have applied (``repair["repaired"]``) and still fail verification, so the
+    # non-repair path's verified-based classification is reused here too. A
+    # repair that applied but failed verification is a real failure, not a
+    # false success.
+    _write_one_attempt_record(
+        unit_id=unit_id,
+        model=served,
+        outcome_label="accepted" if outcome.verified else "failed",
+        failure_class=_classify_unit_failure_class(outcome),
+        duration_s=outcome.latency_ms / 1000 if outcome.latency_ms else None,
+        tokens_in=outcome.usage.prompt_tokens or None,
+        tokens_out=outcome.usage.completion_tokens or None,
+        story_id=story_id,
+    )
+
+
+def _record_planner_attempts(
+    objective: str, attempts: Sequence[Mapping[str, Any]], *, story_id: str | None
+) -> None:
+    """Write one BOD-353 attempt record per planner (decomposition) call.
+
+    Each entry in ``plan.attempts`` is ``{"model", "error"}``: an empty
+    ``error`` is a successful plan, any other value is the failure that moved
+    decomposition to the next model or try. A write failure is logged and
+    never fails the run.
+    """
+    for attempt in attempts:
+        model = str(attempt.get("model") or "")
+        if not model:
+            continue
+        error = str(attempt.get("error") or "")
+        try:
+            record = build_attempt_record(
+                task_kind="autodev_plan",
+                harness="verdict-autodev-planner",
+                model=model,
+                outcome="accepted" if not error else "failed",
+                failure_class="success" if not error else _classify_planner_error(error),
+                source="verdict.autodev_run.run_autodev",
+                story_id=story_id,
+            )
+            write_attempt_record(record, store_dir=verdict_home())
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "autodev: outcome attempt record write failed for planner model %s",
+                model,
+                exc_info=True,
+            )
+
+
+def _classify_planner_error(error: str) -> str:
+    """Map one decomposer attempt error onto the fixed BOD-353 taxonomy."""
+    if "HTTP 429" in error:
+        return "quota_429"
+    if any(f"HTTP {code}" in error for code in (500, 502, 503, 504)):
+        return "provider_5xx"
+    if "transport error" in error:
+        return "tool_error"
+    if "not valid JSON" in error or "not JSON" in error or "slice" in error.lower():
+        return "spec_violation"
+    return "other"
 
 
 def _packet_work_unit(packet: ExecutionPacket, context_prompt: str) -> WorkUnit:
@@ -2354,7 +2543,14 @@ def run_autodev(
     decomposer = decomposer or Decomposer(
         DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
     )
-    plan = plan or decomposer.decompose(objective, repo_root=repo, evidence=evidence)
+    if plan is None:
+        from verdict.decomposer import DecompositionError
+
+        try:
+            plan = decomposer.decompose(objective, repo_root=repo, evidence=evidence)
+        except DecompositionError as exc:
+            _record_planner_attempts(objective, exc.attempts, story_id=_story_id_from(objective))
+            raise
 
     executor = executor or PatchExecutor(
         repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)
@@ -2391,6 +2587,8 @@ def run_autodev(
 
         # Drop entries matching the selected model
         retry_ladder = tuple(r for r in retry_ladder if str(r["model"]) != executor.config.model)
+    _record_planner_attempts(objective, plan.attempts, story_id=_story_id_from(objective))
+
     outcomes: list[UnitOutcome] = []
     receipt_ids: list[str] = []
     for planned_unit in plan.units:
@@ -2402,6 +2600,8 @@ def run_autodev(
         outcome, executor_failed = _run_unit_once(
             unit, repo, executor, mechanical=mechanical, runner=runner
         )
+        if outcome.tier == "model":
+            _record_executor_attempt(unit.unit_id, outcome, story_id=_story_id_from(objective))
         retry_executor: PatchExecutor | None = None
         retry_decision: Any = None
         if executor_failed and retry_ladder:
@@ -2430,6 +2630,9 @@ def run_autodev(
             )
             retry_outcome, _ = _run_unit_once(
                 unit, repo, retry_executor, mechanical=False, runner=runner
+            )
+            _record_executor_attempt(
+                unit.unit_id, retry_outcome, story_id=_story_id_from(objective)
             )
             retry_note = {
                 "failed_model": executor.config.model,

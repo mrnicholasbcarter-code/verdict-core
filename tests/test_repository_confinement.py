@@ -174,3 +174,39 @@ def test_replay_destination_rejects_absolute_and_traversal_paths(tmp_path: Path)
             _create_confined_file(repo, relpath, b"attacker-controlled")
 
     assert not outside.exists()
+
+
+def test_owned_new_file_under_a_new_directory_is_an_ordinary_omission(tmp_path: Path) -> None:
+    """A unit that owns a new tests/test_x.py in a repo with no tests/ dir yet
+    must see an ordinary FileNotFoundError, not a refusal: the missing
+    ancestor is a ``mkdir -p`` target, not a security event (BOD-409).
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    prompt = build_unit_prompt(_unit("tests/test_x.py"), repo)
+
+    assert "tests/test_x.py (unreadable: FileNotFoundError)" in prompt
+
+
+def test_create_confined_file_creates_missing_parent_directory(tmp_path: Path) -> None:
+    from verdict.autodev_run import _create_confined_file, _preflight_replay_destination
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    _preflight_replay_destination(repo, "tests/test_x.py")
+    _create_confined_file(repo, "tests/test_x.py", b"def test_x():\n    assert True\n")
+
+    assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == (
+        "def test_x():\n    assert True\n"
+    )
+
+
+def test_existing_file_as_directory_component_is_still_rejected(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pkg").write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(UnsafeRepositoryPathError, match=r"not a directory|symlink"):
+        read_repository_text(repo, "pkg/owned.py")
