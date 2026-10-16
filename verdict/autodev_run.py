@@ -53,8 +53,10 @@ from verdict.patch_executor import (
     PatchExecutor,
     PatchExecutorConfig,
     TokenUsage,
+    _add_usage,
 )
 from verdict.receipt_store import ReceiptConflictError, ReceiptStore
+from verdict.relay import fatal_identity_mismatch
 from verdict.repository_files import (
     UnsafeRepositoryPathError,
     hold_repository_dirs,
@@ -1691,12 +1693,18 @@ class UnitOutcome:
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
     repair_attempt: dict[str, Any] | None = None
+    # The gateway's ``x-omniroute-model`` header on the call that produced this
+    # outcome; ``None`` when no header was observed (mechanical tier, test transports).
+    served_model: str | None = None
+    # Set when the selected executor failed and a freshly selected route ran the unit.
+    executor_retry: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "unit_id": self.unit_id,
             "tier": self.tier,
             "model": self.model,
+            "served_model": self.served_model,
             "verified": self.verified,
             "status": "verified" if self.verified else "unverified",
             "reason": self.reason,
@@ -1704,6 +1712,7 @@ class UnitOutcome:
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
             "repair_attempt": self.repair_attempt,
+            **({"executor_retry": self.executor_retry} if self.executor_retry else {}),
         }
 
 
@@ -2349,26 +2358,53 @@ def run_autodev(
         outcome, executor_failed = _run_unit_once(
             unit, repo, executor, mechanical=mechanical, runner=runner
         )
-        retry_note: dict[str, Any] | None = None
+        retry_executor: PatchExecutor | None = None
+        retry_decision: Any = None
         if executor_failed and retry_ladder:
-            route = next(iter(retry_ladder), None)
-            if route is not None:
-                key = str(route["model"])
-                if key not in _retry_executors:
-                    _retry_executors[key] = cast(
-                        Callable[[Mapping[str, Any]], PatchExecutor], retry_executor_factory
-                    )(route)
-                retry_executor = _retry_executors[key]
-                retry_outcome, _ = _run_unit_once(
-                    unit, repo, retry_executor, mechanical=False, runner=runner
+            # The first decision rejected every other candidate, so none of them may
+            # run on that authority (BOD-396). A fresh decision over the remaining
+            # probed candidates selects the retry route, or the unit stays failed.
+            try:
+                retry_decision = _select_retry_route(unit, retry_ladder, objective)
+            except AutodevError as exc:
+                retry_decision = None
+                outcome = replace(
+                    outcome,
+                    executor_retry={"failed_model": executor.config.model, "refused": str(exc)},
                 )
-                retry_note = {
-                    "failed_model": executor.config.model,
-                    "failed_reason": outcome.reason,
-                    "retry_model": retry_executor.config.model,
-                    "failed_repair_attempt": outcome.repair_attempt,
-                }
-                outcome = retry_outcome
+        if retry_decision is not None:
+            retry_route = retry_decision.selected_route
+            assert retry_route is not None
+            key = retry_route.model
+            if key not in _retry_executors:
+                _retry_executors[key] = cast(
+                    Callable[[Mapping[str, Any]], PatchExecutor], retry_executor_factory
+                )({"model": retry_route.model, "gateway": retry_route.gateway})
+            retry_executor = _retry_executors[key]
+            _assert_exact_model(
+                retry_executor.config.model, retry_route.model, surface="autodev retry executor"
+            )
+            retry_outcome, _ = _run_unit_once(
+                unit, repo, retry_executor, mechanical=False, runner=runner
+            )
+            retry_note = {
+                "failed_model": executor.config.model,
+                "failed_served_model": outcome.served_model,
+                "failed_reason": outcome.reason,
+                "failed_usage": outcome.usage.to_dict(),
+                "failed_repair_attempt": outcome.repair_attempt,
+                "retry_model": retry_executor.config.model,
+                "execution_path_decision_digest": retry_decision.decision_digest,
+                "execution_path_selected_route": retry_route.to_dict(),
+                "execution_path_why_selected": retry_decision.why_selected,
+                "execution_path_rejected": [item.to_dict() for item in retry_decision.rejected],
+            }
+            # Both executors' tokens were spent on this unit, so both are counted.
+            outcome = replace(
+                retry_outcome,
+                usage=_add_usage(outcome.usage, retry_outcome.usage),
+                executor_retry=retry_note,
+            )
         outcomes.append(outcome)
         record_payload: dict[str, Any] = {
             "objective": objective,
@@ -2392,8 +2428,7 @@ def run_autodev(
             "context_pack_used_tokens": pack.used_tokens,
             "context_pack_token_budget": pack.token_budget,
         }
-        if retry_note is not None:
-            record_payload["executor_retry"] = retry_note
+        if retry_executor is not None:
             record_payload["retry_served_headers"] = retry_executor.response_headers
         record = ledger.put_receipt(
             "outcome",
@@ -2485,6 +2520,26 @@ def _prior_unit_failures(ledger: ReceiptStore, unit: WorkUnit, *, limit: int = 3
     return failures
 
 
+def _select_retry_route(unit: WorkUnit, ladder: Sequence[Mapping[str, Any]], objective: str) -> Any:
+    """Return a fresh execution-path decision over the remaining probed candidates."""
+    from verdict.execution_path import ExecutionPathError, optimize_execution_path
+    from verdict.subagent_resolver import public_execution_path_request
+
+    request = {
+        "schema_version": "1",
+        "trajectory_id": f"autodev-retry:{unit.unit_id}",
+        "slice_id": unit.unit_id,
+        "acceptance_criteria": [unit.objective],
+        "proof_criteria": [" ".join(unit.verification_command)],
+        "candidates": [dict(route) for route in ladder],
+    }
+    try:
+        decision = optimize_execution_path(public_execution_path_request(request, task=objective))
+    except ExecutionPathError as exc:
+        raise AutodevError(f"autodev retry selection refused: {exc}") from exc
+    return _require_launch_decision(decision, surface="autodev retry")
+
+
 def _run_unit_once(
     unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
 ) -> tuple[UnitOutcome, bool]:
@@ -2526,8 +2581,24 @@ def _run_unit_once(
             verified=False,
             reason=f"executor error: {type(exc).__name__}: {exc}",
             changed_files=_touched_since(repo, before, runner=runner),
+            served_model=executor.response_headers.get("x-omniroute-model"),
         )
         return (outcome, True)
+
+    served = executor.response_headers.get("x-omniroute-model")
+    if fatal_identity_mismatch(executor.config.model, served):
+        # The gateway served another model than the selected route: nothing it
+        # wrote is trusted, and the unit does not move on to another route.
+        reason = (
+            f"provider identity mismatch: selected {executor.config.model!r}, served {served!r}"
+        )
+        touched = _touched_since(repo, before, runner=runner)
+        return (
+            _from_attempt(
+                attempt, verified=False, reason=reason, changed_files=touched, served=served
+            ),
+            False,
+        )
 
     if not attempt.applied:
         return (
@@ -2536,13 +2607,17 @@ def _run_unit_once(
                 verified=False,
                 reason=attempt.reason,
                 changed_files=_touched_since(repo, before, runner=runner),
+                served=served,
             ),
             True,
         )
 
     touched = _touched_since(repo, before, runner=runner)
     ok, reason = _verify(unit, repo, touched, runner=runner)
-    return (_from_attempt(attempt, verified=ok, reason=reason, changed_files=touched), False)
+    return (
+        _from_attempt(attempt, verified=ok, reason=reason, changed_files=touched, served=served),
+        False,
+    )
 
 
 def _run_unit(
@@ -2554,7 +2629,12 @@ def _run_unit(
 
 
 def _from_attempt(
-    attempt: PatchAttempt, *, verified: bool, reason: str, changed_files: tuple[str, ...]
+    attempt: PatchAttempt,
+    *,
+    verified: bool,
+    reason: str,
+    changed_files: tuple[str, ...],
+    served: str | None = None,
 ) -> UnitOutcome:
     return UnitOutcome(
         unit_id=attempt.unit_id,
@@ -2566,6 +2646,7 @@ def _from_attempt(
         usage=attempt.usage,
         latency_ms=attempt.latency_ms,
         repair_attempt=attempt.repair_attempt,
+        served_model=served,
     )
 
 
