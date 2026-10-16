@@ -1089,9 +1089,17 @@ class IntelligenceService:
                 and isinstance(_fetch_error, str)
                 and _fetch_error.startswith("unauthorized:")
             ):
+                from verdict.credentials_store import resolve_gateway_key
+
                 key_source = None
-                if os.getenv("OMNIROUTE_API_KEY"):
-                    key_source = "env OMNIROUTE_API_KEY"
+                resolved = resolve_gateway_key()
+                if resolved is not None:
+                    _, resolved_kind = resolved
+                    key_source = (
+                        "env OMNIROUTE_API_KEY"
+                        if resolved_kind == "env:OMNIROUTE_API_KEY"
+                        else f"resolved via {resolved_kind}"
+                    )
                 else:
                     omni_config = self.providers.get("omniroute")
                     env_name = str(getattr(omni_config, "api_key_env", None) or "")

@@ -111,3 +111,48 @@ def manage_service(
         "uninstall": uninstall,
         "commands": commands,
     }
+
+
+def _systemctl_show(unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> dict[str, str]:
+    """``LoadState``/``ActiveState``/``SubState`` for one unit. Never raises."""
+    try:
+        result = run(
+            ["systemctl", "--user", "show", "-p", "LoadState,ActiveState,SubState", unit]
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            values[key] = value
+    return values
+
+
+def _run_systemctl_show(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+
+def timer_state(
+    unit: str,
+    *,
+    run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show,
+) -> dict[str, Any]:
+    """Installed/failed/active state of a systemd user timer, for doctor and setup.
+
+    Returns ``{"installed": bool, "failed": bool, "active": bool, "state": str}``.
+    ``state`` is one of ``"missing"`` (unit file not loaded), ``"failed"``
+    (``is-failed``), ``"inactive"`` or ``"active"``. A unit that is loaded but
+    not currently running (e.g. waiting for its next trigger) is still
+    ``"active"`` when systemd reports ``ActiveState=active``.
+    """
+    values = _systemctl_show(unit, run)
+    load_state = values.get("LoadState", "not-found")
+    active_state = values.get("ActiveState", "inactive")
+    if load_state != "loaded":
+        return {"installed": False, "failed": False, "active": False, "state": "missing"}
+    if active_state == "failed":
+        return {"installed": True, "failed": True, "active": False, "state": "failed"}
+    if active_state == "active":
+        return {"installed": True, "failed": False, "active": True, "state": "active"}
+    return {"installed": True, "failed": False, "active": False, "state": "inactive"}

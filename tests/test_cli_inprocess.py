@@ -983,10 +983,24 @@ def test_cmd_doctor_all_healthy(
 
     # A healthy host also has the memory-bridge state: text mode now runs the
     # same shared collector as --json, including run_doctor_diagnostics.
-    (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".verdict" / "memory.db").touch()
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    (verdict_dir / "memory.db").touch()
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
     cli.cmd_doctor()
 
@@ -1168,6 +1182,20 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     verdict_dir = tmp_path / ".verdict"
     verdict_dir.mkdir(parents=True, exist_ok=True)
     (verdict_dir / "memory.db").touch()
+
+    # BOD-411: doctor now reports health-cache freshness; give this shared
+    # fixture one fresh route so unrelated doctor exit-code tests stay green.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
@@ -1632,6 +1660,21 @@ def _doctor_parity_host(
         (tmp_path / ".verdict" / "memory.db").touch()
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
 
 def _doctor_both_modes(
@@ -2589,6 +2632,21 @@ def _old_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
     monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
     monkeypatch.chdir(tmp_path)
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
     return cfg_dir
 
 
@@ -2694,6 +2752,24 @@ def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
     docs = tmp_path / "docs" / "adr"
     docs.mkdir(parents=True)
     (docs / "ADR-001.md").write_text("# Local decision")
+
+    # BOD-411: health-cache freshness now follows VERDICT_HOME too.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import (
+        CATEGORY_OK,
+        HealthCache,
+        ProbeResult,
+        default_cache_path,
+    )
+
+    cache = HealthCache(default_cache_path())
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
     def forbidden(*args, **kwargs):
         pytest.fail("documentation preflight must not fetch removed products")
