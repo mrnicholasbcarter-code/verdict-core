@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -122,16 +123,84 @@ def _json(out: str) -> Any:
 
 
 def judge_doctor(code: int, out: str, err: str) -> tuple[bool, str, dict[str, Any]]:
-    """Doctor passes when it has no issue other than this job's own result."""
+    """Doctor passes when it has no issue other than this job's own result.
+
+    Contract examples:
+    - Well-formed clean: `{"status": "ok", "issues": []}` with exit 0 -> PASS
+    - Well-formed with only acceptance warning:
+      `{"status": "failed", "issues": ["Live acceptance is red (x.json): ..."]}`
+      with exit 0 or 1 -> PASS (deliberate allowance)
+    - Well-formed with other issues:
+      `{"status": "failed", "issues": ["gateway not reachable"]}` -> FAIL
+    - Crashed or error payload:
+      `{"error": "doctor crashed"}` -> FAIL (exit != 0 or error field)
+    - Malformed schema missing issues list:
+      `{"status": "failed"}` -> FAIL
+    - Nonzero exit with empty issues:
+      `{"issues": []}` with exit 1 -> FAIL (cannot pass implicitly)
+    """
     payload = _json(out)
     if not isinstance(payload, dict):
-        return False, f"doctor printed no JSON (exit {code})", {}
-    issues = [str(item) for item in payload.get("issues") or []]
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
+        return (
+            False,
+            f"doctor printed no JSON (exit {code})",
+            {"exit_code": code, "error": first_err},
+        )
+
+    if payload.get("error"):
+        err_msg = redact_text(str(payload["error"]))[:200]
+        return (
+            False,
+            f"doctor error (exit {code}): {err_msg[:160]}",
+            {"error": err_msg, "exit_code": code},
+        )
+
+    if "issues" not in payload or not isinstance(payload["issues"], list):
+        return (
+            False,
+            f"doctor printed malformed report (exit {code}): missing issues list",
+            {"exit_code": code},
+        )
+
+    issues = [str(item) for item in payload["issues"]]
     own = [item for item in issues if item.startswith(ISSUE_PREFIX)]
     others = [item for item in issues if not item.startswith(ISSUE_PREFIX)]
-    detail = {"issues": [redact_text(item)[:200] for item in others], "own_issues": len(own)}
+    detail = {
+        "issues": [redact_text(item)[:200] for item in others],
+        "own_issues": len(own),
+        "exit_code": code,
+    }
+
     if others:
         return False, f"{len(others)} doctor issue(s): {redact_text(others[0])[:160]}", detail
+
+    # Enforce allowed exits BEFORE own-only exemption:
+    # Only exit 0 (clean) and exit 1 (reported issues) are allowed doctor exits.
+    # Timeouts (124), signals (137), usage errors (2), or unexpected exits must never pass.
+    if code not in (0, 1):
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
+        detail["error"] = first_err
+        return (False, f"doctor exited (exit {code}): {first_err[:160]}".strip(), detail)
+
+    if len(own) > 0:
+        return True, "no doctor issue", detail
+
+    if code != 0:
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
+        detail["error"] = first_err
+        return (
+            False,
+            f"doctor exited (exit {code}) without reporting issues: {first_err[:160]}".strip(),
+            detail,
+        )
+
     return True, "no doctor issue", detail
 
 
@@ -146,15 +215,83 @@ def judge_choose(code: int, out: str, err: str) -> tuple[bool, str, dict[str, An
     return True, "route selected", {"selected": selected}
 
 
-def judge_route(code: int, out: str, err: str) -> tuple[bool, str, dict[str, Any]]:
-    payload = _json(out.strip().splitlines()[-1] if out.strip() else "")
-    model = payload.get("model") if isinstance(payload, dict) else None
-    detail = {
-        "model": model,
-        "reason": payload.get("reason") if isinstance(payload, dict) else None,
+_INVALID_ROUTE_NAMES = frozenset(
+    {
+        "no_eligible_target",
+        "none",
+        "null",
+        "undefined",
+        "error",
+        "failed",
+        "failure",
+        "timeout",
+        "unknown",
     }
-    if code != 0 or not model or model == "no_eligible_target":
-        return False, f"no route (exit {code}): {detail['reason'] or model}", detail
+)
+
+_ROUTE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9_.:/-]*[a-zA-Z0-9])?$")
+
+
+def _is_valid_route_name(name: Any) -> bool:
+    if not isinstance(name, str):
+        return False
+    candidate = name.strip()
+    if not candidate or len(candidate) > 256:
+        return False
+    if candidate.lower() in _INVALID_ROUTE_NAMES:
+        return False
+    return bool(_ROUTE_NAME_PATTERN.match(candidate))
+
+
+def judge_route(code: int, out: str, err: str) -> tuple[bool, str, dict[str, Any]]:
+    stripped = out.strip()
+    if not stripped:
+        return (
+            False,
+            f"no route (exit {code}): blank output",
+            {"model": None, "reason": "blank output"},
+        )
+
+    last_line = stripped.splitlines()[-1].strip()
+
+    if stripped.startswith("{") or last_line.startswith("{"):
+        target_str = stripped if stripped.startswith("{") else last_line
+        payload = _json(target_str)
+        if not isinstance(payload, dict):
+            return (
+                False,
+                f"no route (exit {code}): malformed JSON",
+                {"model": None, "reason": "malformed JSON"},
+            )
+
+        model = payload.get("model")
+        reason = payload.get("reason")
+        detail = {"model": model, "reason": reason}
+        if code != 0 or not model or model == "no_eligible_target":
+            return (
+                False,
+                f"no route (exit {code}): {reason or model or 'unspecified error'}",
+                detail,
+            )
+        if not _is_valid_route_name(model):
+            return False, f"no route (exit {code}): invalid route: {model}", detail
+        return True, f"routed to {model}", detail
+
+    if code != 0:
+        err_msg = err.strip().splitlines()[-1] if err.strip() else last_line
+        return (
+            False,
+            f"no route (exit {code}): {redact_text(err_msg)[:160]}",
+            {"model": None, "reason": err_msg},
+        )
+
+    model = last_line
+    if not _is_valid_route_name(model):
+        route_reason = model if model.lower() in _INVALID_ROUTE_NAMES else "invalid route name"
+        detail = {"model": model, "reason": route_reason}
+        return False, f"no route (exit 0): {route_reason}: {model}", detail
+
+    detail = {"model": model, "reason": None}
     return True, f"routed to {model}", detail
 
 
