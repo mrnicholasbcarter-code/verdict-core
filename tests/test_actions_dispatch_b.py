@@ -86,6 +86,7 @@ class TestRegistryClassification:
             "prove-at-rest.import-sessions",
             "prove-at-rest.install-service",
             "prove-at-rest.uninstall-service",
+            "acceptance.install-service",
         ],
     )
     def test_prove_at_rest_writers_are_mutation_actions(self, name: str) -> None:

@@ -538,9 +538,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=getattr(args, "json", False),
         )
     elif args.command == "acceptance" and args.acceptance_command == "install-service":
-        from verdict.acceptance_service import manage_service
+        from verdict.actions.registry import run_action
 
-        print(json.dumps(manage_service(dry_run=args.dry_run, uninstall=args.uninstall), indent=2))
+        result = run_action(
+            "acceptance.install-service", {"dry_run": args.dry_run, "uninstall": args.uninstall}
+        )
+        print(json.dumps(result.data, indent=2))
     elif args.command == "acceptance" and args.acceptance_command == "status":
         legacy.cmd_acceptance_status(output_json=args.json)
     elif args.command == "acceptance":
