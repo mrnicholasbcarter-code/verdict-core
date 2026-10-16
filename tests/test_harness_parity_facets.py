@@ -262,7 +262,7 @@ class TestCodexParity:
             )
 
     def test_session_start_is_partial(self, tmp_path: Path) -> None:
-        """Codex SessionStart hook uses local plane only (memory_bridge ~358)."""
+        """Codex SessionStart hook uses local plane only (verdict/memory_harness/codex.py)."""
         from verdict.harness_codex import certify
 
         report = certify(codex_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
