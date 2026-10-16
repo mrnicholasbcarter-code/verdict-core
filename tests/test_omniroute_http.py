@@ -253,6 +253,47 @@ def test_http_transport_timeout_and_oversized_payload_are_typed() -> None:
         oversized.catalog()
 
 
+def test_http_transport_retries_once_after_a_single_timeout_then_succeeds() -> None:
+    """BOD-387: one slow/cold fetch must not void every candidate for an
+    operation. A transport that times out on the first attempt and succeeds
+    on the second returns the catalog instead of raising."""
+    attempts = {"n": 0}
+
+    def flaky_handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise httpx.ReadTimeout("slow upstream", request=request)
+        return httpx.Response(200, json={"data": [{"id": "p/model", "provider": "p"}]})
+
+    payload = OmniRouteHTTPTransport(
+        "https://router.example.test",
+        allow_private_hosts=MOCK_ALLOWLIST,
+        transport=httpx.MockTransport(flaky_handler),
+    ).catalog()
+
+    assert attempts["n"] == 2
+    assert payload == {"data": [{"id": "p/model", "provider": "p"}]}
+
+
+def test_http_transport_two_consecutive_timeouts_still_raise() -> None:
+    """A retry bounds the cost of one slow fetch; it must not mask a
+    genuinely unreachable or persistently slow upstream."""
+    attempts = {"n": 0}
+
+    def always_timeout_handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("slow upstream", request=request)
+
+    with pytest.raises(OmniRouteTransportTimeout):
+        OmniRouteHTTPTransport(
+            "https://router.example.test",
+            allow_private_hosts=MOCK_ALLOWLIST,
+            transport=httpx.MockTransport(always_timeout_handler),
+        ).catalog()
+
+    assert attempts["n"] == 2
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
