@@ -168,7 +168,8 @@ def test_installed_plugin_registers_only_valid_source_hooks(tmp_path: Path) -> N
 
 # 4. pre_llm_call -> canonical before-turn event; bounded, cited, untrusted recall
 def test_pre_llm_call_translates_to_canonical_event() -> None:
-    event = hm.translate_hook("pre_llm_call", _fixture("pre_llm_call.json"), project="proj-a")
+    fired = dict(_fixture("pre_llm_call.json"), hook_fired_at=1760655600.0)
+    event = hm.translate_hook("pre_llm_call", fired, project="proj-a")
     assert event["schema_version"] == "lifecycle-event/v1"
     assert event["kind"] == "before_first_model_turn"
     ident = event["identity"]
@@ -178,7 +179,7 @@ def test_pre_llm_call_translates_to_canonical_event() -> None:
     assert ident["session_id"] == "20261016_190000_abc123"
     assert ident["source_event_id"] == "hermes:20261016_190000_abc123:t-1:pre_llm_call"
     assert len(event["content_hash"]) == 64
-    again = hm.translate_hook("pre_llm_call", _fixture("pre_llm_call.json"), project="proj-a")
+    again = hm.translate_hook("pre_llm_call", fired, project="proj-a")
     assert hm.logical_digest(event) == hm.logical_digest(again)
 
 

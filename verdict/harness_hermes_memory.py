@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -133,6 +134,13 @@ def translate_hook(
         for key in ("model", "platform", "sender_id", "cwd")
         if payload.get(key) is not None
     }
+    fired_at = payload.get("hook_fired_at")
+    if isinstance(fired_at, (int, float)) and not isinstance(fired_at, bool):
+        created_at = float(fired_at)
+        provenance["created_at_source"] = "hermes_hook_fire"
+    else:
+        created_at = time.time()
+        provenance["created_at_source"] = "adapter_receipt"
     return {
         "schema_version": SCHEMA,
         "kind": kind,
@@ -145,6 +153,7 @@ def translate_hook(
             "session_id": session_id,
             "source_event_id": f"hermes:{session_id}:{turn_id}:{hook}",
         },
+        "created_at": created_at,
         "trust": "untrusted",
         "classification": "source",
         "provenance": provenance,

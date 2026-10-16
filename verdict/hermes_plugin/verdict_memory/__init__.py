@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ def _settings() -> tuple[list[str], float]:
 
 
 def _call(hook: str, kwargs: dict[str, Any]) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = {"hook_fired_at": time.time()}
     for key in _FIELDS:
         value = kwargs.get(key)
         if value is None:
