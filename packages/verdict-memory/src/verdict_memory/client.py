@@ -89,10 +89,26 @@ class AiMemoryClient:
         self.config = config
         self._rpc_id = 0
         self._initialized = False
+        # Last typed failure for diagnostics (never healthy-empty swallow).
+        # Shape: {op, code, message, endpoint_redacted, project, workspace} | None
+        self.last_error: dict[str, str | None] | None = None
 
     def _next_id(self) -> int:
         self._rpc_id += 1
         return self._rpc_id
+
+    def _record_error(self, op: str, exc: MemoryProviderError) -> None:
+        self.last_error = {
+            "op": op,
+            "code": exc.code.value,
+            "message": exc.safe_message,
+            "endpoint_redacted": redact_secrets(self.config.endpoint),
+            "project": self.config.project,
+            "workspace": self.config.workspace,
+        }
+
+    def clear_error(self) -> None:
+        self.last_error = None
 
     def _headers(self, token: str | None) -> dict[str, str]:
         headers = {
@@ -163,11 +179,15 @@ class AiMemoryClient:
                     f"{self.config.endpoint}/mcp", headers=headers, json=payload
                 )
         except httpx.TimeoutException as exc:
-            raise MemoryProviderError(ProviderErrorCode.TIMEOUT, "ai-memory request timed out") from exc
+            err = MemoryProviderError(ProviderErrorCode.TIMEOUT, "ai-memory request timed out")
+            self._record_error(method, err)
+            raise err from exc
         except httpx.RequestError as exc:
-            raise MemoryProviderError(
+            err = MemoryProviderError(
                 ProviderErrorCode.UNREACHABLE, "ai-memory service is unreachable"
-            ) from exc
+            )
+            self._record_error(method, err)
+            raise err from exc
         if notify:
             return None
         self._raise_http(response)
@@ -178,7 +198,10 @@ class AiMemoryClient:
         if "error" in data:
             err = data["error"]
             msg = redact_secrets(str(err.get("message", err))) or "mcp error"
-            raise MemoryProviderError(ProviderErrorCode.SERVER_ERROR, msg)
+            exc = MemoryProviderError(ProviderErrorCode.SERVER_ERROR, msg)
+            self._record_error(method, exc)
+            raise exc
+        self.last_error = None
         return data.get("result")
 
     def _tool(self, name: str, arguments: dict[str, Any]) -> Any:
@@ -266,6 +289,7 @@ class AiMemoryClient:
                 capability="supported",
             )
         except MemoryProviderError as exc:
+            self._record_error("health", exc)
             status_map = {
                 ProviderErrorCode.TIMEOUT: ProviderResultStatus.TIMEOUT,
                 ProviderErrorCode.UNREACHABLE: ProviderResultStatus.UNAVAILABLE,
@@ -302,8 +326,15 @@ class AiMemoryClient:
             "project": self.config.project,
             "kind": event.memory_kind,
         }
-        if event.identity.session_id:
-            args["session_id"] = event.identity.session_id
+        # Static MCP clients must not invent session_id: ai-memory rejects UUIDs that
+        # are not sessions of the target project. Omit unless caller sets
+        # metadata["ai_memory_session_id"] to a verified session UUID.
+        verified = (event.metadata or {}).get("ai_memory_session_id")
+        if isinstance(verified, str) and re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            verified,
+        ):
+            args["session_id"] = verified
         page = self._tool("memory_write_page", args)
         path = None
         if isinstance(page, dict):
@@ -327,6 +358,7 @@ class AiMemoryClient:
                 },
             )
         except MemoryProviderError as exc:
+            self._record_error("memory_query", exc)
             status_map = {
                 ProviderErrorCode.TIMEOUT: ProviderResultStatus.TIMEOUT,
                 ProviderErrorCode.UNREACHABLE: ProviderResultStatus.UNAVAILABLE,
@@ -342,9 +374,21 @@ class AiMemoryClient:
         if isinstance(data, dict):
             hits_raw = data.get("hits") or data.get("results") or []
         hits: list[MemoryHit] = []
-        for page in hits_raw[: query.limit]:
+        wanted_project = query.project or self.config.project
+        wanted_workspace = query.workspace or self.config.workspace
+        for page in hits_raw:
             if not isinstance(page, dict):
                 continue
+            # Fail-closed client-side scope filter: ai-memory may return cross-project
+            # FTS hits; never present them as in-scope for a different project.
+            page_project = page.get("project") or page.get("project_name")
+            page_workspace = page.get("workspace") or page.get("workspace_name")
+            if page_project is not None and page_project != wanted_project:
+                continue
+            if page_workspace is not None and page_workspace != wanted_workspace:
+                continue
+            if len(hits) >= query.limit:
+                break
             path = str(page.get("path") or page.get("id") or "")
             snippet = page.get("body") or page.get("snippet") or page.get("title") or ""
             if isinstance(snippet, str):
@@ -355,7 +399,7 @@ class AiMemoryClient:
                 content=content,
                 identity=EventIdentity(
                     source_harness="ai-memory",
-                    project=query.project,
+                    project=wanted_project,
                     session_id=query.session_id or "unknown",
                     tenant=query.tenant,
                     workspace=query.workspace,
