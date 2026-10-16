@@ -314,6 +314,18 @@ class AiMemoryClient:
         return f"verdict-memory/{kind}/{key[:24]}.md"
 
     def put(self, event: LifecycleEvent) -> ExternalMemoryRef:
+        # Auth/config authority: never trust event.identity.project/workspace to choose
+        # the remote scope. Provenance may record them; writes always use client config.
+        if event.identity.project and event.identity.project != self.config.project:
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "event project does not match authenticated client config project",
+            )
+        if event.identity.workspace and event.identity.workspace != self.config.workspace:
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "event workspace does not match authenticated client config workspace",
+            )
         # Redact before network write
         body = redact_secrets(event.content) or ""
         if not body.lstrip().startswith("#"):

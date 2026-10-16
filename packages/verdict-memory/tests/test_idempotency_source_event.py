@@ -102,3 +102,9 @@ def test_without_source_event_id_falls_back_to_content_digest():
     assert e1.idempotency_key == e1.digest()
     assert e2.idempotency_key == e2.digest()
     assert e1.idempotency_key != e2.idempotency_key
+
+
+def test_same_source_event_id_different_session_does_not_collide():
+    a = _event(identity=_id(session_id="sess-a", source_event_id="same-id"))
+    b = _event(identity=_id(session_id="sess-b", source_event_id="same-id"))
+    assert a.idempotency_key != b.idempotency_key

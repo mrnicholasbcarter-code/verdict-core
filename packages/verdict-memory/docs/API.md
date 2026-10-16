@@ -83,7 +83,9 @@ Do **not** revive `AiMemoryExperimentalProvider` (D27/#893).
 
 ## source_event_id / idempotency (updated)
 - When `identity.source_event_id` is set, `idempotency_key = source_idempotency_key(...)`
-  namespaced by `(schema, protocol, source_harness, project, workspace, tenant, source_event_id)`.
+  namespaced by `(schema, protocol, source_harness, project, workspace, tenant, session_id, source_event_id)`.
+      Same `source_event_id` in a different session does not collide. Auth client config project/workspace
+      is authority for remote writes — event.identity.project is provenance only and must match config.
   **Excludes** `created_at`, `observed_at`, content, and adapter clocks.
 - `event.digest()` remains the **content fingerprint** (includes `created_at` + content_hash; excludes observation clocks).
 - Outbox: same key + same content fingerprint → return existing row (**original `created_at` preserved**).

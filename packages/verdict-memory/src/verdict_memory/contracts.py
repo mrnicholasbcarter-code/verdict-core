@@ -243,15 +243,23 @@ def source_idempotency_key(
     project: str,
     workspace: str,
     tenant: str,
+    session_id: str,
     source_event_id: str,
 ) -> str:
     """Stable enqueue key when harness supplies source_event_id.
 
-    Excludes created_at, observed_at, content, and adapter clocks so replay
-    with a rewritten timestamp does not fork the key.
+    Namespace rule (explicit): (schema, protocol, source_harness, project,
+    workspace, tenant, session_id, source_event_id). Same source_event_id in a
+    different session does NOT collide. Excludes created_at, observed_at,
+    content, and adapter clocks so replay with a rewritten timestamp does not
+    fork the key.
     """
     if not source_event_id.strip():
         raise ValueError("source_event_id is required for source_idempotency_key")
+    if not session_id.strip():
+        raise ValueError("session_id is required for source_idempotency_key")
+    if not project.strip() or not source_harness.strip():
+        raise ValueError("project and source_harness are required for source_idempotency_key")
     return event_digest(
         {
             "schema_version": schema_version,
@@ -260,6 +268,7 @@ def source_idempotency_key(
             "project": project,
             "workspace": workspace,
             "tenant": tenant,
+            "session_id": session_id,
             "source_event_id": source_event_id,
         }
     )
@@ -357,6 +366,7 @@ class LifecycleEvent:
                     project=self.identity.project,
                     workspace=self.identity.workspace,
                     tenant=self.identity.tenant,
+                    session_id=self.identity.session_id,
                     source_event_id=str(sid),
                 )
             else:

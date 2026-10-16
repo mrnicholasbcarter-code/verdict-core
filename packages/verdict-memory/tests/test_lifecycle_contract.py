@@ -113,6 +113,7 @@ def test_event_roundtrip_and_digest_excludes_observed_at():
         project=first.identity.project,
         workspace=first.identity.workspace,
         tenant=first.identity.tenant,
+        session_id=first.identity.session_id,
         source_event_id=str(first.identity.source_event_id),
     )
 
