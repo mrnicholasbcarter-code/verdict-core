@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from verdict.runtime_certification import HARNESS_PARITY_FACETS
 
 # ---------------------------------------------------------------------------
@@ -205,7 +207,7 @@ class TestClaudeParity:
 
 
 class TestHermesParity:
-    """Hermes harness reports all facets — all lifecycle facets UNSUPPORTED."""
+    """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
 
     def test_reports_all_facets(self, tmp_path: Path) -> None:
         from verdict.harness_hermes import certify
@@ -224,21 +226,42 @@ class TestHermesParity:
                 f"hermes facet {facet!r} has invalid level {level!r}"
             )
 
-    def test_all_lifecycle_facets_unsupported(self, tmp_path: Path) -> None:
-        """Hermes has no hook system — every lifecycle facet is unsupported."""
+    @pytest.mark.xfail(strict=False, reason="pending lane C harness_hermes change")
+    def test_wired_facets_are_partial(self, tmp_path: Path) -> None:
+        """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
         from verdict.harness_hermes import certify
 
         report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
-        for facet in LIFECYCLE_FACETS:
-            assert report.facets[facet] == "unsupported", (
-                f"hermes lifecycle facet {facet!r} should be unsupported, got {report.facets[facet]!r}"
+        wired = (
+            "hooks",
+            "session_start",
+            "before_first_turn",
+            "session_end",
+            "mutation_capability",
+        )
+        assert len(report.facets) == len(HARNESS_PARITY_FACETS)
+        for facet in wired:
+            assert report.facets[facet] == "partial", (
+                f"hermes facet {facet!r} should be partial, got {report.facets[facet]!r}"
             )
 
-    def test_hooks_unsupported(self, tmp_path: Path) -> None:
+    def test_unwired_lifecycle_facets_unsupported(self, tmp_path: Path) -> None:
+        """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
         from verdict.harness_hermes import certify
 
         report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
-        assert report.facets["hooks"] == "unsupported"
+        unwired = (
+            "tool_pre_post",
+            "edit_event",
+            "compaction_yield",
+            "verification_result",
+            "sync_async_semantics",
+        )
+        assert len(report.facets) == len(HARNESS_PARITY_FACETS)
+        for facet in unwired:
+            assert report.facets[facet] == "unsupported", (
+                f"hermes facet {facet!r} should be unsupported, got {report.facets[facet]!r}"
+            )
 
 
 class TestCodexParity:
