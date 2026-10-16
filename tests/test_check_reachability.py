@@ -661,3 +661,29 @@ def test_unknown_ratchet_base_is_an_error(ratchet_repo: Path) -> None:
     result = checker.check(ratchet_repo, use_vulture=False)
     with pytest.raises(RuntimeError, match="unknown ratchet base"):
         checker.ratchet(ratchet_repo, result, "no-such-ref")
+
+
+# These five still have no production importer. execution_hosts, the experimental
+# memory provider, and workflows.autodev await a controller decision; their parent
+# packages stay with them. Every other orphan module must leave the baseline.
+PENDING_CONTROLLER_ORPHANS = frozenset(
+    {
+        "verdict.execution_hosts",
+        "verdict.memory_providers",
+        "verdict.memory_providers.ai_memory_experimental",
+        "verdict.workflows",
+        "verdict.workflows.autodev",
+    }
+)
+
+
+def test_untriaged_orphan_modules_are_only_the_pending_controller_set() -> None:
+    """Only the five controller-pending orphan modules may stay UNTRIAGED."""
+    root = Path(__file__).parents[1]
+    entries = checker.load_baseline(root / checker.MODULE_BASELINE_NAME)
+    untriaged = {
+        entry.qualified_name
+        for entry in entries
+        if entry.reason.startswith(checker.UNTRIAGED)
+    }
+    assert untriaged == PENDING_CONTROLLER_ORPHANS
