@@ -20,7 +20,6 @@
       "verdict.autodev_routing",
       "verdict.decision_kernel",
       "verdict.intelligence",
-      "verdict.intelligence_adapter",
       "verdict.subagent_models"
     ],
     "reason": "Second selection authority beside the EligibilityLadder; no new production caller. M2 removes the remaining ones."

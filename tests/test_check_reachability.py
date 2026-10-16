@@ -682,8 +682,6 @@ def test_untriaged_orphan_modules_are_only_the_pending_controller_set() -> None:
     root = Path(__file__).parents[1]
     entries = checker.load_baseline(root / checker.MODULE_BASELINE_NAME)
     untriaged = {
-        entry.qualified_name
-        for entry in entries
-        if entry.reason.startswith(checker.UNTRIAGED)
+        entry.qualified_name for entry in entries if entry.reason.startswith(checker.UNTRIAGED)
     }
     assert untriaged == PENDING_CONTROLLER_ORPHANS
