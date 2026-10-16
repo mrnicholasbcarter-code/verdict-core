@@ -83,6 +83,7 @@ class TestDoctorParity:
         d.gateway_lifecycle = {}
         d.shared_memory = {}
         d.capability_report = {}
+        d.acceptance = {}
         return d
 
     def test_cli_calls_run_action(self) -> None:

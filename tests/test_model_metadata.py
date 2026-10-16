@@ -20,6 +20,7 @@ from verdict.metadata import (
     SOURCE_LITELLM,
     SOURCE_MODELS_DEV,
     SOURCE_MODELS_DEV_MODELS,
+    SOURCE_OPENROUTER_AA,
     FieldProvenance,
     ModelMetadataError,
     ProvenancedField,
@@ -34,8 +35,11 @@ from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord
 from verdict.metadata.sources import (
     MODELS_DEV_API_URL,
     HttpxJsonTransport,
+    apply_openrouter_aa_scores,
     apply_soft_scores,
+    fetch_openrouter_models_pages,
     parse_models_dev_api,
+    parse_openrouter_aa_scores,
     parse_soft_score_table,
 )
 from verdict.metadata.store import MetadataSnapshot
@@ -429,3 +433,253 @@ def test_models_dev_and_litellm_ingest_streaming_with_source_provenance() -> Non
     assert md.caps.streaming.provenance.source == SOURCE_MODELS_DEV_MODELS
     assert llm.caps.streaming is not None and llm.caps.streaming.value is False
     assert llm.caps.streaming.provenance.source == SOURCE_LITELLM
+
+
+class TestOpenRouterAAMirror:
+    def test_include_p1_fixture_attaches_exact_id_scores(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        status = snapshot.sources[SOURCE_OPENROUTER_AA]
+        assert status.status == "ok"
+        assert status.record_count is not None and status.record_count >= 3
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        gem = snapshot.record_by_id("google/gemini-2.0-flash")
+        meta = snapshot.record_by_id("meta/llama-3.3-70b-instruct")
+        assert mini is not None and gem is not None and meta is not None
+        assert mini.scores.aa_coding is not None and mini.scores.aa_coding.value == 80.0
+        assert mini.scores.aa_intelligence is not None and mini.scores.aa_intelligence.value == 10.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_OPENROUTER_AA
+        assert gem.scores.aa_intelligence is not None and gem.scores.aa_intelligence.value == 90.0
+        assert gem.scores.aa_coding is not None and gem.scores.aa_coding.value == 20.0
+        # numeric zero coding is real evidence, not missing
+        assert meta.scores.aa_coding is not None and meta.scores.aa_coding.value == 0.0
+        assert meta.scores.aa_intelligence is not None and meta.scores.aa_intelligence.value == 5.0
+
+    def test_batch_suffix_does_not_fuzzy_create_new_record(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        assert snapshot.record_by_id("openai/gpt-4o-mini:batch") is None
+        assert snapshot.record_by_id("unknown/not-in-store") is None
+
+    def test_invalid_numeric_scores_never_enter_store(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        groq = snapshot.record_by_id("groq/llama-3.3-70b-versatile")
+        assert groq is not None
+        assert groq.scores.aa_coding is None
+        assert groq.scores.aa_intelligence is None
+        assert groq.scores.aa_agentic is None
+
+    def test_include_p1_false_skips_openrouter(self, tmp_path: Path) -> None:
+        snapshot = _refresh(tmp_path, include_p1=False)
+        assert snapshot.sources[SOURCE_OPENROUTER_AA].status == "skipped"
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None
+        assert mini.scores.to_dict() == {}
+
+    def test_openrouter_fill_null_does_not_override_existing_aa(self, tmp_path: Path) -> None:
+        # First apply direct AA fixture, then OpenRouter mirror — existing wins.
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={
+                SOURCE_ARTIFICIAL_ANALYSIS: _load("artificial_analysis.json"),
+                SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json"),
+            },
+        )
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None and mini.scores.aa_agentic is not None
+        assert mini.scores.aa_agentic.value == 18.4
+        assert mini.scores.aa_agentic.provenance.source == SOURCE_ARTIFICIAL_ANALYSIS
+        # coding was null from AA fixture path for agentic-focused fixture; OR may fill coding
+        # AA fixture has coding_index 22.0 for mini — must be retained if applied first.
+        # Order in refresh: fixture AA specs loop first, then OR — so coding 22.0 kept.
+        assert mini.scores.aa_coding is not None
+        assert mini.scores.aa_coding.value == 22.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_ARTIFICIAL_ANALYSIS
+
+    def test_openrouter_pagination_rejects_foreign_next(self) -> None:
+        from verdict.metadata.sources import _normalize_openrouter_next
+
+        with pytest.raises(ModelMetadataError, match=r"openrouter\.ai"):
+            _normalize_openrouter_next(
+                "https://evil.example/api/v1/models?offset=100",
+                previous="https://openrouter.ai/api/v1/models?limit=100",
+            )
+
+    def test_openrouter_pagination_cycle_is_partial(self, tmp_path: Path) -> None:
+        from verdict.metadata.sources import HttpxJsonTransport, fetch_openrouter_models_pages
+
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            # Always return the same next pointing at start → cycle after first follow
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "openai/gpt-4o-mini",
+                            "benchmarks": {
+                                "artificial_analysis": {
+                                    "coding_index": 1.0,
+                                    "intelligence_index": 1.0,
+                                    "agentic_index": 1.0,
+                                }
+                            },
+                        }
+                    ],
+                    "links": {
+                        "next": "https://openrouter.ai/api/v1/models?output_modalities=text&limit=500&offset=0"
+                    },
+                    "total_count": 1,
+                },
+            )
+
+        transport = HttpxJsonTransport(transport=httpx.MockTransport(handler), clock=lambda: NOW)
+        rows, status = fetch_openrouter_models_pages(transport, max_pages=5)
+        assert rows  # partial retained
+        assert status.reason is not None and "cyclic" in status.reason
+        assert len(calls) >= 1
+
+
+class TestOpenRouterJoinAndPaginationInvariants:
+    """Sol PR #887 R1/R2: exact-else-canonical never both; raw_id; malformed next."""
+
+    def test_exact_id_else_canonical_never_both(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        records = {
+            k: ModelMetadataRecord(id=k, caps=CapabilityCaps())
+            for k in ("vendor/exact", "vendor/alternate")
+        }
+        applied = apply_openrouter_aa_scores(records, attachments)
+        assert applied == 1
+        assert records["vendor/exact"].scores.aa_coding is not None
+        assert records["vendor/exact"].scores.aa_coding.value == 88
+        assert records["vendor/alternate"].scores.aa_coding is None
+        assert records["vendor/exact"].scores.aa_coding.provenance.raw_id == "vendor/exact"
+
+    def test_canonical_fallback_keeps_openrouter_raw_id(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        only_canonical = {
+            "vendor/alternate": ModelMetadataRecord(id="vendor/alternate", caps=CapabilityCaps())
+        }
+        assert apply_openrouter_aa_scores(only_canonical, attachments) == 1
+        field = only_canonical["vendor/alternate"].scores.aa_coding
+        assert field is not None
+        assert field.value == 88
+        assert field.provenance.raw_id == "vendor/exact"
+        assert field.provenance.source == SOURCE_OPENROUTER_AA
+
+    def test_unmatched_openrouter_row_attaches_nothing(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        empty = {"other/id": ModelMetadataRecord(id="other/id", caps=CapabilityCaps())}
+        assert apply_openrouter_aa_scores(empty, attachments) == 0
+        assert empty["other/id"].scores.aa_coding is None
+
+    def test_malformed_next_with_incomplete_total_is_partial_or_error(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+
+        class Transport:
+            def get_json(self, url: str):
+                from verdict.metadata.sources import FetchedDocument
+
+                return FetchedDocument(
+                    url=url,
+                    data={"data": rows, "links": {"next": 42}, "total_count": 2},
+                    fetched_at=FETCHED_AT,
+                )
+
+        got_rows, status = fetch_openrouter_models_pages(Transport())  # type: ignore[arg-type]
+        assert len(got_rows) == 1
+        assert status.status == "error" or (
+            status.reason is not None and "partial" in status.reason
+        )
+        assert status.status != "ok" or (
+            status.reason is not None and status.reason.startswith("partial:")
+        )
+
+    def test_malformed_pagination_does_not_erase_p0(self, tmp_path: Path) -> None:
+        from verdict.metadata.sources import FixtureTransport
+
+        # Refresh with fixture OR payload that would be fine; separate unit covers fetch.
+        # P0 survival: include_p1 error path must leave models.dev records.
+        class BoomTransport(FixtureTransport):
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    raise ModelMetadataError("forced openrouter failure")
+                return super().get_json(url)
+
+        # Use file_transport payloads for P0 only; force live OR path via include_p1
+        # without OR fixture so transport is consulted — inject custom transport.
+        transport = file_transport(
+            models_dev_api=_load("models_dev_api.json"),
+            models_dev_models=_load("models_dev_models.json"),
+            litellm=_load("litellm_prices.json"),
+            fetched_at=FETCHED_AT,
+        )
+
+        # Wrap: P0 URLs from fixture map; OR URL returns malformed pagination.
+        class Mixed:
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    from verdict.metadata.sources import FetchedDocument
+
+                    return FetchedDocument(
+                        url=url,
+                        data={"data": [{"id": "x"}], "links": {"next": 42}, "total_count": 9},
+                        fetched_at=FETCHED_AT,
+                    )
+                return transport.get_json(url)
+
+        snapshot = refresh_metadata(
+            transport=Mixed(),  # type: ignore[arg-type]
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=tmp_path / "model-metadata.json",
+            now=NOW,
+            persist=True,
+            include_p1=True,
+        )
+        assert len(snapshot.records) >= 4
+        assert snapshot.record_by_id("openai/gpt-4o-mini") is not None
+        or_status = snapshot.sources[SOURCE_OPENROUTER_AA]
+        assert or_status.status == "error" or (
+            or_status.reason is not None and "partial" in or_status.reason
+        )

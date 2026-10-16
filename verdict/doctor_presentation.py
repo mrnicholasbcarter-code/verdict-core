@@ -37,6 +37,8 @@ def repair_command(finding: str) -> str:
         for word in ("missing", "invalid", "not set", "auth", "credential", "format")
     ):
         return f"verdict credentials set {credential.group(1)}"
+    if "live acceptance" in lowered:
+        return "verdict acceptance status"
     if any(word in lowered for word in ("gateway", "omniroute", "host url")):
         return "verdict detect"
     if any(

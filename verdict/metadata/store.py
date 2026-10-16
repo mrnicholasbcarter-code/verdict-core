@@ -23,6 +23,7 @@ from verdict.metadata.records import (
     SOURCE_MODELS_DEV,
     SOURCE_MODELS_DEV_MODELS,
     SOURCE_OPEN_LLM,
+    SOURCE_OPENROUTER_AA,
     FieldConflict,
     FieldProvenance,
     MetadataDrop,
@@ -41,15 +42,19 @@ from verdict.metadata.sources import (
     MODELS_DEV_API_URL,
     MODELS_DEV_MODELS_URL,
     OPEN_LLM_FIELD_MAP,
+    OPENROUTER_MODELS_URL,
     FetchedDocument,
     FixtureTransport,
     HttpxJsonTransport,
     JsonTransport,
+    apply_openrouter_aa_scores,
     apply_soft_scores,
+    fetch_openrouter_models_pages,
     merge_litellm_secondary,
     parse_litellm,
     parse_models_dev_api,
     parse_models_dev_models,
+    parse_openrouter_aa_scores,
     parse_soft_score_table,
     skipped_p1,
 )
@@ -455,7 +460,6 @@ def refresh_metadata(
         )
 
     p1_payloads = dict(p1_payloads or {})
-    _ = include_p1  # live P1 fetchers are stubs; fixtures still apply when provided
     p1_specs = (
         (SOURCE_ARTIFICIAL_ANALYSIS, AA_FIELD_MAP),
         (SOURCE_ARENA_ELO, ARENA_FIELD_MAP),
@@ -481,6 +485,58 @@ def refresh_metadata(
             version="fixture",
             record_count=applied,
             reason="stored only for ids that exactly match a models.dev record",
+        )
+
+    # Live OpenRouter /models AA mirror (unauthenticated). Opt-in via include_p1.
+    # Fixture override: p1_payloads[SOURCE_OPENROUTER_AA] may supply a /models page
+    # object or a list of model rows (tests). P1 failure must not undo P0 persist.
+    if include_p1:
+        or_fixture = p1_payloads.get(SOURCE_OPENROUTER_AA)
+        try:
+            if or_fixture is not None:
+                if isinstance(or_fixture, Mapping) and isinstance(or_fixture.get("data"), list):
+                    or_rows = list(or_fixture["data"])
+                elif isinstance(or_fixture, list):
+                    or_rows = list(or_fixture)
+                else:
+                    raise ModelMetadataError(
+                        "openrouter fixture must be a /models object or a list of rows"
+                    )
+                or_status = SourceStatus(
+                    source=SOURCE_OPENROUTER_AA,
+                    status="ok",
+                    url=OPENROUTER_MODELS_URL,
+                    fetched_at=fetched_at,
+                    version="fixture",
+                    reason=("fixture: Artificial Analysis indices mirrored via OpenRouter /models"),
+                )
+            else:
+                or_rows, or_status = fetch_openrouter_models_pages(transport)
+            attachments = parse_openrouter_aa_scores(
+                or_rows, fetched_at=or_status.fetched_at or fetched_at, version=or_status.version
+            )
+            applied = apply_openrouter_aa_scores(records, attachments)
+            sources[SOURCE_OPENROUTER_AA] = SourceStatus(
+                source=SOURCE_OPENROUTER_AA,
+                status=or_status.status,
+                url=or_status.url or OPENROUTER_MODELS_URL,
+                fetched_at=or_status.fetched_at or fetched_at,
+                version=or_status.version,
+                reason=or_status.reason,
+                record_count=applied,
+            )
+        except Exception as exc:
+            sources[SOURCE_OPENROUTER_AA] = SourceStatus(
+                source=SOURCE_OPENROUTER_AA,
+                status="error",
+                url=OPENROUTER_MODELS_URL,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+    elif SOURCE_OPENROUTER_AA not in sources:
+        sources[SOURCE_OPENROUTER_AA] = SourceStatus(
+            source=SOURCE_OPENROUTER_AA,
+            status="skipped",
+            reason="pass --include-p1 to fetch OpenRouter /models AA mirror (unauthenticated)",
         )
 
     map_drops: list[MetadataDrop] = []

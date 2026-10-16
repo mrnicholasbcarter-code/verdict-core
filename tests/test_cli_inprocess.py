@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 import verdict.actions.helpers as _action_helpers
+import verdict.prove_at_rest_service as _prove_at_rest_service
 from verdict import cli
 from verdict import doctor_diagnostics as dd
 from verdict.execution_packet import ExecutionPacket
@@ -19,10 +20,27 @@ from verdict.models import RoutingDecision
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
 
+def _fake_timer_state_active(unit: str) -> dict[str, object]:
+    return {"installed": True, "failed": False, "active": True, "state": "active"}
+
+
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No doctor test reads the host's real systemd user units (BOD-411 review).
+
+    CI runners have neither unit installed, so without this every test that
+    exercises ``cmd_doctor``/``_collect_doctor_diagnostics`` would fail there
+    while passing on a developer host that happens to have the timers. Tests
+    that need missing/failed/inactive states monkeypatch
+    ``verdict.prove_at_rest_service.timer_state`` again, explicitly.
+    """
+    monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
 
 
 def test_cmd_route_terse_uses_configured_primary(
@@ -331,6 +349,8 @@ def test_omniroute_token_ignores_private_sqlite_credentials(
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
 
     assert cli._read_omniroute_token() is None
 
@@ -343,17 +363,40 @@ def test_omniroute_token_uses_explicit_environment_reference(
     assert cli._read_omniroute_token() == "explicit-env-token"
 
 
-def test_omniroute_token_does_not_inspect_home_or_private_paths(
-    monkeypatch: pytest.MonkeyPatch,
+def test_omniroute_token_uses_only_the_documented_resolver_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_if_path_checked(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("credential lookup must not inspect private paths")
+    """BOD-411 D29: ``_read_omniroute_token`` is the one resolver, nothing broader.
 
-    monkeypatch.setattr(cli.os.path, "exists", fail_if_path_checked)
-    monkeypatch.setattr(cli.os.path, "expanduser", fail_if_path_checked)
+    Only the documented sources (env, credential store, the owner-only key
+    file, Prime's ``auth.json``, in that precedence) are ever consulted. A
+    key file readable by group or others is refused, not fallen back on.
+    """
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.delenv("PRIME_AGENT_HOME", raising=False)
 
+    # No source configured at all: None, not a crash or a private-path read.
     assert cli._read_omniroute_token() is None
+
+    # The owner-only key file is honoured.
+    key_dir = config / "verdict"
+    key_dir.mkdir(parents=True, mode=0o700)
+    key_file = key_dir / "omniroute-api-key"
+    key_file.write_text("key-file-token\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    assert cli._read_omniroute_token() == "key-file-token"
+
+    # A key file readable by group or others is refused, not used.
+    key_file.chmod(0o640)
+    assert cli._read_omniroute_token() is None
+    key_file.chmod(0o600)
+
+    # A fresh env key still wins over the key file (documented precedence).
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "env-token")
+    assert cli._read_omniroute_token() == "env-token"
 
 
 def test_omniroute_management_requests_return_none_when_no_local_gateway(
@@ -983,10 +1026,24 @@ def test_cmd_doctor_all_healthy(
 
     # A healthy host also has the memory-bridge state: text mode now runs the
     # same shared collector as --json, including run_doctor_diagnostics.
-    (tmp_path / ".verdict").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".verdict" / "memory.db").touch()
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    (verdict_dir / "memory.db").touch()
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
     cli.cmd_doctor()
 
@@ -1168,6 +1225,25 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     verdict_dir = tmp_path / ".verdict"
     verdict_dir.mkdir(parents=True, exist_ok=True)
     (verdict_dir / "memory.db").touch()
+
+    # BOD-411: doctor now reports health-cache freshness; give this shared
+    # fixture one fresh route so unrelated doctor exit-code tests stay green.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
+
+    # The hourly live acceptance job's newest result is green.
+    monkeypatch.setattr(
+        "verdict.acceptance_state.doctor_check", lambda **_: ({"state": "green"}, [], [])
+    )
 
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
@@ -1632,6 +1708,21 @@ def _doctor_parity_host(
         (tmp_path / ".verdict" / "memory.db").touch()
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
 
 def _doctor_both_modes(
@@ -2589,6 +2680,21 @@ def _old_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(socket, "create_connection", lambda *a, **k: MagicMock())
     monkeypatch.setattr(documentation_preflight, "discover_sources", lambda _root=None: ())
     monkeypatch.chdir(tmp_path)
+
+    # BOD-411: doctor now reports health-cache freshness.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    verdict_dir = tmp_path / ".verdict"
+    verdict_dir.mkdir(parents=True, exist_ok=True)
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
     return cfg_dir
 
 
@@ -2694,6 +2800,24 @@ def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
     docs = tmp_path / "docs" / "adr"
     docs.mkdir(parents=True)
     (docs / "ADR-001.md").write_text("# Local decision")
+
+    # BOD-411: health-cache freshness now follows VERDICT_HOME too.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import (
+        CATEGORY_OK,
+        HealthCache,
+        ProbeResult,
+        default_cache_path,
+    )
+
+    cache = HealthCache(default_cache_path())
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
     def forbidden(*args, **kwargs):
         pytest.fail("documentation preflight must not fetch removed products")

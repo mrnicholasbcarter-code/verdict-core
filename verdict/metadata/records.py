@@ -24,6 +24,7 @@ SOURCE_ARTIFICIAL_ANALYSIS = "artificial_analysis"
 SOURCE_ARENA_ELO = "arena_elo"
 SOURCE_OPEN_LLM = "open_llm_leaderboard"
 SOURCE_BFCL = "bfcl"
+SOURCE_OPENROUTER_AA = "openrouter.artificial_analysis"
 
 DROP_UNMAPPED: DropReason = "unmapped"
 DROP_REQUIRED_UNKNOWN: DropReason = "required_unknown"

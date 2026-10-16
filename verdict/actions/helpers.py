@@ -67,13 +67,20 @@ _CLI_DEFAULT_PROVIDERS = {
 
 
 def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
-    """Resolve the CLI provider/gateway bootstrap from the shared contract."""
-    from verdict.provider_bootstrap import resolve_provider_bootstrap
+    """Resolve the CLI provider/gateway bootstrap from the shared contract.
+
+    Passes ``credential_store_env`` so the CLI route path checks the same
+    non-environment sources (credentials.env, the owner-only key file, Prime's
+    auth.json) that ``api.py`` and ``worker_runtime.py`` already check; without
+    it a key held only in the key file was reported as missing (BOD-416).
+    """
+    from verdict.provider_bootstrap import load_credential_store_env, resolve_provider_bootstrap
 
     return resolve_provider_bootstrap(
         allow_default_providers=True,
         default_providers=_CLI_DEFAULT_PROVIDERS,
         require_authoritative=require_authoritative,
+        credential_store_env=load_credential_store_env(),
     )
 
 

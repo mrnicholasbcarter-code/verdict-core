@@ -841,6 +841,26 @@ def _manage_prove_service(*, uninstall: bool, **kwargs: Any) -> ActionResult:
     return ActionResult(data=data)
 
 
+def _action_acceptance_status(**kwargs: Any) -> ActionResult:
+    """The newest live acceptance result; not ok when red, stale or missing."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    ok = not issues and row.get("state") == "green"
+    data = {"latest": row, "issues": issues, "warnings": warnings}
+    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+
+
+def _action_acceptance_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install/remove the hourly acceptance timer."""
+    from verdict.acceptance_service import manage_service
+
+    data = manage_service(
+        dry_run=bool(kwargs.get("dry_run", False)), uninstall=bool(kwargs.get("uninstall", False))
+    )
+    return ActionResult(data=data)
+
+
 def _action_prove_at_rest_install_service(**kwargs: Any) -> ActionResult:
     """Render (dry-run) or install the bounded systemd user prober."""
     return _manage_prove_service(uninstall=False, **kwargs)
@@ -977,7 +997,8 @@ def _action_metadata_lookup(**kwargs: Any) -> ActionResult:
 def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     from datetime import datetime, timezone
 
-    from verdict.metadata import ModelMetadataError, file_transport, refresh_metadata
+    from verdict.metadata import ModelMetadataError
+    from verdict.metadata.store import file_transport, refresh_metadata
 
     store_path = kwargs.get("store_path")
     mapping_path = kwargs.get("mapping_path")

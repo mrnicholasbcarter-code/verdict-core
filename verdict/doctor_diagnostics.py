@@ -12,10 +12,13 @@ import re
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.prompt import Prompt
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # _cli_bootstrap is canonical in verdict.actions.helpers; import it here so
@@ -42,8 +45,16 @@ _DOCTOR_NETWORK_ERROR_MARKERS = (
 # OmniRoute API utilities — copied from cli.py to avoid a circular import.
 # ---------------------------------------------------------------------------
 def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-    return os.getenv("OMNIROUTE_API_KEY")
+    """The OmniRoute gateway key via the one resolver (BOD-411 D29).
+
+    ``credentials_store.resolve_api_key`` checks ``VERDICT_OMNIROUTE_API_KEY``/
+    ``OMNIROUTE_API_KEY`` (env, then the credential store), the owner-only
+    ``omniroute-api-key`` key file, then Prime's ``auth.json`` -- in that
+    documented precedence. It never inspects anything else.
+    """
+    from verdict.credentials_store import resolve_api_key
+
+    return resolve_api_key()
 
 
 def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
@@ -141,6 +152,8 @@ class DoctorDiagnostics:
         self.config_loaded: bool = False
         #: Report-only gateway lifecycle state. ``doctor`` never starts a gateway.
         self.gateway_lifecycle: dict[str, Any] = {}
+        #: The newest ``verdict acceptance run`` result (``acceptance_state.doctor_check``).
+        self.acceptance: dict[str, Any] = {}
 
 
 DOCTOR_PREFLIGHT_TIMEOUT_DEFAULT = 120.0
@@ -302,6 +315,22 @@ def _census_result_stale(last: Any) -> str | None:
     if age > 3 * CENSUS_INTERVAL_SECONDS:
         return f"last census {int(age)}s ago is stale; check: systemctl --user status verdict-census.timer"
     return None
+
+
+def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
+    """The newest live acceptance result: red or older than 2 h is an issue."""
+    from verdict.acceptance_state import doctor_check
+
+    row, issues, warnings = doctor_check()
+    diag.acceptance = row
+    age = row.get("age_seconds")
+    detail = f"{row.get('state')}: " + row.get("path", "no result yet")
+    if age is not None:
+        detail += f", {age / 60:.0f} min old"
+    state = "failed" if issues else "warning" if warnings else "ok"
+    diag.sections.append(("Live acceptance", state, detail))
+    diag.issues.extend(issues)
+    diag.warnings.extend(warnings)
 
 
 def _collect_doctor_diagnostics(
@@ -684,6 +713,7 @@ def _collect_doctor_diagnostics(
                         f"Configured provider node '{name}' ({url}) is unreachable/offline."
                     )
 
+    _doctor_acceptance(diag)
     # Credentials check
     sections.append(("Credentials", "header", ""))
     from verdict.credentials_registry import CREDENTIALS
@@ -720,4 +750,113 @@ def _collect_doctor_diagnostics(
     except Exception as e:
         issues_found.append(f"Census runtime check failed: {e}")
 
+    # Installed-state ownership (BOD-411): doctor fails when the background
+    # prober/sync timers are missing, inactive or failed, or when the health
+    # cache is too stale or empty to mean anything, instead of only checking
+    # docs/config/gateway and leaving the actual background service unverified.
+    sections.append(("Installed services", "header", ""))
+    for row in installed_service_rows():
+        sections.append((row["label"], row["status"], row["detail"]))
+        if row["status"] == "failed":
+            issues_found.append(row["detail"])
+
     return diag
+
+
+def installed_service_rows(
+    *, now: datetime | None = None, timer_state: Callable[[str], dict[str, Any]] | None = None
+) -> list[dict[str, str]]:
+    """Doctor rows for each background systemd unit and the health cache.
+
+    A missing or inactive timer, an ``is-failed`` unit, or a health cache
+    that is too stale or empty to be useful are all reported with ``status:
+    "failed"`` and named by unit/file so the drill
+    (``systemctl --user stop verdict-prove-at-rest.timer; verdict doctor``)
+    exits non-zero and names the unit. ``now`` and ``timer_state`` are
+    injectable for tests; without injection this reads the host's real
+    systemd user units (never available on a CI runner).
+    """
+    from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
+    from verdict.prove_at_rest_service import timer_state as _real_timer_state
+
+    timer_state = timer_state or _real_timer_state
+
+    rows: list[dict[str, str]] = []
+    for unit, label in (
+        (PROVE_AT_REST_TIMER, "Prove-at-rest timer"),
+        ("verdict-prime-sync.timer", "Prime-sync timer"),
+    ):
+        state = timer_state(unit)
+        if state["state"] in {"missing", "failed", "inactive"}:
+            rows.append(
+                {
+                    "label": label,
+                    "status": "failed",
+                    "detail": f"{unit} is {state['state']}; run 'verdict prove-at-rest install-service'"
+                    if unit == PROVE_AT_REST_TIMER
+                    else f"{unit} is {state['state']}",
+                }
+            )
+        else:
+            rows.append({"label": label, "status": "ok", "detail": f"{unit} is active"})
+
+    rows.append(health_cache_row(now=now))
+    return rows
+
+
+def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
+    """Doctor row for ``health-cache.json`` staleness and emptiness.
+
+    Failed when the cache is missing, when its newest entry is older than
+    2x the probe interval, or when it has no fresh and no stale route
+    (``fresh + stale == 0``): either state means the background prober is
+    not keeping eligibility current, whatever the timers report.
+
+    ``now`` is injectable so tests can exercise staleness with a fake clock
+    instead of racing the real one.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import (
+        STATE_FRESH,
+        STATE_STALE,
+        HealthCache,
+        default_cache_path,
+    )
+
+    path = default_cache_path()
+    if not path.exists():
+        return {
+            "label": "Health cache",
+            "status": "failed",
+            "detail": f"{path} does not exist; the prober has not run yet",
+        }
+    try:
+        cache = HealthCache(path)
+    except Exception as exc:
+        return {"label": "Health cache", "status": "failed", "detail": f"unreadable: {exc}"}
+    now = now if now is not None else datetime.now(timezone.utc)
+    routes = cache.routes()
+    fresh = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_FRESH)
+    stale = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_STALE)
+    if fresh + stale == 0:
+        return {
+            "label": "Health cache",
+            "status": "failed",
+            "detail": f"{path} has no fresh or stale route; the prober is not producing usable evidence",
+        }
+    newest_checked = max((entry.checked_at for entry in routes.values()), default=None)
+    if newest_checked is not None:
+        age_seconds = (now - newest_checked).total_seconds()
+        probe_interval_seconds = 300.0
+        if age_seconds > 2 * probe_interval_seconds:
+            return {
+                "label": "Health cache",
+                "status": "failed",
+                "detail": f"{path} newest entry is {int(age_seconds)}s old (> 2x the {int(probe_interval_seconds)}s probe interval)",
+            }
+    return {
+        "label": "Health cache",
+        "status": "ok",
+        "detail": f"{fresh} fresh, {stale} stale route(s)",
+    }

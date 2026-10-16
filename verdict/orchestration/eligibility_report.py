@@ -21,6 +21,11 @@ from verdict.orchestration.health_cache import HealthCache, default_cache_path
 from verdict.orchestration.session_evidence import SessionLedger
 from verdict.paths import verdict_home
 
+# Omitted openrouter_free_set: cache-only read from the caller-owned state dir.
+# Explicit None: no FREE assertion. Explicit set: use as-is.
+# Live refresh is owned by prove_at_rest / dedicated refresh (same cache path).
+_OPENROUTER_FREE_SET_OMITTED = object()
+
 
 def parse_provider_families(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     """``["cc,kr", "gc"]`` -> ``("cc", "gc", "kr")`` (deduplicated, sorted, lowercase)."""
@@ -144,6 +149,8 @@ def build_selector(
     visibility_executor: str = "prime",
     health_cache: HealthCache | None = None,
     session_ledger: SessionLedger | None = None,
+    openrouter_free_set: Any = _OPENROUTER_FREE_SET_OMITTED,
+    now: datetime | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -156,6 +163,9 @@ def build_selector(
     registry as-is and never writes it. Pass True only from a caller that
     exists to make that write explicit (``--sync-visibility``); see
     ``prime_visibility``'s docstring for the OpenSpec requirement this keeps.
+
+    ``now`` defaults to wall-clock UTC. Pass an explicit clock so cache TTL
+    checks and admission use the same instant as the caller (tests / replay).
     """
     from verdict.admission import (
         AdmissionStage,
@@ -164,6 +174,7 @@ def build_selector(
         default_runtime_evidence,
     )
     from verdict.omniroute_health import load_omniroute_health
+    from verdict.openrouter_free_set import OpenRouterFreeSet, load_openrouter_free_set
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import HealthResult, LaunchCandidate, openai_health_probe
@@ -179,7 +190,20 @@ def build_selector(
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (verdict_home() / "orchestration-health.json")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    # BOD-418: public OpenRouter 0/0 set. Selector construction is cache-only
+    # against the caller-owned state dir (same path prove_at_rest refresh writes).
+    # Missing cache => no openrouter/ FREE assertion (fail closed). Never fetch
+    # or write as a side effect of building a selector over gateway inventory.
+    if openrouter_free_set is _OPENROUTER_FREE_SET_OMITTED:
+        owned_cache = state_path.parent / "openrouter-free-set.json"
+        openrouter_free_set = load_openrouter_free_set(
+            now=now, cache_path=owned_cache, refresh=False
+        )
+    elif not isinstance(openrouter_free_set, OpenRouterFreeSet):
+        openrouter_free_set = None
     # Canonical admission over the full live inventory first. Scope, provider
     # family and the active controller are extra narrowing on that set.
     admitted = admit(
@@ -201,7 +225,11 @@ def build_selector(
         if any(c not in {"free", "subscription", "metered", "unknown"} for c in capacity):
             raise ValueError("Invalid capacity filter")
         classifier = EligibilityLadder(
-            rows, connections, lambda _: HealthResult(False, "not_probed"), state_path
+            rows,
+            connections,
+            lambda _: HealthResult(False, "not_probed"),
+            state_path,
+            openrouter_free_set=openrouter_free_set,
         )
         admitted = admitted.narrow(
             AdmissionStage.POLICY,
@@ -259,6 +287,7 @@ def build_selector(
         refresh_hook=refresh_hook,
         health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
+        openrouter_free_set=openrouter_free_set,
     )
 
 
