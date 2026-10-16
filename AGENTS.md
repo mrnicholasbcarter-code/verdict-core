@@ -26,6 +26,7 @@ standing invariants are [ADR 0001](docs/adr/0001-verdict-control-plane-invariant
 | Skipped or empty review is an error, not a pass. | [`tests/test_orch_review.py`](tests/test_orch_review.py) `::test_skipped_or_empty_review_fails_closed_without_provider_reselection`, `tests/test_orch_runtime.py::test_real_skipped_ocr_result_blocks_runtime_completion` |
 | A receipt is bound to the SHA-256 of `events.jsonl`. Tampering is detected. | [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py) |
 | Advisory signals may reorder admitted candidates. They never change membership or authorize a route. | [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py) (`TestAdvisoryRanker`) |
+| Fixture data never satisfies live proof. | [`tests/test_routing_demo.py`](tests/test_routing_demo.py) `::test_fixture_catalog_cannot_pass` |
 | Live smoke runs only with `VERDICT_LIVE_SMOKE=1`. | [`tests/test_live_smoke_opt_in.py`](tests/test_live_smoke_opt_in.py) |
 | Removed architecture (Ruflo / swarm / hivemind) stays removed. | [`tests/test_obsolete_architecture_absent.py`](tests/test_obsolete_architecture_absent.py), [`scripts/check_no_obsolete_architecture.py`](scripts/check_no_obsolete_architecture.py) |
 | Doc links resolve. New code is reachable. | [`scripts/check_doc_links.py`](scripts/check_doc_links.py), [`scripts/check_reachability.py`](scripts/check_reachability.py) (tests: `tests/test_check_doc_links.py`, `tests/test_check_reachability.py`) |
