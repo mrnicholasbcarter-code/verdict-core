@@ -187,6 +187,37 @@ def test_doctor_judge_ignores_only_its_own_acceptance_issue() -> None:
     assert acceptance.judge_doctor(1, json.dumps(other), "")[0] is False
 
 
+def test_judge_doctor_fails_closed_on_error_or_malformed_report() -> None:
+    # Crashed doctor with error payload: regression from release review
+    passed, reason, detail = acceptance.judge_doctor(1, '{"error":"doctor crashed"}', "")
+    assert passed is False
+    assert "doctor error (exit 1)" in reason
+    assert detail.get("error") == "doctor crashed"
+
+    # Missing issues list (malformed schema)
+    passed, reason, _ = acceptance.judge_doctor(1, "{}", "")
+    assert passed is False
+    assert "malformed" in reason
+
+    passed, reason, _ = acceptance.judge_doctor(0, '{"status": "ok"}', "")
+    assert passed is False
+    assert "malformed" in reason
+
+    passed, reason, _ = acceptance.judge_doctor(0, '{"issues": "not-a-list"}', "")
+    assert passed is False
+    assert "malformed" in reason
+
+    # Nonzero exit with empty issues list cannot pass implicitly
+    passed, reason, _ = acceptance.judge_doctor(1, '{"issues": []}', "unexpected crash")
+    assert passed is False
+    assert "without reporting issues" in reason
+
+    # Non-JSON / crash
+    passed, reason, _ = acceptance.judge_doctor(1, "Internal Server Error", "")
+    assert passed is False
+    assert "printed no JSON" in reason
+
+
 # -- alert state ----------------------------------------------------------------
 
 
@@ -426,3 +457,103 @@ def test_install_service_cli_dry_run_renders_the_units(
     assert report["dry_run"] is True
     assert "verdict-acceptance.service" in report["files"]
     assert not (tmp_path / "systemd").exists()
+
+
+def test_judge_route_accepts_bare_terse_output() -> None:
+    passed, reason, detail = acceptance.judge_route(0, "mistral/codestral-latest\n", "")
+    assert passed is True
+    assert reason == "routed to mistral/codestral-latest"
+    assert detail == {"model": "mistral/codestral-latest", "reason": None}
+
+    passed, reason, detail = acceptance.judge_route(0, "nvidia/google/gemma-4-31b-it\n", "")
+    assert passed is True
+    assert detail["model"] == "nvidia/google/gemma-4-31b-it"
+
+
+def test_judge_route_accepts_json_payload() -> None:
+    passed, reason, detail = acceptance.judge_route(0, json.dumps({"model": "p/a"}), "")
+    assert passed is True
+    assert reason == "routed to p/a"
+    assert detail == {"model": "p/a", "reason": None}
+
+    passed, reason, detail = acceptance.judge_route(
+        0, json.dumps({"model": "mistral/codestral-latest", "reason": "fastest"}), ""
+    )
+    assert passed is True
+    assert detail == {"model": "mistral/codestral-latest", "reason": "fastest"}
+
+
+def test_judge_route_refuses_blank_output() -> None:
+    passed, reason, detail = acceptance.judge_route(0, "", "")
+    assert passed is False
+    assert "no route" in reason
+    assert detail["model"] is None
+
+    passed, reason, detail = acceptance.judge_route(0, "   \n\n  ", "")
+    assert passed is False
+    assert "no route" in reason
+
+
+def test_judge_route_refuses_no_eligible_target_and_nulls() -> None:
+    passed, reason, detail = acceptance.judge_route(0, "no_eligible_target\n", "")
+    assert passed is False
+    assert "no route" in reason
+
+    passed, reason, detail = acceptance.judge_route(
+        0, json.dumps({"model": "no_eligible_target", "reason": "all cooling"}), ""
+    )
+    assert passed is False
+    assert "no route" in reason
+    assert detail["reason"] == "all cooling"
+
+    passed, reason, detail = acceptance.judge_route(0, "None\n", "")
+    assert passed is False
+
+    passed, reason, detail = acceptance.judge_route(0, json.dumps({"model": None}), "")
+    assert passed is False
+
+
+def test_judge_route_refuses_nonzero_exit() -> None:
+    passed, reason, detail = acceptance.judge_route(
+        1, json.dumps({"model": "no_eligible_target", "reason": "OmniRoute rejected API key"}), ""
+    )
+    assert passed is False
+    assert "exit 1" in reason
+    assert detail["reason"] == "OmniRoute rejected API key"
+
+    passed, reason, detail = acceptance.judge_route(1, "mistral/codestral-latest", "error")
+    assert passed is False
+    assert "exit 1" in reason
+
+
+def test_judge_route_refuses_malformed_json() -> None:
+    passed, reason, detail = acceptance.judge_route(0, '{"model": ', "")
+    assert passed is False
+    assert "no route" in reason
+    assert detail["reason"] == "malformed JSON"
+
+    passed, reason, detail = acceptance.judge_route(0, "{malformed json", "")
+    assert passed is False
+    assert "no route" in reason
+    assert detail["reason"] == "malformed JSON"
+
+
+def test_judge_route_refuses_logs_and_random_prose() -> None:
+    passed, reason, detail = acceptance.judge_route(
+        0, "I think the best route is gpt-4 for this task.", ""
+    )
+    assert passed is False
+    assert "no route" in reason
+    assert detail["reason"] == "invalid route name"
+
+    passed, reason, detail = acceptance.judge_route(0, "[INFO] starting routing engine...", "")
+    assert passed is False
+    assert detail["reason"] == "invalid route name"
+
+    passed, reason, detail = acceptance.judge_route(0, "warning: fallback route triggered", "")
+    assert passed is False
+    assert detail["reason"] == "invalid route name"
+
+    passed, reason, detail = acceptance.judge_route(0, "error: gateway connection refused", "")
+    assert passed is False
+    assert detail["reason"] == "invalid route name"
