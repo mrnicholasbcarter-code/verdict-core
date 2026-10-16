@@ -169,7 +169,10 @@ def register(subparsers: Any) -> None:
     metadata_refresh_p.add_argument(
         "--include-p1",
         action="store_true",
-        help="Record P1 skip reasons (AA/Arena/OpenLLM/BFCL); scores stored only from fixtures",
+        help=(
+            "Fetch OpenRouter /models AA indices into SoftScores (unauthenticated) and "
+            "record other P1 skip reasons; fixture p1 payloads still apply when supplied"
+        ),
     )
     metadata_refresh_p.add_argument(
         "--json", action="store_true", help="Output machine-readable JSON"

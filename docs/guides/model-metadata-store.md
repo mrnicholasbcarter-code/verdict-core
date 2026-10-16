@@ -2,8 +2,14 @@
 
 Core owns an independently fetched **model metadata store**. OmniRoute is
 inventory, execute, and health only — never the metadata source of truth.
-OpenRouter catalog endpoints are likewise **not** a metadata source of truth
-(independence + ToS).
+
+**2026-10-16 (BOD-108):** OpenRouter `GET /api/v1/models` is authorized as a
+**P1 soft-score mirror** for Artificial Analysis indices
+(`source=openrouter.artificial_analysis`), fill-null only onto existing Core
+records. models.dev remains the P0 hard-cap SoT. OmniRoute stays non-SoT. The
+prior categorical exclusion of OpenRouter as any metadata source is
+**superseded** for this ratings path (hard-cap fill and Design Arena Elo remain
+deferred).
 
 Decision record: [ADR-032](../adr/ADR-032-core-model-metadata-store.md)
 (store). Identity join follow-up: joining gateway model ids to models.dev
@@ -19,13 +25,16 @@ this guide covers the store, fetchers, mapping/join, and the read API
 | P0 primary (canonical join) | models.dev **models.json** | Provider-agnostic lab/model facts: tools, vision, structured, context, reasoning, attachment | `https://models.dev/models.json` — field provenance `source=models.dev.models` |
 | P0 primary (provider catalog) | models.dev **api.json** | Provider-scoped rows; fills ids not present in models.json | `https://models.dev/api.json` — field provenance `source=models.dev` |
 | P0 secondary | LiteLLM | context/price/tool/vision/structured **fill** when models.dev left the field unknown | `model_prices_and_context_window.json` on GitHub |
-| P1 stub | Artificial Analysis | intelligence / coding / **agentic** / latency — stored only if a payload is supplied | free API requires a key (~100 req/day) |
+| P1 live (opt-in `--include-p1`) | OpenRouter `/api/v1/models` AA mirror | `aa_intelligence` / `aa_coding` / `aa_agentic` fill-null; provenance `openrouter.artificial_analysis` | Unauthenticated; paginate via Core metadata HTTP client |
+| P1 stub | Artificial Analysis (direct) | same indices — fixture or future keyed fetch | free API requires a key (~100 req/day); OpenRouter mirror preferred |
 | P1 stub | Arena Elo | Elo — Hugging Face `lmarena-ai/leaderboard-dataset` | no core `huggingface_hub` dependency |
 | P1 stub | Open LLM Leaderboard | open-weight scores — HF `open-llm-leaderboard/contents` | same |
 | P1 stub | BFCL | tool-calling **quality** (binary `tools` still from models.dev) | HF CSVs, no stable JSON API |
 
-**Non-sources of truth:** OmniRoute `/v1/models`, OpenRouter `/api/v1/models`, and any
-gateway inventory payload. Those are execute/inventory only.
+**Non-sources of truth for hard caps:** OmniRoute `/v1/models` and any gateway
+inventory payload (execute/inventory/health only). OpenRouter `/api/v1/models`
+may supply **soft AA indices** under `--include-p1` as above; it is still not
+the hard-cap SoT.
 
 Refresh:
 

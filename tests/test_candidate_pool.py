@@ -546,3 +546,126 @@ def test_same_leaf_different_providers_remain_available_for_diversity() -> None:
         top_k=2,
     )
     assert {item.provider for item in receipt.shortlist} == {"provider-a", "provider-b"}
+
+
+def test_cold_start_selects_coding_metric_without_cross_fallback() -> None:
+    """code_edit uses aa_coding only; high intelligence does not substitute."""
+    high_code = "model/high-code"
+    high_intel = "model/high-intel"
+    store = _store(
+        (
+            _record(
+                high_code, scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0))
+            ),
+            _record(
+                high_intel, scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0))
+            ),
+        )
+    )
+    health = {
+        high_code: RouteHealth(state=HEALTH_OK, fresh=True),
+        high_intel: RouteHealth(state=HEALTH_OK, fresh=True),
+    }
+    receipt = build_candidate_pool(
+        [high_code, high_intel],
+        task="implement the feature with tests",
+        metadata=store,
+        health=health,
+        outcomes=(),
+        top_k=2,
+    )
+    assert [e.route_id for e in receipt.shortlist] == [high_code, high_intel]
+    winner = receipt.shortlist[0]
+    assert winner.eval_prior_kind == "metadata"
+    assert winner.eval_prior_metric == "aa_coding"
+    assert winner.eval_prior_value == 90.0
+    assert winner.eval_prior_provenance is not None
+    assert winner.eval_prior_provenance["source"] == SOURCE_MODELS_DEV
+    assert winner.eval_prior_metadata_id == high_code
+
+
+def test_cold_start_docs_selects_intelligence_metric() -> None:
+    high_code = "model/high-code"
+    high_intel = "model/high-intel"
+    store = _store(
+        (
+            _record(
+                high_code, scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0))
+            ),
+            _record(
+                high_intel, scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0))
+            ),
+        )
+    )
+    health = {
+        high_code: RouteHealth(state=HEALTH_OK, fresh=True),
+        high_intel: RouteHealth(state=HEALTH_OK, fresh=True),
+    }
+    receipt = build_candidate_pool(
+        [high_code, high_intel],
+        task="summarize the docs for the operator",
+        metadata=store,
+        health=health,
+        outcomes=(),
+        top_k=2,
+    )
+    assert receipt.shortlist[0].route_id == high_intel
+    assert receipt.shortlist[0].eval_prior_metric == "aa_intelligence"
+    assert receipt.shortlist[0].eval_prior_value == 90.0
+
+
+def test_missing_coding_prior_is_absent_even_with_high_intelligence() -> None:
+    only_intel = "model/intel-only"
+    store = _store((_record(only_intel, scores=SoftScores(aa_intelligence=_prov(95.0))),))
+    receipt = build_candidate_pool(
+        [only_intel],
+        task="implement a bug fix",
+        metadata=store,
+        health={only_intel: RouteHealth(state=HEALTH_OK, fresh=True)},
+        outcomes=(),
+        top_k=1,
+    )
+    entry = receipt.shortlist[0]
+    assert entry.eval_prior_kind == "absent"
+    assert entry.eval_prior_metric == "aa_coding"
+    assert entry.eval_prior_value is None
+    assert "eval_score" not in entry.score_features
+
+
+def test_zero_coding_is_evidence_not_missing() -> None:
+    zero = "model/zero-code"
+    store = _store((_record(zero, scores=SoftScores(aa_coding=_prov(0.0))),))
+    receipt = build_candidate_pool(
+        [zero],
+        task="refactor the module",
+        metadata=store,
+        health={zero: RouteHealth(state=HEALTH_OK, fresh=True)},
+        outcomes=(),
+        top_k=1,
+    )
+    entry = receipt.shortlist[0]
+    assert entry.eval_prior_kind == "metadata"
+    assert entry.eval_prior_value == 0.0
+    assert entry.score_features["eval_score"] == 0.0
+
+
+def test_caller_eval_score_wins_and_is_not_attributed_to_metadata() -> None:
+    route = "model/with-aa"
+    store = _store(
+        (_record(route, scores=SoftScores(aa_coding=_prov(80.0), aa_intelligence=_prov(80.0))),)
+    )
+    receipt = build_candidate_pool(
+        [route],
+        task="implement tests",
+        metadata=store,
+        health={route: RouteHealth(state=HEALTH_OK, fresh=True)},
+        evidence={route: RouteEvidence(eval_score=15.0)},
+        outcomes=(),
+        top_k=1,
+    )
+    entry = receipt.shortlist[0]
+    assert entry.eval_prior_kind == "caller_evidence"
+    assert entry.eval_prior_metric is None
+    assert entry.eval_prior_value == 15.0
+    assert entry.eval_prior_provenance is None
+    assert abs(entry.score_features["eval_score"] - 0.15) < 1e-9

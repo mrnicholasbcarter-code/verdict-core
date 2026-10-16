@@ -35,3 +35,11 @@ the capability hard gate (spend preservation). This slice does not wire the capa
 Admit/ranking code that needs tools/vision/structured/context must read Core's
 store, not OmniRoute catalog rows. Receipts that cite a cap must copy that
 field's provenance. Expanding the map is a data change, not a heuristic.
+
+## Addendum 2026-10-16 (BOD-108)
+
+Operator authorized OpenRouter `GET /api/v1/models` as a P1 **soft-score** source
+mirroring Artificial Analysis indices into Core SoftScores (fill-null,
+`source=openrouter.artificial_analysis`). models.dev remains P0 hard-cap
+authority; OmniRoute remains non-SoT. Prior docs that categorically barred
+OpenRouter as any metadata source are superseded for this ratings path only.
