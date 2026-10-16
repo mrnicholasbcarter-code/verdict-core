@@ -1,0 +1,17 @@
+{
+  "_synthetic": true,
+  "_note": "synthetic: shaped like Codex 0.161.0 hook stdin, not yet live-observed",
+  "session_id": "sess-a-0001",
+  "turn_id": "turn-a-1",
+  "cwd": "/work/project-a",
+  "hook_event_name": "PostToolUse",
+  "transcript_path": "/home/u/.codex/sessions/2026/10/16/rollout-sess-a.jsonl",
+  "model": "gpt-5",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": [
+      "echo",
+      "lane-b-smoke"
+    ]
+  }
+}

@@ -12,9 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from verdict.harness_claude import HOOK_COMMAND_TEMPLATE
 from verdict.memory_bridge import configure_memory_bridge, uninstall_memory_bridge
 from verdict.memory_harness.claude import install_claude_hooks
-from verdict.memory_harness.codex import install_codex_hooks
+from verdict.memory_harness.codex import (
+    CODEX_HOOK_EVENTS,
+    HOOK_TIMEOUT_SECONDS,
+    hook_command,
+    install_codex_hooks,
+)
 from verdict.memory_plane import MemoryPlane
 
 BRIDGE = (
@@ -44,15 +50,15 @@ CLAUDE_EVENTS = (
 
 
 def _claude_cmd(event: str) -> str:
-    return f"python -m verdict.harness_claude hook {event}"
+    return HOOK_COMMAND_TEMPLATE.format(event=event)
 
 
-CODEX_POST = (
+LEGACY_CODEX_POST = (
     "verdict hook record 'codex_session' "
     "'$(cat /tmp/codex_last_prompt 2>/dev/null || echo \"no prompt captured\")' "
     "--namespace sessions --source codex 2>/dev/null || true"
 )
-CODEX_RECALL = (
+LEGACY_CODEX_RECALL = (
     "verdict hook recall '$(cat /tmp/codex_session_prompt 2>/dev/null || echo \"\")' "
     "--json --limit 20 2>/dev/null || true"
 )
@@ -158,6 +164,22 @@ def test_claude_hooks_replace_invalid_json(tmp_path: Path) -> None:
     assert "not json" not in settings.read_text(encoding="utf-8")
 
 
+def _assert_canonical_codex_hooks(document: dict[str, object]) -> None:
+    hooks = document["hooks"]
+    assert isinstance(hooks, dict)
+    for event in CODEX_HOOK_EVENTS:
+        groups = hooks[event]
+        assert isinstance(groups, list)
+        verdict_hooks = [
+            hook
+            for group in groups
+            for hook in group.get("hooks", [])
+            if hook.get("command") == hook_command(event)
+        ]
+        assert len(verdict_hooks) == 1, event
+        assert verdict_hooks[0]["timeout"] == HOOK_TIMEOUT_SECONDS
+
+
 def test_codex_hooks_write_canonical_commands_and_ignore_shared_db(tmp_path: Path) -> None:
     hooks = tmp_path / "nested" / "hooks.json"
     unused = tmp_path / "not-created" / "shared.db"
@@ -167,28 +189,41 @@ def test_codex_hooks_write_canonical_commands_and_ignore_shared_db(tmp_path: Pat
     assert hooks.is_file()
     assert not unused.exists()
     document = json.loads(hooks.read_text(encoding="utf-8"))
-    assert document["hooks"]["PostToolUse"][0]["matcher"] == "Write|Edit|Bash"
-    assert document["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"] == 10
-    assert _commands(document["hooks"]["PostToolUse"]) == [CODEX_POST]
-    assert document["hooks"]["SessionStart"][0]["matcher"] == "startup|resume"
-    assert document["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] == 10
-    assert _commands(document["hooks"]["SessionStart"]) == [CODEX_RECALL]
+    assert set(document["hooks"]) == set(CODEX_HOOK_EVENTS)
+    assert len(CODEX_HOOK_EVENTS) == 11
+    _assert_canonical_codex_hooks(document)
+    for event in CODEX_HOOK_EVENTS:
+        assert document["hooks"][event] == [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command(event),
+                        "timeout": HOOK_TIMEOUT_SECONDS,
+                    }
+                ]
+            }
+        ]
     assert str(unused) not in hooks.read_text(encoding="utf-8")
+    assert "/tmp/codex_" not in hooks.read_text(encoding="utf-8")
 
 
 def test_codex_hooks_keep_user_entries_and_noncanonical_verdict_commands(tmp_path: Path) -> None:
     hooks = tmp_path / "hooks.json"
-    quoted = CODEX_RECALL.replace("'", '"')
     original = {
         "version": 1,
         "hooks": {
             "PostToolUse": [
-                {"matcher": "Custom", "hooks": [{"type": "command", "command": "echo user-codex"}]}
+                {"matcher": "Custom", "hooks": [{"type": "command", "command": "echo user-codex"}]},
+                {
+                    "matcher": "Write|Edit|Bash",
+                    "hooks": [{"type": "command", "command": LEGACY_CODEX_POST, "timeout": 10}],
+                },
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume",
-                    "hooks": [{"type": "command", "command": quoted, "timeout": 10}],
+                    "hooks": [{"type": "command", "command": LEGACY_CODEX_RECALL, "timeout": 10}],
                 }
             ],
         },
@@ -202,12 +237,14 @@ def test_codex_hooks_keep_user_entries_and_noncanonical_verdict_commands(tmp_pat
     assert hooks.read_text(encoding="utf-8") == first
     document = json.loads(first)
     assert document["version"] == 1
+    _assert_canonical_codex_hooks(document)
     post = _commands(document["hooks"]["PostToolUse"])
-    assert "echo user-codex" in post
-    assert post.count(CODEX_POST) == 1
+    assert post.count("echo user-codex") == 1
+    assert post.count(hook_command("PostToolUse")) == 1
+    assert LEGACY_CODEX_POST not in post
     session = _commands(document["hooks"]["SessionStart"])
-    assert session.count(quoted) == 1
-    assert CODEX_RECALL not in session
+    assert session == [hook_command("SessionStart")]
+    assert "/tmp/codex_" not in first
 
 
 def test_codex_hooks_replace_invalid_json(tmp_path: Path) -> None:
@@ -217,7 +254,8 @@ def test_codex_hooks_replace_invalid_json(tmp_path: Path) -> None:
     install_codex_hooks(hooks, tmp_path / "shared.db")
 
     document = json.loads(hooks.read_text(encoding="utf-8"))
-    assert _commands(document["hooks"]["PostToolUse"]) == [CODEX_POST]
+    _assert_canonical_codex_hooks(document)
+    assert _commands(document["hooks"]["PostToolUse"]) == [hook_command("PostToolUse")]
     assert "not json" not in hooks.read_text(encoding="utf-8")
 
 
@@ -242,7 +280,7 @@ def test_configure_writes_claude_and_codex_files_under_isolated_home(
     claude_settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert _claude_cmd("PreToolUse") in _commands(claude_settings["hooks"]["PreToolUse"])
     codex_hooks = json.loads((home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-    assert CODEX_POST in _commands(codex_hooks["hooks"]["PostToolUse"])
+    _assert_canonical_codex_hooks(codex_hooks)
     assert (home / "keep.txt").read_text(encoding="utf-8") == "unrelated"
     assert (cwd / "README.md").read_text(encoding="utf-8") == "unrelated"
 
@@ -346,29 +384,45 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     verdict_dir.mkdir(exist_ok=True)
     (verdict_dir / "keep.dat").write_text("keep", encoding="utf-8")
     settings = home / ".claude" / "settings.json"
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    document["hooks"].setdefault("PreToolUse", []).append(
+        {"matcher": "Read", "hooks": [{"type": "command", "command": "echo keep-read"}]}
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
     hooks = home / ".codex" / "hooks.json"
     claude_md = cwd / "CLAUDE.md"
-    settings_before = settings.read_bytes()
-    hooks_before = hooks.read_bytes()
     claude_before = claude_md.read_bytes()
 
     first = uninstall_memory_bridge(home, cwd, purge_data=False)
 
     assert first == {
         "status": "success",
-        "uninstalled_targets": [".mcp.json", ".claude/settings.json (hooks)"],
+        "uninstalled_targets": [
+            ".mcp.json",
+            ".claude/settings.json (hooks)",
+            ".codex/hooks.json (hooks)",
+        ],
     }
     assert not (cwd / ".mcp.json").exists()
-    assert settings.read_bytes() == settings_before
-    assert hooks.read_bytes() == hooks_before
+    remaining = json.loads(settings.read_text(encoding="utf-8"))
+    commands = [c for groups in remaining.get("hooks", {}).values() for c in _commands(groups)]
+    assert commands == ["echo keep-read"]
+    assert not any(_claude_cmd(event) in commands for event in CLAUDE_EVENTS)
+    settings_after = settings.read_bytes()
+    codex_left = json.loads(hooks.read_text(encoding="utf-8"))
+    for event in CODEX_HOOK_EVENTS:
+        groups = codex_left.get("hooks", {}).get(event, [])
+        assert hook_command(event) not in _commands(groups)
+    hooks_after = hooks.read_bytes()
     assert claude_before == claude_md.read_bytes()
     assert (hermes / "verdict_bridge.json").read_text(encoding="utf-8") == '{"memory_plane": "x"}'
     assert (verdict_dir / "keep.dat").read_text(encoding="utf-8") == "keep"
     assert (home / "keep.txt").read_text(encoding="utf-8") == "unrelated"
 
     second = uninstall_memory_bridge(home, cwd, purge_data=False)
-    assert second["uninstalled_targets"] == [".claude/settings.json (hooks)"]
-    assert settings.read_bytes() == settings_before
+    assert second["uninstalled_targets"] == []
+    assert settings.read_bytes() == settings_after
+    assert hooks.read_bytes() == hooks_after
 
 
 def test_uninstall_purge_removes_verdict_dir_and_leaves_unrelated_files(
