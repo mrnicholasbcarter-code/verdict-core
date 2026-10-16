@@ -1,0 +1,46 @@
+{
+  "canonical_json": "{\"classification\":\"source\",\"content\":\"shared note about routing budgets\",\"content_hash\":\"26c33694d8ba17fdedd00827e5ab6f6ba683129559d0a74d948036d71af4b30d\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"e18879e9a9d487de5817feb3270da333074ba8fc9f1550e7871e896f74113478\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"manual_capture\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.0,\"payload\":{},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
+  "contract_api_version": "0.1.0a1",
+  "digest": "e18879e9a9d487de5817feb3270da333074ba8fc9f1550e7871e896f74113478",
+  "digest_payload_note": "idempotency_key equals digest; adapter timestamps must not fork identity",
+  "event": {
+    "classification": "source",
+    "content": "shared note about routing budgets",
+    "content_hash": "26c33694d8ba17fdedd00827e5ab6f6ba683129559d0a74d948036d71af4b30d",
+    "created_at": 1700000000.0,
+    "deadline_at": null,
+    "derived_from": [],
+    "idempotency_key": "e18879e9a9d487de5817feb3270da333074ba8fc9f1550e7871e896f74113478",
+    "identity": {
+      "attempt_id": "attempt-1",
+      "parent_session_id": null,
+      "project": "verdict",
+      "session_id": "sess-1",
+      "source_agent": "worker-a",
+      "source_harness": "verdict",
+      "tenant": "default",
+      "workspace": "default"
+    },
+    "kind": "manual_capture",
+    "memory_kind": "memory",
+    "metadata": {
+      "extension": {
+        "k": 1
+      }
+    },
+    "observed_at": 1700000001.0,
+    "payload": {},
+    "protocol_version": "1",
+    "provenance": {},
+    "revision": "1",
+    "schema_version": "lifecycle-event/v1",
+    "scope": "default",
+    "sensitivity": "standard",
+    "trust": "remote-advisory"
+  },
+  "schema": "lifecycle-event/v1",
+  "serialization": {
+    "digest": "sha256(utf-8 canonical json of digest payload; observed_at excluded)",
+    "json": "sort_keys=True, separators=(',', ':'), ensure_ascii=False"
+  }
+}
