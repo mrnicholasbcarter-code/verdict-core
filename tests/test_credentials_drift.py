@@ -10,6 +10,18 @@ import pytest
 from verdict.credentials_registry import CREDENTIALS, DEPENDENCIES
 
 
+def test_dependency_names_use_verdict_core_package() -> None:
+    """DependencySpec names for this package must use verdict-core extras.
+
+    `verdict` is an unrelated PyPI project. Extra names like verdict[server]
+    would display the wrong package in setup/credentials output.
+    """
+    offenders = [dep.name for dep in DEPENDENCIES if dep.name.startswith("verdict[")]
+    assert not offenders, "Found dependency name(s) not naming verdict-core:\n" + "\n".join(
+        f"  - {name}" for name in offenders
+    )
+
+
 def test_dependency_install_hints_use_verdict_core_package() -> None:
     """Install hints for this package must name verdict-core on PyPI.
 
