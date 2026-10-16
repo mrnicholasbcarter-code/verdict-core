@@ -18,7 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from verdict.memory_gate import MemoryGate, MemoryWriteRequest
-from verdict.memory_harness.claude import install_claude_hooks, install_claude_instructions
+from verdict.memory_harness.claude import (
+    install_claude_hooks,
+    install_claude_instructions,
+    uninstall_claude_hooks,
+)
 from verdict.memory_harness.codex import install_codex_hooks, install_codex_instructions
 from verdict.memory_harness.hermes import install_hermes_bridge
 from verdict.memory_harness.prime import install_prime_bridge
@@ -774,10 +778,13 @@ def uninstall_memory_bridge(home_dir: Path, cwd: Path, purge_data: bool = False)
         mcp_local.unlink()
         uninstalled.append(".mcp.json")
 
-    # Remove .claude settings hooks (optional - just note)
+    # Remove only Verdict-managed Claude hooks; user hooks stay.
     settings_file = home_dir / ".claude" / "settings.json"
-    if settings_file.exists():
-        uninstalled.append(".claude/settings.json (hooks)")
+    if settings_file.is_file():
+        before = settings_file.read_bytes()
+        uninstall_claude_hooks(settings_file)
+        if settings_file.read_bytes() != before:
+            uninstalled.append(".claude/settings.json (hooks)")
 
     return {"status": "success", "uninstalled_targets": uninstalled}
 

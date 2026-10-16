@@ -374,9 +374,13 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     verdict_dir.mkdir(exist_ok=True)
     (verdict_dir / "keep.dat").write_text("keep", encoding="utf-8")
     settings = home / ".claude" / "settings.json"
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    document["hooks"].setdefault("PreToolUse", []).append(
+        {"matcher": "Read", "hooks": [{"type": "command", "command": "echo keep-read"}]}
+    )
+    settings.write_text(json.dumps(document), encoding="utf-8")
     hooks = home / ".codex" / "hooks.json"
     claude_md = cwd / "CLAUDE.md"
-    settings_before = settings.read_bytes()
     hooks_before = hooks.read_bytes()
     claude_before = claude_md.read_bytes()
 
@@ -387,7 +391,11 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
         "uninstalled_targets": [".mcp.json", ".claude/settings.json (hooks)"],
     }
     assert not (cwd / ".mcp.json").exists()
-    assert settings.read_bytes() == settings_before
+    remaining = json.loads(settings.read_text(encoding="utf-8"))
+    commands = [c for groups in remaining.get("hooks", {}).values() for c in _commands(groups)]
+    assert commands == ["echo keep-read"]
+    assert not any(_claude_cmd(event) in commands for event in CLAUDE_EVENTS)
+    settings_after = settings.read_bytes()
     assert hooks.read_bytes() == hooks_before
     assert claude_before == claude_md.read_bytes()
     assert (hermes / "verdict_bridge.json").read_text(encoding="utf-8") == '{"memory_plane": "x"}'
@@ -395,8 +403,8 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     assert (home / "keep.txt").read_text(encoding="utf-8") == "unrelated"
 
     second = uninstall_memory_bridge(home, cwd, purge_data=False)
-    assert second["uninstalled_targets"] == [".claude/settings.json (hooks)"]
-    assert settings.read_bytes() == settings_before
+    assert second["uninstalled_targets"] == []
+    assert settings.read_bytes() == settings_after
 
 
 def test_uninstall_purge_removes_verdict_dir_and_leaves_unrelated_files(
