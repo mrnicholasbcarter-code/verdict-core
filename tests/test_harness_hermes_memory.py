@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -285,3 +286,170 @@ def test_backend_failure_degrades_with_gap_outbox_and_blocks_new_work(tmp_path: 
     dispatch_new_work()
     assert dispatched == []
     assert admission.failures and admission.failures[0] == hm.GAP_BACKEND_UNAVAILABLE
+
+
+# ---- lifecycle-event/v1 backend seam (P-shaped fakes; P client on security hold)
+
+
+@dataclass(frozen=True)
+class Ref:
+    provider_id: str
+    external_id: str
+
+
+@dataclass(frozen=True)
+class Event:
+    raw: dict[str, Any]
+
+    @property
+    def content(self) -> str:
+        return str(self.raw["content"])
+
+    @property
+    def identity(self) -> Any:
+        return type("Identity", (), self.raw["identity"])()
+
+
+@dataclass(frozen=True)
+class Hit:
+    ref: Ref
+    event: Event
+    untrusted: bool = True
+
+
+@dataclass(frozen=True)
+class Result:
+    status: str
+    hits: tuple[Hit, ...] = ()
+
+
+@dataclass
+class Query:
+    query: str
+    project: str
+    workspace: str = "default"
+    limit: int = 10
+
+
+@dataclass
+class PShapedFake:
+    status: str = "available"
+    raise_on_put: bool = False
+    raise_on_search: bool = False
+    stored: list[Event] = field(default_factory=list)
+    queries: list[Query] = field(default_factory=list)
+
+    def put(self, event: Event) -> Ref:
+        if self.raise_on_put or self.status != "available":
+            raise ConnectionError("provider unavailable")
+        self.stored.append(event)
+        return Ref("fake-verdict-memory", f"ext-{len(self.stored)}")
+
+    def search(self, query: Query) -> Result:
+        self.queries.append(query)
+        if self.raise_on_search:
+            raise TimeoutError("timed out")
+        if self.status != "available":
+            return Result(status=self.status)
+        return Result(
+            status="available",
+            hits=tuple(Hit(Ref("f", f"ext-{i}"), e) for i, e in enumerate(self.stored)),
+        )
+
+
+class PAdmission:
+    def __init__(self) -> None:
+        self.failures: list[str] = []
+
+    def record_backend_failure(self, reason: str) -> None:
+        self.failures.append(reason)
+
+
+def _bridge(
+    tmp_path: Path,
+    fake: PShapedFake,
+    loaded: list[bytes] | None = None,
+    admission: Any = None,
+    max_events: int = 3,
+) -> hm.HermesMemoryBridge:
+    def load_event(blob: bytes) -> Event:
+        if loaded is not None:
+            loaded.append(blob)
+        return Event(json.loads(blob))
+
+    backend = hm.LifecycleBackendAdapter(fake, load_event=load_event, make_query=Query)
+    return hm.HermesMemoryBridge(
+        provider=backend,
+        outbox=hm.BoundedJsonlOutbox(tmp_path / "outbox.jsonl", max_events=max_events),
+        project="proj-a",
+        admission=admission,
+    )
+
+
+def test_capture_hands_canonical_lifecycle_event_bytes_to_backend(tmp_path: Path) -> None:
+    fake, loaded = PShapedFake(), []
+    resp = _bridge(tmp_path, fake, loaded).handle("post_llm_call", _fixture("post_llm_call.json"))
+    assert resp.status == "captured" and resp.gaps == ()
+    assert len(loaded) == 1 and len(fake.stored) == 1
+    record = json.loads(loaded[0])
+    assert loaded[0] == hm.canonical_json(record)  # P serialization: sorted, compact, UTF-8
+    assert record["schema_version"] == "lifecycle-event/v1"
+    assert record["kind"] == "before_yield"
+    assert (
+        record["identity"]["source_event_id"] == "hermes:20261016_190000_abc123:t-1:post_llm_call"
+    )
+    assert "SHOULDNOTLEAK" not in loaded[0].decode("utf-8")
+
+
+def test_recall_maps_available_hits_and_scopes_query_from_config(tmp_path: Path) -> None:
+    fake = PShapedFake()
+    bridge = _bridge(tmp_path, fake)
+    assert bridge.handle("pre_llm_call", _fixture("pre_llm_call.json")).status == "empty"
+    bridge.handle("post_llm_call", _fixture("post_llm_call.json"))
+    hostile = dict(_fixture("pre_llm_call.json"), project="proj-b", workspace="evil")
+    resp = bridge.handle("pre_llm_call", hostile)
+    assert resp.status == "ok" and resp.context
+    assert "[hermes:20261016_190000_abc123:t-1:post_llm_call]" in resp.context
+    assert (fake.queries[-1].project, fake.queries[-1].workspace) == ("proj-a", "default")
+
+
+def test_non_available_status_is_named_gap_not_empty(tmp_path: Path) -> None:
+    for status in ("unavailable", "auth_failed", "malformed", "timeout"):
+        admission = PAdmission()
+        resp = _bridge(tmp_path, PShapedFake(status=status), admission=admission).handle(
+            "pre_llm_call", _fixture("pre_llm_call.json")
+        )
+        assert resp.status == "error", status
+        assert resp.context is None
+        assert hm.GAP_BACKEND_UNAVAILABLE in resp.gaps
+        assert admission.failures == [hm.GAP_BACKEND_UNAVAILABLE]
+    raising = _bridge(tmp_path, PShapedFake(raise_on_search=True)).handle(
+        "pre_llm_call", _fixture("pre_llm_call.json")
+    )
+    assert raising.status == "error" and hm.GAP_BACKEND_UNAVAILABLE in raising.gaps
+
+
+def test_put_failure_keeps_bounded_outbox_and_reports_gap(tmp_path: Path) -> None:
+    fake, admission = PShapedFake(raise_on_put=True), PAdmission()
+    bridge = _bridge(tmp_path, fake, admission=admission, max_events=2)
+    for turn in ("t-1", "t-2", "t-3"):
+        resp = bridge.handle("post_llm_call", dict(_fixture("post_llm_call.json"), turn_id=turn))
+        assert resp.status == "queued" and resp.gaps == (hm.GAP_BACKEND_UNAVAILABLE,)
+    pending = bridge.outbox.pending()
+    assert [r["identity"]["source_event_id"].split(":")[2] for r in pending] == ["t-2", "t-3"]
+    assert bridge.outbox.dropped == 1
+    assert fake.stored == []
+    assert admission.failures == [hm.GAP_BACKEND_UNAVAILABLE] * 3
+
+
+def test_empty_content_events_are_not_sent_to_backend(tmp_path: Path) -> None:
+    fake, loaded = PShapedFake(), []
+    bridge = _bridge(tmp_path, fake, loaded)
+    assert bridge.handle("on_session_start", {"session_id": "s", "turn_id": ""}).status == "ignored"
+    assert (
+        bridge.handle(
+            "post_llm_call", dict(_fixture("post_llm_call.json"), assistant_response="")
+        ).status
+        == "ignored"
+    )
+    assert loaded == [] and fake.stored == []
