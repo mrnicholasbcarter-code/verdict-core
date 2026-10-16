@@ -909,9 +909,13 @@ class Prober:
     # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
-    # Routes that answered this cycle's screen: their pool answered after the
-    # cooldown, so the agentic loop does not drop them as cooled.
-    _screen_survivors: set[str] = field(default_factory=set, init=False, repr=False)
+    # Half-open agentic allowlist: screen survivors from pools already cooled
+    # before this cycle's screen, with no fresh account-level failure for that
+    # pool in the current screen/cycle. One tool conversation each.
+    _half_open_routes: set[str] = field(default_factory=set, init=False, repr=False)
+    # Pools that received a fresh account-level (pool-cooling) negative during
+    # this screen/cycle. Half-open is never granted or retained for these.
+    _screen_failed_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1038,6 +1042,11 @@ class Prober:
             self.cache.record(buffered_id, buffered_result, buffered_now)
             stats.probed += 1
             stats.negative += 1
+            if (
+                buffered_result.failure_scope != "route"
+                and buffered_result.category in POOL_COOLDOWN_CATEGORIES
+            ):
+                self._revoke_half_open_for_pool(buffered_result.pool or pool_of(buffered_id))
         self._auth_fail_buffer = []
         self._auth_fail_pools = []
 
@@ -1317,9 +1326,18 @@ class Prober:
             )
             if self._needs_agentic(route, now)
         ]
-        self._screen_survivors = set()
+        self._half_open_routes = set()
+        self._screen_failed_pools = set()
+        if self._stop.is_set():
+            stats.agentic_stopped_reason = "stopped"
+            return
+        if self.monotonic() >= deadline:
+            stats.agentic_stopped_reason = "wall_cap"
+            return
         if self.screen_transport is not None:
             pending = self._screen(pending, stats, deadline)
+            if stats.agentic_stopped_reason:
+                return
         pending = pending[: self.agentic_max_routes]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
@@ -1347,11 +1365,19 @@ class Prober:
                     if route_pool in empty_pools:
                         continue
                     now = self.clock()
-                    if route.route_id not in self._screen_survivors and route_pool in (
+                    if route_pool in self._screen_failed_pools or route_pool in (
                         _cooled_pools(self.cache, now)
                     ):
-                        pending.remove(route)
-                        continue
+                        # One-shot half-open only for pre-screen cooldowns with
+                        # no fresh account-level failure this cycle.
+                        if (
+                            route_pool not in self._screen_failed_pools
+                            and route.route_id in self._half_open_routes
+                        ):
+                            self._half_open_routes.discard(route.route_id)
+                        else:
+                            pending.remove(route)
+                            continue
                     # Reserve every turn up front; an empty bucket keeps the
                     # route pending while other pools' conversations run.
                     if not self.cache.consume(
@@ -1422,27 +1448,62 @@ class Prober:
         bucket, timeouts write nothing. A screen OK only selects a route for
         the agentic probe; it never admits one. A pool whose screen call
         failed keeps its open candidates unscreened.
+
+        Stop, deadline, and local bucket boundaries are checked before each
+        ``test-all`` submit. Screen requests reserve the pool bucket first so
+        ADR-012's "budget exhaustion never launch another transport call"
+        holds for the screen phase too.
         """
         assert self.screen_transport is not None
         now = self.clock()
-        cooled = _cooled_pools(self.cache, now)
+        cooled_before = _cooled_pools(self.cache, now)
         groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
         for route in candidates:
             key = (route.provider, _pool_of(route))
-            limit = 1 if key[1] in cooled else self.agentic_max_routes
+            limit = 1 if key[1] in cooled_before else self.agentic_max_routes
             group = groups.setdefault(key, [])
             if len(group) < limit:
                 group.append(route)
         if not groups:
             return []
-        timeout = max((deadline - self.monotonic()) / 2, 1.0)
+        remaining = deadline - self.monotonic()
+        if self._stop.is_set():
+            stats.agentic_stopped_reason = "stopped"
+            return []
+        if remaining <= 0:
+            stats.agentic_stopped_reason = "wall_cap"
+            return []
         screen = self.screen_transport
+
+        def _dispatch_screen(
+            provider: str, model_ids: list[str]
+        ) -> Mapping[str, Mapping[str, Any]] | None:
+            # Recheck at worker start: a queued submit must not call transport
+            # after stop/deadline trips between submit and run. Timeout is the
+            # remaining phase time at actual dispatch, not the stale pre-queue value.
+            if self._stop.is_set() or self.monotonic() >= deadline:
+                return None
+            left = deadline - self.monotonic()
+            if left <= 0:
+                return None
+            return screen(provider, model_ids, left / 2)
+
+        futures: dict[tuple[str, str], Future[Mapping[str, Mapping[str, Any]] | None]] = {}
         with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
-            futures = {
-                key: pool.submit(screen, key[0], [r.route_id for r in group], timeout)
-                for key, group in groups.items()
-            }
-            outcomes = {}
+            for key, group in groups.items():
+                if self._stop.is_set():
+                    stats.agentic_stopped_reason = "stopped"
+                    break
+                if self.monotonic() >= deadline:
+                    stats.agentic_stopped_reason = "wall_cap"
+                    break
+                amount = len(group)
+                now = self.clock()
+                if not self.cache.consume(key[0], now, pool=key[1], amount=amount):
+                    # Empty bucket: skip this pool's screen; do not launch.
+                    continue
+                futures[key] = pool.submit(_dispatch_screen, key[0], [r.route_id for r in group])
+            outcomes: dict[tuple[str, str], Mapping[str, Mapping[str, Any]] | None] = {}
             for key, future in futures.items():
                 try:
                     outcomes[key] = future.result()
@@ -1450,24 +1511,52 @@ class Prober:
                     outcomes[key] = None
         survivors: set[str] = set()
         unscreened: set[str] = set()
+        failed_pools: set[str] = set()
         for key, group in groups.items():
+            if key not in outcomes:
+                # Not dispatched (stop/deadline/bucket). Keep open candidates.
+                if key[1] not in cooled_before:
+                    unscreened.update(route.route_id for route in group)
+                continue
             results = outcomes[key]
             if results is None:
-                if key[1] not in cooled:
+                if key[1] not in cooled_before:
                     unscreened.update(route.route_id for route in group)
                 continue
             stats.screened += len(group)
             stats.requests += len(results)
             for route in group:
                 result = results.get(route.route_id)
-                if result is not None and self._record_screen(route, result, now):
+                if result is None:
+                    continue
+                if self._record_screen(route, result, now):
                     survivors.add(route.route_id)
+                elif _pool_of(route) in _cooled_pools(self.cache, now):
+                    # Fresh account-level negative this screen: never half-open.
+                    failed_pools.add(_pool_of(route))
+        # Half-open only for pre-screen cooled pools with no fresh account
+        # failure this screen. Ordering cannot re-grant a revoked shared pool.
+        self._screen_failed_pools |= failed_pools
+        half_open = {
+            route.route_id
+            for route in candidates
+            if route.route_id in survivors
+            and _pool_of(route) in cooled_before
+            and _pool_of(route) not in self._screen_failed_pools
+        }
         stats.screen_ok += len(survivors)
-        self._screen_survivors = survivors
+        self._half_open_routes = half_open
         if survivors or stats.screened:
             self._save()
         keep = survivors | unscreened
         return [route for route in candidates if route.route_id in keep]
+
+    def _revoke_half_open_for_pool(self, pool: str) -> None:
+        """Drop half-open grants after a fresh account-level failure for *pool*."""
+        self._screen_failed_pools.add(pool)
+        self._half_open_routes = {
+            route_id for route_id in self._half_open_routes if pool_of(route_id) != pool
+        }
 
     def _record_screen(
         self, route: AdmittedRoute, result: Mapping[str, Any], now: datetime
@@ -1506,6 +1595,9 @@ class Prober:
             ),
             now,
         )
+        # Account-level pool-cooling only; 404/timeout/model-scoped leave siblings open.
+        if not scoped and category in POOL_COOLDOWN_CATEGORIES:
+            self._revoke_half_open_for_pool(_pool_of(route))
         return False
 
     def _converse(
@@ -1592,6 +1684,15 @@ class Prober:
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
         if self._buffer_auth_failure(route, result, now, stats):
+            # Auth buffer may later flush as a real pool-cooling negative.
+            # If this result is already a pool-cooling category and not
+            # route-scoped, revoke half-open now so a sibling cannot start.
+            if (
+                not passed
+                and result.failure_scope != "route"
+                and result.category in POOL_COOLDOWN_CATEGORIES
+            ):
+                self._revoke_half_open_for_pool(_pool_of(route))
             return
         self.cache.record(route.route_id, result, now)
         stats.probed += 1
@@ -1599,6 +1700,8 @@ class Prober:
             stats.fresh += 1
         else:
             stats.negative += 1
+            if result.failure_scope != "route" and result.category in POOL_COOLDOWN_CATEGORIES:
+                self._revoke_half_open_for_pool(_pool_of(route))
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""
