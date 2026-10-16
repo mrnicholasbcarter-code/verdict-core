@@ -349,6 +349,44 @@ def test_review_argv_shape(tmp_path: Path, monkeypatch) -> None:
     assert ".ocr-home-" in review_call["env"]["HOME"]  # type: ignore[operator,index]
 
 
+def test_review_argv_includes_ocr_rule_to_cover_default_path_tests(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """OCR default_path drops test files unless --rule include lists them.
+
+    The rule must be additive (include test globs only; no exclude key) so
+    production non-Python sources and custom/security excludes stay intact.
+    """
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json"))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict("cx/gpt-5.5-low")), runner)
+    _run(reviewer)
+    review_call = next(c for c in runner.calls if "review" in c["argv"])  # type: ignore[operator]
+    argv = list(review_call["argv"])
+    assert "--rule" in argv
+    rule_path = Path(argv[argv.index("--rule") + 1])
+    # Rule file lives under the review out_dir (ephemeral run artifact), not ~/.opencodereview.
+    assert (
+        rule_path.resolve()
+        == (tmp_path / "out" / "verdict-ocr-default-path-test-include.json").resolve()
+    )
+    assert rule_path.is_file()
+    rule = json.loads(rule_path.read_text(encoding="utf-8"))
+    assert "exclude" not in rule
+    include = rule.get("include")
+    assert isinstance(include, list)
+    # Changed Python tests (the main-replay false-positive case).
+    assert "**/test_*.py" in include
+    assert "**/*_test.py" in include
+    # Non-Python default_path tests must also be includable (no language narrowing).
+    assert "**/*_test.go" in include
+    assert any("*.test." in str(p) or "**/*.test." in str(p) for p in include)
+    # Must not be a Python-only replace-all whitelist.
+    assert "**/*.py" not in include or include != ["**/*.py"]
+    # Secret never lands in the rule file.
+    assert "sk-secret-value" not in rule_path.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # StaticDiffGate
 # --------------------------------------------------------------------------- #

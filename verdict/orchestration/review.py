@@ -296,6 +296,66 @@ async def _run_runner_bounded(
 _subprocess_runner = make_subprocess_runner()
 
 
+# OCR v1.12.9 default_path filter drops these test globs unless a --rule
+# `include` list explicitly names them. Include is additive (preview-proven):
+# listing test patterns unblocks tests without replacing the production file
+# set or wiping custom/security excludes. Omit `exclude` so rule excludes merge
+# with OCR defaults rather than replacing them.
+_OCR_DEFAULT_PATH_TEST_INCLUDES: tuple[str, ...] = (
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/test/**/*_test.py",
+    "**/tests/**/*_test.py",
+    "**/*_test.go",
+    "**/*_test.rs",
+    "**/*_test.zig",
+    "**/*Test.java",
+    "**/*Tests.java",
+    "**/*Test.swift",
+    "**/*Tests.swift",
+    "**/Tests/**/*.swift",
+    "**/*.test.{js,jsx,ts,tsx}",
+    "**/*.spec.{js,jsx,ts,tsx}",
+    "**/__tests__/**",
+    "**/*_spec.rb",
+    "**/spec/**/*_spec.rb",
+    "**/*Spec.hs",
+    "**/*Spec.lhs",
+    "**/tests/**/*.nim",
+    "**/tests/**/*.R",
+    "**/tests/**/*.elm",
+    "**/test/**/*.jl",
+    "**/test/**/*.hs",
+    "**/test/**/*.lhs",
+    "**/test/**/*.zig",
+    "**/test/**/*.ml",
+    "**/test/**/*.sol",
+    "**/tests/**/*.sol",
+    "**/test/**/*.vy",
+    "**/tests/**/*.vy",
+    "**/*.test.ets",
+    "**/*Test.fs",
+    "**/src/test/java/**/*.java",
+    "**/src/test/**/*.{kt,kts}",
+)
+
+
+def _write_ocr_default_path_test_include_rule(directory: Path) -> Path:
+    """Write an ephemeral OCR --rule that includes default_path test globs.
+
+    The file must live under the review out_dir / isolated OCR HOME so it is
+    deleted with that home and never touches ``~/.opencodereview``.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "verdict-ocr-default-path-test-include.json"
+    path.write_text(
+        json.dumps({"include": list(_OCR_DEFAULT_PATH_TEST_INCLUDES)}, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class OpenCodeReviewer:
     """Independent, fail-closed semantic reviewer backed by the ``ocr`` CLI."""
 
@@ -532,6 +592,10 @@ class OpenCodeReviewer:
 
         try:
             self._write_isolated_config(home_dir, api_key)
+            # Ephemeral --rule under review out_dir (same lifecycle as ocr-raw;
+            # isolated HOME is still used for OCR config and is deleted after).
+            # Additive include of OCR default_path test globs; no exclude key.
+            rule_path = _write_ocr_default_path_test_include_rule(self._out_dir)
             argv = [
                 self._ocr_bin,
                 "review",
@@ -557,6 +621,8 @@ class OpenCodeReviewer:
                 background,
                 "--output",
                 str(raw_path),
+                "--rule",
+                str(rule_path),
             ]
             run = await _run_runner_bounded(
                 self._runner, argv, env={"HOME": str(home_dir)}, timeout_seconds=timeout_seconds
