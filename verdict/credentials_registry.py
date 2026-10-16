@@ -360,17 +360,17 @@ def _check_mcp_memory_service() -> tuple[bool, str | None]:
 
 DEPENDENCIES: tuple[DependencySpec, ...] = (
     DependencySpec(
-        name="verdict[server]",
+        name="verdict-core[server]",
         install_command="uv pip install verdict-core[server]",
         check=lambda: _check_python_extra("server"),
     ),
     DependencySpec(
-        name="verdict[dashboard]",
+        name="verdict-core[dashboard]",
         install_command="uv pip install verdict-core[dashboard]",
         check=lambda: _check_python_extra("dashboard"),
     ),
     DependencySpec(
-        name="verdict[all]",
+        name="verdict-core[all]",
         install_command="uv pip install verdict-core[all]",
         check=lambda: _check_python_extra("all"),
     ),
