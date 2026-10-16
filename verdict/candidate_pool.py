@@ -298,6 +298,12 @@ class ShortlistEntry:
     score_features: dict[str, float]
     inclusion_reason: str
     aliases: tuple[str, ...] = ()
+    # Cold-start soft prior attribution (selected metric only; not P(success)).
+    eval_prior_metric: str | None = None
+    eval_prior_value: float | None = None
+    eval_prior_provenance: dict[str, str] | None = None
+    eval_prior_metadata_id: str | None = None
+    eval_prior_kind: str = "absent"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -310,6 +316,15 @@ class ShortlistEntry:
             "score_features": dict(self.score_features),
             "inclusion_reason": self.inclusion_reason,
             "aliases": list(self.aliases),
+            "eval_prior_metric": self.eval_prior_metric,
+            "eval_prior_value": self.eval_prior_value,
+            "eval_prior_provenance": (
+                None
+                if self.eval_prior_provenance is None
+                else dict(self.eval_prior_provenance)
+            ),
+            "eval_prior_metadata_id": self.eval_prior_metadata_id,
+            "eval_prior_kind": self.eval_prior_kind,
         }
 
 
@@ -363,6 +378,11 @@ class _Survivor:
     qualified: bool = True
     needs_probe: bool = False
     aliases: tuple[str, ...] = ()
+    eval_prior_metric: str | None = None
+    eval_prior_value: float | None = None
+    eval_prior_provenance: dict[str, str] | None = None
+    eval_prior_metadata_id: str | None = None
+    eval_prior_kind: str = "absent"
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -672,14 +692,36 @@ def _score_features(
     elif ev.task_success_rate is not None:
         features["task_similarity"] = max(0.0, min(1.0, float(ev.task_success_rate)))
 
-    # Soft eval score from caller or metadata (nullable — never invented).
-    eval_score = ev.eval_score
-    if eval_score is None:
-        soft = survivor.record.scores.aa_coding or survivor.record.scores.aa_intelligence
+    # Soft eval prior: caller evidence wins; else ONE task-relevant AA field.
+    # No cross-metric fallback. Index/100 is a provisional fuse prior, not P(success).
+    family_prefix = task_fingerprint.task_family.split(":", 1)[0]
+    if family_prefix in {"code_edit", "code_review", "coding", "code"}:
+        selected_metric = "aa_coding"
+    else:
+        selected_metric = "aa_intelligence"
+
+    survivor.eval_prior_metadata_id = survivor.record.id
+    if ev.eval_score is not None:
+        eval_score = float(ev.eval_score)
+        features["eval_score"] = max(0.0, min(100.0, eval_score)) / 100.0
+        survivor.eval_prior_kind = "caller_evidence"
+        survivor.eval_prior_metric = None
+        survivor.eval_prior_value = eval_score
+        survivor.eval_prior_provenance = None
+    else:
+        soft = getattr(survivor.record.scores, selected_metric, None)
         if soft is not None and isinstance(soft.value, (int, float)):
-            eval_score = float(soft.value)
-    if eval_score is not None:
-        features["eval_score"] = max(0.0, min(100.0, float(eval_score))) / 100.0
+            raw = float(soft.value)
+            features["eval_score"] = max(0.0, min(100.0, raw)) / 100.0
+            survivor.eval_prior_kind = "metadata"
+            survivor.eval_prior_metric = selected_metric
+            survivor.eval_prior_value = raw
+            survivor.eval_prior_provenance = soft.provenance.to_dict()
+        else:
+            survivor.eval_prior_kind = "absent"
+            survivor.eval_prior_metric = selected_metric
+            survivor.eval_prior_value = None
+            survivor.eval_prior_provenance = None
 
     # Health freshness boost.
     if survivor.health.state == HEALTH_OK:
@@ -935,6 +977,15 @@ def _portfolio_shortlist(
                 score_features=dict(survivor.features),
                 inclusion_reason=reason,
                 aliases=aliases,
+                eval_prior_metric=survivor.eval_prior_metric,
+                eval_prior_value=survivor.eval_prior_value,
+                eval_prior_provenance=(
+                    None
+                    if survivor.eval_prior_provenance is None
+                    else dict(survivor.eval_prior_provenance)
+                ),
+                eval_prior_metadata_id=survivor.eval_prior_metadata_id,
+                eval_prior_kind=survivor.eval_prior_kind,
             )
         )
     return entries

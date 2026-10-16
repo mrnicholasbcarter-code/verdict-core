@@ -20,6 +20,7 @@ from verdict.metadata import (
     SOURCE_LITELLM,
     SOURCE_MODELS_DEV,
     SOURCE_MODELS_DEV_MODELS,
+    SOURCE_OPENROUTER_AA,
     FieldProvenance,
     ModelMetadataError,
     ProvenancedField,
@@ -429,3 +430,118 @@ def test_models_dev_and_litellm_ingest_streaming_with_source_provenance() -> Non
     assert md.caps.streaming.provenance.source == SOURCE_MODELS_DEV_MODELS
     assert llm.caps.streaming is not None and llm.caps.streaming.value is False
     assert llm.caps.streaming.provenance.source == SOURCE_LITELLM
+
+
+class TestOpenRouterAAMirror:
+    def test_include_p1_fixture_attaches_exact_id_scores(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        status = snapshot.sources[SOURCE_OPENROUTER_AA]
+        assert status.status == "ok"
+        assert status.record_count is not None and status.record_count >= 3
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        gem = snapshot.record_by_id("google/gemini-2.0-flash")
+        meta = snapshot.record_by_id("meta/llama-3.3-70b-instruct")
+        assert mini is not None and gem is not None and meta is not None
+        assert mini.scores.aa_coding is not None and mini.scores.aa_coding.value == 80.0
+        assert mini.scores.aa_intelligence is not None and mini.scores.aa_intelligence.value == 10.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_OPENROUTER_AA
+        assert gem.scores.aa_intelligence is not None and gem.scores.aa_intelligence.value == 90.0
+        assert gem.scores.aa_coding is not None and gem.scores.aa_coding.value == 20.0
+        # numeric zero coding is real evidence, not missing
+        assert meta.scores.aa_coding is not None and meta.scores.aa_coding.value == 0.0
+        assert meta.scores.aa_intelligence is not None and meta.scores.aa_intelligence.value == 5.0
+
+    def test_batch_suffix_does_not_fuzzy_create_new_record(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        assert snapshot.record_by_id("openai/gpt-4o-mini:batch") is None
+        assert snapshot.record_by_id("unknown/not-in-store") is None
+
+    def test_invalid_numeric_scores_never_enter_store(self, tmp_path: Path) -> None:
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        groq = snapshot.record_by_id("groq/llama-3.3-70b-versatile")
+        assert groq is not None
+        assert groq.scores.aa_coding is None
+        assert groq.scores.aa_intelligence is None
+        assert groq.scores.aa_agentic is None
+
+    def test_include_p1_false_skips_openrouter(self, tmp_path: Path) -> None:
+        snapshot = _refresh(tmp_path, include_p1=False)
+        assert snapshot.sources[SOURCE_OPENROUTER_AA].status == "skipped"
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None
+        assert mini.scores.to_dict() == {}
+
+    def test_openrouter_fill_null_does_not_override_existing_aa(self, tmp_path: Path) -> None:
+        # First apply direct AA fixture, then OpenRouter mirror — existing wins.
+        snapshot = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={
+                SOURCE_ARTIFICIAL_ANALYSIS: _load("artificial_analysis.json"),
+                SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json"),
+            },
+        )
+        mini = snapshot.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None and mini.scores.aa_agentic is not None
+        assert mini.scores.aa_agentic.value == 18.4
+        assert mini.scores.aa_agentic.provenance.source == SOURCE_ARTIFICIAL_ANALYSIS
+        # coding was null from AA fixture path for agentic-focused fixture; OR may fill coding
+        # AA fixture has coding_index 22.0 for mini — must be retained if applied first.
+        # Order in refresh: fixture AA specs loop first, then OR — so coding 22.0 kept.
+        assert mini.scores.aa_coding is not None
+        assert mini.scores.aa_coding.value == 22.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_ARTIFICIAL_ANALYSIS
+
+    def test_openrouter_pagination_rejects_foreign_next(self) -> None:
+        from verdict.metadata.sources import _normalize_openrouter_next
+
+        with pytest.raises(ModelMetadataError, match=r"openrouter\.ai"):
+            _normalize_openrouter_next(
+                "https://evil.example/api/v1/models?offset=100",
+                previous="https://openrouter.ai/api/v1/models?limit=100",
+            )
+
+    def test_openrouter_pagination_cycle_is_partial(self, tmp_path: Path) -> None:
+        from verdict.metadata.sources import (
+            HttpxJsonTransport,
+            fetch_openrouter_models_pages,
+        )
+
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            # Always return the same next pointing at start → cycle after first follow
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "openai/gpt-4o-mini",
+                            "benchmarks": {
+                                "artificial_analysis": {"coding_index": 1.0, "intelligence_index": 1.0, "agentic_index": 1.0}
+                            },
+                        }
+                    ],
+                    "links": {"next": "https://openrouter.ai/api/v1/models?output_modalities=text&limit=500&offset=0"},
+                    "total_count": 1,
+                },
+            )
+
+        transport = HttpxJsonTransport(transport=httpx.MockTransport(handler), clock=lambda: NOW)
+        rows, status = fetch_openrouter_models_pages(transport, max_pages=5)
+        assert rows  # partial retained
+        assert status.reason is not None and "cyclic" in status.reason
+        assert len(calls) >= 1

@@ -1,0 +1,94 @@
+{
+  "data": [
+    {
+      "id": "openai/gpt-4o-mini",
+      "canonical_slug": "openai/gpt-4o-mini",
+      "name": "GPT-4o Mini",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 10.0,
+          "coding_index": 80.0,
+          "agentic_index": 12.0
+        },
+        "design_arena": []
+      }
+    },
+    {
+      "id": "google/gemini-2.0-flash",
+      "canonical_slug": "google/gemini-2.0-flash",
+      "name": "Gemini 2.0 Flash",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 90.0,
+          "coding_index": 20.0,
+          "agentic_index": 30.0
+        },
+        "design_arena": []
+      }
+    },
+    {
+      "id": "meta/llama-3.3-70b-instruct",
+      "canonical_slug": "meta/llama-3.3-70b-instruct-20241201",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 5.0,
+          "coding_index": 0.0,
+          "agentic_index": null
+        },
+        "design_arena": []
+      }
+    },
+    {
+      "id": "openai/gpt-4o-mini:batch",
+      "canonical_slug": "openai/gpt-4o-mini",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 10.0,
+          "coding_index": 80.0,
+          "agentic_index": 12.0
+        },
+        "design_arena": []
+      }
+    },
+    {
+      "id": "unknown/not-in-store",
+      "canonical_slug": "unknown/not-in-store-dated",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 99.0,
+          "coding_index": 99.0,
+          "agentic_index": 99.0
+        },
+        "design_arena": []
+      }
+    },
+    {
+      "id": "groq/llama-3.3-70b-versatile",
+      "canonical_slug": "groq/llama-3.3-70b-versatile",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": null,
+          "coding_index": true,
+          "agentic_index": "not-a-number"
+        }
+      }
+    },
+    {
+      "id": "intel-only-via-canon-miss",
+      "canonical_slug": "nope",
+      "benchmarks": {
+        "artificial_analysis": {
+          "intelligence_index": 55.0
+        }
+      }
+    },
+    {
+      "id": "no-benchmarks-model",
+      "name": "plain"
+    }
+  ],
+  "total_count": 8,
+  "links": {
+    "next": null
+  }
+}

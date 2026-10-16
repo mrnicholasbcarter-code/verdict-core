@@ -7,11 +7,12 @@ P1: stubbed unless a fixture payload is supplied — never invent scores.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Protocol
-from urllib.parse import urlsplit
+from typing import Any, Literal, Protocol
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -20,6 +21,7 @@ from verdict.metadata.records import (
     SOURCE_ARTIFICIAL_ANALYSIS,
     SOURCE_BFCL,
     SOURCE_OPEN_LLM,
+    SOURCE_OPENROUTER_AA,
     CapabilityCaps,
     FieldProvenance,
     ModelMetadataError,
@@ -45,6 +47,11 @@ LITELLM_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
 ARTIFICIAL_ANALYSIS_URL = "https://artificialanalysis.ai/api/v2/language/models/free"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_MODELS_PATH_PREFIX = "/api/v1/models"
+OPENROUTER_MAX_PAGES = 20
+OPENROUTER_PAGE_LIMIT = 500
+
 
 ALLOWED_METADATA_HOSTS = frozenset(
     {
@@ -53,6 +60,7 @@ ALLOWED_METADATA_HOSTS = frozenset(
         "github.com",
         "huggingface.co",
         "artificialanalysis.ai",
+        "openrouter.ai",
     }
 )
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -124,10 +132,28 @@ class HttpxJsonTransport:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def get_json(self, url: str) -> FetchedDocument:
-        normalized = validate_upstream_url(url, allow_private_hosts=set())
-        host = (urlsplit(normalized).hostname or "").rstrip(".").lower()
+        # validate_upstream_url forbids query/fragment; OpenRouter pagination needs
+        # query. Validate the origin (scheme/host/path) then request the full URL.
+        parts = urlsplit(url.strip())
+        origin = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        try:
+            normalized_origin = validate_upstream_url(origin, allow_private_hosts=set())
+        except ValueError as exc:
+            raise ModelMetadataError(str(exc)) from exc
+        host = (urlsplit(normalized_origin).hostname or "").rstrip(".").lower()
         if host not in ALLOWED_METADATA_HOSTS:
             raise ModelMetadataError(f"metadata host is not allowlisted: {host}")
+        if parts.fragment:
+            raise ModelMetadataError("metadata URL must not contain a fragment")
+        request_url = urlunsplit(
+            (
+                "https" if parts.scheme == "https" else urlsplit(normalized_origin).scheme,
+                urlsplit(normalized_origin).netloc,
+                urlsplit(normalized_origin).path,
+                parts.query,
+                "",
+            )
+        )
         headers = {
             "Accept": "application/json",
             "User-Agent": f"verdict-core/{_package_version()} (BOD-108 metadata)",
@@ -135,7 +161,7 @@ class HttpxJsonTransport:
         with httpx.Client(
             transport=self._transport, timeout=self.timeout, follow_redirects=False
         ) as client:
-            response = client.get(normalized, headers=headers)
+            response = client.get(request_url, headers=headers)
             if response.is_redirect:
                 raise ModelMetadataError("metadata redirect is not allowed")
             response.raise_for_status()
@@ -149,7 +175,7 @@ class HttpxJsonTransport:
             raise ModelMetadataError("metadata response is not JSON") from exc
         version = version_header.strip().strip('"') if version_header else None
         return FetchedDocument(
-            url=normalized, data=data, fetched_at=_iso(self._clock()), version=version or None
+            url=request_url, data=data, fetched_at=_iso(self._clock()), version=version or None
         )
 
 
@@ -493,3 +519,187 @@ def apply_soft_scores(
 
 def skipped_p1(source: str) -> SourceStatus:
     return SourceStatus(source=source, status="skipped", reason=P1_SKIP_REASONS[source])
+
+
+
+def _finite_number(raw: object) -> float | None:
+    """Parse a soft-score number: finite float only; bool/NaN/inf rejected; 0 kept."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return float(raw)
+    if isinstance(raw, float) and math.isfinite(raw):
+        return raw
+    return None
+
+
+def _openrouter_models_url(*, offset: int = 0, limit: int = OPENROUTER_PAGE_LIMIT) -> str:
+    query = urlencode(
+        {
+            "output_modalities": "text",
+            "limit": str(max(1, min(int(limit), 1000))),
+            "offset": str(max(0, int(offset))),
+        }
+    )
+    return f"{OPENROUTER_MODELS_URL}?{query}"
+
+
+def _normalize_openrouter_next(next_url: object, *, previous: str) -> str | None:
+    """Resolve links.next to an absolute OpenRouter /api/v1/models URL or reject."""
+    if not isinstance(next_url, str) or not next_url.strip():
+        return None
+    absolute = urljoin(previous, next_url.strip())
+    parts = urlsplit(absolute)
+    host = (parts.hostname or "").rstrip(".").lower()
+    if parts.scheme != "https" or host != "openrouter.ai":
+        raise ModelMetadataError(
+            f"openrouter pagination next is not https://openrouter.ai: {absolute}"
+        )
+    path = parts.path or ""
+    if not path.startswith(OPENROUTER_MODELS_PATH_PREFIX):
+        raise ModelMetadataError(
+            f"openrouter pagination next path is not {OPENROUTER_MODELS_PATH_PREFIX}: {absolute}"
+        )
+    return urlunsplit(("https", "openrouter.ai", path, parts.query, ""))
+
+
+def fetch_openrouter_models_pages(
+    transport: JsonTransport,
+    *,
+    start_url: str | None = None,
+    max_pages: int = OPENROUTER_MAX_PAGES,
+) -> tuple[list[Any], SourceStatus]:
+    """Paginate OpenRouter /models through the guarded metadata transport.
+
+    Every page URL (including normalized ``links.next``) goes through
+    ``transport.get_json``. Cycles, foreign hosts, redirects (client-side), and
+    page bounds produce an explicit partial/error status rather than a silent
+    complete success. No Authorization header — public catalog only.
+    """
+    url: str | None = start_url or _openrouter_models_url()
+    rows: list[Any] = []
+    seen: set[str] = set()
+    pages = 0
+    last_fetched_at: str | None = None
+    last_version: str | None = None
+    partial_reason: str | None = None
+
+    while url is not None:
+        if url in seen:
+            partial_reason = f"cyclic openrouter pagination at {url}"
+            break
+        seen.add(url)
+        if pages >= max_pages:
+            partial_reason = f"openrouter pagination exceeded max_pages={max_pages}"
+            break
+        try:
+            document = transport.get_json(url)
+        except Exception as exc:
+            return rows, SourceStatus(
+                source=SOURCE_OPENROUTER_AA,
+                status="error" if not rows else "ok",
+                url=url,
+                fetched_at=last_fetched_at,
+                version=last_version,
+                reason=f"{type(exc).__name__}: {exc}"
+                + ("; partial pages retained" if rows else ""),
+                record_count=None,
+            )
+        pages += 1
+        last_fetched_at = document.fetched_at
+        last_version = document.version
+        payload = document.data
+        if not isinstance(payload, Mapping):
+            partial_reason = "openrouter /models payload is not an object"
+            break
+        batch = payload.get("data")
+        if not isinstance(batch, list):
+            partial_reason = "openrouter /models data is not an array"
+            break
+        rows.extend(batch)
+        nxt = (payload.get("links") or {}) if isinstance(payload.get("links"), Mapping) else {}
+        next_raw = nxt.get("next") if isinstance(nxt, Mapping) else None
+        if next_raw in (None, ""):
+            url = None
+            continue
+        try:
+            url = _normalize_openrouter_next(next_raw, previous=document.url)
+        except ModelMetadataError as exc:
+            partial_reason = str(exc)
+            break
+
+    status_kind: Literal["ok", "skipped", "error"] = "ok"
+    reason = (
+        "Artificial Analysis indices mirrored via OpenRouter /models "
+        "(source=openrouter.artificial_analysis); unauthenticated catalog"
+    )
+    if partial_reason:
+        status_kind = "ok" if rows else "error"
+        reason = f"partial: {partial_reason}"
+    return rows, SourceStatus(
+        source=SOURCE_OPENROUTER_AA,
+        status=status_kind,
+        url=OPENROUTER_MODELS_URL,
+        fetched_at=last_fetched_at,
+        version=last_version,
+        reason=reason,
+        record_count=None,
+    )
+
+
+def parse_openrouter_aa_scores(
+    rows: list[Any],
+    *,
+    fetched_at: str,
+    version: str | None = None,
+) -> dict[str, SoftScores]:
+    """Map OpenRouter /models rows with AA benchmarks to SoftScores keyed by attach id.
+
+    Keys prefer ``id``, with ``canonical_slug`` as an alternate exact-join key when
+    distinct. No suffix stripping. Bool/NaN/inf rejected; numeric 0 preserved.
+    """
+    scores: dict[str, SoftScores] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        benchmarks = row.get("benchmarks")
+        if not isinstance(benchmarks, Mapping):
+            continue
+        aa = benchmarks.get("artificial_analysis")
+        if not isinstance(aa, Mapping):
+            continue
+        coding = _finite_number(aa.get("coding_index"))
+        intel = _finite_number(aa.get("intelligence_index"))
+        agentic = _finite_number(aa.get("agentic_index"))
+        if coding is None and intel is None and agentic is None:
+            continue
+        oid = row.get("id") if isinstance(row.get("id"), str) else None
+        canon = row.get("canonical_slug") if isinstance(row.get("canonical_slug"), str) else None
+        attach_ids = []
+        if oid and oid.strip():
+            attach_ids.append(oid.strip())
+        if canon and canon.strip() and canon.strip() not in attach_ids:
+            attach_ids.append(canon.strip())
+        if not attach_ids:
+            continue
+        for attach_id in attach_ids:
+            cited = FieldProvenance(
+                source=SOURCE_OPENROUTER_AA,
+                fetched_at=fetched_at,
+                version=version,
+                raw_id=attach_id,
+            )
+            scores[attach_id] = SoftScores(
+                aa_intelligence=(
+                    ProvenancedField(value=intel, provenance=cited) if intel is not None else None
+                ),
+                aa_coding=(
+                    ProvenancedField(value=coding, provenance=cited) if coding is not None else None
+                ),
+                aa_agentic=(
+                    ProvenancedField(value=agentic, provenance=cited)
+                    if agentic is not None
+                    else None
+                ),
+            )
+    return scores
