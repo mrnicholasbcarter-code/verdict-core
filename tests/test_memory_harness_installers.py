@@ -193,7 +193,17 @@ def test_codex_hooks_write_canonical_commands_and_ignore_shared_db(tmp_path: Pat
     assert len(CODEX_HOOK_EVENTS) == 11
     _assert_canonical_codex_hooks(document)
     for event in CODEX_HOOK_EVENTS:
-        assert _commands(document["hooks"][event]) == [hook_command(event)]
+        assert document["hooks"][event] == [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command(event),
+                        "timeout": HOOK_TIMEOUT_SECONDS,
+                    }
+                ]
+            }
+        ]
     assert str(unused) not in hooks.read_text(encoding="utf-8")
     assert "/tmp/codex_" not in hooks.read_text(encoding="utf-8")
 
