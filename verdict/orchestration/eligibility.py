@@ -1472,22 +1472,6 @@ def capacity_class_of(
     plan_lower = plan_label.lower()
     auth_type = str(conn.get("authType", "")).lower()
     rid = route_id or str(row.get("id") or "")
-    if rid and is_openrouter_catalog_route(rid):
-        if openrouter_route_is_public_free(rid, openrouter_free_set):
-            return CapacityClass.FREE, plan_label or "openrouter_public_zero"
-        # Do not assert FREE from connection free signals / plan_label / suffix.
-        pricing = row.get("pricing")
-        prices: list[float] = []
-        if isinstance(pricing, Mapping):
-            for value in pricing.values():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    prices.append(float(value))
-        positive = any(p > 0 for p in prices)
-        if auth_type == "oauth":
-            return CapacityClass.SUBSCRIPTION, plan_label
-        if auth_type == "apikey" and positive:
-            return CapacityClass.METERED, plan_label
-        return CapacityClass.UNKNOWN, plan_label
     pricing = row.get("pricing")
     prices: list[float] = []
     if isinstance(pricing, Mapping):
@@ -1496,6 +1480,15 @@ def capacity_class_of(
                 prices.append(float(value))
     all_zero = bool(prices) and all(p == 0 for p in prices)
     positive = any(p > 0 for p in prices)
+    if rid and is_openrouter_catalog_route(rid):
+        if openrouter_route_is_public_free(rid, openrouter_free_set):
+            return CapacityClass.FREE, plan_label or "openrouter_public_zero"
+        # Do not assert FREE from connection free signals / plan_label / suffix.
+        if auth_type == "oauth":
+            return CapacityClass.SUBSCRIPTION, plan_label
+        if auth_type == "apikey" and positive:
+            return CapacityClass.METERED, plan_label
+        return CapacityClass.UNKNOWN, plan_label
     if auth_type == "oauth" and "free" not in plan_lower:
         return CapacityClass.SUBSCRIPTION, plan_label
     if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:

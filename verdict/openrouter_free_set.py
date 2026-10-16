@@ -359,14 +359,24 @@ def load_openrouter_free_set(
     fetch: FetchFn | None = None,
     timeout: float = 30.0,
     url: str = OPENROUTER_MODELS_URL,
+    refresh: bool | None = None,
 ) -> OpenRouterFreeSet | None:
-    """Return the cached-or-fresh free set, or None when membership cannot be asserted."""
+    """Return the cached-or-fresh free set, or None when membership cannot be asserted.
+
+    ``refresh`` defaults to True outside pytest and False under
+    ``PYTEST_CURRENT_TEST``, so hermetic tests never open openrouter.ai unless
+    they pass an explicit ``fetch`` or ``refresh=True``.
+    """
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     path = cache_path or default_cache_path()
     ttl = float(DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds)
     cached = _load_cached_set(path, now=current, ttl_seconds=ttl)
+    if refresh is None:
+        refresh = fetch is not None or not os.environ.get("PYTEST_CURRENT_TEST")
+    if not refresh:
+        return cached
     fetch_fn = fetch or (lambda target, to: fetch_openrouter_models(target, timeout=to))
     try:
         payload = fetch_fn(url, timeout)
