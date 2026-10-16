@@ -1,8 +1,8 @@
-"""Tests for OpenCodeReviewer + StaticDiffGate OpenCodeReviewer + StaticDiffGate (verdict.orchestration.review).
+"""Tests for OpenCodeReviewer (verdict.orchestration.review).
 
 No network: every ``ocr`` invocation goes through an injected fake runner and
 saved sanitized fixtures. Live evidence for the real schema is recorded in the
-OpenCodeReviewer + StaticDiffGate delivery notes; the fixtures here are sanitized copies of that output.
+OpenCodeReviewer delivery notes; the fixtures here are sanitized copies of that output.
 """
 
 from __future__ import annotations
@@ -23,12 +23,7 @@ from verdict.orchestration.contracts import (
     RouteVerdict,
     TaskRequirements,
 )
-from verdict.orchestration.review import (
-    OcrRun,
-    OpenCodeReviewer,
-    StaticDiffGate,
-    _changed_ordinary_test_paths,
-)
+from verdict.orchestration.review import OcrRun, OpenCodeReviewer, _changed_ordinary_test_paths
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ocr"
 
@@ -443,49 +438,6 @@ def test_changed_ordinary_test_paths_helper_filters_protected_dirs() -> None:
         "__tests__/normal.test.ts",
         "src/test/java/FooTest.java",
     ]
-
-
-# --------------------------------------------------------------------------- #
-# StaticDiffGate
-# --------------------------------------------------------------------------- #
-
-
-def _gate(allowed: list[str], changed: list[str]) -> StaticDiffGate:
-    def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
-        return changed
-
-    return StaticDiffGate(allowed, differ=differ)
-
-
-def test_static_gate_pass_within_ownership() -> None:
-    gate = _gate(
-        ["verdict/orchestration/review.py", "tests/"],
-        ["verdict/orchestration/review.py", "tests/test_orch_review.py"],
-    )
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "PASS"
-    assert result.passed
-
-
-def test_static_gate_fail_outside_ownership() -> None:
-    gate = _gate(
-        ["verdict/orchestration/review.py"], ["verdict/orchestration/review.py", "verdict/api.py"]
-    )
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "FAIL"
-    assert not result.passed
-    assert result.findings[0].file == "verdict/api.py"
-    assert result.findings[0].severity == "high"
-
-
-def test_static_gate_error_on_diff_failure() -> None:
-    def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
-        raise RuntimeError("git exploded")
-
-    gate = StaticDiffGate(["x"], differ=differ)
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "ERROR"
-    assert "could not compute diff" in result.detail
 
 
 class PoolSelector(FakeSelector):

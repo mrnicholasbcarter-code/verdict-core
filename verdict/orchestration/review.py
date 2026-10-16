@@ -31,7 +31,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +53,7 @@ from verdict.orchestration.controller_operations import (
 )
 from verdict.orchestration.provider_catalog import aliased_pools_for
 
-__all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "StaticDiffGate", "make_subprocess_runner"]
+__all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "make_subprocess_runner"]
 
 # OCR severity vocabulary -> Verdict's normalized ladder.
 _SEVERITY_MAP: Mapping[str, str] = {
@@ -946,63 +946,6 @@ class OpenCodeReviewer:
             if token.startswith("v") and token[1:2].isdigit():
                 return token
         return parts[-1] if parts else "unknown"
-
-
-def _norm_owned(path: str) -> str:
-    return str(path).strip().replace("\\", "/").lstrip("./")
-
-
-class StaticDiffGate:
-    """Cheap deterministic ownership barrier over a git diff.
-
-    FAILs when any file changed between ``base_ref`` and ``head_ref`` falls
-    outside the allowed-owned set. This is a fast pre-review guard, not a
-    semantic review, so it never calls an LLM.
-    """
-
-    _REVIEWER = "static-diff-gate"
-
-    def __init__(self, allowed: Iterable[str], *, differ: DiffLister | None = None) -> None:
-        self._allowed = tuple(_norm_owned(p) for p in allowed)
-        self._differ: DiffLister = differ or _git_diff_names
-
-    def review(self, *, repo: Path, base_ref: str, head_ref: str) -> ReviewResult:
-        try:
-            changed = self._differ(repo=repo, base_ref=base_ref, head_ref=head_ref)
-        except Exception as exc:
-            return ReviewResult(
-                status="ERROR",
-                reviewer=self._REVIEWER,
-                route_id="",
-                detail=f"could not compute diff: {exc}",
-            )
-        violations = [f for f in changed if not self._is_allowed(f)]
-        if violations:
-            findings = tuple(
-                ReviewFinding(
-                    severity="high",
-                    category="ownership",
-                    file=path,
-                    line=None,
-                    message=f"{path} is outside the allowed-owned set",
-                )
-                for path in sorted(violations)
-            )
-            return ReviewResult(
-                status="FAIL",
-                reviewer=self._REVIEWER,
-                route_id="",
-                findings=findings,
-                detail=f"{len(violations)} file(s) outside ownership barrier",
-            )
-        return ReviewResult(status="PASS", reviewer=self._REVIEWER, route_id="")
-
-    def _is_allowed(self, path: str) -> bool:
-        candidate = _norm_owned(path)
-        for owned in self._allowed:
-            if candidate == owned or candidate.startswith(owned.rstrip("/") + "/"):
-                return True
-        return False
 
 
 class DiffLister(Protocol):
