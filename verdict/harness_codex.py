@@ -23,7 +23,7 @@ import shutil
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -405,6 +405,24 @@ def _upsert_table(text: str, table: str, values: Mapping[str, str | bool]) -> st
 
 
 Parity = Literal["supported", "partial", "unsupported", "not-installed"]
+HookLevel = Literal["supported", "partial", "unknown"]
+
+# Per-event evidence for codex-cli 0.161.0. Nothing is "supported" until a live
+# isolated smoke records the event firing. "partial": event name in the 0.161.0
+# binary and used by a working same-host hooks.json; "unknown": name only.
+CODEX_HOOK_EVENT_LEVELS: Mapping[str, HookLevel] = {
+    "SessionStart": "partial",
+    "UserPromptSubmit": "partial",
+    "PreToolUse": "partial",
+    "PostToolUse": "partial",
+    "PermissionRequest": "unknown",
+    "PreCompact": "partial",
+    "PostCompact": "unknown",
+    "SubagentStart": "partial",
+    "SubagentStop": "unknown",
+    "Stop": "partial",
+    "SessionEnd": "unknown",
+}
 
 _BINARY_NAMES = ("codex",)
 
@@ -431,6 +449,7 @@ class CertifyReport:
     base_url: str | None
     notes: tuple[str, ...]
     needs_owner: tuple[str, ...]
+    hook_events: Mapping[str, HookLevel] = field(default_factory=dict)
 
 
 def discover(
@@ -495,7 +514,7 @@ def certify(
         healthy = health_check(base) if health_check is not None else probe_health(base_url=base)
 
     facets: dict[str, Parity] = {
-        "hooks": "unsupported",  # no native hook system in Codex CLI
+        "hooks": "partial",  # native hooks.json (0.161.0); per-event levels in hook_events
         "model_selection": "partial",
         "config_import": "supported" if report.config_exists else "partial",
         "mcp": "unsupported",  # Codex CLI has no MCP support
@@ -504,8 +523,8 @@ def certify(
         "tool_interception": "unsupported",
         "structured_output": "unsupported",
         # Lifecycle matrix facets (BOD-80 parity)
-        "session_start": "partial",  # file:memory_bridge._install_codex_hooks SessionStart — local plane only
-        "before_first_turn": "partial",  # file:memory_bridge._install_codex_hooks recall — local plane
+        "session_start": "partial",  # file:memory_harness.codex.install_codex_hooks SessionStart — local plane only
+        "before_first_turn": "partial",  # file:memory_harness.codex.install_codex_hooks recall — local plane
         "tool_pre_post": "unsupported",  # no tool pre/post hooks in Codex adapter
         "edit_event": "unsupported",  # no edit event hooks in Codex adapter
         "compaction_yield": "unsupported",  # no compaction hooks in Codex adapter
@@ -516,7 +535,8 @@ def certify(
     }
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.codex/config.toml → Verdict :8000",
-        "Codex hooks installed via memory_bridge._install_codex_hooks for session start/recall",
+        "Codex stdin hooks installed via memory_harness.codex.install_codex_hooks for all events",
+        "hook_events levels are source-evidenced; none live-observed yet",
     ]
     needs_owner = ("live enable with secrets (export token_env; Codex API key is NEEDS_OWNER)",)
     if not discovered.installed:
@@ -540,6 +560,7 @@ def certify(
         base_url=report.base_url,
         notes=tuple(notes),
         needs_owner=needs_owner,
+        hook_events=dict(CODEX_HOOK_EVENT_LEVELS),
     )
 
 
@@ -547,12 +568,14 @@ def format_certify(report: CertifyReport) -> str:
     facet_lines = "\n".join(f"  {name}: {level}" for name, level in sorted(report.facets.items()))
     notes_text = "\n".join(f"  - {note}" for note in report.notes)
     owner = "\n".join(f"  - {item}" for item in report.needs_owner)
+    event_lines = "\n".join(f"  {name}: {level}" for name, level in report.hook_events.items())
     return (
         f"Codex certify: {report.overall}\n"
         f"  healthy: {'yes' if report.healthy else 'no'}\n"
         f"  token_env set: {'yes' if report.token_env_set else 'no'}\n"
         f"  base_url: {report.base_url or '(none)'}\n"
         f"Facets:\n{facet_lines}\n"
+        f"Hook events:\n{event_lines}\n"
         f"Notes:\n{notes_text}\n"
         f"Needs owner:\n{owner}\n"
     )

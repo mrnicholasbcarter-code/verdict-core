@@ -29,7 +29,10 @@ CODEX_EVENTS = (
     "Stop",
     "SessionEnd",
 )
-USER_HOOK = {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-own-audit --log", "timeout": 5}]}
+USER_HOOK = {
+    "matcher": "Bash",
+    "hooks": [{"type": "command", "command": "my-own-audit --log", "timeout": 5}],
+}
 
 
 def _load(name: str) -> dict:
@@ -120,7 +123,12 @@ def test_install_upgrades_legacy_tmp_hooks(codex_home: Path, tmp_path: Path) -> 
             "SessionStart": [
                 {
                     "matcher": "startup|resume",
-                    "hooks": [{"type": "command", "command": "verdict hook recall '$(cat /tmp/codex_session_prompt)'"}],
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "verdict hook recall '$(cat /tmp/codex_session_prompt)'",
+                        }
+                    ],
                 }
             ]
         }
