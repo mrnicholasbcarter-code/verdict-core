@@ -699,4 +699,3 @@ def translate_hook_stdin(text: str, *, claude_version: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HarnessClaudeError("hook payload must be a JSON object")
     return translate_hook_payload(payload, claude_version=claude_version)
-
