@@ -86,7 +86,11 @@ class PatchExecutorConfig:
     base_url: str = DEFAULT_BASE_URL
     api_key: str | None = None
     timeout_seconds: float = 120.0
-    max_tokens: int = 4096
+    # Reasoning routes spend completion tokens on thinking before the answer, and
+    # OmniRoute does not lower that effort for them (it maps reasoning_effort to
+    # enable_thinking). Measured on BOD-396: a repair turn used 3555 reasoning plus
+    # 410 answer tokens; at 4096 the same request returned no content.
+    max_tokens: int = 16384
     temperature: float = 0.0
     max_response_bytes: int = 1_048_576
     session_id: str = DEFAULT_SESSION_ID
