@@ -253,17 +253,27 @@ def _warm_cache(
     tui: TerminalUI, reader: Callable[[], str | None] | None, gateway: str, notes: list[str]
 ) -> None:
     del gateway
-    choice = _choice(tui, reader, "5 / Warm-cache daemon", "not checked", "off", ["off", "on"])
+    from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
+    from verdict.prove_at_rest_service import manage_service, timer_state
+
+    current = timer_state(PROVE_AT_REST_TIMER)["state"]
+    choice = _choice(tui, reader, "5 / Warm-cache daemon", current, "on", ["off", "on"])
+    tui.console.print(Text(f"Enables: background health cache. Current timer state: {current}."))
     tui.console.print(
-        Text("Enables: background health cache. Service installer: not available yet.")
+        Text("Live probes may spend credits. 'on' installs and starts the systemd user timer.")
     )
-    tui.console.print(Text("Manual command: verdict prove-at-rest daemon --allow-live-probe"))
-    tui.console.print(
-        Text("User-service templates: deploy/systemd/verdict-health-cache.{service,timer}")
-    )
-    tui.console.print(Text("Live probes may spend credits. No daemon is started by this wizard."))
-    notes.append(
-        "Warm-cache: not available yet; use the manual command/templates above. No service installed."
-        if choice == "on"
-        else "Warm-cache: unchanged; no enable/disable operation requested."
-    )
+    if choice == "on":
+        try:
+            result = manage_service(dry_run=False)
+            new_state = timer_state(PROVE_AT_REST_TIMER)["state"]
+            tui.console.print(
+                Text(
+                    f"Service installer: ran (changed={result['changed']}); timer is now {new_state}."
+                )
+            )
+            notes.append(f"Warm-cache: {PROVE_AT_REST_TIMER} is {new_state}.")
+        except Exception as exc:
+            tui.console.print(Text(f"Service installer failed: {exc}"))
+            notes.append(f"Warm-cache: service installer failed ({exc}); timer is {current}.")
+    else:
+        notes.append(f"Warm-cache: unchanged; timer is {current}.")

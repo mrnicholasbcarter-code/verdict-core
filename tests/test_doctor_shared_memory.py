@@ -15,8 +15,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import verdict.prove_at_rest_service as _prove_at_rest_service
 from verdict import cli
 from verdict import doctor_diagnostics as dd
+
+
+def _fake_timer_state_active(unit: str) -> dict[str, object]:
+    return {"installed": True, "failed": False, "active": True, "state": "active"}
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here reads the host's real systemd user units (BOD-411 review)."""
+    monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,6 +64,21 @@ def _base_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("VERDICT_SHARED_MEMORY_TOKEN", raising=False)
 
     monkeypatch.setattr(dd, "_omniroute_api_request", lambda *a, **k: None)
+
+    # BOD-411: doctor now reports health-cache freshness; give these
+    # shared-memory-focused tests one fresh route so that unrelated check
+    # does not fail them.
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(verdict_dir / "health-cache.json")
+    cache.record(
+        "test/route",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, http_status=200),
+        datetime.now(timezone.utc),
+    )
+    cache.save()
 
     import urllib.request
 
