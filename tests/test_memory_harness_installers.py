@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from verdict.memory_bridge import _install_claude_hooks as install_claude_hooks
-from verdict.memory_bridge import _install_codex_hooks as install_codex_hooks
 from verdict.memory_bridge import configure_memory_bridge, uninstall_memory_bridge
+from verdict.memory_harness.claude import install_claude_hooks
+from verdict.memory_harness.codex import install_codex_hooks
 from verdict.memory_plane import MemoryPlane
 
 BRIDGE = (
