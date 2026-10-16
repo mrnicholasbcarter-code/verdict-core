@@ -522,17 +522,38 @@ class EligibilityLadder:
         provider = resolve_provider(raw_provider) if raw_provider else raw_provider
         provider = provider or route_id.split("/", 1)[0].lower()
         for key in (f"pool:{pool_of(route_id)}", f"route:{route_id}", f"provider:{provider}"):
-            if self._active_cooldown(key, now) is not None:
+            if self._active_cooldown(key, now, route_id) is not None:
                 return key
         if cache is not None and cache.lookup(route_id, now).state == "negative":
             return f"route:{route_id}"
         return None
 
-    def _active_cooldown(self, key: str, now: datetime) -> datetime | None:
+    def _active_cooldown(
+        self, key: str, now: datetime, route_id: str | None = None
+    ) -> datetime | None:
         entry = self._state["cooldowns"].get(key)
         until = _parse_iso(str(entry.get("until", ""))) if isinstance(entry, dict) else None
         cache = getattr(self, "_health_cache", None)
         cooldown = cache.cooldown_for(key, now) if cache is not None else None
+        if cooldown is not None and route_id is not None and key.startswith("provider:"):
+            # BOD-407: same refutation as canonical admission. A cached provider
+            # rate-limit cooldown is not current once the gateway tested a viable
+            # connection after it and measures quota left.
+            from verdict.admission import (
+                RATE_LIMIT_COOLDOWN_CATEGORIES,
+                live_quota_refutes_rate_limit,
+            )
+
+            provider = key.partition(":")[2]
+            if cooldown.category in RATE_LIMIT_COOLDOWN_CATEGORIES and any(
+                str(c.get("provider", "")).lower() == provider
+                and c.get("isActive") is True
+                and live_quota_refutes_rate_limit(
+                    c, route_id=route_id, observed_at=cooldown.checked_at, now=now
+                )
+                for c in self._connections
+            ):
+                cooldown = None
         if cooldown is not None and (until is None or cooldown.until > until):
             until = cooldown.until
         return until if until is not None and until > now else None
@@ -616,7 +637,7 @@ class EligibilityLadder:
             (f"route:{route_id}", "cooldown:route"),
             (f"provider:{provider}", "cooldown:provider"),
         ):
-            until = self._active_cooldown(key, now)
+            until = self._active_cooldown(key, now, route_id)
             if until is not None:
                 a.failed_stage, a.reason = EligibilityStage.AVAILABLE, label
                 a.cooldown_until = _iso(until)
