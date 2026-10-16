@@ -257,6 +257,7 @@ class PatchExecutor:
         self._last_observation = None
         self.response_headers = {}
         self.last_repair_attempt = None
+        self._newline_trimmed: list[int] = []
         started = time.monotonic()
         messages: list[dict[str, str]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -296,6 +297,8 @@ class PatchExecutor:
             "first_error": first_error,
             "repaired": repaired.applied,
         }
+        if self._newline_trimmed:
+            self.last_repair_attempt["newline_trimmed"] = True
         reason = (
             ""
             if repaired.applied
@@ -392,7 +395,9 @@ class PatchExecutor:
                 raise PatchExecutorError(
                     f"search/replace reply touches files outside the unit boundary: {list(outside)}"
                 )
-            files = apply_search_replace_blocks(blocks, self.repo_root)
+            files = apply_search_replace_blocks(
+                blocks, self.repo_root, newline_trimmed=self._newline_trimmed
+            )
             diff = build_exact_diff(files, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError, UnicodeDecodeError) as exc:
             return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
@@ -686,15 +691,29 @@ def parse_search_replace_reply(content: str) -> list[tuple[str, str, str]]:
 
 
 def apply_search_replace_blocks(
-    blocks: list[tuple[str, str, str]], repo_root: str | Path
+    blocks: list[tuple[str, str, str]],
+    repo_root: str | Path,
+    *,
+    newline_trimmed: list[int] | None = None,
 ) -> dict[str, str]:
-    """Apply blocks in order to in-memory copies; each SEARCH must match exactly once."""
+    """Apply blocks in order to in-memory copies; each SEARCH must match exactly once.
+
+    Block numbers matched by the single-line newline-trim rule are appended to
+    ``newline_trimmed`` when a list is given.
+    """
     root = Path(repo_root)
     files: dict[str, str] = {}
     for number, (path, search, replacement) in enumerate(blocks, start=1):
         if path not in files:
             files[path] = read_repository_text(root, path)
         count = files[path].count(search) if search else 0
+        if count == 0:
+            trimmed = _newline_trimmed_block(files[path], search, replacement)
+            if trimmed is not None:
+                search, replacement = trimmed
+                count = 1
+                if newline_trimmed is not None:
+                    newline_trimmed.append(number)
         if count != 1:
             raise PatchExecutorError(
                 f"search/replace block {number} for {path} matches {count} times "
@@ -702,6 +721,31 @@ def apply_search_replace_blocks(
             )
         files[path] = files[path].replace(search, replacement, 1)
     return files
+
+
+_MIN_TRIMMED_SEARCH_CHARS = 16
+
+
+def _newline_trimmed_block(text: str, search: str, replacement: str) -> tuple[str, str] | None:
+    """The block without its fence-forced final newline, if that is a safe unique match.
+
+    The edit fence makes SEARCH and REPLACE end with a newline, so a block aimed
+    inside one long line (a JSON fixture string, BOD-392) can never match as sent.
+    Only a single-line fragment of at least 16 non-whitespace characters that
+    matches exactly once qualifies, so a multi-line SEARCH never becomes a prefix
+    of a different line and a tiny fragment never matches by accident.
+    """
+    if not (search.endswith("\n") and replacement.endswith("\n")):
+        return None
+    trimmed_search = search.removesuffix("\n")
+    trimmed_replacement = replacement.removesuffix("\n")
+    if "\n" in trimmed_search or "\n" in trimmed_replacement:
+        return None
+    if len("".join(trimmed_search.split())) < _MIN_TRIMMED_SEARCH_CHARS:
+        return None
+    if text.count(trimmed_search) != 1:
+        return None
+    return trimmed_search, trimmed_replacement
 
 
 def build_full_file_repair_prompt(unit: WorkUnit, repo_root: str | Path, error: str) -> str:

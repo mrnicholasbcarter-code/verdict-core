@@ -913,6 +913,77 @@ def test_search_replace_lf_search_against_crlf_file_matches_zero_times(tmp_path:
     assert (repo / "owned.py").read_bytes() == crlf_text.encode("utf-8")
 
 
+def test_search_replace_matches_inside_a_single_long_line(tmp_path: Path) -> None:
+    """Observed BOD-392 on main 1ff76ada: a JSON fixture keeps all stdout on
+    one line with literal \\n escapes. grok-4.5 copied the right text, but the
+    wire format forces SEARCH to end in a newline before ``=======``, so a
+    mid-line SEARCH matched 0 times. That trailing newline is a format
+    artifact, not file content."""
+    long_line = 'msg = "head\\n  - verdict[server]  INSTALLED\\n    present\\n  - gh"\n'
+    original = _large_text().replace("line5\n", long_line, 1)
+    repo = _git_repo(tmp_path, original)
+    reply = _edit_block(
+        "owned.py",
+        (
+            "  - verdict[server]  INSTALLED\\n    present\\n\n",
+            "  - verdict-core[server]  INSTALLED\\n    present\\n\n",
+        ),
+    )
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied, attempt.reason
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original.replace(
+        "verdict[server]", "verdict-core[server]", 1
+    )
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["newline_trimmed"] is True
+
+
+def test_newline_trim_never_turns_a_multi_line_search_into_a_prefix(tmp_path: Path) -> None:
+    """Review of PR #870: SEARCH "foo\\nbar\\n" against "foo\\nbar_extra\\n" must
+    not trim to "foo\\nbar" and silently edit the start of another line."""
+    original = _large_text().replace("line5\nline6\n", "foo\nbar_extra\n", 1)
+    repo = _git_repo(tmp_path, original)
+    reply = _edit_block("owned.py", ("foo\nbar\n", "FOO\nBAR\n"))
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "search/replace block 1 for owned.py matches 0 times" in attempt.reason
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original
+
+
+def test_newline_trim_rejects_a_short_fragment(tmp_path: Path) -> None:
+    """Review of PR #870: a one-character SEARCH "x\\n" must not match mid-line."""
+    original = _large_text().replace("line5\n", "pre_x_post\n", 1)
+    repo = _git_repo(tmp_path, original)
+    reply = _edit_block("owned.py", ("x\n", "y\n"))
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "search/replace block 1 for owned.py matches 0 times" in attempt.reason
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original
+
+
+def test_newline_trim_still_requires_a_unique_match(tmp_path: Path) -> None:
+    fragment = "  - verdict[server]  INSTALLED\\n"
+    original = _large_text().replace("line5\n", f'msg = "{fragment}{fragment}"\n', 1)
+    repo = _git_repo(tmp_path, original)
+    reply = _edit_block("owned.py", (fragment + "\n", "  - verdict-core[server]  INSTALLED\\n\n"))
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "search/replace block 1 for owned.py matches 0 times" in attempt.reason
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original
+
+
 def test_search_replace_overlapping_blocks_rejected_by_name(tmp_path: Path) -> None:
     original = _large_text()
     repo = _git_repo(tmp_path, original)
