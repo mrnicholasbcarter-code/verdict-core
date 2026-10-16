@@ -32,10 +32,6 @@
     "reason": "UNTRIAGED: orphan module (1 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
   },
   {
-    "qualified_name": "verdict.memory_providers.ai_memory_experimental",
-    "reason": "UNTRIAGED: orphan module (397 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
     "qualified_name": "verdict.release.normalize",
     "reason": "DELETE candidate: BOD-259 release scanner normalizers; only tests import the module."
   },
@@ -53,10 +49,6 @@
   },
   {
     "qualified_name": "verdict.workflows",
-    "reason": "UNTRIAGED: orphan module (48 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.workflows.autodev",
-    "reason": "UNTRIAGED: orphan module (971 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
+    "reason": "DELETE candidate: package shell remains after superseded verdict.workflows.autodev was removed; no production importer."
   }
 ]
