@@ -120,11 +120,32 @@ longer says Hermes has no hook system.
   client is on security hold. Recall reports gap `memory_backend_not_configured`,
   and captures go to `<HERMES_HOME>/plugin-data/verdict-memory/outbox.jsonl`.
 
+## Backend seam
+
+`LifecycleBackendAdapter(provider, load_event=..., make_query=...)` connects the
+bridge to a provider with P's `put(event)` / `search(RecallQuery)` interface:
+- each event is passed to `load_event` as P canonical `lifecycle-event/v1` bytes;
+  with P, that function is `verdict_memory.loads_lifecycle_event`;
+- recall builds its query with `make_query` (P's `RecallQuery`), scoped to the
+  configured project and workspace;
+- any search status other than `available`, or a raised error, becomes gap
+  `memory_backend_unavailable`, never a healthy empty result;
+- a failed `put` queues the event in the bounded outbox.
+
+The plugin stamps `hook_fired_at` (Hermes-side time when the hook fired), and that
+becomes the event's `created_at`. `provenance.created_at_source` records whether
+the time came from `hermes_hook_fire` or, as a fallback, `adapter_receipt`.
+
+Verdict does not import the package itself, because E owns that dependency. A
+one-off run against P's real `FakeMemoryProvider` (P worktree on `PYTHONPATH`, no
+install) captured an event, deduplicated a replay, recalled it with a citation and
+no leaked secret, and reported the gap when the provider status was `UNAVAILABLE`.
+
 ## Not proven yet
 
 - A live Hermes turn with these hooks firing. The status stays PARTIAL until a
   real turn is observed.
-- A real backend round trip, since P's `AiMemoryClient` is on security hold, and
+- A real backend round trip (only P's Fake has been exercised), since P's `AiMemoryClient` is on security hold, and
   the Hermes→Codex and Codex→Hermes pairs.
 - Draining the outbox to the backend, which waits on E/P wiring.
 - `on_session_start` and `on_session_end` are translated but not acted on.
