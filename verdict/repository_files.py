@@ -53,6 +53,12 @@ def _open_dir(parent_fd: int, component: str, relative_path: str) -> int:
             raise UnsafeRepositoryPathError(
                 relative_path, f"symlink in path component {component!r}", symlink=True
             ) from exc
+        if exc.errno == errno.ENOENT:
+            # A wholly missing ancestor (e.g. a first tests/ directory for a
+            # unit that owns a new test file) is ordinary absence, not a
+            # security event; callers that create a confined new file walk
+            # this same path and must see FileNotFoundError, not a refusal.
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), relative_path) from exc
         if exc.errno == errno.ENOTDIR:
             # Distinguish a missing ancestor from a symlink or non-directory.
             # lstat never follows the component if it has itself become a link.
