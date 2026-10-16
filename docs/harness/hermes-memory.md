@@ -141,10 +141,42 @@ one-off run against P's real `FakeMemoryProvider` (P worktree on `PYTHONPATH`, n
 install) captured an event, deduplicated a replay, recalled it with a citation and
 no leaked secret, and reported the gap when the provider status was `UNAVAILABLE`.
 
+## Live observation (2026-10-16 19:21 ET)
+
+A single bounded `hermes chat -Q --max-turns 1` turn, run with Hermes Agent
+v0.21.3 in a temporary `HERMES_HOME`. Setup:
+- model `agy/gemini-3.1-flash-lite` via the OpenAI-compatible endpoint
+  `127.0.0.1:20128/v1`;
+- the key was referenced by environment variable name only;
+- branch head `5228c38e`;
+- the staged smoke script lives outside the repo.
+
+Observed:
+- The plugin loader parsed and loaded `verdict-memory` (source=user) and
+  registered its hooks.
+- All four hooks fired in order: `on_session_start`, then `pre_llm_call` (gap
+  `memory_backend_not_configured`), then `post_llm_call` (queued), then
+  `on_session_end`.
+- One outbox row was written: kind `before_yield`, `source_event_id` beginning
+  `hermes:<session_id>:`, `created_at_source=hermes_hook_fire`.
+- Hermes exited 0 and the model replied `ok`.
+- Canary and key hits in the outbox, stdout, stderr, hook log and evidence file:
+  all 0.
+- Uninstall succeeded and the temporary directory was removed.
+
+Observed turn ids are composite (`<session>:<uuid>:<hash>`), so `source_event_id`
+is long but still unique per turn.
+
+Facet status after this run: `session_start`, `before_first_turn`, `session_end`
+and capture (`mutation_capability`) have been seen **firing** live. `certify` still
+reports them as `partial`, because no live backend round trip exists yet (P's
+client is on hold) and recall injection with real content has not been observed.
+Any change to SUPPORTED is the controller's decision.
+
 ## Not proven yet
 
-- A live Hermes turn with these hooks firing. The status stays PARTIAL until a
-  real turn is observed.
+- Recall injecting real content into a live turn (only the no-backend gap has
+  been observed).
 - A real backend round trip (only P's Fake has been exercised), since P's `AiMemoryClient` is on security hold, and
   the Hermes→Codex and Codex→Hermes pairs.
 - Draining the outbox to the backend, which waits on E/P wiring.
