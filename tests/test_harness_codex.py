@@ -306,3 +306,23 @@ def test_cli_disable_without_enable_exits_nonzero(
     combined = err.out + err.err
     assert "backup" in combined.lower() or "not enabled" in combined.lower()
     assert SECRET not in combined
+
+
+def test_certify_hook_events_are_never_supported_before_live_proof(tmp_path: Path) -> None:
+    from verdict.harness_codex import CODEX_HOOK_EVENT_LEVELS, certify
+
+    report = certify(codex_home=tmp_path, force=True, which=lambda _name: "/usr/bin/codex")
+    assert dict(report.hook_events) == dict(CODEX_HOOK_EVENT_LEVELS)
+    assert len(report.hook_events) == 11
+    assert "supported" not in report.hook_events.values()
+    assert report.facets["hooks"] == "partial"
+
+
+def test_format_certify_lists_each_hook_event(tmp_path: Path) -> None:
+    from verdict.harness_codex import certify, format_certify
+
+    report = certify(codex_home=tmp_path, force=True, which=lambda _name: "/usr/bin/codex")
+    text = format_certify(report)
+    assert "Hook events:" in text
+    assert "  SessionEnd: unknown" in text
+    assert "  PreToolUse: partial" in text
