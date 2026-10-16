@@ -408,11 +408,11 @@ Parity = Literal["supported", "partial", "unsupported", "not-installed"]
 HookLevel = Literal["supported", "partial", "unknown"]
 
 # Per-event evidence for codex-cli 0.161.0. Nothing is "supported" until a live
-# isolated smoke records the event firing. "partial": event name in the 0.161.0
+# isolated smoke records the event firing (live fixtures). "partial": event name in the 0.161.0
 # binary and used by a working same-host hooks.json; "unknown": name only.
 CODEX_HOOK_EVENT_LEVELS: Mapping[str, HookLevel] = {
-    "SessionStart": "partial",
-    "UserPromptSubmit": "partial",
+    "SessionStart": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
+    "UserPromptSubmit": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
     "PreToolUse": "partial",
     "PostToolUse": "partial",
     "PermissionRequest": "unknown",
@@ -421,7 +421,7 @@ CODEX_HOOK_EVENT_LEVELS: Mapping[str, HookLevel] = {
     "SubagentStart": "partial",
     "SubagentStop": "unknown",
     "Stop": "partial",
-    "SessionEnd": "unknown",
+    "SessionEnd": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
 }
 
 _BINARY_NAMES = ("codex",)
@@ -536,7 +536,7 @@ def certify(
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.codex/config.toml → Verdict :8000",
         "Codex stdin hooks installed via memory_harness.codex.install_codex_hooks for all events",
-        "hook_events levels are source-evidenced; none live-observed yet",
+        "hook_events: SessionStart, UserPromptSubmit, SessionEnd live-observed (0.161.0); rest source-evidenced",
     ]
     needs_owner = ("live enable with secrets (export token_env; Codex API key is NEEDS_OWNER)",)
     if not discovered.installed:

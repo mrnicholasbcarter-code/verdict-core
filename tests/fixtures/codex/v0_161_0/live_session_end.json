@@ -1,0 +1,10 @@
+{
+  "_live": true,
+  "_observed": "codex-cli 0.161.0, 2026-10-16T23:17:33Z, isolated project hooks",
+  "_redacted": "/home/<user> -> /home/USER",
+  "session_id": "01a14701-a7ef-7750-9957-f601420603d0",
+  "transcript_path": "/home/USER/.codex/sessions/2026/10/16/rollout-2026-10-16T23-17-33-01a14701-a7ef-7750-9957-f601420603d0.jsonl",
+  "cwd": "/home/USER/worktrees/bod80-lane-b-codex-probe/smoke-20261016T230458Z",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}
