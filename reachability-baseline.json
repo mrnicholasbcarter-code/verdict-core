@@ -625,7 +625,7 @@
   },
   {
     "qualified_name": "verdict.commands.parsers_harness.register",
-    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict harness command family (verdict/commands/parsers_harness.py)."
+    "reason": "KEEP: argparse registrar for the harness command family, called from verdict/cli.py main() registrar loop (verdict/cli.py:3282-3293, parsers_harness in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop."
   },
   {
     "qualified_name": "verdict.commands.parsers_models.register",
@@ -641,7 +641,7 @@
   },
   {
     "qualified_name": "verdict.commands.parsers_runtime.register",
-    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict runtime command family (verdict/commands/parsers_runtime.py)."
+    "reason": "KEEP: argparse registrar for the runtime command family, called from verdict/cli.py main() registrar loop (verdict/cli.py:3282-3293, parsers_runtime in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop."
   },
   {
     "qualified_name": "verdict.commands.parsers_setup.register",
