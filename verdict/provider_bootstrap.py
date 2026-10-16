@@ -274,17 +274,36 @@ def load_credential_store_env() -> dict[str, str]:
     into ``os.environ``: a stored credential must not leak into child processes
     or into unrelated code that reads the environment.
 
-    A name supplied this way reports ``source="credential_store"`` and does not
-    raise ``credential_env_missing``.
+    When ``credentials.env`` has neither gateway key name, the owner-only
+    ``omniroute-api-key`` key file and Prime's ``auth.json`` are also consulted
+    (the same non-environment sources ``credentials_store.resolve_gateway_key``
+    documents), so a caller that only reads this store never misses a key that
+    the file-based route already serves. A name supplied this way still reports
+    ``source="credential_store"`` and does not raise ``credential_env_missing``.
     """
     try:
         from verdict.credentials_store import CredentialsStore
 
-        return {str(k): str(v) for k, v in CredentialsStore().load().items()}
+        env = {str(k): str(v) for k, v in CredentialsStore().load().items()}
     except Exception:
         # A missing, unreadable or insecure store is not a bootstrap failure; the
         # resolver still reports any name that stays unset as credential_env_missing.
         return {}
+
+    from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, resolve_gateway_key
+
+    if not any(name in env for name in GATEWAY_KEY_ENV_NAMES):
+        try:
+            resolved = resolve_gateway_key(environ={})
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            value, kind = resolved
+            if kind in {"key_file", "prime_auth"}:
+                for name in GATEWAY_KEY_ENV_NAMES:
+                    env[name] = value
+
+    return env
 
 
 def redact_start_command(argv: Sequence[str] | None) -> str | None:
