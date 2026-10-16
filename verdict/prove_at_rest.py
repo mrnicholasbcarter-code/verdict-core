@@ -1739,7 +1739,11 @@ _OPENROUTER_FREE_SET_LOAD = object()
 def load_openrouter_free_set_for_prober(
     *, now: datetime | None = None, cache_path: Path | None = None, ttl_seconds: float | None = None
 ) -> OpenRouterFreeSet | None:
-    """Public OpenRouter 0/0 set for capacity classification (BOD-418)."""
+    """Public OpenRouter 0/0 set for capacity classification (BOD-418).
+
+    When ``cache_path`` is the caller-owned ``state_dir/openrouter-free-set.json``,
+    this is the live refresh owner that ``build_selector`` later reads cache-only.
+    """
     return load_openrouter_free_set(now=now, cache_path=cache_path, ttl_seconds=ttl_seconds)
 
 
@@ -1761,9 +1765,11 @@ def routes_from_evidence(
     model ids) only sets the ``live_catalog`` ordering hint.
 
     ``openrouter_free_set`` (BOD-418) is the public OpenRouter 0/0 membership
-    set. When omitted, it is loaded from the on-disk cache / public catalog.
-    Pass ``None`` to skip the public free-set (no openrouter/ FREE assertion).
-    OpenRouter-family routes outside that set are never classified FREE.
+    set. When omitted, it is loaded via the public catalog into
+    ``state_dir/openrouter-free-set.json`` (same file ``build_selector`` reads
+    cache-only). Pass ``None`` to skip the public free-set (no openrouter/
+    FREE assertion). OpenRouter-family routes outside that set are never
+    classified FREE.
     """
     from verdict.admission import admit, default_runtime_evidence
     from verdict.openrouter_free_set import openrouter_route_is_public_free
@@ -1771,7 +1777,11 @@ def routes_from_evidence(
 
     free_set: OpenRouterFreeSet | None
     if openrouter_free_set is _OPENROUTER_FREE_SET_LOAD:
-        free_set = load_openrouter_free_set_for_prober(now=now)
+        # Same caller-owned cache path build_selector reads (state_dir /
+        # openrouter-free-set.json). Live refresh writes here; selector is
+        # cache-only against the same file — one membership source.
+        owned = (state_dir / "openrouter-free-set.json") if state_dir is not None else None
+        free_set = load_openrouter_free_set_for_prober(now=now, cache_path=owned)
     else:
         # Explicit None or an OpenRouterFreeSet; never the load sentinel here.
         free_set = (

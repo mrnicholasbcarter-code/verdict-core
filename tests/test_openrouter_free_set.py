@@ -19,10 +19,17 @@ from verdict.openrouter_free_set import (
     parse_free_entries,
     pricing_is_explicitly_free,
 )
+from verdict.orchestration import run as orch_run
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import EligibilityLadder, capacity_class_of
+from verdict.orchestration.eligibility_report import build_selector
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
-from verdict.prove_at_rest import _cooled_pools, _detail_is_model_scoped
+from verdict.prove_at_rest import (
+    _cooled_pools,
+    _detail_is_model_scoped,
+    load_openrouter_free_set_for_prober,
+    routes_from_evidence,
+)
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -509,3 +516,250 @@ def test_routes_from_evidence_marks_only_public_free(
     assert by_id["openrouter/poolside/laguna-xs-2.1:free"].capacity == "free"
     assert by_id["openrouter/aion-labs/aion-3.5-mini"].capacity != "free"
     assert by_id["openrouter/meta-llama/llama-3.3-70b-instruct:free"].capacity != "free"
+
+
+def test_build_selector_missing_owned_cache_fail_closed_no_fetch_no_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Omitted free-set is cache-only on state_dir; missing cache => no FREE."""
+    home_sentinel = tmp_path / "home-sentinel"
+    monkeypatch.setenv("HOME", str(home_sentinel))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    monkeypatch.setenv("PRIME_AGENT_HOME", str(tmp_path / "prime" / "agent"))
+    (tmp_path / "prime" / "agent").mkdir(parents=True)
+    (tmp_path / "prime" / "agent" / "models.json").write_text(
+        json.dumps({"providers": {"omniroute": {"models": [{"id": "cc/claude-sonnet-5"}]}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("VERDICT_OPENROUTER_FREE_SET_CACHE", raising=False)
+
+    fetch_calls: list[str] = []
+
+    def boom_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        raise AssertionError(f"selector must not fetch: {url}")
+
+    monkeypatch.setattr("verdict.openrouter_free_set.fetch_openrouter_models", boom_fetch)
+
+    paid = {
+        "id": "openrouter/aion-labs/aion-3.5-mini:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    genuine = {
+        "id": "openrouter/poolside/laguna-xs-2.1:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    rows = [
+        {
+            "id": "cc/claude-sonnet-5",
+            "owned_by": "claude",
+            "capabilities": {"tool_calling": True, "chat": True},
+            "context_length": 200000,
+        },
+        paid,
+        genuine,
+    ]
+    connections = [
+        {
+            "provider": "claude",
+            "authType": "oauth",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "pro",
+        },
+        {
+            "provider": "openrouter",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "payg",
+            "import_free_only": True,
+        },
+    ]
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda *_a, **_k: rows)
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda *_a, **_k: connections)
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
+
+    state_file = tmp_path / "run" / "state.json"
+    state_file.parent.mkdir(parents=True)
+    ladder = build_selector("http://127.0.0.1:1", scope="", prefer="", state_file=state_file)
+    assert ladder.openrouter_free_set is None
+    assert fetch_calls == []
+    assert not home_sentinel.exists()
+    owned = state_file.parent / "openrouter-free-set.json"
+    assert not owned.exists()
+    # openrouter routes without membership are not FREE
+    cap_paid, _, _ = ladder._capacity_class(connections[1], paid, route_id=paid["id"])
+    cap_genuine, _, _ = ladder._capacity_class(connections[1], genuine, route_id=genuine["id"])
+    assert cap_paid is not CapacityClass.FREE
+    assert cap_genuine is not CapacityClass.FREE
+
+
+def test_build_selector_reads_prepopulated_owned_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepopulated state_dir cache is the membership the selector uses."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home-sentinel"))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    monkeypatch.setenv("PRIME_AGENT_HOME", str(tmp_path / "prime" / "agent"))
+    (tmp_path / "prime" / "agent").mkdir(parents=True)
+    (tmp_path / "prime" / "agent" / "models.json").write_text(
+        json.dumps({"providers": {"omniroute": {"models": [{"id": "cc/claude-sonnet-5"}]}}}),
+        encoding="utf-8",
+    )
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    owned = state_dir / "openrouter-free-set.json"
+    # Refresh owner wrote this cache earlier (simulated by load with fetch).
+    written = load_openrouter_free_set(
+        now=NOW,
+        cache_path=owned,
+        fetch=lambda url, timeout: _payload([_row("poolside/laguna-xs-2.1:free")]),
+    )
+    assert written is not None and owned.exists()
+
+    fetch_calls: list[str] = []
+
+    def boom_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        raise AssertionError(f"selector must not fetch: {url}")
+
+    monkeypatch.setattr("verdict.openrouter_free_set.fetch_openrouter_models", boom_fetch)
+
+    paid = {
+        "id": "openrouter/aion-labs/aion-3.5-mini:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    genuine = {
+        "id": "openrouter/poolside/laguna-xs-2.1:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    rows = [
+        {
+            "id": "cc/claude-sonnet-5",
+            "owned_by": "claude",
+            "capabilities": {"tool_calling": True, "chat": True},
+            "context_length": 200000,
+        },
+        paid,
+        genuine,
+    ]
+    connections = [
+        {
+            "provider": "claude",
+            "authType": "oauth",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "pro",
+        },
+        {
+            "provider": "openrouter",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "payg",
+            "import_free_only": True,
+        },
+    ]
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda *_a, **_k: rows)
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda *_a, **_k: connections)
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
+
+    ladder = build_selector(
+        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json"
+    )
+    assert ladder.openrouter_free_set is not None
+    assert ladder.openrouter_free_set.contains("poolside/laguna-xs-2.1:free")
+    assert fetch_calls == []
+    cap_paid, _, _ = ladder._capacity_class(connections[1], paid, route_id=paid["id"])
+    cap_free, _, evidence = ladder._capacity_class(connections[1], genuine, route_id=genuine["id"])
+    assert cap_paid is not CapacityClass.FREE
+    assert cap_free is CapacityClass.FREE
+    assert evidence == "openrouter_public_zero"
+
+
+def test_refresh_owner_and_selector_share_same_owned_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live refresher writes state_dir cache; selector reads that same file."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home-sentinel"))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    monkeypatch.setenv("PRIME_AGENT_HOME", str(tmp_path / "prime" / "agent"))
+    (tmp_path / "prime" / "agent").mkdir(parents=True)
+    (tmp_path / "prime" / "agent" / "models.json").write_text(
+        json.dumps({"providers": {"omniroute": {"models": [{"id": "cc/claude-sonnet-5"}]}}}),
+        encoding="utf-8",
+    )
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    owned = state_dir / "openrouter-free-set.json"
+    assert not owned.exists()
+
+    fetch_calls: list[str] = []
+
+    def counting_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        return _payload([_row("poolside/laguna-xs-2.1:free")])
+
+    # Refresh owner (prove_at_rest prober path) writes the owned cache.
+    monkeypatch.setattr("verdict.openrouter_free_set.fetch_openrouter_models", counting_fetch)
+    refreshed = load_openrouter_free_set_for_prober(now=NOW, cache_path=owned)
+    assert refreshed is not None
+    assert owned.exists()
+    assert len(fetch_calls) == 1
+
+    # routes_from_evidence with omitted set loads from same state_dir path
+    paid = {
+        "id": "openrouter/aion-labs/aion-3.5-mini:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    genuine = {
+        "id": "openrouter/poolside/laguna-xs-2.1:free",
+        "owned_by": "openrouter",
+        "capabilities": {"tool_calling": True, "chat": True},
+        "context_length": 128000,
+    }
+    connections = [
+        {
+            "provider": "openrouter",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "payg",
+            "import_free_only": True,
+        }
+    ]
+    # Second load via routes_from_evidence should reuse cache (no extra fetch
+    # if we only classify through selector). Selector path:
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda *_a, **_k: [paid, genuine])
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda *_a, **_k: connections)
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
+
+    ladder = build_selector(
+        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json"
+    )
+    # Selector is cache-only: still exactly one fetch (the refresh owner).
+    assert len(fetch_calls) == 1
+    assert ladder.openrouter_free_set is not None
+    assert ladder.openrouter_free_set.contains("poolside/laguna-xs-2.1:free")
+    cap_free, _, evidence = ladder._capacity_class(connections[0], genuine, route_id=genuine["id"])
+    assert cap_free is CapacityClass.FREE
+    assert evidence == "openrouter_public_zero"
+    # And routes_from_evidence with state_dir uses same owned path (may fetch
+    # on miss; here cache exists so should not need network if load hits cache).
+    before = len(fetch_calls)
+    _routes = routes_from_evidence([paid, genuine], connections, now=NOW, state_dir=state_dir)
+    # Cache valid => no additional fetch required for membership.
+    assert len(fetch_calls) == before
