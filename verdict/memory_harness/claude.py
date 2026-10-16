@@ -1,173 +1,104 @@
 """Claude Code memory-bridge installer.
 
-Behavior matches the former ``verdict.memory_bridge._install_claude_hooks``.
-``shared_db`` is accepted and unused; the hooks do not embed the plane path.
+Installs one stdin-driven hook per Claude lifecycle event. Each hook command is
+``HOOK_COMMAND_TEMPLATE`` from :mod:`verdict.harness_claude`; Claude Code pipes
+the hook JSON (session_id, cwd, prompt, ...) to the command on stdin, so no
+global temp prompt files are read. Legacy ``/tmp/claude_*`` Verdict hooks are
+migrated away on install. ``shared_db`` is accepted and unused.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
-from verdict.memory_harness._normalize import _normalize_hook_command
+from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_COMMAND_TEMPLATE
+
+_HOOK_COMMAND_PREFIX = HOOK_COMMAND_TEMPLATE.split("{event}", 1)[0]
+
+
+def _is_verdict_command(command: str) -> bool:
+    if command.startswith(_HOOK_COMMAND_PREFIX):
+        return True
+    return "verdict hook" in command and "/tmp/claude_" in command
+
+
+def _load(settings_file: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(settings_file.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _strip_verdict_hooks(settings: dict[str, Any]) -> bool:
+    """Remove Verdict-managed hook commands in place. Return True if changed."""
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for event in list(hooks):
+        matchers = hooks[event]
+        if not isinstance(matchers, list):
+            continue
+        kept_matchers: list[Any] = []
+        removed_here = False
+        for matcher in matchers:
+            inner = matcher.get("hooks") if isinstance(matcher, dict) else None
+            if not isinstance(inner, list):
+                kept_matchers.append(matcher)
+                continue
+            kept = [
+                h
+                for h in inner
+                if not (isinstance(h, dict) and _is_verdict_command(str(h.get("command", ""))))
+            ]
+            if len(kept) == len(inner):
+                kept_matchers.append(matcher)
+                continue
+            removed_here = True
+            if kept:
+                kept_matchers.append({**matcher, "hooks": kept})
+        if removed_here:
+            changed = True
+            if kept_matchers:
+                hooks[event] = kept_matchers
+            else:
+                del hooks[event]
+    if changed and not hooks:
+        del settings["hooks"]
+    return changed
 
 
 def install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
-    """Install Verdict hooks in Claude Code settings.json."""
-    import json as _json
-
+    """Install Verdict stdin hooks in Claude Code settings.json (idempotent)."""
     settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings = _load(settings_file) if settings_file.exists() else {}
+    _strip_verdict_hooks(settings)
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = settings["hooks"] = {}
+    for event in CLAUDE_HOOK_EVENT_KINDS:
+        entry = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": HOOK_COMMAND_TEMPLATE.format(event=event)}],
+        }
+        existing = hooks.get(event)
+        if isinstance(existing, list):
+            existing.append(entry)
+        else:
+            hooks[event] = [entry]
+    settings_file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
-    # Load existing settings or create new
-    if settings_file.exists():
-        try:
-            settings = _json.loads(settings_file.read_text("utf-8"))
-        except Exception:
-            settings = {}
-    else:
-        settings = {}
 
-    # Ensure hooks structure exists
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-
-    # Define the Verdict hooks we need (canonical form with single quotes)
-    verdict_hooks: dict[str, list[dict[str, Any]]] = {
-        "PreToolUse": [
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_pre_bash' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"bash command\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "PostToolUse": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_session' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "UserPromptSubmit": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "SessionStart": [
-            {
-                "matcher": "compact",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
-                    }
-                ],
-            },
-            {
-                "matcher": "startup|resume",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
-                    }
-                ],
-            },
-        ],
-        "SubagentStop": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_subagent' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"subagent completed\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-    }
-
-    # First, CLEAN UP any existing verdict hooks with non-canonical quote styles
-    for hook_type in list(settings["hooks"].keys()):
-        if hook_type not in verdict_hooks:
-            continue
-        new_hooks_list = []
-        seen_normalized = set()  # Track across ALL matcher objects for this hook_type
-        for matcher_obj in settings["hooks"][hook_type]:
-            matcher = matcher_obj.get("matcher", "")
-            # Only process matchers that we manage
-            if not any(vh.get("matcher") == matcher for vh in verdict_hooks.get(hook_type, [])):
-                new_hooks_list.append(matcher_obj)
-                continue
-
-            new_hooks = []
-            for hook in matcher_obj.get("hooks", []):
-                cmd = hook.get("command", "")
-                if "verdict hook" in cmd:
-                    norm = _normalize_hook_command(cmd)
-                    if norm not in seen_normalized:
-                        seen_normalized.add(norm)
-                        # Only keep if it matches our canonical form (single quotes)
-                        if cmd == _normalize_hook_command(cmd):
-                            new_hooks.append(hook)
-                else:
-                    new_hooks.append(hook)
-
-            if new_hooks:
-                matcher_obj["hooks"] = new_hooks
-                new_hooks_list.append(matcher_obj)
-
-        settings["hooks"][hook_type] = new_hooks_list
-
-    # Now ADD canonical hooks if missing
-    for hook_type, hooks in verdict_hooks.items():
-        if hook_type not in settings["hooks"]:
-            settings["hooks"][hook_type] = []
-
-        # Track what we already have (normalized) for deduplication
-        existing_commands = set()
-        existing_matchers = set()
-        for h in settings["hooks"][hook_type]:
-            existing_matchers.add(h.get("matcher", ""))
-            for hook in h.get("hooks", []):
-                if "verdict hook" in hook.get("command", ""):
-                    existing_commands.add(_normalize_hook_command(hook["command"]))
-
-        for verdict_hook in hooks:
-            matcher = verdict_hook.get("matcher", "")
-            # If this matcher doesn't exist at all, add the whole hook object
-            if matcher not in existing_matchers:
-                settings["hooks"][hook_type].append(verdict_hook)
-                existing_matchers.add(matcher)
-                # Also add commands to existing_commands for deduplication
-                for vh in verdict_hook["hooks"]:
-                    existing_commands.add(_normalize_hook_command(vh["command"]))
-            else:
-                # Matcher exists, add individual commands if missing
-                for vh in verdict_hook["hooks"]:
-                    norm_cmd = _normalize_hook_command(vh["command"])
-                    if norm_cmd not in existing_commands:
-                        # Find the matching matcher_obj and append
-                        for h in settings["hooks"][hook_type]:
-                            if h.get("matcher") == matcher:
-                                h["hooks"].append(vh)
-                                break
-                        existing_commands.add(norm_cmd)
-
-    # Write back
-    settings_file.write_text(_json.dumps(settings, indent=2), encoding="utf-8")
+def uninstall_claude_hooks(settings_file: Path) -> None:
+    """Remove only Verdict-managed hooks; leave the file untouched if none."""
+    if not settings_file.is_file():
+        return
+    settings = _load(settings_file)
+    if _strip_verdict_hooks(settings):
+        settings_file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 def install_claude_instructions(instructions_file: Path, bridge_instruction: str) -> None:

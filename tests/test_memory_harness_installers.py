@@ -24,29 +24,29 @@ BRIDGE = (
     "- Export session records on completion: `verdict memory put <key> <content>`.\n"
 )
 
-CLAUDE_PRE_BASH = (
+# Claude hooks are stdin-driven (lane A): one command per lifecycle event, no
+# /tmp prompt files. Legacy /tmp commands are kept only as migration inputs.
+LEGACY_CLAUDE_PRE_BASH = (
     "verdict hook record 'claude_pre_bash' "
     "'$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"bash command\")' "
     "--namespace sessions --source claude 2>/dev/null || true"
 )
-CLAUDE_POST = (
-    "verdict hook record 'claude_session' "
-    "'$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"no prompt captured\")' "
-    "--namespace sessions --source claude 2>/dev/null || true"
+CLAUDE_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "SubagentStop",
+    "PreCompact",
+    "Stop",
+    "SessionEnd",
 )
-CLAUDE_PROMPT_RECALL = (
-    "verdict hook recall '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"\")' "
-    "--json --limit 20 2>/dev/null || true"
-)
-CLAUDE_SESSION_RECALL = (
-    "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' "
-    "--json --limit 30 2>/dev/null || true"
-)
-CLAUDE_SUBAGENT = (
-    "verdict hook record 'claude_subagent' "
-    "'$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"subagent completed\")' "
-    "--namespace sessions --source claude 2>/dev/null || true"
-)
+
+
+def _claude_cmd(event: str) -> str:
+    return f"python -m verdict.harness_claude hook {event}"
+
+
 CODEX_POST = (
     "verdict hook record 'codex_session' "
     "'$(cat /tmp/codex_last_prompt 2>/dev/null || echo \"no prompt captured\")' "
@@ -98,16 +98,12 @@ def test_claude_hooks_write_canonical_commands_and_ignore_shared_db(tmp_path: Pa
     assert not unused.parent.exists()
     document = json.loads(settings.read_text(encoding="utf-8"))
     assert set(document) == {"hooks"}
-    assert _commands(document["hooks"]["PreToolUse"]) == [CLAUDE_PRE_BASH]
-    assert _commands(document["hooks"]["PostToolUse"]) == [CLAUDE_POST]
-    assert _commands(document["hooks"]["UserPromptSubmit"]) == [CLAUDE_PROMPT_RECALL]
-    assert document["hooks"]["SessionStart"][0]["matcher"] == "compact"
-    assert document["hooks"]["SessionStart"][1]["matcher"] == "startup|resume"
-    assert _commands(document["hooks"]["SessionStart"]) == [
-        CLAUDE_SESSION_RECALL,
-        CLAUDE_SESSION_RECALL,
-    ]
-    assert _commands(document["hooks"]["SubagentStop"]) == [CLAUDE_SUBAGENT]
+    assert list(document["hooks"]) == list(CLAUDE_EVENTS)
+    for event in CLAUDE_EVENTS:
+        assert document["hooks"][event] == [
+            {"matcher": "", "hooks": [{"type": "command", "command": _claude_cmd(event)}]}
+        ]
+    assert "/tmp/claude_" not in settings.read_text(encoding="utf-8")
     assert str(unused) not in settings.read_text(encoding="utf-8")
 
 
@@ -121,7 +117,7 @@ def test_claude_hooks_are_idempotent_and_keep_unrelated_settings(tmp_path: Path)
                     "matcher": "Bash",
                     "hooks": [
                         {"type": "command", "command": "echo user"},
-                        {"type": "command", "command": CLAUDE_PRE_BASH.replace("'", '"')},
+                        {"type": "command", "command": LEGACY_CLAUDE_PRE_BASH},
                     ],
                 },
                 {"matcher": "Read", "hooks": [{"type": "command", "command": "echo keep-read"}]},
@@ -139,13 +135,12 @@ def test_claude_hooks_are_idempotent_and_keep_unrelated_settings(tmp_path: Path)
     assert first == second
     document = json.loads(second)
     assert document["theme"] == "dark"
-    assert document["hooks"]["Stop"] == original["hooks"]["Stop"]
+    assert document["hooks"]["Stop"][0] == original["hooks"]["Stop"][0]
+    assert _commands(document["hooks"]["Stop"]).count(_claude_cmd("Stop")) == 1
     pre = document["hooks"]["PreToolUse"]
-    assert pre[0]["matcher"] == "Bash"
-    assert "echo user" in _commands([pre[0]])
-    assert CLAUDE_PRE_BASH in _commands([pre[0]])
-    assert CLAUDE_PRE_BASH.replace("'", '"') not in _commands([pre[0]])
-    assert _commands([pre[0]]).count(CLAUDE_PRE_BASH) == 1
+    assert pre[0] == {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user"}]}
+    assert LEGACY_CLAUDE_PRE_BASH not in _commands(pre)
+    assert _commands(pre).count(_claude_cmd("PreToolUse")) == 1
     assert pre[1] == {
         "matcher": "Read",
         "hooks": [{"type": "command", "command": "echo keep-read"}],
@@ -245,7 +240,7 @@ def test_configure_writes_claude_and_codex_files_under_isolated_home(
     assert (cwd / "CLAUDE.md").read_text(encoding="utf-8") == "# Mine\n" + BRIDGE
     assert (cwd / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "user agents\n" + BRIDGE
     claude_settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert CLAUDE_PRE_BASH in _commands(claude_settings["hooks"]["PreToolUse"])
+    assert _claude_cmd("PreToolUse") in _commands(claude_settings["hooks"]["PreToolUse"])
     codex_hooks = json.loads((home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
     assert CODEX_POST in _commands(codex_hooks["hooks"]["PostToolUse"])
     assert (home / "keep.txt").read_text(encoding="utf-8") == "unrelated"

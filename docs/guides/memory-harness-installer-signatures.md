@@ -12,9 +12,13 @@ Those hooks do not embed the plane path.
 ```text
 verdict.memory_harness.claude.install_claude_hooks(settings_file: 'Path', shared_db: 'Path') -> 'None'
 verdict.memory_harness.claude.install_claude_instructions(instructions_file: 'Path', bridge_instruction: 'str') -> 'None'
+verdict.memory_harness.claude.uninstall_claude_hooks(settings_file: 'Path') -> 'None'
 ```
 
-`install_claude_hooks` writes Claude Code `settings.json` hooks.
+`install_claude_hooks` writes one stdin-driven Claude Code `settings.json` hook per
+lifecycle event (`verdict.harness_claude.HOOK_COMMAND_TEMPLATE`, provisional) and
+migrates legacy `/tmp/claude_*` Verdict hooks. `uninstall_claude_hooks` removes
+only Verdict-managed entries.
 `install_claude_instructions` appends the bridge block to a project
 `CLAUDE.md` when the marker `Verdict Unified Memory Bridge` is absent.
 
