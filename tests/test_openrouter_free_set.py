@@ -194,6 +194,46 @@ def test_fetch_failure_reuses_still_valid_cache(tmp_path: Path) -> None:
     assert cached.contains("poolside/laguna-xs-2.1:free")
 
 
+def test_valid_cache_within_ttl_skips_fetch(tmp_path: Path) -> None:
+    """Still-valid cache must return without a second network/fetch call."""
+    path = tmp_path / "cache.json"
+    fetch_calls: list[str] = []
+
+    def counting_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        return _payload([_row("poolside/laguna-xs-2.1:free")])
+
+    first = load_openrouter_free_set(
+        now=NOW, cache_path=path, ttl_seconds=21600, fetch=counting_fetch
+    )
+    assert first is not None and first.source == "live"
+    assert len(fetch_calls) == 1
+
+    second = load_openrouter_free_set(
+        now=NOW + timedelta(minutes=5), cache_path=path, ttl_seconds=21600, fetch=counting_fetch
+    )
+    assert second is not None and second.source == "cache"
+    assert len(fetch_calls) == 1
+    assert second.contains("poolside/laguna-xs-2.1:free")
+
+
+def test_refresh_false_is_cache_only(tmp_path: Path) -> None:
+    path = tmp_path / "cache.json"
+    fetch_calls: list[str] = []
+
+    def counting_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        return _payload([_row("poolside/laguna-xs-2.1:free")])
+
+    assert (
+        load_openrouter_free_set(
+            now=NOW, cache_path=path, ttl_seconds=60, refresh=False, fetch=counting_fetch
+        )
+        is None
+    )
+    assert fetch_calls == []
+
+
 def test_opaque_free_router_alias_is_not_certified_free() -> None:
     entries = parse_free_entries(_payload([_row("openrouter/free")]))
     free_set = OpenRouterFreeSet(

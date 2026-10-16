@@ -483,9 +483,10 @@ def load_openrouter_free_set(
 ) -> OpenRouterFreeSet | None:
     """Return the cached-or-fresh free set, or None when membership cannot be asserted.
 
-    ``refresh=True`` (default) fetches the public catalog; on failure, a still-valid
-    cache is returned. Pass ``refresh=False`` for cache-only (hermetic tests inject
-    ``fetch=`` instead of branching on the environment).
+    A still-valid on-disk cache is returned without a network fetch.
+    ``refresh=False`` is cache-only (never fetches, even with ``fetch=``).
+    ``refresh=True`` (default) fetches only on cache miss/expiry; pass an
+    explicit ``fetch=`` for tests. Failed fetch with no valid cache yields None.
     """
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -493,8 +494,11 @@ def load_openrouter_free_set(
     path = cache_path or default_cache_path()
     ttl = float(DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds)
     cached = _load_cached_set(path, now=current, ttl_seconds=ttl)
-    if not refresh and fetch is None:
+    if cached is not None:
         return cached
+    if not refresh:
+        # Cache-only: never fetch, even if a fetch callable was injected.
+        return None
     fetch_fn = fetch or (lambda target, to: fetch_openrouter_models(target, timeout=to))
     try:
         payload = fetch_fn(url, timeout)
