@@ -412,3 +412,26 @@ def test_bod407_stale_local_rate_limit_cooldown_yields_to_live_quota() -> None:
     assert "kiro/claude-haiku-4.5" not in admit(
         [row("kiro/claude-haiku-4.5")], [live], RuntimeEvidence((auth,), ("x",)), now=NOW
     )
+
+
+def test_bod407_updated_at_is_not_a_post_cooldown_test() -> None:
+    """BOD-407 review F1: updatedAt is a periodic refresh, not a test. Only a
+    lastTested newer than the cooldown refutes it."""
+    stale = RuntimeObservation(
+        "provider:kiro",
+        "cooldown",
+        "rate_limited",
+        "at_rest_health_cache:health-cache.json",
+        (NOW - timedelta(days=4)).isoformat(),
+        (NOW + timedelta(days=15)).isoformat(),
+    )
+    runtime = RuntimeEvidence((stale,), ("at_rest_health_cache:health-cache.json",))
+    refreshed = (NOW - timedelta(minutes=10)).isoformat()
+    for extra in (
+        {"updatedAt": refreshed},
+        {"updatedAt": refreshed, "lastTested": (NOW - timedelta(days=5)).isoformat()},
+        {"updatedAt": refreshed, "lastTested": "not-a-time"},
+    ):
+        live = conn("kiro", status="active", quota_percent=38.1, **extra)
+        admitted = admit([row("kiro/claude-haiku-4.5")], [live], runtime, now=NOW)
+        assert "kiro/claude-haiku-4.5" not in admitted, extra

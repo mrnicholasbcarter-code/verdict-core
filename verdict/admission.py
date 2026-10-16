@@ -788,7 +788,7 @@ def live_quota_refutes_rate_limit(
     from verdict.orchestration.eligibility import quota_remaining
 
     cooled_at = observed_at if isinstance(observed_at, datetime) else _parse_iso(observed_at)
-    tested_at = _parse_iso(connection.get("lastTested") or connection.get("updatedAt"))
+    tested_at = _parse_iso(connection.get("lastTested"))
     remaining = quota_remaining(connection, route_id)
     return (
         cooled_at is not None
