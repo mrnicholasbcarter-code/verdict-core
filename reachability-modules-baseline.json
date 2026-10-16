@@ -41,7 +41,7 @@
   },
   {
     "qualified_name": "verdict.context_lift",
-    "reason": "UNTRIAGED: orphan module (353 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
+    "reason": "KEEP: paired cheaper-model lift. No production importer; the live lift test and benchmark doc call it. Catalog fetch now comes from verdict.live_routing."
   },
   {
     "qualified_name": "verdict.delivery",
@@ -65,19 +65,7 @@
   },
   {
     "qualified_name": "verdict.live_routing",
-    "reason": "UNTRIAGED: orphan module (356 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.live_routing_gateway",
-    "reason": "UNTRIAGED: orphan module (139 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.live_routing_run",
-    "reason": "UNTRIAGED: orphan module (111 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
-    "qualified_name": "verdict.live_routing_usage",
-    "reason": "UNTRIAGED: orphan module (151 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
+    "reason": "KEEP: classify, select, explain, and live catalog fetch, probe, and chat execute used by the routing demo and context lift. No production entry point reaches this module."
   },
   {
     "qualified_name": "verdict.memory_migration",

@@ -157,6 +157,30 @@ def test_blocked_when_recorded_missing(tmp_path: Path) -> None:
     assert summary["request_count"] == 0
 
 
+def test_fixture_catalog_cannot_pass(tmp_path: Path) -> None:
+    # A hand-written catalog with no genuine capture provenance (wrong
+    # schema_version, the only field that marks a real `routing_demo`
+    # capture) must be rejected as a live-surface block, never counted as a
+    # completed run. Fixture data never satisfies live proof.
+    fixture = tmp_path / "hand_written_catalog.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "schema_version": "not-a-real-capture",
+                "mode": "recorded",
+                "gateway_base_url": "http://localhost:20128/v1",
+                "catalog_captured_at": _now().isoformat(),
+                "catalog_rows": [{"id": "fake-model-1", "owned_by": "p", "cost_class": "free"}],
+                "pricing_index": {"fake-model-1": {"input": 0.0, "output": 0.0}},
+            }
+        )
+    )
+    summary = run_routing_demo(recorded_path=fixture, execute=False)
+    assert summary["status"] == "blocked"
+    assert summary["reason"] == "live_surface_blocked"
+    assert summary["request_count"] == 0
+
+
 def test_load_roundtrip(tmp_path: Path) -> None:
     identities = [_id("free-a", cost="free"), _id("paid-z", cost="paid")]
     pricing = {"free-a": {"input": 0.0, "output": 0.0}, "paid-z": {"input": 5.0, "output": 5.0}}

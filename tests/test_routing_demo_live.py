@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 
-from verdict.live_routing_gateway import DEFAULT_GATEWAY
+from verdict.live_routing import DEFAULT_GATEWAY
 from verdict.routing_demo import run_routing_demo
 
 

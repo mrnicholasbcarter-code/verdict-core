@@ -169,11 +169,11 @@
   },
   {
     "qualified_name": "verdict.context_lift.refuse_secret_write",
-    "reason": "UNTRIAGED: refuse_secret_write has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
+    "reason": "KEEP: refuse_secret_write has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
   },
   {
     "qualified_name": "verdict.context_lift.run_context_lift",
-    "reason": "UNTRIAGED: run_context_lift has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
+    "reason": "KEEP: run_context_lift has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
   },
   {
     "qualified_name": "verdict.context_sources.CapabilityProviderProtocol",
@@ -398,10 +398,6 @@
   {
     "qualified_name": "verdict.intelligence_adapter.build_intelligence_adapter",
     "reason": "UNTRIAGED: build_intelligence_adapter has only non-production references; Intelligence Adapter v1 - Versioned, Fail-Closed Intelligence Boundary (verdict/intelligence_adapter.py)."
-  },
-  {
-    "qualified_name": "verdict.live_routing_run.run_live_routing",
-    "reason": "UNTRIAGED: run_live_routing has only non-production references; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
   },
   {
     "qualified_name": "verdict.memory_adapters.CanonicalManifestAdapter",
@@ -858,10 +854,6 @@
   {
     "qualified_name": "verdict.home.main",
     "reason": "DELETE candidate: BOD-259 review home.main before removal; verdict/commands/dispatch.py (the real `verdict` with no subcommand path) calls run_home() directly and no pyproject entry point or test references this wrapper -- zero callers of any kind."
-  },
-  {
-    "qualified_name": "verdict.live_routing_run.utc_now",
-    "reason": "UNTRIAGED: utc_now has no resolved reference; Orchestrate live catalog \u2192 classify \u2192 select \u2192 named check \u2192 receipt (verdict/live_routing_run.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.discover_sessions",

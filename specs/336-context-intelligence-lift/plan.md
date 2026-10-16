@@ -67,7 +67,7 @@ verdict/memory_gate.py             # reuse gated writes
 verdict/documentation_preflight.py # reuse ADR/docs discovery
 verdict/code_graph.py              # reuse bounded symbol retrieval
 verdict/live_routing.py            # reuse cheaper-first identity selection
-verdict/live_routing_gateway.py    # reuse catalog fetch; add generic execute helper
+verdict/live_routing.py           # reuse catalog fetch; add generic execute helper
 tests/test_context_intelligence.py # planted-source rule tests
 tests/test_context_lift.py         # pairing/checker/receipt rules
 tests/test_context_lift_live.py    # live paired eval; blocked if down

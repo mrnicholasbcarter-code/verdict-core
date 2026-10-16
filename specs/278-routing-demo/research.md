@@ -12,7 +12,7 @@
 ## R2. Numeric savings need live pricing index, not only cost_class
 
 - **Decision**: Keep the gateway `/api/pricing` (and row-embedded pricing) index beside `ConcreteIdentity` rows. Estimate per-request USD as `(input_price * est_input_tokens + output_price * est_output_tokens) / 1e6` using published $/MTok units from OmniRoute pricing. Baseline uses the same estimator on the costliest qualified identity for that request.
-- **Rationale**: `ConcreteIdentity` stores `cost_class` only; savings charts need numbers. Pricing is already fetched in `live_routing_gateway._pricing_index`.
+- **Rationale**: `ConcreteIdentity` stores `cost_class` only; savings charts need numbers. Pricing is already fetched by `verdict.live_routing.fetch_pricing_index`.
 - **Alternatives considered**: Rank-only “savings” without USD. Rejected: issue asks cost comparison. Invent fixed Opus/Haiku sticker prices. Rejected: fixtures-as-demo.
 
 ## R3. 100 requests under 60 seconds

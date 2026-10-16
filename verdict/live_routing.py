@@ -8,11 +8,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
+from urllib.parse import urljoin
+
+import httpx
 
 from verdict.omniroute_catalog import DEFAULT_CATALOG_FRESHNESS_SECONDS
 
-SCHEMA_VERSION = "golden-path/v1"
-NAMED_CHECK_OBJECT = {"golden_path": "ok"}
 COST_RANK = {"local": 0, "free": 1, "cheaper": 2, "paid": 3}
 OPAQUE_PREFIXES = ("auto/", "auto:", "openrouter/auto")
 CostClass = Literal["local", "free", "cheaper", "paid"]
@@ -101,39 +102,6 @@ class UsageSnapshot:
     remaining_percent: float | None
     resets_at: str | None
     exhausted: bool
-
-
-@dataclass
-class GoldenPathReceipt:
-    unit_id: str
-    endpoint: str
-    chosen_id: str
-    paid_used: bool
-    cheaper_available: bool
-    attempts: list[dict[str, Any]]
-    checker_passed: bool
-    catalog_captured_at: str
-    degraded: bool = False
-    error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = {
-            "schema_version": SCHEMA_VERSION,
-            "unit_id": self.unit_id,
-            "endpoint": self.endpoint,
-            "chosen_id": self.chosen_id,
-            "paid_used": self.paid_used,
-            "cheaper_available": self.cheaper_available,
-            "attempts": list(self.attempts),
-            "checker_passed": self.checker_passed,
-            "catalog_captured_at": self.catalog_captured_at,
-            "error": self.error,
-        }
-        if self.degraded:
-            raise LiveRoutingError(
-                "live_surface_blocked", "fixture catalog cannot emit a pass receipt"
-            )
-        return payload
 
 
 def _opaque_id(identity_id: str) -> bool:
@@ -319,21 +287,6 @@ def failover_order(selection: RouteSelection) -> list[Candidate]:
     return list(selection.ordered)
 
 
-def explain(candidates: Sequence[Candidate], selection: RouteSelection | None) -> dict[str, Any]:
-    chosen_id = selection.chosen.ref if selection else None
-    return {
-        "kept": [item.ref for item in candidates if item.status == "kept"],
-        "dropped": [
-            {"id": item.ref, "reason": item.reason}
-            for item in candidates
-            if item.status == "dropped"
-        ],
-        "chosen": chosen_id,
-        "paid_used": None if selection is None else selection.paid_used,
-        "cheaper_available": None if selection is None else selection.cheaper_available,
-    }
-
-
 _SECRET = re.compile(r"(?i)(api[_-]?key|password|secret|token|authorization|credential)")
 
 
@@ -348,9 +301,110 @@ def strip_secrets(payload: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(json.dumps(clean)))
 
 
-def named_check_passes(body: str) -> bool:
+DEFAULT_GATEWAY = "http://localhost:20128/v1"
+
+
+def _client(*, timeout: float = 8.0) -> httpx.Client:
+    return httpx.Client(timeout=timeout)
+
+
+def fetch_pricing_index(base_url: str) -> dict[str, dict[str, float]]:
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    url = root + "/api/pricing"
     try:
-        parsed = json.loads(body.strip())
-    except json.JSONDecodeError:
+        payload = _client(timeout=10.0).get(url).json()
+    except (httpx.HTTPError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    index: dict[str, dict[str, float]] = {}
+    for provider, models in payload.items():
+        if not isinstance(models, dict):
+            continue
+        for model_id, prices in models.items():
+            if not isinstance(prices, dict):
+                continue
+            entry = {
+                "input": float(prices.get("input") or 0),
+                "output": float(prices.get("output") or 0),
+            }
+            index[str(model_id)] = entry
+            index[f"{provider}/{model_id}"] = entry
+    return index
+
+
+def fetch_models(
+    base_url: str = DEFAULT_GATEWAY, *, freshness_seconds: int = 3600
+) -> tuple[list[ConcreteIdentity], datetime]:
+    captured = datetime.now(timezone.utc)
+    url = urljoin(base_url.rstrip("/") + "/", "models")
+    try:
+        response = _client(timeout=20.0).get(url)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise LiveSurfaceBlocked(f"catalog fetch failed: {exc}") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise LiveSurfaceBlocked("catalog listing is not an OpenAI-compatible models list")
+    pricing = fetch_pricing_index(base_url)
+    identities = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        model_id = str(row["id"])
+        prices = pricing.get(model_id)
+        if prices and "pricing" not in row:
+            row = {**row, "pricing": prices}
+        identities.append(
+            identity_from_row(
+                row, gateway_id=base_url, captured_at=captured, freshness_seconds=freshness_seconds
+            )
+        )
+    if not identities:
+        raise LiveSurfaceBlocked("empty_catalog")
+    return identities, captured
+
+
+def probe_identity(base_url: str, identity_id: str) -> bool:
+    url = urljoin(base_url.rstrip("/") + "/", "chat/completions")
+    try:
+        response = _client(timeout=3.0).post(
+            url,
+            json={
+                "model": identity_id,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 8,
+            },
+        )
+        if response.status_code >= 500:
+            return False
+        return response.status_code < 400
+    except httpx.HTTPError:
         return False
-    return bool(parsed == NAMED_CHECK_OBJECT)
+
+
+def execute_chat(
+    base_url: str,
+    identity_id: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int = 64,
+    timeout: float = 20.0,
+) -> str:
+    url = urljoin(base_url.rstrip("/") + "/", "chat/completions")
+    try:
+        response = _client(timeout=timeout).post(
+            url, json={"model": identity_id, "messages": messages, "max_tokens": max_tokens}
+        )
+        response.raise_for_status()
+        payload: dict[str, Any] = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise LiveSurfaceBlocked(f"execute failed: {exc}") from exc
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    return str(message.get("content") or "")

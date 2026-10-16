@@ -38,7 +38,7 @@ Sources: https://github.com/google/adk-python `src/google/adk/memory/base_memory
 ## R4. Feature 276 live cheaper-first execute
 
 - **Decision**: Obtain the lift subject from 276’s live path: fetch `/v1/models`, classify from published specs, select `local` then `free` then `cheaper`. Do not use paid while a cheaper unused qualified identity remains. Do not treat fixture catalogs as the demo.
-- **Rationale**: 276 already proved cheaper-first live execute (`verdict/live_routing.py`, `live_routing_run.py`). This feature must not re-prove catalog discovery; it must prove packing changes cheaper-model success.
+- **Rationale**: 276 already proved cheaper-first live execute (`verdict/live_routing.py`). This feature must not re-prove catalog discovery; it must prove packing changes cheaper-model success.
 - **Alternatives considered**: Hard-code a free model id. Rejected: name guessing. Use 276’s `{"golden_path":"ok"}` check. Rejected: that task is guessable without retrieved context.
 
 ## R5. Named check and planted fact

@@ -104,7 +104,7 @@ Paths are relative to the `verdict-core` worktree root.
 - [x] T017 [US3] Implement planted-token workspace helper and `lift_check_passes` in `verdict/context_lift.py`
 - [x] T018 [US3] Select cheaper-first live identity via `verdict/live_routing.py`; block paid-as-subject and unknown context limit in `verdict/context_lift.py`
 - [x] T019 [US3] Execute unaided then packed on the same identity; emit `LiftReceipt` in `verdict/context_lift.py`
-- [x] T020 [US3] Add generic chat-completions helper for custom messages without changing 276’s golden-path prompt in `verdict/live_routing_gateway.py`
+- [x] T020 [US3] Add generic chat-completions helper for custom messages without changing 276’s golden-path prompt in `verdict/live_routing.py`
 
 **Checkpoint**: US3 live proof runnable; fixture cannot emit lift
 
