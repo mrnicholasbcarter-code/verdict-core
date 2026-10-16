@@ -13,13 +13,18 @@ import json
 from pathlib import Path
 from typing import Any
 
-from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_COMMAND_TEMPLATE
+from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_COMMAND_TEMPLATE, main
 
 _HOOK_COMMAND_PREFIX = HOOK_COMMAND_TEMPLATE.split("{event}", 1)[0]
 
 
+# Provisional entry point shipped before the controller's 23:10Z decision;
+# migrated away on install/uninstall like the legacy /tmp hooks.
+_PROVISIONAL_COMMAND_PREFIX = "python -m verdict.harness_claude hook "
+
+
 def _is_verdict_command(command: str) -> bool:
-    if command.startswith(_HOOK_COMMAND_PREFIX):
+    if command.startswith((_HOOK_COMMAND_PREFIX, _PROVISIONAL_COMMAND_PREFIX)):
         return True
     return "verdict hook" in command and "/tmp/claude_" in command
 
@@ -106,3 +111,7 @@ def install_claude_instructions(instructions_file: Path, bridge_instruction: str
     existing = instructions_file.read_text("utf-8") if instructions_file.exists() else ""
     if "Verdict Unified Memory Bridge" not in existing:
         instructions_file.write_text(existing + bridge_instruction, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
