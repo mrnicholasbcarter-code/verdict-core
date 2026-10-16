@@ -17,7 +17,7 @@ import stat
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -492,7 +492,7 @@ def load_openrouter_free_set(
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     path = cache_path or default_cache_path()
-    ttl = float(DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds)
+    ttl = float(default_ttl_seconds() if ttl_seconds is None else ttl_seconds)
     cached = _load_cached_set(path, now=current, ttl_seconds=ttl)
     if cached is not None:
         return cached
@@ -544,23 +544,6 @@ def openrouter_route_is_public_free(route_id: str, free_set: OpenRouterFreeSet |
     return free_set.contains(bare)
 
 
-def intersect_with_gateway_ids(
-    free_set: OpenRouterFreeSet, gateway_ids: Collection[str]
-) -> frozenset[str]:
-    """Return gateway route ids whose bare OpenRouter id is publicly free."""
-    known = {_bare_id(item) for item in free_set.free_ids}
-    out: set[str] = set()
-    for route_id in gateway_ids:
-        if not is_openrouter_family_route(route_id):
-            continue
-        bare = _bare_id(route_id)
-        if bare in known and not is_opaque_route_id(route_id):
-            if bare.lower() in {"free", "openrouter/free"}:
-                continue
-            out.add(route_id)
-    return frozenset(out)
-
-
 def key_limit_on_non_free_is_route_scoped(
     *, route_id: str, http_status: int | None, detail: str, free_set: OpenRouterFreeSet | None
 ) -> bool:
@@ -593,7 +576,6 @@ __all__ = [
     "default_cache_path",
     "default_ttl_seconds",
     "fetch_openrouter_models",
-    "intersect_with_gateway_ids",
     "is_openrouter_catalog_route",
     "is_openrouter_family_route",
     "key_limit_on_non_free_is_route_scoped",

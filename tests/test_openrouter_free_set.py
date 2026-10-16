@@ -12,7 +12,7 @@ import pytest
 from verdict.openrouter_free_set import (
     DEFAULT_TTL_SECONDS,
     OpenRouterFreeSet,
-    intersect_with_gateway_ids,
+    default_ttl_seconds,
     key_limit_on_non_free_is_route_scoped,
     load_openrouter_free_set,
     openrouter_route_is_public_free,
@@ -194,6 +194,45 @@ def test_fetch_failure_reuses_still_valid_cache(tmp_path: Path) -> None:
     assert cached.contains("poolside/laguna-xs-2.1:free")
 
 
+def test_default_ttl_seconds_reads_env(monkeypatch) -> None:
+    monkeypatch.delenv("VERDICT_OPENROUTER_FREE_SET_TTL_S", raising=False)
+    assert default_ttl_seconds() == float(DEFAULT_TTL_SECONDS)
+    monkeypatch.setenv("VERDICT_OPENROUTER_FREE_SET_TTL_S", "123")
+    assert default_ttl_seconds() == 123.0
+    monkeypatch.setenv("VERDICT_OPENROUTER_FREE_SET_TTL_S", "0")
+    assert default_ttl_seconds() == float(DEFAULT_TTL_SECONDS)
+    monkeypatch.setenv("VERDICT_OPENROUTER_FREE_SET_TTL_S", "nope")
+    assert default_ttl_seconds() == float(DEFAULT_TTL_SECONDS)
+
+
+def test_load_uses_env_ttl_when_ttl_seconds_omitted(tmp_path: Path, monkeypatch) -> None:
+    """Production load path must honor VERDICT_OPENROUTER_FREE_SET_TTL_S."""
+    path = tmp_path / "cache.json"
+    monkeypatch.setenv("VERDICT_OPENROUTER_FREE_SET_TTL_S", "42")
+    fetch_calls: list[str] = []
+
+    def counting_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        return _payload([_row("poolside/laguna-xs-2.1:free")])
+
+    first = load_openrouter_free_set(now=NOW, cache_path=path, fetch=counting_fetch)
+    assert first is not None
+    assert first.ttl_seconds == 42.0
+    assert len(fetch_calls) == 1
+    # Still valid under env TTL of 42s five seconds later => no second fetch
+    second = load_openrouter_free_set(
+        now=NOW + timedelta(seconds=5), cache_path=path, fetch=counting_fetch
+    )
+    assert second is not None and second.source == "cache"
+    assert len(fetch_calls) == 1
+    # Expired under 42s TTL => fetches again
+    third = load_openrouter_free_set(
+        now=NOW + timedelta(seconds=50), cache_path=path, fetch=counting_fetch
+    )
+    assert third is not None and third.source == "live"
+    assert len(fetch_calls) == 2
+
+
 def test_valid_cache_within_ttl_skips_fetch(tmp_path: Path) -> None:
     """Still-valid cache must return without a second network/fetch call."""
     path = tmp_path / "cache.json"
@@ -266,26 +305,6 @@ def test_non_text_output_modality_excluded_from_coding_candidates() -> None:
     coding = free_set.coding_candidate_ids()
     assert "poolside/laguna-xs-2.1:free" in coding
     assert "google/lyria-3-pro-preview" not in coding
-
-
-def test_intersect_with_gateway_ids_keeps_only_public_free() -> None:
-    entries = parse_free_entries(_payload([_row("poolside/laguna-xs-2.1:free")]))
-    free_set = OpenRouterFreeSet(
-        free_ids=frozenset(entries),
-        entries=entries,
-        fetched_at=NOW,
-        source="live",
-        ttl_seconds=DEFAULT_TTL_SECONDS,
-    )
-    gateway = {
-        "openrouter/poolside/laguna-xs-2.1:free",
-        "openrouter/aion-labs/aion-3.5-mini",
-        "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-        "cc/claude-sonnet-4-6",
-    }
-    assert intersect_with_gateway_ids(free_set, gateway) == {
-        "openrouter/poolside/laguna-xs-2.1:free"
-    }
 
 
 def test_capacity_class_openrouter_suffix_alone_is_not_free() -> None:
