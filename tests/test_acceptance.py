@@ -217,6 +217,24 @@ def test_judge_doctor_fails_closed_on_error_or_malformed_report() -> None:
     assert passed is False
     assert "printed no JSON" in reason
 
+    # R3 regression: timeout 124 or signal 137 with own-only warning must still FAIL
+    own_report = json.dumps(
+        {"status": "failed", "issues": [acceptance.ISSUE_PREFIX + " (x.json): red"]}
+    )
+    passed, reason, detail = acceptance.judge_doctor(124, own_report, "timed out after 600s")
+    assert passed is False
+    assert "exit 124" in reason
+
+    passed, reason, detail = acceptance.judge_doctor(137, own_report, "killed")
+    assert passed is False
+    assert "exit 137" in reason
+
+    # Error payload detail must be redacted
+    secret_err = "fatal: token sk-ant-live1234567890abcdef failed"
+    passed, reason, detail = acceptance.judge_doctor(1, json.dumps({"error": secret_err}), "")
+    assert passed is False
+    assert "sk-ant-live1234567890abcdef" not in detail.get("error", "")
+
 
 # -- alert state ----------------------------------------------------------------
 

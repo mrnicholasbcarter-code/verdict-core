@@ -141,13 +141,20 @@ def judge_doctor(code: int, out: str, err: str) -> tuple[bool, str, dict[str, An
     """
     payload = _json(out)
     if not isinstance(payload, dict):
-        return False, f"doctor printed no JSON (exit {code})", {}
-
-    if payload.get("error"):
-        err_msg = str(payload["error"])
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
         return (
             False,
-            f"doctor error (exit {code}): {redact_text(err_msg)[:160]}",
+            f"doctor printed no JSON (exit {code})",
+            {"exit_code": code, "error": first_err},
+        )
+
+    if payload.get("error"):
+        err_msg = redact_text(str(payload["error"]))[:200]
+        return (
+            False,
+            f"doctor error (exit {code}): {err_msg[:160]}",
             {"error": err_msg, "exit_code": code},
         )
 
@@ -161,20 +168,37 @@ def judge_doctor(code: int, out: str, err: str) -> tuple[bool, str, dict[str, An
     issues = [str(item) for item in payload["issues"]]
     own = [item for item in issues if item.startswith(ISSUE_PREFIX)]
     others = [item for item in issues if not item.startswith(ISSUE_PREFIX)]
-    detail = {"issues": [redact_text(item)[:200] for item in others], "own_issues": len(own)}
+    detail = {
+        "issues": [redact_text(item)[:200] for item in others],
+        "own_issues": len(own),
+        "exit_code": code,
+    }
 
     if others:
         return False, f"{len(others)} doctor issue(s): {redact_text(others[0])[:160]}", detail
+
+    # Enforce allowed exits BEFORE own-only exemption:
+    # Only exit 0 (clean) and exit 1 (reported issues) are allowed doctor exits.
+    # Timeouts (124), signals (137), usage errors (2), or unexpected exits must never pass.
+    if code not in (0, 1):
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
+        detail["error"] = first_err
+        return (False, f"doctor exited (exit {code}): {first_err[:160]}".strip(), detail)
 
     if len(own) > 0:
         return True, "no doctor issue", detail
 
     if code != 0:
-        first_err = err.strip().splitlines()[-1] if err.strip() else f"exit {code}"
+        first_err = redact_text(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")[
+            :200
+        ]
+        detail["error"] = first_err
         return (
             False,
-            f"doctor exited {code} without reporting issues: {redact_text(first_err)[:160]}".strip(),
-            {"issues": [], "exit_code": code},
+            f"doctor exited (exit {code}) without reporting issues: {first_err[:160]}".strip(),
+            detail,
         )
 
     return True, "no doctor issue", detail
