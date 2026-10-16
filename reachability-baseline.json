@@ -429,7 +429,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.review.StaticDiffGate",
-    "reason": "UNTRIAGED: StaticDiffGate has only non-production references; Independent OpenCodeReview: independent, fail-closed semantic review via OpenCodeReview (``ocr``) (verdict/orchestration/review.py)."
+    "reason": "KEEP: StaticDiffGate is the deterministic ownership barrier companion to OpenCodeReviewer; only non-production references today; retained for the Independent OpenCodeReview path (verdict/orchestration/review.py)."
   },
   {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
