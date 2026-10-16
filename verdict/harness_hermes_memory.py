@@ -22,7 +22,7 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -268,6 +268,53 @@ class HermesMemoryBridge:
         self.outbox.enqueue(event)
         self._degraded(gap)
         return HookResponse(status="queued", gaps=(gap,))
+
+
+# ---------------------------------------------------------------- P-shaped backend seam
+_AVAILABLE = "available"
+
+
+class LifecycleBackendAdapter:
+    """Adapt a P ``MemoryProvider`` (put/search) to this bridge's ``MemoryBackend``.
+
+    Events cross the seam as P canonical ``lifecycle-event/v1`` bytes via
+    ``load_event`` (e.g. ``verdict_memory.loads_lifecycle_event``), and recall goes
+    through ``make_query`` (e.g. ``verdict_memory.RecallQuery``). The package is not
+    imported here: E owns the root dependency and P's native client is on hold.
+    Any status other than ``available`` is a failure, never a healthy empty.
+    """
+
+    def __init__(
+        self, provider: Any, *, load_event: Callable[[bytes], Any], make_query: Callable[..., Any]
+    ) -> None:
+        self.provider = provider
+        self.load_event = load_event
+        self.make_query = make_query
+
+    def capture(self, event: dict[str, Any]) -> bool:
+        ref = self.provider.put(self.load_event(canonical_json(event)))
+        return bool(getattr(ref, "external_id", None))
+
+    def recall(self, *, project: str, workspace: str, query: str, limit: int) -> RecallOutcome:
+        request = self.make_query(query=query, project=project, workspace=workspace, limit=limit)
+        try:
+            result = self.provider.search(request)
+        except Exception as exc:
+            return RecallOutcome(status="error", error=type(exc).__name__)
+        status = str(getattr(result.status, "value", result.status))
+        if status != _AVAILABLE:
+            return RecallOutcome(status="error", error=status)
+        hits = tuple(
+            {
+                "identity": {
+                    "source_event_id": getattr(hit.event.identity, "source_event_id", None)
+                },
+                "content": hit.event.content,
+                "ref": getattr(hit.ref, "external_id", None),
+            }
+            for hit in result.hits
+        )
+        return RecallOutcome(status="ok" if hits else "empty", hits=hits)
 
 
 # ---------------------------------------------------------------- install / uninstall
