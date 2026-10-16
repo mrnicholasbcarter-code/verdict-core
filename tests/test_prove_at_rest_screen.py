@@ -6,7 +6,7 @@ import io
 import json
 import urllib.error
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -314,6 +314,125 @@ def test_screen_reserves_bucket_before_dispatch(tmp_path: Path) -> None:
     # 2 screen reservations spent the capacity; agentic turns cannot reserve more.
     assert cache.bucket_remaining("p", NOW, pool="p") == 0
     assert probed == []
+
+
+def test_half_open_blocked_when_sibling_provider_cools_shared_pool(tmp_path: Path) -> None:
+    """R1: half-open OK cannot bypass a NEW account cooldown on the same pool."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    cache.record(
+        "p/old",
+        ProbeResult("permission", False, False, http_status=403, pool="shared"),
+        NOW - timedelta(minutes=1),
+    )
+    assert "shared" in _cooled_pools(cache, NOW)
+
+    def route(rid: str, pool: str) -> AdmittedRoute:
+        return AdmittedRoute(rid, rid.split("/", 1)[0], "free", pool=pool, live_catalog=True)
+
+    routes = [route("p/a", "shared"), route("q/b", "shared")]
+    calls: list[tuple[str, list[str]]] = []
+
+    def screen(
+        provider: str, model_ids: Sequence[str], timeout: float
+    ) -> Mapping[str, Mapping[str, Any]]:
+        mid = model_ids[0]
+        if provider == "p":
+            return {
+                mid: {
+                    "status": "error",
+                    "statusCode": 403,
+                    "error": "Key limit exceeded (total limit)",
+                }
+            }
+        return {mid: {"status": "ok"}}
+
+    def agentic(rid: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        calls.append((rid, sorted(_cooled_pools(cache, NOW))))
+        return _turn(rid, payload)
+
+    stats = CycleStats()
+    Prober(
+        cache,
+        lambda: routes,
+        lambda *args: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        agentic_concurrency=1,
+    ).run_agentic_probes(stats, routes=routes)
+    assert calls == []
+    assert stats.agentic_passed == 0
+    assert "shared" in _cooled_pools(cache, NOW)
+
+
+def _assert_queued_screen_skips_after_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: str
+) -> None:
+    """Shared residual R2 case: queued second group must not start transport."""
+    from concurrent.futures import ThreadPoolExecutor as RealExecutor
+    from threading import Event
+
+    import verdict.prove_at_rest as m
+
+    def route(rid: str, pool: str) -> AdmittedRoute:
+        return AdmittedRoute(rid, rid.split("/", 1)[0], "free", pool=pool, live_catalog=True)
+
+    cache = HealthCache(tmp_path / f"cache-{mode}.json", bucket_capacity=100)
+    routes = [route("p/a", "p"), route("q/b", "q")]
+    submitted = Event()
+    count = [0]
+    mono = [0.0]
+    calls: list[tuple[str, bool, float, float]] = []
+
+    class QueuedExecutor(RealExecutor):
+        def submit(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[no-untyped-def]
+            fut = super().submit(*args, **kwargs)
+            count[0] += 1
+            if count[0] == 2:
+                submitted.set()
+            return fut
+
+    monkeypatch.setattr(m, "ThreadPoolExecutor", QueuedExecutor)
+    prober_box: list[Prober] = []
+
+    def screen(
+        provider: str, model_ids: Sequence[str], timeout: float
+    ) -> Mapping[str, Mapping[str, Any]]:
+        p = prober_box[0]
+        if provider == "p":
+            if not submitted.wait(5):
+                raise RuntimeError("second group was not queued")
+            if mode == "stop":
+                p.stop()
+            else:
+                mono[0] = 20.0
+        calls.append((provider, p._stop.is_set(), mono[0], timeout))
+        return {rid: {"status": "ok"} for rid in model_ids}
+
+    prober = Prober(
+        cache,
+        lambda: routes,
+        lambda *args: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=lambda *args: ProbeExchange(http_status=500, ok=False),
+        clock=lambda: NOW,
+        monotonic=lambda: mono[0],
+        agentic_wall_seconds=10.0,
+        agentic_concurrency=1,
+    )
+    prober_box.append(prober)
+    stats = CycleStats()
+    prober.run_agentic_probes(stats, routes=routes)
+    assert not any(provider == "q" for provider, *_ in calls), (mode, calls)
+    monkeypatch.setattr(m, "ThreadPoolExecutor", RealExecutor)
+
+
+def test_screen_worker_skips_transport_after_stop_between_submit_and_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2: queued worker must not start transport after stop/deadline."""
+    _assert_queued_screen_skips_after_cancel(tmp_path, monkeypatch, mode="stop")
+    _assert_queued_screen_skips_after_cancel(tmp_path, monkeypatch, mode="deadline")
 
 
 def test_live_screen_transport_posts_the_m1_test_all_body(monkeypatch: pytest.MonkeyPatch) -> None:

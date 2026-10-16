@@ -635,6 +635,27 @@ def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
     }
 
 
+def _pool_cooldown_generation(cache: HealthCache, pool: str, now: datetime) -> datetime | None:
+    """Newest checked_at among active pool-cooling negatives for *pool*.
+
+    Half-open permission binds to this stamp. A later account failure updates
+    it, so a stale half-open grant cannot authorize further dispatches.
+    """
+    newest: datetime | None = None
+    for entry in cache.routes().values():
+        if (entry.pool or pool_of(entry.route_id)) != pool:
+            continue
+        if entry.state_at(now) != STATE_NEGATIVE:
+            continue
+        if entry.category not in POOL_COOLDOWN_CATEGORIES:
+            continue
+        if entry.failure_scope == "route":
+            continue
+        if newest is None or entry.checked_at > newest:
+            newest = entry.checked_at
+    return newest
+
+
 def order_cycle(
     routes: Sequence[AdmittedRoute],
     cache: HealthCache,
@@ -909,10 +930,10 @@ class Prober:
     # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
-    # Half-open agentic allowlist: screen survivors from pools already cooled
-    # before this cycle's screen. One tool conversation each; a newer pool
-    # cooldown never inherits this exemption.
-    _half_open_routes: set[str] = field(default_factory=set, init=False, repr=False)
+    # Half-open agentic allowlist: route_id -> cooldown generation (checked_at
+    # of the pool negative that authorized the exemption). Bound to unchanged
+    # evidence: a newer account failure for that pool revokes it.
+    _half_open_routes: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1318,7 +1339,7 @@ class Prober:
             )
             if self._needs_agentic(route, now)
         ]
-        self._half_open_routes = set()
+        self._half_open_routes = {}
         if self._stop.is_set():
             stats.agentic_stopped_reason = "stopped"
             return
@@ -1357,10 +1378,13 @@ class Prober:
                         continue
                     now = self.clock()
                     if route_pool in _cooled_pools(self.cache, now):
-                        # One-shot half-open only for pre-screen cooldowns.
-                        if route.route_id in self._half_open_routes:
-                            self._half_open_routes.discard(route.route_id)
-                        else:
+                        # One-shot half-open only while the bound cooldown
+                        # generation is still the active pool negative.
+                        bound = self._half_open_routes.pop(route.route_id, None)
+                        if (
+                            bound is None
+                            or _pool_cooldown_generation(self.cache, route_pool, now) != bound
+                        ):
                             pending.remove(route)
                             continue
                     # Reserve every turn up front; an empty bucket keeps the
@@ -1458,10 +1482,22 @@ class Prober:
         if remaining <= 0:
             stats.agentic_stopped_reason = "wall_cap"
             return []
-        timeout = remaining / 2
         screen = self.screen_transport
+
+        def _dispatch_screen(
+            provider: str, model_ids: list[str]
+        ) -> Mapping[str, Mapping[str, Any]] | None:
+            # Recheck at worker start: a queued submit must not call transport
+            # after stop/deadline trips between submit and run. Timeout is the
+            # remaining phase time at actual dispatch, not the stale pre-queue value.
+            if self._stop.is_set() or self.monotonic() >= deadline:
+                return None
+            left = deadline - self.monotonic()
+            if left <= 0:
+                return None
+            return screen(provider, model_ids, left / 2)
+
         futures: dict[tuple[str, str], Future[Mapping[str, Mapping[str, Any]] | None]] = {}
-        reserved: dict[tuple[str, str], int] = {}
         with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
             for key, group in groups.items():
                 if self._stop.is_set():
@@ -1475,17 +1511,23 @@ class Prober:
                 if not self.cache.consume(key[0], now, pool=key[1], amount=amount):
                     # Empty bucket: skip this pool's screen; do not launch.
                     continue
-                reserved[key] = amount
-                futures[key] = pool.submit(screen, key[0], [r.route_id for r in group], timeout)
+                futures[key] = pool.submit(_dispatch_screen, key[0], [r.route_id for r in group])
             outcomes: dict[tuple[str, str], Mapping[str, Mapping[str, Any]] | None] = {}
             for key, future in futures.items():
                 try:
                     outcomes[key] = future.result()
                 except (OSError, ValueError, http.client.HTTPException):
                     outcomes[key] = None
+        # Snapshot cooldown generations that authorized half-open BEFORE recording
+        # this screen's results, so a fresh account failure updates generation and
+        # cannot keep the old grant.
+        half_open_gen: dict[str, datetime] = {
+            pool: gen
+            for pool in cooled_before
+            if (gen := _pool_cooldown_generation(self.cache, pool, now)) is not None
+        }
         survivors: set[str] = set()
         unscreened: set[str] = set()
-        half_open: set[str] = set()
         for key, group in groups.items():
             if key not in outcomes:
                 # Not dispatched (stop/deadline/bucket). Keep open candidates.
@@ -1503,8 +1545,20 @@ class Prober:
                 result = results.get(route.route_id)
                 if result is not None and self._record_screen(route, result, now):
                     survivors.add(route.route_id)
-                    if key[1] in cooled_before:
-                        half_open.add(route.route_id)
+        # Bind half-open only when the pre-screen generation is STILL the active
+        # pool negative after recording. A sibling provider's fresh account 403
+        # updates generation and revokes every grant for that pool.
+        half_open: dict[str, datetime] = {}
+        for route in candidates:
+            if route.route_id not in survivors:
+                continue
+            cred_pool = _pool_of(route)
+            bound = half_open_gen.get(cred_pool)
+            if bound is None:
+                continue
+            if _pool_cooldown_generation(self.cache, cred_pool, now) != bound:
+                continue
+            half_open[route.route_id] = bound
         stats.screen_ok += len(survivors)
         self._half_open_routes = half_open
         if survivors or stats.screened:
