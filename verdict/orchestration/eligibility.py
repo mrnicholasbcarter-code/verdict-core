@@ -13,6 +13,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from verdict.openrouter_free_set import (
+    OpenRouterFreeSet,
+    is_openrouter_catalog_route,
+    openrouter_route_is_public_free,
+)
 from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
@@ -267,6 +272,7 @@ class EligibilityLadder:
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
+        openrouter_free_set: OpenRouterFreeSet | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -311,6 +317,9 @@ class EligibilityLadder:
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
         self._min_quota_percent = min_quota_percent
+        # BOD-418: public OpenRouter 0/0 pricing set. When present, openrouter-
+        # family FREE membership requires membership in this set.
+        self.openrouter_free_set = openrouter_free_set
         # Route ids whose health the last select() re-read upgraded after refresh.
         self._last_refresh_upgrades: tuple[str, ...] = ()
 
@@ -429,14 +438,27 @@ class EligibilityLadder:
         auth_type = str(conn.get("authType", "")).strip().lower()
         auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
 
+        # BOD-418: openrouter-family FREE requires public 0/0 membership.
+        # Suffix / connection free signals alone must not mark paid OpenRouter
+        # routes FREE (they previously cooled the whole openrouter-free pool).
+        if route_id and is_openrouter_catalog_route(route_id):
+            free_set = getattr(self, "openrouter_free_set", None)
+            if openrouter_route_is_public_free(route_id, free_set):
+                return CapacityClass.FREE, plan_label, "openrouter_public_zero"
+            # Fall through: never treat openrouter-family as FREE from suffix
+            # or import_free_only. Inventory pricing / oauth rules still apply.
+
         # (a) :free suffix overrides oauth → subscription (fixes D5: 72
-        # kilocode :free misclassed as SUBSCRIPTION).
-        if route_id and has_free_suffix(route_id):
+        # kilocode :free misclassed as SUBSCRIPTION). Openrouter-family is
+        # handled above and must not take this shortcut.
+        if route_id and has_free_suffix(route_id) and not is_openrouter_catalog_route(route_id):
             return CapacityClass.FREE, plan_label, "free_suffix"
 
-        # (b) Connection-level free signals.
+        # (b) Connection-level free signals. Openrouter-family is excluded:
+        # OmniRoute may set importFreeModelsOnly on a free-only key while the
+        # catalog still lists paid models.
         is_free, signal = connection_signals_free(conn)
-        if is_free:
+        if is_free and not (route_id and is_openrouter_catalog_route(route_id)):
             return CapacityClass.FREE, plan_label, signal
 
         # (c) oauth without a free signal → SUBSCRIPTION.
@@ -453,8 +475,11 @@ class EligibilityLadder:
         all_zero = bool(prices) and all(p == 0 for p in prices)
         positive = any(p > 0 for p in prices)
 
-        # All-zero explicit pricing is FREE even for apikey.
-        if all_zero:
+        # All-zero explicit inventory pricing is FREE even for apikey, but not
+        # for openrouter-family when a public free set is available (public
+        # catalog is authoritative there). Without a free set we still refuse
+        # to assert FREE for openrouter-family from inventory alone.
+        if all_zero and not (route_id and is_openrouter_catalog_route(route_id)):
             return CapacityClass.FREE, plan_label, "all_zero_pricing"
 
         # (e) apikey with positive pricing → METERED.
@@ -464,6 +489,9 @@ class EligibilityLadder:
         # (f) UNKNOWN with a named, bounded reason. Never persist the raw
         # connection authType: inventory fields are untrusted and may contain
         # account identifiers or credentials.
+        if route_id and is_openrouter_catalog_route(route_id):
+            reason = "openrouter_not_in_public_free_set"
+            return CapacityClass.UNKNOWN, plan_label, reason
         reason = f"no_pricing_data:auth={auth_evidence}"
         return CapacityClass.UNKNOWN, plan_label, reason
 
@@ -1425,22 +1453,41 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
 
 
 def capacity_class_of(
-    conn: Mapping[str, Any] | None, row: Mapping[str, Any]
+    conn: Mapping[str, Any] | None,
+    row: Mapping[str, Any],
+    *,
+    route_id: str | None = None,
+    openrouter_free_set: OpenRouterFreeSet | None = None,
 ) -> tuple[CapacityClass, str]:
     """Classify a route's capacity without instantiating a ladder.
 
-    Applies the same rules as ``EligibilityLadder._capacity_class`` but
-    without the :free-suffix and connection-level-signal extensions added on
-    origin/main (which require provider_catalog helpers used only by the
-    ladder).  Used by ``prove_at_rest`` and any caller that must not touch the
-    ladder's state file.  ``True``/``False`` values in ``pricing`` are not
-    treated as prices.
+    Applies the same rules as ``EligibilityLadder._capacity_class`` for the
+    prove-at-rest path. OpenRouter-family FREE requires public 0/0 membership
+    (BOD-418); suffix / import_free_only alone are not enough there.
+    ``True``/``False`` values in ``pricing`` are not treated as prices.
     """
     if conn is None:
         return CapacityClass.UNKNOWN, ""
     plan_label = str(conn.get("plan_label", ""))
     plan_lower = plan_label.lower()
     auth_type = str(conn.get("authType", "")).lower()
+    rid = route_id or str(row.get("id") or "")
+    if rid and is_openrouter_catalog_route(rid):
+        if openrouter_route_is_public_free(rid, openrouter_free_set):
+            return CapacityClass.FREE, plan_label or "openrouter_public_zero"
+        # Do not assert FREE from connection free signals / plan_label / suffix.
+        pricing = row.get("pricing")
+        prices: list[float] = []
+        if isinstance(pricing, Mapping):
+            for value in pricing.values():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    prices.append(float(value))
+        positive = any(p > 0 for p in prices)
+        if auth_type == "oauth":
+            return CapacityClass.SUBSCRIPTION, plan_label
+        if auth_type == "apikey" and positive:
+            return CapacityClass.METERED, plan_label
+        return CapacityClass.UNKNOWN, plan_label
     pricing = row.get("pricing")
     prices: list[float] = []
     if isinstance(pricing, Mapping):
