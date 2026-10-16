@@ -101,3 +101,17 @@ Do **not** revive `AiMemoryExperimentalProvider` (D27/#893).
 - Without `source_event_id`, enqueue key falls back to content digest (created_at is part of that fingerprint).
 - Receipt/injection observation time must not be used as source creation time.
 - Rust numeric/Unicode vector parity is **unmeasured** until D reports; Python vectors are fixtures only.
+
+## Security contract (9f1a54f4 — Sol R1–R5 fix pass)
+- **Config authority:** `AiMemoryClientConfig.project/workspace` constrain put/search/delete.
+  Foreign `RecallQuery.project/workspace` → typed error **before RPC**. Event identity project/workspace
+  mismatch → `INVALID_REQUEST`.
+- **Unscoped hits:** missing project/workspace on hits are **skipped** (not relabeled as config project).
+- **Remote path:** `verdict-memory/{kind}/{idempotency_key}.md` (full namespaced key, not raw truncated source id).
+- **Write ACK:** requires non-empty acknowledged `path` from tool result; empty `{}` → `MALFORMED` (no invented ack).
+- **Search schema:** missing `hits`/`results` or malformed RPC → `MALFORMED` (not AVAILABLE empty).
+- **Redaction:** `redact_secrets` + `redact_mapping` before remote put and durable outbox (nested metadata/payload/provenance).
+  Capture policy gates direct put (secrets/private sensitivity denied).
+- **Delete:** only paths under `verdict-memory/`; arbitrary paths → `INVALID_REQUEST`.
+- **Endpoint:** loopback HTTP or HTTPS; reject URL credentials/query/fragment/non-loopback HTTP.
+- **Live install:** HOLD until parent clears after mock re-run. E may use Fake/serialization only until then.
