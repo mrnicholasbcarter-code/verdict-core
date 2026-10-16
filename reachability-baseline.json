@@ -640,10 +640,6 @@
     "reason": "DELETE candidate: BOD-259 review select_model_for_role before removal; verdict/subagent_models.py:413 is a docstring Usage example, not executable code; verdict/__init__.py:343,757 is only the lazy re-export declaration, not a call; its real caller verdict/subagent_resolver.py switched to BOD-104 execution-path authority in #580 (c9828a3c); only tests/test_subagent_models.py exercises SubagentModelSelector.select_for_role directly."
   },
   {
-    "qualified_name": "verdict.subagent_models.select_models_for_parallel_roles",
-    "reason": "KEEP: being wired by BOD-313 (#856 scripts/prime_supervisor.py --select-only); public re-export in verdict/__init__.py."
-  },
-  {
     "qualified_name": "verdict.subagent_selection.execute_with_worker_failover",
     "reason": "WIRE: BOD-157 worker selection/failover is not called by supervisor_admission."
   },
