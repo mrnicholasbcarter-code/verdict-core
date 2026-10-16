@@ -1,0 +1,130 @@
+# Hermes memory plugin (BOD80 lane C)
+
+Status: **experimental, PARTIAL**. This page describes what the code on branch
+`bod80/lane-c-hermes` actually does. Hook behavior is taken from the installed
+Hermes source and from Hermes's own plugin loader in a temporary `HERMES_HOME`. A
+live Hermes turn has **not** been observed yet.
+
+## What it is
+
+`verdict.harness_hermes_memory` installs a small Hermes plugin named
+`verdict-memory`. That plugin registers four native Hermes hooks. Each hook passes
+a bounded JSON payload to:
+
+```
+python -m verdict.harness_hermes_memory hook <hook-name>
+```
+
+Verdict then turns the payload into a `lifecycle-event/v1` event and handles
+recall or capture. The plugin itself contains no capture policy. It uses only the
+standard library and catches every error, so a memory failure never breaks a
+Hermes turn.
+
+The plugin does **not** use Hermes's `memory.provider` slot, which allows only one
+provider at a time. Hermes's built-in memory keeps working.
+
+## Install and uninstall
+
+```python
+from pathlib import Path
+import verdict.harness_hermes_memory as m
+
+m.install(hermes_home=Path("/path/to/hermes-home"))    # defaults to $HERMES_HOME, then ~/.hermes
+m.uninstall(hermes_home=Path("/path/to/hermes-home"))
+```
+
+`install`:
+- copies `plugin.yaml` and `__init__.py` from `verdict/hermes_plugin/verdict_memory/`
+  into `<HERMES_HOME>/plugins/verdict-memory/`;
+- writes `config.json`, which holds the Verdict command and a hook timeout (8 s
+  by default);
+- writes the ownership marker `.verdict-owned.json`;
+- adds `verdict-memory` to the end of `plugins.enabled` in `config.yaml` and leaves
+  every other entry (for example `orca-status`) and every other key alone;
+- the first time it edits the config, backs it up once to
+  `config.yaml.verdict-memory.bak`;
+- does nothing on a second run: the files stay byte-identical and no second backup
+  is made;
+- raises `HermesMemoryCollisionError` and changes nothing if
+  `plugins/verdict-memory/` already exists without a Verdict marker.
+
+`uninstall`:
+- removes only `verdict-memory` from `plugins.enabled`, and removes the `plugins:`
+  key only if the install created it and it is now empty;
+- deletes only the plugin directory that carries the Verdict marker;
+- refuses on a user-owned collision, just like install.
+
+Known limit: config edits go through PyYAML, as in the existing
+`verdict harness hermes enable`, so comments in `config.yaml` are not kept when
+the file is rewritten. The parsed content is kept.
+
+## Hooks used and event mapping
+
+| Hermes hook | Fires at (v0.21.3 source) | Canonical kind | Verdict action |
+|---|---|---|---|
+| `on_session_start` | `agent/conversation_loop.py:774` | `session_start` | translated, no action yet |
+| `pre_llm_call` | `agent/turn_context.py:697` | `before_first_model_turn` | bounded recall; returns `{"context": ...}` |
+| `post_llm_call` | `agent/turn_finalizer.py:434` | `before_yield` | capture of the assistant response |
+| `on_session_end` | `agent/turn_finalizer.py:663`, `cli.py:873` | `session_end` | translated, no action yet |
+
+Loader references: `hermes_cli/plugins.py:1-9` (directory plugins), `:108`
+(`VALID_HOOKS`), `:916` (`register_hook`), `:1424` (`plugins.enabled` gate). Hermes
+adds whatever `pre_llm_call` returns to the current user message
+(`website/docs/developer-guide/observer-hooks.md:62`).
+
+Event identity:
+- `source_harness=hermes`;
+- `project` and `workspace` come from Verdict configuration (the runtime uses
+  `VERDICT_MEMORY_PROJECT`, falling back to the name of the working directory);
+  a `project` or `workspace` field inside a hook payload is ignored;
+- `source_event_id = hermes:<session_id>:<turn_id>:<hook>`, so replaying the same
+  turn produces a single logical event;
+- `content` is passed through `verdict.shared_memory.redact_secrets` and capped at
+  8,000 characters, and provenance fields (`model`, `platform`, `sender_id`,
+  `cwd`) are redacted too;
+- canonical JSON and the logical digest follow P's rules: sorted keys, compact
+  separators, UTF-8, and `observed_at`/`deadline_at` excluded from the digest.
+
+Recall output is bounded (2,000 characters by default). It is wrapped in a header
+that marks it as untrusted recalled evidence, not instructions, and each line
+cites its `source_event_id`.
+
+## Capability matrix (Hermes Agent v0.21.3, upstream 2ed6387d, read 2026-10-16)
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Automatic recall before each turn | PARTIAL (source-evidenced) | `pre_llm_call` context injection; not seen live |
+| High-value capture | PARTIAL (source-evidenced) | `post_llm_call`; not seen live; no backend yet |
+| Session identity | PARTIAL (source-evidenced) | `session_id` and `turn_id` in hook kwargs |
+| Project identity | PARTIAL | not provided by Hermes; comes from Verdict config |
+| Source event id | PARTIAL | built from `session_id`, `turn_id` and the hook name |
+| Reversible install | SUPPORTED (tested in a temp `HERMES_HOME`) | `tests/test_harness_hermes_memory.py` |
+| Tool pre/post, verification, compaction, subagents | UNSUPPORTED by this adapter | the hooks exist in Hermes but are not wired |
+| Resume | UNKNOWN | not traced |
+
+`verdict.harness_hermes.certify` now reports `hooks`, `session_start`,
+`before_first_turn`, `session_end` and `mutation_capability` as `partial`. It no
+longer says Hermes has no hook system.
+
+## Backend failure, outbox and gaps
+
+- **Recall failure:** the hook returns no context with gap
+  `memory_backend_unavailable`, and the failure is reported to an admission
+  interface so Verdict can refuse to dispatch new work. The real gate belongs to
+  E; tests use a fake.
+- **Capture failure:** the event goes to a bounded JSONL outbox (500 events by
+  default; the oldest are dropped and counted), and the same gap is reported.
+- **Healthy but empty recall** returns status `empty`, which is distinct from an
+  error.
+- **No backend configured.** This is the current runtime state, because the P
+  client is on security hold. Recall reports gap `memory_backend_not_configured`,
+  and captures go to `<HERMES_HOME>/plugin-data/verdict-memory/outbox.jsonl`.
+
+## Not proven yet
+
+- A live Hermes turn with these hooks firing. The status stays PARTIAL until a
+  real turn is observed.
+- A real backend round trip, since P's `AiMemoryClient` is on security hold, and
+  the Hermes→Codex and Codex→Hermes pairs.
+- Draining the outbox to the backend, which waits on E/P wiring.
+- `on_session_start` and `on_session_end` are translated but not acted on.
