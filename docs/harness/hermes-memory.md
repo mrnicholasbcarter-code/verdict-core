@@ -173,7 +173,20 @@ reports them as `partial`, because no live backend round trip exists yet (P's
 client is on hold) and recall injection with real content has not been observed.
 Any change to SUPPORTED is the controller's decision.
 
+## Live redaction check (2026-10-16 19:31 ET)
+
+Same setup as above, with the model asked to echo two fake keys. Its reply was
+`key1 sk-lanecfake<hex> api_key=sk-lanecfake<hex>`. The captured outbox row stored
+`key1 sk-lanecfake<hex> api_key=[REDACTED]`:
+- the `api_key=<value>` form is redacted;
+- a **bare** `sk-...` token is **not** redacted and reaches the outbox raw, because
+  `redact_secrets` only matches `bearer`/`basic` values, `token|secret|password|api_key`
+  assignments and URL user-info;
+- the real key appeared 0 times in all files.
+
 ## Not proven yet
+
+- Redaction of bare credential tokens (e.g. `sk-...`) in captured text; see above.
 
 - Recall injecting real content into a live turn (only the no-backend gap has
   been observed).
