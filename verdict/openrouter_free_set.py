@@ -333,8 +333,10 @@ def fetch_openrouter_models(
         data = payload.get("data")
         if isinstance(data, list):
             rows.extend(data)
-        elif pages == 1 and isinstance(payload.get("models"), list):
-            rows.extend(payload["models"])  # type: ignore[index]
+        elif pages == 1:
+            models = payload.get("models")
+            if isinstance(models, list):
+                rows.extend(models)
         raw_total = payload.get("total_count")
         if isinstance(raw_total, int):
             total_count = raw_total

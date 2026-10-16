@@ -1666,10 +1666,14 @@ def routes_from_evidence(
     from verdict.openrouter_free_set import openrouter_route_is_public_free
     from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
 
+    free_set: OpenRouterFreeSet | None
     if openrouter_free_set is _OPENROUTER_FREE_SET_LOAD:
         free_set = load_openrouter_free_set_for_prober(now=now)
     else:
-        free_set = openrouter_free_set  # may be None or an OpenRouterFreeSet
+        # Explicit None or an OpenRouterFreeSet; never the load sentinel here.
+        free_set = (
+            openrouter_free_set if isinstance(openrouter_free_set, OpenRouterFreeSet) else None
+        )
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
     by_id: dict[str, Mapping[str, Any]] = {str(row.get("id", "")): row for row in inventory_rows}
