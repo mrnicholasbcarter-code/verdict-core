@@ -635,27 +635,6 @@ def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
     }
 
 
-def _pool_cooldown_generation(cache: HealthCache, pool: str, now: datetime) -> datetime | None:
-    """Newest checked_at among active pool-cooling negatives for *pool*.
-
-    Half-open permission binds to this stamp. A later account failure updates
-    it, so a stale half-open grant cannot authorize further dispatches.
-    """
-    newest: datetime | None = None
-    for entry in cache.routes().values():
-        if (entry.pool or pool_of(entry.route_id)) != pool:
-            continue
-        if entry.state_at(now) != STATE_NEGATIVE:
-            continue
-        if entry.category not in POOL_COOLDOWN_CATEGORIES:
-            continue
-        if entry.failure_scope == "route":
-            continue
-        if newest is None or entry.checked_at > newest:
-            newest = entry.checked_at
-    return newest
-
-
 def order_cycle(
     routes: Sequence[AdmittedRoute],
     cache: HealthCache,
@@ -930,10 +909,13 @@ class Prober:
     # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
-    # Half-open agentic allowlist: route_id -> cooldown generation (checked_at
-    # of the pool negative that authorized the exemption). Bound to unchanged
-    # evidence: a newer account failure for that pool revokes it.
-    _half_open_routes: dict[str, datetime] = field(default_factory=dict, init=False, repr=False)
+    # Half-open agentic allowlist: screen survivors from pools already cooled
+    # before this cycle's screen, with no fresh account-level failure for that
+    # pool in the current screen/cycle. One tool conversation each.
+    _half_open_routes: set[str] = field(default_factory=set, init=False, repr=False)
+    # Pools that received a fresh account-level (pool-cooling) negative during
+    # this screen/cycle. Half-open is never granted or retained for these.
+    _screen_failed_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1060,6 +1042,11 @@ class Prober:
             self.cache.record(buffered_id, buffered_result, buffered_now)
             stats.probed += 1
             stats.negative += 1
+            if (
+                buffered_result.failure_scope != "route"
+                and buffered_result.category in POOL_COOLDOWN_CATEGORIES
+            ):
+                self._revoke_half_open_for_pool(buffered_result.pool or pool_of(buffered_id))
         self._auth_fail_buffer = []
         self._auth_fail_pools = []
 
@@ -1339,7 +1326,8 @@ class Prober:
             )
             if self._needs_agentic(route, now)
         ]
-        self._half_open_routes = {}
+        self._half_open_routes = set()
+        self._screen_failed_pools = set()
         if self._stop.is_set():
             stats.agentic_stopped_reason = "stopped"
             return
@@ -1377,14 +1365,17 @@ class Prober:
                     if route_pool in empty_pools:
                         continue
                     now = self.clock()
-                    if route_pool in _cooled_pools(self.cache, now):
-                        # One-shot half-open only while the bound cooldown
-                        # generation is still the active pool negative.
-                        bound = self._half_open_routes.pop(route.route_id, None)
+                    if route_pool in self._screen_failed_pools or route_pool in (
+                        _cooled_pools(self.cache, now)
+                    ):
+                        # One-shot half-open only for pre-screen cooldowns with
+                        # no fresh account-level failure this cycle.
                         if (
-                            bound is None
-                            or _pool_cooldown_generation(self.cache, route_pool, now) != bound
+                            route_pool not in self._screen_failed_pools
+                            and route.route_id in self._half_open_routes
                         ):
+                            self._half_open_routes.discard(route.route_id)
+                        else:
                             pending.remove(route)
                             continue
                     # Reserve every turn up front; an empty bucket keeps the
@@ -1518,16 +1509,9 @@ class Prober:
                     outcomes[key] = future.result()
                 except (OSError, ValueError, http.client.HTTPException):
                     outcomes[key] = None
-        # Snapshot cooldown generations that authorized half-open BEFORE recording
-        # this screen's results, so a fresh account failure updates generation and
-        # cannot keep the old grant.
-        half_open_gen: dict[str, datetime] = {
-            pool: gen
-            for pool in cooled_before
-            if (gen := _pool_cooldown_generation(self.cache, pool, now)) is not None
-        }
         survivors: set[str] = set()
         unscreened: set[str] = set()
+        failed_pools: set[str] = set()
         for key, group in groups.items():
             if key not in outcomes:
                 # Not dispatched (stop/deadline/bucket). Keep open candidates.
@@ -1543,28 +1527,36 @@ class Prober:
             stats.requests += len(results)
             for route in group:
                 result = results.get(route.route_id)
-                if result is not None and self._record_screen(route, result, now):
+                if result is None:
+                    continue
+                if self._record_screen(route, result, now):
                     survivors.add(route.route_id)
-        # Bind half-open only when the pre-screen generation is STILL the active
-        # pool negative after recording. A sibling provider's fresh account 403
-        # updates generation and revokes every grant for that pool.
-        half_open: dict[str, datetime] = {}
-        for route in candidates:
-            if route.route_id not in survivors:
-                continue
-            cred_pool = _pool_of(route)
-            bound = half_open_gen.get(cred_pool)
-            if bound is None:
-                continue
-            if _pool_cooldown_generation(self.cache, cred_pool, now) != bound:
-                continue
-            half_open[route.route_id] = bound
+                elif _pool_of(route) in _cooled_pools(self.cache, now):
+                    # Fresh account-level negative this screen: never half-open.
+                    failed_pools.add(_pool_of(route))
+        # Half-open only for pre-screen cooled pools with no fresh account
+        # failure this screen. Ordering cannot re-grant a revoked shared pool.
+        self._screen_failed_pools |= failed_pools
+        half_open = {
+            route.route_id
+            for route in candidates
+            if route.route_id in survivors
+            and _pool_of(route) in cooled_before
+            and _pool_of(route) not in self._screen_failed_pools
+        }
         stats.screen_ok += len(survivors)
         self._half_open_routes = half_open
         if survivors or stats.screened:
             self._save()
         keep = survivors | unscreened
         return [route for route in candidates if route.route_id in keep]
+
+    def _revoke_half_open_for_pool(self, pool: str) -> None:
+        """Drop half-open grants after a fresh account-level failure for *pool*."""
+        self._screen_failed_pools.add(pool)
+        self._half_open_routes = {
+            route_id for route_id in self._half_open_routes if pool_of(route_id) != pool
+        }
 
     def _record_screen(
         self, route: AdmittedRoute, result: Mapping[str, Any], now: datetime
@@ -1603,6 +1595,9 @@ class Prober:
             ),
             now,
         )
+        # Account-level pool-cooling only; 404/timeout/model-scoped leave siblings open.
+        if not scoped and category in POOL_COOLDOWN_CATEGORIES:
+            self._revoke_half_open_for_pool(_pool_of(route))
         return False
 
     def _converse(
@@ -1689,6 +1684,15 @@ class Prober:
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
         if self._buffer_auth_failure(route, result, now, stats):
+            # Auth buffer may later flush as a real pool-cooling negative.
+            # If this result is already a pool-cooling category and not
+            # route-scoped, revoke half-open now so a sibling cannot start.
+            if (
+                not passed
+                and result.failure_scope != "route"
+                and result.category in POOL_COOLDOWN_CATEGORIES
+            ):
+                self._revoke_half_open_for_pool(_pool_of(route))
             return
         self.cache.record(route.route_id, result, now)
         stats.probed += 1
@@ -1696,6 +1700,8 @@ class Prober:
             stats.fresh += 1
         else:
             stats.negative += 1
+            if result.failure_scope != "route" and result.category in POOL_COOLDOWN_CATEGORIES:
+                self._revoke_half_open_for_pool(_pool_of(route))
 
     def run_forever(self) -> CycleStats | None:
         """Loop ``run_once`` until ``stop``. A cycle error retries next interval."""

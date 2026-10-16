@@ -316,6 +316,54 @@ def test_screen_reserves_bucket_before_dispatch(tmp_path: Path) -> None:
     assert probed == []
 
 
+def test_half_open_blocked_when_fresh_failure_shares_checked_at(tmp_path: Path) -> None:
+    """R1: same checked_at must not alias a new shared-pool account failure."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    cache.record(
+        "p/old",
+        ProbeResult("permission", False, False, http_status=403, pool="shared"),
+        NOW,  # same stamp as the screen-phase clock
+    )
+    assert "shared" in _cooled_pools(cache, NOW)
+
+    def route(rid: str, pool: str) -> AdmittedRoute:
+        return AdmittedRoute(rid, rid.split("/", 1)[0], "free", pool=pool, live_catalog=True)
+
+    routes = [route("p/a", "shared"), route("q/b", "shared")]
+    calls: list[tuple[str, list[str]]] = []
+
+    def screen(
+        provider: str, model_ids: Sequence[str], timeout: float
+    ) -> Mapping[str, Mapping[str, Any]]:
+        mid = model_ids[0]
+        if provider == "p":
+            return {
+                mid: {
+                    "status": "error",
+                    "statusCode": 403,
+                    "error": "Key limit exceeded (total limit)",
+                }
+            }
+        return {mid: {"status": "ok"}}
+
+    def agentic(rid: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        calls.append((rid, sorted(_cooled_pools(cache, NOW))))
+        return _turn(rid, payload)
+
+    stats = CycleStats()
+    Prober(
+        cache,
+        lambda: routes,
+        lambda *args: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        agentic_concurrency=1,
+    ).run_agentic_probes(stats, routes=routes)
+    assert calls == []
+    assert stats.agentic_passed == 0
+
+
 def test_half_open_blocked_when_sibling_provider_cools_shared_pool(tmp_path: Path) -> None:
     """R1: half-open OK cannot bypass a NEW account cooldown on the same pool."""
     cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
