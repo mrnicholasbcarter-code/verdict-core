@@ -1863,3 +1863,259 @@ def test_run_autodev_retry_runs_only_on_a_freshly_selected_route(
     assert retry["execution_path_decision_digest"]
     payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
     assert payload["executor_retry"]["execution_path_selected_route"]["model"] == FREE_B
+
+
+# BOD-406: the executor ladder keeps free or subscription candidates from two
+# families, never paid ones, and a cache HIT never decides admission.
+
+
+def _bod406_verdicts() -> list[RouteVerdict]:
+    return [
+        _route_verdict("mistral/codestral-latest", rank=0, reached=EligibilityStage.SELECTED),
+        _route_verdict("cc/claude-haiku-5-5", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "antigravity/gemini-3.1-flash-lite", rank=3, capacity=CapacityClass.SUBSCRIPTION
+        ),
+        _route_verdict("antigravity/gemini-3-flash", rank=4, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("anthropic/claude-sonnet-5", rank=5, capacity=CapacityClass.METERED),
+        _route_verdict("gc/grok-4.5", rank=6, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+
+
+def test_prepare_live_autodev_selected_ladder_spans_free_and_subscription_families(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_bod406_verdicts())
+    )
+    # codestral reports a sub-cent cost on a real (cache MISS) answer: it is dropped.
+    probed = _scripted_probe(monkeypatch, costs={"mistral/codestral-latest": "0.0000051000"})
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    # One route per family; cc/*, cx/* (D22) and metered routes are never probed.
+    assert probed == [
+        "mistral/codestral-latest",
+        "antigravity/gemini-3.1-flash-lite",
+        "gc/grok-4.5",
+    ]
+    assert dropped == ({"route_id": "mistral/codestral-latest", "reason": "cost_0.0000051000"},)
+    routes = [item["route_id"] for item in candidates]
+    assert routes == ["antigravity/gemini-3.1-flash-lite", "gc/grok-4.5"]
+    assert all(item["selection_reason"].strip() for item in candidates)
+    assert all("capacity=subscription" in item["selection_reason"] for item in candidates)
+    assert decision.selected_route.model in routes
+
+
+def test_prepare_live_autodev_selected_probe_bypasses_cache_and_drops_cache_hits(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    sent: list[Mapping[str, str]] = []
+    hit = {FREE_A: True, FREE_B: False}
+    served: dict[str, str] = {}
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = dict(served)
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        sent.append(dict(kwargs.get("extra_headers") or {}))
+
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            served["x-omniroute-model"] = model.split("/", 1)[1]
+            served["x-omniroute-response-cost"] = "0"
+            served["x-omniroute-cache-hit"] = "true" if hit[model] else "false"
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert sent and all(item.get("X-OmniRoute-No-Cache") == "true" for item in sent)
+    # A cached answer proves nothing about the route; it never admits one.
+    assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+
+
+def test_prepare_live_autodev_selected_keeps_premium_grok_off_the_ladder(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator policy: gc/grok-4.7 and gc/grok-4.7-build-fast are premium-reserved."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("gc/grok-4.7-build-fast", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=3),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == ["gc/grok-4.5", FREE_A]
+    assert [item["route_id"] for item in candidates] == ["gc/grok-4.5", FREE_A]
+    assert dropped == (
+        {"route_id": "gc/grok-4.7-build-fast", "reason": "premium_reserved"},
+        {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
+    )
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
+
+
+def test_prepare_live_autodev_selected_reserves_premium_grok_model_on_any_provider(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The premium reservation follows the model name, not one provider prefix."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("gc/grok-4.5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("grok-cli/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "omniroute/gc/grok-4.7-build-fast", rank=2, capacity=CapacityClass.SUBSCRIPTION
+        ),
+        _route_verdict("gc/grok-4.7", rank=3, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=4),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == ["gc/grok-4.5", FREE_A]
+    assert [item["route_id"] for item in candidates] == ["gc/grok-4.5", FREE_A]
+    # Ranked after the allowed grok-4.5, the premium routes are still recorded.
+    assert dropped == (
+        {"route_id": "grok-cli/grok-4.7", "reason": "premium_reserved"},
+        {"route_id": "omniroute/gc/grok-4.7-build-fast", "reason": "premium_reserved"},
+        {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
+    )
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
+
+
+def test_live_planner_models_reserves_premium_grok_model_on_any_provider() -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("grok-cli/grok-4.7-build-fast", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("omniroute/gc/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=3),
+    ]
+
+    class _Selector:
+        def select(self, requirements: Any, *, now: Any) -> Any:
+            return None, tuple(verdicts)
+
+    assert autodev._live_planner_models(_Selector(), top_n=3) == ("gc/grok-4.5", FREE_A)
+
+
+def test_prepare_live_autodev_selected_drops_x_omniroute_cache_hit_header(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    served: dict[str, str] = {}
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = dict(served)
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            served["x-omniroute-model"] = model.split("/", 1)[1]
+            served["x-omniroute-response-cost"] = "0"
+            served["x-omniroute-cache"] = "Hit" if model == FREE_A else "MISS"
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+
+
+def test_retry_selection_accepts_subscription_candidates_from_live_selection(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-406 x BOD-396: the retry decision takes the selected candidate dicts as they are."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_bod406_verdicts())
+    )
+    _scripted_probe(monkeypatch, costs={"mistral/codestral-latest": "0.0000051000"})
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    decision, plan, _headers, candidates, _dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+    remaining = [c for c in candidates if c["route_id"] != decision.selected_route.model]
+
+    retry = autodev._select_retry_route(plan.units[0], remaining, "fix ruff errors")
+
+    assert [c["selection_reason"] for c in remaining]
+    assert retry.selected_route.model == remaining[0]["route_id"]
+    assert "capacity=subscription" in remaining[0]["selection_reason"]
