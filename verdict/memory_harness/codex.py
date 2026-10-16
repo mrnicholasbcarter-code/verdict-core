@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -38,7 +40,7 @@ def hook_command(event: str) -> str:
 
     Single switch point for the hook entry form; the payload arrives on stdin.
     """
-    return f"verdict hook codex-event {event}"
+    return f"python -m verdict.memory_harness.codex {event}"
 
 
 def _verdict_hook(event: str) -> dict[str, Any]:
@@ -179,3 +181,80 @@ def install_codex_instructions(codex_dir: Path, bridge_instruction: str) -> None
     existing = agents_md.read_text("utf-8") if agents_md.exists() else ""
     if "Verdict Unified Memory Bridge" not in existing:
         agents_md.write_text(existing + bridge_instruction, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Hook entrypoint: ``python -m verdict.memory_harness.codex <Event>``
+# ---------------------------------------------------------------------------
+
+OUTBOX_DIR_ENV = "VERDICT_CODEX_OUTBOX_DIR"
+OUTBOX_FILENAME = "codex-lifecycle.jsonl"
+NO_BACKEND_GAP = "no-backend: captured to local outbox only"
+EXIT_GATE_BLOCKED = 2
+
+
+class LaunchGateError(Exception):
+    """The Verdict launch gate rejected this hook invocation (fail closed)."""
+
+
+def default_outbox_dir() -> Path:
+    configured = os.environ.get(OUTBOX_DIR_ENV)
+    if configured:
+        return Path(configured)
+    return Path.home() / ".verdict" / "outbox" / "codex"
+
+
+def launch_gate(event: str, payload: Mapping[str, Any]) -> None:
+    """Reject invocations Verdict cannot attribute; raises LaunchGateError."""
+    if event not in CODEX_HOOK_EVENTS:
+        raise LaunchGateError(f"unknown Codex hook event {event!r}")
+    declared = payload.get("hook_event_name")
+    if declared is not None and declared != event:
+        raise LaunchGateError(f"payload hook_event_name {declared!r} does not match {event!r}")
+    for key in ("session_id", "cwd"):
+        if not isinstance(payload.get(key), str) or not payload.get(key):
+            raise LaunchGateError(f"payload missing {key}")
+
+
+def run_hook(event: str, stdin_text: str, *, outbox_dir: Path | None = None) -> int:
+    """Gate, translate and capture one Codex hook payload.
+
+    Graceful path: there is no backend client yet, so the record carries a named
+    gap and goes to the local outbox (deduplicated by event_hash), exit 0.
+    Gate rejections and capture failures fail closed: stderr reason, nonzero.
+    Nothing is ever written to stdout (Codex may parse it).
+    """
+    try:
+        loaded = json.loads(stdin_text) if stdin_text.strip() else None
+        if not isinstance(loaded, dict):
+            raise LaunchGateError("stdin is not a JSON object")
+        launch_gate(event, loaded)
+    except (LaunchGateError, ValueError) as exc:
+        print(f"verdict codex hook blocked: {exc}", file=sys.stderr)
+        return EXIT_GATE_BLOCKED
+    record = {**event_provenance(loaded), "event": event, "gap": NO_BACKEND_GAP}
+    try:
+        target = (outbox_dir or default_outbox_dir()) / OUTBOX_FILENAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            for line in target.read_text("utf-8").splitlines():
+                if f'"event_hash": "{record["event_hash"]}"' in line:
+                    return 0
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"verdict codex hook capture failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        print("usage: python -m verdict.memory_harness.codex <Event>", file=sys.stderr)
+        return EXIT_GATE_BLOCKED
+    return run_hook(args[0], sys.stdin.read())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

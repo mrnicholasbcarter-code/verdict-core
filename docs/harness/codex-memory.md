@@ -55,9 +55,17 @@ Two sessions in different projects never share a session, project, or hash. Verd
 - `uninstall_codex_hooks(hooks_file)` removes only Verdict entries and drops any event list
   that ends up empty.
 
-## Hook command form (pending)
+## Hook entrypoint
 
-`hook_command(event)` is the only place the command string is defined. It currently returns
-`verdict hook codex-event <Event>`. The other option is `python -m verdict.memory_harness.codex <Event>`.
-The controller hasn't chosen between them yet. Until it does, the CLI entry point isn't wired,
-and nothing should claim the hooks run end to end.
+`hook_command(event)` is the only place the command string is defined. It returns
+`python -m verdict.memory_harness.codex <Event>`, the form the controller chose. The entrypoint:
+
+- reads the payload from stdin and writes nothing to stdout;
+- runs the launch gate first. An unknown event, a `hook_event_name` that doesn't match the
+  event argument, a missing `session_id` or `cwd`, or a payload that isn't valid JSON fails
+  closed with exit code 2 and a reason on stderr;
+- otherwise appends the provenance record to the outbox at
+  `$VERDICT_CODEX_OUTBOX_DIR/codex-lifecycle.jsonl` (default `~/.verdict/outbox/codex`),
+  deduplicated by `event_hash`, and exits 0. There is no backend client yet, so every record
+  carries the named gap `no-backend`. This is the one place it degrades gracefully;
+- exits 1 with a reason on stderr if the outbox write fails.

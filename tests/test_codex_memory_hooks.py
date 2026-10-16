@@ -8,6 +8,9 @@ hook stdin JSON but not yet observed live. Installer import path is
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,7 +80,7 @@ def test_installer_reads_stdin_not_tmp_files(codex_home: Path, tmp_path: Path) -
     for cmd in commands:
         assert "/tmp/codex_" not in cmd
         assert "$(cat" not in cmd
-        assert "verdict hook codex-event" in cmd
+        assert cmd.startswith("python -m verdict.memory_harness.codex ")
 
 
 def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path) -> None:
@@ -86,7 +89,7 @@ def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path)
     data = json.loads(hooks_file.read_text("utf-8"))
     for event in CODEX_EVENTS:
         cmds = [h["command"] for g in data["hooks"].get(event, []) for h in g["hooks"]]
-        assert any(f"verdict hook codex-event {event}" in c for c in cmds), event
+        assert any(c == f"python -m verdict.memory_harness.codex {event}" for c in cmds), event
 
 
 def test_two_sessions_in_different_projects_stay_isolated() -> None:
@@ -178,3 +181,58 @@ def test_certify_reports_per_event_levels(codex_home: Path) -> None:
     # Nothing has been observed live yet, so nothing may claim "supported".
     assert set(levels.values()) <= {"partial", "unknown"}
     assert "Hook events:" in harness_codex.format_certify(report)
+
+
+def _run_entrypoint(
+    tmp_path: Path, event: str, payload: object
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    outbox = tmp_path / "outbox"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "CODEX_HOME": str(tmp_path / "home" / ".codex"),
+        codex_installer.OUTBOX_DIR_ENV: str(outbox),
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "verdict.memory_harness.codex", event],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=60,
+        check=False,
+    )
+    return proc, outbox / codex_installer.OUTBOX_FILENAME
+
+
+def test_entrypoint_captures_to_outbox_with_named_gap(tmp_path: Path) -> None:
+    payload = _load("session_start_project_a.json")
+    proc, outbox = _run_entrypoint(tmp_path, "SessionStart", payload)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""
+    records = [json.loads(line) for line in outbox.read_text("utf-8").splitlines()]
+    assert len(records) == 1
+    record = records[0]
+    assert record["gap"] == codex_installer.NO_BACKEND_GAP
+    assert record["session_id"] == payload["session_id"]
+    assert record["event_hash"] == codex_installer.event_provenance(payload)["event_hash"]
+    again, _ = _run_entrypoint(tmp_path, "SessionStart", payload)
+    assert again.returncode == 0
+    assert len(outbox.read_text("utf-8").splitlines()) == 1
+
+
+def test_entrypoint_launch_gate_fails_closed(tmp_path: Path) -> None:
+    payload = dict(_load("session_start_project_a.json"), hook_event_name="Stop")
+    proc, outbox = _run_entrypoint(tmp_path, "SessionStart", payload)
+    assert proc.returncode == codex_installer.EXIT_GATE_BLOCKED
+    assert proc.stdout == ""
+    assert "does not match" in proc.stderr
+    assert not outbox.exists()
+
+
+def test_entrypoint_rejects_payload_without_session(tmp_path: Path) -> None:
+    proc, outbox = _run_entrypoint(tmp_path, "PreToolUse", {"hook_event_name": "PreToolUse"})
+    assert proc.returncode == codex_installer.EXIT_GATE_BLOCKED
+    assert "missing session_id" in proc.stderr
+    assert not outbox.exists()
