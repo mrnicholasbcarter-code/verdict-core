@@ -487,13 +487,27 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
     tmp.replace(path)
 
 
-# --- Hook entry point (provisional; pending controller decision) ------------
+# --- Hook entry point ---------------------------------------------------------
 
-# Single switch point for the installed hook command. Provisional default.
-HOOK_COMMAND_TEMPLATE = "python -m verdict.harness_claude hook {event}"
+# Single switch point for the installed hook command (controller 2026-10-16 23:10Z):
+# the E0 module entry point ``python -m verdict.memory_harness.claude <Event>``.
+HOOK_COMMAND_TEMPLATE = "python -m verdict.memory_harness.claude {event}"
 OUTBOX_DIR_ENV = "VERDICT_CLAUDE_OUTBOX_DIR"
 CLAUDE_VERSION_ENV = "VERDICT_CLAUDE_VERSION"
 OUTBOX_FILENAME = "claude-lifecycle.jsonl"
+
+# Exit-code contract with Claude Code hooks (docs.claude.com hooks reference):
+#   0  success; stdout is empty, so nothing is injected into the context.
+#   2  BLOCKING error: on PreToolUse it blocks the tool call, on UserPromptSubmit
+#      it erases the prompt, on Stop/SubagentStop it prevents stopping. This
+#      capture hook must never block the user's turn, so it never returns 2.
+#   1  (any other nonzero) non-blocking error: Claude Code shows stderr and
+#      continues. Used for malformed/unknown input, argv/payload mismatch and an
+#      unwritable outbox, so failures are visible instead of masked by exit 0.
+# The Verdict launch gate is a separate hook (see _ensure_claude_gate) and keeps
+# its own fail-closed semantics; this capture hook does not touch it.
+HOOK_EXIT_OK = 0
+HOOK_EXIT_ERROR = 1
 
 
 def default_outbox_dir() -> Path:
@@ -501,6 +515,11 @@ def default_outbox_dir() -> Path:
     if configured:
         return Path(configured)
     return Path.home() / ".verdict" / "outbox" / "claude"
+
+
+def _hook_error(message: str) -> int:
+    print(f"verdict claude hook: {message}", file=sys.stderr)
+    return HOOK_EXIT_ERROR
 
 
 def run_hook(
@@ -512,41 +531,44 @@ def run_hook(
 ) -> int:
     """Translate one hook payload and append it to the local outbox.
 
-    Never fails the harness: errors go to stderr and the exit code is 0.
-    Stdout stays empty. Replays of the same source event are skipped.
+    Returns HOOK_EXIT_OK on success or replay, HOOK_EXIT_ERROR (non-blocking,
+    reason on stderr) otherwise. Stdout stays empty. Existing outbox records are
+    never rewritten: the outbox is append-only, and an unwritable outbox leaves
+    it untouched (degraded: the record is reported, not captured).
     """
     version = claude_version or os.environ.get(CLAUDE_VERSION_ENV) or "unknown"
     try:
         record = translate_hook_stdin(stdin_text, claude_version=version)
-        if record["provenance"]["hook_event_name"] != event:
-            raise HarnessClaudeError(
-                f"hook event mismatch: argv {event!r} vs payload "
-                f"{record['provenance']['hook_event_name']!r}"
-            )
-        target_dir = outbox_dir if outbox_dir is not None else default_outbox_dir()
+    except HarnessClaudeError as exc:
+        return _hook_error(str(exc))
+    payload_event = record["provenance"]["hook_event_name"]
+    if payload_event != event:
+        return _hook_error(f"hook event mismatch: argv {event!r} vs payload {payload_event!r}")
+    target_dir = outbox_dir if outbox_dir is not None else default_outbox_dir()
+    outbox = target_dir / OUTBOX_FILENAME
+    event_id = record["identity"]["source_event_id"]
+    try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        outbox = target_dir / OUTBOX_FILENAME
-        event_id = record["identity"]["source_event_id"]
         if outbox.exists():
             for line in outbox.read_text("utf-8").splitlines():
                 try:
                     if json.loads(line)["identity"]["source_event_id"] == event_id:
-                        return 0
+                        return HOOK_EXIT_OK
                 except (ValueError, KeyError, TypeError):
                     continue
         with outbox.open("a", encoding="utf-8") as handle:
             handle.write(_canonical_json(record) + "\n")
-    except (HarnessClaudeError, OSError) as exc:
-        print(f"verdict claude hook: {exc}", file=sys.stderr)
-    return 0
+    except OSError as exc:
+        return _hook_error(f"outbox unwritable ({outbox}): {exc.strerror or exc}")
+    return HOOK_EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point used by ``python -m verdict.memory_harness.claude <Event>``."""
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2 or args[0] != "hook":
-        print("usage: python -m verdict.harness_claude hook <Event>", file=sys.stderr)
-        return 0
-    return run_hook(args[1], sys.stdin.read())
+    if len(args) != 1:
+        return _hook_error("usage: python -m verdict.memory_harness.claude <Event>")
+    return run_hook(args[0], sys.stdin.read())
 
 
 __all__ = [
@@ -555,6 +577,8 @@ __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_TOKEN_ENV",
     "HOOK_COMMAND_TEMPLATE",
+    "HOOK_EXIT_ERROR",
+    "HOOK_EXIT_OK",
     "OUTBOX_DIR_ENV",
     "OUTBOX_FILENAME",
     "CertifyReport",
@@ -676,6 +700,3 @@ def translate_hook_stdin(text: str, *, claude_version: str) -> dict[str, Any]:
         raise HarnessClaudeError("hook payload must be a JSON object")
     return translate_hook_payload(payload, claude_version=claude_version)
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
