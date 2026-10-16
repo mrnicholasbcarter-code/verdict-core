@@ -19,8 +19,8 @@ as `tests/fixtures/codex/v0_161_0/live_*.json`.
 | --- | --- |
 | SessionStart | supported |
 | UserPromptSubmit | supported |
-| PreToolUse | partial |
-| PostToolUse | partial |
+| PreToolUse | supported |
+| PostToolUse | supported |
 | PreCompact | partial |
 | SubagentStart | partial |
 | Stop | supported |
@@ -29,7 +29,7 @@ as `tests/fixtures/codex/v0_161_0/live_*.json`.
 | SubagentStop | unknown |
 | SessionEnd | supported |
 
-- `supported`: observed live on 2026-10-16 (isolated smokes; Stop came from a completed OmniRoute turn on a free model, which called no tool, so tool events were not reached).
+- `supported`: observed live on 2026-10-16 (isolated smokes; Stop, PreToolUse and PostToolUse came from completed OmniRoute turns on a free model).
 - `partial`: the event name appears in the 0.161.0 binary, and a working hooks.json on the same host uses it.
 - `unknown`: only the name is known.
 
