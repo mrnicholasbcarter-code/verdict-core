@@ -16,13 +16,15 @@ import httpx
 
 from verdict.live_routing import (
     COST_RANK,
+    DEFAULT_GATEWAY,
     ConcreteIdentity,
     LiveSurfaceBlocked,
     classify_identities,
+    fetch_models,
+    fetch_pricing_index,
     select_route,
     strip_secrets,
 )
-from verdict.live_routing_gateway import DEFAULT_GATEWAY, fetch_models, fetch_pricing_index
 from verdict.routing_demo_capture import SCHEMA_VERSION, save_recorded_capture
 from verdict.routing_demo_capture import load_recorded_capture as _load_recorded_capture
 from verdict.routing_demo_mock import run_mock_comparison

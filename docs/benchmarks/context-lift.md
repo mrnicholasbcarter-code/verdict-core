@@ -22,7 +22,7 @@ markdown fail. The token cannot be guessed from the task wording, so a pass requ
 ```python
 import json, pathlib
 from verdict.context_lift import run_context_lift
-from verdict.live_routing_gateway import DEFAULT_GATEWAY
+from verdict.live_routing import DEFAULT_GATEWAY
 
 result = run_context_lift(base_url=DEFAULT_GATEWAY, proof_root=pathlib.Path("/tmp/liftproof"))
 print(json.dumps(result["receipt"], indent=2, sort_keys=True))

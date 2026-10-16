@@ -12,7 +12,7 @@ Deliver a portfolio-readable demo that routes exactly 100 heterogeneous requests
 
 **Language/Version**: Python 3.10+ (repo `requires-python`), typed modules under `verdict/`
 
-**Primary Dependencies**: Existing `verdict.live_routing` (classify/select/explain/cheaper-first), `verdict.live_routing_gateway` (fetch_models, pricing index, probe/execute), `httpx`, pytest
+**Primary Dependencies**: Existing `verdict.live_routing` (classify/select/explain/cheaper-first, catalog fetch, pricing index, probe/execute), `httpx`, pytest
 
 **Storage**: Optional JSON evidence under `docs/benchmarks/` or `evidence/` for labeled recorded captures; no new database
 
@@ -63,8 +63,7 @@ specs/278-routing-demo/
 ```text
 verdict/
 ├── live_routing.py              # reuse cheaper-first (do not rewrite)
-├── live_routing_gateway.py      # reuse fetch/pricing/probe helpers
-├── live_routing_run.py          # reuse orchestrator pieces as needed
+├── live_routing.py              # classify/select plus catalog fetch
 └── routing_demo.py              # NEW: 100-request demo + baseline/savings
 
 docs/benchmarks/

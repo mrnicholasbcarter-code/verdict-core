@@ -16,7 +16,7 @@ description: "Task list for routing demo cost vs quality"
 
 ## Phase 2 — Foundational
 
-- [x] T004 Expose or wrap live pricing index fetch for demo use without rewriting cheaper-first in `verdict/live_routing_gateway.py` (export helper) and `verdict/routing_demo.py`
+- [x] T004 Expose or wrap live pricing index fetch for demo use without rewriting cheaper-first in `verdict/live_routing.py` (export helper) and `verdict/routing_demo.py`
 - [x] T005 Implement deterministic 100-request mix builder (`simple`/`complex`) in `verdict/routing_demo.py`
 - [x] T006 Implement USD estimator from live/recorded pricing quotes in `verdict/routing_demo.py`
 - [x] T007 [P] Write failing unit tests for estimator, baseline=costliest, cheaper-first reuse, blocked shape in `tests/test_routing_demo.py`

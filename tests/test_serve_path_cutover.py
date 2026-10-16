@@ -317,7 +317,7 @@ def test_chooser_yields_to_ep_and_cannot_invent() -> None:
     assert receipt.selected["model"] == "cheap-model"
 
 
-def test_live_routing_select_route_consumes_ep() -> None:
+def test_select_route_consumes_execution_path() -> None:
     decision = _decision()
     identity = ConcreteIdentity(
         identity_id="other-paid",

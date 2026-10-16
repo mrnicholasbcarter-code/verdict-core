@@ -246,6 +246,6 @@ Task: "Fail-first live catalog fetch in tests/test_golden_path_live.py"
 
 ## Phase 10: Convergence
 
-- [X] T033 Remove the 3-attempt execute cap in `verdict/live_routing_run.py` so failover walks remaining unique qualified identities cheaper-first including paid after cheaper unused identities are gone, per FR-011a (partial)
-- [X] T034 Add xAI management prepaid-balance usage probe (management key + team id) in `verdict/live_routing_usage.py` per FR-001h / plan usage table (partial)
+- [X] T033 Remove the 3-attempt execute cap so failover walks remaining unique qualified identities cheaper-first including paid after cheaper unused identities are gone, per FR-011a (partial)
+- [X] T034 Add xAI management prepaid-balance usage probe (management key + team id) per FR-001h / plan usage table (partial)
 - [X] T035 Set mix cost class from the first remaining qualified mix step, not always `steps[0]`, in `verdict/live_routing.py` per FR-001e (partial)

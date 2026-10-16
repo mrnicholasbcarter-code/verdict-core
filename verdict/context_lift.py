@@ -20,13 +20,16 @@ from verdict.context_intelligence import (
 )
 from verdict.context_pack import ContextPack, ContextUnit
 from verdict.live_routing import (
+    DEFAULT_GATEWAY,
     LiveRoutingError,
     LiveSurfaceBlocked,
     classify_identities,
+    execute_chat,
     failover_order,
+    fetch_models,
+    probe_identity,
     select_route,
 )
-from verdict.live_routing_gateway import DEFAULT_GATEWAY, execute_chat, fetch_models, probe_identity
 from verdict.memory_gate import MemoryGate, MemoryWriteRequest
 from verdict.memory_plane import MemoryPlane, MemoryRecord
 

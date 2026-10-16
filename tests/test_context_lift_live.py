@@ -6,8 +6,7 @@ import pytest
 
 from verdict.context_intelligence import ContextIntelligenceError
 from verdict.context_lift import run_context_lift, unaided_prompt
-from verdict.live_routing import LiveSurfaceBlocked
-from verdict.live_routing_gateway import DEFAULT_GATEWAY
+from verdict.live_routing import DEFAULT_GATEWAY, LiveSurfaceBlocked
 
 
 def test_live_paired_lift_or_block(tmp_path: Path) -> None:
