@@ -25,6 +25,7 @@ values; status/certify only report whether the named env var is set.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -487,6 +488,7 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
 
 __all__ = [
     "BACKUP_NAME",
+    "CLAUDE_HOOK_EVENT_KINDS",
     "DEFAULT_BASE_URL",
     "DEFAULT_TOKEN_ENV",
     "CertifyReport",
@@ -505,4 +507,103 @@ __all__ = [
     "format_status",
     "resolve_paths",
     "status",
+    "translate_hook_payload",
+    "translate_hook_stdin",
 ]
+
+
+# --- Hook stdin -> lifecycle-event/v1 translation (pure, stdlib only) -------
+
+LIFECYCLE_EVENT_SCHEMA = "lifecycle-event/v1"
+LIFECYCLE_PROTOCOL_VERSION = "1"
+CLAUDE_HOOK_EVENT_KINDS: dict[str, str] = {
+    "SessionStart": "session_start",
+    "UserPromptSubmit": "before_first_model_turn",
+    "PreToolUse": "before_tool",
+    "PostToolUse": "after_tool",
+    "SubagentStop": "subagent_end",
+    "PreCompact": "before_compact",
+    "Stop": "before_yield",
+    "SessionEnd": "session_end",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def translate_hook_payload(payload: Mapping[str, Any], *, claude_version: str) -> dict[str, Any]:
+    """Translate one Claude Code hook stdin payload into a lifecycle-event/v1 record.
+
+    Pure: reads nothing but ``payload``. Prompt text comes from the payload's
+    ``prompt`` field, never from global temp files. Scope is the cwd basename.
+    """
+    if not isinstance(payload, Mapping):
+        raise HarnessClaudeError("hook payload must be a JSON object")
+    event_name = payload.get("hook_event_name")
+    session_id = payload.get("session_id")
+    cwd = payload.get("cwd")
+    for name, value in (("hook_event_name", event_name), ("session_id", session_id), ("cwd", cwd)):
+        if not isinstance(value, str) or not value:
+            raise HarnessClaudeError(f"hook payload missing {name}")
+    assert isinstance(event_name, str) and isinstance(session_id, str) and isinstance(cwd, str)
+    kind = CLAUDE_HOOK_EVENT_KINDS.get(event_name)
+    if kind is None:
+        raise HarnessClaudeError(f"unsupported Claude hook event: {event_name}")
+    project = Path(cwd).name
+    if not project:
+        raise HarnessClaudeError("hook payload cwd has no project name")
+
+    prompt = payload.get("prompt")
+    if event_name == "UserPromptSubmit":
+        if not isinstance(prompt, str) or not prompt:
+            raise HarnessClaudeError("UserPromptSubmit payload missing prompt")
+        content = prompt
+    else:
+        detail = payload.get("source") or payload.get("reason") or ""
+        content = f"claude {event_name}" + (f" ({detail})" if detail else "")
+
+    try:
+        source_event_id = hashlib.sha256(_canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise HarnessClaudeError("hook payload is not canonical JSON") from exc
+
+    return {
+        "schema_version": LIFECYCLE_EVENT_SCHEMA,
+        "protocol_version": LIFECYCLE_PROTOCOL_VERSION,
+        "kind": kind,
+        "content": content,
+        "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "identity": {
+            "source_harness": "claude",
+            "project": project,
+            "session_id": session_id,
+            "parent_session_id": None,
+            "attempt_id": None,
+            "source_event_id": source_event_id,
+            "tenant": "default",
+            "workspace": "default",
+            "source_agent": "claude-code",
+        },
+        "scope": project,
+        "classification": "source",
+        "provenance": {
+            "harness": "claude",
+            "harness_version": claude_version,
+            "hook_event_name": event_name,
+            "cwd": cwd,
+        },
+    }
+
+
+def translate_hook_stdin(text: str, *, claude_version: str) -> dict[str, Any]:
+    """Parse hook stdin JSON text and translate it (see translate_hook_payload)."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise HarnessClaudeError("hook stdin is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HarnessClaudeError("hook payload must be a JSON object")
+    return translate_hook_payload(payload, claude_version=claude_version)
