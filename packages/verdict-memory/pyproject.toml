@@ -18,13 +18,21 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "build>=1.2",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/vectors",
+    "/docs",
+    "/README.md",
+    "/pyproject.toml",
 ]
 
 [tool.hatch.build.targets.wheel]
-only-include = ["verdict_memory"]
-
-[tool.hatch.build.targets.wheel.sources]
-"src" = ""
+packages = ["src/verdict_memory"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

@@ -4,11 +4,16 @@ Experimental API (0.1.0a1). Schema family: lifecycle-event/v1.
 """
 
 from verdict_memory.contracts import (
+    ALLOWED_EVENT_KINDS,
+    CANONICAL_EVENT_KINDS,
+    EVENT_IDENTITY_KNOWN_FIELDS,
+    LIFECYCLE_EVENT_KNOWN_FIELDS,
     CAPABILITY_STATUS_PARTIAL,
     CAPABILITY_STATUS_SUPPORTED,
     CAPABILITY_STATUS_UNKNOWN,
     CAPABILITY_STATUS_UNSUPPORTED,
     CONTRACT_API_VERSION,
+    EVENT_KIND_ALIASES,
     LIFECYCLE_EVENT_SCHEMA,
     CaptureDecision,
     LifecycleEvent,
@@ -30,11 +35,16 @@ from verdict_memory.provider import MemoryProvider
 
 __version__ = "0.1.0a1"
 __all__ = [
+    "ALLOWED_EVENT_KINDS",
+    "CANONICAL_EVENT_KINDS",
+    "EVENT_IDENTITY_KNOWN_FIELDS",
+    "LIFECYCLE_EVENT_KNOWN_FIELDS",
     "CAPABILITY_STATUS_PARTIAL",
     "CAPABILITY_STATUS_SUPPORTED",
     "CAPABILITY_STATUS_UNKNOWN",
     "CAPABILITY_STATUS_UNSUPPORTED",
     "CONTRACT_API_VERSION",
+    "EVENT_KIND_ALIASES",
     "LIFECYCLE_EVENT_SCHEMA",
     "CaptureDecision",
     "FakeMemoryProvider",

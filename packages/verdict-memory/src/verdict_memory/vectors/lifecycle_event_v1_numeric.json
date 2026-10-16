@@ -1,0 +1,51 @@
+{
+  "schema": "lifecycle-event/v1",
+  "name": "numeric_normalization",
+  "created_at_json": "1700000000.0",
+  "payload_n_json": "1.0",
+  "event": {
+    "schema_version": "lifecycle-event/v1",
+    "protocol_version": "1",
+    "kind": "after_edit",
+    "content": "# 路由预算\nshared note about routing budgets — café 日本語 🚀",
+    "content_hash": "d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38",
+    "identity": {
+      "source_harness": "verdict",
+      "project": "verdict",
+      "session_id": "sess-1",
+      "parent_session_id": null,
+      "attempt_id": "attempt-1",
+      "source_event_id": "src-evt-0001",
+      "tenant": "default",
+      "workspace": "default",
+      "source_agent": "worker-a"
+    },
+    "created_at": 1700000000.0,
+    "observed_at": 1700000001.5,
+    "scope": "default",
+    "memory_kind": "memory",
+    "sensitivity": "standard",
+    "trust": "remote-advisory",
+    "classification": "source",
+    "derived_from": [],
+    "provenance": {},
+    "payload": {
+      "n": 1.0,
+      "z": 0.0
+    },
+    "metadata": {
+      "extension": {
+        "k": 1
+      }
+    },
+    "revision": "1",
+    "idempotency_key": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+    "deadline_at": null
+  },
+  "digest": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+  "canonical_json": "{\"classification\":\"source\",\"content\":\"# 路由预算\\nshared note about routing budgets — café 日本語 🚀\",\"content_hash\":\"d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"after_edit\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.5,\"payload\":{\"n\":1.0,\"z\":0.0},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
+  "assert_substring": [
+    "\"created_at\":1700000000.0",
+    "\"n\":1.0"
+  ]
+}

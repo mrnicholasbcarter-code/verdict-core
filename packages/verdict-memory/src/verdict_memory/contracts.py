@@ -3,14 +3,23 @@
 Schema family: lifecycle-event/v1 (experimental until a validated vertical).
 Serialization convention matches existing Verdict shared-memory digests:
 ``json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)``
-then UTF-8 + SHA-256. Observed clocks are excluded from logical digests so
-the same source event after compaction/resume enqueues once.
+then UTF-8 + SHA-256.
+
+Logical digests exclude ``observed_at`` and ``deadline_at``. Stable
+``identity.source_event_id`` (harness-supplied) is preferred over adapter
+wall-clocks for replay/compaction dedupe.
+
+Float note: JSON numbers are serialized with Python's default (shortest
+round-trip) form. Golden vectors pin exact decimal spellings for
+cross-language checks; Rust consumers must emit the same digit string for
+the fixture values (no scientific notation for the pinned integers/floats).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -27,16 +36,96 @@ CAPABILITY_STATUS_PARTIAL = "partial"
 CAPABILITY_STATUS_UNSUPPORTED = "unsupported"
 CAPABILITY_STATUS_UNKNOWN = "unknown"
 
+# BOD-80 canonical lifecycle kinds (ticket mandatory list).
+# Provisional aliases kept for early API compatibility:
+#   before_turn -> before_first_model_turn
+#   compaction  -> before_compact
 EventKind = Literal[
     "session_start",
-    "before_turn",
+    "before_first_model_turn",
+    "before_tool",
     "after_tool",
-    "compaction",
-    "resume",
+    "after_edit",
+    "subagent_start",
+    "subagent_end",
+    "before_compact",
+    "before_yield",
+    "verification_result",
     "session_end",
+    "resume",
+    # package-level / non-harness capture kinds (still v1 family):
     "handoff",
     "manual_capture",
+    # provisional aliases (normalized at construction):
+    "before_turn",
+    "compaction",
 ]
+
+EVENT_KIND_ALIASES: dict[str, str] = {
+    "before_turn": "before_first_model_turn",
+    "compaction": "before_compact",
+}
+
+CANONICAL_EVENT_KINDS: frozenset[str] = frozenset(
+    {
+        "session_start",
+        "before_first_model_turn",
+        "before_tool",
+        "after_tool",
+        "after_edit",
+        "subagent_start",
+        "subagent_end",
+        "before_compact",
+        "before_yield",
+        "verification_result",
+        "session_end",
+        "resume",
+    }
+)
+
+ALLOWED_EVENT_KINDS: frozenset[str] = CANONICAL_EVENT_KINDS | {
+    "handoff",
+    "manual_capture",
+}
+
+LIFECYCLE_EVENT_KNOWN_FIELDS: frozenset[str] = frozenset(
+    {
+        "schema_version",
+        "protocol_version",
+        "kind",
+        "content",
+        "content_hash",
+        "identity",
+        "created_at",
+        "observed_at",
+        "scope",
+        "memory_kind",
+        "sensitivity",
+        "trust",
+        "classification",
+        "derived_from",
+        "provenance",
+        "payload",
+        "metadata",
+        "revision",
+        "idempotency_key",
+        "deadline_at",
+    }
+)
+
+EVENT_IDENTITY_KNOWN_FIELDS: frozenset[str] = frozenset(
+    {
+        "source_harness",
+        "project",
+        "session_id",
+        "parent_session_id",
+        "attempt_id",
+        "source_event_id",
+        "tenant",
+        "workspace",
+        "source_agent",
+    }
+)
 
 
 class ProviderResultStatus(str, Enum):
@@ -92,9 +181,32 @@ def redact_secrets(value: str | None) -> str | None:
     return redacted
 
 
+def _json_default(value: Any) -> Any:
+    raise TypeError(f"value is not JSON-serializable: {type(value)!r}")
+
+
 def canonicalize(value: Any) -> str:
-    """Canonical JSON bytes as a Unicode string (UTF-8 safe)."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Canonical JSON as Unicode (UTF-8 safe). Rejects non-finite floats."""
+
+    def scrub(obj: Any) -> Any:
+        if isinstance(obj, float):
+            if not math.isfinite(obj):
+                raise ValueError("non-finite floats are not allowed in canonical JSON")
+            return obj
+        if isinstance(obj, dict):
+            return {k: scrub(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [scrub(v) for v in obj]
+        return obj
+
+    return json.dumps(
+        scrub(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+        default=_json_default,
+    )
 
 
 def digest_bytes(payload: bytes) -> str:
@@ -107,13 +219,19 @@ def event_digest(payload: Mapping[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class EventIdentity:
-    """Harness-provided provenance. Auth/project authority comes from client config."""
+    """Harness-provided provenance. Auth/project authority comes from client config.
+
+    ``source_event_id`` is the stable logical source identity supplied by the
+    harness (not an adapter wall-clock). Replay/compaction must reuse it so
+    the same source event enqueues once.
+    """
 
     source_harness: str
     project: str
     session_id: str
     parent_session_id: str | None = None
     attempt_id: str | None = None
+    source_event_id: str | None = None
     tenant: str = "default"
     workspace: str = "default"
     source_agent: str = "unknown"
@@ -125,6 +243,7 @@ class EventIdentity:
             "session_id": self.session_id,
             "parent_session_id": self.parent_session_id,
             "attempt_id": self.attempt_id,
+            "source_event_id": self.source_event_id,
             "tenant": self.tenant,
             "workspace": self.workspace,
             "source_agent": self.source_agent,
@@ -157,6 +276,11 @@ class LifecycleEvent:
     deadline_at: float | None = None
 
     def __post_init__(self) -> None:
+        canon_kind = EVENT_KIND_ALIASES.get(self.kind, self.kind)
+        if canon_kind != self.kind:
+            object.__setattr__(self, "kind", canon_kind)
+        if self.kind not in ALLOWED_EVENT_KINDS:
+            raise ValueError(f"unsupported event kind: {self.kind}")
         if self.schema_version != LIFECYCLE_EVENT_SCHEMA:
             raise ValueError(f"unsupported schema_version: {self.schema_version}")
         if self.protocol_version != SHARED_MEMORY_PROTOCOL_VERSION:
@@ -229,11 +353,18 @@ class LifecycleEvent:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> LifecycleEvent:
-        raw = dict(value)
-        identity = raw.pop("identity")
+        """Load event. Unknown optional fields are ignored (documented additive policy).
+
+        Unsupported ``kind`` values raise ``ValueError`` after alias normalization
+        (explicit error, not silent success).
+        """
+        incoming = dict(value)
+        raw = {k: v for k, v in incoming.items() if k in LIFECYCLE_EVENT_KNOWN_FIELDS}
+        identity = raw.pop("identity", None)
         if not isinstance(identity, Mapping):
             raise ValueError("identity must be an object")
-        raw["identity"] = EventIdentity(**dict(identity))
+        id_raw = {k: v for k, v in dict(identity).items() if k in EVENT_IDENTITY_KNOWN_FIELDS}
+        raw["identity"] = EventIdentity(**id_raw)
         raw["derived_from"] = tuple(raw.get("derived_from") or ())
         return cls(**raw)  # type: ignore[arg-type]
 
@@ -366,12 +497,17 @@ class MemoryProviderError(RuntimeError):
 
 
 __all__ = [
+    "CANONICAL_EVENT_KINDS",
+    "ALLOWED_EVENT_KINDS",
+    "LIFECYCLE_EVENT_KNOWN_FIELDS",
+    "EVENT_IDENTITY_KNOWN_FIELDS",
     "CAPABILITY_STATUS_PARTIAL",
     "CAPABILITY_STATUS_SUPPORTED",
     "CAPABILITY_STATUS_UNKNOWN",
     "CAPABILITY_STATUS_UNSUPPORTED",
     "CONTRACT_API_VERSION",
     "ENVELOPE_SCHEMA_VERSION",
+    "EVENT_KIND_ALIASES",
     "LIFECYCLE_EVENT_SCHEMA",
     "SHARED_MEMORY_PROTOCOL_VERSION",
     "CaptureDecision",

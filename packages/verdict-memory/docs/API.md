@@ -6,85 +6,76 @@
 **Worktree:** `/home/nick/worktrees/bod80-memory-package`
 **Package:** `packages/verdict-memory` · import `verdict_memory`
 
-## Version policy
+## Version / compatibility policy
 - Package version: `0.1.0a1` (alpha). Schema family `lifecycle-event/v1`.
-- Breaking schema changes bump the schema id (`lifecycle-event/v2`); additive fields allowed in v1 with unknown-field ignore on readers.
+- **Unknown optional fields:** ignored on read (`LifecycleEvent.from_dict` filters to documented known fields). Additive only; no generic framework.
+- **Unsupported `kind`:** explicit `ValueError("unsupported event kind: …")` after alias normalization — never silent success.
+- Breaking schema changes bump schema id (`lifecycle-event/v2`).
 - No unearned 1.0 freeze until a real vertical + golden vectors validated with native pair.
 
+## Canonical event kinds (BOD-80 ticket list)
+`session_start`, `before_first_model_turn`, `before_tool`, `after_tool`, `after_edit`,
+`subagent_start`, `subagent_end`, `before_compact`, `before_yield`, `verification_result`,
+`session_end`, `resume`.
+
+Package-level kinds also allowed: `handoff`, `manual_capture`.
+
+Provisional aliases (normalized at construction):
+- `before_turn` → `before_first_model_turn`
+- `compaction` → `before_compact`
+
 ## Language-neutral seam (JSON)
-Serialization (existing Verdict shared-memory convention):
-`json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)` → UTF-8 → SHA-256.
+Serialization: `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)` → UTF-8 → SHA-256.
 
-Logical digest **excludes** `observed_at` and `deadline_at` so the same source event after compaction/resume enqueues once.
+Logical digest **excludes** `observed_at` and `deadline_at`. Prefer harness-supplied `identity.source_event_id` for stable replay/compaction dedupe (not adapter wall-clocks).
 
-Golden vector: `packages/verdict-memory/vectors/lifecycle_event_v1_minimal.json`
+Golden vectors:
+- `vectors/lifecycle_event_v1_minimal.json` (Unicode content + source_event_id)
+- `vectors/lifecycle_event_v1_unicode_optional.json`
+- `vectors/lifecycle_event_v1_numeric.json` (pinned float spellings e.g. `1700000000.0`, `1.0`)
 
-### LifecycleEvent (schema `lifecycle-event/v1`)
-Required fields:
-- `schema_version`, `protocol_version` (`"1"`)
-- `kind`: `session_start|before_turn|after_tool|compaction|resume|session_end|handoff|manual_capture`
-- `content`, `content_hash` (sha256 of UTF-8 content)
-- `identity`: `{source_harness, project, session_id, parent_session_id?, attempt_id?, tenant, workspace, source_agent}`
-- `created_at` (float unix seconds)
-- `scope`, `memory_kind`, `sensitivity`, `trust`, `classification` (`source|derived`)
-- `idempotency_key` (= logical digest if omitted)
-Optional: `observed_at`, `deadline_at`, `derived_from[]`, `provenance{}`, `payload{}`, `metadata{}`, `revision`
+Bundled in the wheel under `verdict_memory/vectors/`.
+
+### LifecycleEvent fields
+Documented known fields (unknown extras ignored on read):
+`schema_version`, `protocol_version`, `kind`, `content`, `content_hash`, `identity`,
+`created_at`, `observed_at`, `scope`, `memory_kind`, `sensitivity`, `trust`,
+`classification`, `derived_from`, `provenance`, `payload`, `metadata`, `revision`,
+`idempotency_key`, `deadline_at`.
+
+Identity known fields: `source_harness`, `project`, `session_id`, `parent_session_id`,
+`attempt_id`, `source_event_id`, `tenant`, `workspace`, `source_agent`.
 
 **Authority rule:** harness identity is provenance only. Auth/project authority comes from authenticated client **config**, never from free-form event payload.
 
-### CaptureDecision
-`{eligible: bool, reason: str, event_digest: str|null}`
-Stable reasons: `eligible`, `sensitivity_denied`, `secret_detected`, `low_value_tool_noise`, `capture_disabled`.
-
-### RecallQuery / RecallResult / MemoryHit
-- Query: `{query, project, scope, tenant, workspace, session_id?, limit, deadline_at?}`
-- Result: `{status, hits[], error_code?, message?, capability}`
-- Hit: `{ref, event, score, untrusted: true}` — recall is always untrusted / non-authority.
-- `status=available` + empty hits = healthy empty (not failure).
-- Failed statuses never carry hits.
-
-### ProviderHealth / capability matrix values
-`supported|partial|unsupported|unknown` on health/recall results.
-
-## Python public API (`verdict_memory`)
+## Python public API
 ```python
 from verdict_memory import (
     LifecycleEvent, CaptureDecision, RecallQuery, RecallResult,
     FakeMemoryProvider, MemoryCapturePolicy, MemoryProvider,
     ProviderResultStatus, ProviderHealth, ProviderErrorCode,
+    CANONICAL_EVENT_KINDS, ALLOWED_EVENT_KINDS, EVENT_KIND_ALIASES,
     canonicalize, event_digest, loads_lifecycle_event, redact_secrets,
     CONTRACT_API_VERSION, LIFECYCLE_EVENT_SCHEMA,
 )
 from verdict_memory.contracts import EventIdentity
 from verdict_memory.outbox import MemoryOutbox
-from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig  # skeleton
+from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig
 ```
 
-Entrypoints for consumers (E / adapters):
-1. **normalize** — `LifecycleEvent.from_dict` / `loads_lifecycle_event`
-2. **capture decision** — `MemoryCapturePolicy.evaluate(event)`
-3. **enqueue** — `MemoryOutbox.enqueue(event)` (redacts before durable write; INSERT OR IGNORE)
-4. **recall** — `provider.search(RecallQuery(...))` → `RecallResult`
+Entrypoints: normalize → capture decision → enqueue → recall.
 
-## Outbox bounds (operational SQLite only)
-- Table: `memory_lifecycle_outbox`
-- States: `pending|acked|dead_letter`
-- `DEFAULT_DUE_LIMIT = 20` (matches existing Verdict due-query)
-- `DEFAULT_MAX_PENDING = 10_000` (soft refuse with `queue_full`; rationale: protect disk, not an SLA invent)
+## Packaging
+Hatchling src-layout. Wheel **must** contain `verdict_memory/*.py` modules + bundled vectors.
+Regression: `tests/test_packaging_wheel.py` builds a wheel, asserts module files present,
+installs into an isolated venv with empty `PYTHONPATH`, imports from outside the checkout.
 
-## Backend client (in progress)
-- Target: existing ai-memory **2.6.6** at `http://127.0.0.1:49374` (MCP `/mcp`).
-- Token file: `~/.config/ai-memory/auth-token` (load in-process only; never print / never controller env).
-- `AiMemoryClient` / `AiMemoryClientConfig` skeleton shipped; live put/search/health probe in next commits.
-- Do **not** revive `AiMemoryExperimentalProvider` (D27/#893).
+## Backend client
+`AiMemoryClient` talks to existing ai-memory 2.6.6 MCP (`Accept: application/json, text/event-stream`).
+Token from file path only; never print. Live round-trip proof continues separately.
+Do **not** revive `AiMemoryExperimentalProvider` (D27/#893).
 
-## What E needs to start
-- Depend on path package temporarily: `packages/verdict-memory` (path or wheel).
-- Adapt Verdict `MemoryRecord` → `LifecycleEvent` at the consumer boundary (package has **no** `verdict.*` imports).
-- Launch-gate health check uses `provider.health()`; refuse **new** work on UNAVAILABLE/AUTH_FAILED; keep running work via outbox.
-- Request root `pyproject` dependency line via parent when ready for locked artifact.
-
-## Explicit non-goals (P)
-- No new retrieval DB/service; no MemoryPlane extraction; no ExperimentalProvider revival.
-- No root `verdict/*` or root `pyproject` edits (E owns).
-- No publishing / new remotes until parent-approved release.
+## What E needs
+- Path/wheel dep on `packages/verdict-memory` (E owns root dependency line).
+- Adapt Verdict `MemoryRecord` → `LifecycleEvent` at consumer boundary (no `verdict.*` imports in package).
+- Report actual adapter needs against this experimental manifest; do not invent 1.0 support claims.
