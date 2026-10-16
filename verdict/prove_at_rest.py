@@ -343,6 +343,10 @@ class ProbeExchange:
 # touch the network unless the caller built a live transport.
 ProbeTransportFn = Callable[[str, str, float], ProbeExchange]
 
+# A screen sends one provider's model ids to ``POST /api/models/test-all`` and
+# returns the per-model results, or None when the screen itself failed.
+ScreenTransportFn = Callable[[str, Sequence[str], float], Mapping[str, Mapping[str, Any]] | None]
+
 
 @dataclass
 class CycleStats:
@@ -363,6 +367,10 @@ class CycleStats:
     agentic_probed: int = 0
     agentic_passed: int = 0
     agentic_stopped_reason: str = ""
+    # BOD-410: routes sent to the cheap gateway screen (POST /api/models/test-all)
+    # before the agentic probe, and how many answered.
+    screened: int = 0
+    screen_ok: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -376,6 +384,8 @@ class CycleStats:
             "agentic_probed": self.agentic_probed,
             "agentic_passed": self.agentic_passed,
             "agentic_stopped_reason": self.agentic_stopped_reason,
+            "screened": self.screened,
+            "screen_ok": self.screen_ok,
         }
 
 
@@ -615,14 +625,29 @@ def _pool_of(route: AdmittedRoute) -> str:
 
 
 def _cooled_pools(cache: HealthCache, now: datetime) -> set[str]:
-    """Derive pool cooldowns from existing active negatives, never a second store."""
-    return {
-        entry.pool or pool_of(entry.route_id)
-        for entry in cache.routes().values()
-        if entry.state_at(now) == STATE_NEGATIVE
-        and entry.category in POOL_COOLDOWN_CATEGORIES
-        and entry.failure_scope != "route"
-    }
+    """Derive pool cooldowns from existing active negatives, never a second store.
+
+    A later validated success in the same pool supersedes the negative: the
+    account answered after the failure, so the failure was not account-wide.
+    """
+    entries = cache.routes().values()
+    last_success: dict[str, datetime] = {}
+    for entry in entries:
+        if entry.last_success_at is not None:
+            pool = entry.pool or pool_of(entry.route_id)
+            if pool not in last_success or entry.last_success_at > last_success[pool]:
+                last_success[pool] = entry.last_success_at
+    cooled: set[str] = set()
+    for entry in entries:
+        pool = entry.pool or pool_of(entry.route_id)
+        if (
+            entry.state_at(now) == STATE_NEGATIVE
+            and entry.category in POOL_COOLDOWN_CATEGORIES
+            and entry.failure_scope != "route"
+            and (pool not in last_success or entry.checked_at > last_success[pool])
+        ):
+            cooled.add(pool)
+    return cooled
 
 
 def order_cycle(
@@ -759,7 +784,11 @@ def _live_rank(route: AdmittedRoute) -> int:
 
 
 def agentic_candidates(
-    routes: Sequence[AdmittedRoute], cache: HealthCache, now: datetime
+    routes: Sequence[AdmittedRoute],
+    cache: HealthCache,
+    now: datetime,
+    *,
+    include_cooled: bool = False,
 ) -> list[AdmittedRoute]:
     """FREE routes worth an agentic probe, most promising first.
 
@@ -767,6 +796,7 @@ def agentic_candidates(
     cooled pools, effort variants whose base has not passed) and skips routes
     with an active negative. Order: chat+tool passed, chat passed, then
     unprobed routes by live-catalog evidence. Ordering never adds a route.
+    ``include_cooled`` keeps cooled pools so a screen can half-open them.
     """
     from verdict.orchestration.credential_pools import base_route, collapse_alias_duplicates
 
@@ -777,7 +807,7 @@ def agentic_candidates(
     ]
     kept, _inherited = collapse_alias_duplicates([route.route_id for route in chat_routes])
     kept_ids = set(kept)
-    cooled = _cooled_pools(cache, now)
+    cooled = set() if include_cooled else _cooled_pools(cache, now)
     picked: list[tuple[int, AdmittedRoute]] = []
     for route in chat_routes:
         if route.route_id not in kept_ids or _pool_of(route) in cooled:
@@ -891,6 +921,12 @@ class Prober:
     # BOD-338: confirm the gateway key independently of provider credentials.
     # Offline/injected transports without a checker use a majority-pool fallback.
     gateway_auth_check: Callable[[float], ProbeExchange] | None = None
+    # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
+    # picks agentic survivors. ``None`` keeps the unscreened candidate order.
+    screen_transport: ScreenTransportFn | None = None
+    # Routes that answered this cycle's screen: their pool answered after the
+    # cooldown, so the agentic loop does not drop them as cooled.
+    _screen_survivors: set[str] = field(default_factory=set, init=False, repr=False)
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1291,9 +1327,15 @@ class Prober:
             self._cycle_pools = {_pool_of(route) for route in snapshot}
         pending = [
             route
-            for route in agentic_candidates(snapshot, self.cache, now)
+            for route in agentic_candidates(
+                snapshot, self.cache, now, include_cooled=self.screen_transport is not None
+            )
             if self._needs_agentic(route, now)
-        ][: self.agentic_max_routes]
+        ]
+        self._screen_survivors = set()
+        if self.screen_transport is not None:
+            pending = self._screen(pending, stats, deadline)
+        pending = pending[: self.agentic_max_routes]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
         if pending:
@@ -1320,7 +1362,9 @@ class Prober:
                     if route_pool in empty_pools:
                         continue
                     now = self.clock()
-                    if route_pool in _cooled_pools(self.cache, now):
+                    if route.route_id not in self._screen_survivors and route_pool in (
+                        _cooled_pools(self.cache, now)
+                    ):
                         pending.remove(route)
                         continue
                     # Reserve every turn up front; an empty bucket keeps the
@@ -1381,6 +1425,103 @@ class Prober:
         ):
             self._flush_auth_fail_buffer(stats)
             self._save()
+
+    def _screen(
+        self, candidates: Sequence[AdmittedRoute], stats: CycleStats, deadline: float
+    ) -> list[AdmittedRoute]:
+        """Return the candidates that answered the cheap gateway screen, in order.
+
+        One ``test-all`` call per provider/pool, at most ``agentic_max_routes``
+        ids each; a cooled pool sends one id (half-open). Failures are recorded
+        as negatives (account-level ones cool the pool), 429s zero the pool
+        bucket, timeouts write nothing. A screen OK only selects a route for
+        the agentic probe; it never admits one. A pool whose screen call
+        failed keeps its open candidates unscreened.
+        """
+        assert self.screen_transport is not None
+        now = self.clock()
+        cooled = _cooled_pools(self.cache, now)
+        groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
+        for route in candidates:
+            key = (route.provider, _pool_of(route))
+            limit = 1 if key[1] in cooled else self.agentic_max_routes
+            group = groups.setdefault(key, [])
+            if len(group) < limit:
+                group.append(route)
+        if not groups:
+            return []
+        timeout = max((deadline - self.monotonic()) / 2, 1.0)
+        screen = self.screen_transport
+        with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
+            futures = {
+                key: pool.submit(screen, key[0], [r.route_id for r in group], timeout)
+                for key, group in groups.items()
+            }
+            outcomes = {}
+            for key, future in futures.items():
+                try:
+                    outcomes[key] = future.result()
+                except (OSError, ValueError, http.client.HTTPException):
+                    outcomes[key] = None
+        survivors: set[str] = set()
+        unscreened: set[str] = set()
+        for key, group in groups.items():
+            results = outcomes[key]
+            if results is None:
+                if key[1] not in cooled:
+                    unscreened.update(route.route_id for route in group)
+                continue
+            stats.screened += len(group)
+            stats.requests += len(results)
+            for route in group:
+                result = results.get(route.route_id)
+                if result is not None and self._record_screen(route, result, now):
+                    survivors.add(route.route_id)
+        stats.screen_ok += len(survivors)
+        self._screen_survivors = survivors
+        if survivors or stats.screened:
+            self._save()
+        keep = survivors | unscreened
+        return [route for route in candidates if route.route_id in keep]
+
+    def _record_screen(
+        self, route: AdmittedRoute, result: Mapping[str, Any], now: datetime
+    ) -> bool:
+        """Apply one ``test-all`` result; True when the route answered."""
+        status = result.get("status")
+        timed_out = bool(result.get("isTimeout"))
+        if status == "ok" or (status == "slow" and not timed_out):
+            return True
+        code = result.get("statusCode")
+        code = code if isinstance(code, int) else None
+        if code is None:
+            match = re.search(r"\[(\d{3})\]", str(result.get("error") or ""))
+            code = int(match.group(1)) if match else None
+        if bool(result.get("rateLimited")) or code == 429:
+            self.cache.zero_bucket(route.provider, now + timedelta(seconds=60), pool=route.pool)
+            return False
+        if timed_out or result.get("isTransient") or result.get("skipped") or status != "error":
+            return False
+        exchange = ProbeExchange(
+            http_status=code, ok=False, error_category=None if code else "upstream"
+        )
+        category = category_for(exchange)
+        detail = str(result.get("error") or "")
+        scoped = _detail_is_model_scoped(category, code, detail, route.route_id)
+        self.cache.record(
+            route.route_id,
+            ProbeResult(
+                category=category,
+                chat_ok=False,
+                tool_ok=False,
+                http_status=code,
+                pool=route.pool,
+                capacity_evidence=route.capacity_evidence,
+                failure_scope="route" if scoped else None,
+            ),
+            now,
+        )
+        return False
 
     def _converse(
         self, route_id: str, deadline: float
@@ -1456,6 +1597,12 @@ class Prober:
             pool=route.pool,
             capacity_evidence=route.capacity_evidence,
             identity="verified" if passed else "",
+            failure_scope=(
+                "route"
+                if not passed
+                and _detail_is_model_scoped(category, last.http_status, last.detail, route.route_id)
+                else None
+            ),
         )
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
@@ -1657,13 +1804,12 @@ def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> Prob
         except ValueError:
             retry_after = None
     named = None
-    if exc.code == 400:
-        try:
-            body = exc.read(16_384).decode("utf-8", "replace")
-        except OSError:
-            body = ""
-        if is_catalog_stale_error(body):
-            named = CATEGORY_CATALOG_STALE
+    try:
+        body = exc.read(16_384).decode("utf-8", "replace") if exc.fp is not None else ""
+    except OSError:
+        body = ""
+    if exc.code == 400 and is_catalog_stale_error(body):
+        named = CATEGORY_CATALOG_STALE
     return ProbeExchange(
         http_status=exc.code,
         ok=False,
@@ -1672,7 +1818,22 @@ def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> Prob
         error_category=category_for(
             ProbeExchange(http_status=exc.code, ok=False, error_category=named)
         ),
+        detail=_error_detail(body),
     )
+
+
+def _error_detail(body: str) -> str:
+    """The provider message without URLs, for model-vs-account scope only."""
+    message = body
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, Mapping):
+        error = parsed.get("error")
+        if isinstance(error, Mapping) and isinstance(error.get("message"), str):
+            message = error["message"]
+    return re.sub(r"https?://\S+", "<url>", message)[:300]
 
 
 def live_agentic_transport(
@@ -1717,6 +1878,44 @@ def live_agentic_transport(
             return ProbeExchange(http_status=None, ok=False, error_category="timeout")
 
     return transport
+
+
+def live_screen_transport(base_url: str, *, api_key: str | None) -> ScreenTransportFn:
+    """``POST /api/models/test-all`` with the M1 body (no auto-hide, rate limits respected)."""
+    endpoint = base_url.rstrip("/")
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[: -len("/v1")]
+    endpoint += "/api/models/test-all"
+
+    def screen(
+        provider_id: str, model_ids: Sequence[str], timeout_seconds: float
+    ) -> Mapping[str, Mapping[str, Any]] | None:
+        body = {
+            "providerId": provider_id,
+            "modelIds": list(model_ids)[:100],
+            "respectRateLimit": True,
+            "autoHideFailed": False,
+        }
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with open_no_redirect(request, timeout=timeout_seconds) as response:
+                parsed = json.loads(response.read(4_194_304) or b"{}")
+        except (OSError, ValueError, http.client.HTTPException):
+            return None
+        results = parsed.get("results") if isinstance(parsed, Mapping) else None
+        if not isinstance(results, Mapping):
+            return None
+        return {str(k): v for k, v in results.items() if isinstance(v, Mapping)}
+
+    return screen
 
 
 def live_gateway_auth_check(
@@ -1832,7 +2031,9 @@ def _detail_is_model_scoped(
     category: str, http_status: int | None, detail: str, route_id: str = ""
 ) -> bool:
     """Only a named route/model without account-wide markers is route-scoped."""
-    text = detail.strip().lower()
+    # OmniRoute prefixes every relayed error with "[<route_id>]"; that names
+    # the requested route, not the model the provider refused.
+    text = re.sub(r"^\[[^\]]*\]\s*", "", detail.strip()).lower()
     if not text or not route_id or any(marker in text for marker in _ACCOUNT_SCOPE_MARKERS):
         return False
     if http_status not in {403, 429} and category not in {
@@ -2250,6 +2451,11 @@ def build_live_daemon(
         agentic_wall_seconds=agentic_wall_seconds,
         gateway_auth_check=(
             live_gateway_auth_check(origin, api_key=key) if transport is None else None
+        ),
+        screen_transport=(
+            live_screen_transport(origin, api_key=key)
+            if allow_live_probe and transport is None
+            else None
         ),
     )
     return ProverDaemon(prober=prober, consented=allow_live_probe)
