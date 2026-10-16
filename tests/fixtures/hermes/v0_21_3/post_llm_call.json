@@ -1,0 +1,4 @@
+{"_source": "field names from website/docs/developer-guide/observer-hooks.md:123-125 (source-documented, not live-captured)",
+ "session_id": "20261016_190000_abc123", "turn_id": "t-1", "user_message": "How do we run the verdict gate?",
+ "assistant_response": "Decision: run vgate via vrun. Use token=sk-live-SHOULDNOTLEAK123 never.",
+ "model": "grok-4.7", "platform": "cli", "cwd": "/home/nick/dev/project-a"}
