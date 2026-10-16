@@ -2002,9 +2002,16 @@ _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 #: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
 _PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
 
-#: Operator policy (grok-fast-premium-policy): premium routes reserved for
-#: explicit premium work, never ordinary planner or executor candidates.
-_PREMIUM_RESERVED_ROUTES = frozenset({"gc/grok-4.7", "gc/grok-4.7-build-fast"})
+#: Operator policy (grok-fast-premium-policy): premium models reserved for
+#: explicit premium work, never ordinary planner or executor candidates, on any
+#: provider prefix (gc/, grok-cli/, omniroute/gc/, ...).
+_PREMIUM_RESERVED_MODELS = frozenset({"grok-4.7", "grok-4.7-build-fast"})
+
+
+def _is_premium_reserved(route_id: str) -> bool:
+    from verdict.admission import canonical_route_id
+
+    return canonical_route_id(route_id).split("/", 1)[-1] in _PREMIUM_RESERVED_MODELS
 
 
 def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
@@ -2045,7 +2052,7 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
             or "/" not in route_id
             or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
             or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
-            or route_id in _PREMIUM_RESERVED_ROUTES
+            or _is_premium_reserved(route_id)
             or route_family(route_id) in families
         ):
             continue
@@ -2145,11 +2152,13 @@ def prepare_live_autodev_selected(
             reached not in _ELIGIBLE_STAGES
             or "/" not in route_id
             or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
-            or route_family(route_id) in families
         ):
             continue
-        if route_id in _PREMIUM_RESERVED_ROUTES:
+        # Before the family dedupe, so a premium route is always named in ``dropped``.
+        if _is_premium_reserved(route_id):
             dropped.append({"route_id": route_id, "reason": "premium_reserved"})
+            continue
+        if route_family(route_id) in families:
             continue
         families.add(route_family(route_id))
         ladder.append((verdict, f"{reached.lower()} rank={verdict.rank} capacity={capacity}"))
@@ -2216,7 +2225,10 @@ def prepare_live_autodev_selected(
             reason = "content"
         elif served != route_id.split("/", 1)[1]:
             reason = "identity"
-        elif headers.get("x-omniroute-cache-hit", "").lower() == "true":
+        elif (
+            headers.get("x-omniroute-cache-hit", "").lower() == "true"
+            or headers.get("x-omniroute-cache", "").lower() == "hit"
+        ):
             reason = "cache_hit"
         elif cost is None:
             reason = "missing_cost_header"

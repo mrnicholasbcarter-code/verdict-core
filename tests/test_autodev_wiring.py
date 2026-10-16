@@ -1871,3 +1871,103 @@ def test_prepare_live_autodev_selected_keeps_premium_grok_off_the_ladder(
         {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
     )
     assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
+
+
+def test_prepare_live_autodev_selected_reserves_premium_grok_model_on_any_provider(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The premium reservation follows the model name, not one provider prefix."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("gc/grok-4.5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("grok-cli/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "omniroute/gc/grok-4.7-build-fast", rank=2, capacity=CapacityClass.SUBSCRIPTION
+        ),
+        _route_verdict("gc/grok-4.7", rank=3, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=4),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == ["gc/grok-4.5", FREE_A]
+    assert [item["route_id"] for item in candidates] == ["gc/grok-4.5", FREE_A]
+    # Ranked after the allowed grok-4.5, the premium routes are still recorded.
+    assert dropped == (
+        {"route_id": "grok-cli/grok-4.7", "reason": "premium_reserved"},
+        {"route_id": "omniroute/gc/grok-4.7-build-fast", "reason": "premium_reserved"},
+        {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
+    )
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
+
+
+def test_live_planner_models_reserves_premium_grok_model_on_any_provider() -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("grok-cli/grok-4.7-build-fast", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("omniroute/gc/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=3),
+    ]
+
+    class _Selector:
+        def select(self, requirements: Any, *, now: Any) -> Any:
+            return None, tuple(verdicts)
+
+    assert autodev._live_planner_models(_Selector(), top_n=3) == ("gc/grok-4.5", FREE_A)
+
+
+def test_prepare_live_autodev_selected_drops_x_omniroute_cache_hit_header(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    served: dict[str, str] = {}
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = dict(served)
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            served["x-omniroute-model"] = model.split("/", 1)[1]
+            served["x-omniroute-response-cost"] = "0"
+            served["x-omniroute-cache"] = "Hit" if model == FREE_A else "MISS"
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]
