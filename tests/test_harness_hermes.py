@@ -170,8 +170,19 @@ def test_cli_help_lists_hermes(
 def test_certify_reports_source_evidenced_plugin_hooks_as_partial(tmp_path: Path) -> None:
     from verdict.harness_hermes import certify
 
-    report = certify(hermes_home=tmp_path, force=True, health_check=lambda _u: True, which=lambda _n: "/usr/bin/hermes")
-    for facet in ("hooks", "session_start", "before_first_turn", "session_end", "mutation_capability"):
+    report = certify(
+        hermes_home=tmp_path,
+        force=True,
+        health_check=lambda _u: True,
+        which=lambda _n: "/usr/bin/hermes",
+    )
+    for facet in (
+        "hooks",
+        "session_start",
+        "before_first_turn",
+        "session_end",
+        "mutation_capability",
+    ):
         assert report.facets[facet] == "partial", facet
     assert report.facets["tool_pre_post"] == "unsupported"  # not wired by the adapter
     joined = " ".join(report.notes)

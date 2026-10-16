@@ -83,7 +83,9 @@ class FakeAdmission:
 # 2. install: idempotent, preserves orca-status / memory / model, temp HERMES_HOME only
 def test_install_is_idempotent_and_preserves_unrelated_config(tmp_path: Path) -> None:
     home = _home(tmp_path)
-    first = hm.install(hermes_home=home, command=[sys.executable, "-m", "verdict.harness_hermes_memory"])
+    first = hm.install(
+        hermes_home=home, command=[sys.executable, "-m", "verdict.harness_hermes_memory"]
+    )
     assert first.changed is True
     cfg_after_first = (home / "config.yaml").read_bytes()
     plugin_dir = home / "plugins" / hm.PLUGIN_NAME
@@ -100,7 +102,9 @@ def test_install_is_idempotent_and_preserves_unrelated_config(tmp_path: Path) ->
     assert "provider" not in data["memory"]  # never takes the single memory.provider slot
     assert data["model"] == OPERATOR_LIKE_CONFIG["model"]
 
-    second = hm.install(hermes_home=home, command=[sys.executable, "-m", "verdict.harness_hermes_memory"])
+    second = hm.install(
+        hermes_home=home, command=[sys.executable, "-m", "verdict.harness_hermes_memory"]
+    )
     assert second.changed is False
     assert (home / "config.yaml").read_bytes() == cfg_after_first
     assert sorted(p.name for p in home.iterdir() if p.name.endswith(".bak")) == [hm.BACKUP_NAME]
@@ -122,7 +126,9 @@ def test_uninstall_drops_plugins_key_it_created(tmp_path: Path) -> None:
     home = _home(tmp_path, {"model": {"default": "x"}})
     hm.install(hermes_home=home)
     hm.uninstall(hermes_home=home)
-    assert yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) == {"model": {"default": "x"}}
+    assert yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) == {
+        "model": {"default": "x"}
+    }
 
 
 def test_install_refuses_user_owned_plugin_collision(tmp_path: Path) -> None:
@@ -183,8 +189,10 @@ def test_unsupported_hook_is_explicit() -> None:
 def test_recall_is_bounded_cited_untrusted_and_empty_is_not_error(tmp_path: Path) -> None:
     provider = FakeProvider()
     bridge = hm.HermesMemoryBridge(
-        provider=provider, outbox=hm.BoundedJsonlOutbox(tmp_path / "o.jsonl", max_events=5),
-        project="proj-a", max_context_chars=400,
+        provider=provider,
+        outbox=hm.BoundedJsonlOutbox(tmp_path / "o.jsonl", max_events=5),
+        project="proj-a",
+        max_context_chars=400,
     )
     empty = bridge.handle("pre_llm_call", _fixture("pre_llm_call.json"))
     assert empty.status == "empty" and empty.context is None and empty.gaps == ()
@@ -204,7 +212,8 @@ def test_recall_is_bounded_cited_untrusted_and_empty_is_not_error(tmp_path: Path
 def test_post_llm_call_capture_redacts_and_dedupes(tmp_path: Path) -> None:
     provider = FakeProvider()
     bridge = hm.HermesMemoryBridge(
-        provider=provider, outbox=hm.BoundedJsonlOutbox(tmp_path / "o.jsonl", max_events=5),
+        provider=provider,
+        outbox=hm.BoundedJsonlOutbox(tmp_path / "o.jsonl", max_events=5),
         project="proj-a",
     )
     payload = _fixture("post_llm_call.json")
@@ -214,19 +223,33 @@ def test_post_llm_call_capture_redacts_and_dedupes(tmp_path: Path) -> None:
     assert len(stored) == 1
     assert "SHOULDNOTLEAK" not in json.dumps(stored)
     assert stored[0]["kind"] == "before_yield"
-    assert stored[0]["identity"]["source_event_id"] == "hermes:20261016_190000_abc123:t-1:post_llm_call"
+    assert (
+        stored[0]["identity"]["source_event_id"]
+        == "hermes:20261016_190000_abc123:t-1:post_llm_call"
+    )
 
 
 # 6. two projects/sessions cannot recall each other; payload cannot claim project
 def test_cross_project_isolation_and_payload_cannot_claim_project(tmp_path: Path) -> None:
     provider = FakeProvider()
-    a = hm.HermesMemoryBridge(provider=provider, outbox=hm.BoundedJsonlOutbox(tmp_path / "a", max_events=5), project="proj-a")
-    b = hm.HermesMemoryBridge(provider=provider, outbox=hm.BoundedJsonlOutbox(tmp_path / "b", max_events=5), project="proj-b")
+    a = hm.HermesMemoryBridge(
+        provider=provider,
+        outbox=hm.BoundedJsonlOutbox(tmp_path / "a", max_events=5),
+        project="proj-a",
+    )
+    b = hm.HermesMemoryBridge(
+        provider=provider,
+        outbox=hm.BoundedJsonlOutbox(tmp_path / "b", max_events=5),
+        project="proj-b",
+    )
     hostile = dict(_fixture("post_llm_call.json"), project="proj-b", workspace="evil")
     a.handle("post_llm_call", hostile)
     assert ("proj-b", "default") not in provider.records
     assert ("proj-b", "evil") not in provider.records
-    assert b.handle("pre_llm_call", dict(_fixture("pre_llm_call.json"), project="proj-a")).status == "empty"
+    assert (
+        b.handle("pre_llm_call", dict(_fixture("pre_llm_call.json"), project="proj-a")).status
+        == "empty"
+    )
     assert provider.queries[-1][:2] == ("proj-b", "default")
 
 
@@ -236,7 +259,9 @@ def test_backend_failure_degrades_with_gap_outbox_and_blocks_new_work(tmp_path: 
     provider = FakeProvider(down=True)
     admission = FakeAdmission()
     outbox = hm.BoundedJsonlOutbox(tmp_path / "o.jsonl", max_events=2)
-    bridge = hm.HermesMemoryBridge(provider=provider, outbox=outbox, project="proj-a", admission=admission)
+    bridge = hm.HermesMemoryBridge(
+        provider=provider, outbox=outbox, project="proj-a", admission=admission
+    )
 
     recall = bridge.handle("pre_llm_call", _fixture("pre_llm_call.json"))
     assert recall.status == "error" and recall.context is None
@@ -252,9 +277,11 @@ def test_backend_failure_degrades_with_gap_outbox_and_blocks_new_work(tmp_path: 
     assert "SHOULDNOTLEAK" not in (tmp_path / "o.jsonl").read_text(encoding="utf-8")
 
     dispatched = []
+
     def dispatch_new_work() -> None:
         if admission.admit_new_work():
             dispatched.append("model-call")
+
     dispatch_new_work()
     assert dispatched == []
     assert admission.failures and admission.failures[0] == hm.GAP_BACKEND_UNAVAILABLE
