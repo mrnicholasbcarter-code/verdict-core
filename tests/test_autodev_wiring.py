@@ -1035,7 +1035,7 @@ def test_run_autodev_retries_next_ranked_candidate_when_executor_attempt_fails(
         decomposer=_decomposer([PLAN[0]]),
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1088,7 +1088,7 @@ def test_run_autodev_executor_exception_is_recorded_and_retried_once(
         decomposer=_decomposer([PLAN[0]]),
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1137,7 +1137,7 @@ def test_run_autodev_retry_is_bounded_to_one_attempt(repo: Path, tmp_path: Path)
         decomposer=_decomposer(PLAN),  # two units
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1190,10 +1190,7 @@ def test_run_autodev_skips_retry_route_equal_to_selected_model(repo: Path, tmp_p
         decomposer=_decomposer([PLAN[0]]),
         executor=primary,
         mechanical=False,
-        retry_routes=(
-            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
-            {"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},
-        ),
+        retry_routes=(_ad03_candidate("cheap/model"), _ad03_candidate("prov/other:free")),
         retry_executor_factory=retry_factory,
     )
 
@@ -1319,10 +1316,7 @@ def test_run_autodev_no_retry_when_all_routes_equal_primary(repo: Path, tmp_path
         decomposer=_decomposer([PLAN[0]]),
         executor=primary,
         mechanical=False,
-        retry_routes=(
-            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
-            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
-        ),
+        retry_routes=(_ad03_candidate("cheap/model"), _ad03_candidate("cheap/model")),
         retry_executor_factory=retry_factory,
     )
 
@@ -1371,7 +1365,7 @@ def test_run_autodev_retry_executor_built_once_per_model(repo: Path, tmp_path: P
         decomposer=_decomposer((PLAN[0], PLAN[1])),
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1418,7 +1412,7 @@ def test_run_autodev_receipt_retry_served_headers(repo: Path, tmp_path: Path) ->
         decomposer=_decomposer((PLAN[0], PLAN[1])),
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/retry:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/retry:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1576,7 +1570,7 @@ def test_run_autodev_retry_executor_receives_the_identical_pack_compiled_once(
         decomposer=_decomposer([PLAN[0]]),
         executor=_recording_executor(repo, primary_sent, "no diff"),
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=lambda route: _recording_executor(
             repo, retry_sent, A_DIFF, model=str(route["model"])
         ),
@@ -1662,7 +1656,7 @@ def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_p
         decomposer=_decomposer([PLAN[0]]),
         executor=primary,
         mechanical=False,
-        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_routes=(_ad03_candidate("prov/other:free"),),
         retry_executor_factory=retry_factory,
     )
 
@@ -1739,6 +1733,136 @@ def test_prepare_live_autodev_selected_needs_two_planner_families(
         )
     assert "planner" in str(excinfo.value)
     assert "cc/" not in str(excinfo.value)
+
+
+# BOD-396: the executor of every model call is a route an execution-path decision
+# selected, and the outcome, the report and the served header name the same model.
+
+
+def _ad03_candidate(route_id: str) -> dict[str, Any]:
+    return {
+        "strategy": "direct_cheap",
+        "route_id": route_id,
+        "gateway": GATEWAY,
+        "provider": route_id.split("/", 1)[0],
+        "model": route_id,
+        "eligible": True,
+        "is_free": True,
+        "certification_state": "ready",
+        "certification_freshness": "fresh",
+        "probe_observed_at": 1_760_000_000.0,
+        "probe_headers": {"x-omniroute-response-cost": "0"},
+    }
+
+
+def _served_executor(
+    repo: Path, model: str, content: str, *, served: str | None = None
+) -> PatchExecutor:
+    """An executor whose gateway answers with ``x-omniroute-model: served``."""
+    holder: list[PatchExecutor] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        holder[0].response_headers = {
+            "x-omniroute-model": served if served is not None else model_id.split("/", 1)[1]
+        }
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo, PatchExecutorConfig(model=model, base_url=GATEWAY), transport=transport
+    )
+    holder.append(executor)
+    return executor
+
+
+def test_run_autodev_builds_the_executor_from_the_selected_route(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev_run
+
+    decision = _two_candidate_decision()
+    selected = decision.selected_route.model
+    assert {item.candidate_id for item in decision.rejected} == {FREE_A, FREE_B} - {selected}
+    built: list[str] = []
+
+    def build(repo_root: Path, config: PatchExecutorConfig, **_: Any) -> PatchExecutor:
+        built.append(config.model)
+        return _served_executor(Path(repo_root), config.model, A_DIFF)
+
+    monkeypatch.setattr(autodev_run, "PatchExecutor", build)
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        execution_path_decision=decision,
+        store=ReceiptStore(tmp_path / "receipts.db"),
+        decomposer=_decomposer([PLAN[0]], model=selected),
+        mechanical=False,
+    )
+
+    outcome = report.to_dict()["outcomes"][0]
+    assert built == [selected]
+    assert outcome["model"] == report.to_dict()["tokens"]["executor_model"] == selected
+    assert outcome["served_model"] == selected.split("/", 1)[1]
+    assert outcome["verified"] is True
+
+
+def test_run_autodev_served_header_mismatch_fails_closed_by_name(
+    repo: Path, tmp_path: Path
+) -> None:
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(tmp_path / "receipts.db"),
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_served_executor(repo, "cheap/model", A_DIFF, served="other-model"),
+        mechanical=False,
+    )
+
+    outcome = report.outcomes[0]
+    assert outcome.verified is False
+    assert outcome.reason == (
+        "provider identity mismatch: selected 'cheap/model', served 'other-model'"
+    )
+
+
+def test_run_autodev_retry_runs_only_on_a_freshly_selected_route(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A route the first decision rejected may run only after a new decision selects it."""
+    store = ReceiptStore(tmp_path / "receipts.db")
+    built: list[str] = []
+
+    def retry_factory(route: Mapping[str, Any]) -> PatchExecutor:
+        built.append(str(route["model"]))
+        return _served_executor(repo, str(route["model"]), A_DIFF)
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_served_executor(repo, "cheap/model", "no diff"),
+        mechanical=False,
+        retry_routes=(_ad03_candidate("cheap/model"), _ad03_candidate(FREE_B)),
+        retry_executor_factory=retry_factory,
+    )
+
+    outcome = report.to_dict()["outcomes"][0]
+    retry = outcome["executor_retry"]
+    assert built == [FREE_B]
+    assert outcome["model"] == FREE_B and outcome["verified"] is True
+    assert outcome["served_model"] == FREE_B.split("/", 1)[1]
+    assert retry["failed_model"] == "cheap/model"
+    assert retry["retry_model"] == FREE_B
+    assert retry["execution_path_selected_route"]["model"] == FREE_B
+    assert retry["execution_path_decision_digest"]
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["executor_retry"]["execution_path_selected_route"]["model"] == FREE_B
 
 
 # BOD-406: the executor ladder keeps free or subscription candidates from two
@@ -1971,3 +2095,27 @@ def test_prepare_live_autodev_selected_drops_x_omniroute_cache_hit_header(
 
     assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
     assert [item["route_id"] for item in candidates] == [FREE_B]
+
+
+def test_retry_selection_accepts_subscription_candidates_from_live_selection(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-406 x BOD-396: the retry decision takes the selected candidate dicts as they are."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_bod406_verdicts())
+    )
+    _scripted_probe(monkeypatch, costs={"mistral/codestral-latest": "0.0000051000"})
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    decision, plan, _headers, candidates, _dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+    remaining = [c for c in candidates if c["route_id"] != decision.selected_route.model]
+
+    retry = autodev._select_retry_route(plan.units[0], remaining, "fix ruff errors")
+
+    assert [c["selection_reason"] for c in remaining]
+    assert retry.selected_route.model == remaining[0]["route_id"]
+    assert "capacity=subscription" in remaining[0]["selection_reason"]
