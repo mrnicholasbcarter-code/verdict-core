@@ -389,7 +389,7 @@ class PatchExecutor:
                     f"search/replace reply touches files outside the unit boundary: {list(outside)}"
                 )
             files = apply_search_replace_blocks(blocks, self.repo_root)
-            diff = build_full_file_diff(files, self.repo_root)
+            diff = build_exact_diff(files, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError, UnicodeDecodeError) as exc:
             return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
         attempt, _ = self._check_and_apply(unit, diff, parse_patch_paths(diff), usage, started)
@@ -738,6 +738,31 @@ def parse_full_file_reply(content: str) -> dict[str, str]:
     return files
 
 
+def build_exact_diff(files: Mapping[str, str], repo_root: str | Path) -> str:
+    """Build a git diff from complete new contents, byte for byte, no normalization.
+
+    Used for search/replace results: the in-memory text is already exact, so
+    no fence-newline guess and no truncation heuristic apply.
+    """
+    root = Path(repo_root)
+    sections: list[str] = []
+    for path, text in sorted(files.items()):
+        original = read_repository_text(root, path)
+        if text == original:
+            continue
+        old_lines = original.splitlines(keepends=True)
+        new_lines = text.splitlines(keepends=True)
+        hunks = list(difflib.unified_diff(old_lines, new_lines, f"a/{path}", f"b/{path}"))
+        sections.append(f"diff --git a/{path} b/{path}\n")
+        for line in hunks:
+            sections.append(
+                line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+            )
+    if not sections:
+        raise PatchExecutorError("search/replace reply changes nothing")
+    return "".join(sections)
+
+
 def build_full_file_diff(files: Mapping[str, str], repo_root: str | Path) -> str:
     """Build a git diff from complete new contents, keeping the original bytes.
 
@@ -747,8 +772,8 @@ def build_full_file_diff(files: Mapping[str, str], repo_root: str | Path) -> str
     truncated and refused by name.
     """
     root = Path(repo_root)
-    sections: list[str] = []
-    for path, body in sorted(files.items()):
+    normalized: dict[str, str] = {}
+    for path, body in files.items():
         original = read_repository_text(root, path)
         text = body.removesuffix("\n")
         if original.endswith("\n") and text:
@@ -761,17 +786,11 @@ def build_full_file_diff(files: Mapping[str, str], repo_root: str | Path) -> str
             raise PatchExecutorError(
                 f"truncated full-file reply for {path}: {len(new_lines)} of {len(old_lines)} lines"
             )
-        if text == original:
-            continue
-        hunks = list(difflib.unified_diff(old_lines, new_lines, f"a/{path}", f"b/{path}"))
-        sections.append(f"diff --git a/{path} b/{path}\n")
-        for line in hunks:
-            sections.append(
-                line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
-            )
-    if not sections:
-        raise PatchExecutorError("full-file reply changes nothing")
-    return "".join(sections)
+        normalized[path] = text
+    try:
+        return build_exact_diff(normalized, root)
+    except PatchExecutorError as exc:
+        raise PatchExecutorError("full-file reply changes nothing") from exc
 
 
 def _add_usage(first: TokenUsage, second: TokenUsage) -> TokenUsage:
@@ -1077,6 +1096,7 @@ __all__ = [
     "RouteObserver",
     "TokenUsage",
     "apply_search_replace_blocks",
+    "build_exact_diff",
     "build_full_file_diff",
     "build_full_file_repair_prompt",
     "build_repair_prompt",
