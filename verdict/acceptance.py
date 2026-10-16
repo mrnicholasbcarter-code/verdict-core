@@ -418,7 +418,15 @@ def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
     plan: list[tuple[str, Callable[[], Check]]] = [
         ("doctor", cli("doctor", ["doctor", "--json"], 600, judge_doctor)),
         ("eligibility", lambda: eligibility_check(gateway, api_key, seed=seed)),
-        ("choose", cli("choose", ["choose", "--role", "implement", "--json"], 180, judge_choose)),
+        (
+            "choose",
+            cli(
+                "choose",
+                ["choose", "--task-class", "implementation", "--requires", "tools,code", "--json"],
+                180,
+                judge_choose,
+            ),
+        ),
         ("route", cli("route", ["route", "--terse", ROUTE_TASK], 300, judge_route)),
         ("serve", lambda: serve_check(gateway)),
         (

@@ -179,6 +179,16 @@ def register(subparsers: Any) -> None:
         "status", help="Show the newest acceptance result; exit 1 when it is red or stale"
     )
     acceptance_status_p.add_argument("--json", action="store_true", help="Output JSON")
+    acceptance_install_p = acceptance_sub.add_parser(
+        "install-service",
+        help="Install the hourly verdict-acceptance user timer from this checkout",
+    )
+    acceptance_install_p.add_argument(
+        "--dry-run", action="store_true", help="Render the units; write nothing"
+    )
+    acceptance_install_p.add_argument(
+        "--uninstall", action="store_true", help="Disable and remove the units"
+    )
     uninst_p = subparsers.add_parser(
         "uninstall", help="Reversibly uninstall Verdict memory bridge hooks and MCP registrations"
     )

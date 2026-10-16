@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -536,6 +537,10 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             service_ids=getattr(args, "service_ids", None),
             output_json=getattr(args, "json", False),
         )
+    elif args.command == "acceptance" and args.acceptance_command == "install-service":
+        from verdict.acceptance_service import manage_service
+
+        print(json.dumps(manage_service(dry_run=args.dry_run, uninstall=args.uninstall), indent=2))
     elif args.command == "acceptance" and args.acceptance_command == "status":
         legacy.cmd_acceptance_status(output_json=args.json)
     elif args.command == "acceptance":

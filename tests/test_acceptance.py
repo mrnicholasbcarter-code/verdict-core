@@ -95,7 +95,16 @@ def _fake_cli(eligibility: dict[str, Any], *, choose_exit: int = 2):
         if name == "eligibility":
             return 0, json.dumps(eligibility), ""
         if name == "choose":
-            return choose_exit, "", "verdict choose: error: unrecognized arguments: --role"
+            # main's choose CLI: --task-class is required; there is no --role.
+            assert "--task-class" in args and "--role" not in args, args
+            return (
+                choose_exit,
+                "",
+                (
+                    "verdict choose requires --candidates-json until live catalog probing "
+                    "is in a later story"
+                ),
+            )
         if name == "route":
             return 0, json.dumps({"model": "p/a"}), ""
         return 0, json.dumps({"enabled": True, "provider": "verdict"}), ""
@@ -366,3 +375,54 @@ def test_recall_is_unmeasured_when_every_unlisted_sample_is_account_blocked() ->
     )
     assert quality["precision"] == 1.0
     assert quality["recall_estimate"] is None
+
+
+# -- the hourly systemd unit --------------------------------------------------
+
+
+def test_acceptance_unit_runs_from_the_installed_checkout_hourly(tmp_path: Path) -> None:
+    from verdict import acceptance_service
+
+    calls: list[list[str]] = []
+    report = acceptance_service.manage_service(unit_dir=tmp_path, dry_run=True, run=calls.append)
+    service = report["files"][acceptance_service.SERVICE]
+    timer = report["files"][acceptance_service.TIMER]
+    root = Path(acceptance_service.__file__).resolve().parent.parent
+    assert f"WorkingDirectory={root}\n" in service
+    assert "-m verdict acceptance run --notify dry-run\n" in service
+    assert f"SuccessExitStatus={acceptance.RED_EXIT}\n" in service
+    assert "OnCalendar=hourly\n" in timer and "Persistent=true\n" in timer
+    # Dry-run never writes or calls systemctl.
+    assert calls == [] and list(tmp_path.iterdir()) == []
+
+
+def test_acceptance_unit_install_writes_enables_and_uninstall_removes(tmp_path: Path) -> None:
+    from verdict import acceptance_service
+
+    calls: list[list[str]] = []
+    acceptance_service.manage_service(unit_dir=tmp_path, run=calls.append)
+    assert (tmp_path / acceptance_service.SERVICE).is_file()
+    assert ["systemctl", "--user", "enable", "--now", acceptance_service.TIMER] in calls
+    # A long oneshot is started without blocking the install.
+    assert ["systemctl", "--user", "start", "--no-block", acceptance_service.SERVICE] in calls
+    calls.clear()
+    acceptance_service.manage_service(unit_dir=tmp_path, uninstall=True, run=calls.append)
+    assert not (tmp_path / acceptance_service.SERVICE).exists()
+    assert calls[0][:4] == ["systemctl", "--user", "disable", "--now"]
+
+
+def test_install_service_cli_dry_run_renders_the_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from verdict import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_SKIP_SETUP", "1")
+    monkeypatch.setattr(sys, "argv", ["verdict", "acceptance", "install-service", "--dry-run"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["dry_run"] is True
+    assert "verdict-acceptance.service" in report["files"]
+    assert not (tmp_path / "systemd").exists()

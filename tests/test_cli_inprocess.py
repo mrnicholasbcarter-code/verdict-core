@@ -1174,6 +1174,7 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "verdict.acceptance_state.doctor_check", lambda **_: ({"state": "green"}, [], [])
     )
 
+
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
