@@ -469,11 +469,11 @@
   },
   {
     "qualified_name": "verdict.provider_bootstrap.GatewayProbeResult",
-    "reason": "UNTRIAGED: GatewayProbeResult has only non-production references; Deterministic provider/gateway bootstrap contract (verdict/provider_bootstrap.py)."
+    "reason": "DELETE candidate: BOD-316 review GatewayProbeResult in verdict/provider_bootstrap.py before removal; GatewayProbeResult has only non-production references (tests/test_provider_bootstrap.py:20,445,447,468,484,493,495,530,614,622). verdict/gateway_lifecycle.py:91 names it only in a docstring as an illustrative alternative probe-return shape; it is never imported or constructed there. The real production probe pipeline (verdict/gateway_lifecycle.py:338-356 _health/_probe_once, used from verdict/cli.py:765-770, verdict/doctor_diagnostics.py:246-251, verdict/api.py:701-751) was extended in BOD-270 with its own duck-typed GatewayHealth (responded/auth_failed) and does not call this class. docs/CONFIGURATION.md:131 still documents it as the gateway health mechanism and is stale; not fixed here."
   },
   {
     "qualified_name": "verdict.provider_bootstrap.verify_gateway_reachable",
-    "reason": "UNTRIAGED: verify_gateway_reachable has only non-production references; Deterministic provider/gateway bootstrap contract (verdict/provider_bootstrap.py)."
+    "reason": "DELETE candidate: BOD-316 review verify_gateway_reachable in verdict/provider_bootstrap.py before removal; verify_gateway_reachable has only non-production references (tests/test_provider_bootstrap.py:26,449,471,484,497,530,617,621). git grep across verdict/, scripts/, tests/ finds no import or call from any production module -- only this module's own definition/__all__ entry and the test suite. BOD-270's verdict/gateway_lifecycle.py replaced this BOD-269 health check with its own ensure_gateway_ready/inspect_gateway/require_gateway_ready pipeline, wired from verdict/cli.py:765-770, verdict/doctor_diagnostics.py:246-251, verdict/api.py:701-751. docs/CONFIGURATION.md:131 documents this as the only gateway health check and is stale; not fixed here."
   },
   {
     "qualified_name": "verdict.provider_receipts.build_provider_receipt",
