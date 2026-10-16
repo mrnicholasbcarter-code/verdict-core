@@ -420,7 +420,7 @@ CODEX_HOOK_EVENT_LEVELS: Mapping[str, HookLevel] = {
     "PostCompact": "unknown",
     "SubagentStart": "partial",
     "SubagentStop": "unknown",
-    "Stop": "partial",
+    "Stop": "supported",  # live: tests/fixtures/codex/v0_161_0/live_stop.json
     "SessionEnd": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
 }
 
@@ -536,7 +536,7 @@ def certify(
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.codex/config.toml → Verdict :8000",
         "Codex stdin hooks installed via memory_harness.codex.install_codex_hooks for all events",
-        "hook_events: SessionStart, UserPromptSubmit, SessionEnd live-observed (0.161.0); rest source-evidenced",
+        "hook_events: SessionStart, UserPromptSubmit, Stop, SessionEnd live-observed (0.161.0); rest source-evidenced",
     ]
     needs_owner = ("live enable with secrets (export token_env; Codex API key is NEEDS_OWNER)",)
     if not discovered.installed:
