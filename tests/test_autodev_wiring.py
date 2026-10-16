@@ -1582,7 +1582,10 @@ def test_run_autodev_retry_executor_receives_the_identical_pack_compiled_once(
         ),
     )
 
-    assert len(primary_sent) == 1 and len(retry_sent) == 1
+    # "no diff" is an unparseable patch-shape rejection, so the primary executor
+    # gets its one internal repair turn (also "no diff") before the unit is
+    # handed to the external retry ladder.
+    assert len(primary_sent) == 2 and len(retry_sent) == 1
     assert _sent_context(retry_sent[0]) == _sent_context(primary_sent[0])
     assert calls == ["drop the unused import in a.py"]
     payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
