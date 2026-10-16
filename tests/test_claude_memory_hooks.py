@@ -226,8 +226,8 @@ USER_SETTINGS = {
 }
 
 
-def test_hook_command_is_single_provisional_constant() -> None:
-    assert harness_claude.HOOK_COMMAND_TEMPLATE == "python -m verdict.harness_claude hook {event}"
+def test_hook_command_is_e0_module_entry_point() -> None:
+    assert harness_claude.HOOK_COMMAND_TEMPLATE == "python -m verdict.memory_harness.claude {event}"
 
 
 def test_installed_commands_use_stdin_entry_point_and_no_tmp(tmp_path: Path) -> None:
@@ -359,14 +359,106 @@ def test_hook_handler_replay_is_idempotent_and_sessions_stay_separate(tmp_path: 
     assert set(sessions.values()) == {"proj-a", "proj-b"}
 
 
-def test_hook_handler_never_fails_the_harness(
+@pytest.mark.parametrize(
+    ("event", "stdin_text"),
+    [
+        ("SessionStart", "not json"),
+        ("SessionStart", "[]"),
+        ("Notification", json.dumps({"hook_event_name": "Notification"})),
+    ],
+)
+def test_hook_handler_rejects_malformed_or_unknown_input_nonblocking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], event: str, stdin_text: str
+) -> None:
+    rc = harness_claude.run_hook(event, stdin_text, outbox_dir=tmp_path)
+    assert rc == harness_claude.HOOK_EXIT_ERROR == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("verdict claude hook: ")
+    assert not (tmp_path / harness_claude.OUTBOX_FILENAME).exists()
+
+
+def test_hook_handler_event_mismatch_is_nonzero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     payload = _fixture_for("proj-b", "SessionStart")
-    assert harness_claude.run_hook("SessionStart", "not json", outbox_dir=tmp_path) == 0
-    assert harness_claude.run_hook("SessionEnd", json.dumps(payload), outbox_dir=tmp_path) == 0
+    rc = harness_claude.run_hook("SessionEnd", json.dumps(payload), outbox_dir=tmp_path)
+    assert rc == harness_claude.HOOK_EXIT_ERROR
+    assert "mismatch" in capsys.readouterr().err
     assert not (tmp_path / harness_claude.OUTBOX_FILENAME).exists()
-    assert capsys.readouterr().out == ""
+
+
+def test_hook_handler_unwritable_outbox_is_explicit_and_keeps_existing_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outbox_dir = tmp_path / "outbox"
+    first = _fixture_for("proj-a", "SessionStart")
+    rc = harness_claude.run_hook(
+        "SessionStart", json.dumps(first), outbox_dir=outbox_dir, claude_version=CLAUDE_VERSION
+    )
+    assert rc == 0
+    outbox = outbox_dir / harness_claude.OUTBOX_FILENAME
+    before = outbox.read_bytes()
+    outbox.chmod(0o444)
+    try:
+        second = _fixture_for("proj-b", "SessionStart")
+        rc = harness_claude.run_hook(
+            "SessionStart", json.dumps(second), outbox_dir=outbox_dir, claude_version=CLAUDE_VERSION
+        )
+    finally:
+        outbox.chmod(0o644)
+    assert rc == harness_claude.HOOK_EXIT_ERROR
+    assert "outbox unwritable" in capsys.readouterr().err
+    assert outbox.read_bytes() == before
+
+
+def test_hook_exit_codes_never_use_blocking_code() -> None:
+    # Claude Code treats exit 2 as a blocking error on several events.
+    assert harness_claude.HOOK_EXIT_OK == 0
+    assert harness_claude.HOOK_EXIT_ERROR not in (0, 2)
+
+
+def test_module_main_runs_hook_via_subprocess(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    payload = _fixture_for("proj-a", "SessionStart")
+    env = {**os.environ, harness_claude.OUTBOX_DIR_ENV: str(tmp_path / "ob")}
+    ok = subprocess.run(
+        [sys.executable, "-m", "verdict.memory_harness.claude", "SessionStart"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert (ok.returncode, ok.stdout) == (0, ""), ok.stderr
+    record = json.loads((tmp_path / "ob" / harness_claude.OUTBOX_FILENAME).read_text("utf-8"))
+    assert record["identity"]["session_id"] == payload["session_id"]
+    bad = subprocess.run(
+        [sys.executable, "-m", "verdict.memory_harness.claude"],
+        input="",
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert bad.returncode == harness_claude.HOOK_EXIT_ERROR
+    assert "usage" in bad.stderr
+
+
+def test_install_migrates_provisional_harness_claude_hook_entries(tmp_path: Path) -> None:
+    from verdict.memory_harness.claude import install_claude_hooks
+
+    settings = tmp_path / "settings.json"
+    old = "python -m verdict.harness_claude hook Stop"
+    hooks = {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": old}]}]}
+    settings.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+    install_claude_hooks(settings, tmp_path / "unused.db")
+    commands = _all_commands(json.loads(settings.read_text(encoding="utf-8")))
+    assert old not in commands
+    assert "python -m verdict.memory_harness.claude Stop" in commands
 
 
 def test_hook_main_reads_stdin_and_env_outbox(
@@ -375,7 +467,7 @@ def test_hook_main_reads_stdin_and_env_outbox(
     payload = _fixture_for("proj-a", "SessionStart")
     monkeypatch.setenv(harness_claude.OUTBOX_DIR_ENV, str(tmp_path / "ob"))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
-    assert harness_claude.main(["hook", "SessionStart"]) == 0
+    assert harness_claude.main(["SessionStart"]) == 0
     record = json.loads((tmp_path / "ob" / harness_claude.OUTBOX_FILENAME).read_text("utf-8"))
     assert record["identity"]["session_id"] == payload["session_id"]
     assert capsys.readouterr().out == ""
