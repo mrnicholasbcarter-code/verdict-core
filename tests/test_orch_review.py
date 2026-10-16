@@ -23,7 +23,12 @@ from verdict.orchestration.contracts import (
     RouteVerdict,
     TaskRequirements,
 )
-from verdict.orchestration.review import OcrRun, OpenCodeReviewer, StaticDiffGate
+from verdict.orchestration.review import (
+    OcrRun,
+    OpenCodeReviewer,
+    StaticDiffGate,
+    _changed_ordinary_test_paths,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ocr"
 
@@ -120,6 +125,12 @@ class FakeRunner:
 def _reviewer(
     tmp_path: Path, selector: FakeSelector, runner: FakeRunner, **kwargs: object
 ) -> OpenCodeReviewer:
+    if "differ" not in kwargs:
+
+        def _empty_differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
+            return []
+
+        kwargs["differ"] = _empty_differ
     return OpenCodeReviewer(
         selector,
         api_key_env="TEST_OCR_KEY",
@@ -349,42 +360,89 @@ def test_review_argv_shape(tmp_path: Path, monkeypatch) -> None:
     assert ".ocr-home-" in review_call["env"]["HOME"]  # type: ignore[operator,index]
 
 
-def test_review_argv_includes_ocr_rule_to_cover_default_path_tests(
+def test_review_argv_includes_exact_changed_tests_not_protected_paths(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """OCR default_path drops test files unless --rule include lists them.
+    """OCR --rule include must list exact ordinary changed tests only.
 
-    The rule must be additive (include test globs only; no exclude key) so
-    production non-Python sources and custom/security excludes stay intact.
+    Broad recursive test globs re-admit fixtures/testdata/generated that OCR
+    keeps out via default_path. Include stays additive with no exclude key so
+    custom/security excludes still merge.
     """
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    changed = [
+        "calc.py",
+        "test_calc.py",
+        "main.go",
+        "main_test.go",
+        "util.ts",
+        "src/util.test.ts",
+        "fixtures/test_fixture.py",
+        "testdata/test_fixture.py",
+        "generated/test_generated.py",
+        "__tests__/fixtures/secret.test.ts",
+        ".env",
+    ]
+
+    def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
+        return changed
+
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json"))
-    reviewer = _reviewer(tmp_path, FakeSelector(_verdict("cx/gpt-5.5-low")), runner)
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict("cx/gpt-5.5-low")), runner, differ=differ)
     _run(reviewer)
     review_call = next(c for c in runner.calls if "review" in c["argv"])  # type: ignore[operator]
     argv = list(review_call["argv"])
     assert "--rule" in argv
     rule_path = Path(argv[argv.index("--rule") + 1])
-    # Rule file lives under the review out_dir (ephemeral run artifact), not ~/.opencodereview.
     assert (
         rule_path.resolve()
-        == (tmp_path / "out" / "verdict-ocr-default-path-test-include.json").resolve()
+        == (tmp_path / "out" / "verdict-ocr-changed-test-include.json").resolve()
     )
     assert rule_path.is_file()
     rule = json.loads(rule_path.read_text(encoding="utf-8"))
     assert "exclude" not in rule
     include = rule.get("include")
     assert isinstance(include, list)
-    # Changed Python tests (the main-replay false-positive case).
-    assert "**/test_*.py" in include
-    assert "**/*_test.py" in include
-    # Non-Python default_path tests must also be includable (no language narrowing).
-    assert "**/*_test.go" in include
-    assert any("*.test." in str(p) or "**/*.test." in str(p) for p in include)
-    # Must not be a Python-only replace-all whitelist.
-    assert "**/*.py" not in include or include != ["**/*.py"]
-    # Secret never lands in the rule file.
+    assert include == ["test_calc.py", "main_test.go", "src/util.test.ts"]
+    assert "calc.py" not in include
+    assert "main.go" not in include
+    assert "util.ts" not in include
+    assert "fixtures/test_fixture.py" not in include
+    assert "testdata/test_fixture.py" not in include
+    assert "generated/test_generated.py" not in include
+    assert "__tests__/fixtures/secret.test.ts" not in include
+    assert ".env" not in include
+    assert not any("*" in path for path in include)
     assert "sk-secret-value" not in rule_path.read_text(encoding="utf-8")
+
+
+def test_changed_ordinary_test_paths_helper_filters_protected_dirs() -> None:
+    changed = [
+        "tests/test_normal.py",
+        "pkg/foo_test.go",
+        "web/app.spec.tsx",
+        "fixtures/test_fixture.py",
+        "testdata/test_fixture.py",
+        "generated/test_generated.py",
+        "__tests__/fixtures/secret.test.ts",
+        "__tests__/normal.test.ts",
+        "src/test/java/FooTest.java",
+        "calc.py",
+    ]
+
+    def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
+        return changed
+
+    selected = _changed_ordinary_test_paths(
+        repo=Path("/r"), base_ref="a", head_ref="b", differ=differ
+    )
+    assert selected == [
+        "tests/test_normal.py",
+        "pkg/foo_test.go",
+        "web/app.spec.tsx",
+        "__tests__/normal.test.ts",
+        "src/test/java/FooTest.java",
+    ]
 
 
 # --------------------------------------------------------------------------- #

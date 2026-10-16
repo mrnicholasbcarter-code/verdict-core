@@ -296,63 +296,119 @@ async def _run_runner_bounded(
 _subprocess_runner = make_subprocess_runner()
 
 
-# OCR v1.12.9 default_path filter drops these test globs unless a --rule
-# `include` list explicitly names them. Include is additive (preview-proven):
-# listing test patterns unblocks tests without replacing the production file
-# set or wiping custom/security excludes. Omit `exclude` so rule excludes merge
-# with OCR defaults rather than replacing them.
-_OCR_DEFAULT_PATH_TEST_INCLUDES: tuple[str, ...] = (
-    "**/test_*.py",
-    "**/*_test.py",
-    "**/test/**/*_test.py",
-    "**/tests/**/*_test.py",
-    "**/*_test.go",
-    "**/*_test.rs",
-    "**/*_test.zig",
-    "**/*Test.java",
-    "**/*Tests.java",
-    "**/*Test.swift",
-    "**/*Tests.swift",
-    "**/Tests/**/*.swift",
-    "**/*.test.{js,jsx,ts,tsx}",
-    "**/*.spec.{js,jsx,ts,tsx}",
-    "**/__tests__/**",
-    "**/*_spec.rb",
-    "**/spec/**/*_spec.rb",
-    "**/*Spec.hs",
-    "**/*Spec.lhs",
-    "**/tests/**/*.nim",
-    "**/tests/**/*.R",
-    "**/tests/**/*.elm",
-    "**/test/**/*.jl",
-    "**/test/**/*.hs",
-    "**/test/**/*.lhs",
-    "**/test/**/*.zig",
-    "**/test/**/*.ml",
-    "**/test/**/*.sol",
-    "**/tests/**/*.sol",
-    "**/test/**/*.vy",
-    "**/tests/**/*.vy",
-    "**/*.test.ets",
-    "**/*Test.fs",
-    "**/src/test/java/**/*.java",
-    "**/src/test/**/*.{kt,kts}",
+# OCR v1.12.9 ``default_path`` drops ordinary test files unless ``--rule``
+# ``include`` names them. Broad recursive test globs also re-admit
+# fixture/testdata/generated paths that OCR otherwise keeps out, so production
+# must include only the *exact* changed paths that look like ordinary tests and
+# are not under those protected directories. Include stays additive; omit
+# ``exclude`` so custom/security excludes still merge with OCR defaults.
+_OCR_PROTECTED_PATH_PARTS: frozenset[str] = frozenset(
+    {"fixtures", "testdata", "generated", "__fixtures__"}
+)
+
+# Basename / path heuristics mirroring OCR's ordinary test default_path set,
+# without duplicating OCR's full policy list as recursive globs.
+_OCR_ORDINARY_TEST_BASENAME_SUFFIXES: tuple[str, ...] = (
+    "_test.py",
+    "_test.go",
+    "_test.rs",
+    "_test.zig",
+    "Test.java",
+    "Tests.java",
+    "Test.swift",
+    "Tests.swift",
+    "_spec.rb",
+    "Spec.hs",
+    "Spec.lhs",
+    "Test.fs",
+)
+
+_OCR_ORDINARY_TEST_DOT_SUFFIXES: tuple[str, ...] = (
+    ".test.js",
+    ".test.jsx",
+    ".test.ts",
+    ".test.tsx",
+    ".spec.js",
+    ".spec.jsx",
+    ".spec.ts",
+    ".spec.tsx",
+    ".test.ets",
 )
 
 
-def _write_ocr_default_path_test_include_rule(directory: Path) -> Path:
-    """Write an ephemeral OCR --rule that includes default_path test globs.
+def _posix_path_parts(path: str) -> tuple[str, ...]:
+    return tuple(part for part in path.replace("\\", "/").split("/") if part and part != ".")
 
-    The file must live under the review out_dir / isolated OCR HOME so it is
-    deleted with that home and never touches ``~/.opencodereview``.
+
+def _is_ocr_protected_path(path: str) -> bool:
+    """True when a changed path sits under OCR-protected fixture/testdata/generated dirs."""
+    parts = {part.lower() for part in _posix_path_parts(path)}
+    return bool(parts & {p.lower() for p in _OCR_PROTECTED_PATH_PARTS})
+
+
+def _looks_like_ordinary_ocr_test_path(path: str) -> bool:
+    """Heuristic for ordinary tests OCR would drop via default_path.
+
+    Intentionally narrower than OCR's full default_path list: only common
+    test naming that we need to re-include for changed files. Protected
+    directories are rejected separately.
+    """
+    if _is_ocr_protected_path(path):
+        return False
+    norm = path.replace("\\", "/").strip().rstrip("/")
+    name = norm.rsplit("/", 1)[-1]
+    # Directory-only / empty basename entries are not include targets.
+    if not name or "." not in name:
+        return False
+    if name.startswith("test_") and name.endswith(".py"):
+        return True
+    if any(name.endswith(suffix) for suffix in _OCR_ORDINARY_TEST_BASENAME_SUFFIXES):
+        return True
+    if any(name.endswith(suffix) for suffix in _OCR_ORDINARY_TEST_DOT_SUFFIXES):
+        return True
+    parts = _posix_path_parts(norm)
+    lower_parts = {p.lower() for p in parts}
+    # ``__tests__/`` trees are ordinary JS/TS tests unless under fixtures/…
+    if "__tests__" in lower_parts:
+        return True
+    # ``src/test/java`` / ``src/test`` Kotlin layouts
+    return bool(
+        "src" in lower_parts and "test" in lower_parts and name.endswith((".java", ".kt", ".kts"))
+    )
+
+
+def _changed_ordinary_test_paths(
+    *, repo: Path, base_ref: str, head_ref: str, differ: DiffLister
+) -> list[str]:
+    """Exact changed paths that should be OCR ``include`` entries."""
+    selected: list[str] = []
+    seen: set[str] = set()
+    try:
+        changed = differ(repo=repo, base_ref=base_ref, head_ref=head_ref)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # Keep review running; empty include preserves OCR default_path behavior.
+        return []
+    for raw in changed:
+        path = raw.replace("\\", "/").strip()
+        if not path or path in seen:
+            continue
+        if _looks_like_ordinary_ocr_test_path(path):
+            selected.append(path)
+            seen.add(path)
+    return selected
+
+
+def _write_ocr_changed_test_include_rule(directory: Path, include_paths: Sequence[str]) -> Path:
+    """Write an ephemeral OCR ``--rule`` with exact changed-test includes.
+
+    Lives under the review ``out_dir`` (same lifecycle as ``ocr-raw.json``) and
+    never touches ``~/.opencodereview``. No ``exclude`` key: OCR merges custom
+    excludes itself; we only add the needed includes.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "verdict-ocr-default-path-test-include.json"
-    path.write_text(
-        json.dumps({"include": list(_OCR_DEFAULT_PATH_TEST_INCLUDES)}, indent=2, sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-    )
+    path = directory / "verdict-ocr-changed-test-include.json"
+    payload: dict[str, object] = {"include": list(include_paths)}
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
@@ -376,6 +432,7 @@ class OpenCodeReviewer:
         out_dir: Path,
         runner: OcrRunner | None = None,
         idle_timeout_seconds: float | None = 300,
+        differ: DiffLister | None = None,
     ) -> None:
         self._selector = selector
         self._ocr_bin = ocr_bin
@@ -388,6 +445,7 @@ class OpenCodeReviewer:
         self._out_dir = Path(out_dir)
         self._idle_timeout_seconds = idle_timeout_seconds
         self._runner: OcrRunner = runner or make_subprocess_runner(idle_timeout_seconds)
+        self._differ: DiffLister = differ or _git_diff_names
 
     async def review(
         self,
@@ -593,9 +651,12 @@ class OpenCodeReviewer:
         try:
             self._write_isolated_config(home_dir, api_key)
             # Ephemeral --rule under review out_dir (same lifecycle as ocr-raw;
-            # isolated HOME is still used for OCR config and is deleted after).
-            # Additive include of OCR default_path test globs; no exclude key.
-            rule_path = _write_ocr_default_path_test_include_rule(self._out_dir)
+            # isolated HOME still holds OCR config and is deleted after).
+            # Include exact changed ordinary tests only; no exclude key.
+            include_paths = _changed_ordinary_test_paths(
+                repo=repo, base_ref=base_ref, head_ref=head_ref, differ=self._differ
+            )
+            rule_path = _write_ocr_changed_test_include_rule(self._out_dir, include_paths)
             argv = [
                 self._ocr_bin,
                 "review",
