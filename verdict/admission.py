@@ -778,6 +778,28 @@ def _connection_is_rate_limited(
     return False
 
 
+RATE_LIMIT_COOLDOWN_CATEGORIES = frozenset({"rate_limited", "rate_limit", "quota_exhausted"})
+
+
+def live_quota_refutes_rate_limit(
+    connection: Mapping[str, Any], *, route_id: str, observed_at: Any, now: datetime
+) -> bool:
+    """The gateway tested this viable connection after the cooldown and measures quota left."""
+    from verdict.orchestration.eligibility import quota_remaining
+
+    cooled_at = observed_at if isinstance(observed_at, datetime) else _parse_iso(observed_at)
+    tested_at = _parse_iso(connection.get("lastTested"))
+    remaining = quota_remaining(connection, route_id)
+    return (
+        cooled_at is not None
+        and tested_at is not None
+        and cooled_at < tested_at <= now
+        and remaining is not None
+        and remaining > 0
+        and _connection_is_viable(connection, route_id=route_id, now=now)
+    )
+
+
 def _connection_is_viable(connection: Mapping[str, Any], *, route_id: str, now: datetime) -> bool:
     """Positive viability for a connection that could serve ``route_id``.
 
@@ -957,6 +979,22 @@ def _judge(
             or (not active_workspaces and len(active) == 1)
         )
         and (not markers or not o.pool_id or o.pool_id in markers or o.pool_id in route_id)
+    )
+    # BOD-407: a locally persisted provider rate-limit cooldown is refuted by
+    # newer live evidence: the gateway tested an active, viable connection for
+    # this provider after the cooldown was recorded and measures quota left.
+    # Gateway-sourced cooldowns, auth/permission/payment blockers, untimed
+    # cooldowns and unmeasured quota still block.
+    provider_obs = tuple(
+        o
+        for o in provider_obs
+        if o in gateway_obs
+        or o.state not in {"cooldown", "exhausted"}
+        or o.category not in RATE_LIMIT_COOLDOWN_CATEGORIES
+        or not any(
+            live_quota_refutes_rate_limit(c, route_id=route_id, observed_at=o.observed_at, now=now)
+            for c in active
+        )
     )
     # Sibling-account suppression. An account-agnostic route may be served by
     # any active account, so one exhausted or cooled-down account must not sink

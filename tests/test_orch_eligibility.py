@@ -934,3 +934,43 @@ def test_concurrent_state_writes_keep_every_update(
     for state in (ladder._state, on_disk):
         assert {f"route:{r}" for r in expected} <= set(state["cooldowns"])
         assert expected <= set(state["health"])
+
+
+def test_bod407_ladder_stale_cache_rate_limit_yields_to_live_quota(tmp_path: Path) -> None:
+    """BOD-407: the ladder reads the same stale provider:kiro cache cooldown."""
+    from verdict.orchestration.health_cache import HealthCache, ScopedCooldown
+
+    cache = HealthCache(tmp_path / "health-cache.json")
+    cache.record_cooldown(
+        ScopedCooldown(
+            key="provider:kiro",
+            category="rate_limited",
+            checked_at=NOW - timedelta(days=4),
+            until=NOW + timedelta(days=15),
+            provider_id="kiro",
+        )
+    )
+    rows = [row("kiro/claude-haiku-4.5", owned_by="kiro")]
+    tested = (NOW - timedelta(minutes=10)).isoformat()
+    live = {**conn("kiro"), "quota_percent": 38.1, "lastTested": tested}
+    ladder, _ = make_ladder(tmp_path, rows, [live], health_cache=cache)
+    verdicts = by_route(ladder.evaluate(REQ, now=NOW))
+    assert verdicts["kiro/claude-haiku-4.5"].reason != "cooldown:provider"
+    # A cooldown recorded after the gateway's last test still blocks.
+    fresh = HealthCache(tmp_path / "fresh-cache.json")
+    fresh.record_cooldown(
+        ScopedCooldown(
+            key="provider:kiro",
+            category="rate_limited",
+            checked_at=NOW - timedelta(minutes=1),
+            until=NOW + timedelta(minutes=5),
+            provider_id="kiro",
+        )
+    )
+    ladder, _ = make_ladder(tmp_path, rows, [live], health_cache=fresh)
+    verdicts = by_route(ladder.evaluate(REQ, now=NOW))
+    assert verdicts["kiro/claude-haiku-4.5"].reason == "cooldown:provider"
+    # Unmeasured quota: the cooldown still blocks.
+    ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")], health_cache=cache)
+    verdicts = by_route(ladder.evaluate(REQ, now=NOW))
+    assert verdicts["kiro/claude-haiku-4.5"].reason == "cooldown:provider"

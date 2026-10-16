@@ -371,3 +371,67 @@ def test_prefix_scope_matches_on_family_boundary() -> None:
         assert scoped.first_failure("krypton/b").first_failed_stage is AdmissionStage.WORKER_SCOPE
     # A prefix that already names a path narrows within the family.
     assert admitted.restrict_prefixes(["kr/a"]).ids == frozenset({"kr/a"})
+
+
+def test_bod407_stale_local_rate_limit_cooldown_yields_to_live_quota() -> None:
+    """BOD-407: a local provider 429 cooldown is false once the live gateway
+    measures remaining quota on a viable connection for that provider."""
+    stale = RuntimeObservation(
+        "provider:kiro",
+        "cooldown",
+        "rate_limited",
+        "at_rest_health_cache:health-cache.json",
+        (NOW - timedelta(days=4)).isoformat(),
+        (NOW + timedelta(days=15)).isoformat(),
+    )
+    runtime = RuntimeEvidence((stale,), ("at_rest_health_cache:health-cache.json",))
+    tested = (NOW - timedelta(minutes=10)).isoformat()
+    live = conn("kiro", status="active", quota_percent=38.1, lastTested=tested)
+    admitted = admit([row("kiro/claude-haiku-4.5")], [live], runtime, now=NOW)
+    assert "kiro/claude-haiku-4.5" in admitted
+    # Without measured live quota the local cooldown still blocks (no admit on absence).
+    blocked = admit([row("kiro/claude-haiku-4.5")], [conn("kiro")], runtime, now=NOW)
+    assert "kiro/claude-haiku-4.5" not in blocked
+    # A live gateway rate limit keeps it blocked even with quota left.
+    limited = conn(
+        "kiro",
+        quota_percent=38.1,
+        lastTested=tested,
+        rateLimitedUntil=(NOW + timedelta(hours=1)).isoformat(),
+    )
+    assert "kiro/claude-haiku-4.5" not in admit(
+        [row("kiro/claude-haiku-4.5")], [limited], runtime, now=NOW
+    )
+    # A cooldown newer than the gateway's last test still blocks.
+    fresh = dataclasses.replace(stale, observed_at=(NOW - timedelta(minutes=1)).isoformat())
+    assert "kiro/claude-haiku-4.5" not in admit(
+        [row("kiro/claude-haiku-4.5")], [live], RuntimeEvidence((fresh,), ("x",)), now=NOW
+    )
+    # Auth/permission cooldowns are never cleared by quota.
+    auth = dataclasses.replace(stale, category="permission")
+    assert "kiro/claude-haiku-4.5" not in admit(
+        [row("kiro/claude-haiku-4.5")], [live], RuntimeEvidence((auth,), ("x",)), now=NOW
+    )
+
+
+def test_bod407_updated_at_is_not_a_post_cooldown_test() -> None:
+    """BOD-407 review F1: updatedAt is a periodic refresh, not a test. Only a
+    lastTested newer than the cooldown refutes it."""
+    stale = RuntimeObservation(
+        "provider:kiro",
+        "cooldown",
+        "rate_limited",
+        "at_rest_health_cache:health-cache.json",
+        (NOW - timedelta(days=4)).isoformat(),
+        (NOW + timedelta(days=15)).isoformat(),
+    )
+    runtime = RuntimeEvidence((stale,), ("at_rest_health_cache:health-cache.json",))
+    refreshed = (NOW - timedelta(minutes=10)).isoformat()
+    for extra in (
+        {"updatedAt": refreshed},
+        {"updatedAt": refreshed, "lastTested": (NOW - timedelta(days=5)).isoformat()},
+        {"updatedAt": refreshed, "lastTested": "not-a-time"},
+    ):
+        live = conn("kiro", status="active", quota_percent=38.1, **extra)
+        admitted = admit([row("kiro/claude-haiku-4.5")], [live], runtime, now=NOW)
+        assert "kiro/claude-haiku-4.5" not in admitted, extra
