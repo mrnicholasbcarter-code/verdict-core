@@ -47,5 +47,7 @@
   "assert_substring": [
     "\"created_at\":1700000000.0",
     "\"n\":1.0"
-  ]
+  ],
+  "idempotency_key": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+  "content_fingerprint": "32cbe6e9ff3f09f59140d86e61d094094d7b9094e87150f14e605ba678cf61b0"
 }

@@ -29,5 +29,7 @@
   },
   "digest": "f720b33dc60f73e4fb92853825a08c5a5f795d1d22e3c2060ea6d8bbcff67448",
   "canonical_json": "{\"classification\":\"source\",\"content\":\"ok — 验证通过 ✓\",\"content_hash\":\"83b16d17a6b8dd02a36750c55743255b423774a8519d40791ea652f64bd36106\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"f720b33dc60f73e4fb92853825a08c5a5f795d1d22e3c2060ea6d8bbcff67448\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"verification_result\",\"memory_kind\":\"memory\",\"metadata\":{},\"observed_at\":null,\"payload\":{},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
-  "note": "Readers must accept omitted optional null/empty fields; digests use full normalized object."
+  "note": "Readers must accept omitted optional null/empty fields; digests use full normalized object.",
+  "idempotency_key": "f720b33dc60f73e4fb92853825a08c5a5f795d1d22e3c2060ea6d8bbcff67448",
+  "content_fingerprint": "fa5276457a1ee8b9175e99500ffc6c1646cfdb4053ee7820f3c25310eb88edfc"
 }

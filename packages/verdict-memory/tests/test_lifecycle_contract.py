@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from verdict_memory import (
+    source_idempotency_key,
     ALLOWED_EVENT_KINDS,
     CANONICAL_EVENT_KINDS,
     CONTRACT_API_VERSION,
@@ -104,19 +105,38 @@ def test_event_roundtrip_and_digest_excludes_observed_at():
     assert second.to_dict() == first.to_dict()
     twin = _event(metadata={"a": 1, "b": 2}, observed_at=9_999.0)
     assert twin.digest() == first.digest()
-    assert twin.idempotency_key == first.digest()
+    assert twin.idempotency_key == first.idempotency_key
+    assert twin.idempotency_key == source_idempotency_key(
+        schema_version=first.schema_version,
+        protocol_version=first.protocol_version,
+        source_harness=first.identity.source_harness,
+        project=first.identity.project,
+        workspace=first.identity.workspace,
+        tenant=first.identity.tenant,
+        source_event_id=str(first.identity.source_event_id),
+    )
 
 
 def test_stable_source_event_id_across_replay_timestamps():
-    a = _event(observed_at=1.0, identity=EventIdentity(
-        source_harness="verdict", project="verdict", session_id="s",
-        source_event_id="stable-1",
-    ))
-    b = _event(observed_at=99.0, identity=EventIdentity(
-        source_harness="verdict", project="verdict", session_id="s",
-        source_event_id="stable-1",
-    ))
-    assert a.digest() == b.digest()
+    a = _event(
+        created_at=1_700_000_000.0,
+        observed_at=1.0,
+        identity=EventIdentity(
+            source_harness="verdict", project="verdict", session_id="s",
+            source_event_id="stable-1",
+        ),
+    )
+    b = _event(
+        created_at=9_999.0,
+        observed_at=99.0,
+        identity=EventIdentity(
+            source_harness="verdict", project="verdict", session_id="s",
+            source_event_id="stable-1",
+        ),
+    )
+    # Enqueue identity stable across created_at rewrite; content fingerprint differs
+    assert a.idempotency_key == b.idempotency_key
+    assert a.digest() != b.digest()
 
 
 def test_canonical_golden_vectors():

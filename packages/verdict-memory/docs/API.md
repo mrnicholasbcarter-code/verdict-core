@@ -79,3 +79,15 @@ Do **not** revive `AiMemoryExperimentalProvider` (D27/#893).
 - Path/wheel dep on `packages/verdict-memory` (E owns root dependency line).
 - Adapt Verdict `MemoryRecord` → `LifecycleEvent` at consumer boundary (no `verdict.*` imports in package).
 - Report actual adapter needs against this experimental manifest; do not invent 1.0 support claims.
+
+
+## source_event_id / idempotency (updated)
+- When `identity.source_event_id` is set, `idempotency_key = source_idempotency_key(...)`
+  namespaced by `(schema, protocol, source_harness, project, workspace, tenant, source_event_id)`.
+  **Excludes** `created_at`, `observed_at`, content, and adapter clocks.
+- `event.digest()` remains the **content fingerprint** (includes `created_at` + content_hash; excludes observation clocks).
+- Outbox: same key + same content fingerprint → return existing row (**original `created_at` preserved**).
+  Same key + different content fingerprint → `IdempotencyConflictError` (no silent second memory, no silent replace).
+- Without `source_event_id`, enqueue key falls back to content digest (created_at is part of that fingerprint).
+- Receipt/injection observation time must not be used as source creation time.
+- Rust numeric/Unicode vector parity is **unmeasured** until D reports; Python vectors are fixtures only.

@@ -217,6 +217,54 @@ def event_digest(payload: Mapping[str, Any]) -> str:
     return digest_bytes(canonicalize(payload).encode("utf-8"))
 
 
+class IdempotencyConflictError(ValueError):
+    """Same source_event_id with a conflicting logical payload.
+
+    Replay with the same content is idempotent. A different content_hash /
+    kind / scope for the same source identity is an explicit conflict — never
+    a second silent memory.
+    """
+
+    def __init__(self, source_event_id: str, existing_digest: str, new_digest: str):
+        self.source_event_id = source_event_id
+        self.existing_digest = existing_digest
+        self.new_digest = new_digest
+        super().__init__(
+            f"idempotency conflict for source_event_id={source_event_id!r}: "
+            f"existing={existing_digest[:16]}… new={new_digest[:16]}…"
+        )
+
+
+def source_idempotency_key(
+    *,
+    schema_version: str,
+    protocol_version: str,
+    source_harness: str,
+    project: str,
+    workspace: str,
+    tenant: str,
+    source_event_id: str,
+) -> str:
+    """Stable enqueue key when harness supplies source_event_id.
+
+    Excludes created_at, observed_at, content, and adapter clocks so replay
+    with a rewritten timestamp does not fork the key.
+    """
+    if not source_event_id.strip():
+        raise ValueError("source_event_id is required for source_idempotency_key")
+    return event_digest(
+        {
+            "schema_version": schema_version,
+            "protocol_version": protocol_version,
+            "source_harness": source_harness,
+            "project": project,
+            "workspace": workspace,
+            "tenant": tenant,
+            "source_event_id": source_event_id,
+        }
+    )
+
+
 @dataclass(frozen=True)
 class EventIdentity:
     """Harness-provided provenance. Auth/project authority comes from client config.
@@ -298,7 +346,22 @@ class LifecycleEvent:
         object.__setattr__(self, "metadata", dict(self.metadata))
         object.__setattr__(self, "derived_from", tuple(self.derived_from))
         if not self.idempotency_key:
-            object.__setattr__(self, "idempotency_key", self.digest())
+            # Prefer harness source_event_id so replay with a rewritten created_at
+            # does not fork the enqueue key. Content conflicts are detected separately.
+            sid = self.identity.source_event_id
+            if sid and str(sid).strip():
+                key = source_idempotency_key(
+                    schema_version=self.schema_version,
+                    protocol_version=self.protocol_version,
+                    source_harness=self.identity.source_harness,
+                    project=self.identity.project,
+                    workspace=self.identity.workspace,
+                    tenant=self.identity.tenant,
+                    source_event_id=str(sid),
+                )
+            else:
+                key = self.digest()
+            object.__setattr__(self, "idempotency_key", key)
 
     def _digest_payload(self) -> dict[str, Any]:
         """Stable logical identity — excludes observation clock and deadline."""
@@ -323,6 +386,20 @@ class LifecycleEvent:
 
     def digest(self) -> str:
         return event_digest(self._digest_payload())
+
+    def content_fingerprint(self) -> str:
+        """Logical payload fingerprint for conflict detection.
+
+        When ``source_event_id`` is set, excludes ``created_at`` so a replay that
+        rewrites observation/receipt clocks (or mistakenly rewrites created_at)
+        does not false-conflict. Content, kind, scope, and identity still bind.
+        Without ``source_event_id``, equals ``digest()`` (created_at included).
+        """
+        payload = self._digest_payload()
+        if self.identity.source_event_id and str(self.identity.source_event_id).strip():
+            payload = dict(payload)
+            payload.pop("created_at", None)
+        return event_digest(payload)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -498,6 +575,8 @@ class MemoryProviderError(RuntimeError):
 
 __all__ = [
     "CANONICAL_EVENT_KINDS",
+    "IdempotencyConflictError",
+    "source_idempotency_key",
     "ALLOWED_EVENT_KINDS",
     "LIFECYCLE_EVENT_KNOWN_FIELDS",
     "EVENT_IDENTITY_KNOWN_FIELDS",

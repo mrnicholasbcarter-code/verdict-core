@@ -4,7 +4,9 @@
   "serialization": {
     "json": "sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False",
     "digest": "sha256(utf-8 canonical json of digest payload; observed_at/deadline_at excluded)",
-    "float_note": "Pinned fixture values must emit identical digit strings cross-language (1700000000.0 not 1.7e9)."
+    "idempotency_key": "source_idempotency_key when source_event_id set (excludes created_at/content); else content digest",
+    "content_fingerprint": "digest payload minus created_at when source_event_id set; used for conflict detection",
+    "float_note": "Pinned fixture values must emit identical digit strings cross-language (1700000000.0 not 1.7e9). Rust parity UNMEASURED until D reports."
   },
   "event": {
     "schema_version": "lifecycle-event/v1",
@@ -42,12 +44,14 @@
       }
     },
     "revision": "1",
-    "idempotency_key": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+    "idempotency_key": "738d164e5863f36f6df4effa86f6eec981ebf79f146645c1da6e6237b500be7e",
     "deadline_at": null
   },
   "digest": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
-  "canonical_json": "{\"classification\":\"source\",\"content\":\"# 路由预算\\nshared note about routing budgets — café 日本語 🚀\",\"content_hash\":\"d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"after_edit\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.5,\"payload\":{\"n\":1.0,\"z\":0.0},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
-  "digest_payload_note": "idempotency_key equals digest; source_event_id preferred over adapter timestamps",
+  "content_fingerprint": "32cbe6e9ff3f09f59140d86e61d094094d7b9094e87150f14e605ba678cf61b0",
+  "idempotency_key": "738d164e5863f36f6df4effa86f6eec981ebf79f146645c1da6e6237b500be7e",
+  "source_idempotency_key": "738d164e5863f36f6df4effa86f6eec981ebf79f146645c1da6e6237b500be7e",
+  "canonical_json": "{\"classification\":\"source\",\"content\":\"# 路由预算\\nshared note about routing budgets — café 日本語 🚀\",\"content_hash\":\"d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"738d164e5863f36f6df4effa86f6eec981ebf79f146645c1da6e6237b500be7e\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"after_edit\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.5,\"payload\":{\"n\":1.0,\"z\":0.0},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
   "canonical_kinds": [
     "after_edit",
     "after_tool",
@@ -65,5 +69,10 @@
   "aliases": {
     "before_turn": "before_first_model_turn",
     "compaction": "before_compact"
-  }
+  },
+  "notes": [
+    "Replay with rewritten created_at/observed_at keeps the same idempotency_key and content_fingerprint when content/kind/scope match.",
+    "Same source_event_id with different content_fingerprint => IdempotencyConflictError (no silent second memory).",
+    "Do not claim Rust byte parity from these Python vectors alone."
+  ]
 }

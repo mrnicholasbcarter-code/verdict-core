@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from verdict_memory.contracts import LifecycleEvent, ProviderErrorCode, redact_secrets
+from verdict_memory.contracts import (
+    IdempotencyConflictError,
+    LifecycleEvent,
+    ProviderErrorCode,
+    redact_secrets,
+)
 from verdict_memory.policy import MemoryCapturePolicy
 
 OutboxState = Literal["pending", "acked", "dead_letter"]
@@ -77,6 +82,14 @@ class MemoryOutbox:
         )
 
     def enqueue(self, event: LifecycleEvent) -> OutboxEvent | None:
+        """Enqueue once per idempotency_key.
+
+        When ``identity.source_event_id`` is set, the key is stable across
+        created_at/observed_at rewrites. Same key + same content digest returns
+        the existing row (original source timestamp preserved). Same key +
+        different content digest raises ``IdempotencyConflictError`` — never a
+        silent second memory or silent payload replace.
+        """
         decision = self.policy.evaluate(event)
         if not decision.eligible:
             return None
@@ -84,22 +97,54 @@ class MemoryOutbox:
         if pending >= self.max_pending:
             raise RuntimeError(f"{ProviderErrorCode.QUEUE_FULL.value}: pending queue full")
         now = float(self._clock())
-        # Redact before durable write
         payload_obj = event.to_dict()
         if isinstance(payload_obj.get("content"), str):
             payload_obj["content"] = redact_secrets(payload_obj["content"]) or ""
+        # content fingerprint for conflict detection (excludes observed_at)
+        content_fp = event.content_fingerprint()
+        payload_obj.setdefault("metadata", {})
+        if isinstance(payload_obj["metadata"], dict):
+            payload_obj["metadata"] = {
+                **payload_obj["metadata"],
+                "content_fingerprint": content_fp,
+            }
         payload = json.dumps(payload_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         with sqlite3.connect(self.path, timeout=10) as db:
+            db.row_factory = sqlite3.Row
+            existing = db.execute(
+                "SELECT * FROM memory_lifecycle_outbox WHERE idempotency_key=?",
+                (event.idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                existing_event = LifecycleEvent.from_dict(json.loads(existing["event_json"]))
+                existing_fp = (existing_event.metadata or {}).get("content_fingerprint") or existing_event.digest()
+                if existing_fp != content_fp:
+                    raise IdempotencyConflictError(
+                        str(event.identity.source_event_id or event.idempotency_key),
+                        str(existing_fp),
+                        content_fp,
+                    )
+                # Same logical content: return existing row unchanged (preserve created_at).
+                return self._from_row(existing)
             db.execute(
-                "INSERT OR IGNORE INTO memory_lifecycle_outbox "
+                "INSERT INTO memory_lifecycle_outbox "
                 "(idempotency_key,event_json,state,attempts,next_attempt_at,created_at,updated_at) "
                 "VALUES (?,?,'pending',0,?,?,?)",
                 (event.idempotency_key, payload, now, now, now),
             )
-            db.row_factory = sqlite3.Row
             row = db.execute(
                 "SELECT * FROM memory_lifecycle_outbox WHERE idempotency_key=?",
                 (event.idempotency_key,),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    
+    def get(self, idempotency_key: str) -> OutboxEvent | None:
+        with sqlite3.connect(self.path, timeout=10) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM memory_lifecycle_outbox WHERE idempotency_key=?",
+                (idempotency_key,),
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
