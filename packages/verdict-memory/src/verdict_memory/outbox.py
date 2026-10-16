@@ -13,8 +13,8 @@ from verdict_memory.contracts import (
     IdempotencyConflictError,
     LifecycleEvent,
     ProviderErrorCode,
-    redact_mapping,
     redact_secrets,
+    sanitize_event,
 )
 from verdict_memory.policy import MemoryCapturePolicy
 
@@ -94,35 +94,20 @@ class MemoryOutbox:
         decision = self.policy.evaluate(event)
         if not decision.eligible:
             return None
-        pending = self.count("pending")
-        if pending >= self.max_pending:
-            raise RuntimeError(f"{ProviderErrorCode.QUEUE_FULL.value}: pending queue full")
+        event = sanitize_event(event)
         now = float(self._clock())
-        payload_obj = event.to_dict()
-        # Redact content + nested metadata/payload/provenance BEFORE durable bytes.
-        if isinstance(payload_obj.get("content"), str):
-            payload_obj["content"] = redact_secrets(payload_obj["content"]) or ""
-        for nested_key in ("metadata", "payload", "provenance"):
-            if nested_key in payload_obj:
-                payload_obj[nested_key] = redact_mapping(payload_obj.get(nested_key) or {})
-        # content fingerprint for conflict detection (excludes observed_at)
+        payload = json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         content_fp = event.content_fingerprint()
-        payload_obj.setdefault("metadata", {})
-        if isinstance(payload_obj["metadata"], dict):
-            payload_obj["metadata"] = {
-                **payload_obj["metadata"],
-                "content_fingerprint": content_fp,
-            }
-        payload = json.dumps(payload_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         with sqlite3.connect(self.path, timeout=10) as db:
             db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
                 "SELECT * FROM memory_lifecycle_outbox WHERE idempotency_key=?",
                 (event.idempotency_key,),
             ).fetchone()
             if existing is not None:
                 existing_event = LifecycleEvent.from_dict(json.loads(existing["event_json"]))
-                existing_fp = (existing_event.metadata or {}).get("content_fingerprint") or existing_event.digest()
+                existing_fp = existing_event.content_fingerprint()
                 if existing_fp != content_fp:
                     raise IdempotencyConflictError(
                         str(event.identity.source_event_id or event.idempotency_key),
@@ -131,6 +116,11 @@ class MemoryOutbox:
                     )
                 # Same logical content: return existing row unchanged (preserve created_at).
                 return self._from_row(existing)
+            pending = db.execute(
+                "SELECT count(*) FROM memory_lifecycle_outbox WHERE state='pending'"
+            ).fetchone()[0]
+            if pending >= self.max_pending:
+                raise RuntimeError(f"{ProviderErrorCode.QUEUE_FULL.value}: pending queue full")
             db.execute(
                 "INSERT INTO memory_lifecycle_outbox "
                 "(idempotency_key,event_json,state,attempts,next_attempt_at,created_at,updated_at) "

@@ -161,53 +161,18 @@ def test_red_unscoped_hit_must_not_relabel_as_configured_project():
 
 
 def test_red_remote_path_must_include_full_namespaced_identity():
-    """Distinct harness/session must not share the same remote raw source-id path."""
-    paths: list[str] = []
+    """Distinct harness/session cannot share a remote source path (real MCP shapes)."""
+    from test_transport_contract import Server, event
 
-    def handler(request, payload):
-        args = payload["params"]["arguments"]
-        paths.append(args["path"])
-        return httpx.Response(
-            200,
-            json={
-                "jsonrpc": "2.0",
-                "id": payload.get("id"),
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps({"path": args["path"], "digest": "unused"}),
-                        }
-                    ]
-                },
-            },
-        )
-
-    client = AiMemoryClient(_cfg(transport=_mcp_ok_init_then(handler)))
-    e1 = _event(
-        identity=EventIdentity(
-            source_harness="harness-a",
-            project="bod80-memory-test",
-            session_id="sess-1",
-            source_event_id="same-raw-id",
-            workspace="default",
-        )
-    )
-    e2 = _event(
-        identity=EventIdentity(
-            source_harness="harness-b",
-            project="bod80-memory-test",
-            session_id="sess-2",
-            source_event_id="same-raw-id",
-            workspace="default",
-        )
-    )
+    server = Server()
+    client = server.client()
+    e1 = event(identity=EventIdentity("harness-a", "allowed", "sess-1", source_event_id="same-raw-id"))
+    e2 = event(identity=EventIdentity("harness-b", "allowed", "sess-2", source_event_id="same-raw-id"))
     client.put(e1)
     client.put(e2)
+    paths = [args["path"] for args in server.writes]
     assert len(paths) == 2
-    assert paths[0] != paths[1], (
-        f"remote paths collided for distinct harness/session: {paths}"
-    )
+    assert paths[0] != paths[1], f"remote paths collided for distinct harness/session: {paths}"
 
 
 def test_red_empty_write_rpc_must_not_ack_without_persisted_digest():
@@ -281,42 +246,20 @@ def test_red_malformed_rpc_object_must_be_typed_failure_not_healthy_empty():
 
 
 def test_red_search_hit_exact_ref_and_digest_contract():
-    """When server returns a hit, client must expose enough to verify exact ref (not any hit)."""
+    """Hits expose exact verified refs and lifecycle digests, never snippet guesses."""
+    from test_transport_contract import Server, event
 
-    def handler(request, payload):
-        hits = [
-            {
-                "path": "verdict-memory/memory/other-old-marker.md",
-                "snippet": "old marker content",
-                "project": "bod80-memory-test",
-                "workspace": "default",
-                "rank": 0.9,
-            },
-            {
-                "path": "verdict-memory/memory/src-1.md",
-                "snippet": "safe content",
-                "project": "bod80-memory-test",
-                "workspace": "default",
-                "rank": 1.0,
-            },
-        ]
-        return httpx.Response(
-            200,
-            json={
-                "jsonrpc": "2.0",
-                "id": payload.get("id"),
-                "result": {"content": [{"type": "text", "text": json.dumps({"hits": hits})}]},
-            },
-        )
-
-    client = AiMemoryClient(_cfg(transport=_mcp_ok_init_then(handler)))
-    result = client.search(
-        RecallQuery(query="safe", project="bod80-memory-test", workspace="default")
-    )
+    server = Server()
+    client = server.client()
+    first = client.put(event(identity=EventIdentity("prime", "allowed", "old", source_event_id="old")))
+    exact = event()
+    ref = client.put(exact)
+    result = client.search(RecallQuery(query="safe", project="allowed"))
     assert result.status is ProviderResultStatus.AVAILABLE
-    # Caller must be able to filter exact path; paths must remain distinct and scoped
-    paths = [h.ref.external_id for h in result.hits]
-    assert "verdict-memory/memory/src-1.md" in paths
-    # Unscoped relabel check already covered; here ensure project stamped only when present
+    paths = [hit.ref.external_id for hit in result.hits]
+    assert paths == [first.external_id, ref.external_id]
+    hit = next(hit for hit in result.hits if hit.ref == ref)
+    assert hit.event.digest() == exact.digest()
+    assert hit.event.identity.source_event_id == exact.identity.source_event_id
     for hit in result.hits:
         assert hit.untrusted is True

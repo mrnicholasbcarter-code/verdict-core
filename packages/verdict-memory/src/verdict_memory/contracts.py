@@ -153,6 +153,7 @@ class ProviderErrorCode(str, Enum):
     DEGRADED = "degraded"
     QUEUE_FULL = "queue_full"
     MALFORMED = "malformed"
+    CONFLICT = "conflict"
     UNKNOWN = "unknown"
 
 
@@ -199,7 +200,7 @@ def redact_mapping(value: Any) -> Any:
         out: dict[str, Any] = {}
         for k, v in value.items():
             key = str(k)
-            if _SECRET_KEYS.search(key) and isinstance(v, str):
+            if _SECRET_KEYS.search(key):
                 out[key] = "[REDACTED]"
             else:
                 out[key] = redact_mapping(v)
@@ -504,6 +505,14 @@ class CaptureDecision:
             "reason": self.reason,
             "event_digest": self.event_digest,
         }
+
+
+def sanitize_event(event: LifecycleEvent) -> LifecycleEvent:
+    """One sanitized logical object for both outbox and remote persistence."""
+    raw = redact_mapping(event.to_dict())
+    raw["content_hash"] = ""
+    raw["idempotency_key"] = ""
+    return LifecycleEvent.from_dict(raw)
 
 
 @dataclass(frozen=True)

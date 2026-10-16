@@ -20,6 +20,7 @@ _DEAD_LETTER_CODES = frozenset(
         ProviderErrorCode.PROTOCOL_INCOMPATIBLE,
         ProviderErrorCode.INVALID_REQUEST,
         ProviderErrorCode.NOT_CONFIGURED,
+        ProviderErrorCode.CONFLICT,
     }
 )
 
@@ -83,7 +84,7 @@ class MemoryMirrorWorker:
         if code in _DEAD_LETTER_CODES:
             self.outbox.mark_dead_letter(event, error_code=code.value, safe_error=message)
             return "dead"
-        delay = min(self.max_delay_seconds, self.base_delay_seconds * (2**event.attempts))
+        delay = min(self.max_delay_seconds, self.base_delay_seconds * (2**min(event.attempts, 32)))
         self.outbox.mark_retry(
             event, error_code=code.value, safe_error=message, delay_seconds=delay
         )
