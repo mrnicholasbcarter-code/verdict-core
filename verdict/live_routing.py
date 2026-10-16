@@ -14,8 +14,6 @@ import httpx
 
 from verdict.omniroute_catalog import DEFAULT_CATALOG_FRESHNESS_SECONDS
 
-SCHEMA_VERSION = "golden-path/v1"
-NAMED_CHECK_OBJECT = {"golden_path": "ok"}
 COST_RANK = {"local": 0, "free": 1, "cheaper": 2, "paid": 3}
 OPAQUE_PREFIXES = ("auto/", "auto:", "openrouter/auto")
 CostClass = Literal["local", "free", "cheaper", "paid"]
@@ -104,39 +102,6 @@ class UsageSnapshot:
     remaining_percent: float | None
     resets_at: str | None
     exhausted: bool
-
-
-@dataclass
-class GoldenPathReceipt:
-    unit_id: str
-    endpoint: str
-    chosen_id: str
-    paid_used: bool
-    cheaper_available: bool
-    attempts: list[dict[str, Any]]
-    checker_passed: bool
-    catalog_captured_at: str
-    degraded: bool = False
-    error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = {
-            "schema_version": SCHEMA_VERSION,
-            "unit_id": self.unit_id,
-            "endpoint": self.endpoint,
-            "chosen_id": self.chosen_id,
-            "paid_used": self.paid_used,
-            "cheaper_available": self.cheaper_available,
-            "attempts": list(self.attempts),
-            "checker_passed": self.checker_passed,
-            "catalog_captured_at": self.catalog_captured_at,
-            "error": self.error,
-        }
-        if self.degraded:
-            raise LiveRoutingError(
-                "live_surface_blocked", "fixture catalog cannot emit a pass receipt"
-            )
-        return payload
 
 
 def _opaque_id(identity_id: str) -> bool:
@@ -322,21 +287,6 @@ def failover_order(selection: RouteSelection) -> list[Candidate]:
     return list(selection.ordered)
 
 
-def explain(candidates: Sequence[Candidate], selection: RouteSelection | None) -> dict[str, Any]:
-    chosen_id = selection.chosen.ref if selection else None
-    return {
-        "kept": [item.ref for item in candidates if item.status == "kept"],
-        "dropped": [
-            {"id": item.ref, "reason": item.reason}
-            for item in candidates
-            if item.status == "dropped"
-        ],
-        "chosen": chosen_id,
-        "paid_used": None if selection is None else selection.paid_used,
-        "cheaper_available": None if selection is None else selection.cheaper_available,
-    }
-
-
 _SECRET = re.compile(r"(?i)(api[_-]?key|password|secret|token|authorization|credential)")
 
 
@@ -349,14 +299,6 @@ def strip_secrets(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         clean[key] = value
     return cast(dict[str, Any], json.loads(json.dumps(clean)))
-
-
-def named_check_passes(body: str) -> bool:
-    try:
-        parsed = json.loads(body.strip())
-    except json.JSONDecodeError:
-        return False
-    return bool(parsed == NAMED_CHECK_OBJECT)
 
 
 DEFAULT_GATEWAY = "http://localhost:20128/v1"

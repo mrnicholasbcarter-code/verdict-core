@@ -4,15 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
-from verdict.live_routing import (
-    ConcreteIdentity,
-    GoldenPathReceipt,
-    LiveRoutingError,
-    classify_identities,
-    select_route,
-)
+from verdict.live_routing import ConcreteIdentity, classify_identities, select_route
 from verdict.routing_demo import (
     REQUEST_COUNT,
     SCHEMA_VERSION,
@@ -163,23 +155,6 @@ def test_blocked_when_recorded_missing(tmp_path: Path) -> None:
     summary = run_routing_demo(recorded_path=tmp_path / "missing.json", execute=False)
     assert summary["status"] == "blocked"
     assert summary["request_count"] == 0
-
-
-def test_degraded_fixture_receipt_cannot_pass() -> None:
-    receipt = GoldenPathReceipt(
-        unit_id="named-check",
-        endpoint="http://fixture",
-        chosen_id="model",
-        paid_used=False,
-        cheaper_available=True,
-        attempts=[],
-        checker_passed=True,
-        catalog_captured_at="2026-08-30T00:00:00+00:00",
-        degraded=True,
-    )
-    with pytest.raises(LiveRoutingError) as exc:
-        receipt.to_dict()
-    assert exc.value.code == "live_surface_blocked"
 
 
 def test_load_roundtrip(tmp_path: Path) -> None:
