@@ -675,7 +675,7 @@ def test_build_selector_reads_prepopulated_owned_cache(
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
 
     ladder = build_selector(
-        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json"
+        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json", now=NOW
     )
     assert ladder.openrouter_free_set is not None
     assert ladder.openrouter_free_set.contains("poolside/laguna-xs-2.1:free")
@@ -748,7 +748,7 @@ def test_refresh_owner_and_selector_share_same_owned_cache(
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
 
     ladder = build_selector(
-        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json"
+        "http://127.0.0.1:1", scope="", prefer="", state_file=state_dir / "state.json", now=NOW
     )
     # Selector is cache-only: still exactly one fetch (the refresh owner).
     assert len(fetch_calls) == 1
@@ -763,3 +763,72 @@ def test_refresh_owner_and_selector_share_same_owned_cache(
     _routes = routes_from_evidence([paid, genuine], connections, now=NOW, state_dir=state_dir)
     # Cache valid => no additional fetch required for membership.
     assert len(fetch_calls) == before
+
+
+def test_build_selector_owned_cache_ttl_boundary_uses_injected_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same owned cache: fresh at NOW+5h59, expired at NOW+6h (injected clock)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home-sentinel"))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    monkeypatch.setenv("PRIME_AGENT_HOME", str(tmp_path / "prime" / "agent"))
+    (tmp_path / "prime" / "agent").mkdir(parents=True)
+    (tmp_path / "prime" / "agent" / "models.json").write_text(
+        json.dumps({"providers": {"omniroute": {"models": [{"id": "cc/claude-sonnet-5"}]}}}),
+        encoding="utf-8",
+    )
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    owned = state_dir / "openrouter-free-set.json"
+    written = load_openrouter_free_set(
+        now=NOW,
+        cache_path=owned,
+        fetch=lambda url, timeout: _payload([_row("poolside/laguna-xs-2.1:free")]),
+    )
+    assert written is not None and owned.exists()
+
+    def boom_fetch(url: str, timeout: float) -> dict[str, object]:
+        raise AssertionError(f"selector must not fetch: {url}")
+
+    monkeypatch.setattr("verdict.openrouter_free_set.fetch_openrouter_models", boom_fetch)
+    rows = [
+        {
+            "id": "openrouter/poolside/laguna-xs-2.1:free",
+            "owned_by": "openrouter",
+            "capabilities": {"tool_calling": True, "chat": True},
+            "context_length": 128000,
+        }
+    ]
+    connections = [
+        {
+            "provider": "openrouter",
+            "authType": "apikey",
+            "isActive": True,
+            "testStatus": "ok",
+            "plan_label": "payg",
+            "import_free_only": True,
+        }
+    ]
+    monkeypatch.setattr(orch_run, "fetch_inventory", lambda *_a, **_k: rows)
+    monkeypatch.setattr(orch_run, "fetch_connections", lambda *_a, **_k: connections)
+    monkeypatch.setattr(orch_run, "resolve_api_key", lambda *_a, **_k: None)
+
+    fresh = build_selector(
+        "http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        state_file=state_dir / "state.json",
+        now=NOW + timedelta(hours=5, minutes=59),
+    )
+    assert fresh.openrouter_free_set is not None
+    assert fresh.openrouter_free_set.contains("poolside/laguna-xs-2.1:free")
+
+    expired = build_selector(
+        "http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        state_file=state_dir / "state.json",
+        now=NOW + timedelta(hours=6),
+    )
+    assert expired.openrouter_free_set is None
