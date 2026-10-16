@@ -15,8 +15,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import verdict.prove_at_rest_service as _prove_at_rest_service
 from verdict import cli
 from verdict import doctor_diagnostics as dd
+
+
+def _fake_timer_state_active(unit: str) -> dict[str, object]:
+    return {"installed": True, "failed": False, "active": True, "state": "active"}
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here reads the host's real systemd user units (BOD-411 review)."""
+    monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

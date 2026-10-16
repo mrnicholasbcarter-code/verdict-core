@@ -45,8 +45,16 @@ _DOCTOR_NETWORK_ERROR_MARKERS = (
 # OmniRoute API utilities — copied from cli.py to avoid a circular import.
 # ---------------------------------------------------------------------------
 def _read_omniroute_token() -> str | None:
-    """Read an explicitly configured OmniRoute token without private-database access."""
-    return os.getenv("OMNIROUTE_API_KEY")
+    """The OmniRoute gateway key via the one resolver (BOD-411 D29).
+
+    ``credentials_store.resolve_api_key`` checks ``VERDICT_OMNIROUTE_API_KEY``/
+    ``OMNIROUTE_API_KEY`` (env, then the credential store), the owner-only
+    ``omniroute-api-key`` key file, then Prime's ``auth.json`` -- in that
+    documented precedence. It never inspects anything else.
+    """
+    from verdict.credentials_store import resolve_api_key
+
+    return resolve_api_key()
 
 
 def _omniroute_api_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
@@ -736,17 +744,23 @@ def _collect_doctor_diagnostics(
     return diag
 
 
-def installed_service_rows(*, now: datetime | None = None) -> list[dict[str, str]]:
+def installed_service_rows(
+    *, now: datetime | None = None, timer_state: Callable[[str], dict[str, Any]] | None = None
+) -> list[dict[str, str]]:
     """Doctor rows for each background systemd unit and the health cache.
 
     A missing or inactive timer, an ``is-failed`` unit, or a health cache
     that is too stale or empty to be useful are all reported with ``status:
     "failed"`` and named by unit/file so the drill
     (``systemctl --user stop verdict-prove-at-rest.timer; verdict doctor``)
-    exits non-zero and names the unit. ``now`` is injectable for tests.
+    exits non-zero and names the unit. ``now`` and ``timer_state`` are
+    injectable for tests; without injection this reads the host's real
+    systemd user units (never available on a CI runner).
     """
     from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
-    from verdict.prove_at_rest_service import timer_state
+    from verdict.prove_at_rest_service import timer_state as _real_timer_state
+
+    timer_state = timer_state or _real_timer_state
 
     rows: list[dict[str, str]] = []
     for unit, label in (

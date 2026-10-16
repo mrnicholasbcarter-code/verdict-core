@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 import verdict.actions.helpers as _action_helpers
+import verdict.prove_at_rest_service as _prove_at_rest_service
 from verdict import cli
 from verdict import doctor_diagnostics as dd
 from verdict.execution_packet import ExecutionPacket
@@ -19,10 +20,27 @@ from verdict.models import RoutingDecision
 from verdict.provider_detection import DetectedProvider, DetectionResult
 
 
+def _fake_timer_state_active(unit: str) -> dict[str, object]:
+    return {"installed": True, "failed": False, "active": True, "state": "active"}
+
+
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No doctor test reads the host's real systemd user units (BOD-411 review).
+
+    CI runners have neither unit installed, so without this every test that
+    exercises ``cmd_doctor``/``_collect_doctor_diagnostics`` would fail there
+    while passing on a developer host that happens to have the timers. Tests
+    that need missing/failed/inactive states monkeypatch
+    ``verdict.prove_at_rest_service.timer_state`` again, explicitly.
+    """
+    monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
 
 
 def test_cmd_route_terse_uses_configured_primary(
@@ -331,6 +349,8 @@ def test_omniroute_token_ignores_private_sqlite_credentials(
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
 
     assert cli._read_omniroute_token() is None
 
@@ -343,17 +363,40 @@ def test_omniroute_token_uses_explicit_environment_reference(
     assert cli._read_omniroute_token() == "explicit-env-token"
 
 
-def test_omniroute_token_does_not_inspect_home_or_private_paths(
-    monkeypatch: pytest.MonkeyPatch,
+def test_omniroute_token_uses_only_the_documented_resolver_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_if_path_checked(*_args: object, **_kwargs: object) -> bool:
-        raise AssertionError("credential lookup must not inspect private paths")
+    """BOD-411 D29: ``_read_omniroute_token`` is the one resolver, nothing broader.
 
-    monkeypatch.setattr(cli.os.path, "exists", fail_if_path_checked)
-    monkeypatch.setattr(cli.os.path, "expanduser", fail_if_path_checked)
+    Only the documented sources (env, credential store, the owner-only key
+    file, Prime's ``auth.json``, in that precedence) are ever consulted. A
+    key file readable by group or others is refused, not fallen back on.
+    """
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.delenv("PRIME_AGENT_HOME", raising=False)
 
+    # No source configured at all: None, not a crash or a private-path read.
     assert cli._read_omniroute_token() is None
+
+    # The owner-only key file is honoured.
+    key_dir = config / "verdict"
+    key_dir.mkdir(parents=True, mode=0o700)
+    key_file = key_dir / "omniroute-api-key"
+    key_file.write_text("key-file-token\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    assert cli._read_omniroute_token() == "key-file-token"
+
+    # A key file readable by group or others is refused, not used.
+    key_file.chmod(0o640)
+    assert cli._read_omniroute_token() is None
+    key_file.chmod(0o600)
+
+    # A fresh env key still wins over the key file (documented precedence).
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "env-token")
+    assert cli._read_omniroute_token() == "env-token"
 
 
 def test_omniroute_management_requests_return_none_when_no_local_gateway(
