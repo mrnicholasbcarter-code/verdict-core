@@ -20,11 +20,12 @@ a model that answered badly is not.
 from __future__ import annotations
 
 import ast
+import difflib
 import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,17 @@ _BARE_FENCE_LINE_RE = re.compile(r"^```[ \t]*\S*[ \t]*$\n?", re.MULTILINE)
 _DIFF_HEADER_RE = re.compile(
     r"^(?:---|\+\+\+|rename from|rename to|copy from|copy to)[ \t]+(.+?)(?:\t.*)?$", re.MULTILINE
 )
+
+# OmniRoute 3.8.51 skips both cache read and write on either header
+# (isBypassed / isCacheableForRead / isCacheableForWrite). Executor calls must
+# be real samples: a replayed reply makes a retry or a repeat run meaningless.
+NO_CACHE_HEADERS = {"X-OmniRoute-No-Cache": "true", "Cache-Control": "no-cache"}
+
+# A full-file repair turn is offered only when every owned file is this small,
+# so a complete rewrite stays well inside max_tokens.
+FULL_FILE_REPAIR_MAX_LINES = 300
+
+_FULL_FILE_BLOCK_RE = re.compile(r"^```file:[ \t]*(\S+)[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
 
 SYSTEM_PROMPT = (
     "You are a patch generator. Reply with a single unified diff and nothing else: "
@@ -157,6 +169,7 @@ class PatchAttempt:
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
     resolved_model: str | None = None
+    repair_attempt: dict[str, Any] | None = None
 
     @property
     def applied(self) -> bool:
@@ -172,6 +185,7 @@ class PatchAttempt:
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
             "resolved_model": self.resolved_model,
+            "repair_attempt": self.repair_attempt,
         }
 
 
@@ -208,91 +222,167 @@ class PatchExecutor:
             opener=opener,
             max_response_bytes=config.max_response_bytes,
             session_id=config.session_id,
+            extra_headers=NO_CACHE_HEADERS,
         )
         self._runner = runner
         self._observer = observer
         self._last_observation: RouteObservation | None = None
+        self.last_repair_attempt: dict[str, Any] | None = None
 
     def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
-        """Request a patch for ``unit`` and apply it if it stays in bounds."""
+        """Request a patch for ``unit`` and apply it if it stays in bounds.
+
+        When the first diff is rejected for a patch-shape reason (an
+        unparseable diff, a bare-hunk mismatch, or a failed ``git apply
+        --check``), the same route gets one repair turn with the exact error.
+        If every owned file is small, the turn asks for complete file
+        contents and Verdict builds the diff itself; otherwise it asks for a
+        corrected diff against the line-numbered files. Either way the result
+        goes through the same boundary and apply checks. A rejection for any
+        other reason (out-of-bounds files, an identity mismatch) gets no
+        repair turn.
+        """
         self._last_observation = None
         self.response_headers = {}
+        self.last_repair_attempt = None
         started = time.monotonic()
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_unit_prompt(unit, self.repo_root)},
+        ]
+        failure, content, usage = self._turn(unit, messages, started)
+        if failure is not None:
+            return failure
+        attempt, repairable = self._apply_diff_reply(unit, content, usage, started)
+        if not repairable:
+            return attempt
+
+        first_error = attempt.reason
+        full_file = full_file_repair_eligible(unit, self.repo_root)
+        repair_prompt = (
+            build_full_file_repair_prompt(unit, self.repo_root, first_error)
+            if full_file
+            else build_repair_prompt(unit, self.repo_root, first_error)
+        )
+        messages = [
+            *messages,
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": repair_prompt},
+        ]
+        failure, content, repair_usage = self._turn(unit, messages, started)
+        if failure is not None:
+            repaired = failure
+        elif full_file:
+            repaired = self._apply_full_file_reply(unit, content, repair_usage, started)
+        else:
+            repaired, _ = self._apply_diff_reply(unit, content, repair_usage, started)
+        self.last_repair_attempt = {
+            "format": "full_file" if full_file else "diff",
+            "first_error": first_error,
+            "repaired": repaired.applied,
+        }
+        reason = (
+            ""
+            if repaired.applied
+            else f"patch repair failed: {repaired.reason} (first attempt: {first_error})"
+        )
+        return replace(
+            repaired,
+            reason=reason,
+            usage=_add_usage(usage, repaired.usage),
+            repair_attempt=self.last_repair_attempt,
+        )
+
+    def _turn(
+        self, unit: WorkUnit, messages: list[dict[str, str]], started: float
+    ) -> tuple[PatchAttempt | None, str, TokenUsage]:
+        """Run one model turn; return a failure attempt, or ``None`` with the reply."""
         try:
-            content, usage, finish_reason = self._request_patch(unit)
+            content, usage, finish_reason = self._request_patch(messages)
         except PatchExecutorError as exc:
-            return self._attempt(unit, "error", str(exc), started=started)
+            return self._attempt(unit, "error", str(exc), started=started), "", TokenUsage()
         if finish_reason == "length":
-            return self._attempt(
-                unit,
-                "rejected",
-                f"truncated: the reply hit max_tokens={self.config.max_tokens} (finish_reason=length)",
-                usage=usage,
-                started=started,
+            reason = (
+                f"truncated: the reply hit max_tokens={self.config.max_tokens} "
+                "(finish_reason=length)"
             )
+            return self._attempt(unit, "rejected", reason, usage=usage, started=started), "", usage
         observation = self._last_observation
         if observation is not None and fatal_identity_mismatch(
             observation.model, observation.resolved_model
         ):
-            return self._attempt(
-                unit,
-                "error",
-                (
-                    "provider identity mismatch: "
-                    f"selected {observation.model!r}, served {observation.resolved_model!r}"
-                ),
-                usage=usage,
-                started=started,
+            reason = (
+                "provider identity mismatch: "
+                f"selected {observation.model!r}, served {observation.resolved_model!r}"
             )
+            return self._attempt(unit, "error", reason, usage=usage, started=started), "", usage
+        return None, content, usage
 
-        # From here the call succeeded, so anything wrong is the model's output:
+    def _apply_diff_reply(
+        self, unit: WorkUnit, content: str, usage: TokenUsage, started: float
+    ) -> tuple[PatchAttempt, bool]:
+        """Apply a model-authored diff.
+
+        Returns the attempt and whether the rejection is a patch-shape problem
+        the repair turn can address: an unparseable diff, a bare-hunk mismatch,
+        or a failed ``git apply --check``. A patch that names files outside the
+        unit boundary is never repaired.
+        """
+        # The call succeeded, so anything wrong is the model's output:
         # a refusal to apply, not an infrastructure error.
         try:
             diff = extract_diff(content)
             paths = parse_patch_paths(diff)
         except PatchExecutorError as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), True
 
         outside = unit.out_of_bounds(paths)
         if outside:
-            return self._attempt(
-                unit,
-                "rejected",
-                f"patch touches files outside the unit boundary: {list(outside)}",
-                usage=usage,
-                started=started,
-            )
+            reason = f"patch touches files outside the unit boundary: {list(outside)}"
+            return self._attempt(unit, "rejected", reason, usage=usage, started=started), False
 
         diff = repair_new_file_diff(diff, self.repo_root)
-
         try:
             diff = repair_bare_hunks(diff, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError) as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), True
 
+        return self._check_and_apply(unit, diff, paths, usage, started)
+
+    def _apply_full_file_reply(
+        self, unit: WorkUnit, content: str, usage: TokenUsage, started: float
+    ) -> PatchAttempt:
+        """Turn complete file contents into a diff and apply it like any other."""
+        try:
+            files = parse_full_file_reply(content)
+            outside = unit.out_of_bounds(tuple(files))
+            if outside:
+                raise PatchExecutorError(
+                    f"full-file reply touches files outside the unit boundary: {list(outside)}"
+                )
+            diff = build_full_file_diff(files, self.repo_root)
+        except (PatchExecutorError, UnsafeRepositoryPathError, OSError, UnicodeDecodeError) as exc:
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+        attempt, _ = self._check_and_apply(unit, diff, parse_patch_paths(diff), usage, started)
+        return attempt
+
+    def _check_and_apply(
+        self, unit: WorkUnit, diff: str, paths: tuple[str, ...], usage: TokenUsage, started: float
+    ) -> tuple[PatchAttempt, bool]:
         check = self._git_apply(diff, check_only=True)
         if check.returncode != 0:
-            return self._attempt(
-                unit,
-                "rejected",
-                f"git apply --check failed: {_tail(check.stderr)}",
-                usage=usage,
-                started=started,
-            )
+            reason = f"git apply --check failed: {_tail(check.stderr)}"
+            return self._attempt(unit, "rejected", reason, usage=usage, started=started), True
 
         applied = self._git_apply(diff, check_only=False)
         if applied.returncode != 0:
-            return self._attempt(
-                unit,
-                "error",
-                f"git apply failed after a passing check: {_tail(applied.stderr)}",
-                usage=usage,
-                started=started,
-            )
+            reason = f"git apply failed after a passing check: {_tail(applied.stderr)}"
+            return self._attempt(unit, "error", reason, usage=usage, started=started), False
 
-        return self._attempt(
+        attempt = self._attempt(
             unit, "applied", "", changed_files=tuple(sorted(paths)), usage=usage, started=started
         )
+        return attempt, False
 
     def for_unit(self, unit: WorkUnit) -> BoundUnitExecutor:
         """Return a :class:`~verdict.dispatcher.SubagentExecutor` bound to ``unit``."""
@@ -342,14 +432,11 @@ class PatchExecutor:
         )
         return PatchExecutorError(reason)
 
-    def _request_patch(self, unit: WorkUnit) -> tuple[str, TokenUsage, str | None]:
+    def _request_patch(self, messages: list[dict[str, str]]) -> tuple[str, TokenUsage, str | None]:
         """Return the raw model text and its measured usage, or raise on transport failure."""
         payload = {
             "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_unit_prompt(unit, self.repo_root)},
-            ],
+            "messages": messages,
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
         }
@@ -430,8 +517,6 @@ class BoundUnitExecutor:
         model = getattr(candidate, "model", None) or getattr(candidate, "runtime_id", None)
         executor = self.executor
         if model and model != executor.config.model:
-            from dataclasses import replace
-
             executor = PatchExecutor(
                 executor.repo_root,
                 replace(executor.config, model=model, timeout_seconds=timeout_seconds),
@@ -467,6 +552,130 @@ def build_unit_prompt(unit: WorkUnit, repo_root: str | Path) -> str:
         sections += ["", f"--- current contents of {path} ---", text]
     sections += ["", "Reply with the unified diff only."]
     return "\n".join(sections)
+
+
+def build_repair_prompt(unit: WorkUnit, repo_root: str | Path, error: str) -> str:
+    """Render the follow-up turn after ``git apply --check`` refused a diff.
+
+    Line numbers let the model write hunk headers and context that match the
+    file exactly; the git error says which hunk did not apply.
+    """
+    root = Path(repo_root)
+    sections = [
+        "Your diff was rejected and nothing was changed.",
+        f"Exact error: {error}",
+        "",
+        "Write a corrected unified diff against the files exactly as shown below.",
+        "Line numbers are for reference only; they are not part of the file.",
+        "Context and removed lines must match the file byte for byte.",
+    ]
+    for path in unit.owned_files:
+        try:
+            text = read_repository_text(root, path)
+        except UnsafeRepositoryPathError as exc:
+            raise PatchExecutorError(str(exc)) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            sections += ["", f"--- {path} (unreadable: {type(exc).__name__}) ---"]
+            continue
+        numbered = [f"{n:>4}| {line}" for n, line in enumerate(text.splitlines(), start=1)]
+        sections += ["", f"--- current contents of {path} (with line numbers) ---", *numbered]
+    sections += ["", "Reply with the unified diff only."]
+    return "\n".join(sections)
+
+
+def full_file_repair_eligible(unit: WorkUnit, repo_root: str | Path) -> bool:
+    """True when every owned file exists and has at most ``FULL_FILE_REPAIR_MAX_LINES`` lines."""
+    for path in unit.owned_files:
+        try:
+            text = read_repository_text(Path(repo_root), path)
+        except (UnsafeRepositoryPathError, OSError, UnicodeDecodeError):
+            return False
+        if len(text.splitlines()) > FULL_FILE_REPAIR_MAX_LINES:
+            return False
+    return True
+
+
+def build_full_file_repair_prompt(unit: WorkUnit, repo_root: str | Path, error: str) -> str:
+    """Ask for complete new file contents instead of a second diff."""
+    root = Path(repo_root)
+    sections = [
+        "Your diff was rejected and nothing was changed.",
+        f"Exact error: {error}",
+        "",
+        "Do NOT send a diff this time. Reply with the COMPLETE new content of each",
+        "file you change, every line included, each in exactly this format:",
+        "```file:<path>",
+        "<entire new file content>",
+        "```",
+        "No prose. Files you do not include stay unchanged.",
+    ]
+    for path in unit.owned_files:
+        sections += ["", "Current contents:", f"```file:{path}", read_repository_text(root, path)]
+        sections[-1] = sections[-1].removesuffix("\n")
+        sections.append("```")
+    return "\n".join(sections)
+
+
+def parse_full_file_reply(content: str) -> dict[str, str]:
+    """Return ``{path: new_text}`` from strict ```file:<path> fenced blocks."""
+    blocks = _FULL_FILE_BLOCK_RE.findall(content or "")
+    if not blocks:
+        raise PatchExecutorError("full-file reply contains no ```file:<path> block")
+    files: dict[str, str] = {}
+    for raw_path, body in blocks:
+        try:
+            path = normalize_owned_path(raw_path)
+        except WorkUnitError as exc:
+            raise PatchExecutorError(f"unusable path in full-file block {raw_path!r}") from exc
+        if path in files:
+            raise PatchExecutorError(f"full-file reply repeats {path}")
+        files[path] = body
+    return files
+
+
+def build_full_file_diff(files: Mapping[str, str], repo_root: str | Path) -> str:
+    """Build a git diff from complete new contents, keeping the original bytes.
+
+    The fence's closing newline is not file content, so the original file's
+    final-newline state decides it. A reply that keeps fewer than half the
+    lines of a file of 10+ lines, or empties a non-empty file, is treated as
+    truncated and refused by name.
+    """
+    root = Path(repo_root)
+    sections: list[str] = []
+    for path, body in sorted(files.items()):
+        original = read_repository_text(root, path)
+        text = body.removesuffix("\n")
+        if original.endswith("\n") and text:
+            text += "\n"
+        old_lines = original.splitlines(keepends=True)
+        new_lines = text.splitlines(keepends=True)
+        if (original and not text) or (
+            len(old_lines) >= 10 and len(new_lines) * 2 < len(old_lines)
+        ):
+            raise PatchExecutorError(
+                f"truncated full-file reply for {path}: {len(new_lines)} of {len(old_lines)} lines"
+            )
+        if text == original:
+            continue
+        hunks = list(difflib.unified_diff(old_lines, new_lines, f"a/{path}", f"b/{path}"))
+        sections.append(f"diff --git a/{path} b/{path}\n")
+        for line in hunks:
+            sections.append(
+                line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+            )
+    if not sections:
+        raise PatchExecutorError("full-file reply changes nothing")
+    return "".join(sections)
+
+
+def _add_usage(first: TokenUsage, second: TokenUsage) -> TokenUsage:
+    """Sum two turns' usage; the total is reported only if both turns reported it."""
+    return TokenUsage(
+        prompt_tokens=first.prompt_tokens + second.prompt_tokens,
+        completion_tokens=first.completion_tokens + second.completion_tokens,
+        reported=first.reported and second.reported,
+    )
 
 
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -762,9 +971,14 @@ __all__ = [
     "RouteObservation",
     "RouteObserver",
     "TokenUsage",
+    "build_full_file_diff",
+    "build_full_file_repair_prompt",
+    "build_repair_prompt",
     "build_unit_prompt",
     "extract_content",
     "extract_diff",
+    "full_file_repair_eligible",
+    "parse_full_file_reply",
     "parse_patch_paths",
     "parse_usage",
 ]

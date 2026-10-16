@@ -339,6 +339,14 @@ def test_admin_capture_never_sends_key_to_a_proxy(tmp_path, monkeypatch, proxy):
     assert not (tmp_path / "out").exists()
 
 
+def test_sanitize_evidence_handles_none_plan_label() -> None:
+    """BOD-381: a null plan_label must sanitize to "", not raise AttributeError."""
+    from verdict.orchestration.connections_snapshot import sanitize_evidence
+
+    result = sanitize_evidence({"plan_label": None})
+    assert result["plan_label"] == ""
+
+
 def test_snapshot_action_registration_kind() -> None:
     """Verify the gateway.connections-snapshot action is registered correctly as mutation."""
     from verdict.actions.registry import get_action

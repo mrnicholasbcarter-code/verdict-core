@@ -173,23 +173,23 @@ def test_invalid_code_plan_is_replanned_once() -> None:
     assert result.to_dict()["attempts"][0]["error"]
 
 
-def test_frontier_planner_only_after_recorded_cheap_failure() -> None:
+def test_cc_planner_is_refused_and_never_called() -> None:
     calls: list[str] = []
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
         calls.append(model_id)
-        if len(calls) == 1:
-            return {"status_code": 503, "body": {}}
         return {
             "status_code": 200,
             "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
         }
 
-    result = Decomposer(
-        DecompositionConfig(model="cc/claude-opus-5"), transport=transport
-    ).decompose("fix", repo_root=".")
-    assert calls == ["mistral/codestral-latest", "cc/claude-opus-5"]
-    assert "HTTP 503" in result.attempts[0]["error"]
+    for config in (
+        DecompositionConfig(model="cc/claude-opus-5"),
+        DecompositionConfig(model="free/alpha:free", planner_models=("cc/claude-haiku-5-5",)),
+    ):
+        with pytest.raises(DecompositionError, match="cc/\\* planner routes are excluded"):
+            Decomposer(config, transport=transport).decompose("fix", repo_root=".")
+    assert calls == []
 
 
 def test_code_and_test_split_into_two_units_is_merged_before_rejecting() -> None:
@@ -238,27 +238,122 @@ def test_replan_evidence_includes_a_one_unit_json_example() -> None:
     assert "one unit owning both" in prompts[1].lower()
 
 
-def test_planner_climbs_the_ladder_after_two_cheap_failures() -> None:
+def test_planner_moves_down_planner_models_after_two_rejections() -> None:
+    calls: list[str] = []
+    code_only = dict(
+        TWO_UNITS[0],
+        objective="add validation",
+        verification_command=["python", "-m", "pytest", "tests/test_cli.py"],
+    )
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
+        content = json.dumps([code_only] if len(calls) < 3 else TWO_UNITS)
+        return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
+
+    config = DecompositionConfig(
+        model="free/alpha:free", planner_models=("free/alpha:free", "agy/gemini-x")
+    )
+    result = Decomposer(config, transport=transport).decompose("fix", repo_root=".")
+    assert calls == ["free/alpha:free", "free/alpha:free", "agy/gemini-x"]
+    assert result.model == "agy/gemini-x"
+    assert len(result.attempts) == 3
+
+
+def test_transient_503_moves_to_the_next_planner_family() -> None:
     calls: list[str] = []
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
         calls.append(model_id)
-        if len(calls) < 3:
+        if model_id == "free/alpha:free":
             return {"status_code": 503, "body": {}}
         return {
             "status_code": 200,
             "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
         }
 
-    result = Decomposer(transport=transport).decompose("fix", repo_root=".")
-    assert calls == ["mistral/codestral-latest", "mistral/codestral-latest", "cc/claude-haiku-5-5"]
-    assert result.model == "cc/claude-haiku-5-5"
-    assert len(result.attempts) == 3
+    config = DecompositionConfig(
+        model="free/alpha:free", planner_models=("free/alpha:free", "agy/gemini-x")
+    )
+    result = Decomposer(config, transport=transport).decompose("fix", repo_root=".")
+    # A transient 503 is never re-sent to the same model; the plan comes from the next family.
+    assert calls == ["free/alpha:free", "agy/gemini-x"]
+    assert result.model == "agy/gemini-x"
+    assert [a["model"] for a in result.attempts] == ["free/alpha:free", "agy/gemini-x"]
+    assert "HTTP 503" in result.attempts[0]["error"]
+    assert len(result.units) == 2
 
 
-def test_two_cheap_failures_without_ladder_success_raise_with_three_attempts() -> None:
+def test_failure_carries_every_attempt_and_never_tries_cc() -> None:
+    calls: list[str] = []
+    split = [
+        dict(TWO_UNITS[0], unit_id="one", owned_files=["verdict/r.py"]),
+        dict(TWO_UNITS[1], unit_id="two", owned_files=["verdict/r.py"]),
+    ]
+
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
+        if model_id == "agy/gemini-x":
+            return {"status_code": 429, "body": {}}
+        return {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": json.dumps(split)}}]},
+        }
+
+    config = DecompositionConfig(
+        model="free/alpha:free", planner_models=("free/alpha:free", "agy/gemini-x")
+    )
+    with pytest.raises(DecompositionError) as excinfo:
+        Decomposer(config, transport=transport).decompose("fix", repo_root=".")
+    assert not any(model.startswith("cc/") for model in calls)
+    attempts = excinfo.value.attempts
+    assert [a["model"] for a in attempts] == ["free/alpha:free", "free/alpha:free", "agy/gemini-x"]
+    assert "both claim" in attempts[0]["error"]
+    assert "HTTP 429" in attempts[2]["error"]
+    # The raised message names every attempt, not only the last one.
+    message = str(excinfo.value)
+    assert "both claim" in message and "HTTP 429" in message and "free/alpha:free" in message
+
+
+def test_units_editing_one_file_with_one_check_are_merged() -> None:
+    """Live codestral shape (BOD-393): one rename per line, all owning the same file."""
+    check = ["pytest", "tests/test_credentials_drift.py", "-q"]
+    owned = ["verdict/credentials_registry.py", "tests/test_credentials_drift.py"]
+    plan = [
+        {
+            "unit_id": f"rename-{n}",
+            "objective": f"rename {n}",
+            "owned_files": owned,
+            "verification_command": check,
+            "context": "",
+        }
+        for n in ("server", "dashboard", "all")
+    ] + [
+        {
+            "unit_id": "update-fixture",
+            "objective": "update the fixture",
+            "owned_files": ["tests/fixtures/f.json", "tests/test_actions_dispatch_b.py"],
+            "verification_command": ["pytest", "tests/test_actions_dispatch_b.py", "-q"],
+            "context": "",
+        }
+    ]
+
+    units = parse_decomposition(json.dumps(plan))
+
+    assert [u.unit_id for u in units] == ["rename-server", "update-fixture"]
+    assert units[0].owned_files == tuple(owned)
+    assert "rename dashboard" in units[0].objective and "rename all" in units[0].objective
+
+
+def test_transient_503_on_the_only_planner_raises_after_one_attempt() -> None:
+    calls: list[str] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(model_id)
         return {"status_code": 503, "body": {}}
 
-    with pytest.raises(DecompositionError, match="HTTP 503"):
+    with pytest.raises(DecompositionError, match="HTTP 503") as excinfo:
         Decomposer(transport=transport).decompose("fix", repo_root=".")
+    # A transient error is not re-sent to the same model and there is no hidden fallback.
+    assert calls == ["mistral/codestral-latest"]
+    assert len(excinfo.value.attempts) == 1

@@ -987,3 +987,149 @@ def test_census_skips_routes_with_unexpired_negative_health(tmp_path):
     assert {model for model, phase in calls} == {"good/model-0", "good/model-1"}
     assert report["probed"] == 2
     assert report["updated"] == 2
+
+
+# ── BOD-387: keep worker-capable passports fresh across census ticks ─────────
+
+
+def _census_snapshot(models):
+    from verdict.free_tier_admit import snapshot_from_payloads
+
+    providers = sorted({m.split("/", 1)[0] for m in models})
+    return snapshot_from_payloads(
+        catalog={"data": [{"id": m} for m in models]},
+        free_tier={
+            "perModel": [
+                {
+                    "provider": m.split("/", 1)[0],
+                    "modelId": m.split("/", 1)[1],
+                    "freeType": "keyless",
+                }
+                for m in models
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": p, "isActive": True, "testStatus": "active"} for p in providers
+            ]
+        },
+    )
+
+
+def _ok_transport(calls):
+    from verdict.prove_at_rest import ProbeExchange
+
+    def transport(model, phase, timeout):
+        calls.append(model)
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    return transport
+
+
+def test_passport_ttl_outlives_two_census_intervals():
+    """OnUnitInactiveSec counts from run end, so one TTL must cover a late tick."""
+    from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
+    from verdict.model_passports import PASSPORT_TTL_SECONDS
+
+    assert PASSPORT_TTL_SECONDS >= 2 * CENSUS_INTERVAL_SECONDS
+
+
+def test_census_reproves_a_passport_that_would_expire_before_the_next_tick(tmp_path):
+    from verdict.census_passports import passive_refresh, run_census
+    from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
+
+    route = "n/agnes"
+    proved_at = NOW - timedelta(seconds=CENSUS_INTERVAL_SECONDS)
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(route, _free_result(), proved_at)
+    store = tmp_path / "state.json"
+    passive_refresh(cache, 1, store, proved_at)
+    assert load_healthy_passports(store)[route].expires_at > NOW
+
+    calls: list[str] = []
+    run_census(
+        _census_snapshot([route]),
+        _ok_transport(calls),
+        cache=cache,
+        passport_store_path=store,
+        now=NOW,
+    )
+
+    assert route in calls
+    from verdict.model_passports import PASSPORT_TTL_SECONDS
+
+    assert load_healthy_passports(store)[route].expires_at == NOW + timedelta(
+        seconds=PASSPORT_TTL_SECONDS
+    )
+
+
+def test_census_spends_budget_on_previously_proven_routes_across_families(tmp_path):
+    """Recently proven routes are kept alive first, one per family before seconds."""
+    from verdict.census_passports import run_census
+
+    proven = ["n/agnes", "n/laguna", "v/gemma"]
+    unprobed = [f"a/x{i}" for i in range(6)]
+    cache = HealthCache(tmp_path / "health.json")
+    for route in proven:
+        cache.record(route, _free_result(), NOW - timedelta(minutes=12))
+    calls: list[str] = []
+    result = run_census(
+        _census_snapshot(proven + unprobed),
+        _ok_transport(calls),
+        cache=cache,
+        passport_store_path=tmp_path / "state.json",
+        now=NOW,
+        max_candidates=2,
+        max_tokens=512,
+    )
+
+    assert result["probed"] == 2
+    assert set(calls) == {"n/agnes", "v/gemma"}
+
+
+def _proven_cache(tmp_path, routes):
+    cache = HealthCache(tmp_path / "health.json")
+    for route in routes:
+        # Proven by an earlier tick; too old to copy, so its passport is due.
+        cache.record(route, _free_result(), NOW - timedelta(minutes=12))
+    return cache
+
+
+TEN_PROVEN = [f"{family}/m" for family in "abcdefgh"] + ["y/worker", "z/worker"]
+
+
+def test_census_reserves_an_exploration_slot_for_a_never_proven_route(tmp_path):
+    from verdict.census_passports import run_census
+
+    calls: list[str] = []
+    run_census(
+        _census_snapshot([*TEN_PROVEN, "q/new"]),
+        _ok_transport(calls),
+        cache=_proven_cache(tmp_path, TEN_PROVEN),
+        passport_store_path=tmp_path / "state.json",
+        now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+    )
+
+    assert len(set(calls)) == 6
+    assert "q/new" in calls
+
+
+def test_census_probes_due_worker_capable_routes_before_other_proven_routes(tmp_path):
+    from verdict.census_passports import run_census
+
+    calls: list[str] = []
+    run_census(
+        _census_snapshot([*TEN_PROVEN, "q/new"]),
+        _ok_transport(calls),
+        cache=_proven_cache(tmp_path, TEN_PROVEN),
+        passport_store_path=tmp_path / "state.json",
+        now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+        role_routes=frozenset({"y/worker", "z/worker"}),
+    )
+
+    assert {"y/worker", "z/worker"} <= set(calls)
+    assert "q/new" in calls

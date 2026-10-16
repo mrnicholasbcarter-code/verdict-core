@@ -27,8 +27,14 @@ _RUNTIME_SOURCE_PATHS = {
     "model_cooldowns": "/api/resilience/model-cooldowns",
     "budget": "/api/usage/budget",
     "token_limits": "/api/usage/token-limits",
+    "connections": "/api/resilience/connections",
 }
-_MANAGEMENT_SOURCES = frozenset({"rate_limits", "model_cooldowns", "budget", "token_limits"})
+_MANAGEMENT_SOURCES = frozenset(
+    {"rate_limits", "model_cooldowns", "budget", "token_limits", "connections"}
+)
+# Health is public liveness without a token; OmniRoute 3.8.51+ returns the
+# provider health, breaker, lockout and learned-limit detail only with it.
+_MANAGEMENT_DETAIL_SOURCES = _MANAGEMENT_SOURCES | {"health"}
 _USAGE_SCOPED_SOURCES = frozenset({"budget", "token_limits"})
 _DEFAULT_RUNTIME_SOURCES = frozenset({"health"})
 _MAX_JSON_CONTAINER_DEPTH = 64
@@ -142,7 +148,7 @@ class OmniRouteHTTPTransport:
             payload = self._get_json(
                 operation="runtime",
                 path=path,
-                token=self.management_token if source in _MANAGEMENT_SOURCES else None,
+                token=self.management_token if source in _MANAGEMENT_DETAIL_SOURCES else None,
                 params=params,
             )
             _merge_source(
@@ -389,6 +395,8 @@ def _merge_source(
         _merge_budget(observations, payload, base)
     elif source == "token_limits":
         _merge_token_limits(observations, payload, base, usage_api_key_id=usage_api_key_id)
+    elif source == "connections":
+        _merge_connections(observations, payload, base, received_at=received_at)
 
 
 def _merge_health(
@@ -424,6 +432,78 @@ def _merge_health(
         _apply_lockout(observations, record, base, received_at=received_at)
     for record in _records(payload, "learnedLimits"):
         _apply_headroom(observations, record, base)
+
+
+def _merge_connections(
+    observations: dict[str, dict[str, Any]],
+    payload: Any,
+    base: Mapping[str, Any],
+    *,
+    received_at: datetime,
+) -> None:
+    """Fold ``/api/resilience/connections`` into provider and model observations.
+
+    A provider is healthy when at least one active connection is not cooling
+    down and its breaker is CLOSED (or has never tripped). With no usable
+    connection the strongest blocker wins: an open breaker, else a cooldown
+    as a lockout until it ends. A model lockout applies only when every usable
+    connection of the provider has it.
+    """
+    by_provider: dict[str, list[Mapping[str, Any]]] = {}
+    for record in _records(payload, "connections"):
+        provider = record.get("provider")
+        if isinstance(provider, str) and provider and record.get("isActive") is True:
+            by_provider.setdefault(provider, []).append(record)
+    for provider, connections in by_provider.items():
+        usable = []
+        breaker_open = False
+        cooldown_ms: list[int] = []
+        for record in connections:
+            breaker = record.get("breaker")
+            breaker_state = (
+                str(breaker.get("state", "")).upper() if isinstance(breaker, Mapping) else "CLOSED"
+            )
+            remaining = _integer(record.get("cooldownRemainingMs")) or 0
+            if record.get("isCoolingDown") is True or remaining > 0:
+                cooldown_ms.append(remaining)
+            elif breaker_state == "OPEN":
+                breaker_open = True
+            elif breaker_state == "CLOSED":
+                usable.append(record)
+        if usable:
+            _merge_observation(observations, provider, {"health": "healthy"}, base)
+        elif breaker_open:
+            _merge_observation(
+                observations, provider, {"circuit": "open", "health": "circuit_open"}, base
+            )
+        elif cooldown_ms and max(cooldown_ms) > 0:
+            _apply_lockout(
+                observations,
+                {"provider": provider, "remainingMs": min(ms for ms in cooldown_ms if ms > 0)},
+                base,
+                received_at=received_at,
+            )
+        else:
+            _merge_observation(observations, provider, {"health": "degraded"}, base)
+        locked: dict[str, int] | None = None
+        for record in usable:
+            current: dict[str, int] = {}
+            for lockout in record.get("lockouts") or ():
+                if not isinstance(lockout, Mapping) or not isinstance(lockout.get("model"), str):
+                    continue
+                lockout_ms = _integer(lockout.get("remainingMs"))
+                if lockout_ms:
+                    current[lockout["model"]] = lockout_ms
+            locked = (
+                current
+                if locked is None
+                else {m: min(ms, current[m]) for m, ms in locked.items() if m in current}
+            )
+        for model, remaining in (locked or {}).items():
+            record = {"provider": provider, "remainingMs": remaining}
+            if model != "*":
+                record["model"] = model
+            _apply_lockout(observations, record, base, received_at=received_at)
 
 
 def _merge_rate_limits(

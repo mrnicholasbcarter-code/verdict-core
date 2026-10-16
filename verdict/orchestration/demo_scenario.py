@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -222,6 +223,19 @@ def _load_events(run_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+async def _run_serial_selection(run: Awaitable[Any]) -> Any:
+    """Run with a one-thread default executor so off-loop selections run FIFO.
+
+    The runtime selects in ``asyncio.to_thread`` (BOD-341). With several threads,
+    which ready node selects (and logs) first depends on thread timing. One
+    thread keeps the submission order, so the recorded story is reproducible.
+    Workers are async and unaffected; this is the scenario boundary only.
+    """
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="offline-scenario-select") as pool:
+        asyncio.get_running_loop().set_default_executor(pool)
+        return await run
+
+
 def run_flagship_scenario(
     runs_root: Path,
     *,
@@ -260,7 +274,10 @@ def run_flagship_scenario(
         allow_unknown_capacity=True,
     )
     executor = FaultInjectingExecutor(
-        ScriptedExecutor(_worker_script_for(worker_seconds)), {ROUTE_A: ["rate_limit"]}
+        # Keyed by node, not route: both ready nodes may select ROUTE_A
+        # concurrently, and the story is that node-1's first attempt fails over.
+        ScriptedExecutor(_worker_script_for(worker_seconds)),
+        {"@node-1": ["rate_limit"]},
     )
     reviewer = OpenCodeReviewer(
         ladder,
@@ -273,20 +290,22 @@ def run_flagship_scenario(
     os.environ[_OFFLINE_OCR_ENV] = "offline-scripted-no-network"
     try:
         result = asyncio.run(
-            run_golden_path(
-                FLAGSHIP_GOAL,
-                repo=repo,
-                runs_root=runs_root,
-                selector=ladder,
-                executor=executor,
-                classifier=FailureIntelligence(),
-                reviewer=reviewer,
-                graph=GRAPH,
-                run_id=run_id,
-                policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
-                # Authoritative marker so replay classification identifies this as a
-                # scripted scenario and never shows 'real models' in cockpit replay.
-                mode="offline-scenario",
+            _run_serial_selection(
+                run_golden_path(
+                    FLAGSHIP_GOAL,
+                    repo=repo,
+                    runs_root=runs_root,
+                    selector=ladder,
+                    executor=executor,
+                    classifier=FailureIntelligence(),
+                    reviewer=reviewer,
+                    graph=GRAPH,
+                    run_id=run_id,
+                    policy=RuntimePolicy(max_parallel=2, max_attempts_per_node=4),
+                    # Authoritative marker so replay classification identifies this as a
+                    # scripted scenario and never shows 'real models' in cockpit replay.
+                    mode="offline-scenario",
+                )
             )
         )
     finally:

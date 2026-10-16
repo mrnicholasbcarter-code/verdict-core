@@ -82,11 +82,21 @@ def _resolve_default_orchestrator_model() -> str:
 
 
 AUTODEV_SCOPE = "autodev"
+EXECUTOR_RETRIES_PER_UNIT = 1
 _STABLE_CONTEXT_OBSERVED_AT = "1970-01-01T00:00:00Z"
 # Measured token counts, not secrets: without this the receipt store's
 # ``token``/``prompt``/``completion`` key patterns redact the very numbers the
 # expensive/cheap split is supposed to be evidence for.
-_USAGE_ALLOWLIST = ("usage.prompt_tokens", "usage.completion_tokens", "usage.total_tokens")
+_USAGE_ALLOWLIST = (
+    "usage.prompt_tokens",
+    "usage.completion_tokens",
+    "usage.total_tokens",
+    "executor_retry",
+    "repair_attempt",
+    "retry_served_headers",
+    "context_pack_used_tokens",
+    "context_pack_token_budget",
+)
 _PACKET_RECEIPT_ALLOWLIST = (
     *_USAGE_ALLOWLIST,
     "token_budget",
@@ -1680,6 +1690,7 @@ class UnitOutcome:
     changed_files: tuple[str, ...] = ()
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    repair_attempt: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1692,6 +1703,7 @@ class UnitOutcome:
             "changed_files": list(self.changed_files),
             "usage": self.usage.to_dict(),
             "latency_ms": self.latency_ms,
+            "repair_attempt": self.repair_attempt,
         }
 
 
@@ -1987,6 +1999,64 @@ def prepare_live_autodev(
 _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 
 
+#: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
+_PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
+
+
+def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
+    """Planner routes from the live eligibility ladder, one per model family (BOD-393).
+
+    Planning is one reasoning call that must return JSON, so it needs a
+    reasoning-capable route but not the agentic tool-use proof an executor
+    needs (``frontier_worthy`` selects the single-call qualification; the
+    capacity filter below still keeps it off paid routes). Only free or
+    prepaid subscription routes outside the D22-excluded pools qualify, and
+    at least two families are required so one provider's outage cannot end
+    planning.
+    """
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
+    from verdict.orchestration.credential_pools import pool_of
+
+    requirements = TaskRequirements(
+        required_capabilities=frozenset({"reasoning"}),
+        coding=True,
+        reasoning=True,
+        frontier_worthy=True,
+    )
+    try:
+        _chosen, verdicts = selector.select(
+            requirements, now=datetime.datetime.now(datetime.timezone.utc)
+        )
+    except Exception as exc:  # live gateway state; fail closed, named
+        raise AutodevError(
+            f"autodev planner selection could not read the eligibility ladder: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    planners: list[str] = []
+    families: set[str] = set()
+    for verdict in sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0)):
+        route_id = str(verdict.route_id)
+        if (
+            getattr(verdict.reached, "value", None) not in _ELIGIBLE_STAGES
+            or "/" not in route_id
+            or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
+            or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
+            or route_family(route_id) in families
+        ):
+            continue
+        planners.append(route_id)
+        families.add(route_family(route_id))
+        if len(planners) == top_n:
+            break
+    if len(planners) < 2:
+        raise AutodevError(
+            "autodev planner selection needs eligible free/subscription planner routes from "
+            f"at least two model families; found {planners or 'none'} "
+            "(no paid or frontier fallback)"
+        )
+    return tuple(planners)
+
+
 def prepare_live_autodev_selected(
     objective: str, repo: Path, *, base_url: str, api_key: str | None, top_n: int = 3
 ) -> tuple[
@@ -2146,9 +2216,12 @@ def prepare_live_autodev_selected(
             f"correctly: {detail}"
         )
 
-    plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
-        objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
-    )
+    planners = _live_planner_models(selector, top_n=top_n)
+    plan = Decomposer(
+        DecompositionConfig(
+            model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
+        )
+    ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
     if time.time() - started > 3600:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
@@ -2190,6 +2263,8 @@ def run_autodev(
     probe_dropped: Sequence[Mapping[str, str]] = (),
     mechanical: bool = True,
     runner: Any = subprocess.run,
+    retry_routes: Sequence[Mapping[str, Any]] | None = None,
+    retry_executor_factory: Callable[[Mapping[str, Any]], PatchExecutor] | None = None,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
     # execution-path authority is the only strategy/route authority for automatic worker launch.
@@ -2233,32 +2308,97 @@ def run_autodev(
     )
     ledger = store if store is not None else ReceiptStore(repo / ".verdict" / "receipts.db")
 
+    # Normalize and validate the retry ladder
+    retry_ladder = tuple(retry_routes or ())
+    _retry_executors: dict[str, PatchExecutor] = {}
+
+    if retry_ladder:
+        if retry_executor_factory is None:
+
+            def _default_retry_executor_factory(route: Mapping[str, Any]) -> PatchExecutor:
+                return PatchExecutor(
+                    repo,
+                    replace(
+                        executor.config, model=str(route["model"]), base_url=str(route["gateway"])
+                    ),
+                )
+
+            retry_executor_factory = _default_retry_executor_factory
+
+        # Validate each entry: fail closed on malformed ladder entries
+        for entry in retry_ladder:
+            if not isinstance(entry, Mapping):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+            model = entry.get("model")
+            gateway = entry.get("gateway")
+            if not model or not isinstance(model, str):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+            if not gateway or not isinstance(gateway, str):
+                raise AutodevError(f"autodev retry route entry missing model/gateway: {entry!r}")
+
+        # Drop entries matching the selected model
+        retry_ladder = tuple(r for r in retry_ladder if str(r["model"]) != executor.config.model)
     outcomes: list[UnitOutcome] = []
     receipt_ids: list[str] = []
-    for unit in plan.units:
-        outcome = _run_unit(unit, repo, executor, mechanical=mechanical, runner=runner)
+    for planned_unit in plan.units:
+        # One pack per unit: the primary and any retry executor receive identical bytes.
+        pack = compile_unit_context(
+            planned_unit, repo, prior_failures=_prior_unit_failures(ledger, planned_unit)
+        )
+        unit = replace(planned_unit, context=pack.compiled_prompt)
+        outcome, executor_failed = _run_unit_once(
+            unit, repo, executor, mechanical=mechanical, runner=runner
+        )
+        retry_note: dict[str, Any] | None = None
+        if executor_failed and retry_ladder:
+            route = next(iter(retry_ladder), None)
+            if route is not None:
+                key = str(route["model"])
+                if key not in _retry_executors:
+                    _retry_executors[key] = cast(
+                        Callable[[Mapping[str, Any]], PatchExecutor], retry_executor_factory
+                    )(route)
+                retry_executor = _retry_executors[key]
+                retry_outcome, _ = _run_unit_once(
+                    unit, repo, retry_executor, mechanical=False, runner=runner
+                )
+                retry_note = {
+                    "failed_model": executor.config.model,
+                    "failed_reason": outcome.reason,
+                    "retry_model": retry_executor.config.model,
+                    "failed_repair_attempt": outcome.repair_attempt,
+                }
+                outcome = retry_outcome
         outcomes.append(outcome)
+        record_payload: dict[str, Any] = {
+            "objective": objective,
+            "orchestrator_model": plan.model,
+            "planner_attempts": list(plan.attempts),
+            "strategy_authority": "verdict.execution_path.optimize_execution_path",
+            "execution_path_decision_digest": decision.decision_digest,
+            "execution_path_trajectory_id": decision.trajectory_id,
+            "execution_path_task_slice_id": decision.task_slice_id,
+            "execution_path_strategy": decision.selected_strategy,
+            "execution_path_selected_route": decision.selected_route.to_dict(),
+            "execution_path_why_selected": decision.why_selected,
+            "execution_path_rejected": [item.to_dict() for item in decision.rejected],
+            "executor_probe_dropped": [dict(item) for item in probe_dropped],
+            **outcome.to_dict(),
+            "served_headers": executor.response_headers,
+            "verification_command": list(unit.verification_command),
+            "owned_files": list(unit.owned_files),
+            "context_pack_digest": "sha256:"
+            + hashlib.sha256(pack.compiled_prompt.encode("utf-8")).hexdigest(),
+            "context_pack_used_tokens": pack.used_tokens,
+            "context_pack_token_budget": pack.token_budget,
+        }
+        if retry_note is not None:
+            record_payload["executor_retry"] = retry_note
+            record_payload["retry_served_headers"] = retry_executor.response_headers
         record = ledger.put_receipt(
             "outcome",
             AUTODEV_SCOPE,
-            {
-                "objective": objective,
-                "orchestrator_model": plan.model,
-                "planner_attempts": list(plan.attempts),
-                "strategy_authority": "verdict.execution_path.optimize_execution_path",
-                "execution_path_decision_digest": decision.decision_digest,
-                "execution_path_trajectory_id": decision.trajectory_id,
-                "execution_path_task_slice_id": decision.task_slice_id,
-                "execution_path_strategy": decision.selected_strategy,
-                "execution_path_selected_route": decision.selected_route.to_dict(),
-                "execution_path_why_selected": decision.why_selected,
-                "execution_path_rejected": [item.to_dict() for item in decision.rejected],
-                "executor_probe_dropped": [dict(item) for item in probe_dropped],
-                **outcome.to_dict(),
-                "served_headers": executor.response_headers,
-                "verification_command": list(unit.verification_command),
-                "owned_files": list(unit.owned_files),
-            },
+            record_payload,
             provenance={"source": "verdict.autodev", "authority": "observed"},
             allowlist=_USAGE_ALLOWLIST,
         )
@@ -2278,10 +2418,80 @@ def run_autodev(
     )
 
 
-def _run_unit(
+def compile_unit_context(
+    unit: WorkUnit, repo: Path, *, prior_failures: Sequence[str] = (), token_budget: int = 4096
+) -> ContextPack:
+    """Compile the worker context for one ``run_autodev`` unit (BOD-303).
+
+    The default objective path uses the same compiler as packet autodev: repository
+    instructions, governing ADRs, native code-intelligence retrieval and prior failed
+    outcomes, all inside one token budget. Owned-file contents are left out because
+    :func:`verdict.patch_executor.build_unit_prompt` inlines them fresh at send time.
+    """
+    from verdict.context_intelligence import (
+        ContextIntelligenceError,
+        execute_context_query,
+        plan_context_query,
+    )
+
+    def read_optional(paths: Sequence[str]) -> tuple[str, ...]:
+        found: list[str] = []
+        for path in paths:
+            with suppress(OSError, UnicodeDecodeError, UnsafeRepositoryPathError):
+                found.append(read_repository_text(repo, path))
+        return tuple(found)
+
+    try:
+        fabric = execute_context_query(
+            plan_context_query(
+                unit.objective,
+                proof_criteria=(" ".join(unit.verification_command),),
+                token_budget=max(256, token_budget // 2),
+                max_units=8,
+            ),
+            repo_root=repo,
+        )
+        intelligence = tuple(item.content for item in fabric.units)
+    except (OSError, ValueError, ContextIntelligenceError):
+        intelligence = ()
+    return compile_worker_context(
+        objective=unit.objective,
+        non_goals=("do not modify files outside the owned files",),
+        acceptance=(" ".join(unit.verification_command),),
+        authority={"owned_paths": list(unit.owned_files)},
+        owned_source={},
+        repository_instructions=read_optional(("AGENTS.md",)),
+        relevant_examples=(unit.context, *intelligence),
+        governing_docs=read_optional(discover_governing_docs(repo)),
+        prior_verified_outcomes=tuple(prior_failures),
+        token_budget=token_budget,
+    )
+
+
+def _prior_unit_failures(ledger: ReceiptStore, unit: WorkUnit, *, limit: int = 3) -> list[str]:
+    """Recent unverified autodev outcomes that touched this unit's owned files."""
+    owned = set(unit.owned_files)
+    failures: list[str] = []
+    for record in ledger.query_receipts("outcome", scope=AUTODEV_SCOPE, limit=200):
+        payload = record.payload
+        if payload.get("verified") or not owned.intersection(payload.get("owned_files") or ()):
+            continue
+        failures.append(
+            f"prior attempt {payload.get('unit_id')} by {payload.get('model')} "
+            f"failed: {payload.get('reason')}"
+        )
+        if len(failures) >= limit:
+            break
+    return failures
+
+
+def _run_unit_once(
     unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
-) -> UnitOutcome:
-    """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
+) -> tuple[UnitOutcome, bool]:
+    """Try one tier and return (outcome, executor_failed).
+
+    executor_failed is True if the model tier failed (attempt not applied or exception).
+    """
     started = time.monotonic()
     # Units run in sequence against one tree, so earlier units leave it dirty.
     # Attribution is the delta against this snapshot, not the whole dirty set.
@@ -2290,31 +2500,57 @@ def _run_unit(
     if mechanical and _try_mechanical(unit, repo, runner=runner):
         touched = _touched_since(repo, before, runner=runner)
         ok, reason = _verify(unit, repo, touched, runner=runner)
-        return UnitOutcome(
-            unit_id=unit.unit_id,
-            tier="mechanical",
-            model="none",
-            verified=ok,
-            reason=reason,
-            changed_files=touched,
-            latency_ms=int((time.monotonic() - started) * 1000),
+        return (
+            UnitOutcome(
+                unit_id=unit.unit_id,
+                tier="mechanical",
+                model="none",
+                verified=ok,
+                reason=reason,
+                changed_files=touched,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            ),
+            False,
         )
 
     # The mechanical tier may have written a partial repair before declining the
     # unit. Those edits are on disk either way, so they belong in this unit's
     # attribution rather than going unreported or landing on a later unit.
-    attempt = executor.execute_unit(unit)
-    if not attempt.applied:
-        return _from_attempt(
-            attempt,
+    try:
+        attempt = executor.execute_unit(unit)
+    except Exception as exc:
+        outcome = UnitOutcome(
+            unit_id=unit.unit_id,
+            tier="model",
+            model=executor.config.model,
             verified=False,
-            reason=attempt.reason,
+            reason=f"executor error: {type(exc).__name__}: {exc}",
             changed_files=_touched_since(repo, before, runner=runner),
+        )
+        return (outcome, True)
+
+    if not attempt.applied:
+        return (
+            _from_attempt(
+                attempt,
+                verified=False,
+                reason=attempt.reason,
+                changed_files=_touched_since(repo, before, runner=runner),
+            ),
+            True,
         )
 
     touched = _touched_since(repo, before, runner=runner)
     ok, reason = _verify(unit, repo, touched, runner=runner)
-    return _from_attempt(attempt, verified=ok, reason=reason, changed_files=touched)
+    return (_from_attempt(attempt, verified=ok, reason=reason, changed_files=touched), False)
+
+
+def _run_unit(
+    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
+) -> UnitOutcome:
+    """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
+    outcome, _ = _run_unit_once(unit, repo, executor, mechanical=mechanical, runner=runner)
+    return outcome
 
 
 def _from_attempt(
@@ -2329,6 +2565,7 @@ def _from_attempt(
         changed_files=changed_files,
         usage=attempt.usage,
         latency_ms=attempt.latency_ms,
+        repair_attempt=attempt.repair_attempt,
     )
 
 

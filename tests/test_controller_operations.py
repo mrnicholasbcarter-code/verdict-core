@@ -311,24 +311,48 @@ def test_bounded_planner_timeout_keeps_attested_terminal_for_session_feedback(
     Self-host run bod308-salvage-safe-20261011 lost a live 600 s planner timeout:
     the outer bound fired first, replaced Prime's ``executor_kind="live"`` terminal
     with an unattested one, and session feedback refused to learn from it.
+
+    BOD-383: this used to race a real ``PrimeHeadlessExecutor`` subprocess kill
+    (SIGTERM, wait, maybe SIGKILL, wait) against the outer bound. That OS-level
+    cleanup work takes real wall-clock time that depends on process-scheduling
+    jitter, and the test's small ``timeout_seconds=2.0`` (chosen for speed) only
+    gives ``bounded_executor_call`` a 0.2 s reserve, so a loaded CI runner could
+    delay the subprocess reap past the outer deadline and flake. The property
+    under test is ``bounded_executor_call``'s margin ordering, not subprocess
+    kill mechanics (covered separately by
+    ``test_orch_executors.test_timeout_kills_process_group``), so a cooperating
+    in-process executor exercises it deterministically: both the inner and outer
+    bounds are ``asyncio.wait_for`` timers on the same event loop clock, and
+    asyncio always runs the earlier-deadline timer's callback first, with no
+    OS cleanup racing the deadline.
     """
-    import stat
     import time
     from datetime import datetime, timezone
 
-    from verdict.orchestration.executors import PrimeHeadlessExecutor
+    from verdict.orchestration.contracts import WorkerTerminal
     from verdict.orchestration.health_cache import HealthCache
     from verdict.orchestration.recovery import FailureIntelligence
     from verdict.orchestration.session_feedback import record_worker_failure
 
-    prime = tmp_path / "fake-prime"
-    prime.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
-    prime.chmod(prime.stat().st_mode | stat.S_IXUSR)
+    class CooperatingExecutor:
+        """Honors its own timeout and returns its own attested terminal."""
+
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            try:
+                await asyncio.wait_for(asyncio.Event().wait(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                return WorkerTerminal(
+                    ok=False, error="timeout", model=route_id, executor_kind="live"
+                )
+            raise AssertionError("executor should have hit its own timeout")
+
     route = "antigravity/gemini-fixture"
     started = time.monotonic()
     terminal = asyncio.run(
         operations.bounded_executor_call(
-            PrimeHeadlessExecutor(prime_bin=str(prime)),
+            CooperatingExecutor(),
             "plan",
             route_id=route,
             cwd=tmp_path,

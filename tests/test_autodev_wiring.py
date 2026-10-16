@@ -868,8 +868,8 @@ def test_cmd_autodev_without_pin_uses_selected_route(
         calls.update(kwargs)
         headers = {"x-omniroute-response-cost": "0"}
         candidates = (
-            {"route_id": FREE_A, "probe_headers": headers},
-            {"route_id": FREE_B, "probe_headers": headers},
+            {"route_id": FREE_A, "gateway": GATEWAY, "model": FREE_A, "probe_headers": headers},
+            {"route_id": FREE_B, "gateway": GATEWAY, "model": FREE_B, "probe_headers": headers},
         )
         dropped = ({"route_id": "free/gamma:free", "reason": "identity"},)
         return decision, prepared, headers, candidates, dropped
@@ -988,3 +988,754 @@ def test_prepare_live_autodev_selected_fails_closed_when_the_ladder_raises(
         )
     assert "could not read the eligibility ladder" in str(excinfo.value)
     assert "ConnectionError" in str(excinfo.value)
+
+
+def test_run_autodev_retries_next_ranked_candidate_when_executor_attempt_fails(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Primary executor fails; retry with next model succeeds."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def primary_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=primary_transport,
+    )
+
+    def retry_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": A_DIFF}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=retry_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Unit should be verified with the retry model
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+
+    # Receipt should record both attempts
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) == 1
+    payload = records[0].payload
+    assert "executor_retry" in payload
+    assert payload["executor_retry"]["failed_model"] == "cheap/model"
+    assert payload["executor_retry"]["retry_model"] == "prov/other:free"
+
+
+def test_run_autodev_executor_exception_is_recorded_and_retried_once(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Primary executor raises exception; retry succeeds."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def primary_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        raise RuntimeError("boom")
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=primary_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=lambda m, p, t: {
+                "status_code": 200,
+                "body": {
+                    "choices": [{"message": {"content": A_DIFF}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                },
+            },
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Unit should be verified after retry
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+
+    # Receipt should show executor error in failed_reason
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    payload = records[0].payload
+    # The error message may be wrapped by transport layer
+    assert "RuntimeError: boom" in payload["executor_retry"]["failed_reason"]
+
+
+def test_run_autodev_retry_is_bounded_to_one_attempt(repo: Path, tmp_path: Path) -> None:
+    """Primary fails, retry also fails; outcome is from retry, no further attempts."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer(PLAN),  # two units
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units should fail but not crash; outcome is from retry model
+    assert len(report.failed) == 2
+    assert all(u.model == "prov/other:free" for u in report.failed)
+
+    # Receipt should show the retry was attempted
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) == 2
+    for payload in [r.payload for r in records]:
+        assert "executor_retry" in payload
+
+
+def test_run_autodev_skips_retry_route_equal_to_selected_model(repo: Path, tmp_path: Path) -> None:
+    """Retry route with model equal to primary is silently dropped; no retry happens."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # Include a route that matches the primary model (should be skipped)
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=(
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+            {"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},
+        ),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Should fail (primary failed)
+    assert len(report.failed) == 1
+
+    # Factory should be called only for the non-matching route (cheap/model is filtered out before calling factory)
+    # Actually, after filtering, only prov/other:free remains, so factory is called once for it
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["model"] == "prov/other:free"
+
+
+def test_autodev_cli_passes_selection_ladder_as_retry_routes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI passes selected_candidates as retry_routes to run_autodev."""
+    import verdict.autodev_run as autodev
+    import verdict.cli as cli
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_autodev(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return autodev.AutodevReport(
+            objective="fix ruff errors",
+            repo_path=str(args[1]),
+            orchestrator_model="cheap/model",
+            executor_model="cheap/model",
+            units_planned=0,
+            outcomes=(),
+            orchestrator_usage=autodev.TokenUsage(),
+        )
+
+    monkeypatch.setattr(autodev, "run_autodev", fake_run_autodev)
+
+    # Mock the selection process
+    def fake_selected(objective: str, repo_path: Any, **kwargs: Any) -> Any:
+        from tests.test_autodev_wiring import _decomposer, _two_candidate_decision
+
+        decision = _two_candidate_decision()
+        prepared = _decomposer([PLAN[0]], model=decision.selected_route.model).decompose(
+            "fix ruff errors", repo_root=repo_path
+        )
+        # Candidates must match what prepare_live_autodev_selected returns:
+        # with route_id, gateway, model, probe_headers, etc.
+        candidates = (
+            {
+                "route_id": "free/a:free",
+                "gateway": GATEWAY,
+                "model": "free/a:free",
+                "probe_headers": {"x-omniroute-response-cost": "0"},
+            },
+            {
+                "route_id": "free/b:free",
+                "gateway": GATEWAY,
+                "model": "free/b:free",
+                "probe_headers": {"x-omniroute-response-cost": "0"},
+            },
+        )
+        return decision, prepared, {}, candidates, ()
+
+    monkeypatch.setattr(autodev, "prepare_live_autodev_selected", fake_selected)
+    monkeypatch.setattr("verdict.credentials_store.resolve_api_key", lambda: "fake-key")
+
+    # Call the CLI with live selection
+    cli.cmd_autodev(
+        "fix ruff errors",
+        str(repo),
+        orchestrator_model=None,
+        executor_model=None,
+        base_url=None,
+        allow_live=True,
+        dry_run=False,
+        output_json=False,
+    )
+
+    # Verify retry_routes was passed
+    assert "retry_routes" in captured
+    # The retry_routes should be exactly the selected candidates
+    retry_routes = captured["retry_routes"]
+    assert isinstance(retry_routes, (list, tuple))
+    assert len(retry_routes) == 2
+    # Verify the routes match what fake_selected returned
+    assert retry_routes[0]["route_id"] == "free/a:free"
+    assert retry_routes[1]["route_id"] == "free/b:free"
+
+
+def test_run_autodev_no_retry_when_all_routes_equal_primary(repo: Path, tmp_path: Path) -> None:
+    """All retry_routes entries have model == primary executor's model; no retry happens."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # All retry routes have the same model as primary (should all be filtered)
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=(
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+            {"model": "cheap/model", "gateway": "http://127.0.0.1:20128/v1"},
+        ),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Should fail (primary failed, no retry routes available after filtering)
+    assert len(report.failed) == 1
+
+    # Factory should never be called since all routes were filtered out
+    assert len(factory_calls) == 0
+
+
+def test_run_autodev_retry_executor_built_once_per_model(repo: Path, tmp_path: Path) -> None:
+    """Two failing units with same retry model call factory exactly once (lazy cache)."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    factory_calls = []
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        factory_calls.append(route)
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    # Single retry route; both units will fail primary and hit the same retry route
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer((PLAN[0], PLAN[1])),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units should fail (all executors return "no diff")
+    assert len(report.failed) == 2
+
+    # Factory should be called exactly once: the lazy cache reuses the executor for the second unit
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["model"] == "prov/other:free"
+
+
+def test_run_autodev_receipt_retry_served_headers(repo: Path, tmp_path: Path) -> None:
+    """Retry_served_headers in receipt: present when retry happened, absent when no retry."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    def failing_transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+            "headers": {"x-test-header": "value"} if "retry" in model_id else {},
+        }
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=failing_transport,
+    )
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        return PatchExecutor(
+            repo,
+            PatchExecutorConfig(model=str(route["model"]), base_url=str(route["gateway"])),
+            transport=failing_transport,
+        )
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer((PLAN[0], PLAN[1])),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/retry:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    # Both units fail; both should have retry attempted
+    assert len(report.failed) == 2
+
+    # Get receipts from store
+    records = store.query_receipts(scope=AUTODEV_SCOPE)
+    assert len(records) >= 2
+
+    # Both receipts should have retry_served_headers present (from retry executor)
+    for record in records:
+        payload = record.payload
+        # When retry happened, retry_served_headers key should be present
+        assert "retry_served_headers" in payload
+        # The value should be empty dict (from failing_transport for retry model)
+        assert payload["retry_served_headers"] == {}
+
+
+def test_run_autodev_malformed_retry_route_raises_autodevarror(repo: Path, tmp_path: Path) -> None:
+    """Malformed retry_routes entry (missing gateway) raises AutodevError."""
+    db = tmp_path / "receipts.db"
+    store = ReceiptStore(db)
+
+    primary = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=lambda m, p, t: {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "no diff"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        },
+    )
+
+    with pytest.raises(AutodevError, match="autodev retry route entry missing model/gateway"):
+        run_autodev(
+            "fix ruff errors",
+            repo,
+            store=store,
+            decomposer=_decomposer([PLAN[0]]),
+            executor=primary,
+            mechanical=False,
+            retry_routes=({"model": "prov/other:free"},),  # Missing gateway
+        )
+
+
+# BOD-303: the default ``run_autodev`` path builds each unit's worker context through the
+# real context compiler, once per unit, and records the digest of the exact pack sent.
+
+ADR_LINE = "Widgets must stay pure and side-effect free."
+AGENTS_LINE = "Always run ruff before committing."
+
+
+def _context_repo(repo: Path) -> Path:
+    (repo / "docs" / "adr").mkdir(parents=True)
+    (repo / "docs" / "adr" / "0001-widgets.md").write_text(
+        f"# ADR 0001: widgets\n\n{ADR_LINE}\n", encoding="utf-8"
+    )
+    (repo / "AGENTS.md").write_text(f"# Rules\n\n{AGENTS_LINE}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "docs"],
+        cwd=repo,
+        check=True,
+    )
+    return repo
+
+
+def _sent_context(payload: Mapping[str, Any]) -> str:
+    prompt = str(payload["messages"][-1]["content"])
+    after = prompt.split("Additional context:\n", 1)[1]
+    return after.split("\n\n--- current contents of ", 1)[0]
+
+
+def _recording_executor(
+    repo: Path, sent: list[Mapping[str, Any]], content: str, *, model: str = "cheap/model"
+) -> PatchExecutor:
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        sent.append(payload)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    return PatchExecutor(
+        repo,
+        PatchExecutorConfig(model=model, base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+
+
+def test_run_autodev_worker_request_carries_the_compiled_context_pack(
+    repo: Path, tmp_path: Path
+) -> None:
+    import hashlib
+
+    _context_repo(repo)
+    store = ReceiptStore(tmp_path / "receipts.db")
+    sent: list[Mapping[str, Any]] = []
+
+    run_autodev(
+        "drop unused imports",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_recording_executor(repo, sent, A_DIFF),
+        mechanical=False,
+    )
+
+    assert len(sent) == 1
+    prompt = str(sent[0]["messages"][-1]["content"])
+    # Owned source still reaches the worker, and the compiled pack adds the governing
+    # ADR and repository instructions the bare prompt never carried.
+    assert "x = 1" in prompt
+    context = _sent_context(sent[0])
+    assert ADR_LINE in context
+    assert AGENTS_LINE in context
+    assert "drop the unused import in a.py" in context
+
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    expected = "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
+    assert payload["context_pack_digest"] == expected
+    assert 0 < payload["context_pack_used_tokens"] <= payload["context_pack_token_budget"]
+
+
+def test_run_autodev_retry_executor_receives_the_identical_pack_compiled_once(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    import verdict.autodev_run as autodev_run
+
+    _context_repo(repo)
+    calls: list[str] = []
+    real_compile = autodev_run.compile_worker_context
+
+    def counting_compile(**kwargs: Any) -> Any:
+        calls.append(str(kwargs["objective"]))
+        return real_compile(**kwargs)
+
+    monkeypatch.setattr(autodev_run, "compile_worker_context", counting_compile)
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary_sent: list[Mapping[str, Any]] = []
+    retry_sent: list[Mapping[str, Any]] = []
+
+    run_autodev(
+        "drop unused imports",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=_recording_executor(repo, primary_sent, "no diff"),
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=lambda route: _recording_executor(
+            repo, retry_sent, A_DIFF, model=str(route["model"])
+        ),
+    )
+
+    # "no diff" is an unparseable patch-shape rejection, so the primary executor
+    # gets its one internal repair turn (also "no diff") before the unit is
+    # handed to the external retry ladder.
+    assert len(primary_sent) == 2 and len(retry_sent) == 1
+    assert _sent_context(retry_sent[0]) == _sent_context(primary_sent[0])
+    assert calls == ["drop the unused import in a.py"]
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    digest = "sha256:" + hashlib.sha256(_sent_context(retry_sent[0]).encode("utf-8")).hexdigest()
+    assert payload["context_pack_digest"] == digest
+    assert payload["executor_retry"]["retry_model"] == "prov/other:free"
+
+
+BAD_A_DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,2 +1 @@
+-import sys
+ x = 1
+"""
+
+
+def _replies_executor(repo: Path, replies: list[str], *, model: str = "cheap/model") -> Any:
+    calls: list[Mapping[str, Any]] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        calls.append(payload)
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": replies[min(len(calls), len(replies)) - 1]}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model=model, base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+    return executor, calls
+
+
+def test_run_autodev_repairs_a_rejected_patch_and_records_it(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, calls = _replies_executor(repo, [BAD_A_DIFF, "```file:a.py\nx = 1\n```"])
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+    )
+
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "cheap/model"
+    assert len(calls) == 2
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["repair_attempt"]["repaired"] is True
+    assert payload["repair_attempt"]["format"] == "full_file"
+    assert "patch failed" in payload["repair_attempt"]["first_error"]
+    assert "executor_retry" not in payload
+
+
+def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_path: Path) -> None:
+    store = ReceiptStore(tmp_path / "receipts.db")
+    primary, primary_calls = _replies_executor(repo, [BAD_A_DIFF, BAD_A_DIFF])
+
+    def retry_factory(route: Mapping[str, Any]) -> Any:
+        executor, _ = _replies_executor(repo, [A_DIFF], model=str(route["model"]))
+        return executor
+
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=store,
+        decomposer=_decomposer([PLAN[0]]),
+        executor=primary,
+        mechanical=False,
+        retry_routes=({"model": "prov/other:free", "gateway": "http://127.0.0.1:20128/v1"},),
+        retry_executor_factory=retry_factory,
+    )
+
+    assert len(primary_calls) == 2
+    assert len(report.verified) == 1
+    assert report.verified[0].model == "prov/other:free"
+    payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+    assert payload["executor_retry"]["failed_repair_attempt"]["repaired"] is False
+    assert payload["executor_retry"]["failed_reason"].startswith("patch repair failed:")
+
+
+def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-393: planner candidates come from the live ladder, never cc/*, cx/* or paid."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict(FREE_A, rank=0),
+        _route_verdict("kilocode/alpha:free", rank=1),  # same family as FREE_A
+        _route_verdict("cc/claude-haiku-5-5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=3, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("anthropic/claude-sonnet-5", rank=4, capacity=CapacityClass.METERED),
+        _route_verdict("agy/gemini-x", rank=5, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_B, rank=6),
+    ]
+    built: dict[str, Any] = {}
+    requirements: list[Any] = []
+
+    class _Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            requirements.append(req)
+            return None, tuple(verdicts)
+
+    def build_selector(gateway: str, **kwargs: Any) -> Any:
+        built.update(kwargs)
+        return _Selector()
+
+    monkeypatch.setattr("verdict.orchestration.eligibility_report.build_selector", build_selector)
+    _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    planners = configs[0].planner_models
+    assert planners == (FREE_A, "agy/gemini-x", FREE_B)
+    assert configs[0].model == FREE_A
+    assert any(req.reasoning and "reasoning" in req.required_capabilities for req in requirements)
+
+
+def test_prepare_live_autodev_selected_needs_two_planner_families(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict("kilocode/alpha:free", rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    _scripted_probe(monkeypatch)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: pytest.fail("must not plan"))
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+    assert "planner" in str(excinfo.value)
+    assert "cc/" not in str(excinfo.value)

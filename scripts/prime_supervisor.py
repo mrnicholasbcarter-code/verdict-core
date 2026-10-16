@@ -1915,6 +1915,123 @@ def verify_startup_controller_identity(
     raise ControllerLaunchError("controller_identity_unverified", detail)
 
 
+def _resolve_subagent_report_routes(
+    roles: tuple[str, ...] = ("worker", "reviewer"),
+) -> dict[str, dict[str, Any]]:
+    """Live worker/reviewer routes for a ``--select-only`` report; never launches.
+
+    Reuses the existing role-aware ``SubagentModelSelector`` (OmniRoute
+    availability + Verdict eligibility + diversity exclusion) -- the same
+    authority pi-subagents launches already consult. A missing eligible route
+    for a role is reported as a named error, never invented.
+    """
+    from verdict.orchestration.contracts import route_family
+    from verdict.subagent_models import select_models_for_parallel_roles
+
+    try:
+        selected = select_models_for_parallel_roles(list(roles))
+    except Exception as exc:
+        return {role: {"error": f"role_resolution_failed: {exc}"} for role in roles}
+
+    report: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        model = selected.get(role)
+        if model is None:
+            report[role] = {"error": "no_eligible_route"}
+        else:
+            report[role] = {
+                "model_id": model.id,
+                "provider": model.provider,
+                "family": route_family(model.id),
+            }
+    return report
+
+
+def _run_select_only(
+    *, repo: Path, state: Path, args: argparse.Namespace, controller_scope_prefixes: Sequence[str]
+) -> int:
+    """Resolve controller + worker + reviewer routes live; print JSON; never launch.
+
+    Reuses the exact same production selection path ``attempt()`` would use
+    (``CONTROLLER_SELECTOR`` injection point, then the production factory) so
+    this is proof of the real selection pipeline, not a parallel one. Writes
+    no run.json/session dir -- this is a read-only report.
+
+    ``--select-only`` claims to be read-only. The production factory's default
+    receipt store writes to ``{repo}/.verdict/receipts.db`` when no store is
+    injected (``ControllerSelectionHooks.receipt_store is None``), which is a
+    write outside ``--state-dir``. This passes an explicit ``ReceiptStore``
+    rooted under ``--state-dir`` so a select-only run never touches the repo.
+    """
+    from verdict.receipt_store import ReceiptStore
+
+    token = f"select-only-{uuid.uuid4()}"
+    decision_path = (
+        args.controller_decision.resolve() if args.controller_decision is not None else None
+    )
+    selector = CONTROLLER_SELECTOR
+    selection_hooks = CONTROLLER_SELECTION_HOOKS
+    needs_production = selector is None and selection_hooks is None and decision_path is None
+    controller_report: dict[str, Any]
+    try:
+        if needs_production:
+            factory = CONTROLLER_SELECTION_FACTORY or build_production_controller_selection_bundle
+            select_only_receipt_store = ReceiptStore(state / "select-only-receipts.db")
+            production_bundle = factory(
+                repo=repo,
+                state_dir=state,
+                session_dir=None,
+                token=None,
+                max_issues=args.max_issues,
+                timeout=args.timeout,
+                story_id=args.story,
+                controller_scope_prefixes=controller_scope_prefixes,
+                receipt_store=select_only_receipt_store,
+            )
+            selection_hooks = production_bundle.hooks
+        decision = resolve_controller_decision(
+            decision_path=decision_path,
+            mission_path=args.controller_mission,
+            attempt_id=token,
+            provider=args.provider,
+            model=args.model,
+            thinking=args.thinking,
+            override_reason=args.override_reason,
+            selector=selector,
+            selection_hooks=selection_hooks,
+            session_state=None,
+        )
+        from verdict.orchestration.contracts import route_family
+
+        controller_report = {
+            "route_id": decision.selected_upstream_route,
+            "provider": decision.prime_target.prime_provider,
+            "model": decision.prime_target.prime_model,
+            "family": route_family(decision.selected_upstream_route),
+            "why_selected": decision.why_selected,
+        }
+    except ControllerLaunchError as exc:
+        controller_report = {"error": f"{exc.reason_code}: {exc.detail}"}
+
+    subagent_routes = _resolve_subagent_report_routes(("worker", "reviewer"))
+    worker_report = subagent_routes.get("worker", {"error": "no_eligible_route"})
+    reviewer_report = subagent_routes.get("reviewer", {"error": "no_eligible_route"})
+    reviewer_family_differs = (
+        "family" in worker_report
+        and "family" in reviewer_report
+        and worker_report["family"] != reviewer_report["family"]
+    )
+    report = {
+        "mode": "select-only",
+        "controller": controller_report,
+        "worker": worker_report,
+        "reviewer": reviewer_report,
+        "reviewer_family_differs_from_worker": reviewer_family_differs,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True), flush=True)
+    return 0 if "error" not in controller_report else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -1998,6 +2115,17 @@ def main() -> int:
             "alternative; this flag takes precedence when both are set."
         ),
     )
+    parser.add_argument(
+        "--select-only",
+        action="store_true",
+        help=(
+            "Run live controller selection (and the same worker/reviewer role "
+            "selection pi-subagents uses) and print the chosen routes as JSON. "
+            "Never launches Prime, writes run.json, or creates a session dir. "
+            "Exit 0 with the report when the controller route resolves, exit 2 "
+            "with the named failure when it does not."
+        ),
+    )
     args = parser.parse_args()
     if args.skip_identity_verify and os.environ.get("VERDICT_TEST_MODE") != "1":
         parser.error("--skip-identity-verify is only allowed when VERDICT_TEST_MODE=1")
@@ -2052,6 +2180,11 @@ def main() -> int:
         parser.error(
             f"invalid --scope / VERDICT_CONTROLLER_ROUTE_PREFIXES: "
             f"no route prefixes found in {_raw_scope!r}"
+        )
+
+    if args.select_only:
+        return _run_select_only(
+            repo=repo, state=state, args=args, controller_scope_prefixes=controller_scope_prefixes
         )
 
     def interrupted(_signum: int, _frame: Any) -> None:
