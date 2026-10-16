@@ -507,16 +507,12 @@ def refresh_metadata(
                     url=OPENROUTER_MODELS_URL,
                     fetched_at=fetched_at,
                     version="fixture",
-                    reason=(
-                        "fixture: Artificial Analysis indices mirrored via OpenRouter /models"
-                    ),
+                    reason=("fixture: Artificial Analysis indices mirrored via OpenRouter /models"),
                 )
             else:
                 or_rows, or_status = fetch_openrouter_models_pages(transport)
             scored = parse_openrouter_aa_scores(
-                or_rows,
-                fetched_at=or_status.fetched_at or fetched_at,
-                version=or_status.version,
+                or_rows, fetched_at=or_status.fetched_at or fetched_at, version=or_status.version
             )
             applied = apply_soft_scores(records, scored)
             sources[SOURCE_OPENROUTER_AA] = SourceStatus(

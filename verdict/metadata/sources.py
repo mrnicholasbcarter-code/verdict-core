@@ -521,7 +521,6 @@ def skipped_p1(source: str) -> SourceStatus:
     return SourceStatus(source=source, status="skipped", reason=P1_SKIP_REASONS[source])
 
 
-
 def _finite_number(raw: object) -> float | None:
     """Parse a soft-score number: finite float only; bool/NaN/inf rejected; 0 kept."""
     if isinstance(raw, bool):
@@ -564,10 +563,7 @@ def _normalize_openrouter_next(next_url: object, *, previous: str) -> str | None
 
 
 def fetch_openrouter_models_pages(
-    transport: JsonTransport,
-    *,
-    start_url: str | None = None,
-    max_pages: int = OPENROUTER_MAX_PAGES,
+    transport: JsonTransport, *, start_url: str | None = None, max_pages: int = OPENROUTER_MAX_PAGES
 ) -> tuple[list[Any], SourceStatus]:
     """Paginate OpenRouter /models through the guarded metadata transport.
 
@@ -648,10 +644,7 @@ def fetch_openrouter_models_pages(
 
 
 def parse_openrouter_aa_scores(
-    rows: list[Any],
-    *,
-    fetched_at: str,
-    version: str | None = None,
+    rows: list[Any], *, fetched_at: str, version: str | None = None
 ) -> dict[str, SoftScores]:
     """Map OpenRouter /models rows with AA benchmarks to SoftScores keyed by attach id.
 

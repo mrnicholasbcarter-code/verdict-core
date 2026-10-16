@@ -319,9 +319,7 @@ class ShortlistEntry:
             "eval_prior_metric": self.eval_prior_metric,
             "eval_prior_value": self.eval_prior_value,
             "eval_prior_provenance": (
-                None
-                if self.eval_prior_provenance is None
-                else dict(self.eval_prior_provenance)
+                None if self.eval_prior_provenance is None else dict(self.eval_prior_provenance)
             ),
             "eval_prior_metadata_id": self.eval_prior_metadata_id,
             "eval_prior_kind": self.eval_prior_kind,

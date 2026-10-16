@@ -514,10 +514,7 @@ class TestOpenRouterAAMirror:
             )
 
     def test_openrouter_pagination_cycle_is_partial(self, tmp_path: Path) -> None:
-        from verdict.metadata.sources import (
-            HttpxJsonTransport,
-            fetch_openrouter_models_pages,
-        )
+        from verdict.metadata.sources import HttpxJsonTransport, fetch_openrouter_models_pages
 
         calls: list[str] = []
 
@@ -531,11 +528,17 @@ class TestOpenRouterAAMirror:
                         {
                             "id": "openai/gpt-4o-mini",
                             "benchmarks": {
-                                "artificial_analysis": {"coding_index": 1.0, "intelligence_index": 1.0, "agentic_index": 1.0}
+                                "artificial_analysis": {
+                                    "coding_index": 1.0,
+                                    "intelligence_index": 1.0,
+                                    "agentic_index": 1.0,
+                                }
                             },
                         }
                     ],
-                    "links": {"next": "https://openrouter.ai/api/v1/models?output_modalities=text&limit=500&offset=0"},
+                    "links": {
+                        "next": "https://openrouter.ai/api/v1/models?output_modalities=text&limit=500&offset=0"
+                    },
                     "total_count": 1,
                 },
             )

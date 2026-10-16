@@ -548,7 +548,6 @@ def test_same_leaf_different_providers_remain_available_for_diversity() -> None:
     assert {item.provider for item in receipt.shortlist} == {"provider-a", "provider-b"}
 
 
-
 def test_cold_start_selects_coding_metric_without_cross_fallback() -> None:
     """code_edit uses aa_coding only; high intelligence does not substitute."""
     high_code = "model/high-code"
@@ -556,12 +555,10 @@ def test_cold_start_selects_coding_metric_without_cross_fallback() -> None:
     store = _store(
         (
             _record(
-                high_code,
-                scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0)),
+                high_code, scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0))
             ),
             _record(
-                high_intel,
-                scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0)),
+                high_intel, scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0))
             ),
         )
     )
@@ -593,12 +590,10 @@ def test_cold_start_docs_selects_intelligence_metric() -> None:
     store = _store(
         (
             _record(
-                high_code,
-                scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0)),
+                high_code, scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0))
             ),
             _record(
-                high_intel,
-                scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0)),
+                high_intel, scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0))
             ),
         )
     )
@@ -621,9 +616,7 @@ def test_cold_start_docs_selects_intelligence_metric() -> None:
 
 def test_missing_coding_prior_is_absent_even_with_high_intelligence() -> None:
     only_intel = "model/intel-only"
-    store = _store(
-        (_record(only_intel, scores=SoftScores(aa_intelligence=_prov(95.0))),)
-    )
+    store = _store((_record(only_intel, scores=SoftScores(aa_intelligence=_prov(95.0))),))
     receipt = build_candidate_pool(
         [only_intel],
         task="implement a bug fix",

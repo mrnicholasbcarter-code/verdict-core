@@ -59,12 +59,10 @@ def test_apply_candidate_pool_serializes_eval_prior_in_admit_receipt() -> None:
         sources={},
         records=(
             _record(
-                high_code,
-                scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0)),
+                high_code, scores=SoftScores(aa_coding=_prov(90.0), aa_intelligence=_prov(10.0))
             ),
             _record(
-                high_intel,
-                scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0)),
+                high_intel, scores=SoftScores(aa_coding=_prov(10.0), aa_intelligence=_prov(90.0))
             ),
         ),
     )
@@ -90,10 +88,7 @@ def test_apply_candidate_pool_serializes_eval_prior_in_admit_receipt() -> None:
         free_tier_providers=(),
     )
     receipt, pool = service._apply_candidate_pool(
-        base,
-        profile=_profile("code_edit"),
-        metadata=snapshot,
-        identity_map=None,
+        base, profile=_profile("code_edit"), metadata=snapshot, identity_map=None
     )
     assert receipt.candidate_pool is not None
     shortlist = receipt.candidate_pool["shortlist"]
