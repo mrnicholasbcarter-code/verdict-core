@@ -540,8 +540,19 @@ def routing_view_from_inventory(
     with tempfile.TemporaryDirectory() as _td:
         sp = state_path or Path(_td) / "elig_state.json"
 
+        from verdict.openrouter_free_set import load_openrouter_free_set
+
+        # Cache-only from caller-owned state dir; missing cache => no FREE assertion.
+        # Live refresh is owned elsewhere and writes this same path.
+        owned_cache = sp.parent / "openrouter-free-set.json"
+        free_set = load_openrouter_free_set(cache_path=owned_cache, refresh=False)
+
         ladder = EligibilityLadder(
-            inventory_rows=inventory_rows, connections=connections, probe=probe_fn, state_path=sp
+            inventory_rows=inventory_rows,
+            connections=connections,
+            probe=probe_fn,
+            state_path=sp,
+            openrouter_free_set=free_set,
         )
         now = datetime.now(timezone.utc)
         if probe:

@@ -15,6 +15,12 @@ from typing import Any
 
 import pytest
 
+from verdict.openrouter_free_set import (
+    DEFAULT_TTL_SECONDS,
+    OpenRouterFreeEntry,
+    OpenRouterFreeSet,
+    is_opaque_route_id,
+)
 from verdict.orchestration.contracts import CapacityClass, TaskRequirements
 from verdict.orchestration.eligibility import (
     _CAPACITY_ORDER,
@@ -512,6 +518,51 @@ _KILOCODE_FREE_TAILS: tuple[str, ...] = (
 )
 
 
+def _ranking_openrouter_free_set(inventory: list[dict[str, Any]]) -> OpenRouterFreeSet:
+    """Deterministic public free-set stand-in from ranking fixture pricing.
+
+    Ranking inventory uses OmniRoute ``input``/``output`` keys (not OpenAPI
+    ``prompt``/``completion``). Treat explicit all-zero numeric pricing as the
+    fixture's public 0/0 membership so BOD-418 openrouter/ FREE transitions are
+    hermetic and do not depend on a live OpenRouter fetch.
+    """
+    entries: dict[str, OpenRouterFreeEntry] = {}
+    for row in inventory:
+        route_id = str(row.get("id") or "")
+        if not route_id.startswith("openrouter/"):
+            continue
+        pricing = row.get("pricing")
+        if not isinstance(pricing, Mapping):
+            continue
+        if "input" not in pricing or "output" not in pricing:
+            continue
+        values: list[float] = []
+        ok = True
+        for value in pricing.values():
+            if value is None or isinstance(value, bool):
+                continue
+            if not isinstance(value, (int, float)):
+                ok = False
+                break
+            values.append(float(value))
+        if not ok or not values or any(v != 0.0 for v in values):
+            continue
+        bare = route_id[len("openrouter/") :]
+        entries[bare] = OpenRouterFreeEntry(
+            model_id=bare,
+            pricing={"prompt": 0.0, "completion": 0.0},
+            output_modalities=("text",),
+            opaque=is_opaque_route_id(bare) or bare.lower() in {"free", "openrouter/free"},
+        )
+    return OpenRouterFreeSet(
+        free_ids=frozenset(entries),
+        entries=entries,
+        fetched_at=NOW,
+        source="live",
+        ttl_seconds=DEFAULT_TTL_SECONDS,
+    )
+
+
 def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
     """Every route whose class differs from origin/main, with the new rule."""
     out: dict[str, tuple[CapacityClass, CapacityClass, str]] = {}
@@ -531,6 +582,344 @@ def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, s
         CapacityClass.UNKNOWN,
         CapacityClass.FREE,
         "free_suffix",
+    )
+    # BOD-418: openrouter/ FREE requires public 0/0 membership; import_free_only
+    # alone no longer classifies these routes FREE.
+    out["openrouter/auto"] = (CapacityClass.FREE, CapacityClass.METERED, "apikey_positive_pricing")
+    out["openrouter/baai/bge-m3"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/black-forest-labs/flux.2-flex"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/black-forest-labs/flux.2-max"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/black-forest-labs/flux.2-pro"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/cohere/rerank-4-fast"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/cohere/rerank-4-pro"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/cohere/rerank-v3.5"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/deepgram/nova-3"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/deepseek/deepseek-v4-flash-0731:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/deepseek/deepseek-v4-flash-0731:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/deepseek/deepseek-v4-flash-0731:free-low"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/deepseek/deepseek-v4-flash-0731:free-xhigh"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/google/chirp-3"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/google/gemini-3-pro-image-preview"] = (
+        CapacityClass.FREE,
+        CapacityClass.METERED,
+        "apikey_positive_pricing",
+    )
+    out["openrouter/google/gemini-3.1-flash-image-preview"] = (
+        CapacityClass.FREE,
+        CapacityClass.METERED,
+        "apikey_positive_pricing",
+    )
+    out["openrouter/google/gemini-embedding-001"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/google/gemini-embedding-2"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/google/gemini-embedding-2-preview"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/inclusionai/ling-3.0-flash-fin:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/inclusionai/ling-3.0-flash-vl:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/microsoft/mai-transcribe-1.5"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/mistralai/mistral-embed-2312"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/mistralai/voxtral-mini-transcribe"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-mini:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-mini:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-mini:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-mini:free-none"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-pro:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-pro:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-pro:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nex-agi/nex-n2.5-pro:free-none"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nvidia/nemotron-3-super-120b-a12b:free-low"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nvidia/nemotron-3-super-120b-a12b:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/nvidia/parakeet-tdt-0.6b-v3"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/gpt-4o-mini-transcribe"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/gpt-4o-transcribe"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/gpt-5-image-mini"] = (
+        CapacityClass.FREE,
+        CapacityClass.METERED,
+        "apikey_positive_pricing",
+    )
+    out["openrouter/openai/gpt-5.4-image-2"] = (
+        CapacityClass.FREE,
+        CapacityClass.METERED,
+        "apikey_positive_pricing",
+    )
+    out["openrouter/openai/text-embedding-3-large"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/text-embedding-3-small"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/whisper-1"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/whisper-large-v3"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openai/whisper-large-v3-turbo"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/openrouter/free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3-asr-flash-2026-02-10"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3-embedding-4b"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3-embedding-8b"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3.8-27b:free-low"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3.8-27b:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/qwen/qwen3.8-27b:free-xhigh"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-low"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-minimal"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-none"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling-small:free-xhigh"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-low"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-medium"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-minimal"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-none"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/thinkingmachines/inkling:free-xhigh"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/z-ai/glm-5.2:free"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/z-ai/glm-5.2:free-high"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
+    )
+    out["openrouter/z-ai/glm-5.2:free-xhigh"] = (
+        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
+        "openrouter_not_in_public_free_set",
     )
     return out
 
@@ -588,11 +977,13 @@ class TestRankingParityAgainstOriginMain:
             probe=probe,
             state_path=tmp_path / "old-state.json",
         )
+        free_set = _ranking_openrouter_free_set(inventory)
         new = EligibilityLadder(
             inventory_rows=inventory,
             connections=connections,
             probe=probe,
             state_path=tmp_path / "new-state.json",
+            openrouter_free_set=free_set,
         )
         old_verdicts = {v.route_id: v for v in old.evaluate(req, now=NOW)}
         new_verdicts = {v.route_id: v for v in new.evaluate(req, now=NOW)}

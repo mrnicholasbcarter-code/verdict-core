@@ -64,6 +64,11 @@ from pathlib import Path
 from typing import Any
 
 from verdict.http_safety import open_no_redirect
+from verdict.openrouter_free_set import (
+    OpenRouterFreeSet,
+    key_limit_on_non_free_is_route_scoped,
+    load_openrouter_free_set,
+)
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
 from verdict.orchestration.eligibility import capacity_class_of
@@ -1726,6 +1731,22 @@ class Prober:
 # ---------------------------------------------------------------------------
 
 
+# Sentinel: omitted openrouter_free_set means "load from public catalog/cache".
+# Explicit None means "no free-set assertion" (hermetic tests / callers without OR).
+_OPENROUTER_FREE_SET_LOAD = object()
+
+
+def load_openrouter_free_set_for_prober(
+    *, now: datetime | None = None, cache_path: Path | None = None, ttl_seconds: float | None = None
+) -> OpenRouterFreeSet | None:
+    """Public OpenRouter 0/0 set for capacity classification (BOD-418).
+
+    When ``cache_path`` is the caller-owned ``state_dir/openrouter-free-set.json``,
+    this is the live refresh owner that ``build_selector`` later reads cache-only.
+    """
+    return load_openrouter_free_set(now=now, cache_path=cache_path, ttl_seconds=ttl_seconds)
+
+
 def routes_from_evidence(
     inventory_rows: Sequence[Mapping[str, Any]],
     connections: Sequence[Mapping[str, Any]],
@@ -1733,6 +1754,7 @@ def routes_from_evidence(
     now: datetime,
     state_dir: Path | None = None,
     live_catalog: Mapping[str, Collection[str]] | None = None,
+    openrouter_free_set: OpenRouterFreeSet | object | None = _OPENROUTER_FREE_SET_LOAD,
 ) -> tuple[AdmittedRoute, ...]:
     """Admit exactly the way ``verdict eligibility`` does, without probing.
 
@@ -1741,10 +1763,30 @@ def routes_from_evidence(
     classifier eligibility uses, so this prober and ``verdict eligibility``
     agree on FREE versus SUBSCRIPTION. ``live_catalog`` (provider -> served
     model ids) only sets the ``live_catalog`` ordering hint.
+
+    ``openrouter_free_set`` (BOD-418) is the public OpenRouter 0/0 membership
+    set. When omitted, it is loaded via the public catalog into
+    ``state_dir/openrouter-free-set.json`` (same file ``build_selector`` reads
+    cache-only). Pass ``None`` to skip the public free-set (no openrouter/
+    FREE assertion). OpenRouter-family routes outside that set are never
+    classified FREE.
     """
     from verdict.admission import admit, default_runtime_evidence
+    from verdict.openrouter_free_set import openrouter_route_is_public_free
     from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
 
+    free_set: OpenRouterFreeSet | None
+    if openrouter_free_set is _OPENROUTER_FREE_SET_LOAD:
+        # Same caller-owned cache path build_selector reads (state_dir /
+        # openrouter-free-set.json). Live refresh writes here; selector is
+        # cache-only against the same file — one membership source.
+        owned = (state_dir / "openrouter-free-set.json") if state_dir is not None else None
+        free_set = load_openrouter_free_set_for_prober(now=now, cache_path=owned)
+    else:
+        # Explicit None or an OpenRouterFreeSet; never the load sentinel here.
+        free_set = (
+            openrouter_free_set if isinstance(openrouter_free_set, OpenRouterFreeSet) else None
+        )
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
     by_id: dict[str, Mapping[str, Any]] = {str(row.get("id", "")): row for row in inventory_rows}
@@ -1760,7 +1802,12 @@ def routes_from_evidence(
         row: Mapping[str, Any] = by_id.get(record.route_id, {})
         provider = record.provider or _provider_of(record.route_id)
         conn: Mapping[str, Any] | None = conn_by_provider.get(provider.lower())
-        capacity, plan = capacity_class_of(conn, row)
+        capacity, plan = capacity_class_of(
+            conn, row, route_id=record.route_id, openrouter_free_set=free_set
+        )
+        evidence_label = plan or None
+        if capacity.value == "free" and openrouter_route_is_public_free(record.route_id, free_set):
+            evidence_label = "openrouter_public_zero"
         out.append(
             AdmittedRoute(
                 route_id=record.route_id,
@@ -1770,7 +1817,7 @@ def routes_from_evidence(
                 # order_cycle can probe one canonical route per pool and the
                 # census report can group by pool.
                 pool=pool_of(record.route_id),
-                capacity_evidence=plan or None,
+                capacity_evidence=evidence_label,
                 non_chat=is_non_chat_route(record.route_id, row),
                 live_catalog=_served_by_gateway(record.route_id, row, live_catalog),
             )
@@ -2116,9 +2163,26 @@ _ACCOUNT_SCOPE_MARKERS = ("account", "all models", "this provider", "organizatio
 
 
 def _detail_is_model_scoped(
-    category: str, http_status: int | None, detail: str, route_id: str = ""
+    category: str,
+    http_status: int | None,
+    detail: str,
+    route_id: str = "",
+    *,
+    openrouter_free_set: OpenRouterFreeSet | None = None,
 ) -> bool:
-    """Only a named route/model without account-wide markers is route-scoped."""
+    """Only a named route/model without account-wide markers is route-scoped.
+
+    BOD-418: a Key-limit 403/402 on an OpenRouter route that is *not* in the
+    public 0/0 free set is route-scoped so it cannot cool the FREE pool.
+    The same error on a confirmed-free route stays account/provider scoped.
+    """
+    free_set = openrouter_free_set
+    if free_set is None and route_id.split("/", 1)[0].lower() == "openrouter":
+        free_set = load_openrouter_free_set_for_prober()
+    if key_limit_on_non_free_is_route_scoped(
+        route_id=route_id, http_status=http_status, detail=detail, free_set=free_set
+    ):
+        return True
     # OmniRoute prefixes every relayed error with "[<route_id>]"; that names
     # the requested route, not the model the provider refused.
     text = re.sub(r"^\[[^\]]*\]\s*", "", detail.strip()).lower()
