@@ -150,6 +150,7 @@ def build_selector(
     health_cache: HealthCache | None = None,
     session_ledger: SessionLedger | None = None,
     openrouter_free_set: Any = _OPENROUTER_FREE_SET_OMITTED,
+    now: datetime | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -162,6 +163,9 @@ def build_selector(
     registry as-is and never writes it. Pass True only from a caller that
     exists to make that write explicit (``--sync-visibility``); see
     ``prime_visibility``'s docstring for the OpenSpec requirement this keeps.
+
+    ``now`` defaults to wall-clock UTC. Pass an explicit clock so cache TTL
+    checks and admission use the same instant as the caller (tests / replay).
     """
     from verdict.admission import (
         AdmissionStage,
@@ -186,7 +190,9 @@ def build_selector(
     except (urllib.error.URLError, OSError) as exc:
         raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (verdict_home() / "orchestration-health.json")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if now is None else now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     # BOD-418: public OpenRouter 0/0 set. Selector construction is cache-only
     # against the caller-owned state dir (same path prove_at_rest refresh writes).
     # Missing cache => no openrouter/ FREE assertion (fail closed). Never fetch
