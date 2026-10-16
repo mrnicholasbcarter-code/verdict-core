@@ -91,7 +91,7 @@ def _mcp_ok_init_then(handler):
 
 
 def test_red_foreign_query_project_must_not_override_config():
-    """Search must always send config project/workspace; foreign query.project must not win."""
+    """Foreign query.project must fail closed before RPC (config authority)."""
 
     captured: list[dict] = []
 
@@ -108,8 +108,7 @@ def test_red_foreign_query_project_must_not_override_config():
         )
 
     client = AiMemoryClient(_cfg(transport=_mcp_ok_init_then(handler)))
-    # Attacker-controlled / mistaken query with foreign project
-    client.search(
+    result = client.search(
         RecallQuery(
             query="x",
             project="evil-other-project",
@@ -117,9 +116,9 @@ def test_red_foreign_query_project_must_not_override_config():
             limit=5,
         )
     )
-    assert captured, "expected MCP tools/call"
-    assert captured[0].get("project") == "bod80-memory-test"
-    assert captured[0].get("workspace") == "default"
+    assert not captured, f"foreign query must not reach MCP; got {captured}"
+    assert result.error_code is not None
+    assert result.status is not ProviderResultStatus.AVAILABLE
 
 
 def test_red_unscoped_hit_must_not_relabel_as_configured_project():

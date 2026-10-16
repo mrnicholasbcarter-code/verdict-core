@@ -152,6 +152,7 @@ class ProviderErrorCode(str, Enum):
     SERVER_ERROR = "server_error"
     DEGRADED = "degraded"
     QUEUE_FULL = "queue_full"
+    MALFORMED = "malformed"
     UNKNOWN = "unknown"
 
 
@@ -177,8 +178,35 @@ def redact_secrets(value: str | None) -> str | None:
         r"\1\2[REDACTED]",
         redacted,
     )
+    redacted = re.sub(r"\bsk-[A-Za-z0-9]{16,}\b", "[REDACTED]", redacted)
     redacted = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", redacted)
     return redacted
+
+
+def redact_mapping(value: Any) -> Any:
+    """Recursively redact secret-shaped strings in mappings/lists.
+
+    Values under secret-named keys are fully redacted even when the value itself
+    does not match a content pattern.
+    """
+    from collections.abc import Mapping as MappingType
+
+    _SECRET_KEYS = re.compile(r"(?i)(token|secret|password|api[_-]?key|authorization|auth)$")
+
+    if isinstance(value, str):
+        return redact_secrets(value) or ""
+    if isinstance(value, MappingType):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            if _SECRET_KEYS.search(key) and isinstance(v, str):
+                out[key] = "[REDACTED]"
+            else:
+                out[key] = redact_mapping(v)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [redact_mapping(v) for v in value]
+    return value
 
 
 def _json_default(value: Any) -> Any:
@@ -615,5 +643,6 @@ __all__ = [
     "digest_bytes",
     "event_digest",
     "loads_lifecycle_event",
+    "redact_mapping",
     "redact_secrets",
 ]

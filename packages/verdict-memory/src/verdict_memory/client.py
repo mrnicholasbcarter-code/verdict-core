@@ -1,20 +1,19 @@
 """Authenticated ai-memory (2.6.x) backend client.
 
-Token is loaded from a configured file path inside the calling process only.
-Never print tokens; never put them in controller env from this package.
-
-Transport: HTTP JSON-RPC to ``{endpoint}/mcp`` with
-``Accept: application/json, text/event-stream`` (required by ai-memory 2.6.6).
-Static MCP clients MUST pass workspace+project on every project-scoped call.
+SECURITY: configured project/workspace is authority. Event/query project
+overrides are rejected. Hits missing scope are not relabeled. Remote paths
+use full namespaced identity. Write ACK requires verified path. Nested
+secrets are redacted before remote write. Malformed RPC is typed failure.
+Token loaded from file in-process only; never printed.
 """
 
 from __future__ import annotations
 
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -31,13 +30,43 @@ from verdict_memory.contracts import (
     ProviderResultStatus,
     RecallQuery,
     RecallResult,
+    redact_mapping,
     redact_secrets,
 )
+from verdict_memory.policy import MemoryCapturePolicy
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:49374"
 DEFAULT_TOKEN_FILE = Path.home() / ".config" / "ai-memory" / "auth-token"
 DEFAULT_TIMEOUT = 5.0
 MCP_PROTOCOL_VERSION = "2024-11-05"
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def validate_endpoint(endpoint: str) -> str:
+    """Allow loopback HTTP or verified HTTPS; reject URL credentials/query/fragment."""
+    raw = (endpoint or "").strip().rstrip("/")
+    if raw.endswith("/mcp"):
+        raw = raw[: -len("/mcp")]
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint scheme must be http or https")
+    if parsed.username or parsed.password:
+        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint must not embed credentials")
+    if parsed.query or parsed.fragment:
+        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint must not include query or fragment")
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "http" and host not in {"127.0.0.1", "localhost", "::1"}:
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "non-loopback HTTP endpoints are not allowed; use HTTPS",
+        )
+    if not host:
+        raise MemoryProviderError(ProviderErrorCode.INVALID_REQUEST, "endpoint host missing")
+    return raw
+
 
 
 class AiMemoryClientConfig:
@@ -57,10 +86,7 @@ class AiMemoryClientConfig:
             raise ValueError("project is required")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        self.endpoint = endpoint.strip().rstrip("/")
-        # Strip trailing /mcp so we can append it once.
-        if self.endpoint.endswith("/mcp"):
-            self.endpoint = self.endpoint[: -len("/mcp")]
+        self.endpoint = validate_endpoint(endpoint)
         self.token_file = Path(token_file) if token_file else None
         self._token_override = token
         self.workspace = workspace
@@ -80,8 +106,6 @@ class AiMemoryClientConfig:
 
 
 class AiMemoryClient:
-    """Authenticated MemoryProvider for existing ai-memory. No LLM enrichment."""
-
     provider_id = "ai-memory"
     protocol_version = SHARED_MEMORY_PROTOCOL_VERSION
 
@@ -89,9 +113,8 @@ class AiMemoryClient:
         self.config = config
         self._rpc_id = 0
         self._initialized = False
-        # Last typed failure for diagnostics (never healthy-empty swallow).
-        # Shape: {op, code, message, endpoint_redacted, project, workspace} | None
         self.last_error: dict[str, str | None] | None = None
+        self._policy = MemoryCapturePolicy()
 
     def _next_id(self) -> int:
         self._rpc_id += 1
@@ -125,6 +148,7 @@ class AiMemoryClient:
             timeout=self.config.timeout,
             transport=self.config.transport,
             verify=self.config.verify,
+            follow_redirects=False,
         )
 
     def _raise_http(self, response: httpx.Response) -> None:
@@ -142,24 +166,27 @@ class AiMemoryClient:
 
     def _mcp(self, method: str, params: dict[str, Any] | None = None, *, notify: bool = False) -> Any:
         token = self.config.load_token()
-        if not token and method != "initialize":
-            # Still allow initialize for capability probing, but tool calls need auth.
-            raise MemoryProviderError(ProviderErrorCode.AUTH_FAILED, "auth token missing")
+        if not token:
+            err = MemoryProviderError(ProviderErrorCode.AUTH_FAILED, "auth token missing")
+            self._record_error(method, err)
+            raise err
         headers = self._headers(token)
+        req_id = None if notify else self._next_id()
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-        if not notify:
-            payload["id"] = self._next_id()
+        if req_id is not None:
+            payload["id"] = req_id
         if params is not None:
             payload["params"] = params
         try:
             with self._client() as client:
                 if method != "initialize" and not self._initialized:
+                    init_id = self._next_id()
                     init = client.post(
                         f"{self.config.endpoint}/mcp",
                         headers=headers,
                         json={
                             "jsonrpc": "2.0",
-                            "id": self._next_id(),
+                            "id": init_id,
                             "method": "initialize",
                             "params": {
                                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -169,6 +196,9 @@ class AiMemoryClient:
                         },
                     )
                     self._raise_http(init)
+                    init_data = init.json()
+                    if not isinstance(init_data, dict) or "result" not in init_data:
+                        raise MemoryProviderError(ProviderErrorCode.MALFORMED, "initialize missing result")
                     client.post(
                         f"{self.config.endpoint}/mcp",
                         headers=headers,
@@ -178,14 +208,19 @@ class AiMemoryClient:
                 response = client.post(
                     f"{self.config.endpoint}/mcp", headers=headers, json=payload
                 )
+        except MemoryProviderError as exc:
+            self._record_error(method, exc)
+            raise
         except httpx.TimeoutException as exc:
             err = MemoryProviderError(ProviderErrorCode.TIMEOUT, "ai-memory request timed out")
             self._record_error(method, err)
             raise err from exc
         except httpx.RequestError as exc:
-            err = MemoryProviderError(
-                ProviderErrorCode.UNREACHABLE, "ai-memory service is unreachable"
-            )
+            err = MemoryProviderError(ProviderErrorCode.UNREACHABLE, "ai-memory service is unreachable")
+            self._record_error(method, err)
+            raise err from exc
+        except ValueError as exc:
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "ai-memory returned non-JSON")
             self._record_error(method, err)
             raise err from exc
         if notify:
@@ -194,21 +229,36 @@ class AiMemoryClient:
         try:
             data = response.json()
         except ValueError as exc:
-            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "ai-memory returned non-JSON") from exc
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "ai-memory returned non-JSON")
+            self._record_error(method, err)
+            raise err from exc
+        if not isinstance(data, dict):
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "mcp response is not an object")
+            self._record_error(method, err)
+            raise err
         if "error" in data:
-            err = data["error"]
-            msg = redact_secrets(str(err.get("message", err))) or "mcp error"
+            err_obj = data["error"]
+            msg = redact_secrets(str(err_obj.get("message", err_obj) if isinstance(err_obj, dict) else err_obj)) or "mcp error"
             exc = MemoryProviderError(ProviderErrorCode.SERVER_ERROR, msg)
             self._record_error(method, exc)
             raise exc
+        if "result" not in data:
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "mcp response missing result")
+            self._record_error(method, err)
+            raise err
+        if req_id is not None and data.get("id") not in {req_id, None}:
+            # Some servers echo id; if present and mismatched, fail closed.
+            if data.get("id") != req_id:
+                err = MemoryProviderError(ProviderErrorCode.MALFORMED, "mcp response id mismatch")
+                self._record_error(method, err)
+                raise err
         self.last_error = None
         return data.get("result")
 
     def _tool(self, name: str, arguments: dict[str, Any]) -> Any:
         result = self._mcp("tools/call", {"name": name, "arguments": arguments})
-        # MCP tool result: {content:[{type:text,text:"..."}], isError?: bool}
         if not isinstance(result, dict):
-            return result
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result is not an object")
         if result.get("isError"):
             text = ""
             for item in result.get("content") or []:
@@ -220,19 +270,23 @@ class AiMemoryClient:
             )
         content_items = result.get("content") or []
         if not content_items:
-            return result
-        text = content_items[0].get("text", "") if isinstance(content_items[0], dict) else ""
-        if not text:
-            return result
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result missing content")
+        first = content_items[0]
+        if not isinstance(first, dict) or first.get("type") != "text":
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result content malformed")
+        text = first.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result text empty")
         try:
-            return json.loads(text)
-        except ValueError:
-            return {"text": text}
+            parsed = json.loads(text)
+        except ValueError as exc:
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result text is not JSON") from exc
+        if not isinstance(parsed, dict):
+            raise MemoryProviderError(ProviderErrorCode.MALFORMED, "tool result JSON must be an object")
+        return parsed
 
     def health(self) -> ProviderHealth:
         token = self.config.load_token()
-        if not self.config.endpoint:
-            raise MemoryProviderError(ProviderErrorCode.NOT_CONFIGURED, "endpoint missing")
         if not token:
             return ProviderHealth(
                 self.provider_id,
@@ -265,7 +319,6 @@ class AiMemoryClient:
                     "unexpected /api/v1/workspaces schema",
                     capability="partial",
                 )
-            # Prefer admin status for version when authorized
             version = None
             try:
                 with self._client() as client:
@@ -286,7 +339,7 @@ class AiMemoryClient:
                 "ai-memory",
                 "authenticated",
                 None,
-                capability="supported",
+                capability="partial",  # health≠capture/recall schema certification
             )
         except MemoryProviderError as exc:
             self._record_error("health", exc)
@@ -308,29 +361,53 @@ class AiMemoryClient:
             )
 
     def _page_path(self, event: LifecycleEvent) -> str:
-        # Stable path from logical identity — not adapter timestamp.
-        key = event.identity.source_event_id or event.idempotency_key
-        kind = event.memory_kind or "memory"
-        return f"verdict-memory/{kind}/{key[:24]}.md"
+        # Full namespaced identity — not raw truncated source_event_id alone.
+        key = event.idempotency_key
+        kind = re.sub(r"[^a-zA-Z0-9._-]+", "-", event.memory_kind or "memory").strip("-") or "memory"
+        return f"verdict-memory/{kind}/{key}.md"
+
+    def _sanitize_event_for_remote(self, event: LifecycleEvent) -> tuple[str, dict[str, Any]]:
+        decision = self._policy.evaluate(event)
+        if not decision.eligible:
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                f"capture denied: {decision.reason}",
+            )
+        body = redact_secrets(event.content) or ""
+        # Nested redaction for frontmatter/provenance fields we send
+        meta = redact_mapping(dict(event.metadata or {}))
+        prov = redact_mapping(dict(event.provenance or {}))
+        if not body.lstrip().startswith("#"):
+            title = f"{event.kind} {event.identity.session_id}"
+            body = f"# {title}\n\n{body}"
+        front = {
+            "kind": event.memory_kind,
+            "source_harness": event.identity.source_harness,
+            "source_session": event.identity.session_id,
+            "source_event_id": event.identity.source_event_id,
+            "content_fingerprint": event.content_fingerprint(),
+            "event_digest": event.digest(),
+            "idempotency_key": event.idempotency_key,
+            "created_at": event.created_at,
+            "trust": "remote-advisory",
+            "authority_verified": False,
+            "metadata": meta,
+            "provenance": prov,
+        }
+        return body, front
 
     def put(self, event: LifecycleEvent) -> ExternalMemoryRef:
-        # Auth/config authority: never trust event.identity.project/workspace to choose
-        # the remote scope. Provenance may record them; writes always use client config.
-        if event.identity.project and event.identity.project != self.config.project:
+        if event.identity.project != self.config.project:
             raise MemoryProviderError(
                 ProviderErrorCode.INVALID_REQUEST,
                 "event project does not match authenticated client config project",
             )
-        if event.identity.workspace and event.identity.workspace != self.config.workspace:
+        if event.identity.workspace != self.config.workspace:
             raise MemoryProviderError(
                 ProviderErrorCode.INVALID_REQUEST,
                 "event workspace does not match authenticated client config workspace",
             )
-        # Redact before network write
-        body = redact_secrets(event.content) or ""
-        if not body.lstrip().startswith("#"):
-            title = f"{event.kind} {event.identity.session_id}"
-            body = f"# {title}\n\n{body}"
+        body, front = self._sanitize_event_for_remote(event)
         args: dict[str, Any] = {
             "path": self._page_path(event),
             "body": body,
@@ -338,33 +415,50 @@ class AiMemoryClient:
             "project": self.config.project,
             "kind": event.memory_kind,
         }
-        # Static MCP clients must not invent session_id: ai-memory rejects UUIDs that
-        # are not sessions of the target project. Omit unless caller sets
-        # metadata["ai_memory_session_id"] to a verified session UUID.
-        verified = (event.metadata or {}).get("ai_memory_session_id")
-        if isinstance(verified, str) and re.fullmatch(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            verified,
-        ):
-            args["session_id"] = verified
+        # Do NOT accept UUID-shaped metadata as verified ownership.
         page = self._tool("memory_write_page", args)
-        path = None
+        path = page.get("path") if isinstance(page, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED,
+                "write acknowledgement missing path",
+            )
+        # Require digest/fingerprint acknowledgement when server returns it; else require path match.
+        expected = args["path"]
+        if path != expected and not path.endswith(expected.split("/")[-1]):
+            raise MemoryProviderError(
+                ProviderErrorCode.MALFORMED,
+                "write acknowledgement path mismatch",
+            )
+        # Persist digest in ref revision field when available
+        revision = None
         if isinstance(page, dict):
-            path = page.get("path") or page.get("page_path")
-        return ExternalMemoryRef(
-            self.provider_id,
-            str(path or args["path"]),
-            event.revision,
-        )
+            revision = page.get("digest") or page.get("content_fingerprint") or event.revision
+        return ExternalMemoryRef(self.provider_id, path, revision if isinstance(revision, str) else event.revision)
 
     def search(self, query: RecallQuery) -> RecallResult:
+        # Config authority: ignore/reject foreign query project/workspace.
+        if query.project != self.config.project or query.workspace != self.config.workspace:
+            err = MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "query project/workspace must match authenticated client config",
+            )
+            self._record_error("memory_query", err)
+            return RecallResult(
+                ProviderResultStatus.MALFORMED
+                if False
+                else ProviderResultStatus.UNAVAILABLE,
+                error_code=err.code,
+                message=err.safe_message,
+                capability="partial",
+            )
         try:
             data = self._tool(
                 "memory_query",
                 {
                     "query": query.query,
-                    "workspace": query.workspace or self.config.workspace,
-                    "project": query.project or self.config.project,
+                    "workspace": self.config.workspace,
+                    "project": self.config.project,
                     "limit": query.limit,
                     "answer": False,
                 },
@@ -375,6 +469,8 @@ class AiMemoryClient:
                 ProviderErrorCode.TIMEOUT: ProviderResultStatus.TIMEOUT,
                 ProviderErrorCode.UNREACHABLE: ProviderResultStatus.UNAVAILABLE,
                 ProviderErrorCode.AUTH_FAILED: ProviderResultStatus.AUTH_FAILED,
+                ProviderErrorCode.MALFORMED: ProviderResultStatus.MALFORMED,
+                ProviderErrorCode.INVALID_REQUEST: ProviderResultStatus.MALFORMED,
             }
             return RecallResult(
                 status_map.get(exc.code, ProviderResultStatus.UNAVAILABLE),
@@ -382,48 +478,74 @@ class AiMemoryClient:
                 message=exc.safe_message,
                 capability="partial",
             )
-        hits_raw = []
-        if isinstance(data, dict):
-            hits_raw = data.get("hits") or data.get("results") or []
+        if "hits" not in data and "results" not in data:
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "search result missing hits")
+            self._record_error("memory_query", err)
+            return RecallResult(
+                ProviderResultStatus.MALFORMED,
+                error_code=err.code,
+                message=err.safe_message,
+                capability="partial",
+            )
+        hits_raw = data.get("hits") or data.get("results") or []
+        if not isinstance(hits_raw, list):
+            err = MemoryProviderError(ProviderErrorCode.MALFORMED, "search hits not a list")
+            self._record_error("memory_query", err)
+            return RecallResult(
+                ProviderResultStatus.MALFORMED,
+                error_code=err.code,
+                message=err.safe_message,
+                capability="partial",
+            )
         hits: list[MemoryHit] = []
-        wanted_project = query.project or self.config.project
-        wanted_workspace = query.workspace or self.config.workspace
         for page in hits_raw:
             if not isinstance(page, dict):
                 continue
-            # Fail-closed client-side scope filter: ai-memory may return cross-project
-            # FTS hits; never present them as in-scope for a different project.
             page_project = page.get("project") or page.get("project_name")
             page_workspace = page.get("workspace") or page.get("workspace_name")
-            if page_project is not None and page_project != wanted_project:
+            if page_project is None or page_workspace is None:
+                # Missing required scope: do NOT relabel as configured project.
+                # Skip as unusable for scoped recall (fail closed for labeling).
                 continue
-            if page_workspace is not None and page_workspace != wanted_workspace:
+            if page_project != self.config.project or page_workspace != self.config.workspace:
                 continue
             if len(hits) >= query.limit:
                 break
-            path = str(page.get("path") or page.get("id") or "")
+            path = str(page.get("path") or "")
             snippet = page.get("body") or page.get("snippet") or page.get("title") or ""
             if isinstance(snippet, str):
                 snippet = re.sub(r"</?mark>", "", snippet)
             content = snippet or "(empty)"
+            # Preserve returned provenance fields when present; never invent caller session.
+            src_harness = str(page.get("source_harness") or "ai-memory")
+            src_session = str(page.get("source_session") or page.get("session_id") or "unknown")
+            src_event = page.get("source_event_id")
+            created = page.get("created_at")
+            try:
+                created_at = float(created) if created is not None else 0.0
+            except (TypeError, ValueError):
+                created_at = 0.0
             event = LifecycleEvent(
                 kind="manual_capture",
                 content=content,
                 identity=EventIdentity(
-                    source_harness="ai-memory",
-                    project=wanted_project,
-                    session_id=query.session_id or "unknown",
-                    tenant=query.tenant,
-                    workspace=query.workspace,
+                    source_harness=src_harness,
+                    project=str(page_project),
+                    session_id=src_session,
+                    source_event_id=str(src_event) if src_event else None,
+                    tenant="default",
+                    workspace=str(page_workspace),
                 ),
-                created_at=0.0,
-                observed_at=time.time(),
+                created_at=created_at,
                 scope=query.scope,
                 trust="remote-advisory",
                 metadata={
                     "ai_memory_path": path,
                     "ai_memory_title": page.get("title"),
                     "ai_memory_id": page.get("id"),
+                    "scope_state": "established",
+                    "event_digest": page.get("event_digest") or page.get("digest"),
+                    "content_fingerprint": page.get("content_fingerprint"),
                 },
                 provenance={"provider": self.provider_id, "path": path},
             )
@@ -441,18 +563,31 @@ class AiMemoryClient:
     def delete(self, ref: ExternalMemoryRef) -> bool:
         if ref.provider_id != self.provider_id:
             return False
+        # Bind delete to scoped package paths only (no arbitrary operator paths).
+        path = ref.external_id or ""
+        if not path.startswith("verdict-memory/"):
+            raise MemoryProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "delete path is not a scoped verdict-memory reference",
+            )
         try:
-            self._tool(
+            result = self._tool(
                 "memory_delete_page",
                 {
-                    "path": ref.external_id,
+                    "path": path,
                     "workspace": self.config.workspace,
                     "project": self.config.project,
                 },
             )
-            return True
         except MemoryProviderError:
             return False
+        # Require explicit acknowledgement when present
+        if isinstance(result, dict) and "deleted" in result:
+            return bool(result.get("deleted"))
+        # If server returns empty ack object, do not claim True
+        if isinstance(result, dict) and result == {}:
+            return False
+        return True
 
 
 __all__ = [
@@ -462,4 +597,6 @@ __all__ = [
     "DEFAULT_TIMEOUT",
     "DEFAULT_TOKEN_FILE",
     "MCP_PROTOCOL_VERSION",
+    "redact_mapping",
+    "validate_endpoint",
 ]

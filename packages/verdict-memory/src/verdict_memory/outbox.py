@@ -13,6 +13,7 @@ from verdict_memory.contracts import (
     IdempotencyConflictError,
     LifecycleEvent,
     ProviderErrorCode,
+    redact_mapping,
     redact_secrets,
 )
 from verdict_memory.policy import MemoryCapturePolicy
@@ -98,8 +99,12 @@ class MemoryOutbox:
             raise RuntimeError(f"{ProviderErrorCode.QUEUE_FULL.value}: pending queue full")
         now = float(self._clock())
         payload_obj = event.to_dict()
+        # Redact content + nested metadata/payload/provenance BEFORE durable bytes.
         if isinstance(payload_obj.get("content"), str):
             payload_obj["content"] = redact_secrets(payload_obj["content"]) or ""
+        for nested_key in ("metadata", "payload", "provenance"):
+            if nested_key in payload_obj:
+                payload_obj[nested_key] = redact_mapping(payload_obj.get(nested_key) or {})
         # content fingerprint for conflict detection (excludes observed_at)
         content_fp = event.content_fingerprint()
         payload_obj.setdefault("metadata", {})
