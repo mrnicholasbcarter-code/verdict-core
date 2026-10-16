@@ -1360,7 +1360,18 @@ class OmniRouteAvailabilityAdapter:
         *,
         now: datetime | None = None,
     ) -> AvailabilityReport:
-        current = _now(now or (self.clock() if self.clock else None))
+        # ``current`` is read AFTER the catalog/runtime fetches below, not
+        # before: under contention (concurrent census + role selection) those
+        # fetches can take several seconds, and the gateway's own
+        # ``observed_at`` timestamp is stamped while it processes the
+        # request, after our fetch starts. A clock read taken before the
+        # fetches can then be *earlier* than the gateway's timestamp, making
+        # the computed age negative beyond the staleness tolerance and
+        # flipping every candidate to UNKNOWN ("stale observation") even
+        # though the data just arrived (BOD-387: observed live, reviewer and
+        # worker both intermittently resolved to None under load with no
+        # transport error). ``now`` stays an explicit override for callers
+        # (tests) that need a fixed clock.
         errors: list[str] = []
         try:
             catalog_payload = _call_transport_operation(
@@ -1407,6 +1418,10 @@ class OmniRouteAvailabilityAdapter:
             runtime_failure_state = AvailabilityState.UNAVAILABLE
         mapping = runtime if isinstance(runtime, Mapping) else {}
         malformed_runtime = runtime is not None and not isinstance(runtime, Mapping)
+        # Read now, after both fetches complete, so a slow fetch cannot make
+        # the gateway's own observed_at timestamp look like it is from the
+        # future relative to our clock (see comment above).
+        current = _now(now or (self.clock() if self.clock else None))
 
         def runtime_value(model: ModelInfo) -> object:
             keys = [model.id]
