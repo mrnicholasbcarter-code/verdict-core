@@ -480,6 +480,14 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
     return result
 
 
+def _selector_visibility_executor(args: argparse.Namespace) -> str:
+    default = getattr(args, "executor", "prime")
+    mapping = getattr(args, "executor_map", "")
+    if default == "direct-gateway" and not mapping:
+        return "direct-gateway"
+    return "prime"
+
+
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
     from verdict.orchestration.executors import FaultInjectingExecutor
 
@@ -743,6 +751,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             prefer=args.prefer,
             load=lambda route: sum(1 for r in inflight.values() if r == route),
             state_file=state_path,
+            visibility_executor=_selector_visibility_executor(args),
             **refresh_kwargs,
             **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
         )

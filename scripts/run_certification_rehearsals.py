@@ -99,7 +99,7 @@ def run() -> None:
             "--executor",
             "direct-gateway",
             "--capacity",
-            "free,subscription",
+            "free",
             "--max-attempts-per-node",
             "4",
             "--max-parallel",
@@ -123,7 +123,39 @@ def run() -> None:
             )
         result = subprocess.run(command, env=env, capture_output=True, timeout=1800)
         if result.returncode:
-            raise ValueError(f"{name} rehearsal did not complete (exit {result.returncode})")
+            run_finished_outcome = None
+            run_finished_reason = "unclassified"
+            if runs.exists():
+                children = list(runs.iterdir())
+                if children and children[0].is_dir():
+                    run_dir = children[0]
+                    events_file = run_dir / "events.jsonl"
+                    if events_file.exists():
+                        for line in events_file.read_text().splitlines():
+                            try:
+                                event = json.loads(line.strip())
+                                if event.get("type") == "run_finished":
+                                    outcome = event.get("data", {}).get("outcome")
+                                    run_finished_outcome = (
+                                        outcome
+                                        if isinstance(outcome, str)
+                                        and outcome in {"COMPLETE", "BLOCKED", "CANCELLED"}
+                                        else None
+                                    )
+                                    raw_reason = event.get("data", {}).get("reason", "")
+                                    if raw_reason and "harness_inventory_unavailable" in raw_reason:
+                                        run_finished_reason = "harness_inventory_unavailable"
+                            except Exception:
+                                pass
+            report = {
+                "rehearsal": name,
+                "stage": "orchestration",
+                "error_category": "child_exit",
+                "run_finished_outcome": run_finished_outcome,
+                "run_finished_reason": run_finished_reason,
+            }
+            (root / "certification-failure.json").write_text(json.dumps(report))
+            raise ValueError(f"{name} rehearsal orchestration failed (exit {result.returncode})")
         children = list(runs.iterdir())
         if len(children) != 1 or not children[0].is_dir():
             raise ValueError("Expected one isolated run")
