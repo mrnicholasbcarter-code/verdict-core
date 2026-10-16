@@ -1067,15 +1067,15 @@ def _write_one_attempt_record(
 
 
 def _classify_repair_first_error(first_error: str) -> str:
-    """Classify the pre-repair error that triggered a repair turn."""
-    if "git apply --check failed" in first_error:
-        return "spec_violation"
-    if (
-        "bare hunk" in first_error
-        or "unified diff" in first_error
-        or "diff names no files" in (first_error)
-    ):
-        return "spec_violation"
+    """Classify the pre-repair error that triggered a repair turn.
+
+    A repair turn only ever follows a patch-shape rejection (an unparseable
+    diff, a bare-hunk mismatch, or a failed ``git apply --check``; see
+    ``PatchExecutor._apply_diff_reply``), so every pre-repair error is a
+    ``spec_violation``: the model's reply did not conform to the diff
+    contract, independent of the repair's own outcome.
+    """
+    del first_error  # kept for call-site symmetry and future differentiation
     return "spec_violation"
 
 
@@ -1116,12 +1116,16 @@ def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: st
         tokens_out=None,
         story_id=story_id,
     )
-    repaired_ok = bool(repair.get("repaired"))
+    # The repair turn's own outcome is what the unit landed on: the patch may
+    # have applied (``repair["repaired"]``) and still fail verification, so the
+    # non-repair path's verified-based classification is reused here too. A
+    # repair that applied but failed verification is a real failure, not a
+    # false success.
     _write_one_attempt_record(
         unit_id=unit_id,
         model=served,
-        outcome_label="accepted" if repaired_ok else "failed",
-        failure_class="success" if repaired_ok else _classify_unit_failure_class(outcome),
+        outcome_label="accepted" if outcome.verified else "failed",
+        failure_class=_classify_unit_failure_class(outcome),
         duration_s=outcome.latency_ms / 1000 if outcome.latency_ms else None,
         tokens_in=outcome.usage.prompt_tokens or None,
         tokens_out=outcome.usage.completion_tokens or None,
@@ -2539,7 +2543,14 @@ def run_autodev(
     decomposer = decomposer or Decomposer(
         DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
     )
-    plan = plan or decomposer.decompose(objective, repo_root=repo, evidence=evidence)
+    if plan is None:
+        from verdict.decomposer import DecompositionError
+
+        try:
+            plan = decomposer.decompose(objective, repo_root=repo, evidence=evidence)
+        except DecompositionError as exc:
+            _record_planner_attempts(objective, exc.attempts, story_id=_story_id_from(objective))
+            raise
 
     executor = executor or PatchExecutor(
         repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)

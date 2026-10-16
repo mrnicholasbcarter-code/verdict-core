@@ -177,15 +177,26 @@ def test_repair_then_success_writes_two_executor_attempts(
     assert executor_rows[1]["outcome"] == "accepted"
 
 
-def test_primary_failure_then_retry_success_writes_three_executor_records_plus_planner(
+def test_primary_failure_then_retry_success_writes_two_executor_records(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Primary fails (no repairable diff shape -> straight to retry), repair occurs
-    on primary (consumes one record), retry executor succeeds -> 3 executor records."""
+    """Primary fails with an unrepairable "no diff" rejection (straight to retry,
+    no repair sub-turn); the retry executor succeeds. That is exactly 2 executor
+    records: the primary's failed attempt and the retry's accepted attempt."""
     store_dir = tmp_path / "home"
     monkeypatch.setenv("VERDICT_HOME", str(store_dir))
 
-    primary = _executor(repo, {}, model="primary/model")  # "no diff" -> rejected, repairable
+    # A patch naming a file outside the unit boundary is rejected but never
+    # repaired (per PatchExecutor._apply_diff_reply), so this is the primary's
+    # one and only executor attempt before the retry ladder takes over.
+    out_of_bounds_diff = """diff --git a/other.py b/other.py
+--- a/other.py
++++ b/other.py
+@@ -1 +1 @@
+-x = 1
++x = 2
+"""
+    primary = _executor(repo, {"a.py": out_of_bounds_diff}, model="primary/model")
     retry = _executor(repo, {"a.py": A_DIFF}, model="retry/model")
 
     from tests.test_worker_launch_authority import _decision as _mk_decision
@@ -232,12 +243,11 @@ def test_primary_failure_then_retry_success_writes_three_executor_records_plus_p
         for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
     ]
     executor_rows = [r for r in rows if r["harness"] == "verdict-autodev-executor"]
-    # primary (rejected, repairable) -> 1 repair attempt record + 1 retry attempt record = 2
-    # (the "no diff" rejection is NOT repairable per _apply_diff_reply; repair only fires
-    # on patch-shape errors). So we expect: primary attempt (failed) + retry attempt (accepted).
-    assert len(executor_rows) >= 2, executor_rows
-    assert executor_rows[-1]["outcome"] == "accepted"
-    assert executor_rows[-1]["model"] == "retry/model"
+    assert len(executor_rows) == 2, executor_rows
+    assert executor_rows[0]["outcome"] == "failed"
+    assert executor_rows[0]["model"] == "primary/model"
+    assert executor_rows[1]["outcome"] == "accepted"
+    assert executor_rows[1]["model"] == "retry/model"
 
 
 def test_write_failure_is_logged_and_does_not_fail_the_run(
@@ -270,3 +280,174 @@ def test_write_failure_is_logged_and_does_not_fail_the_run(
     assert len(report.receipt_ids) == 1
     assert not attempt_records_path(store_dir).exists()
     assert any("outcome attempt record" in r.message for r in caplog.records)
+
+
+def test_repair_applied_but_verification_failed_is_not_recorded_as_accepted(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repair turn that applies but then fails verification must not be 'accepted'."""
+    store_dir = tmp_path / "home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_dir))
+
+    turn = {"n": 0}
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        turn["n"] += 1
+        # Second turn applies cleanly (full-file reply, and differs from the
+        # original so it is not rejected as a no-op) but leaves the F401
+        # unfixed, so the unit's own verification command still fails.
+        content = "not a diff at all" if turn["n"] == 1 else "```file:a.py\nimport os\nx = 2\n```"
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+    run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(":memory:"),
+        decomposer=_decomposer(PLAN),
+        executor=executor,
+        mechanical=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
+    ]
+    executor_rows = [r for r in rows if r["harness"] == "verdict-autodev-executor"]
+    assert len(executor_rows) == 2, executor_rows
+    assert executor_rows[0]["outcome"] == "failed"
+    # The repair applied the patch, but verification (ruff F401) still failed:
+    # this must be recorded as failed/test_failed, never accepted/success.
+    assert executor_rows[1]["outcome"] == "failed", executor_rows[1]
+    assert executor_rows[1]["failure_class"] == "test_failed", executor_rows[1]
+
+
+def test_total_planner_failure_still_writes_every_planner_attempt_and_reraises(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When decompose() raises DecompositionError, its own attempts must still be recorded."""
+    from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
+
+    store_dir = tmp_path / "home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_dir))
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": "not json at all"}}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+            },
+        }
+
+    decomposer = Decomposer(
+        DecompositionConfig(
+            model="cheap/model",
+            planner_models=("cheap/model", "cheap/model-2"),
+            base_url="http://127.0.0.1:20128/v1",
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(DecompositionError):
+        run_autodev(
+            "fix ruff errors",
+            repo,
+            store=ReceiptStore(":memory:"),
+            decomposer=decomposer,
+            executor=_executor(repo, {"a.py": A_DIFF}),
+            mechanical=False,
+        )
+
+    rows = [
+        json.loads(line)
+        for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
+    ]
+    planner_rows = [r for r in rows if r["harness"] == "verdict-autodev-planner"]
+    assert len(planner_rows) >= 2, planner_rows
+    assert all(r["outcome"] == "failed" for r in planner_rows)
+
+
+def test_identity_mismatch_writes_exactly_one_record_and_no_retry_record(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fatal served-model mismatch is one false_report record; the retry ladder never runs."""
+    store_dir = tmp_path / "home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_dir))
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {
+                "choices": [{"message": {"content": A_DIFF}}],
+                "model": "some-other-model",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        }
+
+    executor = PatchExecutor(
+        repo,
+        PatchExecutorConfig(model="cheap/model", base_url="http://127.0.0.1:20128/v1"),
+        transport=transport,
+    )
+    run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(":memory:"),
+        decomposer=_decomposer(PLAN),
+        executor=executor,
+        retry_routes=[{"model": "retry/model", "gateway": "http://127.0.0.1:20128/v1"}],
+        mechanical=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
+    ]
+    executor_rows = [r for r in rows if r["harness"] == "verdict-autodev-executor"]
+    assert len(executor_rows) == 1, executor_rows
+    assert executor_rows[0]["outcome"] == "failed"
+    assert executor_rows[0]["failure_class"] == "false_report"
+
+
+def test_refused_retry_selection_writes_no_retry_record(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the retry-route optimizer itself refuses, no retry executor attempt happens."""
+    store_dir = tmp_path / "home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_dir))
+
+    import verdict.autodev_run as autodev_run
+    from verdict.autodev_run import AutodevError
+
+    def fake_select_retry_route(unit: Any, ladder: Any, objective: str) -> Any:
+        raise AutodevError("autodev retry selection refused: no eligible candidates")
+
+    monkeypatch.setattr(autodev_run, "_select_retry_route", fake_select_retry_route)
+
+    run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ReceiptStore(":memory:"),
+        decomposer=_decomposer(PLAN),
+        executor=_executor(repo, {}),  # "no diff" -> rejected, repairable -> executor_failed=True
+        retry_routes=[{"model": "retry/model", "gateway": "http://127.0.0.1:20128/v1"}],
+        mechanical=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
+    ]
+    executor_rows = [r for r in rows if r["harness"] == "verdict-autodev-executor"]
+    assert all(r["model"] != "retry/model" for r in executor_rows), executor_rows
