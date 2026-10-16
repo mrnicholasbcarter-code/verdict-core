@@ -1739,3 +1739,98 @@ def test_prepare_live_autodev_selected_needs_two_planner_families(
         )
     assert "planner" in str(excinfo.value)
     assert "cc/" not in str(excinfo.value)
+
+
+# BOD-406: the executor ladder keeps free or subscription candidates from two
+# families, never paid ones, and a cache HIT never decides admission.
+
+
+def _bod406_verdicts() -> list[RouteVerdict]:
+    return [
+        _route_verdict("mistral/codestral-latest", rank=0, reached=EligibilityStage.SELECTED),
+        _route_verdict("cc/claude-haiku-5-5", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "antigravity/gemini-3.1-flash-lite", rank=3, capacity=CapacityClass.SUBSCRIPTION
+        ),
+        _route_verdict("antigravity/gemini-3-flash", rank=4, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("anthropic/claude-sonnet-5", rank=5, capacity=CapacityClass.METERED),
+        _route_verdict("gc/grok-4.7", rank=6, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+
+
+def test_prepare_live_autodev_selected_ladder_spans_free_and_subscription_families(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_bod406_verdicts())
+    )
+    # codestral reports a sub-cent cost on a real (cache MISS) answer: it is dropped.
+    probed = _scripted_probe(monkeypatch, costs={"mistral/codestral-latest": "0.0000051000"})
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    # One route per family; cc/*, cx/* (D22) and metered routes are never probed.
+    assert probed == [
+        "mistral/codestral-latest",
+        "antigravity/gemini-3.1-flash-lite",
+        "gc/grok-4.7",
+    ]
+    assert dropped == ({"route_id": "mistral/codestral-latest", "reason": "cost_0.0000051000"},)
+    routes = [item["route_id"] for item in candidates]
+    assert routes == ["antigravity/gemini-3.1-flash-lite", "gc/grok-4.7"]
+    assert all(item["selection_reason"].strip() for item in candidates)
+    assert all("capacity=subscription" in item["selection_reason"] for item in candidates)
+    assert decision.selected_route.model in routes
+
+
+def test_prepare_live_autodev_selected_probe_bypasses_cache_and_drops_cache_hits(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    sent: list[Mapping[str, str]] = []
+    hit = {FREE_A: True, FREE_B: False}
+    served: dict[str, str] = {}
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = dict(served)
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        sent.append(dict(kwargs.get("extra_headers") or {}))
+
+        def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
+            served["x-omniroute-model"] = model.split("/", 1)[1]
+            served["x-omniroute-response-cost"] = "0"
+            served["x-omniroute-cache-hit"] = "true" if hit[model] else "false"
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert sent and all(item.get("X-OmniRoute-No-Cache") == "true" for item in sent)
+    # A cached answer proves nothing about the route; it never admits one.
+    assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]

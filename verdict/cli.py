@@ -1374,6 +1374,10 @@ def cmd_autodev(
             "rejected": [item.to_dict() for item in decision.rejected],
             "probed": [candidate["route_id"] for candidate in selected_candidates],
             "dropped": [dict(item) for item in probe_dropped],
+            "candidates": [
+                {"route_id": item["route_id"], "reason": item.get("selection_reason", "")}
+                for item in selected_candidates
+            ],
         }
     else:
         from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL

@@ -2081,9 +2081,10 @@ def prepare_live_autodev_selected(
     from verdict.execution_path import optimize_execution_path
     from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.http_safety import open_no_redirect
-    from verdict.orchestration.contracts import CapacityClass, TaskRequirements
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
+    from verdict.orchestration.credential_pools import pool_of
     from verdict.orchestration.eligibility_report import build_selector
-    from verdict.patch_executor import extract_content
+    from verdict.patch_executor import NO_CACHE_HEADERS, extract_content
     from verdict.probes import openai_probe_transport
     from verdict.subagent_resolver import public_execution_path_request
 
@@ -2119,25 +2120,42 @@ def prepare_live_autodev_selected(
     # ``select`` probes and returns every assessed route; the ladder order is the
     # rank it assigned (lower is better, ``None`` = never ranked).
     ordered = sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0))
-    ladder: list[Any] = []
+    # BOD-406: free and prepaid subscription routes both cost no marginal cash, so
+    # both qualify; metered routes and the D22 pools never do. One route per model
+    # family keeps the retry ladder from being two copies of the same model.
+    ladder: list[tuple[Any, str]] = []
+    families: set[str] = set()
     for verdict in ordered:
         reached = getattr(verdict.reached, "value", None)
         route_id = str(verdict.route_id)
+        if route_id.endswith(":free") or verdict.capacity_class is CapacityClass.FREE:
+            capacity = "free"
+        elif verdict.capacity_class is CapacityClass.SUBSCRIPTION:
+            capacity = "subscription"
+        else:
+            continue
         # A concrete route is provider/model, exactly as the pinned path requires.
-        is_free = route_id.endswith(":free") or verdict.capacity_class is CapacityClass.FREE
-        if reached in _ELIGIBLE_STAGES and is_free and "/" in route_id:
-            ladder.append(verdict)
-            if len(ladder) == top_n:
-                break
+        if (
+            reached not in _ELIGIBLE_STAGES
+            or "/" not in route_id
+            or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
+            or route_family(route_id) in families
+        ):
+            continue
+        families.add(route_family(route_id))
+        ladder.append((verdict, f"{reached.lower()} rank={verdict.rank} capacity={capacity}"))
+        if len(ladder) == top_n:
+            break
     if not ladder:
         raise AutodevError(
-            "autodev selection found no eligible free executor route (no paid or frontier fallback)"
+            "autodev selection found no eligible free or subscription executor route "
+            "(no paid or frontier fallback)"
         )
 
     started = time.time()
     candidates: list[dict[str, Any]] = []
     dropped: list[dict[str, str]] = []
-    for route in ladder:
+    for route, selection_reason in ladder:
         route_id = str(route.route_id)
         headers: dict[str, str] = {}
 
@@ -2152,7 +2170,10 @@ def prepare_live_autodev_selected(
             )
             return response
 
-        transport = openai_probe_transport(base_url, api_key=api_key, opener=opener)
+        # A cached answer proves nothing about the route, so the probe bypasses it.
+        transport = openai_probe_transport(
+            base_url, api_key=api_key, opener=opener, extra_headers=NO_CACHE_HEADERS
+        )
         try:
             probe = transport(
                 route_id,
@@ -2187,6 +2208,8 @@ def prepare_live_autodev_selected(
             reason = "content"
         elif served != route_id.split("/", 1)[1]:
             reason = "identity"
+        elif headers.get("x-omniroute-cache-hit", "").lower() == "true":
+            reason = "cache_hit"
         elif cost is None:
             reason = "missing_cost_header"
         elif not zero_cost:
@@ -2207,6 +2230,7 @@ def prepare_live_autodev_selected(
                 "certification_freshness": "fresh",
                 "probe_observed_at": time.time(),
                 "probe_headers": headers,
+                "selection_reason": f"{selection_reason} probe=OK cost={cost}",
             }
         )
     if not candidates:
