@@ -612,7 +612,7 @@ def test_truncated_reply_is_rejected_by_name(repo: Path) -> None:
 
     runner = RecordingRunner()
     executor = PatchExecutor(
-        repo, PatchExecutorConfig(model="m/x"), transport=transport, runner=runner
+        repo, PatchExecutorConfig(model="m/x", max_tokens=4096), transport=transport, runner=runner
     )
     attempt = executor.execute_unit(_unit())
 
@@ -806,3 +806,17 @@ def test_out_of_bounds_reply_still_gets_no_repair_turn(repo: Path) -> None:
     assert attempt.outcome == "rejected"
     assert attempt.repair_attempt is None
     assert len(seen) == 1
+
+
+def test_executor_and_repair_turns_leave_room_for_reasoning(repo: Path) -> None:
+    """BOD-396: a reasoning route spent 3555 tokens thinking before a 1545-char repair."""
+    sent: list[int] = []
+
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        sent.append(int(payload["max_tokens"]))
+        return _response("not a diff")
+
+    PatchExecutor(repo, PatchExecutorConfig(model="m/x"), transport=transport).execute_unit(_unit())
+
+    assert len(sent) == 2
+    assert all(cap >= 16384 for cap in sent)
