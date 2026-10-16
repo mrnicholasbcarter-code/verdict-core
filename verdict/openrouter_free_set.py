@@ -32,10 +32,8 @@ ENV_CACHE_PATH = "VERDICT_OPENROUTER_FREE_SET_CACHE"
 ENV_TTL_SECONDS = "VERDICT_OPENROUTER_FREE_SET_TTL_S"
 # Brief proposed bound; chosen as the default for public pricing freshness.
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
-OPENROUTER_PREFIXES = frozenset({"openrouter", "kc", "kilocode"})
 # Capacity FREE-gating (BOD-418) applies to the openrouter/ catalog prefix.
-# kc/kilocode :free keep the existing free_suffix rule (D5) unless a caller
-# also intersects them with the public set.
+# kc/kilocode :free keep the existing free_suffix rule (D5).
 OPENROUTER_CATALOG_PREFIX = "openrouter"
 
 # Catalog modalities that are not coding/chat text generation. Image/audio on
@@ -519,11 +517,6 @@ def load_openrouter_free_set(
         return cached
 
 
-def is_openrouter_family_route(route_id: str) -> bool:
-    prefix = route_id.split("/", 1)[0].lower()
-    return prefix in OPENROUTER_PREFIXES
-
-
 def is_openrouter_catalog_route(route_id: str) -> bool:
     """True for gateway ids under the ``openrouter/`` catalog prefix."""
     return route_id.split("/", 1)[0].lower() == OPENROUTER_CATALOG_PREFIX
@@ -577,7 +570,6 @@ __all__ = [
     "default_ttl_seconds",
     "fetch_openrouter_models",
     "is_openrouter_catalog_route",
-    "is_openrouter_family_route",
     "key_limit_on_non_free_is_route_scoped",
     "load_openrouter_free_set",
     "openrouter_route_is_public_free",
