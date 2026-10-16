@@ -695,6 +695,14 @@ def apply_search_replace_blocks(
         if path not in files:
             files[path] = read_repository_text(root, path)
         count = files[path].count(search) if search else 0
+        # The fence syntax forces SEARCH and REPLACE to end with a newline, so a
+        # block aimed inside one long line (a JSON fixture string) carries a
+        # newline the file does not have there (BOD-392).
+        if count == 0 and search.endswith("\n") and replacement.endswith("\n"):
+            trimmed = search.removesuffix("\n")
+            if trimmed and files[path].count(trimmed) == 1:
+                search, replacement = trimmed, replacement.removesuffix("\n")
+                count = 1
         if count != 1:
             raise PatchExecutorError(
                 f"search/replace block {number} for {path} matches {count} times "
