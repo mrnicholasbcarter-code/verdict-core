@@ -851,6 +851,16 @@ def _action_acceptance_status(**kwargs: Any) -> ActionResult:
     return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
 
 
+def _action_acceptance_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install/remove the hourly acceptance timer."""
+    from verdict.acceptance_service import manage_service
+
+    data = manage_service(
+        dry_run=bool(kwargs.get("dry_run", False)), uninstall=bool(kwargs.get("uninstall", False))
+    )
+    return ActionResult(data=data)
+
+
 def _action_prove_at_rest_install_service(**kwargs: Any) -> ActionResult:
     """Render (dry-run) or install the bounded systemd user prober."""
     return _manage_prove_service(uninstall=False, **kwargs)

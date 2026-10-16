@@ -1304,6 +1304,7 @@ def _register_builtins() -> None:
         register(ActionSpec(name, "orchestration", "mutation", summary, "Orchestration"), handler)
 
     from verdict.actions.extra import (
+        _action_acceptance_install_service,
         _action_acceptance_status,
         _action_autodev_packet_canary,
         _action_autodev_packet_canary_rollback,
@@ -1679,6 +1680,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_acceptance_status,
+        ),
+        (
+            ActionSpec(
+                "acceptance.install-service",
+                "health",
+                "mutation",
+                "Install the hourly acceptance timer (--dry-run shows it)",
+                "Health",
+            ),
+            _action_acceptance_install_service,
         ),
         (
             ActionSpec(
