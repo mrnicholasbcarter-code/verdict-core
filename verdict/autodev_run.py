@@ -2002,6 +2002,10 @@ _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 #: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
 _PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
 
+#: Operator policy (grok-fast-premium-policy): premium routes reserved for
+#: explicit premium work, never ordinary planner or executor candidates.
+_PREMIUM_RESERVED_ROUTES = frozenset({"gc/grok-4.7", "gc/grok-4.7-build-fast"})
+
 
 def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
     """Planner routes from the live eligibility ladder, one per model family (BOD-393).
@@ -2041,6 +2045,7 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
             or "/" not in route_id
             or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
             or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
+            or route_id in _PREMIUM_RESERVED_ROUTES
             or route_family(route_id) in families
         ):
             continue
@@ -2125,6 +2130,7 @@ def prepare_live_autodev_selected(
     # family keeps the retry ladder from being two copies of the same model.
     ladder: list[tuple[Any, str]] = []
     families: set[str] = set()
+    dropped: list[dict[str, str]] = []
     for verdict in ordered:
         reached = getattr(verdict.reached, "value", None)
         route_id = str(verdict.route_id)
@@ -2142,6 +2148,9 @@ def prepare_live_autodev_selected(
             or route_family(route_id) in families
         ):
             continue
+        if route_id in _PREMIUM_RESERVED_ROUTES:
+            dropped.append({"route_id": route_id, "reason": "premium_reserved"})
+            continue
         families.add(route_family(route_id))
         ladder.append((verdict, f"{reached.lower()} rank={verdict.rank} capacity={capacity}"))
         if len(ladder) == top_n:
@@ -2154,7 +2163,6 @@ def prepare_live_autodev_selected(
 
     started = time.time()
     candidates: list[dict[str, Any]] = []
-    dropped: list[dict[str, str]] = []
     for route, selection_reason in ladder:
         route_id = str(route.route_id)
         headers: dict[str, str] = {}

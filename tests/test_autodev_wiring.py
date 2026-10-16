@@ -1755,7 +1755,7 @@ def _bod406_verdicts() -> list[RouteVerdict]:
         ),
         _route_verdict("antigravity/gemini-3-flash", rank=4, capacity=CapacityClass.SUBSCRIPTION),
         _route_verdict("anthropic/claude-sonnet-5", rank=5, capacity=CapacityClass.METERED),
-        _route_verdict("gc/grok-4.7", rank=6, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=6, capacity=CapacityClass.SUBSCRIPTION),
     ]
 
 
@@ -1779,11 +1779,11 @@ def test_prepare_live_autodev_selected_ladder_spans_free_and_subscription_famili
     assert probed == [
         "mistral/codestral-latest",
         "antigravity/gemini-3.1-flash-lite",
-        "gc/grok-4.7",
+        "gc/grok-4.5",
     ]
     assert dropped == ({"route_id": "mistral/codestral-latest", "reason": "cost_0.0000051000"},)
     routes = [item["route_id"] for item in candidates]
-    assert routes == ["antigravity/gemini-3.1-flash-lite", "gc/grok-4.7"]
+    assert routes == ["antigravity/gemini-3.1-flash-lite", "gc/grok-4.5"]
     assert all(item["selection_reason"].strip() for item in candidates)
     assert all("capacity=subscription" in item["selection_reason"] for item in candidates)
     assert decision.selected_route.model in routes
@@ -1834,3 +1834,40 @@ def test_prepare_live_autodev_selected_probe_bypasses_cache_and_drops_cache_hits
     # A cached answer proves nothing about the route; it never admits one.
     assert dropped == ({"route_id": FREE_A, "reason": "cache_hit"},)
     assert [item["route_id"] for item in candidates] == [FREE_B]
+
+
+def test_prepare_live_autodev_selected_keeps_premium_grok_off_the_ladder(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator policy: gc/grok-4.7 and gc/grok-4.7-build-fast are premium-reserved."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("gc/grok-4.7-build-fast", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.7", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(FREE_A, rank=3),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN, model=config.model)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == ["gc/grok-4.5", FREE_A]
+    assert [item["route_id"] for item in candidates] == ["gc/grok-4.5", FREE_A]
+    assert dropped == (
+        {"route_id": "gc/grok-4.7-build-fast", "reason": "premium_reserved"},
+        {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
+    )
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
