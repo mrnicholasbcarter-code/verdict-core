@@ -551,3 +551,27 @@ def test_live_replay_through_hook_handler_is_idempotent(tmp_path: Path) -> None:
     lines = (outbox / harness_claude.OUTBOX_FILENAME).read_text("utf-8").splitlines()
     assert len(lines) == len(payloads)
     assert {json.loads(x)["identity"]["session_id"] for x in lines} == set(SESSIONS.values())
+
+
+# --- Hook-event capability (PENDING controller decision) ---
+
+
+def test_hook_event_capability_reflects_live_observation(tmp_path: Path) -> None:
+    cap = harness_claude.CLAUDE_HOOK_EVENT_CAPABILITY
+    assert set(cap) == set(harness_claude.CLAUDE_HOOK_EVENT_KINDS)
+    live = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"}
+    assert {e for e, level in cap.items() if level == "supported"} == live
+    assert cap["SubagentStop"] == "partial"
+    assert cap["PreCompact"] == "partial"
+    observed = {p["hook_event_name"] for p in _live()}
+    assert observed == live
+
+
+def test_certify_notes_live_observed_hook_events(tmp_path: Path) -> None:
+    report = harness_claude.certify(
+        claude_home=tmp_path, force=True, which=lambda _name: "/usr/bin/claude"
+    )
+    note = next(n for n in report.notes if n.startswith("hook events observed live"))
+    for event in ("PreToolUse", "PostToolUse", "Stop"):
+        assert event in note
+    assert "SubagentStop" not in note and "PreCompact" not in note
