@@ -453,3 +453,38 @@ def test_empty_content_events_are_not_sent_to_backend(tmp_path: Path) -> None:
         == "ignored"
     )
     assert loaded == [] and fake.stored == []
+
+
+def test_event_carries_hook_fire_time_as_created_at_for_p_contract() -> None:
+    """P LifecycleEvent requires created_at; it must come from the hook fire, not recall time."""
+    payload = dict(_fixture("post_llm_call.json"), hook_fired_at=1760655600.25)
+    first = hm.translate_hook("post_llm_call", payload, project="proj-a")
+    again = hm.translate_hook("post_llm_call", payload, project="proj-a")
+    assert first["created_at"] == 1760655600.25
+    assert hm.logical_digest(first) == hm.logical_digest(again)
+    assert first["provenance"]["created_at_source"] == "hermes_hook_fire"
+    missing = hm.translate_hook("post_llm_call", _fixture("post_llm_call.json"), project="proj-a")
+    assert isinstance(missing["created_at"], float)
+    assert missing["provenance"]["created_at_source"] == "adapter_receipt"
+
+
+def test_installed_plugin_stamps_hook_fire_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    hm.install(hermes_home=home)
+    spec = importlib.util.spec_from_file_location(
+        "hermes_verdict_memory_plugin_time", home / "plugins" / hm.PLUGIN_NAME / "__init__.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], *, input: str, **_kw: Any) -> Any:
+        seen.update(json.loads(input))
+        return type("P", (), {"stdout": "{}"})()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    module.HOOKS["post_llm_call"](session_id="s", turn_id="t", assistant_response="x")
+    assert isinstance(seen["hook_fired_at"], float) and seen["hook_fired_at"] > 1.7e9
