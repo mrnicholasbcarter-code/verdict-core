@@ -3269,6 +3269,7 @@ def main() -> None:
         parsers_harness,
         parsers_models,
         parsers_openspec,
+        parsers_outcome,
         parsers_routing,
         parsers_runtime,
         parsers_setup,
@@ -3286,9 +3287,10 @@ def main() -> None:
         parsers_openspec,
     ):
         registrar.register(subparsers)
-    # Direct call (not through the tuple-driven loop above) so the static
-    # reachability scanner's attribute-chain tracer resolves this registrar.
+    # Direct calls (not through the tuple-driven loop above) so the static
+    # reachability scanner's attribute-chain tracer resolves these registrars.
     parsers_census.register(subparsers)
+    parsers_outcome.register(subparsers)
 
     from verdict.commands.dispatch import dispatch
 
@@ -4595,6 +4597,108 @@ def _metadata_json_file(path: str | Path | None) -> Any | None:
     if path is None:
         return None
     return json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+
+
+def cmd_outcome_record(
+    *,
+    task_kind: str,
+    harness: str,
+    model: str,
+    outcome: str,
+    failure_class: str,
+    source: str,
+    effort: str | None = None,
+    duration_s: float | None = None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+    cost_usd: float | None = None,
+    story_id: str | None = None,
+    store_dir: str | None = None,
+    output_json: bool = False,
+) -> None:
+    """Record one classified model attempt (BOD-353 outcome writer)."""
+    from verdict.actions.registry import run_action
+
+    result = run_action(
+        "outcome.record",
+        {
+            "task_kind": task_kind,
+            "harness": harness,
+            "model": model,
+            "outcome": outcome,
+            "failure_class": failure_class,
+            "source": source,
+            "effort": effort,
+            "duration_s": duration_s,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "story_id": story_id,
+            "store_dir": store_dir,
+        },
+    )
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "outcome record failed"))
+        if output_json:
+            print(json.dumps({"error": err}, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Outcome  /  record")
+            present.fail("outcome record", err)
+        raise SystemExit(result.exit_code or 2)
+
+    if output_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    from verdict import present
+
+    present.header("Outcome  /  record")
+    present.ok("recorded", f"{data['model']} ({data['task_kind']}) -> {data['outcome']}")
+    present.kv(
+        {
+            "failure_class": data["failure_class"],
+            "harness": data["harness"],
+            "story_id": data.get("story_id") or "-",
+            "stored": data["stored"],
+        }
+    )
+
+
+def cmd_outcome_import(
+    *,
+    jsonl_path: str,
+    source: str = "model-decisions-import",
+    store_dir: str | None = None,
+    output_json: bool = False,
+) -> None:
+    """Import legacy ``work/model-decisions.jsonl`` rows (best-effort mapping, BOD-353)."""
+    from verdict.actions.registry import run_action
+
+    result = run_action(
+        "outcome.import", {"jsonl_path": jsonl_path, "source": source, "store_dir": store_dir}
+    )
+    data = result.data
+    if not result.ok:
+        err = str(data.get("error", "outcome import failed"))
+        if output_json:
+            print(json.dumps({"error": err}, sort_keys=True))
+        else:
+            from verdict import present
+
+            present.header("Outcome  /  import")
+            present.fail("outcome import", err)
+        raise SystemExit(result.exit_code or 2)
+
+    if output_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    from verdict import present
+
+    present.header("Outcome  /  import")
+    present.ok("imported", f"{data['imported']} row(s) from {data['source']}")
+    present.kv({"stored": data["stored"]})
 
 
 def cmd_metadata(args: Any) -> None:
