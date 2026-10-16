@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -902,3 +903,40 @@ def test_opted_in_unknown_still_obeys_external_capacity_gates(
     assert report.eligible == ()
     assert report.candidates[0].state is AvailabilityState.POLICY_DENIED
     assert report.candidates[0].reasons == (reason,)
+
+
+def test_slow_catalog_fetch_does_not_make_a_fresh_runtime_observation_stale() -> None:
+    """BOD-387: ``evaluate`` must read its clock after the catalog/runtime
+    fetches, not before. A transport slow to answer catalog() must not make
+    a runtime observation stamped during that slow call look "stale" by
+    comparison to a clock frozen before the call started -- that produced an
+    intermittent, no-error ``reviewer``/``worker`` role resolving to None
+    under live contention (concurrent census + role selection), even though
+    every eligible route had a fresh passport.
+
+    A deterministic fake clock stands in for wall-clock time: ``catalog()``
+    advances it by 6s (longer than the live 4-9s fetches that triggered
+    this), simulating a slow upstream call; the runtime observation is
+    stamped with that advanced time, as the gateway would when it answers
+    after the delay.
+    """
+    fake_now = [NOW]
+
+    class SlowCatalogTransport:
+        def __init__(self) -> None:
+            self.configured_operations = frozenset({"catalog", "runtime"})
+
+        def catalog(self) -> Any:
+            fake_now[0] = fake_now[0] + timedelta(seconds=6)
+            return {"data": [{"id": "p/model", "provider": "p"}]}
+
+        def runtime(self) -> Any:
+            observed = fake_now[0].isoformat()
+            return {"p/model": {"observed_at": observed, "ttl_seconds": 60, "health": "healthy"}}
+
+    report = OmniRouteAvailabilityAdapter(
+        SlowCatalogTransport(), clock=lambda: fake_now[0]
+    ).evaluate()
+
+    assert report.candidates[0].state is AvailabilityState.READY
+    assert len(report.eligible) == 1
