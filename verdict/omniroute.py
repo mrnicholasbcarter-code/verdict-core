@@ -184,62 +184,82 @@ class OmniRouteHTTPTransport:
         headers = {"accept": "application/json", "accept-encoding": "identity"}
         if token:
             headers["authorization"] = f"Bearer {token}"
-        body = bytearray()
         failure: OmniRouteTransportError | None = None
-        try:
-            self._validate_destination()
-            with (
-                httpx.Client(
-                    transport=self.transport, timeout=self.timeout, follow_redirects=False
-                ) as client,
-                client.stream(
-                    "GET", f"{self.base_url}{path}", headers=headers, params=params
-                ) as response,
-            ):
-                if response.status_code in {401, 403}:
-                    raise OmniRouteTransportUnauthorized(operation, "unauthorized")
-                if response.status_code == 404:
-                    raise OmniRouteTransportUnsupported(
-                        operation, "documented operation unavailable"
+        body = bytearray()
+        # A single slow fetch (cold connection, transient contention) must not
+        # void every candidate for this operation. Retry once on timeout only;
+        # every other failure still fails on the first attempt (BOD-387: the
+        # reviewer role returned no eligible candidate though two routes had
+        # fresh census passports, traced to one timed-out catalog fetch).
+        for attempt in range(2):
+            body = bytearray()
+            try:
+                self._validate_destination()
+                with (
+                    httpx.Client(
+                        transport=self.transport, timeout=self.timeout, follow_redirects=False
+                    ) as client,
+                    client.stream(
+                        "GET", f"{self.base_url}{path}", headers=headers, params=params
+                    ) as response,
+                ):
+                    if response.status_code in {401, 403}:
+                        raise OmniRouteTransportUnauthorized(operation, "unauthorized")
+                    if response.status_code == 404:
+                        raise OmniRouteTransportUnsupported(
+                            operation, "documented operation unavailable"
+                        )
+                    if not 200 <= response.status_code < 300:
+                        raise OmniRouteTransportError(
+                            operation, f"http status {response.status_code}"
+                        )
+                    content_encoding = (
+                        response.headers.get("content-encoding", "identity").strip().lower()
                     )
-                if not 200 <= response.status_code < 300:
-                    raise OmniRouteTransportError(operation, f"http status {response.status_code}")
-                content_encoding = (
-                    response.headers.get("content-encoding", "identity").strip().lower()
-                )
-                if content_encoding not in {"", "identity"}:
-                    raise OmniRouteTransportMalformed(
-                        operation, "encoded responses are unsupported"
-                    )
-                content_length = response.headers.get("content-length")
-                if content_length is not None:
-                    invalid_content_length = False
-                    try:
-                        parsed_content_length = int(content_length)
-                    except ValueError:
-                        invalid_content_length = True
-                        parsed_content_length = 0
-                    if invalid_content_length:
+                    if content_encoding not in {"", "identity"}:
                         raise OmniRouteTransportMalformed(
-                            operation, "invalid content length"
-                        ) from None
-                    if parsed_content_length > self.max_response_bytes:
-                        raise OmniRouteTransportMalformed(operation, "response too large")
-                chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
-                for chunk in chunks:
-                    body.extend(chunk)
-                    if len(body) > self.max_response_bytes:
-                        raise OmniRouteTransportMalformed(operation, "response too large")
-        except OmniRouteTransportError as exc:
-            failure = exc
-        except httpx.TimeoutException:
-            failure = OmniRouteTransportTimeout(operation, "timeout")
-        except httpx.HTTPError as exc:
-            failure = OmniRouteTransportError(operation, type(exc).__name__)
-        except ValueError:
-            failure = OmniRouteTransportError(operation, "destination unavailable")
-        except Exception as exc:
-            failure = OmniRouteTransportError(operation, type(exc).__name__)
+                            operation, "encoded responses are unsupported"
+                        )
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        invalid_content_length = False
+                        try:
+                            parsed_content_length = int(content_length)
+                        except ValueError:
+                            invalid_content_length = True
+                            parsed_content_length = 0
+                        if invalid_content_length:
+                            raise OmniRouteTransportMalformed(
+                                operation, "invalid content length"
+                            ) from None
+                        if parsed_content_length > self.max_response_bytes:
+                            raise OmniRouteTransportMalformed(operation, "response too large")
+                    chunks = (
+                        (response.content,) if response.is_stream_consumed else response.iter_raw()
+                    )
+                    for chunk in chunks:
+                        body.extend(chunk)
+                        if len(body) > self.max_response_bytes:
+                            raise OmniRouteTransportMalformed(operation, "response too large")
+                failure = None
+                break
+            except OmniRouteTransportError as exc:
+                failure = exc
+                break
+            except httpx.TimeoutException:
+                failure = OmniRouteTransportTimeout(operation, "timeout")
+                if attempt == 0:
+                    continue
+                break
+            except httpx.HTTPError as exc:
+                failure = OmniRouteTransportError(operation, type(exc).__name__)
+                break
+            except ValueError:
+                failure = OmniRouteTransportError(operation, "destination unavailable")
+                break
+            except Exception as exc:
+                failure = OmniRouteTransportError(operation, type(exc).__name__)
+                break
 
         if failure is not None:
             raise failure from None
