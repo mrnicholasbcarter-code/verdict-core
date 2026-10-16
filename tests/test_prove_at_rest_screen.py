@@ -194,6 +194,128 @@ def test_agentic_403_naming_the_model_is_route_scoped(tmp_path: Path) -> None:
     assert "p" not in _cooled_pools(cache, NOW)
 
 
+def test_mixed_screen_account_error_blocks_sibling_tool_dispatch(tmp_path: Path) -> None:
+    """R1: screen OK for a sibling must not bypass a pool cooldown from the same screen."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a"), _free("p/b")]
+    screen = _Screen(
+        {
+            "p/a": {
+                "status": "error",
+                "statusCode": 403,
+                "error": "Key limit exceeded (total limit)",
+            },
+            "p/b": {"status": "ok"},
+        }
+    )
+    probed: list[str] = []
+
+    def agentic(rid: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        probed.append(rid)
+        return _turn(rid, payload)
+
+    stats = CycleStats()
+    _prober(cache, routes, screen, agentic).run_agentic_probes(stats, routes=routes)
+    assert "p" in _cooled_pools(cache, NOW)
+    assert probed == []
+    assert stats.agentic_passed == 0
+
+
+def test_post_screen_account_error_blocks_later_sibling_tool_dispatch(tmp_path: Path) -> None:
+    """R1: a later account 403 must stop further tool turns for that cooled pool."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a"), _free("p/b")]
+    screen = _Screen({rid: {"status": "ok"} for rid in ("p/a", "p/b")})
+    calls: list[tuple[str, list[str]]] = []
+
+    def agentic(rid: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        calls.append((rid, sorted(_cooled_pools(cache, NOW))))
+        if rid == "p/a":
+            return ProbeExchange(
+                http_status=403, ok=False, detail="Key limit exceeded (total limit)"
+            )
+        return _turn(rid, payload)
+
+    stats = CycleStats()
+    Prober(
+        cache,
+        lambda: routes,
+        lambda rid, phase, timeout: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=agentic,
+        clock=lambda: NOW,
+        gateway_auth_check=lambda timeout: ProbeExchange(http_status=200, ok=True),
+        agentic_concurrency=1,
+    ).run_agentic_probes(stats, routes=routes)
+    assert not any(rid == "p/b" for rid, _ in calls)
+    assert stats.agentic_passed == 0
+
+
+def test_screen_skips_dispatch_when_pool_bucket_is_empty(tmp_path: Path) -> None:
+    """R2: an empty/blocked local bucket must not launch test-all."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1)
+    cache.zero_bucket("p", NOW.replace(hour=7), pool="p")
+    routes = [_free("p/a")]
+    screen = _Screen({"p/a": {"status": "ok"}})
+    stats = CycleStats()
+    _prober(
+        cache, routes, screen, lambda *args: ProbeExchange(http_status=500, ok=False)
+    ).run_agentic_probes(stats, routes=routes)
+    assert screen.calls == []
+
+
+def test_screen_skips_dispatch_when_stop_is_set(tmp_path: Path) -> None:
+    """R2: a pre-set stop flag must not launch test-all."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a")]
+    screen = _Screen({"p/a": {"status": "ok"}})
+    prober = _prober(cache, routes, screen, lambda *args: ProbeExchange(http_status=500, ok=False))
+    prober.stop()
+    stats = CycleStats()
+    prober.run_agentic_probes(stats, routes=routes)
+    assert screen.calls == []
+    assert stats.agentic_stopped_reason == "stopped"
+
+
+def test_screen_skips_dispatch_when_deadline_already_expired(tmp_path: Path) -> None:
+    """R2: an already-passed deadline must not launch test-all (no min-1s floor)."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a")]
+    screen = _Screen({"p/a": {"status": "ok"}})
+    stats = CycleStats()
+    Prober(
+        cache,
+        lambda: routes,
+        lambda rid, phase, timeout: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=lambda *args: ProbeExchange(http_status=500, ok=False),
+        clock=lambda: NOW,
+        monotonic=lambda: 100.0,
+        agentic_wall_seconds=10.0,
+    ).run_agentic_probes(stats, routes=routes, started=0.0)
+    assert screen.calls == []
+    assert stats.agentic_stopped_reason == "wall_cap"
+
+
+def test_screen_reserves_bucket_before_dispatch(tmp_path: Path) -> None:
+    """R2: screen consumes the local bucket before submitting test-all."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=2)
+    routes = [_free("p/a"), _free("p/b")]
+    screen = _Screen({rid: {"status": "ok"} for rid in ("p/a", "p/b")})
+    probed: list[str] = []
+
+    def agentic(rid: str, payload: dict[str, Any], timeout: float) -> ProbeExchange:
+        probed.append(rid)
+        return _turn(rid, payload)
+
+    stats = CycleStats()
+    _prober(cache, routes, screen, agentic).run_agentic_probes(stats, routes=routes)
+    assert screen.calls == [("p", ["p/a", "p/b"])]
+    # 2 screen reservations spent the capacity; agentic turns cannot reserve more.
+    assert cache.bucket_remaining("p", NOW, pool="p") == 0
+    assert probed == []
+
+
 def test_live_screen_transport_posts_the_m1_test_all_body(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[Any] = []
 

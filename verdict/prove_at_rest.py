@@ -909,9 +909,10 @@ class Prober:
     # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
-    # Routes that answered this cycle's screen: their pool answered after the
-    # cooldown, so the agentic loop does not drop them as cooled.
-    _screen_survivors: set[str] = field(default_factory=set, init=False, repr=False)
+    # Half-open agentic allowlist: screen survivors from pools already cooled
+    # before this cycle's screen. One tool conversation each; a newer pool
+    # cooldown never inherits this exemption.
+    _half_open_routes: set[str] = field(default_factory=set, init=False, repr=False)
     _gateway_auth_result: ProbeExchange | None = field(default=None, init=False, repr=False)
     _cycle_pools: set[str] = field(default_factory=set, init=False, repr=False)
     _cycle_started: float = field(default=0.0, init=False, repr=False)
@@ -1317,9 +1318,17 @@ class Prober:
             )
             if self._needs_agentic(route, now)
         ]
-        self._screen_survivors = set()
+        self._half_open_routes = set()
+        if self._stop.is_set():
+            stats.agentic_stopped_reason = "stopped"
+            return
+        if self.monotonic() >= deadline:
+            stats.agentic_stopped_reason = "wall_cap"
+            return
         if self.screen_transport is not None:
             pending = self._screen(pending, stats, deadline)
+            if stats.agentic_stopped_reason:
+                return
         pending = pending[: self.agentic_max_routes]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
@@ -1347,11 +1356,13 @@ class Prober:
                     if route_pool in empty_pools:
                         continue
                     now = self.clock()
-                    if route.route_id not in self._screen_survivors and route_pool in (
-                        _cooled_pools(self.cache, now)
-                    ):
-                        pending.remove(route)
-                        continue
+                    if route_pool in _cooled_pools(self.cache, now):
+                        # One-shot half-open only for pre-screen cooldowns.
+                        if route.route_id in self._half_open_routes:
+                            self._half_open_routes.discard(route.route_id)
+                        else:
+                            pending.remove(route)
+                            continue
                     # Reserve every turn up front; an empty bucket keeps the
                     # route pending while other pools' conversations run.
                     if not self.cache.consume(
@@ -1422,27 +1433,51 @@ class Prober:
         bucket, timeouts write nothing. A screen OK only selects a route for
         the agentic probe; it never admits one. A pool whose screen call
         failed keeps its open candidates unscreened.
+
+        Stop, deadline, and local bucket boundaries are checked before each
+        ``test-all`` submit. Screen requests reserve the pool bucket first so
+        ADR-012's "budget exhaustion never launch another transport call"
+        holds for the screen phase too.
         """
         assert self.screen_transport is not None
         now = self.clock()
-        cooled = _cooled_pools(self.cache, now)
+        cooled_before = _cooled_pools(self.cache, now)
         groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
         for route in candidates:
             key = (route.provider, _pool_of(route))
-            limit = 1 if key[1] in cooled else self.agentic_max_routes
+            limit = 1 if key[1] in cooled_before else self.agentic_max_routes
             group = groups.setdefault(key, [])
             if len(group) < limit:
                 group.append(route)
         if not groups:
             return []
-        timeout = max((deadline - self.monotonic()) / 2, 1.0)
+        remaining = deadline - self.monotonic()
+        if self._stop.is_set():
+            stats.agentic_stopped_reason = "stopped"
+            return []
+        if remaining <= 0:
+            stats.agentic_stopped_reason = "wall_cap"
+            return []
+        timeout = remaining / 2
         screen = self.screen_transport
+        futures: dict[tuple[str, str], Future[Mapping[str, Mapping[str, Any]] | None]] = {}
+        reserved: dict[tuple[str, str], int] = {}
         with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
-            futures = {
-                key: pool.submit(screen, key[0], [r.route_id for r in group], timeout)
-                for key, group in groups.items()
-            }
-            outcomes = {}
+            for key, group in groups.items():
+                if self._stop.is_set():
+                    stats.agentic_stopped_reason = "stopped"
+                    break
+                if self.monotonic() >= deadline:
+                    stats.agentic_stopped_reason = "wall_cap"
+                    break
+                amount = len(group)
+                now = self.clock()
+                if not self.cache.consume(key[0], now, pool=key[1], amount=amount):
+                    # Empty bucket: skip this pool's screen; do not launch.
+                    continue
+                reserved[key] = amount
+                futures[key] = pool.submit(screen, key[0], [r.route_id for r in group], timeout)
+            outcomes: dict[tuple[str, str], Mapping[str, Mapping[str, Any]] | None] = {}
             for key, future in futures.items():
                 try:
                     outcomes[key] = future.result()
@@ -1450,10 +1485,16 @@ class Prober:
                     outcomes[key] = None
         survivors: set[str] = set()
         unscreened: set[str] = set()
+        half_open: set[str] = set()
         for key, group in groups.items():
+            if key not in outcomes:
+                # Not dispatched (stop/deadline/bucket). Keep open candidates.
+                if key[1] not in cooled_before:
+                    unscreened.update(route.route_id for route in group)
+                continue
             results = outcomes[key]
             if results is None:
-                if key[1] not in cooled:
+                if key[1] not in cooled_before:
                     unscreened.update(route.route_id for route in group)
                 continue
             stats.screened += len(group)
@@ -1462,8 +1503,10 @@ class Prober:
                 result = results.get(route.route_id)
                 if result is not None and self._record_screen(route, result, now):
                     survivors.add(route.route_id)
+                    if key[1] in cooled_before:
+                        half_open.add(route.route_id)
         stats.screen_ok += len(survivors)
-        self._screen_survivors = survivors
+        self._half_open_routes = half_open
         if survivors or stats.screened:
             self._save()
         keep = survivors | unscreened
