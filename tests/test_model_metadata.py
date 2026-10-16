@@ -35,8 +35,11 @@ from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord
 from verdict.metadata.sources import (
     MODELS_DEV_API_URL,
     HttpxJsonTransport,
+    apply_openrouter_aa_scores,
     apply_soft_scores,
+    fetch_openrouter_models_pages,
     parse_models_dev_api,
+    parse_openrouter_aa_scores,
     parse_soft_score_table,
 )
 from verdict.metadata.store import MetadataSnapshot
@@ -548,3 +551,135 @@ class TestOpenRouterAAMirror:
         assert rows  # partial retained
         assert status.reason is not None and "cyclic" in status.reason
         assert len(calls) >= 1
+
+
+class TestOpenRouterJoinAndPaginationInvariants:
+    """Sol PR #887 R1/R2: exact-else-canonical never both; raw_id; malformed next."""
+
+    def test_exact_id_else_canonical_never_both(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        records = {
+            k: ModelMetadataRecord(id=k, caps=CapabilityCaps())
+            for k in ("vendor/exact", "vendor/alternate")
+        }
+        applied = apply_openrouter_aa_scores(records, attachments)
+        assert applied == 1
+        assert records["vendor/exact"].scores.aa_coding is not None
+        assert records["vendor/exact"].scores.aa_coding.value == 88
+        assert records["vendor/alternate"].scores.aa_coding is None
+        assert records["vendor/exact"].scores.aa_coding.provenance.raw_id == "vendor/exact"
+
+    def test_canonical_fallback_keeps_openrouter_raw_id(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        only_canonical = {
+            "vendor/alternate": ModelMetadataRecord(id="vendor/alternate", caps=CapabilityCaps())
+        }
+        assert apply_openrouter_aa_scores(only_canonical, attachments) == 1
+        field = only_canonical["vendor/alternate"].scores.aa_coding
+        assert field is not None
+        assert field.value == 88
+        assert field.provenance.raw_id == "vendor/exact"
+        assert field.provenance.source == SOURCE_OPENROUTER_AA
+
+    def test_unmatched_openrouter_row_attaches_nothing(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+        attachments = parse_openrouter_aa_scores(rows, fetched_at=FETCHED_AT)
+        empty = {"other/id": ModelMetadataRecord(id="other/id", caps=CapabilityCaps())}
+        assert apply_openrouter_aa_scores(empty, attachments) == 0
+        assert empty["other/id"].scores.aa_coding is None
+
+    def test_malformed_next_with_incomplete_total_is_partial_or_error(self) -> None:
+        rows = [
+            {
+                "id": "vendor/exact",
+                "canonical_slug": "vendor/alternate",
+                "benchmarks": {"artificial_analysis": {"coding_index": 88}},
+            }
+        ]
+
+        class Transport:
+            def get_json(self, url: str):
+                from verdict.metadata.sources import FetchedDocument
+
+                return FetchedDocument(
+                    url=url,
+                    data={"data": rows, "links": {"next": 42}, "total_count": 2},
+                    fetched_at=FETCHED_AT,
+                )
+
+        got_rows, status = fetch_openrouter_models_pages(Transport())  # type: ignore[arg-type]
+        assert len(got_rows) == 1
+        assert status.status == "error" or (
+            status.reason is not None and "partial" in status.reason
+        )
+        assert status.status != "ok" or (
+            status.reason is not None and status.reason.startswith("partial:")
+        )
+
+    def test_malformed_pagination_does_not_erase_p0(self, tmp_path: Path) -> None:
+        from verdict.metadata.sources import FixtureTransport
+
+        # Refresh with fixture OR payload that would be fine; separate unit covers fetch.
+        # P0 survival: include_p1 error path must leave models.dev records.
+        class BoomTransport(FixtureTransport):
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    raise ModelMetadataError("forced openrouter failure")
+                return super().get_json(url)
+
+        # Use file_transport payloads for P0 only; force live OR path via include_p1
+        # without OR fixture so transport is consulted — inject custom transport.
+        transport = file_transport(
+            models_dev_api=_load("models_dev_api.json"),
+            models_dev_models=_load("models_dev_models.json"),
+            litellm=_load("litellm_prices.json"),
+            fetched_at=FETCHED_AT,
+        )
+
+        # Wrap: P0 URLs from fixture map; OR URL returns malformed pagination.
+        class Mixed:
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    from verdict.metadata.sources import FetchedDocument
+
+                    return FetchedDocument(
+                        url=url,
+                        data={"data": [{"id": "x"}], "links": {"next": 42}, "total_count": 9},
+                        fetched_at=FETCHED_AT,
+                    )
+                return transport.get_json(url)
+
+        snapshot = refresh_metadata(
+            transport=Mixed(),  # type: ignore[arg-type]
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=tmp_path / "model-metadata.json",
+            now=NOW,
+            persist=True,
+            include_p1=True,
+        )
+        assert len(snapshot.records) >= 4
+        assert snapshot.record_by_id("openai/gpt-4o-mini") is not None
+        or_status = snapshot.sources[SOURCE_OPENROUTER_AA]
+        assert or_status.status == "error" or (
+            or_status.reason is not None and "partial" in or_status.reason
+        )

@@ -47,6 +47,7 @@ from verdict.metadata.sources import (
     FixtureTransport,
     HttpxJsonTransport,
     JsonTransport,
+    apply_openrouter_aa_scores,
     apply_soft_scores,
     fetch_openrouter_models_pages,
     merge_litellm_secondary,
@@ -511,10 +512,10 @@ def refresh_metadata(
                 )
             else:
                 or_rows, or_status = fetch_openrouter_models_pages(transport)
-            scored = parse_openrouter_aa_scores(
+            attachments = parse_openrouter_aa_scores(
                 or_rows, fetched_at=or_status.fetched_at or fetched_at, version=or_status.version
             )
-            applied = apply_soft_scores(records, scored)
+            applied = apply_openrouter_aa_scores(records, attachments)
             sources[SOURCE_OPENROUTER_AA] = SourceStatus(
                 source=SOURCE_OPENROUTER_AA,
                 status=or_status.status,

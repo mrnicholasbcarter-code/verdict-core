@@ -615,14 +615,31 @@ def fetch_openrouter_models_pages(
         rows.extend(batch)
         nxt = (payload.get("links") or {}) if isinstance(payload.get("links"), Mapping) else {}
         next_raw = nxt.get("next") if isinstance(nxt, Mapping) else None
+        total_count = payload.get("total_count")
         if next_raw in (None, ""):
+            if (
+                isinstance(total_count, int)
+                and not isinstance(total_count, bool)
+                and total_count > len(rows)
+            ):
+                partial_reason = (
+                    f"openrouter pagination ended with {len(rows)} rows but "
+                    f"total_count={total_count}"
+                )
             url = None
             continue
+        if not isinstance(next_raw, str):
+            partial_reason = f"openrouter links.next is malformed (type {type(next_raw).__name__})"
+            break
         try:
-            url = _normalize_openrouter_next(next_raw, previous=document.url)
+            normalized_next = _normalize_openrouter_next(next_raw, previous=document.url)
         except ModelMetadataError as exc:
             partial_reason = str(exc)
             break
+        if normalized_next is None:
+            partial_reason = "openrouter links.next is empty after normalize"
+            break
+        url = normalized_next
 
     status_kind: Literal["ok", "skipped", "error"] = "ok"
     reason = (
@@ -643,15 +660,25 @@ def fetch_openrouter_models_pages(
     )
 
 
+@dataclass(frozen=True)
+class OpenRouterAAAttachment:
+    """One OpenRouter row's AA scores with exact-id and optional canonical fallback key."""
+
+    openrouter_id: str
+    canonical_slug: str | None
+    scores: SoftScores
+
+
 def parse_openrouter_aa_scores(
     rows: list[Any], *, fetched_at: str, version: str | None = None
-) -> dict[str, SoftScores]:
-    """Map OpenRouter /models rows with AA benchmarks to SoftScores keyed by attach id.
+) -> list[OpenRouterAAAttachment]:
+    """Parse OpenRouter /models AA benchmarks into attachments.
 
-    Keys prefer ``id``, with ``canonical_slug`` as an alternate exact-join key when
-    distinct. No suffix stripping. Bool/NaN/inf rejected; numeric 0 preserved.
+    Each attachment carries the OpenRouter ``id`` (always used as provenance
+    ``raw_id``) and optional ``canonical_slug`` for exact-else-canonical join.
+    Bool/NaN/inf rejected; numeric 0 preserved. No suffix stripping.
     """
-    scores: dict[str, SoftScores] = {}
+    attachments: list[OpenRouterAAAttachment] = []
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -667,32 +694,62 @@ def parse_openrouter_aa_scores(
         if coding is None and intel is None and agentic is None:
             continue
         oid = row.get("id") if isinstance(row.get("id"), str) else None
-        canon = row.get("canonical_slug") if isinstance(row.get("canonical_slug"), str) else None
-        attach_ids = []
-        if oid and oid.strip():
-            attach_ids.append(oid.strip())
-        if canon and canon.strip() and canon.strip() not in attach_ids:
-            attach_ids.append(canon.strip())
-        if not attach_ids:
+        if not oid or not oid.strip():
             continue
-        for attach_id in attach_ids:
-            cited = FieldProvenance(
-                source=SOURCE_OPENROUTER_AA,
-                fetched_at=fetched_at,
-                version=version,
-                raw_id=attach_id,
+        openrouter_id = oid.strip()
+        canon_raw = (
+            row.get("canonical_slug") if isinstance(row.get("canonical_slug"), str) else None
+        )
+        canonical_slug = canon_raw.strip() if canon_raw and canon_raw.strip() else None
+        if canonical_slug == openrouter_id:
+            canonical_slug = None
+        cited = FieldProvenance(
+            source=SOURCE_OPENROUTER_AA,
+            fetched_at=fetched_at,
+            version=version,
+            raw_id=openrouter_id,
+        )
+        attachments.append(
+            OpenRouterAAAttachment(
+                openrouter_id=openrouter_id,
+                canonical_slug=canonical_slug,
+                scores=SoftScores(
+                    aa_intelligence=(
+                        ProvenancedField(value=intel, provenance=cited)
+                        if intel is not None
+                        else None
+                    ),
+                    aa_coding=(
+                        ProvenancedField(value=coding, provenance=cited)
+                        if coding is not None
+                        else None
+                    ),
+                    aa_agentic=(
+                        ProvenancedField(value=agentic, provenance=cited)
+                        if agentic is not None
+                        else None
+                    ),
+                ),
             )
-            scores[attach_id] = SoftScores(
-                aa_intelligence=(
-                    ProvenancedField(value=intel, provenance=cited) if intel is not None else None
-                ),
-                aa_coding=(
-                    ProvenancedField(value=coding, provenance=cited) if coding is not None else None
-                ),
-                aa_agentic=(
-                    ProvenancedField(value=agentic, provenance=cited)
-                    if agentic is not None
-                    else None
-                ),
-            )
-    return scores
+        )
+    return attachments
+
+
+def apply_openrouter_aa_scores(
+    records: MutableMapping[str, ModelMetadataRecord], attachments: list[OpenRouterAAAttachment]
+) -> int:
+    """Attach AA scores: exact OpenRouter id else canonical_slug; never both.
+
+    Provenance ``raw_id`` remains the OpenRouter ``id`` on canonical fallback.
+    Uses the same fill-null merge as ``apply_soft_scores``.
+    """
+    # Build a one-key SoftScores map per attachment target, then reuse apply_soft_scores.
+    targets: dict[str, SoftScores] = {}
+    for item in attachments:
+        if item.openrouter_id in records:
+            targets[item.openrouter_id] = item.scores
+            continue
+        if item.canonical_slug is not None and item.canonical_slug in records:
+            # Only if exact id was not already chosen for this row (it wasn't in records).
+            targets[item.canonical_slug] = item.scores
+    return apply_soft_scores(records, targets)
