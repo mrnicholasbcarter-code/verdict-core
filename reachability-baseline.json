@@ -428,10 +428,6 @@
     "reason": "UNTRIAGED: routes_share_pool has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
   },
   {
-    "qualified_name": "verdict.orchestration.review.StaticDiffGate",
-    "reason": "UNTRIAGED: StaticDiffGate has only non-production references; Independent OpenCodeReview: independent, fail-closed semantic review via OpenCodeReview (``ocr``) (verdict/orchestration/review.py)."
-  },
-  {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
     "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline \u2014 feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
   },

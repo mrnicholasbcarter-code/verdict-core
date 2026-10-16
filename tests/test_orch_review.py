@@ -1,8 +1,8 @@
-"""Tests for OpenCodeReviewer + StaticDiffGate OpenCodeReviewer + StaticDiffGate (verdict.orchestration.review).
+"""Tests for OpenCodeReviewer (verdict.orchestration.review).
 
 No network: every ``ocr`` invocation goes through an injected fake runner and
 saved sanitized fixtures. Live evidence for the real schema is recorded in the
-OpenCodeReviewer + StaticDiffGate delivery notes; the fixtures here are sanitized copies of that output.
+OpenCodeReviewer delivery notes; the fixtures here are sanitized copies of that output.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from verdict.orchestration.contracts import (
     RouteVerdict,
     TaskRequirements,
 )
-from verdict.orchestration.review import OcrRun, OpenCodeReviewer, StaticDiffGate
+from verdict.orchestration.review import OcrRun, OpenCodeReviewer, _changed_ordinary_test_paths
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ocr"
 
@@ -120,6 +120,12 @@ class FakeRunner:
 def _reviewer(
     tmp_path: Path, selector: FakeSelector, runner: FakeRunner, **kwargs: object
 ) -> OpenCodeReviewer:
+    if "differ" not in kwargs:
+
+        def _empty_differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
+            return []
+
+        kwargs["differ"] = _empty_differ
     return OpenCodeReviewer(
         selector,
         api_key_env="TEST_OCR_KEY",
@@ -349,47 +355,89 @@ def test_review_argv_shape(tmp_path: Path, monkeypatch) -> None:
     assert ".ocr-home-" in review_call["env"]["HOME"]  # type: ignore[operator,index]
 
 
-# --------------------------------------------------------------------------- #
-# StaticDiffGate
-# --------------------------------------------------------------------------- #
+def test_review_argv_includes_exact_changed_tests_not_protected_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """OCR --rule include must list exact ordinary changed tests only.
 
+    Broad recursive test globs re-admit fixtures/testdata/generated that OCR
+    keeps out via default_path. Include stays additive with no exclude key so
+    custom/security excludes still merge.
+    """
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    changed = [
+        "calc.py",
+        "test_calc.py",
+        "main.go",
+        "main_test.go",
+        "util.ts",
+        "src/util.test.ts",
+        "fixtures/test_fixture.py",
+        "testdata/test_fixture.py",
+        "generated/test_generated.py",
+        "__tests__/fixtures/secret.test.ts",
+        ".env",
+    ]
 
-def _gate(allowed: list[str], changed: list[str]) -> StaticDiffGate:
     def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
         return changed
 
-    return StaticDiffGate(allowed, differ=differ)
-
-
-def test_static_gate_pass_within_ownership() -> None:
-    gate = _gate(
-        ["verdict/orchestration/review.py", "tests/"],
-        ["verdict/orchestration/review.py", "tests/test_orch_review.py"],
+    runner = FakeRunner(OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json"))
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict("cx/gpt-5.5-low")), runner, differ=differ)
+    _run(reviewer)
+    review_call = next(c for c in runner.calls if "review" in c["argv"])  # type: ignore[operator]
+    argv = list(review_call["argv"])
+    assert "--rule" in argv
+    rule_path = Path(argv[argv.index("--rule") + 1])
+    assert (
+        rule_path.resolve()
+        == (tmp_path / "out" / "verdict-ocr-changed-test-include.json").resolve()
     )
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "PASS"
-    assert result.passed
+    assert rule_path.is_file()
+    rule = json.loads(rule_path.read_text(encoding="utf-8"))
+    assert "exclude" not in rule
+    include = rule.get("include")
+    assert isinstance(include, list)
+    assert include == ["test_calc.py", "main_test.go", "src/util.test.ts"]
+    assert "calc.py" not in include
+    assert "main.go" not in include
+    assert "util.ts" not in include
+    assert "fixtures/test_fixture.py" not in include
+    assert "testdata/test_fixture.py" not in include
+    assert "generated/test_generated.py" not in include
+    assert "__tests__/fixtures/secret.test.ts" not in include
+    assert ".env" not in include
+    assert not any("*" in path for path in include)
+    assert "sk-secret-value" not in rule_path.read_text(encoding="utf-8")
 
 
-def test_static_gate_fail_outside_ownership() -> None:
-    gate = _gate(
-        ["verdict/orchestration/review.py"], ["verdict/orchestration/review.py", "verdict/api.py"]
-    )
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "FAIL"
-    assert not result.passed
-    assert result.findings[0].file == "verdict/api.py"
-    assert result.findings[0].severity == "high"
+def test_changed_ordinary_test_paths_helper_filters_protected_dirs() -> None:
+    changed = [
+        "tests/test_normal.py",
+        "pkg/foo_test.go",
+        "web/app.spec.tsx",
+        "fixtures/test_fixture.py",
+        "testdata/test_fixture.py",
+        "generated/test_generated.py",
+        "__tests__/fixtures/secret.test.ts",
+        "__tests__/normal.test.ts",
+        "src/test/java/FooTest.java",
+        "calc.py",
+    ]
 
-
-def test_static_gate_error_on_diff_failure() -> None:
     def differ(*, repo: Path, base_ref: str, head_ref: str) -> Sequence[str]:
-        raise RuntimeError("git exploded")
+        return changed
 
-    gate = StaticDiffGate(["x"], differ=differ)
-    result = gate.review(repo=Path("/r"), base_ref="a", head_ref="b")
-    assert result.status == "ERROR"
-    assert "could not compute diff" in result.detail
+    selected = _changed_ordinary_test_paths(
+        repo=Path("/r"), base_ref="a", head_ref="b", differ=differ
+    )
+    assert selected == [
+        "tests/test_normal.py",
+        "pkg/foo_test.go",
+        "web/app.spec.tsx",
+        "__tests__/normal.test.ts",
+        "src/test/java/FooTest.java",
+    ]
 
 
 class PoolSelector(FakeSelector):
