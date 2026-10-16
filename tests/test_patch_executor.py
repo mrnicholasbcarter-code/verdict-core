@@ -762,7 +762,43 @@ def test_failed_repair_is_rejected_by_name_and_tree_is_untouched(tmp_path: Path)
     assert (repo / "owned.py").read_text(encoding="utf-8") == _large_text()
 
 
-def test_non_apply_rejection_gets_no_repair_turn(repo: Path) -> None:
+def test_bare_hunk_mismatch_triggers_full_file_repair(tmp_path: Path) -> None:
+    """Observed BOD-392 failure: a bare-hunk mismatch used to skip repair entirely."""
+    repo = _git_repo(tmp_path, "import os\nimport sys\n\n\nx = 1\n")
+    bare_hunk_diff = "--- a/owned.py\n+++ b/owned.py\n@@\n-not the real line\n+new\n"
+    full = "```file:owned.py\nimport sys\n\n\nx = 1\n```"
+    executor, seen = _sequenced_executor(repo, [bare_hunk_diff, full])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert (repo / "owned.py").read_text(encoding="utf-8") == "import sys\n\n\nx = 1\n"
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "full_file"
+    assert attempt.repair_attempt["repaired"] is True
+    assert (
+        "bare hunk old lines must match source exactly once"
+        in attempt.repair_attempt["first_error"]
+    )
+    assert len(seen) == 2
+
+
+def test_unparseable_diff_reply_triggers_full_file_repair(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, "import os\nimport sys\n\n\nx = 1\n")
+    full = "```file:owned.py\nimport sys\n\n\nx = 1\n```"
+    executor, seen = _sequenced_executor(repo, ["Sure! I will fix this for you.", full])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "full_file"
+    assert attempt.repair_attempt["repaired"] is True
+    assert "not a unified diff" in attempt.repair_attempt["first_error"]
+    assert len(seen) == 2
+
+
+def test_out_of_bounds_reply_still_gets_no_repair_turn(repo: Path) -> None:
     executor, seen = _sequenced_executor(repo, [OUT_OF_BOUNDS_DIFF, IN_BOUNDS_DIFF])
 
     attempt = executor.execute_unit(_unit())

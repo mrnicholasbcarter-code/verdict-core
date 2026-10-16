@@ -232,11 +232,15 @@ class PatchExecutor:
     def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
         """Request a patch for ``unit`` and apply it if it stays in bounds.
 
-        When the first diff fails ``git apply --check``, the same route gets one
-        repair turn with the exact git error. If every owned file is small, the
-        turn asks for complete file contents and Verdict builds the diff itself;
-        otherwise it asks for a corrected diff against the line-numbered files.
-        Either way the result goes through the same boundary and apply checks.
+        When the first diff is rejected for a patch-shape reason (an
+        unparseable diff, a bare-hunk mismatch, or a failed ``git apply
+        --check``), the same route gets one repair turn with the exact error.
+        If every owned file is small, the turn asks for complete file
+        contents and Verdict builds the diff itself; otherwise it asks for a
+        corrected diff against the line-numbered files. Either way the result
+        goes through the same boundary and apply checks. A rejection for any
+        other reason (out-of-bounds files, an identity mismatch) gets no
+        repair turn.
         """
         self._last_observation = None
         self.response_headers = {}
@@ -249,8 +253,8 @@ class PatchExecutor:
         failure, content, usage = self._turn(unit, messages, started)
         if failure is not None:
             return failure
-        attempt, check_failed = self._apply_diff_reply(unit, content, usage, started)
-        if not check_failed:
+        attempt, repairable = self._apply_diff_reply(unit, content, usage, started)
+        if not repairable:
             return attempt
 
         first_error = attempt.reason
@@ -319,8 +323,10 @@ class PatchExecutor:
     ) -> tuple[PatchAttempt, bool]:
         """Apply a model-authored diff.
 
-        Returns the attempt and whether the only problem was a failed
-        ``git apply --check`` (the one failure a repair turn can address).
+        Returns the attempt and whether the rejection is a patch-shape problem
+        the repair turn can address: an unparseable diff, a bare-hunk mismatch,
+        or a failed ``git apply --check``. A patch that names files outside the
+        unit boundary is never repaired.
         """
         # The call succeeded, so anything wrong is the model's output:
         # a refusal to apply, not an infrastructure error.
@@ -328,7 +334,7 @@ class PatchExecutor:
             diff = extract_diff(content)
             paths = parse_patch_paths(diff)
         except PatchExecutorError as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), False
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), True
 
         outside = unit.out_of_bounds(paths)
         if outside:
@@ -339,7 +345,7 @@ class PatchExecutor:
         try:
             diff = repair_bare_hunks(diff, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError) as exc:
-            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), False
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started), True
 
         return self._check_and_apply(unit, diff, paths, usage, started)
 
