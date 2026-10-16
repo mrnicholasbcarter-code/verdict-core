@@ -381,14 +381,17 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     settings.write_text(json.dumps(document), encoding="utf-8")
     hooks = home / ".codex" / "hooks.json"
     claude_md = cwd / "CLAUDE.md"
-    hooks_before = hooks.read_bytes()
     claude_before = claude_md.read_bytes()
 
     first = uninstall_memory_bridge(home, cwd, purge_data=False)
 
     assert first == {
         "status": "success",
-        "uninstalled_targets": [".mcp.json", ".claude/settings.json (hooks)"],
+        "uninstalled_targets": [
+            ".mcp.json",
+            ".claude/settings.json (hooks)",
+            ".codex/hooks.json (hooks)",
+        ],
     }
     assert not (cwd / ".mcp.json").exists()
     remaining = json.loads(settings.read_text(encoding="utf-8"))
@@ -396,7 +399,11 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     assert commands == ["echo keep-read"]
     assert not any(_claude_cmd(event) in commands for event in CLAUDE_EVENTS)
     settings_after = settings.read_bytes()
-    assert hooks.read_bytes() == hooks_before
+    codex_left = json.loads(hooks.read_text(encoding="utf-8"))
+    for event in CODEX_HOOK_EVENTS:
+        groups = codex_left.get("hooks", {}).get(event, [])
+        assert hook_command(event) not in _commands(groups)
+    hooks_after = hooks.read_bytes()
     assert claude_before == claude_md.read_bytes()
     assert (hermes / "verdict_bridge.json").read_text(encoding="utf-8") == '{"memory_plane": "x"}'
     assert (verdict_dir / "keep.dat").read_text(encoding="utf-8") == "keep"
@@ -405,6 +412,7 @@ def test_uninstall_removes_only_its_targets_and_is_idempotent_without_purge(
     second = uninstall_memory_bridge(home, cwd, purge_data=False)
     assert second["uninstalled_targets"] == []
     assert settings.read_bytes() == settings_after
+    assert hooks.read_bytes() == hooks_after
 
 
 def test_uninstall_purge_removes_verdict_dir_and_leaves_unrelated_files(

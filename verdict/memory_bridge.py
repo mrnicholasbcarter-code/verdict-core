@@ -23,7 +23,11 @@ from verdict.memory_harness.claude import (
     install_claude_instructions,
     uninstall_claude_hooks,
 )
-from verdict.memory_harness.codex import install_codex_hooks, install_codex_instructions
+from verdict.memory_harness.codex import (
+    install_codex_hooks,
+    install_codex_instructions,
+    uninstall_codex_hooks,
+)
 from verdict.memory_harness.hermes import install_hermes_bridge
 from verdict.memory_harness.prime import install_prime_bridge
 from verdict.memory_plane import MemoryPlane
@@ -785,6 +789,14 @@ def uninstall_memory_bridge(home_dir: Path, cwd: Path, purge_data: bool = False)
         uninstall_claude_hooks(settings_file)
         if settings_file.read_bytes() != before:
             uninstalled.append(".claude/settings.json (hooks)")
+
+    # Remove only Verdict-managed Codex hooks; user hooks stay.
+    codex_hooks = home_dir / ".codex" / "hooks.json"
+    if codex_hooks.is_file():
+        before = codex_hooks.read_bytes()
+        uninstall_codex_hooks(codex_hooks)
+        if codex_hooks.read_bytes() != before:
+            uninstalled.append(".codex/hooks.json (hooks)")
 
     return {"status": "success", "uninstalled_targets": uninstalled}
 
