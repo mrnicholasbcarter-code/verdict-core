@@ -55,6 +55,12 @@ FULL_FILE_REPAIR_MAX_LINES = 300
 
 _FULL_FILE_BLOCK_RE = re.compile(r"^```file:[ \t]*(\S+)[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
 
+# Larger files are repaired with exact search/replace blocks instead (BOD-395).
+_EDIT_FENCE_RE = re.compile(r"^```edit:[ \t]*(\S+)[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
+_SEARCH_REPLACE_RE = re.compile(
+    r"^<<<<<<< SEARCH\n(.*?)^=======\n(.*?)^>>>>>>> REPLACE[ \t]*(?:\n|\Z)", re.M | re.S
+)
+
 SYSTEM_PROMPT = (
     "You are a patch generator. Reply with a single unified diff and nothing else: "
     "no prose, no explanation, no code fences. Use `diff --git a/<path> b/<path>` "
@@ -236,8 +242,10 @@ class PatchExecutor:
         unparseable diff, a bare-hunk mismatch, or a failed ``git apply
         --check``), the same route gets one repair turn with the exact error.
         If every owned file is small, the turn asks for complete file
-        contents and Verdict builds the diff itself; otherwise it asks for a
-        corrected diff against the line-numbered files. Either way the result
+        contents; if a larger owned file exists, it asks for exact
+        search/replace blocks; Verdict builds the diff itself in both cases.
+        A unit that owns a missing file gets a corrected-diff turn against
+        the line-numbered files. Either way the result
         goes through the same boundary and apply checks. A rejection for any
         other reason (out-of-bounds files, an identity mismatch) gets no
         repair turn.
@@ -258,12 +266,13 @@ class PatchExecutor:
             return attempt
 
         first_error = attempt.reason
-        full_file = full_file_repair_eligible(unit, self.repo_root)
-        repair_prompt = (
-            build_full_file_repair_prompt(unit, self.repo_root, first_error)
-            if full_file
-            else build_repair_prompt(unit, self.repo_root, first_error)
-        )
+        repair_format = repair_format_for(unit, self.repo_root)
+        if repair_format == "full_file":
+            repair_prompt = build_full_file_repair_prompt(unit, self.repo_root, first_error)
+        elif repair_format == "search_replace":
+            repair_prompt = build_search_replace_repair_prompt(unit, first_error)
+        else:
+            repair_prompt = build_repair_prompt(unit, self.repo_root, first_error)
         messages = [
             *messages,
             {"role": "assistant", "content": content},
@@ -272,12 +281,14 @@ class PatchExecutor:
         failure, content, repair_usage = self._turn(unit, messages, started)
         if failure is not None:
             repaired = failure
-        elif full_file:
+        elif repair_format == "full_file":
             repaired = self._apply_full_file_reply(unit, content, repair_usage, started)
+        elif repair_format == "search_replace":
+            repaired = self._apply_search_replace_reply(unit, content, repair_usage, started)
         else:
             repaired, _ = self._apply_diff_reply(unit, content, repair_usage, started)
         self.last_repair_attempt = {
-            "format": "full_file" if full_file else "diff",
+            "format": repair_format,
             "first_error": first_error,
             "repaired": repaired.applied,
         }
@@ -360,6 +371,24 @@ class PatchExecutor:
                 raise PatchExecutorError(
                     f"full-file reply touches files outside the unit boundary: {list(outside)}"
                 )
+            diff = build_full_file_diff(files, self.repo_root)
+        except (PatchExecutorError, UnsafeRepositoryPathError, OSError, UnicodeDecodeError) as exc:
+            return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
+        attempt, _ = self._check_and_apply(unit, diff, parse_patch_paths(diff), usage, started)
+        return attempt
+
+    def _apply_search_replace_reply(
+        self, unit: WorkUnit, content: str, usage: TokenUsage, started: float
+    ) -> PatchAttempt:
+        """Apply exact search/replace blocks in memory, then gate the diff like any other."""
+        try:
+            blocks = parse_search_replace_reply(content)
+            outside = unit.out_of_bounds(tuple(path for path, _, _ in blocks))
+            if outside:
+                raise PatchExecutorError(
+                    f"search/replace reply touches files outside the unit boundary: {list(outside)}"
+                )
+            files = apply_search_replace_blocks(blocks, self.repo_root)
             diff = build_full_file_diff(files, self.repo_root)
         except (PatchExecutorError, UnsafeRepositoryPathError, OSError, UnicodeDecodeError) as exc:
             return self._attempt(unit, "rejected", str(exc), usage=usage, started=started)
@@ -593,6 +622,82 @@ def full_file_repair_eligible(unit: WorkUnit, repo_root: str | Path) -> bool:
         if len(text.splitlines()) > FULL_FILE_REPAIR_MAX_LINES:
             return False
     return True
+
+
+def repair_format_for(unit: WorkUnit, repo_root: str | Path) -> str:
+    """Pick the repair format: full file when small, search/replace when the files exist.
+
+    Search/replace cannot create a file, so a unit that owns a missing file
+    keeps the diff repair.
+    """
+    if full_file_repair_eligible(unit, repo_root):
+        return "full_file"
+    for path in unit.owned_files:
+        try:
+            read_repository_text(Path(repo_root), path)
+        except (UnsafeRepositoryPathError, OSError, UnicodeDecodeError):
+            return "diff"
+    return "search_replace"
+
+
+def build_search_replace_repair_prompt(unit: WorkUnit, error: str) -> str:
+    """Ask for exact search/replace blocks against the files shown in the first message."""
+    return "\n".join(
+        [
+            "Your diff was rejected and nothing was changed.",
+            f"Exact error: {error}",
+            "",
+            "Do NOT send a diff this time. Reply with search/replace blocks against the",
+            "files exactly as shown in the first message, in exactly this format:",
+            "```edit:<path>",
+            "<<<<<<< SEARCH",
+            "<exact current lines, copied byte for byte>",
+            "=======",
+            "<the lines that replace them>",
+            ">>>>>>> REPLACE",
+            "```",
+            "A fence may hold several blocks. Each SEARCH must match exactly once in",
+            "that file: include just enough lines to be unique and do not repeat",
+            "unchanged code. No prose. Files you own: " + ", ".join(unit.owned_files),
+        ]
+    )
+
+
+def parse_search_replace_reply(content: str) -> list[tuple[str, str, str]]:
+    """Return ``(path, search, replace)`` blocks, in reply order, from strict ```edit fences."""
+    fences = _EDIT_FENCE_RE.findall(content or "")
+    if not fences:
+        raise PatchExecutorError("search/replace reply contains no ```edit:<path> block")
+    blocks: list[tuple[str, str, str]] = []
+    for raw_path, body in fences:
+        try:
+            path = normalize_owned_path(raw_path)
+        except WorkUnitError as exc:
+            raise PatchExecutorError(f"unusable path in search/replace block {raw_path!r}") from exc
+        found = _SEARCH_REPLACE_RE.findall(body)
+        if not found or _SEARCH_REPLACE_RE.sub("", body).strip():
+            raise PatchExecutorError(f"malformed search/replace block for {path}")
+        blocks += [(path, search, replacement) for search, replacement in found]
+    return blocks
+
+
+def apply_search_replace_blocks(
+    blocks: list[tuple[str, str, str]], repo_root: str | Path
+) -> dict[str, str]:
+    """Apply blocks in order to in-memory copies; each SEARCH must match exactly once."""
+    root = Path(repo_root)
+    files: dict[str, str] = {}
+    for number, (path, search, replacement) in enumerate(blocks, start=1):
+        if path not in files:
+            files[path] = read_repository_text(root, path)
+        count = files[path].count(search) if search else 0
+        if count != 1:
+            raise PatchExecutorError(
+                f"search/replace block {number} for {path} matches {count} times "
+                "(it must match exactly once)"
+            )
+        files[path] = files[path].replace(search, replacement, 1)
+    return files
 
 
 def build_full_file_repair_prompt(unit: WorkUnit, repo_root: str | Path, error: str) -> str:
@@ -971,14 +1076,18 @@ __all__ = [
     "RouteObservation",
     "RouteObserver",
     "TokenUsage",
+    "apply_search_replace_blocks",
     "build_full_file_diff",
     "build_full_file_repair_prompt",
     "build_repair_prompt",
+    "build_search_replace_repair_prompt",
     "build_unit_prompt",
     "extract_content",
     "extract_diff",
     "full_file_repair_eligible",
     "parse_full_file_reply",
     "parse_patch_paths",
+    "parse_search_replace_reply",
     "parse_usage",
+    "repair_format_for",
 ]

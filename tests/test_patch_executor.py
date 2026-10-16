@@ -729,7 +729,7 @@ def test_full_file_repair_outside_the_boundary_is_rejected(tmp_path: Path) -> No
     assert (repo / "secrets.env").read_text(encoding="utf-8") == "old\n"
 
 
-def test_large_file_keeps_the_diff_repair(tmp_path: Path) -> None:
+def test_large_file_keeps_the_diff_repair_when_an_owned_file_is_new(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path, _large_text())
     # A hunk with no trailing context only matches at EOF, so the fixture keeps one.
     repaired_diff = (
@@ -738,7 +738,7 @@ def test_large_file_keeps_the_diff_repair(tmp_path: Path) -> None:
     )
     executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, repaired_diff])
 
-    attempt = executor.execute_unit(_unit())
+    attempt = executor.execute_unit(_unit(("owned.py", "new.py")))
 
     assert attempt.applied
     assert (repo / "owned.py").read_text(encoding="utf-8").startswith("new\nline2\n")
@@ -752,13 +752,86 @@ def test_failed_repair_is_rejected_by_name_and_tree_is_untouched(tmp_path: Path)
     repo = _git_repo(tmp_path, _large_text())
     executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, BAD_CONTEXT_DIFF])
 
-    attempt = executor.execute_unit(_unit())
+    attempt = executor.execute_unit(_unit(("owned.py", "new.py")))
 
     assert attempt.outcome == "rejected"
     assert attempt.reason.startswith("patch repair failed: git apply --check failed")
     assert attempt.repair_attempt is not None
     assert attempt.repair_attempt["repaired"] is False
     assert len(seen) == 2  # exactly one repair turn, never more
+    assert (repo / "owned.py").read_text(encoding="utf-8") == _large_text()
+
+
+def _edit_block(path: str, *pairs: tuple[str, str]) -> str:
+    body = "".join(
+        f"<<<<<<< SEARCH\n{search}=======\n{replace_with}>>>>>>> REPLACE\n"
+        for search, replace_with in pairs
+    )
+    return f"```edit:{path}\n{body}```"
+
+
+def test_large_file_repair_applies_search_replace_blocks(tmp_path: Path) -> None:
+    """Observed BOD-392: a 407-line file got a diff repair that hit max_tokens."""
+    repo = _git_repo(tmp_path, _large_text())
+    reply = _edit_block("owned.py", ("old\n", "new\n"), ("line7\nline8\n", "line7\nEIGHT\n"))
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.applied, attempt.reason
+    expected = _large_text().replace("old\n", "new\n", 1).replace("line8\n", "EIGHT\n", 1)
+    assert (repo / "owned.py").read_text(encoding="utf-8") == expected
+    assert attempt.changed_files == ("owned.py",)
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "search_replace"
+    assert attempt.repair_attempt["repaired"] is True
+    repair_prompt = seen[1]["messages"][3]["content"]
+    assert "<<<<<<< SEARCH" in repair_prompt
+    assert attempt.repair_attempt["first_error"] in repair_prompt
+
+
+@pytest.mark.parametrize(("search", "count"), [("not in the file\n", 0), ("dup\n", 2)])
+def test_search_text_must_match_exactly_once(tmp_path: Path, search: str, count: int) -> None:
+    original = _large_text() + "dup\ndup\n"
+    repo = _git_repo(tmp_path, original)
+    reply = _edit_block("owned.py", ("old\n", "new\n"), (search, "x\n"))
+    executor, seen = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert attempt.reason.startswith(
+        f"patch repair failed: search/replace block 2 for owned.py matches {count} times"
+    )
+    assert attempt.repair_attempt is not None
+    assert attempt.repair_attempt["format"] == "search_replace"
+    assert attempt.repair_attempt["repaired"] is False
+    assert len(seen) == 2
+    assert (repo / "owned.py").read_text(encoding="utf-8") == original
+
+
+def test_search_replace_block_outside_the_boundary_is_rejected(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, _large_text())
+    (repo / "secrets.env").write_text("old\n", encoding="utf-8")
+    reply = _edit_block("secrets.env", ("old\n", "new\n"))
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, reply])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "outside the unit boundary" in attempt.reason
+    assert (repo / "secrets.env").read_text(encoding="utf-8") == "old\n"
+    assert (repo / "owned.py").read_text(encoding="utf-8") == _large_text()
+
+
+def test_search_replace_reply_without_blocks_is_rejected_by_name(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, _large_text())
+    executor, _ = _sequenced_executor(repo, [BAD_CONTEXT_DIFF, BAD_CONTEXT_DIFF])
+
+    attempt = executor.execute_unit(_unit())
+
+    assert attempt.outcome == "rejected"
+    assert "search/replace reply contains no ```edit:<path> block" in attempt.reason
     assert (repo / "owned.py").read_text(encoding="utf-8") == _large_text()
 
 
