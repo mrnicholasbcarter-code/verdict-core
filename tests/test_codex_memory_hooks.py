@@ -62,7 +62,7 @@ def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return ch
 
 
-LIVE_EVENTS = {"SessionStart", "UserPromptSubmit", "SessionEnd"}
+LIVE_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"}
 
 
 def test_fixtures_are_marked_synthetic_or_live() -> None:
@@ -86,12 +86,12 @@ def test_live_fixtures_cover_supported_events() -> None:
     assert {e for e, lvl in report.items() if lvl == "supported"} == LIVE_EVENTS
 
 
-def test_live_payloads_translate_with_shared_session() -> None:
+def test_live_payloads_translate_with_provenance() -> None:
     records = [
         codex_installer.event_provenance(json.loads(f.read_text("utf-8")))
         for f in FIXTURES.glob("live_*.json")
     ]
-    assert len({r["session_id"] for r in records}) == 1
+    assert all(r["session_id"] and r["cwd"] for r in records)
     assert len({r["event_hash"] for r in records}) == len(records)
     assert {r["event"] for r in records} == LIVE_EVENTS
 

@@ -23,13 +23,13 @@ as `tests/fixtures/codex/v0_161_0/live_*.json`.
 | PostToolUse | partial |
 | PreCompact | partial |
 | SubagentStart | partial |
-| Stop | partial |
+| Stop | supported |
 | PermissionRequest | unknown |
 | PostCompact | unknown |
 | SubagentStop | unknown |
 | SessionEnd | supported |
 
-- `supported`: observed live on 2026-10-16 (one isolated smoke; the model turn did not complete, so tool events were not reached).
+- `supported`: observed live on 2026-10-16 (isolated smokes; Stop came from a completed OmniRoute turn on a free model, which called no tool, so tool events were not reached).
 - `partial`: the event name appears in the 0.161.0 binary, and a working hooks.json on the same host uses it.
 - `unknown`: only the name is known.
 
