@@ -129,19 +129,77 @@ def _number(value: object) -> float | None:
     return None
 
 
+# PublicPricing billable USD fields (OpenAPI PublicPricing). ``discount`` is a
+# fractional multiplier (0=no discount, 1=free), NOT a charge. ``overrides`` is
+# an array of conditional billable price maps (PricingOverride).
+_BILLABLE_PRICE_KEYS = frozenset(
+    {
+        "prompt",
+        "completion",
+        "request",
+        "image",
+        "image_output",
+        "image_token",
+        "audio",
+        "audio_output",
+        "input_audio_cache",
+        "input_cache_read",
+        "input_cache_write",
+        "input_cache_write_1h",
+        "internal_reasoning",
+        "web_search",
+    }
+)
+_OVERRIDE_CONDITION_KEYS = frozenset({"min_prompt_tokens", "utc_start", "utc_end", "utc_days"})
+
+
+def _billable_price_map_is_free(
+    price_map: Mapping[str, Any], *, require_prompt_completion: bool
+) -> bool:
+    """Fail-closed check for one PublicPricing / PricingOverride price map."""
+    if require_prompt_completion:
+        prompt = _number(price_map.get("prompt"))
+        completion = _number(price_map.get("completion"))
+        if prompt is None or completion is None or prompt != 0.0 or completion != 0.0:
+            return False
+    for key, value in price_map.items():
+        if key == "discount" or key in _OVERRIDE_CONDITION_KEYS or key == "overrides":
+            continue
+        if key not in _BILLABLE_PRICE_KEYS:
+            return False  # unknown pricing key: cannot assert free
+        if value is None:
+            continue
+        parsed = _number(value)
+        if parsed is None:
+            return False  # non-numeric billable field: fail closed
+        if parsed > 0.0:
+            return False
+    return True
+
+
 def pricing_is_explicitly_free(pricing: object) -> bool:
-    """True only when prompt and completion are numeric zero and no field is >0."""
+    """True only for explicit PublicPricing 0-cost under default conditions.
+
+    Rules (OpenAPI PublicPricing / PricingOverride):
+    - ``prompt`` and ``completion`` must be present and numeric zero.
+    - Every present billable USD field must parse as a number and be <= 0.
+    - ``discount`` is ignored as a charge (fraction 0..1).
+    - ``overrides`` entries are conditional billable prices; any positive or
+      non-numeric billable override fails closed. Malformed overrides fail closed.
+    """
     if not isinstance(pricing, Mapping):
         return False
-    prompt = _number(pricing.get("prompt"))
-    completion = _number(pricing.get("completion"))
-    if prompt is None or completion is None:
+    if not _billable_price_map_is_free(pricing, require_prompt_completion=True):
         return False
-    if prompt != 0.0 or completion != 0.0:
+    overrides = pricing.get("overrides")
+    if overrides is None:
+        return True
+    if not isinstance(overrides, list):
         return False
-    for value in pricing.values():
-        parsed = _number(value)
-        if parsed is not None and parsed > 0.0:
+    for entry in overrides:
+        if not isinstance(entry, Mapping):
+            return False
+        if not _billable_price_map_is_free(entry, require_prompt_completion=False):
             return False
     return True
 
@@ -210,10 +268,18 @@ def parse_free_entries(payload: object) -> dict[str, OpenRouterFreeEntry]:
     return out
 
 
-def fetch_openrouter_models(
-    url: str = OPENROUTER_MODELS_URL, *, timeout: float = 30.0
-) -> Mapping[str, Any]:
-    """GET the public OpenRouter catalog. No Authorization header."""
+def _absolute_openrouter_url(next_link: str, *, current: str) -> str:
+    """Resolve OpenAPI ``links.next`` (may be absolute or path-absolute)."""
+    link = next_link.strip()
+    if link.startswith("http://") or link.startswith("https://"):
+        return link
+    if link.startswith("/"):
+        return "https://openrouter.ai" + link
+    base = current.rsplit("/", 1)[0]
+    return f"{base}/{link}"
+
+
+def _get_json(url: str, *, timeout: float) -> Mapping[str, Any]:
     request = urllib.request.Request(
         url,
         headers={"Accept": "application/json", "User-Agent": "verdict-openrouter-free-set/1"},
@@ -225,6 +291,67 @@ def fetch_openrouter_models(
     if not isinstance(payload, Mapping):
         raise ValueError("openrouter /models payload is not an object")
     return payload
+
+
+def fetch_openrouter_models(
+    url: str = OPENROUTER_MODELS_URL,
+    *,
+    timeout: float = 30.0,
+    output_modalities: str | None = "all",
+    page_limit: int = 500,
+    max_pages: int = 20,
+) -> Mapping[str, Any]:
+    """GET the public OpenRouter catalog, following ``links.next`` pagination.
+
+    No Authorization header. Requests explicit pages (limit<=1000) and follows
+    ``links.next`` until exhausted or ``max_pages``. ``output_modalities``
+    defaults to ``all`` so membership is not silently truncated to text-only;
+    pass ``output_modalities="text"`` for the API default filter.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    def with_params(target: str) -> str:
+        parts = urlsplit(target)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        if "limit" not in query:
+            query["limit"] = str(max(1, min(int(page_limit), 1000)))
+        if output_modalities is not None and "output_modalities" not in query:
+            query["output_modalities"] = output_modalities
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+        )
+
+    rows: list[Any] = []
+    seen_urls: set[str] = set()
+    current = with_params(url)
+    total_count: int | None = None
+    pages = 0
+    while current and current not in seen_urls and pages < max_pages:
+        seen_urls.add(current)
+        pages += 1
+        payload = _get_json(current, timeout=timeout)
+        data = payload.get("data")
+        if isinstance(data, list):
+            rows.extend(data)
+        elif pages == 1 and isinstance(payload.get("models"), list):
+            rows.extend(payload["models"])  # type: ignore[index]
+        raw_total = payload.get("total_count")
+        if isinstance(raw_total, int):
+            total_count = raw_total
+        links = payload.get("links")
+        next_link = links.get("next") if isinstance(links, Mapping) else None
+        if isinstance(next_link, str) and next_link.strip():
+            current = _absolute_openrouter_url(next_link, current=current)
+        else:
+            current = ""
+    if total_count is not None and len(rows) < total_count and pages >= max_pages:
+        raise ValueError(
+            f"openrouter /models pagination incomplete: got {len(rows)} of {total_count}"
+        )
+    out: dict[str, Any] = {"data": rows}
+    if total_count is not None:
+        out["total_count"] = total_count
+    return out
 
 
 def _read_cache(path: Path) -> dict[str, Any] | None:
@@ -335,18 +462,9 @@ def _load_cached_set(path: Path, *, now: datetime, ttl_seconds: float) -> OpenRo
                 output_modalities=mods,
                 opaque=opaque,
             )
-    elif isinstance(raw.get("free_ids"), list):
-        # Older/partial cache: membership only.
-        for model_id in raw["free_ids"]:
-            if isinstance(model_id, str) and model_id.strip():
-                mid = model_id.strip()
-                entries[mid] = OpenRouterFreeEntry(
-                    model_id=mid,
-                    pricing={"prompt": 0.0, "completion": 0.0},
-                    output_modalities=("text",),
-                    opaque=is_opaque_route_id(mid),
-                )
-    if not entries and not isinstance(raw.get("free_ids"), list):
+    # Legacy caches that only stored free_ids without verified pricing/modality
+    # metadata are not authoritative: inventing 0/0 would hide gaps. Fail closed.
+    if not entries:
         return None
     return _set_from_entries(entries, fetched_at=fetched_at, source="cache", ttl_seconds=cached_ttl)
 
@@ -359,13 +477,13 @@ def load_openrouter_free_set(
     fetch: FetchFn | None = None,
     timeout: float = 30.0,
     url: str = OPENROUTER_MODELS_URL,
-    refresh: bool | None = None,
+    refresh: bool = True,
 ) -> OpenRouterFreeSet | None:
     """Return the cached-or-fresh free set, or None when membership cannot be asserted.
 
-    ``refresh`` defaults to True outside pytest and False under
-    ``PYTEST_CURRENT_TEST``, so hermetic tests never open openrouter.ai unless
-    they pass an explicit ``fetch`` or ``refresh=True``.
+    ``refresh=True`` (default) fetches the public catalog; on failure, a still-valid
+    cache is returned. Pass ``refresh=False`` for cache-only (hermetic tests inject
+    ``fetch=`` instead of branching on the environment).
     """
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -373,9 +491,7 @@ def load_openrouter_free_set(
     path = cache_path or default_cache_path()
     ttl = float(DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds)
     cached = _load_cached_set(path, now=current, ttl_seconds=ttl)
-    if refresh is None:
-        refresh = fetch is not None or not os.environ.get("PYTEST_CURRENT_TEST")
-    if not refresh:
+    if not refresh and fetch is None:
         return cached
     fetch_fn = fetch or (lambda target, to: fetch_openrouter_models(target, timeout=to))
     try:

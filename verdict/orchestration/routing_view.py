@@ -540,8 +540,14 @@ def routing_view_from_inventory(
     with tempfile.TemporaryDirectory() as _td:
         sp = state_path or Path(_td) / "elig_state.json"
 
+        from verdict.openrouter_free_set import load_openrouter_free_set
+
         ladder = EligibilityLadder(
-            inventory_rows=inventory_rows, connections=connections, probe=probe_fn, state_path=sp
+            inventory_rows=inventory_rows,
+            connections=connections,
+            probe=probe_fn,
+            state_path=sp,
+            openrouter_free_set=load_openrouter_free_set(),
         )
         now = datetime.now(timezone.utc)
         if probe:

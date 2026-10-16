@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,55 @@ def test_pricing_requires_explicit_numeric_zero_prompt_and_completion() -> None:
     assert not pricing_is_explicitly_free({"prompt": "free", "completion": "0"})
     assert not pricing_is_explicitly_free({"prompt": "0", "completion": "0.1"})
     assert not pricing_is_explicitly_free({"prompt": "0", "completion": "0", "request": "0.01"})
+
+
+def test_discount_is_not_a_billable_charge() -> None:
+    # OpenAPI: discount is a fraction (0=no discount, 1=free), not a USD charge.
+    assert pricing_is_explicitly_free({"prompt": "0", "completion": "0", "discount": 0.5})
+    assert pricing_is_explicitly_free({"prompt": "0", "completion": "0", "discount": 1})
+
+
+def test_positive_or_nonnumeric_override_fails_closed() -> None:
+    assert not pricing_is_explicitly_free(
+        {
+            "prompt": "0",
+            "completion": "0",
+            "overrides": [{"prompt": "0.000005", "min_prompt_tokens": 200000}],
+        }
+    )
+    assert not pricing_is_explicitly_free(
+        {"prompt": "0", "completion": "0", "overrides": [{"completion": "n/a"}]}
+    )
+    assert not pricing_is_explicitly_free({"prompt": "0", "completion": "0", "overrides": "bad"})
+    # Zero-priced override is fine; conditions ignored as charges.
+    assert pricing_is_explicitly_free(
+        {
+            "prompt": "0",
+            "completion": "0",
+            "overrides": [{"prompt": "0", "completion": "0", "min_prompt_tokens": 1}],
+        }
+    )
+
+
+def test_unknown_or_nonnumeric_billable_field_fails_closed() -> None:
+    assert not pricing_is_explicitly_free({"prompt": "0", "completion": "0", "mystery_fee": "0"})
+    assert not pricing_is_explicitly_free({"prompt": "0", "completion": "0", "request": "free"})
+
+
+def test_legacy_free_ids_only_cache_is_not_authoritative(tmp_path: Path) -> None:
+    path = tmp_path / "cache.json"
+    path.write_text(
+        json.dumps(
+            {
+                "fetched_at": NOW.isoformat().replace("+00:00", "Z"),
+                "ttl_seconds": 3600,
+                "free_ids": ["poolside/laguna-xs-2.1:free"],
+            }
+        )
+    )
+    assert (
+        load_openrouter_free_set(now=NOW, cache_path=path, refresh=False, ttl_seconds=3600) is None
+    )
 
 
 def test_stale_free_suffix_not_in_public_set() -> None:

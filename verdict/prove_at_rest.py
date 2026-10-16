@@ -1628,6 +1628,11 @@ class Prober:
 # ---------------------------------------------------------------------------
 
 
+# Sentinel: omitted openrouter_free_set means "load from public catalog/cache".
+# Explicit None means "no free-set assertion" (hermetic tests / callers without OR).
+_OPENROUTER_FREE_SET_LOAD = object()
+
+
 def load_openrouter_free_set_for_prober(
     *, now: datetime | None = None, cache_path: Path | None = None, ttl_seconds: float | None = None
 ) -> OpenRouterFreeSet | None:
@@ -1642,7 +1647,7 @@ def routes_from_evidence(
     now: datetime,
     state_dir: Path | None = None,
     live_catalog: Mapping[str, Collection[str]] | None = None,
-    openrouter_free_set: OpenRouterFreeSet | None = None,
+    openrouter_free_set: OpenRouterFreeSet | object | None = _OPENROUTER_FREE_SET_LOAD,
 ) -> tuple[AdmittedRoute, ...]:
     """Admit exactly the way ``verdict eligibility`` does, without probing.
 
@@ -1654,17 +1659,17 @@ def routes_from_evidence(
 
     ``openrouter_free_set`` (BOD-418) is the public OpenRouter 0/0 membership
     set. When omitted, it is loaded from the on-disk cache / public catalog.
+    Pass ``None`` to skip the public free-set (no openrouter/ FREE assertion).
     OpenRouter-family routes outside that set are never classified FREE.
     """
     from verdict.admission import admit, default_runtime_evidence
     from verdict.openrouter_free_set import openrouter_route_is_public_free
     from verdict.orchestration.credential_pools import is_non_chat_route, pool_of
 
-    free_set = (
-        openrouter_free_set
-        if openrouter_free_set is not None
-        else load_openrouter_free_set_for_prober(now=now)
-    )
+    if openrouter_free_set is _OPENROUTER_FREE_SET_LOAD:
+        free_set = load_openrouter_free_set_for_prober(now=now)
+    else:
+        free_set = openrouter_free_set  # may be None or an OpenRouterFreeSet
     evidence = default_runtime_evidence(now=now, state_dir=state_dir)
     admitted = admit(inventory_rows, connections, evidence, now=now)
     by_id: dict[str, Mapping[str, Any]] = {str(row.get("id", "")): row for row in inventory_rows}

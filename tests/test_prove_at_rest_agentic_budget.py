@@ -235,9 +235,14 @@ def test_routes_from_evidence_marks_live_catalog(tmp_path: Path) -> None:
         {"id": "af/ghost", "owned_by": "api-airforce", "capabilities": {"tool_calling": True}},
     ]
     conns = [{"provider": "api-airforce", "isActive": True, "testStatus": "active"}]
-    plain = routes_from_evidence(rows, conns, now=NOW, state_dir=tmp_path)
+    plain = routes_from_evidence(rows, conns, now=NOW, state_dir=tmp_path, openrouter_free_set=None)
     marked = routes_from_evidence(
-        rows, conns, now=NOW, state_dir=tmp_path, live_catalog={"api-airforce": {"served"}}
+        rows,
+        conns,
+        now=NOW,
+        state_dir=tmp_path,
+        live_catalog={"api-airforce": {"served"}},
+        openrouter_free_set=None,
     )
     assert {r.route_id for r in plain} == {r.route_id for r in marked}, "a hint never admits"
     assert {r.route_id: r.live_catalog for r in plain} == dict.fromkeys(

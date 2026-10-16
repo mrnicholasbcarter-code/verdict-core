@@ -164,6 +164,7 @@ def build_selector(
         default_runtime_evidence,
     )
     from verdict.omniroute_health import load_omniroute_health
+    from verdict.openrouter_free_set import load_openrouter_free_set
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
     from verdict.subagent_selection import HealthResult, LaunchCandidate, openai_health_probe
@@ -180,6 +181,8 @@ def build_selector(
         raise _gateway_fetch_error("/api/providers", exc) from None
     state_path = state_file or (verdict_home() / "orchestration-health.json")
     now = datetime.now(timezone.utc)
+    # BOD-418: public OpenRouter 0/0 set for openrouter/ FREE capacity.
+    openrouter_free_set = load_openrouter_free_set(now=now)
     # Canonical admission over the full live inventory first. Scope, provider
     # family and the active controller are extra narrowing on that set.
     admitted = admit(
@@ -201,7 +204,11 @@ def build_selector(
         if any(c not in {"free", "subscription", "metered", "unknown"} for c in capacity):
             raise ValueError("Invalid capacity filter")
         classifier = EligibilityLadder(
-            rows, connections, lambda _: HealthResult(False, "not_probed"), state_path
+            rows,
+            connections,
+            lambda _: HealthResult(False, "not_probed"),
+            state_path,
+            openrouter_free_set=openrouter_free_set,
         )
         admitted = admitted.narrow(
             AdmissionStage.POLICY,
@@ -259,6 +266,7 @@ def build_selector(
         refresh_hook=refresh_hook,
         health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
+        openrouter_free_set=openrouter_free_set,
     )
 
 
