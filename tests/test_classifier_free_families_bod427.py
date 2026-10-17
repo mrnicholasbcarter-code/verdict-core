@@ -224,6 +224,63 @@ def test_cheap_variants_of_new_families_stay_cheap(route_id: str) -> None:
     assert classify_known(route_id) == 3
 
 
+def test_prose_and_malformed_versions_never_hit_tier_1() -> None:
+    r"""PR #912 review BLOCK: prose naming a family and malformed version
+    numbers must not classify as tier 1 (the strong-work tier).
+
+    Model-token boundaries ``(?:^|[-/])`` keep prose like "compare
+    longcat-2.0 with" out (family name preceded by a space, never by an id
+    separator); version boundaries ``(?!\d)`` keep "longcat-20" /
+    "claude-3.70" out while "longcat-2.0" / "claude-3.7" route tokens stay.
+    """
+    unknown_prose = [
+        "please compare longcat-2.0 with a competitor",
+        "the docs mention muse-spark but this is not an id",
+        "vendor/longcat-20",
+        "vendor/claude-3.70",
+    ]
+    for model_id in unknown_prose:
+        assert classify_known(model_id) is None
+        assert classify(model_id) == 2
+
+
+def test_anchored_route_tokens_still_classify() -> None:
+    """The boundaries only block prose/malformed versions, never the real
+    route tokens from the census and their direct vendor spellings."""
+    tiers = {
+        "vendor/longcat-2.0": 1,
+        "longcat/LongCat-2.0": 1,
+        "vendor/claude-3.7": 1,
+        "vendor/claude-3-7-sonnet-20250514": 1,
+        "vendor/muse-spark": 1,
+        "muse-spark-web/muse-spark-thinking": 1,
+        "vendor/nemotron-3-ultra": 1,
+        "vendor/ling-2.6-1t": 1,
+        "vendor/kat-coder-pro": 1,
+        "vendor/laguna-m.1": 1,
+        "vendor/mimo-v2.5-pro": 1,
+        "vendor/gpt-4.1": 1,
+        "vendor/claude-4-sonnet": 1,
+    }
+    for model_id, tier in tiers.items():
+        assert classify_known(model_id) == tier
+
+
+def test_explicit_cheap_sizes_keep_tier_3() -> None:
+    """PR #912 review BLOCK: size lookaheads on the tier-2 families keep
+    explicit cheap sizes (7b/8b) on their tier-3 markers, while the
+    mid-size ids (jamba-large-1.7, nemotron-3-super-120b-a12b) stay 2."""
+    for model_id in (
+        "vendor/jamba-large-8b",
+        "vendor/trinity-large-7b",
+        "vendor/nemotron-3-super-8b",
+    ):
+        assert classify_known(model_id) == 3
+        assert classify(model_id) == 3
+    for model_id in ("vendor/jamba-large", "vendor/trinity-large", "vendor/nemotron-3-super"):
+        assert classify_known(model_id) == 2
+
+
 def test_new_strong_families_never_reach_the_frontier_guard() -> None:
     """Tier 0 stays the frontier spend guard (eligibility _task_gate)."""
     new_tiers = {tier for tier in LEFTOVER_FREE_IDS.values() if tier is not None}
