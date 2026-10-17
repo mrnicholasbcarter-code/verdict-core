@@ -199,6 +199,7 @@ def run_census(
     context_prober: Any = None,
     context_store_path: Path | None = None,
     free_flags: Any = None,
+    blocklist_path: Path | None = None,
 ) -> dict[str, Any]:
     """Refresh free, connected routes, preferring recent successful traffic.
 
@@ -372,9 +373,19 @@ def run_census(
     chosen += [model for model in explore if model not in chosen][: limit - len(chosen)]
     probed = 0
     states: dict[str, ModelState] = {}
-    blocklist = ProviderBlocklist()
+    # FAIL_FAKE provider DROPs persist across ticks: load them at tick start
+    # so a provider faked last tick is not re-probed (B3). Only the controller
+    # clears an entry; the census never restores one on its own.
+    if blocklist_path is not None:
+        from verdict.omniroute_pipeline.blocklist_store import load_provider_blocklist
+
+        blocklist = load_provider_blocklist(blocklist_path)
+    else:
+        blocklist = ProviderBlocklist()
     family_used: dict[str, int] = {}
     for model in chosen:
+        if blocklist.is_blocked(model.split("/", 1)[0]):
+            continue
         outcome = probe_full(
             AdmittedRoute(model, model.split("/", 1)[0], "free", capacity_evidence="free"),
             transport,
@@ -423,6 +434,10 @@ def run_census(
             max_candidates=remaining_candidates,
             max_tokens=remaining_tokens,
         )
+    if blocklist_path is not None and blocklist.entries:
+        from verdict.omniroute_pipeline.blocklist_store import save_provider_blocklist
+
+        save_provider_blocklist(blocklist_path, blocklist)
     cache.save()
     after = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
     after["updated"] += refreshed["updated"] + len(passive)
@@ -573,6 +588,7 @@ def cmd_census(
             cooling = load_census_cooldowns(base_url, key)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             cooling = frozenset()
+        from verdict.omniroute_pipeline.blocklist_store import default_blocklist_path
         from verdict.omniroute_pipeline.census_hook import (
             free_rule_enabled,
             guard_transport,
@@ -611,6 +627,7 @@ def cmd_census(
             context_probe_max_per_tick=context_probe_max_per_tick,
             context_prober=needle_prober(base_url, key) if probes_enabled() else None,
             free_flags=flags,
+            blocklist_path=default_blocklist_path(),
         )
         from verdict.omniroute_pipeline.census_hook import free_rule_tick
 
