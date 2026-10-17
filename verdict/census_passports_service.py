@@ -187,7 +187,9 @@ def manage_census_service(
     )
     runtime = runtime_root or default_runtime_root()
     source = source_root or Path(__file__).resolve().parent.parent
-    command = f"{_quote(str(Path(sys.executable).absolute()))} -m verdict census --max-candidates 6 --max-tokens 1536"
+    command = (
+        f"{_quote(str(Path(sys.executable).absolute()))} -m verdict census --max-per-provider 2"
+    )
     files = (
         {}
         if uninstall

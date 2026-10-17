@@ -746,6 +746,9 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
         cache=HealthCache(tmp_path / "health.json"),
         passport_store_path=tmp_path / "passports.json",
         now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+        max_per_provider=None,
         cooling_providers=cooldowns,
     )
     assert requests == ["/api/resilience/model-cooldowns"]
