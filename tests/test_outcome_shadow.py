@@ -7,6 +7,8 @@ shortlist-only. Acceptance requires VALIDATED/proof strictly before as_of.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,11 +30,18 @@ from verdict.metadata.records import (
 )
 from verdict.metadata.store import MetadataSnapshot
 from verdict.outcome_shadow import (
+    ENV_ROOTS,
     METRIC_NAME,
+    SINK_FILENAME,
+    SINK_SCHEMA,
     WOULD_RANK_SCOPE,
+    OutcomeShadowNotConfiguredError,
+    append_outcome_shadow_record,
+    attach_outcome_shadow,
     build_outcome_shadow,
     load_shadow_rows_from_run,
     resolve_outcome_shadow_roots,
+    resolve_outcome_shadow_sink,
 )
 from verdict.task_profile import TaskProfile
 
@@ -362,3 +371,228 @@ def test_research_role_does_not_enter_implement_metric(tmp_path: Path, seed_copy
     assert shadow["metric"] == METRIC_NAME
     # metric denominator equals accept+reject only
     assert shadow["metric_denominator"] == shadow["metric_n_accept"] + shadow["metric_n_reject"]
+
+
+# ---------------------------------------------------------------------------
+# BOD-426: persistent jsonl sink + fail-loud would_rank when not computed.
+# These tests need no seed run: an empty run dir fails verification (skip
+# reason recorded) but the live-shortlist rerank still runs.
+# ---------------------------------------------------------------------------
+
+_SINK_SHORTLIST: list[dict[str, Any]] = [
+    {"route_id": FREE_TOOLS, "score_features": {"health": 1.0}},
+    {"route_id": PAID_TOOLS, "score_features": {"health": 0.5}},
+]
+
+
+def _unverified_root(tmp_path: Path) -> Path:
+    root = tmp_path / "runs" / "run-a"
+    root.mkdir(parents=True)
+    return root
+
+
+def _sink_lines(sink: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in sink.read_text(encoding="utf-8").splitlines()]
+
+
+def test_resolve_sink_unset_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV_ROOTS, raising=False)
+    assert resolve_outcome_shadow_sink() is None
+    assert resolve_outcome_shadow_sink(env={ENV_ROOTS: "   "}) is None
+
+
+def test_resolve_sink_sits_next_to_first_env_root(tmp_path: Path) -> None:
+    first = _unverified_root(tmp_path)
+    second = tmp_path / "elsewhere" / "run-b"
+    raw = os.pathsep.join([str(first), str(second)])
+    sink = resolve_outcome_shadow_sink(env={ENV_ROOTS: raw})
+    # Never inside a verified run dir: the run evidence stays untouched.
+    assert sink == first.resolve().parent / SINK_FILENAME
+
+
+def test_resolve_sink_next_to_manifest_file(tmp_path: Path) -> None:
+    manifest = tmp_path / "shadow-roots.txt"
+    manifest.write_text(f"{_unverified_root(tmp_path)}\n", encoding="utf-8")
+    sink = resolve_outcome_shadow_sink(env={ENV_ROOTS: str(manifest)})
+    assert sink == tmp_path.resolve() / SINK_FILENAME
+
+
+def test_append_writes_one_jsonl_line_per_record_append_only(tmp_path: Path) -> None:
+    sink = tmp_path / SINK_FILENAME
+    sink.write_text('{"pre": "existing"}\n', encoding="utf-8")
+    for idx in range(3):
+        assert append_outcome_shadow_record(sink, {"idx": idx, "would_rank": None}) is True
+    lines = _sink_lines(sink)
+    assert lines[0] == {"pre": "existing"}
+    assert [row["outcome_shadow"]["idx"] for row in lines[1:]] == [0, 1, 2]
+    for row in lines[1:]:
+        assert row["schema"] == SINK_SCHEMA
+        assert isinstance(row["recorded_at"], str) and row["recorded_at"].endswith("Z")
+
+
+def test_append_is_a_single_o_append_write(tmp_path: Path) -> None:
+    sink = tmp_path / SINK_FILENAME
+    real_open = os.open
+    real_write = os.write
+    flags_seen: list[int] = []
+    writes: list[bytes] = []
+
+    def spy_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        flags_seen.append(flags)
+        return real_open(path, flags, *args, **kwargs)
+
+    def spy_write(fd: int, data: bytes) -> int:
+        writes.append(bytes(data))
+        return real_write(fd, data)
+
+    shadow = {"note": "line\nbreak", "would_rank": ["a", "b"]}
+    with (
+        patch("verdict.outcome_shadow.os.open", side_effect=spy_open),
+        patch("verdict.outcome_shadow.os.write", side_effect=spy_write),
+    ):
+        assert append_outcome_shadow_record(sink, shadow) is True
+    assert len(flags_seen) == 1
+    assert flags_seen[0] & os.O_APPEND
+    assert flags_seen[0] & os.O_CREAT
+    assert flags_seen[0] & getattr(os, "O_NOFOLLOW", 0) == getattr(os, "O_NOFOLLOW", 0)
+    # One complete record per write call: readers never see a torn line.
+    assert len(writes) == 1
+    assert writes[0].endswith(b"\n") and writes[0].count(b"\n") == 1
+    assert json.loads(writes[0])["outcome_shadow"] == shadow
+
+
+def test_append_missing_root_is_logged_not_created(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sink = tmp_path / "missing" / SINK_FILENAME
+    with caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+        assert append_outcome_shadow_record(sink, {"would_rank": None}) is False
+    assert not sink.parent.exists()
+    assert any("sink" in rec.getMessage() for rec in caplog.records)
+
+
+def test_append_refuses_symlinked_sink(tmp_path: Path) -> None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("O_NOFOLLOW unavailable")
+    target = tmp_path / "target.txt"
+    target.write_text("keep\n", encoding="utf-8")
+    sink = tmp_path / SINK_FILENAME
+    sink.symlink_to(target)
+    assert append_outcome_shadow_record(sink, {"would_rank": None}) is False
+    assert target.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_attach_persists_every_receipt(tmp_path: Path) -> None:
+    root = _unverified_root(tmp_path)
+    sink = root.parent / SINK_FILENAME
+    pool = {"shortlist": _SINK_SHORTLIST}
+    shadows = []
+    for _ in range(2):
+        out = attach_outcome_shadow(
+            pool,
+            roots=[root],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            as_of=NOW,
+            sink=sink,
+        )
+        shadows.append(out["outcome_shadow"])
+    lines = _sink_lines(sink)
+    assert len(lines) == 2
+    assert [row["outcome_shadow"] for row in lines] == shadows
+    assert lines[0]["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert isinstance(lines[0]["outcome_shadow"]["would_rank"], list)
+    # The run dir itself is never written to.
+    assert sorted(p.name for p in root.iterdir()) == []
+
+
+def test_attach_sink_failure_never_raises(tmp_path: Path) -> None:
+    root = _unverified_root(tmp_path)
+    with patch("verdict.outcome_shadow.os.open", side_effect=OSError("disk full")):
+        out = attach_outcome_shadow(
+            {"shortlist": _SINK_SHORTLIST},
+            roots=[root],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            as_of=NOW,
+            sink=root.parent / SINK_FILENAME,
+        )
+    assert out["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+
+
+def test_build_without_roots_fails_loud() -> None:
+    with pytest.raises(OutcomeShadowNotConfiguredError):
+        build_outcome_shadow(
+            roots=[],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            shortlist=_SINK_SHORTLIST,
+            as_of=NOW,
+        )
+
+
+def test_attach_without_roots_never_copies_actual_into_would_rank(tmp_path: Path) -> None:
+    sink = tmp_path / SINK_FILENAME
+    out = attach_outcome_shadow(
+        {"shortlist": _SINK_SHORTLIST},
+        roots=[],
+        task_family="implement",
+        fingerprint_digest="d" * 8,
+        as_of=NOW,
+        sink=sink,
+    )
+    shadow = out["outcome_shadow"]
+    assert shadow["metric_missingness"] == "no_roots_configured"
+    assert shadow["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert shadow["would_rank"] is None
+    assert shadow["rank_delta"] == []
+    # Persisted record carries the explicit null, not an identity ranking.
+    assert _sink_lines(sink)[0]["outcome_shadow"]["would_rank"] is None
+
+
+def test_attach_error_path_never_copies_actual_into_would_rank() -> None:
+    with patch("verdict.outcome_shadow.build_outcome_shadow", side_effect=RuntimeError("boom")):
+        out = attach_outcome_shadow(
+            {"shortlist": _SINK_SHORTLIST},
+            roots=[Path("/nonexistent/run")],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            as_of=NOW,
+        )
+    shadow = out["outcome_shadow"]
+    assert shadow["metric_missingness"] == "shadow_error"
+    assert shadow["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert shadow["would_rank"] is None
+
+
+def test_service_writes_sink_from_env_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    root = _unverified_root(tmp_path)
+    monkeypatch.setenv(ENV_ROOTS, str(root))
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+    profile = _profile_for_goal("implement a small parser with tests")
+    out, _pool = svc._apply_candidate_pool(
+        _admit_receipt(routes), profile=profile, metadata=store, identity_map=None
+    )
+    sink = root.resolve().parent / SINK_FILENAME
+    lines = _sink_lines(sink)
+    assert len(lines) == 1
+    assert lines[0]["outcome_shadow"] == (out.candidate_pool or {})["outcome_shadow"]
