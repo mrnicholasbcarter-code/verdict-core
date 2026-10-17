@@ -97,6 +97,15 @@ BENIGN_TEXT = (
     _PREFIX + "learn-preprocessing-pipeline-notes",
     "task-" + "runner2026configuration0123456789",
     "risk-" + "0123456789abcdef0123456789",
+    "desk-" + "0123456789abcdefghij2026",
+    "disk-" + "proj-0123456789abcdefghij",
+    # vendor prefixes embedded mid-word are not tokens (controller 09:49Z)
+    "risk_test_" + "0123456789abcdefghij0123",
+    "desk_live_" + "0123456789abcdefghij0123",
+    "ofxai-" + "0123456789abcdefghij" * 3,
+    "abgsk_" + "0123456789abcdefghij" * 3,
+    "nohf_" + "0123456789abcdefghij" * 2,
+    "myglpat-" + "0123456789abcdefghij",
 )
 
 
