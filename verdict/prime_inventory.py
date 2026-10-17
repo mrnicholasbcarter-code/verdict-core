@@ -19,6 +19,10 @@ from verdict.admission import is_opaque
 
 SIDECAR_NAME = "omniroute-inventory.verdict.json"
 
+# Private allowlist of OmniRoute combo ids that must survive sync-models.
+# Public symbols trigger the reachability ratchet; keep this private.
+_PINNED_COMBOS: tuple[str, ...] = ("prime-free-chain",)
+
 
 @dataclass(frozen=True)
 class PrimeInventorySnapshot:
@@ -90,7 +94,8 @@ def concrete_rows(
         route_id = raw.strip() if isinstance(raw, str) else ""
         if not route_id:
             continue
-        if is_opaque(route_id) or str(row.get("owned_by", "")).lower() == "combo":
+        owned_by_combo = str(row.get("owned_by", "")).lower() == "combo"
+        if is_opaque(route_id) or (owned_by_combo and route_id not in _PINNED_COMBOS):
             excluded.add(route_id)
             continue
         kept.setdefault(route_id, row)
