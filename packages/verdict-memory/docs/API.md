@@ -44,6 +44,8 @@ Golden vectors:
 
 Bundled in the wheel under `verdict_memory/vectors/`.
 
+Same-byte parity set (Rust/Python): `vectors/golden/lifecycle-event-v1/` with exact canonical, digest-payload, fingerprint and idempotency bytes per case, `SHA256SUMS`, and rejected inputs. The digest payload is the canonical object minus `content`, `observed_at`, `deadline_at` and `idempotency_key`.
+
 ### LifecycleEvent fields
 Documented known fields (unknown extras ignored on read):
 `schema_version`, `protocol_version`, `kind`, `content`, `content_hash`, `identity`,

@@ -1,0 +1,11 @@
+{
+  "kind": "after_edit",
+  "content": "quote \" backslash \\ tab \t newline \n cr \r bell \u0007 unit-sep \u001f del  nbsp   line-sep   para-sep   café 日本語 路由预算 é 🚀 𝄞",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-ütf8-🚀"
+  },
+  "created_at": 1700000500.0
+}

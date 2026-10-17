@@ -1,0 +1,2 @@
+quote " backslash \ tab 	 newline 
+ cr  bell  unit-sep  del  nbsp   line-sep   para-sep   café 日本語 路由预算 é 🚀 𝄞

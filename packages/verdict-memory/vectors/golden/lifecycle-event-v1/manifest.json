@@ -1,0 +1,175 @@
+{
+  "canonical_json": "json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False) encoded as UTF-8, no trailing newline",
+  "contract_api_version": "0.1.0a1",
+  "digest_payload": "canonical.json object minus content, observed_at, deadline_at, idempotency_key",
+  "fingerprint_payload": "digest payload minus created_at (only when source_event_id is set)",
+  "generator": "packages/verdict-memory/scripts/gen_golden_vectors.py",
+  "idempotency_payload": "{schema_version, protocol_version, source_harness, project, workspace, tenant, session_id, source_event_id} (only when source_event_id is set; else idempotency_key = digest)",
+  "invalid": {
+    "content_hash_mismatch": {
+      "description": "A supplied content_hash that is not sha256(content) is rejected, never recomputed silently.",
+      "error": "content_hash_mismatch",
+      "sha256": "75a5c86dcb281f285ceb30f2787395bcf7f18ee68e94e367db5a2f4abc095eb6"
+    },
+    "non_finite_number": {
+      "description": "NaN is not JSON. Strict parsers reject it on load; the reference rejects it at canonicalization.",
+      "error": "non_finite_number",
+      "sha256": "965b06b10d5f43d6d62838c9da91ad0e11b2fa905b9ea3b27cc551b8925ea069"
+    },
+    "unknown_kind": {
+      "description": "A kind outside the canonical set (after alias normalization) is an explicit error.",
+      "error": "unknown_kind",
+      "sha256": "536da67e630d802ca7267c1438153b3298141c8756dfb6599bc552fbfd254d23"
+    },
+    "unsupported_schema_version": {
+      "description": "A future schema_version is a breaking change (v2) and must not be read as v1.",
+      "error": "unsupported_schema_version",
+      "sha256": "4d0c89f818a924d7c779eb0ace1732c1cc8408aa53c7730de1feab035e5216fb"
+    }
+  },
+  "schema": "lifecycle-event/v1",
+  "valid": {
+    "alias_before_turn": {
+      "description": "Provisional alias 'before_turn' normalizes to 'before_first_model_turn' before digesting.",
+      "expect": {
+        "content_fingerprint": "66c2d03238ee8ef6e6217bd2f6a27897dae44305306b94a2ac87003981dd0be5",
+        "content_hash": "629e63a340a1f9650d86866334b78eb7a86708558048a52aee7099b1c4772bad",
+        "digest": "2dc8073e249b9522dcfe4348aa042bf25aafb6e53d87517db9cc8c484758cac0",
+        "idempotency_key": "9d2088a82c22a6c5d828d8c56d60edb8e7c4c2ba1e2c2cd9c8af80f78d8dda65"
+      },
+      "files": {
+        "canonical.json": "866da0a07046f9a3a806e7253b4e6743ed542cd86b7a21780731a5268716732f",
+        "content.txt": "629e63a340a1f9650d86866334b78eb7a86708558048a52aee7099b1c4772bad",
+        "digest_payload.json": "2dc8073e249b9522dcfe4348aa042bf25aafb6e53d87517db9cc8c484758cac0",
+        "fingerprint_payload.json": "66c2d03238ee8ef6e6217bd2f6a27897dae44305306b94a2ac87003981dd0be5",
+        "idempotency_payload.json": "9d2088a82c22a6c5d828d8c56d60edb8e7c4c2ba1e2c2cd9c8af80f78d8dda65",
+        "input.json": "63ac2a4ac061d5b403c9fd08648565b485dd06b5f5101ed63dc57a78d3745d48"
+      },
+      "kind": "before_first_model_turn"
+    },
+    "minimal_source_event": {
+      "description": "Smallest valid event with a harness source_event_id; every optional field omitted.",
+      "expect": {
+        "content_fingerprint": "fc7da07fa9a7768770ccd9e55b073b0f008a3c0e1e38f7ea65c079df2a45f349",
+        "content_hash": "17b5eb9c1e75705cdf28125022958ec4f59be1dc98bd2d32862d630b1dce8341",
+        "digest": "046cf42709d86cee1529476ec12c602a04973ea913e65a8669162fe090f508fb",
+        "idempotency_key": "a4e92cd3c001aea22563b198671327380007bc05aaa4cca9380b7a3b5eca26b0"
+      },
+      "files": {
+        "canonical.json": "52a850675e46fa03a4f7f301f4238b7ddae09996d98e69096d20d1f255fc8e6a",
+        "content.txt": "17b5eb9c1e75705cdf28125022958ec4f59be1dc98bd2d32862d630b1dce8341",
+        "digest_payload.json": "046cf42709d86cee1529476ec12c602a04973ea913e65a8669162fe090f508fb",
+        "fingerprint_payload.json": "fc7da07fa9a7768770ccd9e55b073b0f008a3c0e1e38f7ea65c079df2a45f349",
+        "idempotency_payload.json": "a4e92cd3c001aea22563b198671327380007bc05aaa4cca9380b7a3b5eca26b0",
+        "input.json": "792788c7754e6ccc821cea4a59c6b6d15d5ca5a0e1e70411001fe03a1a6454aa"
+      },
+      "kind": "session_start"
+    },
+    "nested_key_order": {
+      "description": "Keys sort by Unicode code point at every depth (UTF-8 byte order), arrays keep order.",
+      "expect": {
+        "content_fingerprint": "1fa3e6145feb3ad2b0ba2c23fde0e2f81499603faa7099024dd14512bd7048ec",
+        "content_hash": "aa73258d4984f08b66c31979fbffa6b932244ece0977c41c9c5ebec23fa096d7",
+        "digest": "945008c06e97e2049402febf959fcb4f1585b5823fc3df65b824261e093e0712",
+        "idempotency_key": "66058f5dfe4049a11162e766725ce3aab406fc1481e791713ac7e048d06fd6bb"
+      },
+      "files": {
+        "canonical.json": "b4ff4c051897a035a2d8f5279f09cc4b812dcb6c3f29d1a557a61aa5ea8d8e9a",
+        "content.txt": "aa73258d4984f08b66c31979fbffa6b932244ece0977c41c9c5ebec23fa096d7",
+        "digest_payload.json": "945008c06e97e2049402febf959fcb4f1585b5823fc3df65b824261e093e0712",
+        "fingerprint_payload.json": "1fa3e6145feb3ad2b0ba2c23fde0e2f81499603faa7099024dd14512bd7048ec",
+        "idempotency_payload.json": "66058f5dfe4049a11162e766725ce3aab406fc1481e791713ac7e048d06fd6bb",
+        "input.json": "497fff1433b6dd5d629073da9ebfab4107c04c2467076aaf38a6f5a95b399461"
+      },
+      "kind": "handoff"
+    },
+    "no_source_event_id": {
+      "description": "No source_event_id: idempotency_key and content_fingerprint both equal the digest.",
+      "expect": {
+        "content_fingerprint": "df2b2d9939e102e5507168d31d6f60904278d1bc989ab36db1987f9d4c4c2572",
+        "content_hash": "b5ddaab2195f2770be5fae2e30c9afb0ffce27812bdd231d772d49145047f33a",
+        "digest": "df2b2d9939e102e5507168d31d6f60904278d1bc989ab36db1987f9d4c4c2572",
+        "idempotency_key": "df2b2d9939e102e5507168d31d6f60904278d1bc989ab36db1987f9d4c4c2572"
+      },
+      "files": {
+        "canonical.json": "77490c17dc908c5f60a0e660444d9a1f3939d0a9064bef4f672e535ff4abda90",
+        "content.txt": "b5ddaab2195f2770be5fae2e30c9afb0ffce27812bdd231d772d49145047f33a",
+        "digest_payload.json": "df2b2d9939e102e5507168d31d6f60904278d1bc989ab36db1987f9d4c4c2572",
+        "input.json": "a1bf335c1fb36c05c6d11d858e67dd8e078a0ca68f62c544d9ba96354b0e156c"
+      },
+      "kind": "manual_capture"
+    },
+    "numeric_pinning": {
+      "description": "Pinned number spellings: floats keep '.0', ints stay ints, no exponent notation.",
+      "expect": {
+        "content_fingerprint": "51e18a96a2dabe3f3203c5f68cc3681c6fd50bf936fe8a5c3e999851c2e2f2e8",
+        "content_hash": "f3c7807d475073ba009bf4801b2d934e9f0126cb96dd19a27dbffcae23a7f5a3",
+        "digest": "a87c7a0c70d832437f957cd2f77ba0e9bc23a3b69f0c3f5189977e24bcc391c5",
+        "idempotency_key": "59a77a968990580a4848e4656909312a8458b14bc7f39029fce04cb08e6c4e42"
+      },
+      "files": {
+        "canonical.json": "b68c4e2657243b9ac987dd8468a1517fa1bf23e60cbb41b847ebc80b8b1f746a",
+        "content.txt": "f3c7807d475073ba009bf4801b2d934e9f0126cb96dd19a27dbffcae23a7f5a3",
+        "digest_payload.json": "a87c7a0c70d832437f957cd2f77ba0e9bc23a3b69f0c3f5189977e24bcc391c5",
+        "fingerprint_payload.json": "51e18a96a2dabe3f3203c5f68cc3681c6fd50bf936fe8a5c3e999851c2e2f2e8",
+        "idempotency_payload.json": "59a77a968990580a4848e4656909312a8458b14bc7f39029fce04cb08e6c4e42",
+        "input.json": "033fe2182964630552b6c739a9bd3616d26a488c82831d5074eeb87e746629e7"
+      },
+      "kind": "verification_result"
+    },
+    "observed_and_deadline_excluded": {
+      "description": "observed_at and deadline_at appear in canonical.json but not in the digest payload.",
+      "expect": {
+        "content_fingerprint": "525f10c589df8158c164c0c9152a408c212e86660e6e993a8d730a502ff66b31",
+        "content_hash": "cb37f36cb7d96f595d13e95df7d0a297dba13cb732d2cd79ae09a7b23800e82f",
+        "digest": "56767a2198532431ea6547a98f41970c942552dc8c540953d636ebf20f9e24cf",
+        "idempotency_key": "5d9e5838e42a8ed030330b45f3feec7c4d7fcff60a098372b8ceda67232a7994"
+      },
+      "files": {
+        "canonical.json": "025a87a74ae4284953f64ea3ef721427e92709e67f7ecef9bab9fbeda0edfa84",
+        "content.txt": "cb37f36cb7d96f595d13e95df7d0a297dba13cb732d2cd79ae09a7b23800e82f",
+        "digest_payload.json": "56767a2198532431ea6547a98f41970c942552dc8c540953d636ebf20f9e24cf",
+        "fingerprint_payload.json": "525f10c589df8158c164c0c9152a408c212e86660e6e993a8d730a502ff66b31",
+        "idempotency_payload.json": "5d9e5838e42a8ed030330b45f3feec7c4d7fcff60a098372b8ceda67232a7994",
+        "input.json": "ff71c3452fe2c3d8367e3fc3738fc6e87faba47f54af4e52180ddb4de8db1400"
+      },
+      "kind": "before_tool"
+    },
+    "unicode_and_escapes": {
+      "description": "Non-ASCII stays raw UTF-8 (ensure_ascii=False); only quote, backslash and C0 controls are escaped.",
+      "expect": {
+        "content_fingerprint": "0b2f01e56feaf90475cdcd553a937b1b373a1e1f44a9bfa7f1bf12af8e19f069",
+        "content_hash": "6adba7f848129c76eab00ff891ea7c14835da15da34e4f04182b6d75264d5313",
+        "digest": "e3762ff6e4def61c427873da481f89fd66726ca85d416dde6b93a1be8474b36c",
+        "idempotency_key": "269265b7b8d0112665804c002c3ead1388805439258984a66b75ff4c17035701"
+      },
+      "files": {
+        "canonical.json": "ff2008406e4cafc68622aea07383c4281bf65c797599152b7c301cbeb17acb6f",
+        "content.txt": "6adba7f848129c76eab00ff891ea7c14835da15da34e4f04182b6d75264d5313",
+        "digest_payload.json": "e3762ff6e4def61c427873da481f89fd66726ca85d416dde6b93a1be8474b36c",
+        "fingerprint_payload.json": "0b2f01e56feaf90475cdcd553a937b1b373a1e1f44a9bfa7f1bf12af8e19f069",
+        "idempotency_payload.json": "269265b7b8d0112665804c002c3ead1388805439258984a66b75ff4c17035701",
+        "input.json": "710cb9ce5c8b9e65d887d3afc2b6c94f080b9b3af7d7d0edb29de8cb3bcab4a4"
+      },
+      "kind": "after_edit"
+    },
+    "unknown_fields_ignored": {
+      "description": "Unknown top-level and identity fields are dropped; bytes equal a clean event.",
+      "expect": {
+        "content_fingerprint": "f137dbfbd0ff5daf7674aa28aead07acc92a5cf9673daeed1ea982aaf06339a8",
+        "content_hash": "82bf1cd82cedce3a57d43e210f5aebc2b9cf6c7433fe72e2a6fd825394ca6719",
+        "digest": "05f880e7144a54bafd190ad0e9cbbdf82c5d1a5149254fe3fc31e597fe38122d",
+        "idempotency_key": "0be68b07b33fc5d5edfb9e2a34c988f8d137bd529613c9d0a28c974fb3fdbff3"
+      },
+      "files": {
+        "canonical.json": "8844247cae86effe9b804f0b18fc8e0068382fac89f6123c07301fe675f8c638",
+        "content.txt": "82bf1cd82cedce3a57d43e210f5aebc2b9cf6c7433fe72e2a6fd825394ca6719",
+        "digest_payload.json": "05f880e7144a54bafd190ad0e9cbbdf82c5d1a5149254fe3fc31e597fe38122d",
+        "fingerprint_payload.json": "f137dbfbd0ff5daf7674aa28aead07acc92a5cf9673daeed1ea982aaf06339a8",
+        "idempotency_payload.json": "0be68b07b33fc5d5edfb9e2a34c988f8d137bd529613c9d0a28c974fb3fdbff3",
+        "input.json": "96b95e24bc5e59816ba36144dd80a9d747a2efc908895362b1c573ea4c2e024b"
+      },
+      "kind": "after_tool"
+    }
+  }
+}

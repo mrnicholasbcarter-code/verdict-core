@@ -39,15 +39,15 @@
       }
     },
     "revision": "1",
-    "idempotency_key": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+    "idempotency_key": "f12c73516a4f68846ce2808eaf317df8163b1e939538235db2cc14bf46ba7b2b",
     "deadline_at": null
   },
   "digest": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
-  "canonical_json": "{\"classification\":\"source\",\"content\":\"# 路由预算\\nshared note about routing budgets — café 日本語 🚀\",\"content_hash\":\"d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"after_edit\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.5,\"payload\":{\"n\":1.0,\"z\":0.0},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
+  "canonical_json": "{\"classification\":\"source\",\"content\":\"# 路由预算\\nshared note about routing budgets — café 日本語 🚀\",\"content_hash\":\"d14880610f550e717bc0ecf7970631fff3b35774fc5a3f8b65ef4dcc5f064b38\",\"created_at\":1700000000.0,\"deadline_at\":null,\"derived_from\":[],\"idempotency_key\":\"f12c73516a4f68846ce2808eaf317df8163b1e939538235db2cc14bf46ba7b2b\",\"identity\":{\"attempt_id\":\"attempt-1\",\"parent_session_id\":null,\"project\":\"verdict\",\"session_id\":\"sess-1\",\"source_agent\":\"worker-a\",\"source_event_id\":\"src-evt-0001\",\"source_harness\":\"verdict\",\"tenant\":\"default\",\"workspace\":\"default\"},\"kind\":\"after_edit\",\"memory_kind\":\"memory\",\"metadata\":{\"extension\":{\"k\":1}},\"observed_at\":1700000001.5,\"payload\":{\"n\":1.0,\"z\":0.0},\"protocol_version\":\"1\",\"provenance\":{},\"revision\":\"1\",\"schema_version\":\"lifecycle-event/v1\",\"scope\":\"default\",\"sensitivity\":\"standard\",\"trust\":\"remote-advisory\"}",
   "assert_substring": [
     "\"created_at\":1700000000.0",
     "\"n\":1.0"
   ],
-  "idempotency_key": "6492cbdc5a9e912866e213c96ff672abb6d6d254d26e33226527031840fb4aae",
+  "idempotency_key": "f12c73516a4f68846ce2808eaf317df8163b1e939538235db2cc14bf46ba7b2b",
   "content_fingerprint": "32cbe6e9ff3f09f59140d86e61d094094d7b9094e87150f14e605ba678cf61b0"
 }
