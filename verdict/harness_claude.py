@@ -498,13 +498,14 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
 # hook still imports verdict on pipx/uv installs where a bare ``python`` cannot.
 HOOK_MODULE = "verdict.memory_harness.claude"
 HOOK_COMMAND_TEMPLATE = "{python} -m " + HOOK_MODULE + " {event}"
-# Bare-``python`` form installed before the interpreter was pinned; still
-# recognised so existing installs migrate and uninstall cleanly.
-LEGACY_HOOK_COMMAND_PREFIX = "python -m " + HOOK_MODULE + " "
 
 
 def hook_command(event: str) -> str:
     """Return the installed hook command for ``event`` using ``sys.executable``."""
+    # sys.executable can be empty or None (embedded or frozen interpreters), and
+    # shlex.quote("") would write an unrunnable ''. The bare-python fallback is
+    # the pre-BOD-422 form: no worse than before, and still matched by the
+    # ownership predicate, so a later reinstall from a real interpreter replaces it.
     return HOOK_COMMAND_TEMPLATE.format(python=shlex.quote(sys.executable or "python"), event=event)
 
 
@@ -597,7 +598,6 @@ __all__ = [
     "HOOK_EXIT_ERROR",
     "HOOK_EXIT_OK",
     "HOOK_MODULE",
-    "LEGACY_HOOK_COMMAND_PREFIX",
     "OUTBOX_DIR_ENV",
     "OUTBOX_FILENAME",
     "CertifyReport",

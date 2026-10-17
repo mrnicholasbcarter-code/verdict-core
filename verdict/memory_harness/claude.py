@@ -11,38 +11,27 @@ migrated away on install. ``shared_db`` is accepted and unused.
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any
 
-from verdict.harness_claude import (
-    CLAUDE_HOOK_EVENT_KINDS,
-    HOOK_MODULE,
-    LEGACY_HOOK_COMMAND_PREFIX,
-    hook_command,
-    main,
-)
+from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_MODULE, hook_command, main
+from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is_module_hook
 
-# Provisional entry point shipped before the controller's 23:10Z decision;
-# migrated away on install/uninstall like the legacy /tmp hooks.
-_PROVISIONAL_COMMAND_PREFIX = "python -m verdict.harness_claude hook "
+# Provisional entry point ``<python> -m verdict.harness_claude hook <Event>`` shipped
+# before the controller's 23:10Z decision; migrated away like the legacy /tmp hooks.
+_PROVISIONAL_MODULE = "verdict.harness_claude"
+_LEGACY_PROMPT_FILES = ("/tmp/claude_last_prompt", "/tmp/claude_session_prompt")
 
 
-def _is_module_entry_point(command: str) -> bool:
-    """True for ``<any interpreter> -m verdict.memory_harness.claude <Event>``."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
-    return len(tokens) == 4 and tokens[1:3] == ["-m", HOOK_MODULE]
-
-
-def _is_verdict_command(command: str) -> bool:
-    if command.startswith((LEGACY_HOOK_COMMAND_PREFIX, _PROVISIONAL_COMMAND_PREFIX)):
-        return True
-    if _is_module_entry_point(command):
-        return True
-    return "verdict hook" in command and "/tmp/claude_" in command
+def _is_verdict_command(command: object) -> bool:
+    """Exact parsed match only (see ``_hook_ownership``); everything else is a user hook."""
+    return (
+        is_module_hook(command, HOOK_MODULE, CLAUDE_HOOK_EVENT_KINDS)
+        or is_module_hook(
+            command, _PROVISIONAL_MODULE, CLAUDE_HOOK_EVENT_KINDS, subcommand=("hook",)
+        )
+        or is_legacy_tmp_prompt_hook(command, _LEGACY_PROMPT_FILES)
+    )
 
 
 def _load(settings_file: Path) -> dict[str, Any]:
@@ -73,7 +62,7 @@ def _strip_verdict_hooks(settings: dict[str, Any]) -> bool:
             kept = [
                 h
                 for h in inner
-                if not (isinstance(h, dict) and _is_verdict_command(str(h.get("command", ""))))
+                if not (isinstance(h, dict) and _is_verdict_command(h.get("command")))
             ]
             if len(kept) == len(inner):
                 kept_matchers.append(matcher)

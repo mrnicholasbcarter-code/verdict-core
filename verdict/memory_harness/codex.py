@@ -19,6 +19,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is_module_hook
+
 CODEX_HOOK_EVENTS: tuple[str, ...] = (
     "SessionStart",
     "UserPromptSubmit",
@@ -35,7 +37,8 @@ CODEX_HOOK_EVENTS: tuple[str, ...] = (
 
 HOOK_TIMEOUT_SECONDS = 10
 
-_HOOK_MODULE_ARGS = "-m verdict.memory_harness.codex"
+HOOK_MODULE = "verdict.memory_harness.codex"
+_LEGACY_PROMPT_FILES = ("/tmp/codex_last_prompt", "/tmp/codex_session_prompt")
 
 
 def hook_command(event: str) -> str:
@@ -46,7 +49,11 @@ def hook_command(event: str) -> str:
     the install, so the hook still finds verdict on pipx and uv installs where
     a bare ``python`` on PATH would not have it.
     """
-    return f"{shlex.quote(sys.executable or 'python')} {_HOOK_MODULE_ARGS} {event}"
+    # sys.executable can be empty or None (embedded or frozen interpreters), and
+    # shlex.quote("") would write an unrunnable ''. The bare-python fallback is
+    # the pre-BOD-422 form: no worse than before, and still matched by the
+    # ownership predicate, so a later reinstall from a real interpreter replaces it.
+    return f"{shlex.quote(sys.executable or 'python')} -m {HOOK_MODULE} {event}"
 
 
 def _verdict_hook(event: str) -> dict[str, Any]:
@@ -58,11 +65,11 @@ def _verdict_hook(event: str) -> dict[str, Any]:
 
 
 def _is_verdict_command(command: object) -> bool:
-    if not isinstance(command, str):
-        return False
-    # Match any interpreter path (including the legacy bare ``python``), so a
-    # reinstall from another environment replaces rather than duplicates hooks.
-    return f" {_HOOK_MODULE_ARGS} " in f" {command} " or "verdict hook" in command
+    # Exact parsed match only (see _hook_ownership); wrapped or extended commands
+    # that merely mention the module are user hooks and are preserved.
+    return is_module_hook(command, HOOK_MODULE, CODEX_HOOK_EVENTS) or is_legacy_tmp_prompt_hook(
+        command, _LEGACY_PROMPT_FILES
+    )
 
 
 def _strip_verdict(groups: list[Any]) -> list[Any]:

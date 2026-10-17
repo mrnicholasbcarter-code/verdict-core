@@ -11,6 +11,8 @@ import builtins
 import hashlib
 import io
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -306,6 +308,83 @@ def test_reinstall_replaces_old_bare_python_and_other_interpreter_entries(
     assert ours == expected
     assert all(c.startswith("/new/venv/bin/python3 -m ") for c in ours)
     assert "echo user-bash" in commands and "echo user-stop" in commands
+
+
+# Ownership is an exact parsed match: [python, "-m", module, Event]. These mention
+# the module but are user hooks and must survive uninstall and reinstall.
+CLAUDE_FOREIGN_COMMANDS = (
+    "logger -- 'python -m verdict.memory_harness.claude Stop'",
+    "sh -c 'python -m verdict.memory_harness.claude Stop'",
+    "python -m verdict.memory_harness.claude Stop --extra-arg",
+    "python -m verdict.memory_harness.claude_extra Stop",
+    "echo -m verdict.memory_harness.claude Stop",
+    "ipython -m verdict.memory_harness.claude Stop",
+    "python -m verdict.memory_harness.claude NotAClaudeEvent",
+    "python -m verdict.memory_harness.claude 'Stop",
+    "python -m verdict.harness_claude hook Stop --extra-arg",
+    "logger -- 'verdict hook recall $(cat /tmp/claude_last_prompt)'",
+)
+CLAUDE_OWNED_COMMANDS = (
+    f"{shlex.quote(sys.executable)} -m verdict.memory_harness.claude Stop",
+    "'/opt/pipx venvs/verdict/bin/python' -m verdict.memory_harness.claude Stop",
+    "python -m verdict.memory_harness.claude Stop",
+    "python3 -m verdict.memory_harness.claude Stop",
+    "/usr/bin/python3.12 -m verdict.memory_harness.claude Stop",
+    ".venv/bin/python -m verdict.memory_harness.claude Stop",
+    "python -m verdict.harness_claude hook Stop",
+    "verdict hook recall '$(cat /tmp/claude_last_prompt)'",
+)
+
+
+def _claude_stop(*commands: str) -> dict:
+    hooks = [{"type": "command", "command": c} for c in commands]
+    return {"hooks": {"Stop": [{"matcher": "", "hooks": hooks}]}}
+
+
+@pytest.mark.parametrize("foreign", CLAUDE_FOREIGN_COMMANDS)
+def test_uninstall_preserves_foreign_hooks_that_mention_the_module(
+    tmp_path: Path, foreign: str
+) -> None:
+    from verdict.memory_harness.claude import uninstall_claude_hooks
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(_claude_stop(foreign)), encoding="utf-8")
+    uninstall_claude_hooks(settings)
+    assert json.loads(settings.read_text(encoding="utf-8")) == _claude_stop(foreign)
+
+
+@pytest.mark.parametrize("foreign", CLAUDE_FOREIGN_COMMANDS)
+def test_reinstall_migration_preserves_foreign_hooks(tmp_path: Path, foreign: str) -> None:
+    from verdict.memory_harness.claude import install_claude_hooks
+
+    settings = tmp_path / "settings.json"
+    legacy = "python -m verdict.memory_harness.claude Stop"
+    settings.write_text(json.dumps(_claude_stop(foreign, legacy)), encoding="utf-8")
+    install_claude_hooks(settings, tmp_path / "unused.db")
+    stop = _all_commands(
+        {"hooks": {"Stop": json.loads(settings.read_text("utf-8"))["hooks"]["Stop"]}}
+    )
+    assert foreign in stop
+    assert legacy not in stop
+    assert stop.count(harness_claude.hook_command("Stop")) == 1
+
+
+@pytest.mark.parametrize("owned", CLAUDE_OWNED_COMMANDS)
+def test_pinned_bare_and_relative_verdict_hooks_are_owned(tmp_path: Path, owned: str) -> None:
+    from verdict.memory_harness.claude import install_claude_hooks, uninstall_claude_hooks
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(_claude_stop(owned, "echo user-stop")), encoding="utf-8")
+    uninstall_claude_hooks(settings)
+    assert json.loads(settings.read_text(encoding="utf-8")) == _claude_stop("echo user-stop")
+    settings.write_text(json.dumps(_claude_stop(owned, "echo user-stop")), encoding="utf-8")
+    install_claude_hooks(settings, tmp_path / "unused.db")
+    stop = _all_commands(
+        {"hooks": {"Stop": json.loads(settings.read_text("utf-8"))["hooks"]["Stop"]}}
+    )
+    assert stop.count(harness_claude.hook_command("Stop")) == 1
+    assert "echo user-stop" in stop
+    assert owned not in stop or owned == harness_claude.hook_command("Stop")
 
 
 def test_installed_commands_use_stdin_entry_point_and_no_tmp(tmp_path: Path) -> None:

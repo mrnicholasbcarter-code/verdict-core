@@ -47,7 +47,8 @@ Each installed hook runs `<python> -m verdict.memory_harness.claude <Event>`
 (`verdict.harness_claude.hook_command`), where `<python>` is the absolute, shell-quoted
 `sys.executable` that ran the install. A bare `python` on PATH would miss verdict on pipx and uv
 installs. Reinstalling replaces Verdict hooks written by any interpreter, including the older
-bare-`python` form, and uninstall removes them too. The entrypoint:
+bare-`python` form, and uninstall removes them too (see the ownership rule under install and
+uninstall). The entrypoint:
 
 - reads the payload from stdin and writes nothing to stdout, so nothing is injected into the
   model's context;
@@ -74,8 +75,16 @@ These call `install_claude_hooks`, `install_claude_instructions` and `uninstall_
 
 - Install is idempotent: running it twice leaves `~/.claude/settings.json` byte-identical.
 - User hooks and every other settings key are kept.
-- Install removes legacy Verdict entries first, including any `verdict hook ...` command that
-  reads `/tmp/claude_*` and the provisional `python -m verdict.harness_claude hook` form.
+- Install removes legacy Verdict entries first: earlier
+  `<python> -m verdict.memory_harness.claude <Event>` hooks under any interpreter, the provisional
+  `<python> -m verdict.harness_claude hook <Event>` form, and a direct `verdict hook record|recall`
+  command whose prompt argument reads `/tmp/claude_last_prompt` or `/tmp/claude_session_prompt`.
+- A hook counts as Verdict's only when `shlex.split` parses it as exactly
+  `<python> -m verdict.memory_harness.claude <Event>` with a known Claude event, where `<python>` is
+  the pinned `sys.executable` or a bare, relative or absolute `python`, `python3` or
+  `python3.N`. Wrappers such as `sh -c '...'` or `logger -- '...'`, extra arguments, other
+  modules and unparseable commands are user hooks and are never removed, even when they
+  mention the module (`verdict/memory_harness/_hook_ownership.py`).
 - Uninstall removes only Verdict-managed entries and drops event lists left empty. After
   install then uninstall, the settings file matches the original byte for byte. If there is no
   settings file, uninstall does nothing and creates nothing.

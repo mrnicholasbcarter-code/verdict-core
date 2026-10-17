@@ -20,7 +20,8 @@ lifecycle event (`verdict.harness_claude.hook_command`: the shell-quoted absolut
 interpreter that ran the install, then `-m verdict.memory_harness.claude <Event>`, so
 pipx/uv installs work) and migrates legacy `/tmp/claude_*` and bare-`python` Verdict
 hooks. `uninstall_claude_hooks` removes only Verdict-managed entries, including
-bare-`python` entries from earlier installs.
+bare-`python` entries from earlier installs. Ownership is an exact `shlex` match of
+`<python> -m verdict.memory_harness.claude <Event>`, so wrapped user hooks are kept.
 `install_claude_instructions` appends the bridge block to a project
 `CLAUDE.md` when the marker `Verdict Unified Memory Bridge` is absent.
 
