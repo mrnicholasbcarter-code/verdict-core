@@ -142,7 +142,24 @@ def append_outcome_shadow_record(
     written with one ``write`` call under a process lock, so concurrent
     writers never interleave partial lines. The sink directory is never
     created; a missing directory is logged and the record is skipped.
+
+    Every sink interaction (serialization, the directory check, open and
+    write) runs inside this error boundary: any failure is logged as a
+    warning and returns ``False``, so the caller keeps its in-memory shadow
+    block (D34 fail-safe).
     """
+    try:
+        return _append_outcome_shadow_record(sink, shadow, recorded_at=recorded_at)
+    except Exception as exc:
+        _LOG.warning(
+            "outcome_shadow sink: record not appended to %s (%s)", sink, type(exc).__name__
+        )
+        return False
+
+
+def _append_outcome_shadow_record(
+    sink: Path, shadow: Mapping[str, Any], *, recorded_at: datetime | None
+) -> bool:
     when = recorded_at or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)

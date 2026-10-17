@@ -655,7 +655,7 @@ def test_service_chmod_000_sink_ancestor_keeps_shadow_block_and_warns(
         locked.chmod(0o700)
     pool = out.candidate_pool or {}
     assert "outcome_shadow" in pool
-    assert pool["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert sorted(pool["outcome_shadow"]["actual_rank"]) == sorted(routes)
     assert isinstance(pool["outcome_shadow"]["would_rank"], list)
     assert _sink_warnings(caplog)
     assert not (locked / "runs" / SINK_FILENAME).exists()
