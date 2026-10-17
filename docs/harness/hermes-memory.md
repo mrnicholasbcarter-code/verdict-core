@@ -60,6 +60,8 @@ m.uninstall(hermes_home=Path("/path/to/hermes-home"))
 - removes only `verdict-memory` from `plugins.enabled`, and removes the `plugins:`
   key only if the install created it and it is now empty;
 - deletes only the plugin directory that carries the Verdict marker;
+- removes `<HERMES_HOME>/plugins/` as well, but only if the install created it
+  and it is empty once the plugin is gone; other plugins and user files are kept;
 - refuses on a user-owned collision, just like install.
 
 Known limit: config edits go through PyYAML, as in the existing
@@ -192,10 +194,15 @@ Same setup as above, with the model asked to echo two fake keys. Its reply was
   assignments and URL user-info;
 - the real key appeared 0 times in all files.
 
+BOD-423 adds a fail-closed bare `sk-` guard to the `verdict-memory` client, so once
+this adapter is wired to `AiMemoryClient` such tokens are redacted before they leave
+the host (see `packages/verdict-memory/docs/TRANSPORT.md`). The local JSONL outbox
+above still goes through `verdict.shared_memory.redact_secrets`, which this lane does
+not own, so a bare token can still be stored there until that function is widened.
+
 ## Not proven yet
 
-- Redaction of bare credential tokens (e.g. `sk-...`) in captured text; see above.
-
+- Redaction of bare credential tokens (e.g. `sk-...`) in the local Hermes outbox; see above.
 - Recall injecting real content into a live turn (only the no-backend gap has
   been observed).
 - A real backend round trip (only P's Fake has been exercised), since P's `AiMemoryClient` is on security hold, and
