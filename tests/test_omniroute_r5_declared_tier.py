@@ -25,12 +25,14 @@ def test_declared_tier_written_tier0_pattern_only(
     assert declared_tier_from_elo(1379) is None
     assert declared_tier_from_elo(9999) != 0
     path = tmp_path / "declared-tiers.json"
-    path.write_text(json.dumps({"nvidia/z-ai/glm-5.3": 1, "x/forged": 0}))
+    path.write_text(
+        json.dumps({"nvidia/z-ai/glm-5.3": 1479, "x/mid": 1416, "x/low": 1300, "x/bad": "0"})
+    )
     monkeypatch.delenv(RANKING_MODE_ENV, raising=False)
     assert load_declared_tiers(path) == {}
     monkeypatch.setenv(RANKING_MODE_ENV, "write")
     declared = load_declared_tiers(path)
-    assert declared == {"nvidia/z-ai/glm-5.3": 1}
+    assert declared == {"nvidia/z-ai/glm-5.3": 1, "x/mid": 2}
     assert resolve_capability_tier("nvidia/z-ai/glm-5.3", declared) == 1
     frontier = "anthropic/claude-opus-4"
     assert classify(frontier) == 0

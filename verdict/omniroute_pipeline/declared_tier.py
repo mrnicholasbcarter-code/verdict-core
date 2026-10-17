@@ -3,7 +3,7 @@
 O3 (controller 10:05Z): tier 1 = Elo >= 1450, tier 2 = 1380-1449, below that the
 pattern classifier decides, and never tier 0 by declaration: tier 0 comes only
 from the pattern table. Dark unless ``VERDICT_PIPELINE_RANKING_MODE=write``;
-declared tiers are read from ``declared-tiers.json`` (written by the phase d
+route Elo is read from ``declared-tiers.json`` (written by the phase d
 ranking ingest), so with no file the admit tier is exactly ``classify``.
 """
 
@@ -41,7 +41,11 @@ def default_declared_tiers_path() -> Path:
 
 
 def load_declared_tiers(path: Path | None = None) -> dict[str, int]:
-    """Exact route id -> declared tier (1 or 2 only); empty unless write mode."""
+    """Exact route id -> declared tier from the S11 Elo file; empty unless write mode.
+
+    The file maps route ids to text Elo, so a tier is always derived through the
+    O3 bands and a tier 0 can never be declared.
+    """
     if not ranking_write_enabled():
         return {}
     try:
@@ -50,11 +54,14 @@ def load_declared_tiers(path: Path | None = None) -> dict[str, int]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {
-        str(k): v
-        for k, v in data.items()
-        if isinstance(v, int) and not isinstance(v, bool) and v in (1, 2)
-    }
+    out: dict[str, int] = {}
+    for route, elo in data.items():
+        if isinstance(elo, bool) or not isinstance(elo, int | float):
+            continue
+        tier = declared_tier_from_elo(float(elo))
+        if tier is not None:
+            out[str(route)] = tier
+    return out
 
 
 def resolve_capability_tier(model_id: str, declared: Mapping[str, int]) -> int:
