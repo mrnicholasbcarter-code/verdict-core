@@ -1254,14 +1254,16 @@ class TestFreeCatalogCapabilityClassification:
         "route_id",
         [
             # Representative still-unknown rows from the same live free
-            # snapshot: real model families outside the BOD-419 scope stay
-            # unknown until they are added deliberately.
-            "opencode/ling-2.6-1t-free",
-            "tencent/hunyuan-pro",
-            "nous-research/Hermes-4-405B",
-            "cohere/command-a-03-2025",
-            "api-airforce/x-ai/grok-2-1212",
-            "bluesminds/gpt-4.1",
+            # snapshot. BOD-427 classified the remaining real families with
+            # cited evidence; these special-purpose rows stay unknown
+            # deliberately (apply-only, Lean prover, safety moderator,
+            # unversioned vendor alias, stealth route).
+            "morph/morph-v3-large",
+            "requesty/mistral/leanstral-1-5",
+            "kilo-gateway/nvidia/nemotron-3.5-content-safety:free",
+            "sensenova/sensechat",
+            "agy/gemini-pro-agent",
+            "openrouter/stealth/ox-alpha",
         ],
     )
     def test_families_outside_scope_stay_unknown(self, route_id: str) -> None:
