@@ -166,9 +166,28 @@ def test_cli_help_lists_hermes(
     assert SECRET not in out
 
 
-# BOD80 lane C: Hermes v0.21.3 plugin hooks are source-evidenced, not yet observed live.
-def test_certify_reports_source_evidenced_plugin_hooks_as_partial(tmp_path: Path) -> None:
+# BOD80 lane C: facets backed by a hook that fired live are SUPPORTED; capture stays PARTIAL.
+LIVE_OBSERVATION = (
+    Path(__file__).parent / "fixtures" / "hermes" / "v0_21_3" / "live_observation.json"
+)
+FACET_BACKING_HOOK = {
+    "session_start": "on_session_start",
+    "before_first_turn": "pre_llm_call",
+    "session_end": "on_session_end",
+}
+
+
+def test_certify_supported_facets_are_backed_by_live_observed_hooks(tmp_path: Path) -> None:
+    import json
+
     from verdict.harness_hermes import certify
+    from verdict.harness_hermes_memory import HOOKS_USED
+
+    live = json.loads(LIVE_OBSERVATION.read_text(encoding="utf-8"))
+    fired = [row["hook"] for row in live["hooks_fired"]]
+    assert fired == ["on_session_start", "pre_llm_call", "post_llm_call", "on_session_end"]
+    assert set(fired) == set(HOOKS_USED)
+    assert live["hermes_exit"] == 0 and live["secret_hits"] == 0
 
     report = certify(
         hermes_home=tmp_path,
@@ -176,18 +195,17 @@ def test_certify_reports_source_evidenced_plugin_hooks_as_partial(tmp_path: Path
         health_check=lambda _u: True,
         which=lambda _n: "/usr/bin/hermes",
     )
-    for facet in (
-        "hooks",
-        "session_start",
-        "before_first_turn",
-        "session_end",
-        "mutation_capability",
-    ):
-        assert report.facets[facet] == "partial", facet
+    assert report.facets["hooks"] == "supported"
+    for facet, hook in FACET_BACKING_HOOK.items():
+        assert hook in fired
+        assert report.facets[facet] == "supported", facet
+    # post_llm_call fired, but capture reached only the local outbox (no backend round trip).
+    assert live["backend_round_trip"] is False
+    assert report.facets["mutation_capability"] == "partial"
     assert report.facets["tool_pre_post"] == "unsupported"  # not wired by the adapter
     joined = " ".join(report.notes)
     assert "no native hook system" not in joined.lower()
-    assert "source-evidenced" in joined and "v0.21.3" in joined
+    assert "observed firing live" in joined and "v0.21.3" in joined
 
 
 def test_enable_installs_and_disable_uninstalls_memory_plugin(

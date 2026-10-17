@@ -1,0 +1,37 @@
+{
+ "_source": "sanitized from lane C live smoke 2026-10-16T23:21:38Z (1 bounded turn, temp HERMES_HOME); see docs/harness/hermes-memory.md 'Live observation'",
+ "hermes_version": "Hermes Agent v0.21.3 (2026.9.14)",
+ "upstream": "2ed6387d",
+ "adapter_head": "5228c38e",
+ "hermes_exit": 0,
+ "plugin_source": "user",
+ "hooks_fired": [
+  {
+   "hook": "on_session_start",
+   "status": "ignored",
+   "gaps": []
+  },
+  {
+   "hook": "pre_llm_call",
+   "status": "error",
+   "gaps": [
+    "memory_backend_not_configured"
+   ]
+  },
+  {
+   "hook": "post_llm_call",
+   "status": "queued",
+   "gaps": [
+    "memory_backend_not_configured"
+   ]
+  },
+  {
+   "hook": "on_session_end",
+   "status": "ignored",
+   "gaps": []
+  }
+ ],
+ "outbox_rows": 1,
+ "backend_round_trip": false,
+ "secret_hits": 0
+}

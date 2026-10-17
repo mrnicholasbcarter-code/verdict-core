@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import re
 
-from verdict_memory.contracts import CaptureDecision, LifecycleEvent
+from verdict_memory.contracts import BARE_API_TOKEN_RE, CaptureDecision, LifecycleEvent
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S+"),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"),
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+    BARE_API_TOKEN_RE,  # BOD-423: same bare-token shapes the redactor uses
     re.compile(r"(?i)https?://[^\s/@]+:[^\s/@]+@"),
 )
 _ALLOWED_SENSITIVITY = frozenset({"standard"})

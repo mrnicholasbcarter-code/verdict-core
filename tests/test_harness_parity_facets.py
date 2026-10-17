@@ -205,7 +205,7 @@ class TestClaudeParity:
 
 
 class TestHermesParity:
-    """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
+    """Hermes v0.21.3 plugin hooks observed live; capture PARTIAL until a backend round trip."""
 
     def test_reports_all_facets(self, tmp_path: Path) -> None:
         from verdict.harness_hermes import certify
@@ -224,26 +224,31 @@ class TestHermesParity:
                 f"hermes facet {facet!r} has invalid level {level!r}"
             )
 
-    def test_wired_facets_are_partial(self, tmp_path: Path) -> None:
-        """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
+    def test_live_observed_facets_are_supported(self, tmp_path: Path) -> None:
+        """Facets backed by a hook observed firing live (lane C smoke 2026-10-16) are SUPPORTED.
+
+        Evidence: tests/fixtures/hermes/v0_21_3/live_observation.json, cited by
+        tests/test_harness_hermes.py::test_certify_supported_facets_are_backed_by_live_observed_hooks.
+        """
         from verdict.harness_hermes import certify
 
         report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
-        wired = (
-            "hooks",
-            "session_start",
-            "before_first_turn",
-            "session_end",
-            "mutation_capability",
-        )
+        live = ("hooks", "session_start", "before_first_turn", "session_end")
         assert len(report.facets) == len(HARNESS_PARITY_FACETS)
-        for facet in wired:
-            assert report.facets[facet] == "partial", (
-                f"hermes facet {facet!r} should be partial, got {report.facets[facet]!r}"
+        for facet in live:
+            assert report.facets[facet] == "supported", (
+                f"hermes facet {facet!r} should be supported, got {report.facets[facet]!r}"
             )
 
+    def test_capture_stays_partial_without_backend_round_trip(self, tmp_path: Path) -> None:
+        """post_llm_call fired live, but capture reached only the local outbox."""
+        from verdict.harness_hermes import certify
+
+        report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
+        assert report.facets["mutation_capability"] == "partial"
+
     def test_unwired_lifecycle_facets_unsupported(self, tmp_path: Path) -> None:
-        """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
+        """Hermes hooks this adapter does not wire stay unsupported."""
         from verdict.harness_hermes import certify
 
         report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
