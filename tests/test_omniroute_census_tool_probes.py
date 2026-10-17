@@ -51,7 +51,16 @@ def _snapshot() -> Any:
 
     def gateway(request: httpx.Request) -> httpx.Response:
         data: dict[str, object] = {
-            "/v1/models": {"data": [{"id": "good/a", "owned_by": "good"}]},
+            "/v1/models": {
+                "data": [
+                    {
+                        "id": "good/a",
+                        "owned_by": "good",
+                        # Rule 0.2 positive free evidence: explicit 0/0 pricing.
+                        "pricing": {"input": 0, "output": 0},
+                    }
+                ]
+            },
             "/api/v1/me/status": {"accountQuotas": []},
             "/api/free-tier/summary": {
                 "perModel": [{"provider": "good", "modelId": "a", "freeType": "keyless"}]

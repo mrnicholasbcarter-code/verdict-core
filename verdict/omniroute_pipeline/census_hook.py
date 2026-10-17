@@ -11,14 +11,16 @@ from __future__ import annotations
 import dataclasses
 import os
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from verdict.omniroute_pipeline.free_rule import (
     LAST_GOOD_NAME,
+    FreeStatus,
     Getter,
+    ProviderFreeFlags,
     classify_free,
     fetch_provider_free_flags,
     load_free_flags,
@@ -39,29 +41,65 @@ def default_free_flags_dir() -> Path:
     return default_catalog_cache_path().parent
 
 
-def free_rule_tick(
-    snapshot: Any, *, now: datetime, cache_dir: Path | None = None, get: Getter | None = None
-) -> dict[str, Any] | None:
-    """Return a free-rule summary, or None when the flag is off."""
-    if not free_rule_enabled():
-        return None
+def load_or_fetch_flags(
+    *, now: datetime, cache_dir: Path | None = None, get: Getter | None = None
+) -> tuple[ProviderFreeFlags | None, str]:
+    """Fresh provider flags (dated + last-good copies written), else the 48h last-good.
+
+    Returns the flags and their source ("fresh", "last_good" or "none") so one
+    fetch per tick can serve both the free-rule report and the probe gate.
+    """
     directory = cache_dir or default_free_flags_dir()
     last_good = directory / LAST_GOOD_NAME
     fresh = fetch_provider_free_flags(now, get)
     if fresh is not None:
         write_free_flags(directory / f"free-flags-{now.date().isoformat()}.json", fresh)
         write_free_flags(last_good, fresh)
-    flags = fresh or load_free_flags(last_good, now=now)
-    counts: Counter[str] = Counter()
+        return fresh, "fresh"
+    cached = load_free_flags(last_good, now=now)
+    return cached, ("last_good" if cached is not None else "none")
+
+
+def classify_snapshot_free(snapshot: Any, flags: ProviderFreeFlags | None) -> dict[str, FreeStatus]:
+    """Rule 0.2 verdict per catalog route: snapshot prices + fresh/48h flags.
+
+    Computed once per tick BEFORE live probing, so the chat/tool and needle
+    gates read the same free evidence instead of a literal "free" string.
+    """
+    statuses: dict[str, FreeStatus] = {}
     for identity in getattr(snapshot, "catalog", ()):
         price = (
             {"input": identity.input_cost, "output": identity.output_cost}
             if identity.price_known
             else None
         )
-        counts[classify_free(identity.identity_id, price, flags).value] += 1
+        statuses[identity.identity_id] = classify_free(identity.identity_id, price, flags)
+    return statuses
+
+
+def free_rule_tick(
+    snapshot: Any,
+    *,
+    now: datetime,
+    cache_dir: Path | None = None,
+    get: Getter | None = None,
+    flags: ProviderFreeFlags | None = None,
+    flags_source: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a free-rule summary, or None when the flag is off.
+
+    ``flags``/``flags_source`` let the census tick reuse the flags it already
+    loaded for the probe gate instead of fetching twice.
+    """
+    if not free_rule_enabled():
+        return None
+    if flags is None and flags_source is None:
+        flags, flags_source = load_or_fetch_flags(now=now, cache_dir=cache_dir, get=get)
+    counts: Counter[str] = Counter(
+        status.value for status in classify_snapshot_free(snapshot, flags).values()
+    )
     return {
-        "flags_source": "fresh" if fresh is not None else ("last_good" if flags else "none"),
+        "flags_source": flags_source or ("last_good" if flags else "none"),
         "flag_entries": len(flags.entries) if flags else 0,
         "routes": dict(sorted(counts.items())),
     }
@@ -144,8 +182,12 @@ def run_context_probes(
     now: datetime,
     states: dict[str, Any],
     blocklist: Any,
+    free_status: Mapping[str, str] | None = None,
 ) -> int:
-    """At most ``max_per_tick`` one-step context probes on proven FREE routes."""
+    """At most ``max_per_tick`` one-step context probes on proven FREE routes.
+
+    ``free_status`` carries the tick's rule 0.2 verdicts (FreeStatus values);
+    a route without positive FREE evidence is never sent a needle."""
     from verdict.omniroute_pipeline.context_store import (
         context_due,
         load_usable_context,
@@ -164,7 +206,9 @@ def run_context_probes(
             states.get(route, ModelState.CATALOGED)
         ):
             continue
-        if not probe_allowed(route, free_status="free") or not proven(route):
+        if not probe_allowed(
+            route, free_status=(free_status or {}).get(route, "unverified_free")
+        ) or not proven(route):
             continue
         if max_per_provider is not None and family_used.get(family, 0) >= max_per_provider:
             continue

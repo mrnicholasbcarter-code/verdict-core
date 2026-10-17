@@ -198,6 +198,7 @@ def run_census(
     context_probe_max_per_tick: int = 1,
     context_prober: Any = None,
     context_store_path: Path | None = None,
+    free_flags: Any = None,
 ) -> dict[str, Any]:
     """Refresh free, connected routes, preferring recent successful traffic.
 
@@ -207,6 +208,12 @@ def run_census(
     ``context_probe_max_per_tick`` one-step needle probes run on proven routes,
     all inside the per-provider budget. ``VERDICT_PIPELINE_STATE`` adds the
     per-model state summary and FAIL_FAKE provider blocklist to the report.
+
+    ``free_flags`` are the tick's fresh-or-48h provider free flags; rule 0.2
+    is computed once from them plus the catalog prices BEFORE any live probe,
+    and every pipeline probe (chat/tool and needle) is gated on positive FREE
+    evidence - a free-summary admit alone never authorizes a probe, and a
+    blank price without a provider flag fails closed as UNVERIFIED_FREE.
 
     ``role_routes`` are routes whose catalog capabilities meet the worker and
     reviewer requirements; they are kept fresh before other proven routes.
@@ -237,6 +244,16 @@ def run_census(
 
     pipeline_probes = probes_enabled()
     pipeline_state = state_enabled()
+    from verdict.omniroute_pipeline.census_hook import classify_snapshot_free
+    from verdict.omniroute_pipeline.free_rule import FreeStatus
+
+    # Rule 0.2 once per tick, before any live probing (finding B1).
+    free_verdicts = classify_snapshot_free(snapshot, free_flags)
+
+    def free_evidence(route: str) -> str:
+        # Positive FREE evidence only; unknown routes fail closed.
+        return free_verdicts.get(route, FreeStatus.UNVERIFIED_FREE).value
+
     receipt = admit_free_tier_active(snapshot)
     healthy = {
         row.key.removeprefix("route:")
@@ -268,7 +285,7 @@ def run_census(
         if r not in non_chat
         and canonical_route(r).split("/", 1)[0] not in cooling
         and cache.lookup(r, now).state != STATE_NEGATIVE
-        and (not pipeline_probes or probe_allowed(r, free_status="free"))
+        and (not pipeline_probes or probe_allowed(r, free_status=free_evidence(r)))
     ]
 
     roles = role_routes or frozenset()
@@ -370,8 +387,13 @@ def run_census(
         from verdict.omniroute_pipeline.census_hook import run_context_probes
         from verdict.omniroute_pipeline.context_store import default_context_store_path
 
+        # Spec section 2: needles run only on FREE controller candidates - the
+        # first five routes in census order with positive FREE evidence.
+        needle_pool = [
+            route for route in candidates if free_evidence(route) == FreeStatus.FREE.value
+        ][:5]
         context_probed = run_context_probes(
-            candidates,
+            needle_pool,
             proven=proven,
             family_used=family_used,
             max_per_provider=max_per_provider,
@@ -381,6 +403,7 @@ def run_census(
             now=now,
             states=states,
             blocklist=blocklist,
+            free_status={route: status.value for route, status in free_verdicts.items()},
         )
     cache.save()
     after = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
@@ -532,8 +555,22 @@ def cmd_census(
             cooling = load_census_cooldowns(base_url, key)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             cooling = frozenset()
-        from verdict.omniroute_pipeline.census_hook import guard_transport, needle_prober
+        from verdict.omniroute_pipeline.census_hook import (
+            free_rule_enabled,
+            guard_transport,
+            load_or_fetch_flags,
+            needle_prober,
+        )
         from verdict.omniroute_pipeline.probes import BUDGET_FALLBACK_HEADER, probes_enabled
+
+        # Rule 0.2 free evidence is loaded once, BEFORE live probing (B1):
+        # fresh provider flags when the free-rule flag is on, else the 48h
+        # last-good copy. The report below reuses the same flags, so the tick
+        # fetches at most once.
+        flags: Any = None
+        flags_source: str | None = None
+        if free_rule_enabled():
+            flags, flags_source = load_or_fetch_flags(now=datetime.now(timezone.utc))
 
         # Spec section 2 stage 3: every census probe request (chat, tool and
         # the needles below) carries the strict budget-fallback header, so a
@@ -555,11 +592,14 @@ def cmd_census(
             tool_probe_interval_s=tool_probe_interval_s,
             context_probe_max_per_tick=context_probe_max_per_tick,
             context_prober=needle_prober(base_url, key) if probes_enabled() else None,
+            free_flags=flags,
         )
         from verdict.omniroute_pipeline.census_hook import free_rule_tick
 
         # Dark unless VERDICT_PIPELINE_FREE_RULE is set: public catalogs only.
-        free_rule = free_rule_tick(snapshot, now=datetime.now(timezone.utc))
+        free_rule = free_rule_tick(
+            snapshot, now=datetime.now(timezone.utc), flags=flags, flags_source=flags_source
+        )
         if free_rule is not None:
             report["free_rule"] = free_rule
         from verdict.census_passports_service import write_census_last_result
