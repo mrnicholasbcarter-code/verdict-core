@@ -32,8 +32,9 @@ def load_provider_blocklist(path: Path) -> ProviderBlocklist:
     if not isinstance(data, dict):
         return ProviderBlocklist()
     return ProviderBlocklist(
-        entries={str(key): str(reason) for key, reason in sorted(data.items())
-                  if isinstance(reason, str)}
+        entries={
+            str(key): str(reason) for key, reason in sorted(data.items()) if isinstance(reason, str)
+        }
     )
 
 

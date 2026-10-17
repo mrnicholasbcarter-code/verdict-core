@@ -218,9 +218,7 @@ def test_b2_needle_respects_remaining_budgets(
     assert prober.calls == []
 
 
-def test_b2_needle_reservation_reported(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_b2_needle_reservation_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(PROBES_FLAG_ENV, "1")
     monkeypatch.setenv(STATE_FLAG_ENV, "1")
     models = {"good/a": dict(FREE_PRICING)}
@@ -267,7 +265,9 @@ def test_b3_fail_fake_blocks_sibling_now_and_next_tick(
     prober = CountingProber()
     blocklist_path = tmp_path / "provider-blocklist.json"
 
-    first = _tick(tmp_path, guard_transport(transport), prober, models, blocklist_path=blocklist_path)
+    first = _tick(
+        tmp_path, guard_transport(transport), prober, models, blocklist_path=blocklist_path
+    )
     assert transport.calls == [("good/a", "chat")]  # sibling good/b never dispatched
     assert first["pipeline_states"]["good/a"] == "needs_account"
     assert first["blocklisted_providers"] == {"good": "fail_fake"}
@@ -323,9 +323,7 @@ def test_b4_context_due_rejects_naive_and_malformed_rows() -> None:
 # --- B5: strict budget header on every census probe request ------------------
 
 
-def test_b5_strict_budget_header_on_every_census_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_b5_strict_budget_header_on_every_census_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     from verdict import prove_at_rest
     from verdict.omniroute_pipeline.census_hook import guard_transport, needle_prober
     from verdict.omniroute_pipeline.probes import BUDGET_FALLBACK_HEADER
