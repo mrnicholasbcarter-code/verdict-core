@@ -1,0 +1,4 @@
+[
+  {"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"page verdict-memory/events/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.md not found in resolved scope default/bod80-memory-test"}},
+  {"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"project 'bod80-nonexistent-readonly-contract-79cce53b' not found in workspace 'default'"}}
+]
