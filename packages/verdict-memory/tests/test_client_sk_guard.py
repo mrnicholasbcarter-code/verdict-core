@@ -1,4 +1,6 @@
-"""BOD-423: client-side, fail-closed redaction of bare ``sk-`` tokens before transport.
+"""BOD-423: client-side, fail-closed redaction of bare API tokens before transport.
+
+Cases follow /workspace/hive/findings/ai-memory-sk-scanner-gap.md (Security).
 
 Fake tokens are assembled at runtime so no secret-shaped literal sits in the
 source. No network: every request goes to an ``httpx.MockTransport`` that
@@ -45,7 +47,57 @@ def _ant_token() -> str:
     return _PREFIX + "ant-api03-" + "testFAKE" + "9876543210"
 
 
+def _tail(n: int) -> str:
+    return ("FAKE" + "0123456789abcdefghijKLMNOPQRST" * 4)[:n]
+
+
+def _or_token() -> str:
+    return _PREFIX + "or-v1-" + _tail(40)
+
+
+def _svcacct_token() -> str:
+    return _PREFIX + "svcacct-" + _tail(40)
+
+
+def _xai_token() -> str:
+    return "x" + "ai-" + _tail(80)
+
+
+def _groq_token() -> str:
+    return "g" + "sk_" + _tail(52)
+
+
+def _hf_token() -> str:
+    return "h" + "f_" + _tail(34)
+
+
+def _gitlab_token() -> str:
+    return "gl" + "pat-" + _tail(20)
+
+
+def _stripe_test_token() -> str:
+    return "s" + "k_test_" + _tail(24)
+
+
 ALL_TOKENS = (_alnum_token, _segmented_token, _ant_token)
+VENDOR_TOKENS = (
+    _or_token,
+    _svcacct_token,
+    _xai_token,
+    _groq_token,
+    _hf_token,
+    _gitlab_token,
+    _stripe_test_token,
+)
+BENIGN_TEXT = (
+    "task-runner-configuration-loader",
+    "risk-assessment-dashboard-widget",
+    "desk-booking-service-for-office-2026",
+    "disk-usage-reporting-module-v2",
+    _PREFIX + "learn-preprocessing-pipeline-notes",
+    "task-" + "runner2026configuration0123456789",
+    "risk-" + "0123456789abcdef0123456789",
+)
 
 
 class _Recorder:
@@ -130,19 +182,43 @@ def test_redact_secrets_removes_bare_sk_tokens(make: Any) -> None:
     assert _PREFIX not in out
 
 
+@pytest.mark.parametrize("make", VENDOR_TOKENS)
+def test_redact_secrets_removes_vendor_tokens(make: Any) -> None:
+    token = make()
+    for text in (f"use key {token} now.", json.dumps({"k": token}), f"`{token}`"):
+        out = redact_secrets(text)
+        assert out is not None
+        assert token not in out
+        assert "FAKE" not in out
+        assert "[REDACTED]" in out
+
+
+@pytest.mark.parametrize("text", BENIGN_TEXT)
+def test_benign_kebab_words_are_not_mangled(text: str) -> None:
+    assert redact_secrets(f"see {text} here") == f"see {text} here"
+    assert guard_outbound({"q": text}) == {"q": text}
+    assert MemoryCapturePolicy().evaluate(_event(content=text)).eligible is True
+
+
+@pytest.mark.parametrize("make", ALL_TOKENS + VENDOR_TOKENS)
+def test_redaction_is_idempotent(make: Any) -> None:
+    once = redact_secrets(f"a {make()} b")
+    assert redact_secrets(once) == once
+
+
 def test_redact_secrets_keeps_hyphenated_prose() -> None:
     prose = "use " + _PREFIX + "learn-compatible-estimators here"
     assert redact_secrets(prose) == prose
 
 
-@pytest.mark.parametrize("make", ALL_TOKENS)
+@pytest.mark.parametrize("make", ALL_TOKENS + VENDOR_TOKENS)
 def test_policy_denies_bare_sk_in_content(make: Any) -> None:
     decision = MemoryCapturePolicy().evaluate(_event(content=f"note {make()}"))
     assert decision.eligible is False
     assert decision.reason == "secret_detected"
 
 
-@pytest.mark.parametrize("make", ALL_TOKENS)
+@pytest.mark.parametrize("make", ALL_TOKENS + VENDOR_TOKENS)
 def test_query_token_is_redacted_on_the_wire(make: Any, tmp_path: Path) -> None:
     token = make()
     rec = _Recorder()
@@ -153,7 +229,7 @@ def test_query_token_is_redacted_on_the_wire(make: Any, tmp_path: Path) -> None:
     assert result.status == ProviderResultStatus.AVAILABLE
     assert rec.bodies, "the request must still go out once redacted"
     assert token.encode() not in rec.wire
-    assert _PREFIX.encode() not in rec.wire
+    assert b"FAKE" not in rec.wire
     assert b"[REDACTED]" in rec.wire
 
 
@@ -180,7 +256,7 @@ def test_guard_error_fails_closed_and_sends_nothing(
     def _boom(value: Any) -> Any:
         raise RuntimeError("redactor exploded")
 
-    monkeypatch.setattr(contracts, "_redact_bare_sk", _boom)
+    monkeypatch.setattr(contracts, "_redact_bare_tokens", _boom)
     rec = _Recorder()
     client = _client(rec, tmp_path)
     token = _alnum_token()
@@ -198,11 +274,11 @@ def test_guard_error_fails_closed_and_sends_nothing(
 def test_guard_noop_redactor_is_caught_by_rescan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(contracts, "_redact_bare_sk", lambda value: value)
+    monkeypatch.setattr(contracts, "_redact_bare_tokens", lambda value: value)
     rec = _Recorder()
     client = _client(rec, tmp_path)
     token = _ant_token()
-    with pytest.raises(MemoryProviderError, match="still holds a bare sk- token"):
+    with pytest.raises(MemoryProviderError, match="still holds a bare API token"):
         client._tool("memory_query", {"query": token})
     assert rec.bodies == []
 
@@ -218,7 +294,7 @@ def test_guard_rejects_uncheckable_payload(tmp_path: Path) -> None:
 def test_search_guard_failure_is_typed_not_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(contracts, "_redact_bare_sk", lambda value: value)
+    monkeypatch.setattr(contracts, "_redact_bare_tokens", lambda value: value)
     rec = _Recorder()
     client = _client(rec, tmp_path)
     result = client.search(

@@ -4,7 +4,7 @@ SECURITY: configured project/workspace is authority. Event/query project
 overrides are rejected. Hits missing scope are not relabeled. Remote paths
 use full namespaced identity. Write ACK requires scoped readback. Nested
 secrets are redacted before remote write. Every outbound JSON-RPC body passes a
-fail-closed bare ``sk-`` guard (BOD-423). Malformed RPC is typed failure.
+fail-closed bare API-token guard (BOD-423). Malformed RPC is typed failure.
 Token loaded from file in-process only; never printed.
 """
 
