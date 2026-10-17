@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -146,3 +147,97 @@ def test_catalog_read_gets_its_own_longer_timeout(isolated: Path) -> None:
     _load(isolated, httpx.MockTransport(handler))
     assert timeouts["/v1/models"] == 60.0
     assert timeouts["/api/providers"] == 20.0
+
+
+def _gated_transport(
+    seen: list[tuple[str, str]], fail_provider: str | None = None
+) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append((request.method, path))
+        if path == "/api/providers/test-batch":
+            raise AssertionError("census/admit must never POST /api/providers/test-batch")
+        assert request.method == "GET"
+        assert path != "/v1/models", "gated census must not pull the full catalog"
+        if path.startswith("/api/v1/providers/"):
+            provider = path.split("/")[4]
+            if provider == fail_provider:
+                raise httpx.ReadTimeout("slow", request=request)
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": "nvidia/nemotron-3-nano-30b-a3b:free"}]},
+            )
+        if path not in PAYLOADS:
+            return httpx.Response(404)
+        return httpx.Response(200, json=PAYLOADS[path])
+
+    return httpx.MockTransport(handler)
+
+
+def _load_gated(last_good: Path, transport: httpx.MockTransport) -> object:
+    return load_omniroute_admit_snapshot(
+        BASE,
+        "test-token",
+        transport=transport,
+        last_good_path=last_good,
+        sleep=lambda _seconds: None,
+        catalog_scope="gated",
+        catalog_cache_path=last_good.parent / "census-catalog-cache.json",
+    )
+
+
+def test_gated_catalog_reads_only_gated_provider_models(isolated: Path) -> None:
+    seen: list[tuple[str, str]] = []
+    snapshot = _load_gated(isolated, _gated_transport(seen))
+    assert ("GET", "/api/v1/providers/openrouter/models") in seen
+    assert [p for _m, p in seen if p.startswith("/api/v1/providers/")] == [
+        "/api/v1/providers/openrouter/models"
+    ]
+    assert [row.identity_id for row in snapshot.catalog] == [ROUTE]  # type: ignore[attr-defined]
+    assert snapshot.stale_served == ()  # type: ignore[attr-defined]
+
+
+def test_gated_catalog_failure_falls_back_to_last_good(isolated: Path) -> None:
+    _load_gated(isolated, _gated_transport([]))
+    data = json.loads((isolated.parent / "census-catalog-cache.json").read_text())
+    for entry in data["entries"].values():
+        entry["cached_at"] = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    (isolated.parent / "census-catalog-cache.json").write_text(json.dumps(data))
+    seen: list[tuple[str, str]] = []
+    snapshot = _load_gated(isolated, _gated_transport(seen, fail_provider="openrouter"))
+    assert seen.count(("GET", "/api/v1/providers/openrouter/models")) == 2
+    assert snapshot.stale_served == ("catalog",)  # type: ignore[attr-defined]
+    assert [row.identity_id for row in snapshot.catalog] == [ROUTE]  # type: ignore[attr-defined]
+
+
+def test_gated_catalog_failure_without_last_good_fails_closed(isolated: Path) -> None:
+    with pytest.raises(LiveAdmitError, match="no last-good snapshot"):
+        _load_gated(isolated, _gated_transport([], fail_provider="openrouter"))
+
+
+def test_census_and_admit_paths_never_post_test_batch(isolated: Path) -> None:
+    from verdict.census_passports import load_census_cooldowns
+
+    seen: list[tuple[str, str]] = []
+    transport = _gated_transport(seen)
+    _load_gated(isolated, transport)
+    _load(isolated, _transport(lambda _p, _n: False, None))
+    with contextlib.suppress(Exception):  # only the request log matters here
+        load_census_cooldowns(BASE, transport=transport)
+    assert all(method == "GET" for method, _ in seen)
+    assert not any("test-batch" in path for _, path in seen)
+
+
+def test_census_code_path_has_no_test_batch_call() -> None:
+    import verdict.census_passports
+    import verdict.census_passports_service
+    import verdict.free_tier_admit
+    import verdict.omniroute_health
+
+    for module in (
+        verdict.census_passports,
+        verdict.census_passports_service,
+        verdict.free_tier_admit,
+        verdict.omniroute_health,
+    ):
+        assert "test-batch" not in Path(str(module.__file__)).read_text(encoding="utf-8")
