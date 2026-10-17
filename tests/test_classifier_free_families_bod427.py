@@ -8,7 +8,7 @@ Two guards live here:
   census catalog (10,050 ids, 7,235 known). Each must keep its exact tier.
 * ``test_leftover_free_id_tier`` pins every free-census id that was still
   unknown on main to the tier recorded in
-  ``docs/evidence/bod-427-free-family-capability-evidence.md`` (``None``
+  ``docs/providers/bod-427-free-family-capability-evidence.md`` (``None``
   means deliberately left unknown: aliases, routers and special-purpose
   models).
 
@@ -210,7 +210,15 @@ def test_leftover_free_id_tier(route_id: str, tier: int | None) -> None:
 
 @pytest.mark.parametrize(
     "route_id",
-    ["gpt-4.1-mini", "gpt-4.1-nano", "openai/gpt-5-mini", "meta/llama-4-scout-17b-16e-instruct"],
+    [
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "openai/gpt-5-mini",
+        "meta/llama-4-scout-17b-16e-instruct",
+        "x-ai/grok-2-mini",
+        "xiaomi/mimo-v2.5-flash",
+        "aion-labs/aion-3.5-mini",
+    ],
 )
 def test_cheap_variants_of_new_families_stay_cheap(route_id: str) -> None:
     assert classify_known(route_id) == 3
