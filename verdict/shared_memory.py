@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -394,14 +395,35 @@ def normalize_hit_to_memory_record(hit: SharedMemoryHit) -> MemoryRecord:
     )
 
 
-def redact_secrets(value: str) -> str:
-    """Redact common credentials and URL user-info without echoing a canary."""
-    import re
+# BOD-430: bare provider API keys with no ``key=`` prefix. KEEP IN SYNC with
+# ``BARE_API_TOKEN_RE`` in packages/verdict-memory/src/verdict_memory/contracts.py
+# (BOD-423, PR #906); that package is separate, so the pattern is copied, not imported.
+# - ``sk-<alnum>`` and segmented ``sk-proj-`` / ``sk-ant-api03-`` / ``sk-or-v1-`` /
+#   ``sk-svcacct-`` forms; the segmented branch needs a digit so prose such as
+#   ``sk-learn-preprocessing-pipeline-notes`` is kept;
+# - xAI ``xai-``, Groq ``gsk_``, Hugging Face ``hf_``, GitLab ``glpat-`` and Stripe
+#   ``sk_/rk_`` ``test_``/``live_`` keys;
+# - every branch must start a word (no letter, digit or ``_`` before it), so
+#   kebab-case words like ``task-``, ``risk-``, ``desk-`` and ``disk-`` are untouched.
+_BARE_API_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"sk-(?:(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{16,}|[A-Za-z0-9]{16,})"
+    r"|xai-[A-Za-z0-9]{40,}"
+    r"|gsk_[A-Za-z0-9]{40,}"
+    r"|hf_[A-Za-z0-9]{30,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}"
+    r"|[sr]k_(?:test|live)_[A-Za-z0-9]{16,}"
+    r")"
+)
 
+
+def redact_secrets(value: str) -> str:
+    """Redact common credentials, bare API tokens and URL user-info without echoing a canary."""
     redacted = re.sub(r"(?i)(bearer|basic)\s+[^\s,;]+", r"\1 [REDACTED]", value)
     redacted = re.sub(
         r"(?i)(token|secret|password|api[_-]?key)(\s*[=:]\s*)[^\s,;&]+", r"\1\2[REDACTED]", redacted
     )
+    redacted = _BARE_API_TOKEN_RE.sub("[REDACTED]", redacted)
     redacted = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", redacted)
     return redacted
 
