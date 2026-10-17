@@ -6,7 +6,7 @@
     "digest": "sha256(utf-8 canonical json of digest payload; observed_at/deadline_at excluded)",
     "idempotency_key": "source_idempotency_key when source_event_id set (excludes created_at/content); else content digest",
     "content_fingerprint": "digest payload minus created_at when source_event_id set; used for conflict detection",
-    "float_note": "Pinned fixture values must emit identical digit strings cross-language (1700000000.0 not 1.7e9). Rust parity UNMEASURED until D reports."
+    "float_note": "Pinned fixture values must emit identical digit strings cross-language (1700000000.0 not 1.7e9). Rust parity measured: 129/129 pass with serde_json float_roundtrip plus explicit key sorting (see golden/lifecycle-event-v1/README.md)."
   },
   "event": {
     "schema_version": "lifecycle-event/v1",
