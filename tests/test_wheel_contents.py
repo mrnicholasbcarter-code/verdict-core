@@ -21,6 +21,12 @@ ROOT = Path(__file__).parents[1]
 
 ALLOWED_PACKAGE_SUFFIXES = {".py", ".json", ".typed", ".md"}
 
+# Exact non-suffix package data the runtime reads from the installed package.
+ALLOWED_PACKAGE_FILES = {
+    # Hermes plugin manifest copied by verdict.harness_hermes_memory.install().
+    "verdict/hermes_plugin/verdict_memory/plugin.yaml"
+}
+
 # Each shipped demo module must be a documented entry point or a runtime import of one.
 ALLOWED_DEMO_MODULES = {
     # `verdict quickstart` (README quickstart block).
@@ -65,6 +71,7 @@ def test_wheel_entries_match_the_allowlist(wheel_entries: list[PurePosixPath]) -
         for path in wheel_entries
         if not fnmatch.fnmatch(path.parts[0], "verdict_core-*.dist-info")
         and not (path.parts[0] == "verdict" and path.suffix in ALLOWED_PACKAGE_SUFFIXES)
+        and str(path) not in ALLOWED_PACKAGE_FILES
     ]
     assert not unexpected, f"wheel ships files outside the allowlist: {unexpected}"
 
