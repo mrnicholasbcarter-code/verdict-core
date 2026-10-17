@@ -93,3 +93,21 @@ def test_unknown_unranked_stays_none() -> None:
 
     assert classify_known("kc/reflection/beam-free") is None
     assert _capability_tier({}, "kc/reflection/beam-free") is None
+
+
+@pytest.mark.parametrize("declared_elo", [1500, 1416])  # O3 tier 1 and tier 2
+def test_pattern_tier0_stays_0_under_declared_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declared_elo: int
+) -> None:
+    """Architect ruling: a pattern tier-0 route keeps tier 0 even if Elo declares 1 or 2."""
+    assert classify(FRONTIER) == 0
+    assert declared_tier_from_elo(declared_elo) in (1, 2)
+    monkeypatch.setenv(RANKING_MODE_ENV, "write")
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    from verdict.catalog_cache import default_catalog_cache_path
+
+    path = default_catalog_cache_path().parent / "declared-tiers.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({FRONTIER: declared_elo}))
+    assert FRONTIER not in load_declared_tiers(path)
+    assert _admit_tiers((FRONTIER,)) == {FRONTIER: 0}
