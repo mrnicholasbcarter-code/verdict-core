@@ -193,3 +193,21 @@ def run_context_probes(
             failed_step=None if passed else step,
         )
     return done
+
+
+CENSUS_PROBE_KEY_RELPATH = ".config/verdict/omniroute-api-key"
+
+
+def census_probe_key(home: Path | None = None) -> str | None:
+    """The single key resolver for census reads and probes (controller 10:05Z).
+
+    Only the census probe key file is read, never the environment or any other
+    credential source, so an admin key exported in the shell cannot reach the
+    census. ``None`` when the file is missing or empty: census then fails closed.
+    """
+    path = (home or Path.home()) / CENSUS_PROBE_KEY_RELPATH
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return key or None

@@ -107,3 +107,24 @@ def test_autohide_false_asserted() -> None:
     assert payload["autoHideFailed"] is False
     assert payload["connectionId"] == "c1"
     assert payload["models"] == ["nvidia/z-ai/glm-5.3"]
+
+
+def test_census_has_one_key_resolver_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import inspect
+
+    from verdict import census_passports
+    from verdict.omniroute_pipeline.census_hook import census_probe_key
+
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "env-admin-must-not-be-used")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "env-admin-must-not-be-used")
+    assert census_probe_key(tmp_path) is None
+    keyfile = tmp_path / ".config/verdict/omniroute-api-key"
+    keyfile.parent.mkdir(parents=True)
+    keyfile.write_text("probe-key\n")
+    assert census_probe_key(tmp_path) == "probe-key"
+    src = inspect.getsource(census_passports.cmd_census)
+    assert src.count("census_probe_key()") == 1
+    assert 'omniroute-api-key")' not in src and ".read_text(" not in src
+    assert "endpoint[0]" in src  # the endpoint helper's env key is discarded
+    hook = inspect.getsource(census_probe_key)
+    assert "os.environ" not in hook and "getenv" not in hook

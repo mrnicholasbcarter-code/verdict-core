@@ -810,6 +810,9 @@ def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, ca
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    keyfile = tmp_path / ".config/verdict/omniroute-api-key"
+    keyfile.parent.mkdir(parents=True, exist_ok=True)
+    keyfile.write_text("k")
     monkeypatch.setattr(free_tier_admit, "load_omniroute_admit_snapshot", lambda *a, **k: object())
     monkeypatch.setattr(prove_at_rest, "live_transport", lambda *a, **k: object())
     monkeypatch.setattr(
@@ -837,6 +840,9 @@ def test_census_command_survives_cooldown_endpoint_failures(tmp_path, monkeypatc
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    keyfile = tmp_path / ".config/verdict/omniroute-api-key"
+    keyfile.parent.mkdir(parents=True, exist_ok=True)
+    keyfile.write_text("k")
     monkeypatch.setattr(free_tier_admit, "load_omniroute_admit_snapshot", lambda *a, **k: object())
     monkeypatch.setattr(prove_at_rest, "live_transport", lambda *a, **k: object())
     seen = []

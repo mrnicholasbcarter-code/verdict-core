@@ -514,10 +514,13 @@ def cmd_census(
         endpoint = omniroute_endpoint_from_env()
         if endpoint is None:
             raise ValueError("OmniRoute endpoint is not configured")
-        base_url, key = endpoint
-        key_path = Path.home() / ".config/verdict/omniroute-api-key"
-        if key_path.is_file():
-            key = key_path.read_text().strip()
+        base_url = endpoint[0]
+        from verdict.omniroute_pipeline.census_hook import census_probe_key
+
+        # One resolver path: the census probe key file only (never an env key).
+        key = census_probe_key()
+        if key is None:
+            raise ValueError("census probe key file ~/.config/verdict/omniroute-api-key is missing")
         snapshot = load_omniroute_admit_snapshot(base_url, api_key=key, catalog_scope="gated")
         role_routes = _worker_capable_routes(base_url, key)
         # A cooldown-endpoint outage must not kill the timer's census run; the
