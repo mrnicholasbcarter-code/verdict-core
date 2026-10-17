@@ -596,3 +596,138 @@ def test_service_writes_sink_from_env_roots(
     lines = _sink_lines(sink)
     assert len(lines) == 1
     assert lines[0]["outcome_shadow"] == (out.candidate_pool or {})["outcome_shadow"]
+
+
+# ---------------------------------------------------------------------------
+# BOD-426 review fix: every sink filesystem/serialization failure stays inside
+# the shadow module's error boundary (D34 fail-safe). The receipt keeps its
+# in-memory shadow block and a warning is logged.
+# ---------------------------------------------------------------------------
+
+
+def _sink_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "verdict.outcome_shadow"
+        and rec.levelno >= logging.WARNING
+        and "sink" in rec.getMessage()
+    ]
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses directory permissions"
+)
+def test_service_chmod_000_sink_ancestor_keeps_shadow_block_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    root = _unverified_root(tmp_path)
+    locked = tmp_path / "locked"
+    (locked / "runs").mkdir(parents=True)
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=[root],
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+    svc.outcome_shadow_sink = locked / "runs" / SINK_FILENAME
+    profile = _profile_for_goal("implement a small parser with tests")
+    locked.chmod(0o000)
+    try:
+        with caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+            out, _pool = svc._apply_candidate_pool(
+                _admit_receipt(routes), profile=profile, metadata=store, identity_map=None
+            )
+    finally:
+        locked.chmod(0o700)
+    pool = out.candidate_pool or {}
+    assert "outcome_shadow" in pool
+    assert pool["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert isinstance(pool["outcome_shadow"]["would_rank"], list)
+    assert _sink_warnings(caplog)
+    assert not (locked / "runs" / SINK_FILENAME).exists()
+
+
+class _Unprintable:
+    def __str__(self) -> str:
+        raise RuntimeError("cannot render")
+
+
+def test_append_serialization_failure_is_isolated(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sink = tmp_path / SINK_FILENAME
+    with caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+        assert append_outcome_shadow_record(sink, {"bad": _Unprintable()}) is False
+    assert not sink.exists()
+    assert _sink_warnings(caplog)
+
+
+def test_attach_serialization_failure_keeps_shadow_block_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = _unverified_root(tmp_path)
+    sink = root.parent / SINK_FILENAME
+    with (
+        patch("verdict.outcome_shadow.json.dumps", side_effect=RuntimeError("encoder broke")),
+        caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"),
+    ):
+        out = attach_outcome_shadow(
+            {"shortlist": _SINK_SHORTLIST},
+            roots=[root],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            as_of=NOW,
+            sink=sink,
+        )
+    assert out["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert isinstance(out["outcome_shadow"]["would_rank"], list)
+    assert not sink.exists()
+    assert _sink_warnings(caplog)
+
+
+@pytest.mark.parametrize("exc_type", [OSError, PermissionError])
+@pytest.mark.parametrize("target", ["os.open", "is_dir"])
+def test_attach_sink_filesystem_failure_keeps_shadow_block_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, exc_type: type[OSError], target: str
+) -> None:
+    root = _unverified_root(tmp_path)
+    sink = root.parent / SINK_FILENAME
+    real_is_dir = Path.is_dir
+
+    def failing_is_dir(self: Path, *args: Any, **kwargs: Any) -> bool:
+        if self == sink.parent:
+            raise exc_type(13, "Permission denied", str(self))
+        return real_is_dir(self, *args, **kwargs)
+
+    patcher: Any
+    if target == "os.open":
+        patcher = patch("verdict.outcome_shadow.os.open", side_effect=exc_type(13, "denied"))
+    else:
+        patcher = patch.object(Path, "is_dir", autospec=True, side_effect=failing_is_dir)
+    with patcher, caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+        out = attach_outcome_shadow(
+            {"shortlist": _SINK_SHORTLIST},
+            roots=[root],
+            task_family="implement",
+            fingerprint_digest="d" * 8,
+            as_of=NOW,
+            sink=sink,
+        )
+    assert out["outcome_shadow"]["actual_rank"] == [FREE_TOOLS, PAID_TOOLS]
+    assert isinstance(out["outcome_shadow"]["would_rank"], list)
+    assert not sink.exists()
+    assert _sink_warnings(caplog)
