@@ -194,8 +194,27 @@ def run_census(
     max_per_provider: int | None = DEFAULT_MAX_PER_PROVIDER,
     cooling_providers: frozenset[str] = frozenset(),
     role_routes: frozenset[str] | None = None,
+    tool_probe_interval_s: int | None = None,
+    context_probe_max_per_tick: int = 1,
+    context_prober: Any = None,
+    context_store_path: Path | None = None,
+    free_flags: Any = None,
+    blocklist_path: Path | None = None,
 ) -> dict[str, Any]:
     """Refresh free, connected routes, preferring recent successful traffic.
+
+    Pipeline additions, dark unless ``VERDICT_PIPELINE_PROBES`` is set: proven
+    routes are re-probed (chat+tool) at least every ``tool_probe_interval_s``,
+    ToS-avoid/blocklisted prefixes are never probed, and at most
+    ``context_probe_max_per_tick`` one-step needle probes run on proven routes,
+    all inside the per-provider budget. ``VERDICT_PIPELINE_STATE`` adds the
+    per-model state summary and FAIL_FAKE provider blocklist to the report.
+
+    ``free_flags`` are the tick's fresh-or-48h provider free flags; rule 0.2
+    is computed once from them plus the catalog prices BEFORE any live probe,
+    and every pipeline probe (chat/tool and needle) is gated on positive FREE
+    evidence - a free-summary admit alone never authorizes a probe, and a
+    blank price without a provider flag fails closed as UNVERIFIED_FREE.
 
     ``role_routes`` are routes whose catalog capabilities meet the worker and
     reviewer requirements; they are kept fresh before other proven routes.
@@ -212,6 +231,35 @@ def run_census(
 
     if any(b is not None and b < 1 for b in (max_candidates, max_tokens, max_per_provider)):
         raise ValueError("census budgets must be positive")
+    if context_probe_max_per_tick < 0 or (
+        tool_probe_interval_s is not None and tool_probe_interval_s < 1
+    ):
+        raise ValueError("census pipeline budgets must be positive")
+    from verdict.omniroute_pipeline.probes import probe_allowed, probes_enabled
+    from verdict.omniroute_pipeline.state import (
+        ModelState,
+        ProviderBlocklist,
+        state_enabled,
+        transition,
+    )
+
+    pipeline_probes = probes_enabled()
+    pipeline_state = state_enabled()
+    from verdict.omniroute_pipeline.census_hook import classify_snapshot_free
+    from verdict.omniroute_pipeline.free_rule import FreeStatus
+
+    # Rule 0.2 once per tick, before any live probing (finding B1).
+    free_verdicts = classify_snapshot_free(snapshot, free_flags)
+    # Catalog context limit per route, so needles never exceed it (B2).
+    catalog_max = {
+        identity.identity_id: identity.max_context_tokens
+        for identity in getattr(snapshot, "catalog", ())
+    }
+
+    def free_evidence(route: str) -> str:
+        # Positive FREE evidence only; unknown routes fail closed.
+        return free_verdicts.get(route, FreeStatus.UNVERIFIED_FREE).value
+
     receipt = admit_free_tier_active(snapshot)
     healthy = {
         row.key.removeprefix("route:")
@@ -243,6 +291,7 @@ def run_census(
         if r not in non_chat
         and canonical_route(r).split("/", 1)[0] not in cooling
         and cache.lookup(r, now).state != STATE_NEGATIVE
+        and (not pipeline_probes or probe_allowed(r, free_status=free_evidence(r)))
     ]
 
     roles = role_routes or frozenset()
@@ -275,7 +324,10 @@ def run_census(
     passports = load_healthy_passports(passport_store_path)
     # Renew any passport that would lapse before the tick after next can
     # prove it again, so a slow or late tick never leaves a gap.
-    renew_before = now + timedelta(seconds=2 * CENSUS_INTERVAL_SECONDS)
+    renew_window = 2 * CENSUS_INTERVAL_SECONDS
+    if pipeline_probes and tool_probe_interval_s is not None:
+        renew_window = max(renew_window, tool_probe_interval_s)
+    renew_before = now + timedelta(seconds=renew_window)
     pending = [
         model
         for model in candidates
@@ -320,15 +372,72 @@ def run_census(
     chosen = keep[: limit - len(reserved)] + reserved
     chosen += [model for model in explore if model not in chosen][: limit - len(chosen)]
     probed = 0
+    states: dict[str, ModelState] = {}
+    # FAIL_FAKE provider DROPs persist across ticks: load them at tick start
+    # so a provider faked last tick is not re-probed (B3). Only the controller
+    # clears an entry; the census never restores one on its own.
+    if blocklist_path is not None:
+        from verdict.omniroute_pipeline.blocklist_store import load_provider_blocklist
+
+        blocklist = load_provider_blocklist(blocklist_path)
+    else:
+        blocklist = ProviderBlocklist()
+    family_used: dict[str, int] = {}
     for model in chosen:
+        if blocklist.is_blocked(model.split("/", 1)[0]):
+            continue
         outcome = probe_full(
             AdmittedRoute(model, model.split("/", 1)[0], "free", capacity_evidence="free"),
             transport,
             timeout_seconds=15,
         )
         probed += 1
+        family = canonical_route(model).split("/", 1)[0]
+        family_used[family] = family_used.get(family, 0) + 1
         if outcome.result is not None:
             cache.record(model, outcome.result, now)
+        if pipeline_state:
+            states[model] = _pipeline_state(model, outcome, blocklist, transition, ModelState)
+    context_probed = 0
+    context_reserved = 0
+    if pipeline_probes and context_prober is not None and context_probe_max_per_tick > 0:
+        from verdict.omniroute_pipeline.census_hook import run_context_probes
+        from verdict.omniroute_pipeline.context_store import default_context_store_path
+
+        # Spec section 2: needles run only on FREE controller candidates - the
+        # first five routes in census order with positive FREE evidence.
+        needle_pool = [
+            route for route in candidates if free_evidence(route) == FreeStatus.FREE.value
+        ][:5]
+        # The context pass shares the tick's budgets: what the passive
+        # renewal and the full probes left of max_candidates/max_tokens is all
+        # the needle work may spend, and its reservations are reported (B2).
+        remaining_candidates = (
+            None
+            if max_candidates is None
+            else max(0, max_candidates - refreshed["updated"] - probed)
+        )
+        remaining_tokens = None if max_tokens is None else max(0, max_tokens - probed * 256)
+        context_probed, context_reserved = run_context_probes(
+            needle_pool,
+            proven=proven,
+            family_used=family_used,
+            max_per_provider=max_per_provider,
+            max_per_tick=context_probe_max_per_tick,
+            prober=context_prober,
+            store_path=context_store_path or default_context_store_path(),
+            now=now,
+            states=states,
+            blocklist=blocklist,
+            free_status={route: status.value for route, status in free_verdicts.items()},
+            catalog_max=catalog_max,
+            max_candidates=remaining_candidates,
+            max_tokens=remaining_tokens,
+        )
+    if blocklist_path is not None and blocklist.entries:
+        from verdict.omniroute_pipeline.blocklist_store import save_provider_blocklist
+
+        save_provider_blocklist(blocklist_path, blocklist)
     cache.save()
     after = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
     after["updated"] += refreshed["updated"] + len(passive)
@@ -340,8 +449,39 @@ def run_census(
         "non_chat_skipped": len(non_chat),
         "candidates": len(candidates),
         "probed": probed,
-        "reserved_tokens": probed * 256,
+        "reserved_tokens": probed * 256 + context_reserved,
+        **({"context_probed": context_probed} if pipeline_probes else {}),
+        **(
+            {
+                "pipeline_states": {m: st.value for m, st in sorted(states.items())},
+                "blocklisted_providers": dict(sorted(blocklist.entries.items())),
+            }
+            if pipeline_state
+            else {}
+        ),
     }
+
+
+def _pipeline_state(
+    model: str, outcome: Any, blocklist: Any, transition: Any, model_state: Any
+) -> Any:
+    """Map one census probe onto the pipeline state machine (FAIL_FAKE blocklists)."""
+    from verdict.omniroute_pipeline.probes import ProbeOutcome
+
+    status = getattr(outcome, "http_status", None)
+    category = getattr(outcome, "category", None) or getattr(outcome, "nowrite", None)
+    result = getattr(outcome, "result", None)
+    if status == 402 and "fake" in str(getattr(outcome, "detail", "") or category or ""):
+        probe = ProbeOutcome.FAIL_FAKE
+    elif status in (401, 402, 404, 410, 429):
+        probe = None
+    elif result is not None and getattr(result, "tool_ok", False):
+        return model_state.TOOL_OK
+    else:
+        probe = ProbeOutcome.FAIL if result is not None else None
+    return transition(
+        model_state.CATALOGED, http_status=status, probe=probe, route=model, blocklist=blocklist
+    )
 
 
 def load_census_cooldowns(
@@ -411,6 +551,8 @@ def cmd_census(
     output_json: bool = False,
     install: bool = False,
     dry_run: bool = False,
+    tool_probe_interval_s: int | None = None,
+    context_probe_max_per_tick: int = 1,
 ) -> None:
     import json
 
@@ -428,10 +570,13 @@ def cmd_census(
         endpoint = omniroute_endpoint_from_env()
         if endpoint is None:
             raise ValueError("OmniRoute endpoint is not configured")
-        base_url, key = endpoint
-        key_path = Path.home() / ".config/verdict/omniroute-api-key"
-        if key_path.is_file():
-            key = key_path.read_text().strip()
+        base_url = endpoint[0]
+        from verdict.omniroute_pipeline.census_hook import census_probe_key
+
+        # One resolver path: the census probe key file only (never an env key).
+        key = census_probe_key()
+        if key is None:
+            raise ValueError("census probe key file ~/.config/verdict/omniroute-api-key is missing")
         snapshot = load_omniroute_admit_snapshot(base_url, api_key=key, catalog_scope="gated")
         role_routes = _worker_capable_routes(base_url, key)
         # A cooldown-endpoint outage must not kill the timer's census run; the
@@ -443,9 +588,33 @@ def cmd_census(
             cooling = load_census_cooldowns(base_url, key)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             cooling = frozenset()
+        from verdict.omniroute_pipeline.blocklist_store import default_blocklist_path
+        from verdict.omniroute_pipeline.census_hook import (
+            free_rule_enabled,
+            guard_transport,
+            load_or_fetch_flags,
+            needle_prober,
+        )
+        from verdict.omniroute_pipeline.probes import BUDGET_FALLBACK_HEADER, probes_enabled
+
+        # Rule 0.2 free evidence is loaded once, BEFORE live probing (B1):
+        # fresh provider flags when the free-rule flag is on, else the 48h
+        # last-good copy. The report below reuses the same flags, so the tick
+        # fetches at most once.
+        flags: Any = None
+        flags_source: str | None = None
+        if free_rule_enabled():
+            flags, flags_source = load_or_fetch_flags(now=datetime.now(timezone.utc))
+
+        # Spec section 2 stage 3: every census probe request (chat, tool and
+        # the needles below) carries the strict budget-fallback header, so a
+        # probe can never silently spend on a paid route. prove-at-rest builds
+        # its own transport without this option and is unchanged.
         report = run_census(
             snapshot,
-            live_transport(base_url, api_key=key),
+            guard_transport(
+                live_transport(base_url, api_key=key, extra_headers=BUDGET_FALLBACK_HEADER)
+            ),
             cache=HealthCache(health_cache_path or default_cache_path()),
             passport_store_path=passport_store_path or default_state_path(),
             now=datetime.now(timezone.utc),
@@ -454,7 +623,20 @@ def cmd_census(
             max_per_provider=max_per_provider,
             cooling_providers=cooling,
             role_routes=role_routes,
+            tool_probe_interval_s=tool_probe_interval_s,
+            context_probe_max_per_tick=context_probe_max_per_tick,
+            context_prober=needle_prober(base_url, key) if probes_enabled() else None,
+            free_flags=flags,
+            blocklist_path=default_blocklist_path(),
         )
+        from verdict.omniroute_pipeline.census_hook import free_rule_tick
+
+        # Dark unless VERDICT_PIPELINE_FREE_RULE is set: public catalogs only.
+        free_rule = free_rule_tick(
+            snapshot, now=datetime.now(timezone.utc), flags=flags, flags_source=flags_source
+        )
+        if free_rule is not None:
+            report["free_rule"] = free_rule
         from verdict.census_passports_service import write_census_last_result
 
         write_census_last_result(report)

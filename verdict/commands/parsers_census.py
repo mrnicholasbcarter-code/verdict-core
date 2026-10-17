@@ -13,6 +13,18 @@ def register(subparsers: Any) -> None:
     parser.add_argument(
         "--max-per-provider", type=int, default=2, help="Probe budget per provider family"
     )
+    parser.add_argument(
+        "--tool-probe-interval-s",
+        type=int,
+        default=None,
+        help="Re-probe proven routes (chat+tool) at least this often; needs VERDICT_PIPELINE_PROBES",
+    )
+    parser.add_argument(
+        "--context-probe-max-per-tick",
+        type=int,
+        default=1,
+        help="Needle context probes per tick; needs VERDICT_PIPELINE_PROBES",
+    )
     parser.add_argument("--passport-store-path", type=Path)
     parser.add_argument("--health-cache-path", type=Path)
     parser.add_argument("--install", action="store_true", help="Install the 4-minute user timer")

@@ -167,6 +167,10 @@ class CatalogIdentity:
     price_known: bool = False
     input_cost: float | None = None
     output_cost: float | None = None
+    # Catalog context limit when the inventory row carries one
+    # (context_window / context_length / context); None means the catalog
+    # did not say. Caps the census needle steps for the route.
+    max_context_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -906,6 +910,8 @@ class FreeTierAdmitReceipt:
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
         by_id = {item.identity_id: item for item in snapshot.catalog}
         admitted_models: list[ModelInfo] = []
+        # R5 (phase g): O3 declared tiers, only in VERDICT_PIPELINE_RANKING_MODE=write.
+        declared = load_declared_tiers()
         for model_id in self.admitted:
             identity = by_id.get(model_id)
             provider = identity.provider if identity is not None else _provider_of(model_id)
@@ -913,7 +919,7 @@ class FreeTierAdmitReceipt:
                 ModelInfo(
                     id=model_id,
                     provider=provider,
-                    capability_tier=classify(model_id),
+                    capability_tier=classify(model_id, overrides=declared),
                     is_available=True,
                     availability_state="eligible",
                     source="free_tier_active_admit",
@@ -944,6 +950,53 @@ class FreeTierAdmitReceipt:
                 )
             )
         return EligibilityResult(admitted=admitted_models, records=records)
+
+
+RANKING_MODE_ENV = "VERDICT_PIPELINE_RANKING_MODE"
+DECLARED_TIERS_FILE = "declared-tiers.json"
+O3_TIER1_MIN_ELO = 1450
+O3_TIER2_MIN_ELO = 1380
+
+
+def declared_tier_from_elo(elo: float) -> int | None:
+    """O3 bands (controller 10:05Z): tier 1 at Elo >= 1450, tier 2 at 1380-1449, else None."""
+    if elo >= O3_TIER1_MIN_ELO:
+        return 1
+    if elo >= O3_TIER2_MIN_ELO:
+        return 2
+    return None
+
+
+def load_declared_tiers(path: Path | None = None) -> dict[str, int]:
+    """Exact full route id -> O3 declared tier (1 or 2), for ``classify`` overrides.
+
+    Empty unless ``VERDICT_PIPELINE_RANKING_MODE=write``. The file (phase d's
+    ranking output) maps route ids to text Elo, so a tier is always derived from
+    the bands and tier 0 is never declared. Ids whose pattern tier is 0 are left
+    out so tier 0 stays pattern-only and the frontier spend guard is unchanged.
+    """
+    if os.getenv(RANKING_MODE_ENV, "").strip().lower() != "write":
+        return {}
+    if path is None:
+        from verdict.catalog_cache import default_catalog_cache_path
+
+        path = default_catalog_cache_path().parent / DECLARED_TIERS_FILE
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    declared: dict[str, int] = {}
+    for route, elo in data.items():
+        if isinstance(elo, bool) or not isinstance(elo, int | float):
+            continue
+        tier = declared_tier_from_elo(float(elo))
+        if tier is not None and classify(str(route)) != 0:
+            declared[str(route)] = tier
+    return declared
 
 
 def _verdict_for_reason(reason: str) -> EligibilityVerdict:
@@ -1097,6 +1150,15 @@ def _catalog_prices(row: Mapping[str, Any]) -> tuple[bool, float | None, float |
     return input_price is not None and output_price is not None, input_price, output_price
 
 
+def _catalog_context_limit(row: Mapping[str, Any]) -> int | None:
+    """Positive context limit from the inventory row; absent means unknown."""
+    for key in ("context_window", "context_length", "context"):
+        value = row.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            return int(value)
+    return None
+
+
 def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
     """Parse OpenAI-compatible ``/v1/models`` or a management catalog envelope."""
     rows: list[Any]
@@ -1144,6 +1206,7 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
                 price_known=price_known,
                 input_cost=input_cost,
                 output_cost=output_cost,
+                max_context_tokens=_catalog_context_limit(row),
             )
         )
     return tuple(out)

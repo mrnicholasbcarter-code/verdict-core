@@ -585,6 +585,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=args.output_json,
             install=args.install,
             dry_run=args.dry_run,
+            tool_probe_interval_s=getattr(args, "tool_probe_interval_s", None),
+            context_probe_max_per_tick=getattr(args, "context_probe_max_per_tick", 1),
         )
     elif args.command == "uninstall":
         legacy.cmd_uninstall(purge_data=getattr(args, "purge_data", False))
