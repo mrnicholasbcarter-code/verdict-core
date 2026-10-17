@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+
 import verdict.omniroute_pipeline as pipeline
 
 PKG = Path(pipeline.__file__).parent
@@ -75,11 +76,12 @@ def test_probe_refuses_non_free_route() -> None:
 
 @pytest.mark.xfail(strict=True, raises=ImportError, reason="phase b/e: ToS-avoid policy")
 def test_tos_avoid_fails_closed() -> None:
-    from verdict.omniroute_pipeline.probes import probe_allowed  # type: ignore[attr-defined]
     from verdict.omniroute_pipeline.switcher import (  # type: ignore[import-not-found]
         Candidate,
         build_pool,
     )
+
+    from verdict.omniroute_pipeline.probes import probe_allowed  # type: ignore[attr-defined]
 
     for route in ("agy/gemini-3.8-flash-high", "kiro/x"):
         assert probe_allowed(route, free_status="free") is False

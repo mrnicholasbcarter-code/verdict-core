@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
 from verdict.omniroute_pipeline.free_rule import (
     FreeStatus,
     ProviderFreeFlags,
@@ -135,9 +136,8 @@ def test_fetch_retries_once_then_skips_provider() -> None:
 def test_census_hook_dark_by_default_and_falls_back_to_last_good(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from verdict.omniroute_pipeline.census_hook import FLAG_ENV, free_rule_tick
-
     from verdict.free_tier_admit import CatalogIdentity, OmniRouteAdmitSnapshot
+    from verdict.omniroute_pipeline.census_hook import FLAG_ENV, free_rule_tick
 
     snap = OmniRouteAdmitSnapshot(
         catalog=(

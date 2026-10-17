@@ -7,6 +7,7 @@ xfail(strict=True) until probes.py/state.py grow the rest.
 from __future__ import annotations
 
 import pytest
+
 from verdict.omniroute_pipeline.probes import ProbeOutcome, is_fake_200, judge_chat
 
 PHASE_B = pytest.mark.xfail(

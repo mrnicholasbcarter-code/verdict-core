@@ -455,6 +455,12 @@ def cmd_census(
             cooling_providers=cooling,
             role_routes=role_routes,
         )
+        from verdict.omniroute_pipeline.census_hook import free_rule_tick
+
+        # Dark unless VERDICT_PIPELINE_FREE_RULE is set: public catalogs only.
+        free_rule = free_rule_tick(snapshot, now=datetime.now(timezone.utc))
+        if free_rule is not None:
+            report["free_rule"] = free_rule
         from verdict.census_passports_service import write_census_last_result
 
         write_census_last_result(report)
