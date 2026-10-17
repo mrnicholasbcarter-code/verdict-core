@@ -467,12 +467,18 @@ class AiMemoryClient:
 
     @staticmethod
     def _body(event: LifecycleEvent) -> str:
+        event_dict = event.to_dict()
+        # ai-memory server secret-scanner matches 'key[...]: <long-hex>' as [REDACTED:env_secret].
+        # Serialize idempotency_key as idempotency_hash in the stored markdown body so the server
+        # does not mangle the json envelope.
+        if "idempotency_key" in event_dict:
+            event_dict["idempotency_hash"] = event_dict.pop("idempotency_key")
         return (
             "# Verdict memory event\n\n"
             + canonicalize(
                 {
                     "schema": "verdict-memory-page/v1",
-                    "event": event.to_dict(),
+                    "event": event_dict,
                     "event_digest": event.digest(),
                     "content_fingerprint": event.content_fingerprint(),
                 }
@@ -513,7 +519,10 @@ class AiMemoryClient:
             envelope = json.loads(body[len(prefix) :])
             if not isinstance(envelope, dict) or envelope.get("schema") != "verdict-memory-page/v1":
                 raise ValueError("envelope schema")
-            event = LifecycleEvent.from_dict(envelope["event"])
+            ev_data = envelope["event"]
+            if isinstance(ev_data, dict) and "idempotency_hash" in ev_data and "idempotency_key" not in ev_data:
+                ev_data["idempotency_key"] = ev_data.pop("idempotency_hash")
+            event = LifecycleEvent.from_dict(ev_data)
             raw = event.to_dict()
             raw["idempotency_key"] = ""
             computed = LifecycleEvent.from_dict(raw)
