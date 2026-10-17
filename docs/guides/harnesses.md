@@ -387,7 +387,69 @@ Edit `VERDICT_CHECKOUT` in the service if your checkout is not at
 unchanged, and keeps only the newest 5 `models.json.verdict-sync-*.bak` backups.
 Check the last run with `journalctl --user -u verdict-prime-sync`.
 
+#### Pinned combos
 
+`sync-models` keeps one pinned OmniRoute combo. Rows whose `owned_by` is
+`combo` are excluded, except ids in the private allowlist `_PINNED_COMBOS`
+(`prime-free-chain` only). That id is written into
+`providers.omniroute.models` in `~/.prime/agent/models.json` and is still
+there after the next `verdict harness prime sync-models` run, including a
+`verdict-prime-sync.timer` run. Any other combo id stays excluded. A newly
+added `prime-free-chain` entry takes `contextWindow` from the catalog row
+(`max_input_tokens` when set, otherwise `context_length`; 1000000 for this
+combo). An id that is already in the file keeps its existing settings.
+
+#### Working directory
+
+The timer starts `verdict-prime-sync.service`, which runs
+`python -m verdict.cli`. That puts the service `WorkingDirectory` first on
+`sys.path`, so a `verdict` package in that directory shadows the
+interpreter's install. Set `WorkingDirectory` to the main checkout: the tree
+that interpreter imports from a directory with no `verdict` package of its
+own.
+
+`deploy/systemd/verdict-prime-sync.service` sets
+`Environment=VERDICT_CHECKOUT=%h/dev/verdict-core` and leaves
+`WorkingDirectory` unset. On the installed user unit, set `WorkingDirectory`
+to that same checkout.
+
+`verdict doctor` checks this for a loaded `verdict-prime-sync.service`. The
+row label is `Prime-sync code path`, under the Installed services header.
+`verdict doctor --json` includes the same row in `sections` (`label`,
+`state`, `detail`). Only a unit whose `LoadState` is `loaded` produces a
+row. The check tracks `verdict-prime-sync.service` only.
+
+When the package imported from `WorkingDirectory` matches the package
+imported from a neutral directory, `state` is `ok`. The detail below is the
+wording; `/home/USER` stands in for the home directory, and the check prints
+the unit's real `WorkingDirectory` and package directory:
+
+```
+verdict-prime-sync.service: cwd /home/USER/dev/verdict-core, package /home/USER/dev/verdict-core/verdict
+```
+
+Text mode prints the label `Prime-sync code path` with `OK` and that detail.
+
+When the directories differ, `state` is `failed`, the detail is an issue,
+and `verdict doctor` exits 1 in text mode and with `--json`:
+
+```
+verdict-prime-sync.service: cwd /home/USER/dev/stale-checkout imports package /home/USER/dev/stale-checkout/verdict, not the configured checkout /home/USER/dev/verdict-core/verdict
+```
+
+Text mode prints `Prime-sync code path` with `FAILED`, that detail, and
+`Repair: verdict setup --recommended`. Both package paths are the directory
+of the imported `verdict` package. The words `configured checkout` are the
+message's name for the package imported from a neutral directory.
+
+A missing `WorkingDirectory` or ExecStart interpreter fails with:
+
+```
+verdict-prime-sync.service: missing WorkingDirectory or ExecStart interpreter
+```
+
+If the interpreter cannot import `verdict`, the detail is
+`verdict-prime-sync.service: cwd <WorkingDirectory>; could not resolve the verdict package the interpreter imports (configured=<path or None>, imported=<path or None>)`.
 
 ### Health-cache prober
 
