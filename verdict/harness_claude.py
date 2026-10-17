@@ -25,9 +25,11 @@ values; status/certify only report whether the named env var is set.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -485,10 +487,100 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
     tmp.replace(path)
 
 
+# --- Hook entry point ---------------------------------------------------------
+
+# Single switch point for the installed hook command (controller 2026-10-16 23:10Z):
+# the E0 module entry point ``python -m verdict.memory_harness.claude <Event>``.
+HOOK_COMMAND_TEMPLATE = "python -m verdict.memory_harness.claude {event}"
+OUTBOX_DIR_ENV = "VERDICT_CLAUDE_OUTBOX_DIR"
+CLAUDE_VERSION_ENV = "VERDICT_CLAUDE_VERSION"
+OUTBOX_FILENAME = "claude-lifecycle.jsonl"
+
+# Exit-code contract with Claude Code hooks (docs.claude.com hooks reference):
+#   0  success; stdout is empty, so nothing is injected into the context.
+#   2  BLOCKING error: on PreToolUse it blocks the tool call, on UserPromptSubmit
+#      it erases the prompt, on Stop/SubagentStop it prevents stopping. This
+#      capture hook must never block the user's turn, so it never returns 2.
+#   1  (any other nonzero) non-blocking error: Claude Code shows stderr and
+#      continues. Used for malformed/unknown input, argv/payload mismatch and an
+#      unwritable outbox, so failures are visible instead of masked by exit 0.
+# The Verdict launch gate is a separate hook (see _ensure_claude_gate) and keeps
+# its own fail-closed semantics; this capture hook does not touch it.
+HOOK_EXIT_OK = 0
+HOOK_EXIT_ERROR = 1
+
+
+def default_outbox_dir() -> Path:
+    configured = os.environ.get(OUTBOX_DIR_ENV)
+    if configured:
+        return Path(configured)
+    return Path.home() / ".verdict" / "outbox" / "claude"
+
+
+def _hook_error(message: str) -> int:
+    print(f"verdict claude hook: {message}", file=sys.stderr)
+    return HOOK_EXIT_ERROR
+
+
+def run_hook(
+    event: str,
+    stdin_text: str,
+    *,
+    outbox_dir: Path | None = None,
+    claude_version: str | None = None,
+) -> int:
+    """Translate one hook payload and append it to the local outbox.
+
+    Returns HOOK_EXIT_OK on success or replay, HOOK_EXIT_ERROR (non-blocking,
+    reason on stderr) otherwise. Stdout stays empty. Existing outbox records are
+    never rewritten: the outbox is append-only, and an unwritable outbox leaves
+    it untouched (degraded: the record is reported, not captured).
+    """
+    version = claude_version or os.environ.get(CLAUDE_VERSION_ENV) or "unknown"
+    try:
+        record = translate_hook_stdin(stdin_text, claude_version=version)
+    except HarnessClaudeError as exc:
+        return _hook_error(str(exc))
+    payload_event = record["provenance"]["hook_event_name"]
+    if payload_event != event:
+        return _hook_error(f"hook event mismatch: argv {event!r} vs payload {payload_event!r}")
+    target_dir = outbox_dir if outbox_dir is not None else default_outbox_dir()
+    outbox = target_dir / OUTBOX_FILENAME
+    event_id = record["identity"]["source_event_id"]
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if outbox.exists():
+            for line in outbox.read_text("utf-8").splitlines():
+                try:
+                    if json.loads(line)["identity"]["source_event_id"] == event_id:
+                        return HOOK_EXIT_OK
+                except (ValueError, KeyError, TypeError):
+                    continue
+        with outbox.open("a", encoding="utf-8") as handle:
+            handle.write(_canonical_json(record) + "\n")
+    except OSError as exc:
+        return _hook_error(f"outbox unwritable ({outbox}): {exc.strerror or exc}")
+    return HOOK_EXIT_OK
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point used by ``python -m verdict.memory_harness.claude <Event>``."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        return _hook_error("usage: python -m verdict.memory_harness.claude <Event>")
+    return run_hook(args[0], sys.stdin.read())
+
+
 __all__ = [
     "BACKUP_NAME",
+    "CLAUDE_HOOK_EVENT_KINDS",
     "DEFAULT_BASE_URL",
     "DEFAULT_TOKEN_ENV",
+    "HOOK_COMMAND_TEMPLATE",
+    "HOOK_EXIT_ERROR",
+    "HOOK_EXIT_OK",
+    "OUTBOX_DIR_ENV",
+    "OUTBOX_FILENAME",
     "CertifyReport",
     "ClaudeHarnessPaths",
     "DiscoverReport",
@@ -503,6 +595,107 @@ __all__ = [
     "format_certify",
     "format_discover",
     "format_status",
+    "main",
     "resolve_paths",
+    "run_hook",
     "status",
+    "translate_hook_payload",
+    "translate_hook_stdin",
 ]
+
+
+# --- Hook stdin -> lifecycle-event/v1 translation (pure, stdlib only) -------
+
+LIFECYCLE_EVENT_SCHEMA = "lifecycle-event/v1"
+LIFECYCLE_PROTOCOL_VERSION = "1"
+CLAUDE_HOOK_EVENT_KINDS: dict[str, str] = {
+    "SessionStart": "session_start",
+    "UserPromptSubmit": "before_first_model_turn",
+    "PreToolUse": "before_tool",
+    "PostToolUse": "after_tool",
+    "SubagentStop": "subagent_end",
+    "PreCompact": "before_compact",
+    "Stop": "before_yield",
+    "SessionEnd": "session_end",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def translate_hook_payload(payload: Mapping[str, Any], *, claude_version: str) -> dict[str, Any]:
+    """Translate one Claude Code hook stdin payload into a lifecycle-event/v1 record.
+
+    Pure: reads nothing but ``payload``. Prompt text comes from the payload's
+    ``prompt`` field, never from global temp files. Scope is the cwd basename.
+    """
+    if not isinstance(payload, Mapping):
+        raise HarnessClaudeError("hook payload must be a JSON object")
+    event_name = payload.get("hook_event_name")
+    session_id = payload.get("session_id")
+    cwd = payload.get("cwd")
+    for name, value in (("hook_event_name", event_name), ("session_id", session_id), ("cwd", cwd)):
+        if not isinstance(value, str) or not value:
+            raise HarnessClaudeError(f"hook payload missing {name}")
+    assert isinstance(event_name, str) and isinstance(session_id, str) and isinstance(cwd, str)
+    kind = CLAUDE_HOOK_EVENT_KINDS.get(event_name)
+    if kind is None:
+        raise HarnessClaudeError(f"unsupported Claude hook event: {event_name}")
+    project = Path(cwd).name
+    if not project:
+        raise HarnessClaudeError("hook payload cwd has no project name")
+
+    prompt = payload.get("prompt")
+    if event_name == "UserPromptSubmit":
+        if not isinstance(prompt, str) or not prompt:
+            raise HarnessClaudeError("UserPromptSubmit payload missing prompt")
+        content = prompt
+    else:
+        detail = payload.get("source") or payload.get("reason") or ""
+        content = f"claude {event_name}" + (f" ({detail})" if detail else "")
+
+    try:
+        source_event_id = hashlib.sha256(_canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise HarnessClaudeError("hook payload is not canonical JSON") from exc
+
+    return {
+        "schema_version": LIFECYCLE_EVENT_SCHEMA,
+        "protocol_version": LIFECYCLE_PROTOCOL_VERSION,
+        "kind": kind,
+        "content": content,
+        "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "identity": {
+            "source_harness": "claude",
+            "project": project,
+            "session_id": session_id,
+            "parent_session_id": None,
+            "attempt_id": None,
+            "source_event_id": source_event_id,
+            "tenant": "default",
+            "workspace": "default",
+            "source_agent": "claude-code",
+        },
+        "scope": project,
+        "classification": "source",
+        "provenance": {
+            "harness": "claude",
+            "harness_version": claude_version,
+            "hook_event_name": event_name,
+            "cwd": cwd,
+        },
+    }
+
+
+def translate_hook_stdin(text: str, *, claude_version: str) -> dict[str, Any]:
+    """Parse hook stdin JSON text and translate it (see translate_hook_payload)."""
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise HarnessClaudeError("hook stdin is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise HarnessClaudeError("hook payload must be a JSON object")
+    return translate_hook_payload(payload, claude_version=claude_version)

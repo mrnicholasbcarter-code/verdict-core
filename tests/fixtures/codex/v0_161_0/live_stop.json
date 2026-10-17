@@ -1,0 +1,14 @@
+{
+  "_live": true,
+  "_observed": "codex-cli 0.161.0 via OmniRoute agy/gemini-3.1-flash-lite, 2026-10-16T23:25Z, isolated HOME+CODEX_HOME",
+  "_redacted": "/home/<user> -> /home/USER",
+  "session_id": "01a14708-18b8-7770-91e3-f3761ea1bed9",
+  "turn_id": "01a14708-1924-7bc3-89a4-ae1dc013385b",
+  "transcript_path": "/home/USER/worktrees/bod80-lane-b-codex-probe/codex-home-omniroute/sessions/2026/10/16/rollout-2026-10-16T23-24-35-01a14708-18b8-7770-91e3-f3761ea1bed9.jsonl",
+  "cwd": "/home/USER/worktrees/bod80-lane-b-codex-probe/smoke-20261016T230458Z",
+  "hook_event_name": "Stop",
+  "model": "agy/gemini-3.1-flash-lite",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false,
+  "last_assistant_message": "I'm about to run the shell command to echo the smoke test string.I'm about to run the shell command `echo lane-b-smoke`.I'm about to run the shell command `echo lane-b-smoke` using the shell tool.I'm about to run the shell command `echo lane-b-smoke`.I'm about to run the shell command `echo lane-b-smoke`.DONE"
+}
