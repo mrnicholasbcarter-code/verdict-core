@@ -66,7 +66,11 @@ def context_due(row: dict[str, object] | None, now: datetime) -> bool:
         return True
     try:
         at = datetime.fromisoformat(str(row["measured_at"]))
-    except ValueError:
+    except (TypeError, ValueError):
+        return True
+    # Untrusted cache: an offset-naive stamp is invalid evidence, so the
+    # measurement is treated as missing rather than crashing the census.
+    if at.tzinfo is None:
         return True
     return now - at >= REPROBE_AFTER or (
         row.get("failed_step") is None and row.get("source") == "census needle"

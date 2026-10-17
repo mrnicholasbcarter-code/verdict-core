@@ -191,6 +191,10 @@ def load_free_flags(
         raw = data["entries"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    # A cached datetime is untrusted: malformed or offset-naive stamps are
+    # invalid evidence, never a crash and never a stale flag served as fresh.
+    if fetched_at.tzinfo is None:
+        return None
     if not isinstance(raw, dict) or now - fetched_at > max_age or fetched_at > now:
         return None
     entries: dict[str, FlagEntry] = {
