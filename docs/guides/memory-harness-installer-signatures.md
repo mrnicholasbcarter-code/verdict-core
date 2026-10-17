@@ -16,9 +16,11 @@ verdict.memory_harness.claude.uninstall_claude_hooks(settings_file: 'Path') -> '
 ```
 
 `install_claude_hooks` writes one stdin-driven Claude Code `settings.json` hook per
-lifecycle event (`verdict.harness_claude.HOOK_COMMAND_TEMPLATE`, provisional) and
-migrates legacy `/tmp/claude_*` Verdict hooks. `uninstall_claude_hooks` removes
-only Verdict-managed entries.
+lifecycle event (`verdict.harness_claude.hook_command`: the shell-quoted absolute
+interpreter that ran the install, then `-m verdict.memory_harness.claude <Event>`, so
+pipx/uv installs work) and migrates legacy `/tmp/claude_*` and bare-`python` Verdict
+hooks. `uninstall_claude_hooks` removes only Verdict-managed entries, including
+bare-`python` entries from earlier installs.
 `install_claude_instructions` appends the bridge block to a project
 `CLAUDE.md` when the marker `Verdict Unified Memory Bridge` is absent.
 

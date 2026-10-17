@@ -1,7 +1,8 @@
 """Claude Code memory-bridge installer.
 
 Installs one stdin-driven hook per Claude lifecycle event. Each hook command is
-``HOOK_COMMAND_TEMPLATE`` from :mod:`verdict.harness_claude`; Claude Code pipes
+:func:`verdict.harness_claude.hook_command` (the absolute, shell-quoted interpreter
+that ran the install, ``-m verdict.memory_harness.claude <Event>``); Claude Code pipes
 the hook JSON (session_id, cwd, prompt, ...) to the command on stdin, so no
 global temp prompt files are read. Legacy ``/tmp/claude_*`` Verdict hooks are
 migrated away on install. ``shared_db`` is accepted and unused.
@@ -10,21 +11,36 @@ migrated away on install. ``shared_db`` is accepted and unused.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
-from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_COMMAND_TEMPLATE, main
-
-_HOOK_COMMAND_PREFIX = HOOK_COMMAND_TEMPLATE.split("{event}", 1)[0]
-
+from verdict.harness_claude import (
+    CLAUDE_HOOK_EVENT_KINDS,
+    HOOK_MODULE,
+    LEGACY_HOOK_COMMAND_PREFIX,
+    hook_command,
+    main,
+)
 
 # Provisional entry point shipped before the controller's 23:10Z decision;
 # migrated away on install/uninstall like the legacy /tmp hooks.
 _PROVISIONAL_COMMAND_PREFIX = "python -m verdict.harness_claude hook "
 
 
+def _is_module_entry_point(command: str) -> bool:
+    """True for ``<any interpreter> -m verdict.memory_harness.claude <Event>``."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    return len(tokens) == 4 and tokens[1:3] == ["-m", HOOK_MODULE]
+
+
 def _is_verdict_command(command: str) -> bool:
-    if command.startswith((_HOOK_COMMAND_PREFIX, _PROVISIONAL_COMMAND_PREFIX)):
+    if command.startswith((LEGACY_HOOK_COMMAND_PREFIX, _PROVISIONAL_COMMAND_PREFIX)):
+        return True
+    if _is_module_entry_point(command):
         return True
     return "verdict hook" in command and "/tmp/claude_" in command
 
@@ -85,10 +101,7 @@ def install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
     if not isinstance(hooks, dict):
         hooks = settings["hooks"] = {}
     for event in CLAUDE_HOOK_EVENT_KINDS:
-        entry = {
-            "matcher": "",
-            "hooks": [{"type": "command", "command": HOOK_COMMAND_TEMPLATE.format(event=event)}],
-        }
+        entry = {"matcher": "", "hooks": [{"type": "command", "command": hook_command(event)}]}
         existing = hooks.get(event)
         if isinstance(existing, list):
             existing.append(entry)

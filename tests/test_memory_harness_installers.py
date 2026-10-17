@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from verdict.harness_claude import HOOK_COMMAND_TEMPLATE
+from verdict.harness_claude import hook_command as claude_hook_command
 from verdict.memory_bridge import configure_memory_bridge, uninstall_memory_bridge
 from verdict.memory_harness.claude import install_claude_hooks
 from verdict.memory_harness.codex import (
@@ -50,7 +50,7 @@ CLAUDE_EVENTS = (
 
 
 def _claude_cmd(event: str) -> str:
-    return HOOK_COMMAND_TEMPLATE.format(event=event)
+    return claude_hook_command(event)
 
 
 LEGACY_CODEX_POST = (
