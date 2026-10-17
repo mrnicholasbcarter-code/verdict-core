@@ -1,0 +1,18 @@
+{
+  "_live": true,
+  "_observed": "codex-cli 0.161.0 via OmniRoute agy/gemini-3.1-flash-lite, 2026-10-16T23:28Z, isolated HOME+CODEX_HOME",
+  "_redacted": "/home/<user> -> /home/USER",
+  "session_id": "01a1470b-cbcc-7c21-bd60-4e3d64957b05",
+  "turn_id": "01a1470b-cc3c-7210-be87-b21b04751174",
+  "transcript_path": "/home/USER/worktrees/bod80-lane-b-codex-probe/codex-home-omniroute/sessions/2026/10/16/rollout-2026-10-16T23-28-37-01a1470b-cbcc-7c21-bd60-4e3d64957b05.jsonl",
+  "cwd": "/home/USER/worktrees/bod80-lane-b-codex-probe/smoke-tool-20261016T232837Z",
+  "hook_event_name": "PostToolUse",
+  "model": "agy/gemini-3.1-flash-lite",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat note.txt"
+  },
+  "tool_response": "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
+  "tool_use_id": "call_2971262"
+}

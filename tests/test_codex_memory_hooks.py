@@ -62,7 +62,14 @@ def codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return ch
 
 
-LIVE_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"}
+LIVE_EVENTS = {
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+}
 
 
 def test_fixtures_are_marked_synthetic_or_live() -> None:
