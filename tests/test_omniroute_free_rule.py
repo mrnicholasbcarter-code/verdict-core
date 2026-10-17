@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from verdict.omniroute_pipeline.free_rule import (
     FreeStatus,
     ProviderFreeFlags,
@@ -102,3 +103,77 @@ def test_free_flag_last_good_expires_48h(tmp_path: Path) -> None:
     assert classify_free("kc/reflection/beam-free", None, fresh) is FreeStatus.FREE
     assert load_free_flags(path, now=NOW + timedelta(hours=49)) is None
     assert classify_free("kc/reflection/beam-free", None, None) is FreeStatus.UNVERIFIED_FREE
+
+
+def test_fetch_retries_once_then_skips_provider() -> None:
+    from verdict.omniroute_pipeline.free_rule import (
+        KILO_MODELS_URL,
+        OPENROUTER_MODELS_URL,
+        fetch_provider_free_flags,
+    )
+
+    calls: list[str] = []
+
+    def fake_get(url: str, timeout: float) -> object:
+        calls.append(url)
+        assert timeout == 30.0
+        if url == KILO_MODELS_URL:
+            raise OSError("down")
+        return {"data": [{"id": "a/b", "pricing": {"prompt": "0", "completion": "0"}}]}
+
+    flags = fetch_provider_free_flags(NOW, fake_get)
+    assert calls.count(KILO_MODELS_URL) == 2
+    assert calls.count(OPENROUTER_MODELS_URL) == 1
+    assert flags is not None and set(flags.entries) == {"openrouter/a/b"}
+
+    def all_down(url: str, timeout: float) -> object:
+        raise OSError("down")
+
+    assert fetch_provider_free_flags(NOW, all_down) is None
+
+
+def test_census_hook_dark_by_default_and_falls_back_to_last_good(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.omniroute_pipeline.census_hook import FLAG_ENV, free_rule_tick
+
+    from verdict.free_tier_admit import CatalogIdentity, OmniRouteAdmitSnapshot
+
+    snap = OmniRouteAdmitSnapshot(
+        catalog=(
+            CatalogIdentity("kc/reflection/beam-free", "kc"),
+            CatalogIdentity("nvidia/z-ai/glm-5.3", "nvidia", True, 0.0, 0.0),
+            CatalogIdentity("agentrouter/deepseek-v4-flash", "agentrouter"),
+        ),
+        free_tier=(),
+        connections=(),
+    )
+
+    def never(url: str, timeout: float) -> object:
+        raise AssertionError("no fetch while the flag is off")
+
+    monkeypatch.delenv(FLAG_ENV, raising=False)
+    assert free_rule_tick(snap, now=NOW, cache_dir=tmp_path, get=never) is None
+
+    monkeypatch.setenv(FLAG_ENV, "1")
+
+    def kilo(url: str, timeout: float) -> object:
+        if "kilo" in url:
+            return {"data": [{"id": "reflection/beam-free", "isFree": True}]}
+        raise OSError("down")
+
+    report = free_rule_tick(snap, now=NOW, cache_dir=tmp_path, get=kilo)
+    assert report == {
+        "flags_source": "fresh",
+        "flag_entries": 1,
+        "routes": {"free": 2, "unverified_free": 1},
+    }
+    assert (tmp_path / "free-flags-2026-10-17.json").stat().st_mode & 0o777 == 0o600
+
+    def down(url: str, timeout: float) -> object:
+        raise OSError("down")
+
+    later = free_rule_tick(snap, now=NOW + timedelta(hours=1), cache_dir=tmp_path, get=down)
+    assert later is not None and later["flags_source"] == "last_good"
+    expired = free_rule_tick(snap, now=NOW + timedelta(hours=49), cache_dir=tmp_path, get=down)
+    assert expired is not None and expired["routes"] == {"free": 1, "unverified_free": 2}

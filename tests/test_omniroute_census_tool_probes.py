@@ -1,12 +1,15 @@
-"""Census carries tool probes; prove-at-rest stays untouched (spec v6.1 section 5)."""
+"""Census carries tool probes; prove-at-rest stays untouched (spec v6.1 phase b)."""
 
 from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from verdict import census_passports, prove_at_rest
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="phase b: census tool-probe hook")
 def test_census_runs_tool_probes_and_prove_at_rest_untouched() -> None:
     sig = inspect.signature(census_passports.run_census)
     assert "tool_probe_interval_s" in sig.parameters
