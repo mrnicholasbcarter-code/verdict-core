@@ -24,7 +24,8 @@ def test_classifier_matches_known_tiers_and_defaults() -> None:
     assert classify("unknown/provider-model") == 2
     assert is_frontier_identity("cx/gpt-5.6-sol") is True
     assert is_frontier_identity("openai/gpt-5.4") is True
-    assert is_frontier_identity("opencode/hy3-free") is False
+    # BOD-427 classifies Hy3 (tier 1); an unrecognized free alias stays non-frontier.
+    assert is_frontier_identity("opencode/big-pickle") is False
 
 
 def test_select_best_model_prefers_highest_quality_eligible_model() -> None:
