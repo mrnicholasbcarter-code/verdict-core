@@ -533,11 +533,17 @@ def cmd_census(
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             cooling = frozenset()
         from verdict.omniroute_pipeline.census_hook import guard_transport, needle_prober
-        from verdict.omniroute_pipeline.probes import probes_enabled
+        from verdict.omniroute_pipeline.probes import BUDGET_FALLBACK_HEADER, probes_enabled
 
+        # Spec section 2 stage 3: every census probe request (chat, tool and
+        # the needles below) carries the strict budget-fallback header, so a
+        # probe can never silently spend on a paid route. prove-at-rest builds
+        # its own transport without this option and is unchanged.
         report = run_census(
             snapshot,
-            guard_transport(live_transport(base_url, api_key=key)),
+            guard_transport(
+                live_transport(base_url, api_key=key, extra_headers=BUDGET_FALLBACK_HEADER)
+            ),
             cache=HealthCache(health_cache_path or default_cache_path()),
             passport_store_path=passport_store_path or default_state_path(),
             now=datetime.now(timezone.utc),

@@ -2086,8 +2086,15 @@ def live_gateway_auth_check(
     return check
 
 
-def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
-    """OpenAI-compatible transport. Built only for a consented live daemon."""
+def live_transport(
+    base_url: str, *, api_key: str | None, extra_headers: Mapping[str, str] | None = None
+) -> ProbeTransportFn:
+    """OpenAI-compatible transport. Built only for a consented live daemon.
+
+    ``extra_headers`` is the census-only option for per-request probe headers
+    (X-OmniRoute-Budget-Fallback: strict); prove-at-rest callers never pass it,
+    so their request shape and policy are unchanged.
+    """
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):
         endpoint = endpoint[: -len("/v1")]
@@ -2098,6 +2105,8 @@ def live_transport(base_url: str, *, api_key: str | None) -> ProbeTransportFn:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        if extra_headers:
+            headers.update(extra_headers)
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
