@@ -626,7 +626,7 @@ CLAUDE_HOOK_EVENT_KINDS: dict[str, str] = {
 # (isolated OmniRoute smoke 2026-10-16 19:23 ET, fixtures tests/fixtures/claude/v2_1_300_omniroute;
 # backend model agy/gemini-3.1-flash-lite, so this proves hooks, not the model).
 # "partial" = installed and translated but never observed live.
-# PENDING controller decision on promoting these to SUPPORTED.
+# The 6 live-observed events are marked SUPPORTED per the controller's 2026-10-17 00:32Z approval.
 CLAUDE_HOOK_EVENT_CAPABILITY: dict[str, Parity] = {
     "SessionStart": "supported",
     "UserPromptSubmit": "supported",
