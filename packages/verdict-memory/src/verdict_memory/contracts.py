@@ -169,6 +169,16 @@ class CertificationState(str, Enum):
     INCOMPATIBLE = "incompatible"
 
 
+# BOD-423: bare provider API keys with no ``key=`` prefix, e.g. ``sk-<alnum>`` and the
+# segmented ``sk-proj-...`` / ``sk-ant-...`` forms. The segmented branch needs a digit
+# so hyphenated prose such as ``sk-learn-compatible-estimators`` is not redacted.
+BARE_SK_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])sk-"
+    r"(?:(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{16,}|[A-Za-z0-9]{16,}(?![A-Za-z0-9]))"
+)
+REDACTION_MARKER = "[REDACTED]"
+
+
 def redact_secrets(value: str | None) -> str | None:
     """Redact common credentials and URL user-info without echoing a canary."""
     if value is None:
@@ -179,7 +189,7 @@ def redact_secrets(value: str | None) -> str | None:
         r"\1\2[REDACTED]",
         redacted,
     )
-    redacted = re.sub(r"\bsk-[A-Za-z0-9]{16,}\b", "[REDACTED]", redacted)
+    redacted = BARE_SK_TOKEN_RE.sub("[REDACTED]", redacted)
     redacted = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", redacted)
     return redacted
 
@@ -620,8 +630,47 @@ class MemoryProviderError(RuntimeError):
         super().__init__(f"{code.value}: {self.safe_message}")
 
 
+def _redact_bare_sk(value: Any) -> Any:
+    if isinstance(value, str):
+        return BARE_SK_TOKEN_RE.sub(REDACTION_MARKER, value)
+    if isinstance(value, dict):
+        return {_redact_bare_sk(str(k)): _redact_bare_sk(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_bare_sk(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise TypeError(f"unsupported outbound value type: {type(value).__name__}")
+
+
+def guard_outbound(payload: Any) -> Any:
+    """Client-side, fail-closed secret guard for every outbound request body (BOD-423).
+
+    Redacts bare ``sk-`` tokens in every string (keys and values) of a JSON payload,
+    then re-serializes the result and re-scans it. If redaction raises, the payload
+    holds a type that cannot be checked, or a token survives, this raises
+    :class:`MemoryProviderError` (``INVALID_REQUEST``) and the caller must not send.
+    The error never echoes the payload. The ``Authorization`` header is not a body and
+    is not touched.
+    """
+    try:
+        guarded = _redact_bare_sk(payload)
+        wire = json.dumps(guarded, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    except Exception as exc:
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "outbound secret guard could not check payload; request not sent",
+        ) from exc
+    if BARE_SK_TOKEN_RE.search(wire):
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "outbound payload still holds a bare sk- token after redaction; request not sent",
+        )
+    return guarded
+
+
 __all__ = [
     "ALLOWED_EVENT_KINDS",
+    "BARE_SK_TOKEN_RE",
     "CANONICAL_EVENT_KINDS",
     "CAPABILITY_STATUS_PARTIAL",
     "CAPABILITY_STATUS_SUPPORTED",
@@ -650,6 +699,7 @@ __all__ = [
     "canonicalize",
     "digest_bytes",
     "event_digest",
+    "guard_outbound",
     "loads_lifecycle_event",
     "redact_mapping",
     "redact_secrets",

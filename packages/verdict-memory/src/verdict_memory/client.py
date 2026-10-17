@@ -3,7 +3,8 @@
 SECURITY: configured project/workspace is authority. Event/query project
 overrides are rejected. Hits missing scope are not relabeled. Remote paths
 use full namespaced identity. Write ACK requires scoped readback. Nested
-secrets are redacted before remote write. Malformed RPC is typed failure.
+secrets are redacted before remote write. Every outbound JSON-RPC body passes a
+fail-closed bare ``sk-`` guard (BOD-423). Malformed RPC is typed failure.
 Token loaded from file in-process only; never printed.
 """
 
@@ -34,6 +35,7 @@ from verdict_memory.contracts import (
     RecallQuery,
     RecallResult,
     canonicalize,
+    guard_outbound,
     redact_mapping,
     redact_secrets,
     sanitize_event,
@@ -205,6 +207,12 @@ class AiMemoryClient:
             payload["id"] = req_id
         if params is not None:
             payload["params"] = params
+        # BOD-423: fail closed. A payload the guard cannot clean is never sent.
+        try:
+            payload = guard_outbound(payload)
+        except MemoryProviderError as exc:
+            self._record_error(method, exc)
+            raise
         try:
             with self._client() as client:
                 if method != "initialize" and not self._initialized:
