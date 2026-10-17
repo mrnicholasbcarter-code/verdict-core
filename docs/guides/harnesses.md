@@ -81,6 +81,11 @@ verdict harness claude disable
 
 Restores the pre-enable backup byte-for-byte.
 
+### Memory hooks
+
+Lifecycle capture, recall and the reversible hook installer are covered in
+[Claude Code memory hooks](../harness/claude-memory.md).
+
 ## Cline
 
 Architect lock: `verdict harness cline discover|enable|disable|status|certify`.
