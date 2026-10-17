@@ -119,8 +119,18 @@ def _atomic_write_cache(path: Path, data: dict[str, Any]) -> None:
 
 
 def get_cached_catalog(
-    origin: str, api_key: str | None, *, now: datetime | None = None, cache_path: Path | None = None
+    origin: str,
+    api_key: str | None,
+    *,
+    now: datetime | None = None,
+    cache_path: Path | None = None,
+    max_age_seconds: float | None = None,
 ) -> object | None:
+    """Return the cached catalog while fresh.
+
+    ``max_age_seconds`` replaces the entry's TTL, letting a caller serve a
+    bounded-stale catalog as a last-good fallback.
+    """
     path = cache_path or default_catalog_cache_path()
     data = _read_cache_file(path)
     entries = data.get("entries")
@@ -149,7 +159,7 @@ def get_cached_catalog(
         current = current.replace(tzinfo=timezone.utc)
 
     try:
-        ttl_value = float(ttl)
+        ttl_value = float(ttl if max_age_seconds is None else max_age_seconds)
         if not math.isfinite(ttl_value) or ttl_value <= 0:
             return None
         age = (current - cached_at).total_seconds()
