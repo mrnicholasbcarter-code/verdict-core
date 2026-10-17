@@ -79,6 +79,18 @@ def _stripe_test_token() -> str:
     return "s" + "k_test_" + _tail(24)
 
 
+def _stripe_live_token() -> str:
+    return "s" + "k_live_" + _tail(24)
+
+
+def _stripe_restricted_test_token() -> str:
+    return "r" + "k_test_" + _tail(24)
+
+
+def _stripe_restricted_live_token() -> str:
+    return "r" + "k_live_" + _tail(24)
+
+
 ALL_TOKENS = (_alnum_token, _segmented_token, _ant_token)
 VENDOR_TOKENS = (
     _or_token,
@@ -88,6 +100,9 @@ VENDOR_TOKENS = (
     _hf_token,
     _gitlab_token,
     _stripe_test_token,
+    _stripe_live_token,
+    _stripe_restricted_test_token,
+    _stripe_restricted_live_token,
 )
 BENIGN_TEXT = (
     "task-runner-configuration-loader",
@@ -324,3 +339,71 @@ def test_outbox_redacts_segmented_token_in_metadata(tmp_path: Path) -> None:
             [list(r) for r in conn.execute("select * from memory_lifecycle_outbox").fetchall()]
         )
     assert token not in raw
+
+
+def _canon(body: Any) -> str:
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def test_every_wire_body_passes_guard_outbound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reviewer spy (PR #906): the guarded set must equal the wire set for every body.
+
+    Drives a full session: automatic ``initialize`` + ``notifications/initialized``
+    handshake, ``tools/list``, ``tools/call`` (via ``search``), a notification, and
+    ``health`` (GETs, which must carry no body).
+    """
+    from verdict_memory import client as client_module
+
+    guarded: list[str] = []
+    real_guard = client_module.guard_outbound
+
+    def _spy(payload: Any) -> Any:
+        out = real_guard(payload)
+        guarded.append(_canon(out))
+        return out
+
+    monkeypatch.setattr(client_module, "guard_outbound", _spy)
+    rec = _Recorder()
+    requests: list[httpx.Request] = []
+    inner = rec.transport()
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return inner.handle_request(request)
+
+    client = AiMemoryClient(
+        AiMemoryClientConfig(
+            endpoint="http://127.0.0.1:49374",
+            token="test-token-not-real",
+            token_file=None,
+            workspace="default",
+            project="bod423-test",
+            transport=httpx.MockTransport(_capture),
+            writer_lock_dir=tmp_path / "locks",
+        )
+    )
+    client._mcp("tools/list", {})
+    client.search(RecallQuery(query="find notes", project="bod423-test", workspace="default"))
+    client._mcp("notifications/progress", {"note": "x"}, notify=True)
+    client.health()
+
+    posts = [r for r in requests if r.method == "POST"]
+    others = [r for r in requests if r.method != "POST"]
+    wire = [_canon(json.loads(r.content.decode("utf-8"))) for r in posts]
+    wire_methods = [json.loads(b)["method"] for b in wire]
+    assert wire_methods[:2] == ["initialize", "notifications/initialized"]
+    assert {"tools/list", "tools/call", "notifications/progress"} <= set(wire_methods)
+    missing = sorted({json.loads(b)["method"] for b in set(wire) - set(guarded)})
+    assert set(wire) == set(guarded), f"wire bodies that skipped guard_outbound: {missing}"
+    assert all(r.content == b"" for r in others), "non-POST requests must carry no body"
+
+
+def test_client_has_one_post_choke_point() -> None:
+    """Static backstop for the spy above: only ``_post`` may call ``client.post``."""
+    from verdict_memory import client as client_module
+
+    source = Path(client_module.__file__).read_text(encoding="utf-8")
+    assert source.count(".post(") == 1
+    assert "json=guard_outbound(body)" in source
