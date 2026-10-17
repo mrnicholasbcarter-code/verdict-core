@@ -5,12 +5,21 @@ a live-shortlist rerank diagnostic (ADR-018: counterfactual ≠ promotion).
 
 Metric (normative for this slice): ``implement_validated_accept_reject_v1``.
 Acceptance requires a matching VALIDATED/proof event strictly before ``as_of``.
+
+Persistence (BOD-426): when ``VERDICT_OUTCOME_SHADOW_ROOTS`` is set, every
+shadow block attached to an admission receipt is also appended as one JSON
+line to ``outcome_shadow.jsonl`` next to the first configured roots entry (see
+:func:`resolve_outcome_shadow_sink`). ``would_rank`` is only ever a computed
+rerank; when no counterfactual was computed (no roots, shadow error) it is
+``null``, never a copy of ``actual_rank``.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +32,21 @@ from verdict.orchestration.receipt import EVENTS_FILE, RECEIPT_FILE, verify_run_
 METRIC_NAME = "implement_validated_accept_reject_v1"
 WOULD_RANK_SCOPE = "live_shortlist_only"
 ENV_ROOTS = "VERDICT_OUTCOME_SHADOW_ROOTS"
+SINK_FILENAME = "outcome_shadow.jsonl"
+SINK_SCHEMA = "verdict.outcome_shadow.sink/v1"
+
+_LOG = logging.getLogger(__name__)
+_SINK_LOCK = threading.Lock()
+
+
+class OutcomeShadowNotConfiguredError(ValueError):
+    """Raised when a counterfactual is requested without any shadow roots.
+
+    ``build_outcome_shadow`` refuses to fabricate ``would_rank`` from
+    ``actual_rank``; :func:`attach_outcome_shadow` records the disabled state
+    with ``would_rank: null`` instead.
+    """
+
 
 # Bounds applied BEFORE verify_run_receipt / receipt rebuild.
 DEFAULT_MAX_ROOTS = 8
@@ -83,6 +107,80 @@ def resolve_outcome_shadow_roots(
         else:
             parts.append(chunk)
     return _canonicalize_roots(parts)
+
+
+def resolve_outcome_shadow_sink(*, env: Mapping[str, str] | None = None) -> Path | None:
+    """Return the jsonl sink path derived from ``VERDICT_OUTCOME_SHADOW_ROOTS``.
+
+    Unset or blank → ``None`` (no sink, matching the default-empty roots). When
+    set, the sink is ``outcome_shadow.jsonl`` in the directory that contains
+    the first entry: the runs directory for a run-dir entry, or the manifest's
+    directory for a manifest file. It is never written inside a verified run
+    directory, so run evidence is left untouched.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(ENV_ROOTS) or "").strip()
+    for chunk in raw.split(os.pathsep):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            first = Path(chunk).expanduser().resolve()
+        except OSError:
+            return None
+        return first.parent / SINK_FILENAME
+    return None
+
+
+def append_outcome_shadow_record(
+    sink: Path, shadow: Mapping[str, Any], *, recorded_at: datetime | None = None
+) -> bool:
+    """Append one shadow record as a single JSON line. Never raises.
+
+    Append-only and atomic-ish: the file is opened ``O_APPEND`` (and
+    ``O_NOFOLLOW`` where available) and each record is one complete line
+    written with one ``write`` call under a process lock, so concurrent
+    writers never interleave partial lines. The sink directory is never
+    created; a missing directory is logged and the record is skipped.
+    """
+    when = recorded_at or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    record = {
+        "schema": SINK_SCHEMA,
+        "recorded_at": when.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "outcome_shadow": dict(shadow),
+    }
+    try:
+        line = (
+            json.dumps(
+                record, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str
+            )
+            + "\n"
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        _LOG.warning("outcome_shadow sink: record not serializable (%s)", type(exc).__name__)
+        return False
+    if not sink.parent.is_dir():
+        _LOG.warning(
+            "outcome_shadow sink: directory %s does not exist; record skipped", sink.parent
+        )
+        return False
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        with _SINK_LOCK:
+            fd = os.open(sink, flags, 0o600)
+            try:
+                written = os.write(fd, line)
+            finally:
+                os.close(fd)
+    except OSError as exc:
+        _LOG.warning("outcome_shadow sink: cannot append to %s (%s)", sink, type(exc).__name__)
+        return False
+    if written != len(line):
+        _LOG.warning("outcome_shadow sink: short write to %s (%d/%d)", sink, written, len(line))
+        return False
+    return True
 
 
 def _canonicalize_roots(items: Sequence[Path | str]) -> tuple[Path, ...]:
@@ -422,6 +520,57 @@ def shortlist_would_rank(
     return [route_id for _, _, route_id in scored]
 
 
+def _utc(as_of: datetime | None) -> datetime:
+    as_of_dt = as_of or datetime.now(timezone.utc)
+    if as_of_dt.tzinfo is None:
+        as_of_dt = as_of_dt.replace(tzinfo=timezone.utc)
+    return as_of_dt.astimezone(timezone.utc)
+
+
+def _actual_rank(shortlist: Sequence[ShortlistEntry] | Sequence[Mapping[str, Any]]) -> list[str]:
+    return [
+        (item.route_id if isinstance(item, ShortlistEntry) else str(item.get("route_id") or ""))
+        for item in shortlist
+    ]
+
+
+def _not_computed_shadow(
+    *,
+    as_of: datetime | None,
+    task_family: str,
+    fingerprint_digest: str,
+    actual_rank: list[str],
+    missingness: str,
+) -> dict[str, Any]:
+    """Shadow block for receipts where no counterfactual was computed.
+
+    ``would_rank`` is ``None`` (JSON ``null``): a sentinel meaning "not
+    computed", never an identity copy of ``actual_rank``.
+    """
+    return {
+        "as_of": _utc(as_of).isoformat().replace("+00:00", "Z"),
+        "task_family": task_family,
+        "fingerprint_digest": fingerprint_digest,
+        "metric": METRIC_NAME,
+        "would_rank_scope": WOULD_RANK_SCOPE,
+        "roots": [],
+        "source_run_ids": [],
+        "source_events_digests": [],
+        "metric_missingness": missingness,
+        "n_attempts_matched": 0,
+        "n_nodes_matched": 0,
+        "metric_n_accept": 0,
+        "metric_n_reject": 0,
+        "metric_denominator": 0,
+        "audit": {},
+        "per_route": {},
+        "actual_rank": actual_rank,
+        "would_rank": None,
+        "rank_delta": [],
+        "shadow_skip_reasons": [],
+    }
+
+
 def build_outcome_shadow(
     *,
     roots: Sequence[Path | str],
@@ -434,41 +583,22 @@ def build_outcome_shadow(
     max_events_lines: int = DEFAULT_MAX_EVENTS_LINES,
     max_receipt_bytes: int = DEFAULT_MAX_RECEIPT_BYTES,
 ) -> dict[str, Any]:
-    """Build the serialized outcome_shadow block. Never raises to callers who wrap it."""
-    as_of_dt = as_of or datetime.now(timezone.utc)
-    if as_of_dt.tzinfo is None:
-        as_of_dt = as_of_dt.replace(tzinfo=timezone.utc)
-    as_of_dt = as_of_dt.astimezone(timezone.utc)
+    """Build the serialized outcome_shadow block.
 
-    actual_rank = [
-        (item.route_id if isinstance(item, ShortlistEntry) else str(item.get("route_id") or ""))
-        for item in shortlist
-    ]
+    Raises :class:`OutcomeShadowNotConfiguredError` when ``roots`` is empty:
+    without roots there is no counterfactual, and copying ``actual_rank`` into
+    ``would_rank`` would read as 100% agreement. ``attach_outcome_shadow``
+    handles that case with an explicit disabled block.
+    """
+    as_of_dt = _utc(as_of)
+
+    actual_rank = _actual_rank(shortlist)
 
     canonical = _canonicalize_roots(roots)
     if not canonical:
-        return {
-            "as_of": as_of_dt.isoformat().replace("+00:00", "Z"),
-            "task_family": task_family,
-            "fingerprint_digest": fingerprint_digest,
-            "metric": METRIC_NAME,
-            "would_rank_scope": WOULD_RANK_SCOPE,
-            "roots": [],
-            "source_run_ids": [],
-            "source_events_digests": [],
-            "metric_missingness": "no_roots_configured",
-            "n_attempts_matched": 0,
-            "n_nodes_matched": 0,
-            "metric_n_accept": 0,
-            "metric_n_reject": 0,
-            "metric_denominator": 0,
-            "audit": {},
-            "per_route": {},
-            "actual_rank": actual_rank,
-            "would_rank": list(actual_rank),
-            "rank_delta": [],
-            "shadow_skip_reasons": [],
-        }
+        raise OutcomeShadowNotConfiguredError(
+            f"no outcome shadow roots configured ({ENV_ROOTS} unset or empty)"
+        )
 
     limited = canonical[: max(0, max_roots)]
     skipped_over_cap = [
@@ -618,37 +748,49 @@ def attach_outcome_shadow(
     task_family: str,
     fingerprint_digest: str,
     as_of: datetime | None = None,
+    sink: Path | None = None,
 ) -> dict[str, Any]:
-    """Return a new candidate_pool dict with outcome_shadow attached; never mutates live scores."""
+    """Return a new candidate_pool dict with outcome_shadow attached; never mutates live scores.
+
+    With ``sink`` set, the attached block is also appended to that jsonl file
+    (one line per receipt). Sink failures are logged and never raised.
+    """
     shortlist = candidate_pool.get("shortlist") or []
     if not isinstance(shortlist, list):
         shortlist = []
-    try:
-        shadow = build_outcome_shadow(
-            roots=roots,
+    mapping_rank = [
+        str(item.get("route_id") or "") for item in shortlist if isinstance(item, Mapping)
+    ]
+    shadow: dict[str, Any]
+    if not _canonicalize_roots(roots):
+        shadow = _not_computed_shadow(
+            as_of=as_of,
             task_family=task_family,
             fingerprint_digest=fingerprint_digest,
-            shortlist=shortlist,
-            as_of=as_of,
+            actual_rank=mapping_rank,
+            missingness="no_roots_configured",
         )
-    except Exception as exc:
-        shadow = {
-            "as_of": (as_of or datetime.now(timezone.utc)).isoformat(),
-            "task_family": task_family,
-            "fingerprint_digest": fingerprint_digest,
-            "metric": METRIC_NAME,
-            "would_rank_scope": WOULD_RANK_SCOPE,
-            "metric_missingness": "shadow_error",
-            "shadow_error": type(exc).__name__,
-            "actual_rank": [
-                str(item.get("route_id") or "") for item in shortlist if isinstance(item, Mapping)
-            ],
-            "would_rank": [
-                str(item.get("route_id") or "") for item in shortlist if isinstance(item, Mapping)
-            ],
-            "roots": [],
-            "shadow_skip_reasons": [{"root": "*", "reason": "shadow_error"}],
-        }
+    else:
+        try:
+            shadow = build_outcome_shadow(
+                roots=roots,
+                task_family=task_family,
+                fingerprint_digest=fingerprint_digest,
+                shortlist=shortlist,
+                as_of=as_of,
+            )
+        except Exception as exc:
+            shadow = _not_computed_shadow(
+                as_of=as_of,
+                task_family=task_family,
+                fingerprint_digest=fingerprint_digest,
+                actual_rank=mapping_rank,
+                missingness="shadow_error",
+            )
+            shadow["shadow_error"] = type(exc).__name__
+            shadow["shadow_skip_reasons"] = [{"root": "*", "reason": "shadow_error"}]
+    if sink is not None:
+        append_outcome_shadow_record(sink, shadow)
     out = dict(candidate_pool)
     out["outcome_shadow"] = shadow
     return out
@@ -657,11 +799,16 @@ def attach_outcome_shadow(
 __all__ = [
     "ENV_ROOTS",
     "METRIC_NAME",
+    "SINK_FILENAME",
+    "SINK_SCHEMA",
     "WOULD_RANK_SCOPE",
+    "OutcomeShadowNotConfiguredError",
     "ShadowAttemptRow",
+    "append_outcome_shadow_record",
     "attach_outcome_shadow",
     "build_outcome_shadow",
     "load_shadow_rows_from_run",
     "resolve_outcome_shadow_roots",
+    "resolve_outcome_shadow_sink",
     "shortlist_would_rank",
 ]
