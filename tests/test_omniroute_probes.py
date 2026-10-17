@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from verdict.omniroute_pipeline.probes import ProbeOutcome, is_fake_200, judge_chat
 
 
@@ -71,7 +69,6 @@ def test_context_seeded_from_existing_needles() -> None:
     assert all(s.measured_at is not None for s in seeds.values())
 
 
-@pytest.mark.xfail(strict=True, raises=ImportError, reason="phase b step 3: state machine")
 def test_shutdown_ids_never_probed() -> None:
     from verdict.omniroute_pipeline.state import ModelState, should_probe, transition
 
@@ -82,7 +79,6 @@ def test_shutdown_ids_never_probed() -> None:
     assert should_probe(ModelState.POLICY_REJECTED) is False
 
 
-@pytest.mark.xfail(strict=True, raises=ImportError, reason="phase b step 3: state machine")
 def test_billing_failures_go_needs_account() -> None:
     from verdict.omniroute_pipeline.state import ModelState, ProviderBlocklist, transition
 
@@ -140,3 +136,25 @@ def test_usable_context_store_seeds_and_records(tmp_path) -> None:  # type: igno
     assert path.stat().st_mode & 0o777 == 0o600
     assert load_usable_context(path)["x/m"]["usable_context"] == 128_000
     assert context_due(load_usable_context(path)["x/m"], now) is False
+
+
+def test_state_progression_and_degrade() -> None:
+    from verdict.omniroute_pipeline.state import ModelState, should_probe, transition
+
+    s = ModelState.CATALOGED
+    for want in (
+        ModelState.CHAT_OK,
+        ModelState.TOOL_OK,
+        ModelState.CTX_MEASURED,
+        ModelState.RANKED,
+        ModelState.ELIGIBLE,
+    ):
+        s = transition(s, probe=ProbeOutcome.PASS)
+        assert s is want
+    s = transition(s, probe=ProbeOutcome.FAIL)
+    assert s is ModelState.DEGRADED
+    assert transition(s, probe=ProbeOutcome.PASS) is ModelState.ELIGIBLE
+    assert transition(s, probe=ProbeOutcome.FAIL) is ModelState.FAILED
+    assert transition(ModelState.ELIGIBLE, http_status=429) is ModelState.COOLING
+    assert should_probe(ModelState.COOLING) is False
+    assert should_probe(ModelState.ELIGIBLE) is True
