@@ -12,13 +12,16 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from verdict.memory_gate import MemoryGate, MemoryWriteRequest
+from verdict.memory_harness.claude import install_claude_hooks, install_claude_instructions
+from verdict.memory_harness.codex import install_codex_hooks, install_codex_instructions
+from verdict.memory_harness.hermes import install_hermes_bridge
+from verdict.memory_harness.prime import install_prime_bridge
 from verdict.memory_plane import MemoryPlane
 from verdict.memory_session_adapter import SessionAdapter, session_record_to_memory_record
 from verdict.receipt_store import ReceiptStore
@@ -138,240 +141,11 @@ def detect_available_tools(
     return ToolDetectionReport(detected_tools=tools, preselected_tools=preselected)
 
 
-def _normalize_hook_command(cmd: str) -> str:
-    """Normalize hook command for deduplication."""
-    # Remove extra spaces, normalize quotes
-    cmd = re.sub(r"\s+", " ", cmd.strip())
-    # Remove the 2>/dev/null || true suffix for comparison
-    cmd = re.sub(r"\s*2>/dev/null\s*\|\|\s*true\s*$", "", cmd)
-    # Normalize quote styles
-    cmd = cmd.replace('"', "'").replace("`", "'")
-    return cmd
-
-
-def _install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
-    """Install Verdict hooks in Claude Code settings.json."""
-    import json as _json
-
-    settings_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load existing settings or create new
-    if settings_file.exists():
-        try:
-            settings = _json.loads(settings_file.read_text("utf-8"))
-        except Exception:
-            settings = {}
-    else:
-        settings = {}
-
-    # Ensure hooks structure exists
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-
-    # Define the Verdict hooks we need (canonical form with single quotes)
-    verdict_hooks: dict[str, list[dict[str, Any]]] = {
-        "PreToolUse": [
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_pre_bash' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"bash command\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "PostToolUse": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_session' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "UserPromptSubmit": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-        "SessionStart": [
-            {
-                "matcher": "compact",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
-                    }
-                ],
-            },
-            {
-                "matcher": "startup|resume",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/claude_session_prompt 2>/dev/null || echo \"\")' --json --limit 30 2>/dev/null || true",
-                    }
-                ],
-            },
-        ],
-        "SubagentStop": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'claude_subagent' '$(cat /tmp/claude_last_prompt 2>/dev/null || echo \"subagent completed\")' --namespace sessions --source claude 2>/dev/null || true",
-                    }
-                ],
-            }
-        ],
-    }
-
-    # First, CLEAN UP any existing verdict hooks with non-canonical quote styles
-    for hook_type in list(settings["hooks"].keys()):
-        if hook_type not in verdict_hooks:
-            continue
-        new_hooks_list = []
-        seen_normalized = set()  # Track across ALL matcher objects for this hook_type
-        for matcher_obj in settings["hooks"][hook_type]:
-            matcher = matcher_obj.get("matcher", "")
-            # Only process matchers that we manage
-            if not any(vh.get("matcher") == matcher for vh in verdict_hooks.get(hook_type, [])):
-                new_hooks_list.append(matcher_obj)
-                continue
-
-            new_hooks = []
-            for hook in matcher_obj.get("hooks", []):
-                cmd = hook.get("command", "")
-                if "verdict hook" in cmd:
-                    norm = _normalize_hook_command(cmd)
-                    if norm not in seen_normalized:
-                        seen_normalized.add(norm)
-                        # Only keep if it matches our canonical form (single quotes)
-                        if cmd == _normalize_hook_command(cmd):
-                            new_hooks.append(hook)
-                else:
-                    new_hooks.append(hook)
-
-            if new_hooks:
-                matcher_obj["hooks"] = new_hooks
-                new_hooks_list.append(matcher_obj)
-
-        settings["hooks"][hook_type] = new_hooks_list
-
-    # Now ADD canonical hooks if missing
-    for hook_type, hooks in verdict_hooks.items():
-        if hook_type not in settings["hooks"]:
-            settings["hooks"][hook_type] = []
-
-        # Track what we already have (normalized) for deduplication
-        existing_commands = set()
-        existing_matchers = set()
-        for h in settings["hooks"][hook_type]:
-            existing_matchers.add(h.get("matcher", ""))
-            for hook in h.get("hooks", []):
-                if "verdict hook" in hook.get("command", ""):
-                    existing_commands.add(_normalize_hook_command(hook["command"]))
-
-        for verdict_hook in hooks:
-            matcher = verdict_hook.get("matcher", "")
-            # If this matcher doesn't exist at all, add the whole hook object
-            if matcher not in existing_matchers:
-                settings["hooks"][hook_type].append(verdict_hook)
-                existing_matchers.add(matcher)
-                # Also add commands to existing_commands for deduplication
-                for vh in verdict_hook["hooks"]:
-                    existing_commands.add(_normalize_hook_command(vh["command"]))
-            else:
-                # Matcher exists, add individual commands if missing
-                for vh in verdict_hook["hooks"]:
-                    norm_cmd = _normalize_hook_command(vh["command"])
-                    if norm_cmd not in existing_commands:
-                        # Find the matching matcher_obj and append
-                        for h in settings["hooks"][hook_type]:
-                            if h.get("matcher") == matcher:
-                                h["hooks"].append(vh)
-                                break
-                        existing_commands.add(norm_cmd)
-
-    # Write back
-    settings_file.write_text(_json.dumps(settings, indent=2), encoding="utf-8")
-
-
-def _install_codex_hooks(hooks_file: Path, shared_db: Path) -> None:
-    """Install Verdict hooks in Codex hooks.json."""
-    import json as _json
-
-    hooks_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load existing hooks or create new
-    if hooks_file.exists():
-        try:
-            hooks_data = _json.loads(hooks_file.read_text("utf-8"))
-        except Exception:
-            hooks_data = {"hooks": {}}
-    else:
-        hooks_data = {"hooks": {}}
-
-    if "hooks" not in hooks_data:
-        hooks_data["hooks"] = {}
-
-    # Define Verdict hooks for Codex
-    codex_verdict_hooks: dict[str, list[dict[str, Any]]] = {
-        "PostToolUse": [
-            {
-                "matcher": "Write|Edit|Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook record 'codex_session' '$(cat /tmp/codex_last_prompt 2>/dev/null || echo \"no prompt captured\")' --namespace sessions --source codex 2>/dev/null || true",
-                        "timeout": 10,
-                    }
-                ],
-            }
-        ],
-        "SessionStart": [
-            {
-                "matcher": "startup|resume",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "verdict hook recall '$(cat /tmp/codex_session_prompt 2>/dev/null || echo \"\")' --json --limit 20 2>/dev/null || true",
-                        "timeout": 10,
-                    }
-                ],
-            }
-        ],
-    }
-
-    # Merge hooks
-    for hook_type, hooks in codex_verdict_hooks.items():
-        if hook_type not in hooks_data["hooks"]:
-            hooks_data["hooks"][hook_type] = []
-
-        existing_commands = set()
-        for h in hooks_data["hooks"][hook_type]:
-            for hook in h.get("hooks", []):
-                if "verdict hook" in hook.get("command", ""):
-                    existing_commands.add(_normalize_hook_command(hook["command"]))
-
-        for verdict_hook in hooks:
-            for vh in verdict_hook["hooks"]:
-                norm_cmd = _normalize_hook_command(vh["command"])
-                if norm_cmd not in existing_commands:
-                    hooks_data["hooks"][hook_type].append(verdict_hook)
-                    existing_commands.add(norm_cmd)
-
-    hooks_file.write_text(_json.dumps(hooks_data, indent=2), encoding="utf-8")
+# Per-harness installers live in verdict.memory_harness. No re-export of
+# _install_claude_hooks or _install_codex_hooks: the only production callers
+# import configure_memory_bridge and uninstall_memory_bridge, which stay
+# defined here. Add a re-export only for a real importer, and delete it when
+# that importer imports verdict.memory_harness directly.
 
 
 def configure_memory_bridge(
@@ -402,16 +176,11 @@ def configure_memory_bridge(
 
     for tool in selected_tools:
         if tool == "codex":
-            codex_dir = root / ".codex"
-            codex_dir.mkdir(parents=True, exist_ok=True)
-            agents_md = codex_dir / "AGENTS.md"
-            existing = agents_md.read_text("utf-8") if agents_md.exists() else ""
-            if "Verdict Unified Memory Bridge" not in existing:
-                agents_md.write_text(existing + bridge_instruction, encoding="utf-8")
+            install_codex_instructions(root / ".codex", bridge_instruction)
 
             # Install Codex hooks
             hooks_file = home / ".codex" / "hooks.json"
-            _install_codex_hooks(hooks_file, shared_db)
+            install_codex_hooks(hooks_file, shared_db)
 
             sess_dir = home / ".codex" / "sessions"
             if sess_dir.exists():
@@ -442,14 +211,11 @@ def configure_memory_bridge(
 
         elif tool == "claude":
             # 1. Update CLAUDE.md with bridge instruction
-            claude_md = root / "CLAUDE.md"
-            existing = claude_md.read_text("utf-8") if claude_md.exists() else ""
-            if "Verdict Unified Memory Bridge" not in existing:
-                claude_md.write_text(existing + bridge_instruction, encoding="utf-8")
+            install_claude_instructions(root / "CLAUDE.md", bridge_instruction)
 
             # 2. Install hooks in ~/.claude/settings.json
             settings_file = home / ".claude" / "settings.json"
-            _install_claude_hooks(settings_file, shared_db)
+            install_claude_hooks(settings_file, shared_db)
 
             # 3. Sync existing transcripts
             sess_dir = home / ".claude" / "transcripts"
@@ -492,11 +258,15 @@ def configure_memory_bridge(
             configured.append("pi")
 
         elif tool == "hermes":
-            hermes_dir = home / ".hermes"
-            if hermes_dir.exists():
-                h_cfg = hermes_dir / "verdict_bridge.json"
-                h_cfg.write_text(json.dumps({"memory_plane": str(shared_db)}), encoding="utf-8")
+            install_hermes_bridge(home, shared_db)
             configured.append("hermes")
+
+        elif tool == "prime":
+            # No Prime installer on this tree. The call keeps the stable
+            # signature wired. Do not append "prime": that would change
+            # configured_tools. Remove this branch when install_prime_bridge
+            # writes files and the characterization tests pin those files.
+            install_prime_bridge(home, shared_db)
 
         elif tool == "mcp":
             mcp_file = root / ".mcp.json"
