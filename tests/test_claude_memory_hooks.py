@@ -471,3 +471,107 @@ def test_hook_main_reads_stdin_and_env_outbox(
     record = json.loads((tmp_path / "ob" / harness_claude.OUTBOX_FILENAME).read_text("utf-8"))
     assert record["identity"]["session_id"] == payload["session_id"]
     assert capsys.readouterr().out == ""
+
+
+# --- Live OmniRoute smoke 2026-10-16 19:23 ET (agy/gemini-3.1-flash-lite; proves hooks, not model) ---
+# Separate folder so FIXTURES.glob above never picks these up.
+
+LIVE = Path(__file__).parent / "fixtures" / "claude" / "v2_1_300_omniroute"
+
+SESSIONS = {
+    "proj-a": "9c4f5406-5070-472b-81a7-37711d9d6840",
+    "proj-b": "2f5b4844-b5b0-46c3-99c3-35341915cad5",
+}
+LIVE_EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+]
+TOOL_KINDS = {"PreToolUse": "before_tool", "PostToolUse": "after_tool", "Stop": "before_yield"}
+
+
+def _live() -> list[dict]:
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(LIVE.glob("*.json"))]
+
+
+def _ids(p: dict) -> str:
+    return f"{Path(p['cwd']).name}-{p['hook_event_name']}-{p.get('tool_name', '')}"
+
+
+def test_live_capture_is_complete_two_session_set() -> None:
+    by: dict[str, list[dict]] = {}
+    for p in _live():
+        by.setdefault(Path(p["cwd"]).name, []).append(p)
+    assert set(by) == set(SESSIONS)
+    for proj, payloads in by.items():
+        assert [p["hook_event_name"] for p in payloads] == LIVE_EVENTS
+        assert {p["session_id"] for p in payloads} == {SESSIONS[proj]}
+
+
+def test_live_capture_is_anonymized() -> None:
+    for path in LIVE.glob("*.json"):
+        text = path.read_text(encoding="utf-8")
+        assert "/home/nick" not in text and "-home-nick-" not in text, path.name
+
+
+@pytest.mark.parametrize(
+    "payload", [p for p in _live() if p["hook_event_name"] in TOOL_KINDS], ids=_ids
+)
+def test_live_tool_and_stop_payloads_translate(payload: dict) -> None:
+    record = harness_claude.translate_hook_payload(payload, claude_version=CLAUDE_VERSION)
+    assert record["kind"] == TOOL_KINDS[payload["hook_event_name"]]
+    assert record["identity"]["session_id"] == payload["session_id"]
+    assert record["scope"] == Path(payload["cwd"]).name
+    assert record["provenance"]["hook_event_name"] == payload["hook_event_name"]
+
+
+def test_live_records_keep_sessions_isolated() -> None:
+    records = [
+        harness_claude.translate_hook_payload(p, claude_version=CLAUDE_VERSION) for p in _live()
+    ]
+    pairs = {(r["identity"]["session_id"], r["scope"]) for r in records}
+    assert pairs == {(sid, proj) for proj, sid in SESSIONS.items()}
+    ids = [r["identity"]["source_event_id"] for r in records]
+    assert len(set(ids)) == len(ids)
+
+
+def test_live_replay_through_hook_handler_is_idempotent(tmp_path: Path) -> None:
+    outbox = tmp_path / "outbox"
+    payloads = _live()
+    for p in payloads + payloads:
+        rc = harness_claude.run_hook(
+            p["hook_event_name"], json.dumps(p), outbox_dir=outbox, claude_version=CLAUDE_VERSION
+        )
+        assert rc == harness_claude.HOOK_EXIT_OK
+    lines = (outbox / harness_claude.OUTBOX_FILENAME).read_text("utf-8").splitlines()
+    assert len(lines) == len(payloads)
+    assert {json.loads(x)["identity"]["session_id"] for x in lines} == set(SESSIONS.values())
+
+
+# --- Hook-event capability (controller-approved 2026-10-17 00:32Z) ---
+
+
+def test_hook_event_capability_reflects_live_observation(tmp_path: Path) -> None:
+    cap = harness_claude.CLAUDE_HOOK_EVENT_CAPABILITY
+    assert set(cap) == set(harness_claude.CLAUDE_HOOK_EVENT_KINDS)
+    live = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"}
+    assert {e for e, level in cap.items() if level == "supported"} == live
+    assert cap["SubagentStop"] == "partial"
+    assert cap["PreCompact"] == "partial"
+    observed = {p["hook_event_name"] for p in _live()}
+    assert observed == live
+
+
+def test_certify_notes_live_observed_hook_events(tmp_path: Path) -> None:
+    report = harness_claude.certify(
+        claude_home=tmp_path, force=True, which=lambda _name: "/usr/bin/claude"
+    )
+    note = next(n for n in report.notes if n.startswith("hook events observed live"))
+    for event in ("PreToolUse", "PostToolUse", "Stop"):
+        assert event in note
+    assert "SubagentStop" not in note and "PreCompact" not in note

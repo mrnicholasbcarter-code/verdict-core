@@ -10,8 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from verdict.runtime_certification import HARNESS_PARITY_FACETS
 
 # ---------------------------------------------------------------------------
@@ -226,7 +224,6 @@ class TestHermesParity:
                 f"hermes facet {facet!r} has invalid level {level!r}"
             )
 
-    @pytest.mark.xfail(strict=False, reason="pending lane C harness_hermes change")
     def test_wired_facets_are_partial(self, tmp_path: Path) -> None:
         """Hermes v0.21.3 plugin hooks are source-evidenced; wired facets PARTIAL until observed live."""
         from verdict.harness_hermes import certify

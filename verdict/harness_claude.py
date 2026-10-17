@@ -330,6 +330,8 @@ def certify(
         "Anthropic Messages (/v1/messages) via ANTHROPIC_BASE_URL is unsupported until BOD-102",
         "SessionStart claude-gate provides fail-closed catalog admission",
     ]
+    live_events = [e for e, lvl in CLAUDE_HOOK_EVENT_CAPABILITY.items() if lvl == "supported"]
+    notes.append("hook events observed live (Claude Code 2.1.300): " + ", ".join(live_events))
     needs_owner = (
         "live enable with secrets (token value never written; operator must export token_env)",
     )
@@ -573,6 +575,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "BACKUP_NAME",
+    "CLAUDE_HOOK_EVENT_CAPABILITY",
     "CLAUDE_HOOK_EVENT_KINDS",
     "DEFAULT_BASE_URL",
     "DEFAULT_TOKEN_ENV",
@@ -617,6 +620,22 @@ CLAUDE_HOOK_EVENT_KINDS: dict[str, str] = {
     "PreCompact": "before_compact",
     "Stop": "before_yield",
     "SessionEnd": "session_end",
+}
+
+# Per-hook-event capability. "supported" = observed firing live in Claude Code 2.1.300
+# (isolated OmniRoute smoke 2026-10-16 19:23 ET, fixtures tests/fixtures/claude/v2_1_300_omniroute;
+# backend model agy/gemini-3.1-flash-lite, so this proves hooks, not the model).
+# "partial" = installed and translated but never observed live.
+# The 6 live-observed events are marked SUPPORTED per the controller's 2026-10-17 00:32Z approval.
+CLAUDE_HOOK_EVENT_CAPABILITY: dict[str, Parity] = {
+    "SessionStart": "supported",
+    "UserPromptSubmit": "supported",
+    "PreToolUse": "supported",
+    "PostToolUse": "supported",
+    "SubagentStop": "partial",
+    "PreCompact": "partial",
+    "Stop": "supported",
+    "SessionEnd": "supported",
 }
 
 
