@@ -169,6 +169,28 @@ class CertificationState(str, Enum):
     INCOMPATIBLE = "incompatible"
 
 
+# BOD-423: bare provider API keys with no ``key=`` prefix. Findings:
+# /workspace/hive/findings/ai-memory-sk-scanner-gap.md (Security, 2026-10-17).
+# - ``sk-<alnum>`` and segmented ``sk-proj-`` / ``sk-ant-api03-`` / ``sk-or-v1-`` /
+#   ``sk-svcacct-`` forms; the segmented branch needs a digit so prose such as
+#   ``sk-learn-preprocessing-pipeline-notes`` is kept;
+# - xAI ``xai-``, Groq ``gsk_``, Hugging Face ``hf_``, GitLab ``glpat-`` and Stripe
+#   ``sk_/rk_`` ``test_``/``live_`` keys;
+# - every branch must start a word (no letter, digit or ``_`` before it), so
+#   kebab-case words like ``task-``, ``risk-``, ``desk-`` and ``disk-`` are untouched.
+BARE_API_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"sk-(?:(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{16,}|[A-Za-z0-9]{16,})"
+    r"|xai-[A-Za-z0-9]{40,}"
+    r"|gsk_[A-Za-z0-9]{40,}"
+    r"|hf_[A-Za-z0-9]{30,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}"
+    r"|[sr]k_(?:test|live)_[A-Za-z0-9]{16,}"
+    r")"
+)
+REDACTION_MARKER = "[REDACTED]"
+
+
 def redact_secrets(value: str | None) -> str | None:
     """Redact common credentials and URL user-info without echoing a canary."""
     if value is None:
@@ -179,7 +201,7 @@ def redact_secrets(value: str | None) -> str | None:
         r"\1\2[REDACTED]",
         redacted,
     )
-    redacted = re.sub(r"\bsk-[A-Za-z0-9]{16,}\b", "[REDACTED]", redacted)
+    redacted = BARE_API_TOKEN_RE.sub("[REDACTED]", redacted)
     redacted = re.sub(r"(https?://)[^/@\s]+@", r"\1[REDACTED]@", redacted)
     return redacted
 
@@ -620,8 +642,47 @@ class MemoryProviderError(RuntimeError):
         super().__init__(f"{code.value}: {self.safe_message}")
 
 
+def _redact_bare_tokens(value: Any) -> Any:
+    if isinstance(value, str):
+        return BARE_API_TOKEN_RE.sub(REDACTION_MARKER, value)
+    if isinstance(value, dict):
+        return {_redact_bare_tokens(str(k)): _redact_bare_tokens(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_bare_tokens(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise TypeError(f"unsupported outbound value type: {type(value).__name__}")
+
+
+def guard_outbound(payload: Any) -> Any:
+    """Client-side, fail-closed secret guard for every outbound request body (BOD-423).
+
+    Redacts bare API tokens (``BARE_API_TOKEN_RE``) in every string (keys and values) of a JSON payload,
+    then re-serializes the result and re-scans it. If redaction raises, the payload
+    holds a type that cannot be checked, or a token survives, this raises
+    :class:`MemoryProviderError` (``INVALID_REQUEST``) and the caller must not send.
+    The error never echoes the payload. The ``Authorization`` header is not a body and
+    is not touched.
+    """
+    try:
+        guarded = _redact_bare_tokens(payload)
+        wire = json.dumps(guarded, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    except Exception as exc:
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "outbound secret guard could not check payload; request not sent",
+        ) from exc
+    if BARE_API_TOKEN_RE.search(wire):
+        raise MemoryProviderError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "outbound payload still holds a bare API token after redaction; request not sent",
+        )
+    return guarded
+
+
 __all__ = [
     "ALLOWED_EVENT_KINDS",
+    "BARE_API_TOKEN_RE",
     "CANONICAL_EVENT_KINDS",
     "CAPABILITY_STATUS_PARTIAL",
     "CAPABILITY_STATUS_SUPPORTED",
@@ -650,6 +711,7 @@ __all__ = [
     "canonicalize",
     "digest_bytes",
     "event_digest",
+    "guard_outbound",
     "loads_lifecycle_event",
     "redact_mapping",
     "redact_secrets",

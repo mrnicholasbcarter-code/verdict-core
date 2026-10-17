@@ -16,6 +16,28 @@ Security: deterministic policy before persistence; sanitize nested fields once c
 
 ## Enforcement and limits
 
+### Outbound secret guard (BOD-423)
+
+Every JSON-RPC body `AiMemoryClient._mcp` sends first passes
+`contracts.guard_outbound`:
+- every string, keys included, has bare API tokens replaced with `[REDACTED]`:
+  `sk-<alnum>` and segmented `sk-proj-`/`sk-ant-`/`sk-or-v1-`/`sk-svcacct-` forms that
+  contain a digit, plus `xai-`, `gsk_`, `hf_`, `glpat-` and Stripe `sk_`/`rk_`
+  `test_`/`live_` keys. Each must start a word, so `task-`, `risk-`, `desk-` and
+  `disk-` text is kept (findings: `/workspace/hive/findings/ai-memory-sk-scanner-gap.md`
+  on the operator's box);
+- the result is re-serialized and scanned again;
+- if redaction raises, a value cannot be checked (not JSON), or a token survives, the
+  call raises `MemoryProviderError(INVALID_REQUEST, "... request not sent")`, records
+  `last_error`, and **sends nothing**. `search` turns that into a typed non-available
+  `RecallResult`, never an empty success.
+
+`redact_secrets` and `MemoryCapturePolicy` use the same pattern
+(`BARE_API_TOKEN_RE`), so event content holding a bare token is denied
+(`secret_detected`) and metadata is redacted in the outbox and remote page.
+The `Authorization` header is not a body and is not touched. This is a client-side
+guard only; the ai-memory server-side scanner gap is tracked separately.
+
 All put/delete operations take a nonblocking POSIX advisory lock keyed by endpoint/workspace/project under `~/.cache/verdict-memory/locks`. Contention returns typed DEGRADED and the outbox retries. Cooperating processes on this host must use the same lock directory; deployments must assign this package as sole writer for its namespace. Cross-host writers or tools that ignore that lock are unsupported. ai-memory has no conditional write API, so the client cannot guarantee cross-host CAS. The lock is operational coordination, not a new storage authority.
 
 `ProviderErrorCode.CONFLICT` is a permanent replay failure and dead-letters in the mirror. Ref revision is the persisted sanitized event digest (not backend revision). Sanitization runs identically before outbox and direct put; fingerprints bind the sanitized logical object. Same-source replay preserves the first persisted created_at. No-source replay retains digest identity semantics.

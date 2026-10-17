@@ -498,3 +498,33 @@ def test_check_install_refuses_user_owned_plugin_without_writing(tmp_path: Path)
     with pytest.raises(hm.HermesMemoryCollisionError):
         hm.check_install(hermes_home=home)
     assert sorted(p.name for p in home.rglob("*")) == ["plugins", hm.PLUGIN_NAME]
+
+
+# BOD-423 / QA F899 follow-up: clean uninstall must not leave an empty plugins/ behind
+def test_uninstall_removes_empty_plugins_dir_it_created(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    assert not (home / "plugins").exists()
+    hm.install(hermes_home=home)
+    hm.install(hermes_home=home)  # idempotent re-install keeps the created flag
+    assert hm.uninstall(hermes_home=home).removed is True
+    assert not (home / "plugins").exists()
+
+
+def test_uninstall_keeps_plugins_dir_that_existed_before(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    (home / "plugins").mkdir()
+    hm.install(hermes_home=home)
+    hm.uninstall(hermes_home=home)
+    assert (home / "plugins").is_dir()
+    assert list((home / "plugins").iterdir()) == []
+
+
+def test_uninstall_keeps_created_plugins_dir_with_user_content(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    hm.install(hermes_home=home)
+    user_plugin = home / "plugins" / "orca-status"
+    user_plugin.mkdir()
+    (user_plugin / "plugin.yaml").write_text("name: orca-status\n", encoding="utf-8")
+    hm.uninstall(hermes_home=home)
+    assert not (home / "plugins" / hm.PLUGIN_NAME).exists()
+    assert (user_plugin / "plugin.yaml").read_text(encoding="utf-8") == "name: orca-status\n"
