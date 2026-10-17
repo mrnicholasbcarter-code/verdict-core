@@ -1,0 +1,10 @@
+{
+  "kind": "manual_capture",
+  "content": "note captured without a harness event id",
+  "identity": {
+    "source_harness": "verdict",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-2"
+  },
+  "created_at": 1700000100.25
+}

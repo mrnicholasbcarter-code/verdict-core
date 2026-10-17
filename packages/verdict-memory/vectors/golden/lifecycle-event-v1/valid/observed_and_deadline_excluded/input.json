@@ -1,0 +1,13 @@
+{
+  "kind": "before_tool",
+  "content": "about to call a tool",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-clock"
+  },
+  "created_at": 1700000400.0,
+  "observed_at": 1700000401.5,
+  "deadline_at": 1700000460.0
+}

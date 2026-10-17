@@ -1,0 +1,4 @@
+# Fixture bytes are a contract: no editor rewrites.
+[*]
+insert_final_newline = unset
+trim_trailing_whitespace = false
