@@ -906,6 +906,13 @@ class FreeTierAdmitReceipt:
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
         by_id = {item.identity_id: item for item in snapshot.catalog}
         admitted_models: list[ModelInfo] = []
+        from verdict.omniroute_pipeline.declared_tier import (
+            load_declared_tiers,
+            resolve_capability_tier,
+        )
+
+        # R5 (phase g): declared tiers only in VERDICT_PIPELINE_RANKING_MODE=write.
+        declared = load_declared_tiers()
         for model_id in self.admitted:
             identity = by_id.get(model_id)
             provider = identity.provider if identity is not None else _provider_of(model_id)
@@ -913,7 +920,7 @@ class FreeTierAdmitReceipt:
                 ModelInfo(
                     id=model_id,
                     provider=provider,
-                    capability_tier=classify(model_id),
+                    capability_tier=resolve_capability_tier(model_id, declared),
                     is_available=True,
                     availability_state="eligible",
                     source="free_tier_active_admit",
