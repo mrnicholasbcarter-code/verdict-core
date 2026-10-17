@@ -254,3 +254,39 @@ def test_source_change_forces_refresh_not_cross_source_cache_hit(tmp_path: Path)
     assert first.fresh and second.refreshed and second.fresh and calls == 1
     assert second.source == "gateway-B"
     assert second.snapshot is not None and second.snapshot.route_ids == ("cx/b",)
+
+
+# --- BOD-420: pinned-combo allowlist ---
+
+
+def test_concrete_rows_keeps_pinned_combo_in_route_ids() -> None:
+    """The pinned combo id is kept even though owned_by is 'combo'."""
+    from verdict.prime_inventory import concrete_rows
+
+    rows = [
+        {"id": "prime-free-chain", "owned_by": "combo", "context_length": 1000000},
+        {"id": "cx/real", "owned_by": "cx"},
+    ]
+    kept, excluded = concrete_rows(rows)
+    kept_ids = [r["id"] for r in kept]
+    assert "prime-free-chain" in kept_ids
+    assert "cx/real" in kept_ids
+    assert "prime-free-chain" not in excluded
+
+
+def test_concrete_rows_still_excludes_unpinned_combos() -> None:
+    """Only the exact pinned id is kept; any other combo id stays excluded."""
+    from verdict.prime_inventory import concrete_rows
+
+    rows = [
+        {"id": "prime-free-chain", "owned_by": "combo"},
+        {"id": "usage", "owned_by": "combo"},
+        {"id": "some-other-combo", "owned_by": "combo"},
+    ]
+    kept, excluded = concrete_rows(rows)
+    kept_ids = [r["id"] for r in kept]
+    assert "prime-free-chain" in kept_ids
+    assert "usage" in excluded
+    assert "some-other-combo" in excluded
+    assert "usage" not in kept_ids
+    assert "some-other-combo" not in kept_ids

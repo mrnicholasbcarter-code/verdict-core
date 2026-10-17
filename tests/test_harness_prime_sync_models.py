@@ -207,3 +207,78 @@ def test_real_parser_path_accepts_sync_models_gateway(
         ["harness", "prime", "sync-models", "--gateway", "http://gw.example:1/v1"]
     )
     assert custom.gateway == "http://gw.example:1/v1"
+
+
+# --- BOD-420: pinned-combo allowlist ---
+
+_PINNED_ROW = {"id": "prime-free-chain", "owned_by": "combo", "context_length": 1000000}
+
+
+def _home_with_pinned(tmp_path: Path) -> Path:
+    """A models.json that does NOT yet have prime-free-chain in it."""
+    home = tmp_path / "agent"
+    home.mkdir()
+    (home / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "omniroute": {
+                        "baseUrl": "http://127.0.0.1:20128/v1",
+                        "api": "openai-completions",
+                        "apiKey": "OMNIROUTE_KEY_ENV",
+                        "models": [{"id": "cc/existing", "name": "existing"}],
+                    }
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return home
+
+
+def test_sync_keeps_pinned_combo_on_first_run(tmp_path: Path) -> None:
+    """prime-free-chain (owned_by=combo) must appear in 'added' and land in models.json."""
+    home = _home_with_pinned(tmp_path)
+    live = [{"id": "cc/real", "owned_by": "cc"}, _PINNED_ROW]
+    result = sync_models(live, prime_home=home, now=lambda: "20261017T000000Z")
+    assert "prime-free-chain" in result.added
+    assert result.written is True
+    data = json.loads((home / "models.json").read_text())
+    model_ids = [m["id"] for m in data["providers"]["omniroute"]["models"]]
+    assert "prime-free-chain" in model_ids
+
+
+def test_sync_pinned_combo_has_context_window_1000000(tmp_path: Path) -> None:
+    """The prime-free-chain entry in models.json must have contextWindow == 1000000."""
+    home = _home_with_pinned(tmp_path)
+    live = [_PINNED_ROW]
+    sync_models(live, prime_home=home, now=lambda: "20261017T000000Z")
+    data = json.loads((home / "models.json").read_text())
+    entries = {m["id"]: m for m in data["providers"]["omniroute"]["models"]}
+    assert "prime-free-chain" in entries
+    assert entries["prime-free-chain"]["contextWindow"] == 1000000
+
+
+def test_sync_pinned_combo_not_removed_on_second_run(tmp_path: Path) -> None:
+    """A second sync with the same live rows must have removed == ()."""
+    home = _home_with_pinned(tmp_path)
+    live = [{"id": "cc/real", "owned_by": "cc"}, _PINNED_ROW]
+    # First run: adds prime-free-chain
+    first = sync_models(live, prime_home=home, now=lambda: "20261017T000000Z")
+    assert "prime-free-chain" in first.added
+    # Second run: no changes (neither added nor removed)
+    second = sync_models(live, prime_home=home, now=lambda: "20261017T000001Z")
+    assert "prime-free-chain" not in second.removed
+    assert second.removed == ()
+
+
+def test_sync_unpinned_combo_still_excluded(tmp_path: Path) -> None:
+    """A combo row that is NOT in _PINNED_COMBOS stays excluded (not in models.json)."""
+    home = _home_with_pinned(tmp_path)
+    live = [{"id": "cc/real", "owned_by": "cc"}, {"id": "usage", "owned_by": "combo"}]
+    sync_models(live, prime_home=home, now=lambda: "20261017T000000Z")
+    data = json.loads((home / "models.json").read_text())
+    model_ids = [m["id"] for m in data["providers"]["omniroute"]["models"]]
+    assert "usage" not in model_ids
+    assert "cc/real" in model_ids
