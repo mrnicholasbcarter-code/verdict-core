@@ -226,7 +226,7 @@ def test_worker_capability_floor_drops_unknown_and_insufficient_before_ranking()
     ranked = [c.route_id for c in eligible_worker_candidates(bounded, rows, visible)]
     # Any tier accepted: known small model first, unknown models rank last.
     assert ranked[0] == "kr/claude-haiku-4.5"
-    assert set(ranked[-2:]) == {"kr/qwen3-coder-next", "kr/minimax-m2.5"}
+    assert set(ranked[-2:]) == {"kr/mystery-coder-a1", "kr/mystery-model-b2"}
 
 
 def test_worker_task_config_rejects_invalid_capability_floor() -> None:

@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from verdict.classifier import classify_known
 from verdict.openrouter_free_set import (
     DEFAULT_TTL_SECONDS,
     OpenRouterFreeEntry,
@@ -42,7 +43,6 @@ from verdict.orchestration.provider_catalog import (
     resolve_provider,
     routes_share_pool,
 )
-from verdict.classifier import classify_known
 from verdict.subagent_selection import HealthResult
 
 FIXTURES = Path(__file__).parent / "fixtures" / "catalog_truth"
