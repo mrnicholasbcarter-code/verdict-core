@@ -60,7 +60,10 @@ Two sessions in different projects never share a session, project, or hash. Verd
 ## Hook entrypoint
 
 `hook_command(event)` is the only place the command string is defined. It returns
-`python -m verdict.memory_harness.codex <Event>`, the form the controller chose. The entrypoint:
+`<python> -m verdict.memory_harness.codex <Event>`, the form the controller chose, where
+`<python>` is the absolute, shell-quoted `sys.executable` that ran the install. A bare `python`
+on PATH would miss verdict on pipx and uv installs. Reinstalling replaces Verdict hooks written
+by any interpreter, including the older bare-`python` form. The entrypoint:
 
 - reads the payload from stdin and writes nothing to stdout;
 - runs the launch gate first. An unknown event, a `hook_event_name` that doesn't match the

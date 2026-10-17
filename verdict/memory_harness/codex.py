@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -39,8 +40,14 @@ def hook_command(event: str) -> str:
     """Return the shell command Codex runs for ``event``.
 
     Single switch point for the hook entry form; the payload arrives on stdin.
+    The interpreter is the absolute, shell-quoted ``sys.executable`` that ran
+    the install, so the hook still finds verdict on pipx and uv installs where
+    a bare ``python`` on PATH would not have it.
     """
-    return f"python -m verdict.memory_harness.codex {event}"
+    return f"{shlex.quote(sys.executable)} {_HOOK_MODULE_ARGS} {event}"
+
+
+_HOOK_MODULE_ARGS = "-m verdict.memory_harness.codex"
 
 
 def _verdict_hook(event: str) -> dict[str, Any]:
@@ -54,7 +61,9 @@ def _verdict_hook(event: str) -> dict[str, Any]:
 def _is_verdict_command(command: object) -> bool:
     if not isinstance(command, str):
         return False
-    return command.startswith(hook_command("").rstrip()) or "verdict hook" in command
+    # Match any interpreter path (including the legacy bare ``python``), so a
+    # reinstall from another environment replaces rather than duplicates hooks.
+    return f" {_HOOK_MODULE_ARGS} " in f" {command} " or "verdict hook" in command
 
 
 def _strip_verdict(groups: list[Any]) -> list[Any]:

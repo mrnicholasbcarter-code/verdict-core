@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -111,7 +112,7 @@ def test_installer_reads_stdin_not_tmp_files(codex_home: Path, tmp_path: Path) -
     for cmd in commands:
         assert "/tmp/codex_" not in cmd
         assert "$(cat" not in cmd
-        assert cmd.startswith("python -m verdict.memory_harness.codex ")
+        assert cmd.startswith(f"{shlex.quote(sys.executable)} -m verdict.memory_harness.codex ")
 
 
 def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path) -> None:
@@ -120,7 +121,33 @@ def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path)
     data = json.loads(hooks_file.read_text("utf-8"))
     for event in CODEX_EVENTS:
         cmds = [h["command"] for g in data["hooks"].get(event, []) for h in g["hooks"]]
-        assert any(c == f"python -m verdict.memory_harness.codex {event}" for c in cmds), event
+        assert any(c == codex_installer.hook_command(event) for c in cmds), event
+
+
+def test_hook_command_uses_the_installing_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pipx/uv installs: a bare `python` on PATH would not have verdict.
+    monkeypatch.setattr(sys, "executable", "/opt/pipx venvs/verdict/bin/python")
+    cmd = codex_installer.hook_command("Stop")
+    assert cmd == "'/opt/pipx venvs/verdict/bin/python' -m verdict.memory_harness.codex Stop"
+    assert shlex.split(cmd)[0] == "/opt/pipx venvs/verdict/bin/python"
+
+
+def test_reinstall_replaces_legacy_bare_python_hooks(codex_home: Path, tmp_path: Path) -> None:
+    hooks_file = codex_home / "hooks.json"
+    legacy = {
+        "type": "command",
+        "command": "python -m verdict.memory_harness.codex Stop",
+        "timeout": 10,
+    }
+    hooks_file.write_text(
+        json.dumps({"hooks": {"Stop": [{"hooks": [legacy]}, USER_HOOK]}}), "utf-8"
+    )
+    codex_installer.install_codex_hooks(hooks_file, tmp_path / "plane.db")
+    data = json.loads(hooks_file.read_text("utf-8"))
+    stop = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
+    assert stop.count(codex_installer.hook_command("Stop")) == 1
+    assert "python -m verdict.memory_harness.codex Stop" not in stop
+    assert "my-own-audit --log" in stop
 
 
 def test_two_sessions_in_different_projects_stay_isolated() -> None:
