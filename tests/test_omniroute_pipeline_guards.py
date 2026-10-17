@@ -65,7 +65,6 @@ def test_paid_and_blocklisted_prefixes_never_free() -> None:
         assert classify_free(route, None, None) is not FreeStatus.FREE
 
 
-@pytest.mark.xfail(strict=True, raises=ImportError, reason="phase b: probe policy gate")
 def test_probe_refuses_non_free_route() -> None:
     from verdict.omniroute_pipeline.probes import probe_allowed  # type: ignore[attr-defined]
 
