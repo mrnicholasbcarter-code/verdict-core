@@ -61,7 +61,7 @@ def judge_chat(status: int, body: object) -> ProbeOutcome:
 PROBES_FLAG_ENV = "VERDICT_PIPELINE_PROBES"
 BUDGET_FALLBACK_HEADER = {"X-OmniRoute-Budget-Fallback": "strict"}
 CONTEXT_STEPS = (128_000, 256_000, 512_000, 825_000, 1_000_000)
-TOS_AVOID_PREFIXES = frozenset({"agy", "kiro"})
+TOS_AVOID_PREFIXES = frozenset({"kiro"})  # O1: agy is sanctioned, not ToS-avoid
 NEVER_PROBE_PREFIXES = frozenset(
     {"ahm", "cc", "claude", "cx", "opencode", "opencode-zen", "bedrock"}
 )

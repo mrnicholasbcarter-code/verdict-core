@@ -38,7 +38,9 @@ def _pool() -> list[Any]:
         _c("nvidia/z-ai/glm-5.3", "nvidia", 1479, 825_000),
         _c("nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia", 1416, 825_000),
         _c("kc/nvidia/nemotron-3.5-super-vl:free", "kc", 1416, 700_000),
-        _c("agy/gemini-3.8-flash-high", "agy", 1496, 1_000_000, tos_avoid=True),
+        # O1: agy is sanctioned, not ToS-avoid; usable_context unmeasured (0) until phase b.
+        _c("agy/gemini-3.8-flash-high", "agy", 1496, 0),
+        _c("kiro/x", "kiro", 1400, 1_000_000, tos_avoid=True),
         _c("agentrouter/deepseek-v4-flash", "agentrouter", None, 700_000, free=False),
     ]
 
@@ -142,10 +144,10 @@ def test_flap_freeze() -> None:
     assert len(st.switch_times) == 2
 
 
-def test_empty_pool_fails_closed_no_agy_agentrouter() -> None:
+def test_empty_pool_fails_closed_no_kiro_agentrouter() -> None:
     sw = _sw()
     pool = sw.build_pool(
-        [c for c in _pool() if c.provider in {"agy", "agentrouter"}], min_context=0
+        [c for c in _pool() if c.provider in {"kiro", "agentrouter"}], min_context=0
     )
     assert pool.members == ()
     assert pool.primary is None
@@ -159,22 +161,20 @@ def test_combo_reorder_is_recommendation_only_without_ruling() -> None:
     )
     assert rec.write_allowed is False
     assert rec.http_method is None
-    assert "agy/gemini-3.8-flash-high" not in rec.order
 
 
-def test_agy_never_recommended_up() -> None:
+def test_agy_stays_second_in_combo_recommendation() -> None:
     sw = _sw()
     current = [
-        "agy/gemini-3.8-flash-high",
         "nvidia/z-ai/glm-5.3",
+        "agy/gemini-3.8-flash-high",
+        "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
         "kc/nvidia/nemotron-3.5-super-vl:free",
+        "kc/reflection/beam-free",
     ]
     rec = sw.recommend_combo_order(
         "prime-free-chain", sw.build_pool(_pool()), ruled_write=True, current_order=current
     )
     assert rec.http_method is None  # the switcher never writes the combo
-    if "agy/gemini-3.8-flash-high" in rec.order:
-        assert rec.order.index("agy/gemini-3.8-flash-high") >= current.index(
-            "agy/gemini-3.8-flash-high"
-        )
-    assert "agy" in rec.policy_flags
+    assert rec.order.index("agy/gemini-3.8-flash-high") == 1  # O1: stays second
+    assert "agy" not in rec.policy_flags  # no agy policy flag (O1)

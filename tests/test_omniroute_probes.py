@@ -105,7 +105,8 @@ def test_probe_policy_needle_and_steps() -> None:
     )
 
     assert probe_allowed("kc/reflection/beam-free", free_status="free") is True
-    assert probe_allowed("agy/gemini-3.8-flash-high", free_status="free") is False
+    assert probe_allowed("agy/gemini-3.8-flash-high", free_status="free") is True  # O1
+    assert probe_allowed("kiro/x", free_status="free") is False
     assert probe_allowed("cc/x", free_status="free") is False
     payload = needle_payload("nvidia/z-ai/glm-5.3", 128_000, "ZQ-7")
     assert "ZQ-7" in str(payload["messages"])

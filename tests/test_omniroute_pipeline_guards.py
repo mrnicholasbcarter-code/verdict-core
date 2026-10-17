@@ -82,12 +82,11 @@ def test_tos_avoid_fails_closed() -> None:
 
     from verdict.omniroute_pipeline.probes import probe_allowed  # type: ignore[attr-defined]
 
-    for route in ("agy/gemini-3.8-flash-high", "kiro/x"):
-        assert probe_allowed(route, free_status="free") is False
+    assert probe_allowed("kiro/x", free_status="free") is False
     cand = Candidate(
-        route="agy/gemini-3.8-flash-high",
-        provider="agy",
-        elo=1496,
+        route="kiro/x",
+        provider="kiro",
+        elo=1400,
         usable_context=1_000_000,
         eligible=True,
         tool_ok=True,
@@ -95,6 +94,44 @@ def test_tos_avoid_fails_closed() -> None:
         tos_avoid=True,
     )
     assert build_pool([cand]).members == ()
+
+
+@pytest.mark.xfail(strict=True, raises=ImportError, reason="phase e: switcher pool")
+def test_agy_sanctioned_not_tos_avoid() -> None:
+    from verdict.omniroute_pipeline.switcher import (  # type: ignore[import-not-found]
+        Candidate,
+        build_pool,
+    )
+
+    from verdict.omniroute_pipeline.probes import probe_allowed
+
+    # O1 (11:08Z): agy is an operator-sanctioned free route, never ToS-avoid.
+    assert probe_allowed("agy/gemini-3.8-flash-high", free_status="free") is True
+    measured = Candidate(
+        route="agy/gemini-3.8-flash-high",
+        provider="agy",
+        elo=1496,
+        usable_context=700_000,
+        eligible=True,
+        tool_ok=True,
+        free=True,
+        tos_avoid=False,
+    )
+    assert [c.route for c in build_pool([measured], min_context=700_000).members] == [
+        "agy/gemini-3.8-flash-high"
+    ]
+    # Single mode: agy joins only once phase b measures usable_context >= 700k.
+    unmeasured = Candidate(
+        route="agy/gemini-3.8-flash-high",
+        provider="agy",
+        elo=1496,
+        usable_context=0,
+        eligible=True,
+        tool_ok=True,
+        free=True,
+        tos_avoid=False,
+    )
+    assert build_pool([unmeasured], min_context=700_000).members == ()
 
 
 @pytest.mark.xfail(strict=True, raises=ImportError, reason="phase f: revive requests")
