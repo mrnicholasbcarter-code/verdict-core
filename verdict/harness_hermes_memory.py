@@ -31,6 +31,7 @@ from typing import Any, Literal, Protocol
 import yaml
 
 from verdict.harness_hermes import resolve_paths
+from verdict.hermes_plugin import verdict_memory as _bundled_plugin
 from verdict.shared_memory import redact_secrets
 
 PLUGIN_NAME = "verdict-memory"
@@ -107,7 +108,7 @@ def canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def logical_digest(event: Mapping[str, Any]) -> str:
+def _logical_digest(event: Mapping[str, Any]) -> str:
     """SHA-256 of canonical JSON excluding observation clocks (P-INTERFACE rule)."""
     body = {k: v for k, v in event.items() if k not in ("observed_at", "deadline_at")}
     return hashlib.sha256(canonical_json(body)).hexdigest()
@@ -283,7 +284,7 @@ class HermesMemoryBridge:
 _AVAILABLE = "available"
 
 
-class LifecycleBackendAdapter:
+class _LifecycleBackendAdapter:
     """Adapt a P ``MemoryProvider`` (put/search) to this bridge's ``MemoryBackend``.
 
     Events cross the seam as P canonical ``lifecycle-event/v1`` bytes via
@@ -361,24 +362,35 @@ def _home(hermes_home: Path | None) -> Path:
     return resolve_paths(hermes_home=hermes_home).config.parent
 
 
+def check_install(*, hermes_home: Path | None = None) -> None:
+    """Raise ``HermesMemoryCollisionError`` if :func:`install` would refuse; writes nothing."""
+    if not callable(_bundled_plugin.register) or set(_bundled_plugin.HOOKS) != set(HOOKS_USED):
+        raise HermesMemoryCollisionError(
+            "bundled Hermes plugin does not expose register() for exactly HOOKS_USED"
+        )
+    home = _home(hermes_home)
+    plugin_dir = _plugin_dir(home)
+    if plugin_dir.exists() and _owned(plugin_dir) is None:
+        raise HermesMemoryCollisionError(f"{plugin_dir} exists and is not Verdict-owned")
+    plugins = _load_config(home / "config.yaml").get("plugins")
+    if plugins is not None and not isinstance(plugins, dict):
+        raise HermesMemoryCollisionError("config.yaml plugins: is not a mapping; refusing to edit")
+    if not isinstance((plugins or {}).get("enabled", []), list):
+        raise HermesMemoryCollisionError("config.yaml plugins.enabled is not a list")
+
+
 def install(
     *, hermes_home: Path | None = None, command: Sequence[str] | None = None, timeout_s: float = 8.0
 ) -> InstallResult:
     """Install the plugin and enable it. Idempotent; refuses a user-owned collision."""
+    check_install(hermes_home=hermes_home)
     home = _home(hermes_home)
     config_path = home / "config.yaml"
     plugin_dir = _plugin_dir(home)
     marker = _owned(plugin_dir)
-    if plugin_dir.exists() and marker is None:
-        raise HermesMemoryCollisionError(f"{plugin_dir} exists and is not Verdict-owned")
-
     data = _load_config(config_path)
     plugins = data.get("plugins")
-    if plugins is not None and not isinstance(plugins, dict):
-        raise HermesMemoryCollisionError("config.yaml plugins: is not a mapping; refusing to edit")
     enabled = (plugins or {}).get("enabled", [])
-    if not isinstance(enabled, list):
-        raise HermesMemoryCollisionError("config.yaml plugins.enabled is not a list")
 
     changed = False
     settings = {
