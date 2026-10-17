@@ -202,3 +202,13 @@ def test_census_transport_guard_turns_fake_200_into_billing_failure(
     out = guarded("ahm/x", {}, 1.0)
     assert out.ok is False and category_for(out) == CATEGORY_PAYMENT
     assert guarded("nvidia/z-ai/glm-5.3", {}, 1.0) is real
+
+
+def test_census_transport_guard_judges_tool_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    from verdict.omniroute_pipeline.census_hook import FLAG_ENV, guard_transport
+    from verdict.prove_at_rest import ProbeExchange
+
+    fake = ProbeExchange(http_status=200, ok=True, response_body={"id": "chatcmpl-fake-9"})
+    monkeypatch.setenv(FLAG_ENV, "1")
+    guarded = guard_transport(lambda route, phase, timeout: fake)
+    assert guarded("ahm/x", "tool", 1.0).ok is False
