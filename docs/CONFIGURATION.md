@@ -343,6 +343,44 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_AVAILABILITY_TTL_SECONDS` | Availability cache TTL |
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
+| `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
+
+### Outcome shadow sink
+
+The candidate pool attaches a shadow-only `outcome_shadow` block to every
+admission receipt (BOD-304). It never changes the live shortlist or choice.
+`VERDICT_OUTCOME_SHADOW_ROOTS` turns it on and also picks where the blocks are
+persisted (BOD-426):
+
+- **Roots.** The value is an OS path-separator list of verified run
+  directories (each with `receipt.json` and `events.jsonl`), or a single
+  manifest file listing one run directory per line (`#` starts a comment).
+- **Sink path.** `outcome_shadow.jsonl` in the directory that contains the
+  first entry: the runs directory for a run-dir entry, or the manifest's own
+  directory for a manifest file. For example,
+  `VERDICT_OUTCOME_SHADOW_ROOTS=$HOME/.verdict/shadow-roots.txt` writes
+  `$HOME/.verdict/outcome_shadow.jsonl`. The sink is never written inside a
+  run directory, so receipt verification of the roots is unaffected.
+- **Format.** One JSON object per receipt and per line:
+  `{"schema": "verdict.outcome_shadow.sink/v1", "recorded_at": "...Z",
+  "outcome_shadow": {...}}`. The file is append-only: it is opened with
+  `O_APPEND` (and `O_NOFOLLOW`, so a symlinked sink is refused), created with
+  mode `0600`, and each record is written as one complete line in a single
+  `write` call.
+- **Missing directory.** The sink directory is never created. If it does not
+  exist, or the append fails, a warning is logged on `verdict.outcome_shadow`
+  and admission carries on unchanged.
+- **Unset.** No roots and no sink; nothing is written.
+
+`would_rank` is only ever a computed rerank of the live shortlist
+(`would_rank_scope: "live_shortlist_only"`). When no counterfactual was
+computed (`metric_missingness` is `no_roots_configured` or `shadow_error`),
+`would_rank` is `null` and `rank_delta` is empty. Readers must skip those
+records rather than count them as agreement. `build_outcome_shadow` raises
+`OutcomeShadowNotConfiguredError` if it is called with no roots.
+
+The variable is read when the service starts, so a running `verdict serve`
+needs a restart to pick up a change.
 
 ### Session evidence (orchestration, phase 1)
 

@@ -57,7 +57,11 @@ from verdict.metadata.store import (
 )
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
-from verdict.outcome_shadow import attach_outcome_shadow, resolve_outcome_shadow_roots
+from verdict.outcome_shadow import (
+    attach_outcome_shadow,
+    resolve_outcome_shadow_roots,
+    resolve_outcome_shadow_sink,
+)
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
@@ -300,6 +304,8 @@ class IntelligenceService:
             self.outcome_shadow_roots = resolve_outcome_shadow_roots(None)
         else:
             self.outcome_shadow_roots = resolve_outcome_shadow_roots(outcome_shadow_roots)
+        # BOD-426: persist every shadow block; sink path derives from the same env var.
+        self.outcome_shadow_sink = resolve_outcome_shadow_sink()
         # Request-time OmniRoute evidence cache. A failed refresh never erases
         # the last complete snapshot; cold-start authority mode still fails closed.
         self._admit_snapshot_lkg: OmniRouteAdmitSnapshot | None = None
@@ -855,6 +861,7 @@ class IntelligenceService:
                 task_family=profile.task_family,
                 fingerprint_digest=profile.digest,
                 as_of=self.admit_now,
+                sink=self.outcome_shadow_sink,
             )
         return (
             replace(
