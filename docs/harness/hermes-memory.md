@@ -1,9 +1,10 @@
 # Hermes memory plugin (BOD80 lane C)
 
-Status: **experimental, PARTIAL**. This page describes what the code on branch
-`bod80/lane-c-hermes` actually does. Hook behavior is taken from the installed
-Hermes source and from Hermes's own plugin loader in a temporary `HERMES_HOME`. A
-live Hermes turn has **not** been observed yet.
+Status: **experimental**. The hook surface and the session-start, before-first-turn
+and session-end events are **SUPPORTED** (observed firing live, see "Live
+observation"); memory capture and recall stay **PARTIAL** until a backend round trip
+exists. Hook behavior is taken from the installed Hermes source, Hermes's own plugin
+loader in a temporary `HERMES_HOME`, and one bounded live turn.
 
 ## What it is
 
@@ -103,8 +104,8 @@ cites its `source_event_id`.
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Automatic recall before each turn | PARTIAL (source-evidenced) | `pre_llm_call` context injection; not seen live |
-| High-value capture | PARTIAL (source-evidenced) | `post_llm_call`; not seen live; no backend yet |
+| Automatic recall before each turn | PARTIAL | `pre_llm_call` fired live; recall with real content not seen live (no backend) |
+| High-value capture | PARTIAL | `post_llm_call` fired live and queued to the local outbox; no backend yet |
 | Session identity | PARTIAL (source-evidenced) | `session_id` and `turn_id` in hook kwargs |
 | Project identity | PARTIAL | not provided by Hermes; comes from Verdict config |
 | Source event id | PARTIAL | built from `session_id`, `turn_id` and the hook name |
@@ -112,9 +113,11 @@ cites its `source_event_id`.
 | Tool pre/post, verification, compaction, subagents | UNSUPPORTED by this adapter | the hooks exist in Hermes but are not wired |
 | Resume | UNKNOWN | not traced |
 
-`verdict.harness_hermes.certify` now reports `hooks`, `session_start`,
-`before_first_turn`, `session_end` and `mutation_capability` as `partial`. It no
-longer says Hermes has no hook system.
+`verdict.harness_hermes.certify` reports `hooks`, `session_start`,
+`before_first_turn` and `session_end` as `supported`: each is backed by a hook that
+fired live (`on_session_start`, `pre_llm_call`, `on_session_end`; evidence in
+`tests/fixtures/hermes/v0_21_3/live_observation.json`). `mutation_capability` stays
+`partial`, because `post_llm_call` capture reached only the local outbox.
 
 ## Backend failure, outbox and gaps
 
@@ -177,11 +180,11 @@ Observed:
 Observed turn ids are composite (`<session>:<uuid>:<hash>`), so `source_event_id`
 is long but still unique per turn.
 
-Facet status after this run: `session_start`, `before_first_turn`, `session_end`
-and capture (`mutation_capability`) have been seen **firing** live. `certify` still
-reports them as `partial`, because no live backend round trip exists yet (P's
-client is on hold) and recall injection with real content has not been observed.
-Any change to SUPPORTED is the controller's decision.
+Facet status after this run (controller ruling, live-observed standard):
+`hooks`, `session_start`, `before_first_turn` and `session_end` are `supported`.
+`mutation_capability` stays `partial`: capture fired but reached only the local
+outbox, since no live backend round trip exists yet (P's client is on hold), and
+recall injection with real content has not been observed.
 
 ## Live redaction check (2026-10-16 19:31 ET)
 
