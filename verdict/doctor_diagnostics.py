@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -755,7 +757,7 @@ def _collect_doctor_diagnostics(
     # cache is too stale or empty to mean anything, instead of only checking
     # docs/config/gateway and leaving the actual background service unverified.
     sections.append(("Installed services", "header", ""))
-    for row in installed_service_rows():
+    for row in (*installed_service_rows(), *service_code_path_rows()):
         sections.append((row["label"], row["status"], row["detail"]))
         if row["status"] == "failed":
             issues_found.append(row["detail"])
@@ -860,3 +862,150 @@ def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
         "status": "ok",
         "detail": f"{fresh} fresh, {stale} stale route(s)",
     }
+
+
+# ---------------------------------------------------------------------------
+# Service code paths (BOD-421): a tracked unit must import the verdict
+# package its ExecStart interpreter is configured for, not one shadowed by
+# its WorkingDirectory. ``python -m verdict`` puts the unit cwd first on
+# sys.path, so a stale checkout as WorkingDirectory silently runs old code.
+# ---------------------------------------------------------------------------
+
+_SERVICE_CODE_PATH_UNITS = (("verdict-prime-sync.service", "Prime-sync code path"),)
+
+_EXECSTART_PATH_RE = re.compile(r"path=([^;]+)")
+
+
+def _run_systemctl_show_props(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+
+def _systemctl_show_props(
+    unit: str,
+    run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show_props,
+) -> dict[str, str]:
+    """``LoadState``/``WorkingDirectory``/``ExecStart`` for one unit. Never raises."""
+    try:
+        result = run(
+            ["systemctl", "--user", "show", "-p", "LoadState,WorkingDirectory,ExecStart", unit]
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            values[key] = value.strip()
+    return values
+
+
+def _parse_execstart_interpreter(value: str) -> str | None:
+    """The ExecStart binary path from ``systemctl show`` output.
+
+    Modern systemd prints ``{ path=... ; argv[]=[...] ; ... }``; older
+    versions print the plain command line. Both are handled so the check
+    does not depend on the systemd version.
+    """
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("{"):
+        match = _EXECSTART_PATH_RE.search(text)
+        return match.group(1).strip() if match else None
+    return text.split()[0]
+
+
+def _resolve_verdict_package(
+    interpreter: str,
+    cwd: str,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str | None:
+    """Directory of the ``verdict`` package ``interpreter`` imports with ``cwd``.
+
+    Read-only: it is the same import the service performs at startup.
+    ``cwd`` is first on ``sys.path`` for ``-c`` exactly as for ``-m``, so a
+    ``verdict/`` package under ``cwd`` shadows the interpreter's own install.
+    """
+    try:
+        result = run(
+            [interpreter, "-c", "import verdict; print(verdict.__file__)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    location = result.stdout.strip() if result.returncode == 0 else ""
+    return str(Path(location).resolve().parent) if location else None
+
+
+def service_code_path_rows(
+    *,
+    unit_props: Callable[[str], dict[str, str]] | None = None,
+    resolve: Callable[[str, str], str | None] = _resolve_verdict_package,
+) -> list[dict[str, str]]:
+    """Doctor rows: each tracked unit must import its configured ``verdict`` package.
+
+    The package is resolved twice with the unit's ExecStart interpreter:
+    once from a neutral cwd (the checkout the interpreter's venv is
+    configured to import -- the repo doctor tracks for the unit) and once
+    from the unit's WorkingDirectory (what the service actually imports).
+    A difference means the cwd shadows the configured checkout and the unit
+    runs stale code, reported as ``status: "failed"`` with the unit name,
+    the configured WorkingDirectory and the resolved package path.
+    ``unit_props`` and ``resolve`` are injectable for tests; without
+    injection this reads the host's real systemd user units (never
+    available on a CI runner, where every unit is skipped as not loaded).
+    """
+    unit_props = unit_props or _systemctl_show_props
+    rows: list[dict[str, str]] = []
+    for unit, label in _SERVICE_CODE_PATH_UNITS:
+        props = unit_props(unit)
+        if props.get("LoadState", "not-found") != "loaded":
+            continue
+        working_directory = props.get("WorkingDirectory", "")
+        interpreter = _parse_execstart_interpreter(props.get("ExecStart", ""))
+        if not working_directory or not interpreter:
+            rows.append(
+                {
+                    "label": label,
+                    "status": "failed",
+                    "detail": f"{unit}: missing WorkingDirectory or ExecStart interpreter",
+                }
+            )
+            continue
+        with tempfile.TemporaryDirectory() as neutral_cwd:
+            configured = resolve(interpreter, neutral_cwd)
+        imported = resolve(interpreter, working_directory)
+        if configured is None or imported is None:
+            rows.append(
+                {
+                    "label": label,
+                    "status": "failed",
+                    "detail": (
+                        f"{unit}: cwd {working_directory}; could not resolve the verdict package"
+                        f" the interpreter imports (configured={configured}, imported={imported})"
+                    ),
+                }
+            )
+        elif imported != configured:
+            rows.append(
+                {
+                    "label": label,
+                    "status": "failed",
+                    "detail": (
+                        f"{unit}: cwd {working_directory} imports package {imported},"
+                        f" not the configured checkout {configured}"
+                    ),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "label": label,
+                    "status": "ok",
+                    "detail": f"{unit}: cwd {working_directory}, package {imported}",
+                }
+            )
+    return rows
