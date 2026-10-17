@@ -6,6 +6,10 @@ produce **these exact bytes**. Do not trust a matching digest that was computed
 some other way.
 
 Regenerate with `python scripts/gen_golden_vectors.py`. Check with `--check`.
+The wheel ships this directory as `verdict_memory/vectors/golden/lifecycle-event-v1/`
+and the generator as `verdict_memory/scripts/gen_golden_vectors.py`, so
+`python <site-packages>/verdict_memory/scripts/gen_golden_vectors.py --check`
+also works from an installed wheel.
 Do not edit a fixture by hand. Add a new case instead, because a changed byte
 is a contract change. Changing a byte also needs a deliberate update to the
 pinned digests in `tests/test_golden_vectors_same_byte.py`.

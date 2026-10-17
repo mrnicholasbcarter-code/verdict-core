@@ -246,3 +246,22 @@ def test_legacy_vectors_match_bundled_copies() -> None:
     bundled = PKG_ROOT / "src" / "verdict_memory" / "vectors"
     for legacy in sorted((PKG_ROOT / "vectors").glob("*.json")):
         assert (bundled / legacy.name).read_bytes() == legacy.read_bytes(), legacy.name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "lifecycle_event_v1_minimal.json",
+        "lifecycle_event_v1_numeric.json",
+        "lifecycle_event_v1_unicode_optional.json",
+    ],
+)
+def test_legacy_vectors_store_keys_the_code_derives(name: str) -> None:
+    raw = json.loads((PKG_ROOT / "vectors" / name).read_text(encoding="utf-8"))
+    event = LifecycleEvent.from_dict({**raw["event"], "idempotency_key": ""})
+    assert raw["event"]["idempotency_key"] == event.idempotency_key
+    assert raw["idempotency_key"] == event.idempotency_key
+    assert raw.get("source_idempotency_key", event.idempotency_key) == event.idempotency_key
+    assert raw["digest"] == event.digest()
+    assert raw["content_fingerprint"] == event.content_fingerprint()
+    assert raw["canonical_json"] == canonicalize(event.to_dict())
