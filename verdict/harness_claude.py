@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sys
 from collections.abc import Callable, Mapping, MutableMapping
@@ -492,8 +493,22 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
 # --- Hook entry point ---------------------------------------------------------
 
 # Single switch point for the installed hook command (controller 2026-10-16 23:10Z):
-# the E0 module entry point ``python -m verdict.memory_harness.claude <Event>``.
-HOOK_COMMAND_TEMPLATE = "python -m verdict.memory_harness.claude {event}"
+# the E0 module entry point ``<python> -m verdict.memory_harness.claude <Event>``.
+# ``{python}`` is the shell-quoted absolute interpreter that ran the install, so the
+# hook still imports verdict on pipx/uv installs where a bare ``python`` cannot.
+HOOK_MODULE = "verdict.memory_harness.claude"
+HOOK_COMMAND_TEMPLATE = "{python} -m " + HOOK_MODULE + " {event}"
+
+
+def hook_command(event: str) -> str:
+    """Return the installed hook command for ``event`` using ``sys.executable``."""
+    # sys.executable can be empty or None (embedded or frozen interpreters), and
+    # shlex.quote("") would write an unrunnable ''. The bare-python fallback is
+    # the pre-BOD-422 form: no worse than before, and still matched by the
+    # ownership predicate, so a later reinstall from a real interpreter replaces it.
+    return HOOK_COMMAND_TEMPLATE.format(python=shlex.quote(sys.executable or "python"), event=event)
+
+
 OUTBOX_DIR_ENV = "VERDICT_CLAUDE_OUTBOX_DIR"
 CLAUDE_VERSION_ENV = "VERDICT_CLAUDE_VERSION"
 OUTBOX_FILENAME = "claude-lifecycle.jsonl"
@@ -582,6 +597,7 @@ __all__ = [
     "HOOK_COMMAND_TEMPLATE",
     "HOOK_EXIT_ERROR",
     "HOOK_EXIT_OK",
+    "HOOK_MODULE",
     "OUTBOX_DIR_ENV",
     "OUTBOX_FILENAME",
     "CertifyReport",
@@ -598,6 +614,7 @@ __all__ = [
     "format_certify",
     "format_discover",
     "format_status",
+    "hook_command",
     "main",
     "resolve_paths",
     "run_hook",

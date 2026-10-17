@@ -52,15 +52,27 @@ Two sessions in different projects never share a session, project, or hash. Verd
 - `install_codex_hooks(hooks_file, shared_db)` registers one Verdict command for each of
   the 11 events. Running it again doesn't change the file. User hooks and other top-level
   keys are kept. The file is written atomically.
-- Install removes legacy Verdict entries, including any `verdict hook ...` command that reads
-  `/tmp/codex_*`, before writing the stdin hooks.
+- Install removes legacy Verdict entries before writing the stdin hooks: earlier
+  `<python> -m verdict.memory_harness.codex <Event>` hooks under any interpreter, and a direct
+  `verdict hook record|recall` command whose prompt argument reads `/tmp/codex_last_prompt` or
+  `/tmp/codex_session_prompt`.
+- A hook counts as Verdict's only when `shlex.split` parses it as exactly
+  `<python> -m verdict.memory_harness.codex <Event>` with a known Codex event, where `<python>` is
+  the pinned `sys.executable` or a bare, relative or absolute `python`, `python3` or
+  `python3.N`. Wrappers such as `sh -c '...'` or `logger -- '...'`, extra arguments, other
+  modules and unparseable commands are user hooks and are never removed, even when they
+  mention the module (`verdict/memory_harness/_hook_ownership.py`).
 - `uninstall_codex_hooks(hooks_file)` removes only Verdict entries and drops any event list
   that ends up empty.
 
 ## Hook entrypoint
 
 `hook_command(event)` is the only place the command string is defined. It returns
-`python -m verdict.memory_harness.codex <Event>`, the form the controller chose. The entrypoint:
+`<python> -m verdict.memory_harness.codex <Event>`, the form the controller chose, where
+`<python>` is the absolute, shell-quoted `sys.executable` that ran the install. A bare `python`
+on PATH would miss verdict on pipx and uv installs. Reinstalling replaces Verdict hooks written
+by any interpreter, including the older bare-`python` form (see the ownership rule above). The
+entrypoint:
 
 - reads the payload from stdin and writes nothing to stdout;
 - runs the launch gate first. An unknown event, a `hook_event_name` that doesn't match the
