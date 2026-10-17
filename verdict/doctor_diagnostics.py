@@ -871,6 +871,11 @@ def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
 # sys.path, so a stale checkout as WorkingDirectory silently runs old code.
 # ---------------------------------------------------------------------------
 
+# verdict-prove-at-rest.service is deliberately NOT checked: that unit is
+# currently live-misconfigured on the operator host (WorkingDirectory points
+# at a stale checkout), and retargeting it is deferred until the FREE-only
+# spend filter exists; it will be added to this tuple after the unit is
+# reinstalled from the main repo.
 _SERVICE_CODE_PATH_UNITS = (("verdict-prime-sync.service", "Prime-sync code path"),)
 
 _EXECSTART_PATH_RE = re.compile(r"path=([^;]+)")
