@@ -1,5 +1,7 @@
 # BOD-281: ai-memory Shared-Memory POC — Evaluation Report
 
+> **Later note:** The experimental provider recorded below was removed. It was replaced by the native BOD-339 backend. This file remains the historical POC record.
+
 **Date:** 2026-09-28  
 **Upstream:** akitaonrails/ai-memory @ `85c9ba36`  
 **Commit:** 85c9ba36d7321a0a959cc5fe08ea18cbf667041a 2026-09-28 02:23:09 -0300 Merge PR #946 into main  
