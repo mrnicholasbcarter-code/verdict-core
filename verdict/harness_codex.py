@@ -413,8 +413,8 @@ HookLevel = Literal["supported", "partial", "unknown"]
 CODEX_HOOK_EVENT_LEVELS: Mapping[str, HookLevel] = {
     "SessionStart": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
     "UserPromptSubmit": "supported",  # live: tests/fixtures/codex/v0_161_0/live_*.json
-    "PreToolUse": "partial",
-    "PostToolUse": "partial",
+    "PreToolUse": "supported",  # live: tests/fixtures/codex/v0_161_0/live_pre_tool_use.json
+    "PostToolUse": "supported",  # live: tests/fixtures/codex/v0_161_0/live_post_tool_use.json
     "PermissionRequest": "unknown",
     "PreCompact": "partial",
     "PostCompact": "unknown",
@@ -536,7 +536,7 @@ def certify(
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.codex/config.toml → Verdict :8000",
         "Codex stdin hooks installed via memory_harness.codex.install_codex_hooks for all events",
-        "hook_events: SessionStart, UserPromptSubmit, Stop, SessionEnd live-observed (0.161.0); rest source-evidenced",
+        "hook_events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd live-observed (0.161.0); rest source-evidenced",
     ]
     needs_owner = ("live enable with secrets (export token_env; Codex API key is NEEDS_OWNER)",)
     if not discovered.installed:

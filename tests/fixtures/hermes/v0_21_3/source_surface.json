@@ -1,0 +1,15 @@
+{
+  "hermes_version": "Hermes Agent v0.21.3 (2026.9.14)",
+  "upstream_commit": "2ed6387d87",
+  "evidence": "source-read 2026-10-16; NOT observed firing live",
+  "plugin_loader": "hermes_cli/plugins.py:1-9 (user $HERMES_HOME/plugins/<name>/plugin.yaml + register(ctx)); plugins.enabled gate hermes_cli/plugins.py:1424",
+  "register_hook": "hermes_cli/plugins.py:916",
+  "valid_hooks_used": ["on_session_start", "pre_llm_call", "post_llm_call", "on_session_end"],
+  "fire_sites": {
+    "on_session_start": "agent/conversation_loop.py:774",
+    "pre_llm_call": "agent/turn_context.py:697",
+    "post_llm_call": "agent/turn_finalizer.py:434",
+    "on_session_end": "agent/turn_finalizer.py:663; cli.py:873"
+  },
+  "pre_llm_call_return": "str or {\"context\": str}, appended to current user message (website/docs/developer-guide/observer-hooks.md:62)"
+}

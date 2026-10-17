@@ -245,15 +245,15 @@
   },
   {
     "qualified_name": "verdict.harness_claude.format_certify",
-    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: public text renderer (format_certify) in verdict/harness_claude.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_claude.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_claude.format_discover",
-    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: public text renderer (format_discover) in verdict/harness_claude.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_claude.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_claude.format_status",
-    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: public text renderer (format_status) in verdict/harness_claude.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_claude.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_cline.format_certify",
@@ -269,11 +269,11 @@
   },
   {
     "qualified_name": "verdict.harness_codex.format_certify",
-    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+    "reason": "KEEP: public text renderer (format_certify) in verdict/harness_codex.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_codex.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_codex.format_status",
-    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+    "reason": "KEEP: public text renderer (format_status) in verdict/harness_codex.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_codex.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_cursor.format_certify",
@@ -370,10 +370,6 @@
   {
     "qualified_name": "verdict.memory_mirror.MemoryMirrorWorker",
     "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
-  },
-  {
-    "qualified_name": "verdict.memory_providers.ai_memory_experimental.AiMemoryExperimentalProvider",
-    "reason": "UNTRIAGED: AiMemoryExperimentalProvider has only non-production references; EXPERIMENTAL: HTTP adapter for akitaonrails/ai-memory as a SharedMemoryProvider (verdict/memory_providers/ai_memory_experimental.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.import_session",
@@ -592,10 +588,6 @@
     "reason": "UNTRIAGED: WorkerPool has only non-production references; Bounded worker execution against an OpenAI-compatible OmniRoute gateway (verdict/workers.py)."
   },
   {
-    "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
-    "reason": "UNTRIAGED: AutoDevWorkflow has no resolved reference; 12-Stage Autonomous Software Development Workflow (issue #259) (verdict/workflows/autodev.py)."
-  },
-  {
     "qualified_name": "verdict.benchmarking.format_comparison_report",
     "reason": "UNTRIAGED: format_comparison_report has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
   },
@@ -653,15 +645,15 @@
   },
   {
     "qualified_name": "verdict.harness_claude.certify",
-    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: harness lifecycle entry point (certify) of verdict/harness_claude.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.claude.certify action that `verdict harness claude certify` (cli.cmd_harness_claude) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_claude.disable",
-    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: harness lifecycle entry point (disable) of verdict/harness_claude.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.claude.disable action that `verdict harness claude disable` (cli.cmd_harness_claude) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_claude.enable",
-    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Claude Code harness switching for Verdict (verdict/harness_claude.py)."
+    "reason": "KEEP: harness lifecycle entry point (enable) of verdict/harness_claude.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.claude.enable action that `verdict harness claude enable` (cli.cmd_harness_claude) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_cline.certify",
@@ -677,15 +669,15 @@
   },
   {
     "qualified_name": "verdict.harness_codex.certify",
-    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+    "reason": "KEEP: harness lifecycle entry point (certify) of verdict/harness_codex.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.codex.certify action that `verdict harness codex certify` (cli.cmd_harness_codex) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_codex.disable",
-    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+    "reason": "KEEP: harness lifecycle entry point (disable) of verdict/harness_codex.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.codex.disable action that `verdict harness codex disable` (cli.cmd_harness_codex) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_codex.enable",
-    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Codex harness switching for Verdict (verdict/harness_codex.py)."
+    "reason": "KEEP: harness lifecycle entry point (enable) of verdict/harness_codex.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.codex.enable action that `verdict harness codex enable` (cli.cmd_harness_codex) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_cursor.certify",
