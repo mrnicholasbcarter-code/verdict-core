@@ -35,6 +35,8 @@ CODEX_HOOK_EVENTS: tuple[str, ...] = (
 
 HOOK_TIMEOUT_SECONDS = 10
 
+_HOOK_MODULE_ARGS = "-m verdict.memory_harness.codex"
+
 
 def hook_command(event: str) -> str:
     """Return the shell command Codex runs for ``event``.
@@ -44,10 +46,7 @@ def hook_command(event: str) -> str:
     the install, so the hook still finds verdict on pipx and uv installs where
     a bare ``python`` on PATH would not have it.
     """
-    return f"{shlex.quote(sys.executable)} {_HOOK_MODULE_ARGS} {event}"
-
-
-_HOOK_MODULE_ARGS = "-m verdict.memory_harness.codex"
+    return f"{shlex.quote(sys.executable or 'python')} {_HOOK_MODULE_ARGS} {event}"
 
 
 def _verdict_hook(event: str) -> dict[str, Any]:
@@ -193,7 +192,7 @@ def install_codex_instructions(codex_dir: Path, bridge_instruction: str) -> None
 
 
 # ---------------------------------------------------------------------------
-# Hook entrypoint: ``python -m verdict.memory_harness.codex <Event>``
+# Hook entrypoint: ``<python> -m verdict.memory_harness.codex <Event>``
 # ---------------------------------------------------------------------------
 
 OUTBOX_DIR_ENV = "VERDICT_CODEX_OUTBOX_DIR"

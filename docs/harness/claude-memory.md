@@ -43,8 +43,11 @@ function: it reads nothing but the payload.
 
 ## Hook entrypoint
 
-Each installed hook runs `python -m verdict.memory_harness.claude <Event>`
-(`verdict.harness_claude.HOOK_COMMAND_TEMPLATE`). The entrypoint:
+Each installed hook runs `<python> -m verdict.memory_harness.claude <Event>`
+(`verdict.harness_claude.hook_command`), where `<python>` is the absolute, shell-quoted
+`sys.executable` that ran the install. A bare `python` on PATH would miss verdict on pipx and uv
+installs. Reinstalling replaces Verdict hooks written by any interpreter, including the older
+bare-`python` form, and uninstall removes them too. The entrypoint:
 
 - reads the payload from stdin and writes nothing to stdout, so nothing is injected into the
   model's context;
