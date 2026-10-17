@@ -520,14 +520,6 @@
     "reason": "UNTRIAGED: free_tier_feed_identities has only non-production references; Serve-path cutover: ``optimize_execution_path`` is sole strategy authority on serve (verdict/serve_path.py)."
   },
   {
-    "qualified_name": "verdict.shared_memory.FakeSharedMemoryProvider",
-    "reason": "KEEP: deterministic offline SharedMemoryProvider contract implementation, exported in verdict.shared_memory.__all__; test_only_caller (tests/test_shared_memory_provider.py, tests/test_shared_memory_context.py, tests/test_cross_harness_recall.py). It is the contract fake that CI and consumers run the provider boundary against, not dead code."
-  },
-  {
-    "qualified_name": "verdict.shared_memory.normalize_hit_to_memory_record",
-    "reason": "KEEP: provider-boundary normalizer that drops every remote authority assertion when a SharedMemoryHit becomes a MemoryRecord, exported in verdict.shared_memory.__all__; test_only_caller (tests/test_shared_memory_provider.py, tests/test_memory_outbox.py). There is no production consumer yet because the shared-memory recall wiring is pending; kept as the boundary's documented API."
-  },
-  {
     "qualified_name": "verdict.strength_profiles.aggregate_strength",
     "reason": "UNTRIAGED: aggregate_strength has only non-production references; Deterministic, evidence-backed task-strength profiles (verdict/strength_profiles.py)."
   },

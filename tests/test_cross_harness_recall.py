@@ -38,13 +38,14 @@ from typing import Any
 
 import pytest
 
+from tests.helpers.fake_shared_memory import FakeSharedMemoryProvider
 from verdict.context_pack import ContextUnit
 from verdict.context_sources import SharedMemoryCapabilityProvider
 from verdict.memory_capture_policy import MemoryCapturePolicy
 from verdict.memory_mirror import MemoryMirrorWorker
 from verdict.memory_outbox import MemoryOutbox
 from verdict.memory_plane import MemoryPlane, MemoryRecord
-from verdict.shared_memory import FakeSharedMemoryProvider, SharedMemoryEnvelope, SharedMemoryQuery
+from verdict.shared_memory import SharedMemoryEnvelope, SharedMemoryQuery
 
 # ---------------------------------------------------------------------------
 # Helpers
