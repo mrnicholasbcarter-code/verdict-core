@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import os
@@ -56,6 +57,7 @@ from verdict.metadata.store import (
 )
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.outcome_shadow import attach_outcome_shadow, resolve_outcome_shadow_roots
 from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
@@ -241,6 +243,7 @@ class IntelligenceService:
         receipt_store: Any | None = None,
         persist_routing_receipts: bool = True,
         decision_signal_provider: Any | None = None,
+        outcome_shadow_roots: Sequence[Path | str] | None = None,
     ):
         self.primary_model = primary_model
         self.providers = providers
@@ -292,6 +295,11 @@ class IntelligenceService:
 
             decision_signal_provider = _pfn()
         self.decision_signal_provider = decision_signal_provider
+        # BOD-304 shadow roots: None → env resolve; explicit empty → disabled.
+        if outcome_shadow_roots is None:
+            self.outcome_shadow_roots = resolve_outcome_shadow_roots(None)
+        else:
+            self.outcome_shadow_roots = resolve_outcome_shadow_roots(outcome_shadow_roots)
         # Request-time OmniRoute evidence cache. A failed refresh never erases
         # the last complete snapshot; cold-start authority mode still fails closed.
         self._admit_snapshot_lkg: OmniRouteAdmitSnapshot | None = None
@@ -837,6 +845,17 @@ class IntelligenceService:
             if model_id not in shortlisted_set and model_id not in hard_drop_ids
         )
         chosen = shortlisted[0] if shortlisted else None
+        pool_dict = pool.to_dict()
+        # Shadow-only: never pass outcomes into build_candidate_pool; attach diagnostic.
+        with contextlib.suppress(Exception):
+            # Fail-safe: shadow must not change live admit/choice.
+            pool_dict = attach_outcome_shadow(
+                pool_dict,
+                roots=self.outcome_shadow_roots,
+                task_family=profile.task_family,
+                fingerprint_digest=profile.digest,
+                as_of=self.admit_now,
+            )
         return (
             replace(
                 receipt,
@@ -850,7 +869,7 @@ class IntelligenceService:
                 paid_admitted=tuple(
                     item for item in receipt.paid_admitted if item in shortlisted_set
                 ),
-                candidate_pool=pool.to_dict(),
+                candidate_pool=pool_dict,
             ),
             pool,
         )

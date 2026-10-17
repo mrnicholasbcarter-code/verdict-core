@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "note": "Explicit OmniRoute inventory id → models.dev id. Unlisted OmniRoute ids are unmapped (named drop for BOD-100). Do not fuzzy-match or substitute a related model.",
+  "note": "Explicit OmniRoute inventory id \u2192 models.dev id. Unlisted OmniRoute ids are unmapped (named drop for BOD-100). Do not fuzzy-match or substitute a related model.",
   "entries": [
     {
       "omniroute_id": "groq/llama-3.3-70b-versatile",
@@ -73,6 +73,18 @@
     {
       "omniroute_id": "meta/llama-3.3-70b-instruct",
       "models_dev_id": "meta/llama-3.3-70b-instruct"
+    },
+    {
+      "omniroute_id": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+      "models_dev_id": "nvidia/nemotron-3-super-120b-a12b:free"
+    },
+    {
+      "omniroute_id": "openrouter/poolside/laguna-s-2.1:free",
+      "models_dev_id": "poolside/laguna-s-2.1:free"
+    },
+    {
+      "omniroute_id": "openrouter/poolside/laguna-xs-2.1:free",
+      "models_dev_id": "poolside/laguna-xs-2.1:free"
     }
   ]
 }

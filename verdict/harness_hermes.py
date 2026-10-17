@@ -376,28 +376,32 @@ def certify(
         healthy = health_check(base) if health_check is not None else probe_health(base_url=base)
 
     facets: dict[str, Parity] = {
-        "hooks": "unsupported",  # no native hook system in Hermes
+        # BOD80 lane C: Hermes v0.21.3 plugin hooks (hermes_cli/plugins.py VALID_HOOKS) are
+        # SOURCE-EVIDENCED, not yet observed firing live, so wired facets stay "partial".
+        "hooks": "partial",
         "model_selection": "partial",
         "config_import": "supported" if report.config_exists else "partial",
-        "mcp": "unsupported",  # Hermes has no MCP support
+        "mcp": "unsupported",  # Verdict does not manage Hermes MCP config here
         "subagents": "unsupported",
         "resume": "unsupported",
         "tool_interception": "unsupported",
         "structured_output": "unsupported",
         # Lifecycle matrix facets (BOD-80 parity)
-        "session_start": "unsupported",  # no hook system — no session-start injection
-        "before_first_turn": "unsupported",  # no hook system — no pre-turn recall
-        "tool_pre_post": "unsupported",  # no tool pre/post hooks
-        "edit_event": "unsupported",  # no edit event hooks
-        "compaction_yield": "unsupported",  # no compaction hooks
-        "verification_result": "unsupported",  # no verification hooks
-        "session_end": "unsupported",  # no session-end hooks
-        "sync_async_semantics": "unsupported",  # no hook system
-        "mutation_capability": "unsupported",  # no memory write path from Hermes hooks
+        "session_start": "partial",  # on_session_start plugin hook (source-evidenced)
+        "before_first_turn": "partial",  # pre_llm_call context injection (source-evidenced)
+        "tool_pre_post": "unsupported",  # pre/post_tool_call exist but adapter does not wire them
+        "edit_event": "unsupported",  # no edit event hook
+        "compaction_yield": "unsupported",  # on_pre_compress is MemoryProvider-only; not wired
+        "verification_result": "unsupported",  # pre_verify exists but not wired
+        "session_end": "partial",  # on_session_end plugin hook (source-evidenced)
+        "sync_async_semantics": "unsupported",  # not measured
+        "mutation_capability": "partial",  # post_llm_call capture via verdict-memory plugin
     }
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.hermes/config.yaml → Verdict :8000",
-        "Hermes has no native hook system; lifecycle events are unsupported",
+        "Hermes v0.21.3 plugin hooks (on_session_start, pre_llm_call, post_llm_call, "
+        "on_session_end) are source-evidenced, not yet observed live; "
+        "install with verdict.harness_hermes_memory",
     ]
     needs_owner = ("live enable with secrets (export token_env; Hermes API key is NEEDS_OWNER)",)
     if not discovered.installed:

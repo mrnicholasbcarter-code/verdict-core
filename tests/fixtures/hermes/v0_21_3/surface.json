@@ -1,0 +1,18 @@
+{
+  "hermes_version": "Hermes Agent v0.21.3 (2026.9.14)",
+  "upstream_commit": "2ed6387d87",
+  "evidence": "source-read 2026-10-16 (not observed firing live)",
+  "valid_hooks_subset": {
+    "source": "hermes_cli/plugins.py:108 VALID_HOOKS",
+    "hooks": ["pre_llm_call", "post_llm_call", "on_session_start", "on_session_end",
+              "on_session_finalize", "subagent_start", "subagent_stop",
+              "pre_tool_call", "post_tool_call", "pre_verify"]
+  },
+  "fire_sites": {
+    "pre_llm_call": "agent/turn_context.py:697",
+    "post_llm_call": "agent/turn_finalizer.py:434",
+    "on_session_start": "agent/conversation_loop.py:774",
+    "on_session_end": "agent/turn_finalizer.py:663"
+  },
+  "plugin_loading": "hermes_cli/plugins.py:1-9 (~/.hermes/plugins/<name>/plugin.yaml + register(ctx)); plugins.enabled gate :1424"
+}
