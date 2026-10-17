@@ -510,3 +510,28 @@ def test_live_screen_transport_posts_the_m1_test_all_body(monkeypatch: pytest.Mo
         "respectRateLimit": True,
         "autoHideFailed": False,
     }
+
+
+def test_live_screen_transport_hard_caps_test_all_at_20_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[Any] = []
+
+    class _Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def fake_open(request: Any, timeout: float) -> _Response:
+        sent.append(json.loads(request.data))
+        return _Response(json.dumps({"results": {}}).encode())
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", fake_open)
+    screen = live_screen_transport("http://gw/v1", api_key="k")
+    screen("p", [f"p/m{i}" for i in range(50)], 5.0)
+    assert sent[0]["modelIds"] == [f"p/m{i}" for i in range(20)]
+    assert sent[0]["autoHideFailed"] is False
