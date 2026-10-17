@@ -85,6 +85,70 @@ def passive_refresh(
     }
 
 
+DEFAULT_MAX_PER_PROVIDER = 2
+PASSIVE_EVIDENCE_MAX_AGE_SECONDS = 30 * 60
+
+
+def refresh_from_passive_evidence(
+    snapshot: Any,
+    passport_store_path: Path,
+    now: datetime,
+    eligible_routes: set[str],
+    *,
+    max_age_seconds: float = PASSIVE_EVIDENCE_MAX_AGE_SECONDS,
+) -> set[str]:
+    """Renew passports from recent gateway success before spending probes.
+
+    A route qualifies when the admit snapshot's passive health (latency stats
+    joined with live healthy connections) marks it healthy, unexpired, and
+    observed within ``max_age_seconds``. The passport keeps that observation
+    time, so passive evidence never extends its own age.
+    """
+    from verdict.admission import RuntimeEvidence
+
+    store = ProveAtRestStore(path=passport_store_path)
+    results: dict[str, ProofResult] = {}
+    for row in (snapshot.passive_health or RuntimeEvidence()).observations:
+        route = row.key.removeprefix("route:")
+        if not row.key.startswith("route:") or route not in eligible_routes:
+            continue
+        if row.state != "healthy" or row.until is None or row.observed_at is None:
+            continue
+        try:
+            observed = datetime.fromisoformat(row.observed_at)
+            until = datetime.fromisoformat(row.until)
+        except (TypeError, ValueError):
+            continue
+        age = (now - observed).total_seconds()
+        if until <= now or not 0 <= age <= max_age_seconds:
+            continue
+        passport = passport_from_probe(
+            provider=route.split("/", 1)[0],
+            identity_id=route,
+            observation=ProbeObservation(
+                model_id=route, availability_state="ready", status="ok", observed_at=observed
+            ),
+        )
+        if passport.expires_at <= now:
+            continue
+        results[route] = ProofResult(
+            identity_id=route,
+            provider=passport.provider,
+            status=STATUS_HEALTHY,
+            proved_at=observed,
+            latency_ms=None,
+            passport=passport,
+        )
+    if results:
+        cycle = store.read() or ProveAtRestCycle(
+            cycle_id="census", started_at=now, finished_at=now, admitted=(), results=()
+        )
+        by_id = {row.identity_id: row for row in cycle.results}
+        by_id.update(results)
+        store.write(replace(cycle, results=tuple(by_id.values()), finished_at=now))
+    return set(results)
+
+
 def run_census(
     snapshot: Any,
     transport: Any,
@@ -92,8 +156,9 @@ def run_census(
     cache: HealthCache,
     passport_store_path: Path,
     now: datetime,
-    max_candidates: int = 6,
-    max_tokens: int = 1536,
+    max_candidates: int | None = None,
+    max_tokens: int | None = None,
+    max_per_provider: int | None = DEFAULT_MAX_PER_PROVIDER,
     cooling_providers: frozenset[str] = frozenset(),
     role_routes: frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -103,13 +168,16 @@ def run_census(
     reviewer requirements; they are kept fresh before other proven routes.
 
     Each full probe reserves 256 tokens for the fixed chat/tool prompts and
-    their capped outputs (8 + 64). The candidate cap bounds requests to 2*N.
+    their capped outputs (8 + 64). Budgets are independent: ``max_per_provider``
+    bounds probes per provider family, and the optional ``max_candidates``
+    (requests <= 2*N) and ``max_tokens`` caps each apply on their own.
+    Routes with recent passive gateway success are renewed before any probe.
     """
     from verdict.admission import RuntimeEvidence
     from verdict.free_tier_admit import admit_free_tier_active
     from verdict.prove_at_rest import AdmittedRoute, probe_full
 
-    if max_candidates < 1 or max_tokens < 1:
+    if any(b is not None and b < 1 for b in (max_candidates, max_tokens, max_per_provider)):
         raise ValueError("census budgets must be positive")
     receipt = admit_free_tier_active(snapshot)
     healthy = {
@@ -133,10 +201,14 @@ def run_census(
         entry = routes.get(route)
         return entry is not None and entry.healthy and entry.chat_ok and entry.tool_ok
 
+    from verdict.orchestration.credential_pools import is_non_chat_route
+
+    non_chat = [r for r in receipt.free_admitted if is_non_chat_route(r)]
     eligible = [
         r
         for r in receipt.free_admitted
-        if canonical_route(r).split("/", 1)[0] not in cooling
+        if r not in non_chat
+        and canonical_route(r).split("/", 1)[0] not in cooling
         and cache.lookup(r, now).state != STATE_NEGATIVE
     ]
 
@@ -164,7 +236,9 @@ def run_census(
         family_rank[route] = seen.get(slot, 0)
         seen[slot] = family_rank[route] + 1
     candidates = sorted(eligible, key=lambda r: (rank_key(r), family_rank[r], r))
-    refreshed = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
+    refresh_cap = max_candidates if max_candidates is not None else max(1, len(candidates))
+    passive = refresh_from_passive_evidence(snapshot, passport_store_path, now, set(candidates))
+    refreshed = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
     passports = load_healthy_passports(passport_store_path)
     # Renew any passport that would lapse before the tick after next can
     # prove it again, so a slow or late tick never leaves a gap.
@@ -172,9 +246,24 @@ def run_census(
     pending = [
         model
         for model in candidates
-        if model not in passports or passports[model].expires_at <= renew_before
+        if model not in passive
+        and (model not in passports or passports[model].expires_at <= renew_before)
     ]
-    limit = min(max_candidates - refreshed["updated"], max_tokens // 256)
+    if max_per_provider is not None:
+        per_family: dict[str, int] = {}
+        budgeted = []
+        for model in pending:
+            family = canonical_route(model).split("/", 1)[0]
+            if per_family.get(family, 0) < max_per_provider:
+                per_family[family] = per_family.get(family, 0) + 1
+                budgeted.append(model)
+        pending = budgeted
+    caps = [len(pending)]
+    if max_candidates is not None:
+        caps.append(max_candidates - refreshed["updated"])
+    if max_tokens is not None:
+        caps.append(max_tokens // 256)
+    limit = max(0, min(caps))
     # One probe in three explores routes the census has not proven, so proven
     # routes can never starve discovery. The explored route rotates per tick.
     keep = [model for model in pending if tier(model) == 0]
@@ -196,10 +285,12 @@ def run_census(
         if outcome.result is not None:
             cache.record(model, outcome.result, now)
     cache.save()
-    after = passive_refresh(cache, max_candidates, passport_store_path, now, set(candidates))
-    after["updated"] += refreshed["updated"]
+    after = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
+    after["updated"] += refreshed["updated"] + len(passive)
     return {
         **after,
+        "passive_refreshed": len(passive),
+        "non_chat_skipped": len(non_chat),
         "candidates": len(candidates),
         "probed": probed,
         "reserved_tokens": probed * 256,
@@ -257,8 +348,9 @@ def _worker_capable_routes(base_url: str, api_key: str | None) -> frozenset[str]
 
 def cmd_census(
     *,
-    max_candidates: int = 6,
-    max_tokens: int = 1536,
+    max_candidates: int | None = None,
+    max_tokens: int | None = None,
+    max_per_provider: int | None = DEFAULT_MAX_PER_PROVIDER,
     passport_store_path: Path | None = None,
     health_cache_path: Path | None = None,
     output_json: bool = False,
@@ -304,6 +396,7 @@ def cmd_census(
             now=datetime.now(timezone.utc),
             max_candidates=max_candidates,
             max_tokens=max_tokens,
+            max_per_provider=max_per_provider,
             cooling_providers=cooling,
             role_routes=role_routes,
         )

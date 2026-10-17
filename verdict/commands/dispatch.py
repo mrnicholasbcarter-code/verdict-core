@@ -579,6 +579,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         cmd_census(
             max_candidates=args.max_candidates,
             max_tokens=args.max_tokens,
+            max_per_provider=args.max_per_provider,
             passport_store_path=args.passport_store_path,
             health_cache_path=args.health_cache_path,
             output_json=args.output_json,

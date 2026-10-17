@@ -406,10 +406,11 @@ def test_census_active_candidates_filtered_and_budgeted(tmp_path):
         max_candidates=1,
         max_tokens=256,
     )
-    assert result["probed"] == 1
-    assert {model for model, _ in calls} == {"good/a"}
-    assert len(calls) == 2
-    assert set(load_healthy_passports(tmp_path / "state.json")) == {"good/a"}
+    # Passively healthy eligible routes renew without spending probes (S5).
+    assert result["probed"] == 0
+    assert result["passive_refreshed"] == 2
+    assert calls == []
+    assert set(load_healthy_passports(tmp_path / "state.json")) == {"good/a", "good/b"}
 
 
 def test_census_token_budget_prevents_dispatch(tmp_path):
@@ -746,6 +747,9 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
         cache=HealthCache(tmp_path / "health.json"),
         passport_store_path=tmp_path / "passports.json",
         now=NOW,
+        max_candidates=6,
+        max_tokens=1536,
+        max_per_provider=None,
         cooling_providers=cooldowns,
     )
     assert requests == ["/api/resilience/model-cooldowns"]
