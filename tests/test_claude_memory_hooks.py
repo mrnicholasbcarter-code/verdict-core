@@ -553,7 +553,7 @@ def test_live_replay_through_hook_handler_is_idempotent(tmp_path: Path) -> None:
     assert {json.loads(x)["identity"]["session_id"] for x in lines} == set(SESSIONS.values())
 
 
-# --- Hook-event capability (PENDING controller decision) ---
+# --- Hook-event capability (controller-approved 2026-10-17 00:32Z) ---
 
 
 def test_hook_event_capability_reflects_live_observation(tmp_path: Path) -> None:

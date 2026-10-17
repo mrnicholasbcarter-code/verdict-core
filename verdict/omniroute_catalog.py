@@ -25,7 +25,8 @@ from verdict.omniroute_catalog_stats import (
 
 CATALOG_QUALIFICATION_VERSION = "1"
 DEFAULT_CATALOG_FRESHNESS_SECONDS = 3_600
-DEFAULT_EXPECTED_ROW_COUNT = 3_977
+# Live OmniRoute /v1/models row count observed 2026-10-17 (was 3,977).
+DEFAULT_EXPECTED_ROW_COUNT = 9_450
 CATALOG_FETCH_TIMEOUT_SECONDS = 60.0
 MAX_CATALOG_PROBE_SAMPLE = 16
 CatalogStatus = Literal["qualified", "partial", "stale", "unknown"]

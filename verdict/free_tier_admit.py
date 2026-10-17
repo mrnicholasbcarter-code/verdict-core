@@ -23,13 +23,13 @@ serve-path strategy authority. Serve path must consume
 from __future__ import annotations
 
 import os
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -191,6 +191,8 @@ class OmniRouteAdmitSnapshot:
     connections: tuple[ProviderConnection, ...]
     passive_health: RuntimeEvidence | None = None
     quota_blocks: tuple[NamedDrop, ...] = ()
+    # Admit surfaces served from the last-good snapshot after a live read failed.
+    stale_served: tuple[str, ...] = ()
 
     @property
     def active_providers(self) -> frozenset[str]:
@@ -1397,26 +1399,193 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
     )
 
 
+ADMIT_SURFACE_TIMEOUT_SECONDS = 20.0
+ADMIT_CATALOG_TIMEOUT_SECONDS = 60.0
+ADMIT_READ_ATTEMPTS = 2
+ADMIT_LAST_GOOD_MAX_AGE_SECONDS = 15 * 60
+ADMIT_LAST_GOOD_FILE = "admit-last-good.json"
+CENSUS_CATALOG_CACHE_FILE = "census-catalog-cache.json"
+PROVIDER_MODELS_PATH = "/api/v1/providers/{provider}/models"
+_RETRYABLE_ADMIT_ERRORS = frozenset({"timeout", "transport", "http_error"})
+
+
+def default_admit_last_good_path() -> Path:
+    """Last-good admit payloads (all but the catalog) live beside the catalog cache."""
+    from verdict.catalog_cache import default_catalog_cache_path
+
+    return default_catalog_cache_path().parent / ADMIT_LAST_GOOD_FILE
+
+
+def _read_last_good(path: Path, origin: str, now: datetime, max_age: float) -> dict[str, object]:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    entry = data.get(origin) if isinstance(data, dict) else None
+    if not isinstance(entry, dict):
+        return {}
+    fresh: dict[str, object] = {}
+    for name, row in entry.items():
+        if not isinstance(row, dict) or not isinstance(row.get("fetched_at"), str):
+            continue
+        try:
+            age = (now - datetime.fromisoformat(row["fetched_at"])).total_seconds()
+        except (TypeError, ValueError):
+            continue
+        if 0 <= age < max_age and "payload" in row:
+            fresh[name] = row["payload"]
+    return fresh
+
+
+def _write_last_good(
+    path: Path, origin: str, payloads: Mapping[str, object], now: datetime
+) -> None:
+    """Merge fresh surfaces into the last-good file with an atomic replace."""
+    import json
+    import tempfile
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    entry = data.get(origin)
+    if not isinstance(entry, dict):
+        entry = {}
+    for name, payload in payloads.items():
+        entry[name] = {"fetched_at": now.isoformat(), "payload": payload}
+    data[origin] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def default_census_catalog_cache_path() -> Path:
+    """Gated per-provider catalogs are cached apart from the full catalog cache."""
+    from verdict.catalog_cache import default_catalog_cache_path
+
+    return default_catalog_cache_path().parent / CENSUS_CATALOG_CACHE_FILE
+
+
+def _gated_providers(free_tier: object, providers: object, account_status: object) -> list[str]:
+    """Providers admit can admit from: free-tier summary rows with an active connection."""
+    probe = snapshot_from_payloads(
+        catalog={"data": []},
+        free_tier=free_tier,
+        providers=providers,
+        account_status=account_status,
+    )
+    return sorted(probe.free_tier_providers & probe.active_providers)
+
+
+def _merge_provider_catalogs(by_provider: Mapping[str, object]) -> dict[str, object]:
+    """Merge per-provider model lists into one /v1/models-shaped catalog.
+
+    Per-provider ids are upstream ids (verified on OmniRoute 3.8.51: nvidia
+    returns ``nvidia/nemotron-...`` and ``meta/llama-...``), while the unified
+    catalog id is always ``<provider>/<upstream id>``, so every id gets the
+    provider prefix, even one that already starts with the provider name.
+    The body is ``{"object": "list", "data": [...]}``; a non-list body
+    contributes none.
+    """
+    rows: list[object] = []
+    for provider, payload in sorted(by_provider.items()):
+        data = payload.get("data") if isinstance(payload, Mapping) else payload
+        if not isinstance(data, list):
+            continue
+        for row in data:
+            if isinstance(row, Mapping) and isinstance(row.get("id"), str):
+                row = {**row, "id": f"{provider}/{row['id']}"}
+            rows.append(row)
+    return {"object": "list", "data": rows}
+
+
+def _read_admit_surface(
+    client: httpx.Client, url: str, path: str, headers: Mapping[str, str], timeout: float
+) -> object:
+    try:
+        response = client.get(url, headers=dict(headers), timeout=timeout)
+    except httpx.TimeoutException as exc:
+        raise LiveAdmitError("timeout", f"timed out reading {path}") from exc
+    except httpx.HTTPError as exc:
+        raise LiveAdmitError("transport", f"{path}: {type(exc).__name__}") from exc
+    if response.status_code in {401, 403}:
+        raise LiveAdmitError("unauthorized", f"{path} returned {response.status_code}")
+    if response.status_code == 404:
+        raise LiveAdmitError("unsupported", f"{path} is unavailable")
+    if not 200 <= response.status_code < 300:
+        raise LiveAdmitError("http_error", f"{path} returned {response.status_code}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise LiveAdmitError("malformed", f"{path} is not JSON") from exc
+
+
 def load_omniroute_admit_snapshot(
     base_url: str,
     api_key: str | None = None,
     *,
-    timeout: float = 20.0,
+    timeout: float = ADMIT_SURFACE_TIMEOUT_SECONDS,
+    catalog_timeout: float = ADMIT_CATALOG_TIMEOUT_SECONDS,
+    attempts: int = ADMIT_READ_ATTEMPTS,
+    last_good_path: Path | None = None,
+    last_good_max_age_seconds: float = ADMIT_LAST_GOOD_MAX_AGE_SECONDS,
+    sleep: Callable[[float], None] | None = None,
     transport: httpx.BaseTransport | None = None,
+    catalog_scope: str = "full",
+    catalog_cache_path: Path | None = None,
 ) -> OmniRouteAdmitSnapshot:
-    """Fetch catalog, free-tier summary, and provider connections from OmniRoute."""
+    """Fetch catalog, free-tier summary, and provider connections from OmniRoute.
+
+    Surfaces are read in parallel; the catalog gets its own longer timeout.
+    Timeouts, transport errors and 5xx are retried once with jitter. A surface
+    that still fails is served from the last-good snapshot when it is younger
+    than ``last_good_max_age_seconds`` and is listed in ``stale_served``.
+    Without a usable last-good copy the read fails closed. Auth and
+    unsupported-surface errors are never masked. This path never reads
+    auto/* or combo routes.
+
+    ``catalog_scope="gated"`` (the census) skips the ~27 MB ``/v1/models`` pull
+    and reads ``/api/v1/providers/{p}/models`` only for providers admit can
+    admit from (free-tier rows with an active connection), cached separately.
+    ``"full"`` stays the default because other admit consumers explain
+    exclusions across the whole inventory (``admit_free_tier_active`` walks
+    every catalog identity), which a gated subset cannot do.
+    """
+    if catalog_scope not in {"full", "gated"}:
+        raise ValueError("catalog_scope must be 'full' or 'gated'")
+    gated = catalog_scope == "gated"
+    import logging
+    import random
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from verdict.catalog_cache import get_cached_catalog, put_cached_catalog
+
+    log = logging.getLogger(__name__)
     origin = normalize_omniroute_origin(base_url)
     headers = {"accept": "application/json"}
     if api_key and api_key.strip():
         headers["authorization"] = f"Bearer {api_key.strip()}"
-    from datetime import datetime, timezone
-
-    from verdict.catalog_cache import get_cached_catalog, put_cached_catalog
+    pause = sleep or time.sleep
+    tries = max(1, attempts)
+    store = last_good_path or default_admit_last_good_path()
 
     now_utc = datetime.now(timezone.utc)
-    cached_catalog = get_cached_catalog(origin, api_key, now=now_utc)
+    catalog_path = (catalog_cache_path or default_census_catalog_cache_path()) if gated else None
+    cached_catalog = get_cached_catalog(origin, api_key, now=now_utc, cache_path=catalog_path)
     paths: dict[str, str] = {}
-    if cached_catalog is None:
+    if cached_catalog is None and not gated:
         paths["catalog"] = "/v1/models"
     paths["free_tier"] = "/api/free-tier/summary"
     paths["providers"] = "/api/providers"
@@ -1425,30 +1594,101 @@ def load_omniroute_admit_snapshot(
     payloads: dict[str, object] = {}
     if cached_catalog is not None:
         payloads["catalog"] = cached_catalog
+    failures: dict[str, LiveAdmitError] = {}
 
-    try:
-        with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
-            for name, path in paths.items():
-                response = client.get(f"{origin}{path}", headers=headers)
-                if response.status_code in {401, 403}:
-                    raise LiveAdmitError("unauthorized", f"{path} returned {response.status_code}")
-                if response.status_code == 404:
-                    raise LiveAdmitError("unsupported", f"{path} is unavailable")
-                if not 200 <= response.status_code < 300:
-                    raise LiveAdmitError("http_error", f"{path} returned {response.status_code}")
-                try:
-                    payloads[name] = response.json()
-                except ValueError as exc:
-                    raise LiveAdmitError("malformed", f"{path} is not JSON") from exc
-        if cached_catalog is None and "catalog" in payloads:
-            put_cached_catalog(origin, api_key, payloads["catalog"], now=now_utc)
-    except LiveAdmitError:
-        raise
-    except httpx.TimeoutException as exc:
-        raise LiveAdmitError("timeout", "timed out reading OmniRoute admit surfaces") from exc
-    except httpx.HTTPError as exc:
-        raise LiveAdmitError("transport", type(exc).__name__) from exc
-    from datetime import datetime, timezone
+    def fetch(item: tuple[str, str]) -> tuple[str, object | LiveAdmitError]:
+        name, path = item
+        limit = catalog_timeout if name == "catalog" or name.startswith("model:") else timeout
+        for attempt in range(tries):
+            try:
+                return name, _read_admit_surface(client, f"{origin}{path}", path, headers, limit)
+            except LiveAdmitError as exc:
+                if exc.code not in _RETRYABLE_ADMIT_ERRORS or attempt + 1 >= tries:
+                    return name, exc
+                pause(random.uniform(0.25, 1.0) * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    with (
+        httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client,
+        ThreadPoolExecutor(max_workers=len(paths)) as pool,
+    ):
+        for name, result in pool.map(fetch, paths.items()):
+            if isinstance(result, LiveAdmitError):
+                failures[name] = result
+            else:
+                payloads[name] = result
+        if gated and cached_catalog is None:
+            # Phase 2: per-provider catalog reads for the gated providers only.
+            # A failed providers/free-tier read leaves the gate unknown, so the
+            # catalog falls back to its last-good copy with them.
+            if "free_tier" in payloads and "providers" in payloads:
+                wanted = _gated_providers(
+                    payloads["free_tier"], payloads["providers"], payloads.get("account_status")
+                )
+                model_paths = {
+                    f"model:{p}": PROVIDER_MODELS_PATH.format(provider=quote(p, safe=""))
+                    for p in wanted
+                }
+                by_provider: dict[str, object] = {}
+                catalog_error: LiveAdmitError | None = None
+                if model_paths:
+                    with ThreadPoolExecutor(max_workers=min(8, len(model_paths))) as models_pool:
+                        for name, result in models_pool.map(fetch, model_paths.items()):
+                            if isinstance(result, LiveAdmitError):
+                                catalog_error = catalog_error or result
+                            else:
+                                by_provider[name.removeprefix("model:")] = result
+                if catalog_error is None:
+                    payloads["catalog"] = _merge_provider_catalogs(by_provider)
+                    paths["catalog"] = PROVIDER_MODELS_PATH
+                else:
+                    failures["catalog"] = catalog_error
+            else:
+                failures["catalog"] = LiveAdmitError(
+                    "transport", "gated catalog skipped: provider gate unavailable"
+                )
+
+    for error in failures.values():
+        if error.code not in _RETRYABLE_ADMIT_ERRORS:
+            raise error
+    fetched = {name: payloads[name] for name in paths if name in payloads}
+    if "catalog" in fetched:
+        put_cached_catalog(
+            origin, api_key, fetched["catalog"], now=now_utc, cache_path=catalog_path
+        )
+    small = {name: payload for name, payload in fetched.items() if name != "catalog"}
+    if small:
+        try:
+            _write_last_good(store, origin, small, now_utc)
+        except OSError as exc:
+            log.warning("admit last-good snapshot not written: %s", type(exc).__name__)
+
+    stale: list[str] = []
+    if failures:
+        last_good = _read_last_good(store, origin, now_utc, last_good_max_age_seconds)
+        if "catalog" in failures:
+            # The catalog cache is the catalog's last-good copy (bounded stale).
+            stale_catalog = get_cached_catalog(
+                origin,
+                api_key,
+                now=now_utc,
+                cache_path=catalog_path,
+                max_age_seconds=last_good_max_age_seconds,
+            )
+            if stale_catalog is not None:
+                last_good["catalog"] = stale_catalog
+        missing = sorted(name for name in failures if name not in last_good)
+        if missing:
+            first = failures[missing[0]]
+            raise LiveAdmitError(
+                first.code,
+                f"OmniRoute admit surfaces failed ({', '.join(missing)}) and no last-good "
+                f"snapshot younger than {int(last_good_max_age_seconds)}s exists: {first}",
+            )
+        for name in sorted(failures):
+            payloads[name] = last_good[name]
+            stale.append(name)
+        log.warning("admit snapshot served stale surfaces from last-good: %s", ", ".join(stale))
 
     from verdict.omniroute_health import load_omniroute_health
 
@@ -1466,6 +1706,7 @@ def load_omniroute_admit_snapshot(
             timeout=timeout,
             transport=transport,
         ),
+        stale_served=tuple(stale),
     )
 
 

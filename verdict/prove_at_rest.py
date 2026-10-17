@@ -1465,7 +1465,11 @@ class Prober:
         groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
         for route in candidates:
             key = (route.provider, _pool_of(route))
-            limit = 1 if key[1] in cooled_before else self.agentic_max_routes
+            limit = (
+                1
+                if key[1] in cooled_before
+                else min(self.agentic_max_routes, SCREEN_TEST_ALL_MAX_MODELS)
+            )
             group = groups.setdefault(key, [])
             if len(group) < limit:
                 group.append(route)
@@ -2015,6 +2019,10 @@ def live_agentic_transport(
     return transport
 
 
+# Hard cap on ids per /api/models/test-all call; larger screens time out upstream.
+SCREEN_TEST_ALL_MAX_MODELS = 20
+
+
 def live_screen_transport(base_url: str, *, api_key: str | None) -> ScreenTransportFn:
     """``POST /api/models/test-all`` with the M1 body (no auto-hide, rate limits respected)."""
     endpoint = base_url.rstrip("/")
@@ -2027,7 +2035,7 @@ def live_screen_transport(base_url: str, *, api_key: str | None) -> ScreenTransp
     ) -> Mapping[str, Mapping[str, Any]] | None:
         body = {
             "providerId": provider_id,
-            "modelIds": list(model_ids)[:100],
+            "modelIds": list(model_ids)[:SCREEN_TEST_ALL_MAX_MODELS],
             "respectRateLimit": True,
             "autoHideFailed": False,
         }

@@ -907,6 +907,11 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
     return ActionResult(data=stats.to_dict(), ok=True, exit_code=0)
 
 
+def _optional_int(value: Any) -> int | None:
+    """Census budgets are optional; None leaves that budget unbounded."""
+    return None if value is None else int(value)
+
+
 def _action_census(**kwargs: Any) -> ActionResult:
     """Run the budgeted background census (refresh free-route passports), or
     install/render its systemd/cron timer."""
@@ -921,8 +926,9 @@ def _action_census(**kwargs: Any) -> ActionResult:
     try:
         with redirect_stdout(buf):
             cmd_census(
-                max_candidates=int(kwargs.get("max_candidates", 6)),
-                max_tokens=int(kwargs.get("max_tokens", 1536)),
+                max_candidates=_optional_int(kwargs.get("max_candidates")),
+                max_tokens=_optional_int(kwargs.get("max_tokens")),
+                max_per_provider=_optional_int(kwargs.get("max_per_provider", 2)),
                 passport_store_path=(
                     Path(passport_store_path).expanduser() if passport_store_path else None
                 ),

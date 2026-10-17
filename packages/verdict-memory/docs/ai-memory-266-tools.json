@@ -1,0 +1,422 @@
+[
+  {
+    "name": "memory_delete_page",
+    "description": "Delete a single wiki page by its exact relative path (e.g. `notes/foo.md`). Use when the user explicitly asks to delete or remove a page. Fires the admission chain (op=delete) before the file is removed so backups/mirrors stay consistent. Idempotent \u2014 deleting a page that is already gone is a no-op. Pass `workspace` + `project` together when the page lives in a sibling workspace; missing explicit scopes fail closed instead of falling back to the active/default project. Returns `{ path, deleted }`.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "path"
+      ],
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Exact wiki path to delete (e.g. `notes/foo.md`).",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project to delete from. Session-aware clients may omit it for the current\nproject. Static MCP clients must pass it together with `workspace` for\nevery project-scoped call.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "workspace": {
+          "description": "Workspace to delete from together with `project`. Session-aware clients\nmay omit both for the current project; static MCP clients must pass both.\nMissing explicit sibling scope fails closed instead of falling back.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scope": {
+          "description": "Set to `\"profile\"` to delete an entry of your cross-project profile\n(`path` is taken under `profile/`). Cannot be combined with\n`workspace`/`project`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "title": "Delete memory page",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "memory_query",
+    "description": "Search the project's long-term memory wiki \u2014 prior sessions, decisions, gotchas, architecture notes captured by ai-memory across earlier runs. Call this BEFORE proposing designs, BEFORE answering 'why does X work this way', and whenever the user references prior work you don't recognise. FTS5 + entity-match + graph RRF + (when configured) vector RRF, followed by a bounded kind/tier/pinned/tag source-authority adjustment. Returns up to `limit` pages with HTML-marked snippets and a rank score (lower rank = better match). Only latest page versions. Set `explain=true` to attach per-stream ranks, matched entities, raw scores, RRF contributions, graph provenance, and the authority multiplier to project/scopes hits; it also returns `streams_active`. Cross-project `global=true` search is FTS-only and therefore reports `streams_active` without per-hit RRF details. If compiled wiki search misses in default/project/`scopes` mode, `raw_hits` contains bounded raw observation fallback matches; `global=true` searches compiled wiki pages only and returns no raw fallback. Single-project calls (project implicit or named with `workspace`+`project`) also return `global_scope_hits`: standing user/team preferences from the reserved `_global` scope that apply across projects; only an explicit multi-`scopes` set opts out. Set `global=true` to search EVERY project at once (cross-project) when you don't know which project holds the knowledge \u2014 each hit then carries its workspace + project name.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "MemoryScopeArg": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "description": "Project to read inside the workspace.",
+              "type": "string"
+            },
+            "workspace": {
+              "description": "Workspace to read.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "project",
+            "workspace"
+          ]
+        },
+        "ReasoningTier": {
+          "description": "Operator-facing reasoning-effort tier for the opt-in LLM synthesis paths\n(`memory_query(answer=true)` and `memory_explore`). Borrowed from Honcho's\nreasoning-effort ladder.\n\n`ChatRequest` carries no per-request reasoning/effort field today (the\nprovider-level `reasoning_effort` is fixed at construction from config), so\nthe honest per-request mapping is a per-tier **max-token budget**: a higher\ntier gives the model more room to reason before its answer is truncated.\n[`Self::Minimal`] (the default) leaves each path's base budget unchanged, so\nomitting `reasoning` is byte-identical to the pre-tier behavior. Serde\nrejects an unknown value (invariant #7: typed, schema-checked inputs).",
+          "oneOf": [
+            {
+              "description": "Current behavior: the path's base token budget, unchanged.",
+              "type": "string",
+              "const": "minimal"
+            },
+            {
+              "description": "A modestly wider budget.",
+              "type": "string",
+              "const": "low"
+            },
+            {
+              "description": "Twice the base budget.",
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "description": "Three times the base budget.",
+              "type": "string",
+              "const": "high"
+            },
+            {
+              "description": "Four times the base budget.",
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "FTS5 query expression (e.g. `\"karpathy wiki\"` or `quick OR slow`).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of hits to return (default 10, max 100).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "project": {
+          "description": "Project to search. Session-aware clients may omit it for the current\nproject. Static MCP clients must pass it together with `workspace` for\nevery project-scoped call. Omit it for `global=true`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "workspace": {
+          "description": "Workspace to search together with `project`. Session-aware clients may\nomit both for the current project; static MCP clients must pass both.\nOmit both for `global=true`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "Explicit multi-project scopes to search. Use this when a task\nneeds context from a client project plus shared practice/project\nknowledge. Cannot be combined with `workspace`/`project`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryScopeArg"
+          },
+          "default": []
+        },
+        "global": {
+          "description": "Search EVERY project in every workspace in one call (cross-project\nglobal search). Use when you don't know which project holds the\nknowledge \u2014 e.g. shared infra/ops notes. When true, omit\n`project`/`workspace`/`scopes`; each hit is annotated with its\nworkspace + project so you can tell where it came from.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "include_expired": {
+          "description": "Also return pages whose `expires_at` TTL has passed (hidden by\ndefault; they are deleted by the next forget sweep). Default false.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "include_superseded": {
+          "description": "Also return superseded (older) page versions, not just the current\none. Each superseded hit is labelled `superseded: true` so you can\ntell it from the live version. Use when you need the history of a\npage or an answer that a later edit removed. Ignored on `global`\nsearch and folded into `as_of` time-travel. Default false.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "pin_first": {
+          "description": "Pin before search: prepend the project's bounded pinned latest pages\nahead of the fused search hits, deduped against them so a pinned page\nthat also matches the query appears once (marked `pinned: true`).\nStanding operator-curated context an agent should see first. Applies to\nsingle-project searches (default or `workspace`+`project`); ignored on\n`scopes`, `global`, and `as_of` queries. Default false \u2192 ordering\nunchanged.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "explain": {
+          "description": "Attach `score_details` to project/scopes hits: per-stream ranks\n(FTS5, entity, vector, graph), raw scores, and RRF contributions, plus a\ntop-level `streams_active` list. A `global=true` query uses a\ndifferent FTS-only ranker, so it reports only `streams_active`.\nDefault false.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "as_of": {
+          "description": "Time-travel: an ISO-8601 instant (e.g. `2026-06-01T00:00:00Z`).\nWhen set, the query becomes a time-travel lookup: the entity\ntimeline fused (default-path RRF) with version-filtered full-text\nsearch over the page versions whose ingestion windows contained\nthat instant \u2014 what the store knew then, including versions\nsuperseded since (docs/temporal.md). Vector / graph streams and\nthe raw-observation fallback are skipped in this mode; cannot be\ncombined with `global` or `scopes`. Omit for a normal search.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "answer": {
+          "description": "Opt-in, off by default. When `true` AND the server has an LLM provider\nconfigured, synthesize a natural-language, cited answer over the top\nretrieved hits and attach it as `answer: { text, citations }` (the\ncitations are the page paths the answer drew from). When `true` but no\nprovider is configured, the normal hits are returned plus an\n`answer_unavailable` note \u2014 never an error. When `false`/omitted (the\ndefault) the response is unchanged and NO LLM call is made. Applies to\nthe normal single-project / `scopes` search; ignored on `global` and\n`as_of` queries.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "reasoning": {
+          "description": "Reasoning effort for the `answer` synthesis path: one of `minimal`\n(default), `low`, `medium`, `high`, `max`. Higher tiers give the model a\nlarger token budget to reason within. Only meaningful together with\n`answer=true`; inert on the default (no-LLM) path. Omitting it, or\n`minimal`, is byte-identical to today. An unknown value is rejected.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningTier"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "annotations": {
+      "title": "Search memory",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "memory_read_page",
+    "description": "Fetch the FULL body of a wiki page. You MUST pass exactly one of `path` or `query` \u2014 a call with neither (or with nulls) is invalid and will error; do NOT retry it unchanged. Two modes: (1) pass `path` \u2014 direct lookup by the page's relative wiki path, taken verbatim from a `memory_recent`/`memory_query` hit (e.g. `{\"path\": \"notes/budget.md\"}`); (2) pass `query` \u2014 runs an FTS5 search and returns the top hit's complete body. `path` takes precedence when both are given. Follow the client-aware project-scope instructions: static clients pass `workspace` + `project` together for every project-scoped call. Use this when the user asks to read, open, or show a specific page by name or topic \u2014 not just snippets. Returns `{ path, title, body, frontmatter }` (plus `served_from` when a missing markdown file is served from the DB fallback). Set `include_related: true` to also walk the link graph outward from this page and get a `related` array of the reachable pages, each with its `path`/`title`/`kind`/`workspace`/`project` plus the `depth` (hop distance) and `direction` (`link`/`backlink`) it was reached by; `related_depth` (default 1, hard-capped at 3) sets how far to walk. Default off \u2192 the response omits `related` entirely. Errors if the page is not found.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "query": {
+          "description": "FTS5 query to find the page (searches and returns the top hit's full\nbody). You MUST pass exactly one of `query` or `path` \u2014 never neither,\nand never `null`. Ignored when `path` is provided.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "path": {
+          "description": "Exact wiki path (e.g. `notes/foo.md`), typically taken verbatim from a\n`memory_recent` or `memory_query` hit. You MUST pass exactly one of\n`path` or `query` \u2014 never neither, and never `null`. Takes precedence\nover `query`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "project": {
+          "description": "Project to read from. Session-aware clients may omit it for the current\nproject. Static MCP clients must pass it together with `workspace` for\nevery project-scoped call.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "workspace": {
+          "description": "Workspace to read together with `project`. Session-aware clients may omit\nboth for the current project; static MCP clients must pass both.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "include_related": {
+          "description": "Opt-in: also walk the link graph outward from this page and return the\nreachable pages in a `related` array. Default false \u2192 the response is\nbyte-identical to a plain single-page read (no `related` field).",
+          "type": "boolean",
+          "default": false
+        },
+        "related_depth": {
+          "description": "How many hops to walk when `include_related` is set. Default 1 (direct\nneighbours only); hard-capped at 3, so a larger value is clamped.\nIgnored when `include_related` is false.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Read memory page",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "memory_write_page",
+    "description": "Write or update a durable wiki page for the current project. Use this when the user explicitly asks to remember, save, pin, annotate, or make permanent a fact/rule/note. This is for long-lived project knowledge; do NOT use memory_handoff_begin for permanent annotations, and do NOT use this to send a report or notification to another project \u2014 a wiki page is not a message and never reaches that project's inbox; use memory_message_send for that. Choose a stable relative path such as `notes/<topic>.md`, `concepts/<topic>.md`, `decisions/<topic>.md`, or `_rules/<topic>.md`. `tier` defaults to `semantic`; set `pinned=true` for facts that should never decay. For standing user/team preferences that apply to EVERY project (tech choices, code style, durable personal rules), pass `scope: \"profile\"` \u2014 the page joins the cross-project profile under `profile/` (its path gains that prefix), reaches every project's session start as a default, and default memory_query calls surface it. `scope: \"global\"` writes the reserved `_global` scope directly. Optional `kind`, `entities`, `abstract`, and `relations` carry bounded metadata. This replaces the whole page; omitted metadata is cleared. Bounds apply to raw values before trimming or normalization. Relations use only `causes`, `fixes`, and `contradicts`. **Title convention:** start `body` with a `# Some Title` line \u2014 ai-memory derives the title from that H1 automatically. Do NOT pass the `title` argument; passing it forces correct JSON-escaping of the string and is a known source of `JSON parsing` errors when the title contains quotes or punctuation (issue #67). Use `title` only when there's no usable H1 in the body. **Session evidence:** pass `session_id` when the page is compiled from that session's captured observations. Write the session page itself at `sessions/<session_id>.md` (tier defaults to `episodic` there) to replace the server-model consolidation with your own; `memory_read_session_observations` returns the evidence to write from. The write goes through the `write_page` admission op, not `consolidate`.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "path",
+        "body"
+      ],
+      "properties": {
+        "kind": {
+          "description": "MCP semantic kind, at most 64 raw characters, then trimmed. Empty means absent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "entities": {
+          "description": "Up to 10 input names, each at most 64 raw characters; validation precedes\nwhitespace normalization, lowercasing and deduplication.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10
+        },
+        "abstract": {
+          "description": "L0 summary, at most 1024 raw characters, then trimmed. Empty means absent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        },
+        "relations": {
+          "description": "Existing typed relations, up to 32 input targets total and 1024 raw\ncharacters each. Wikilink syntax (`path`, `project:path`,\n`workspace/project:path`) requires already-trimmed scope components.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "path": {
+          "description": "Relative wiki path to write, for example `notes/santander-2025.md`.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Markdown body. Pass the durable fact/note content, not a handoff\nsummary. Start the body with `# Some Title` \u2014 ai-memory derives the\npage title from that H1 automatically, so you do not need (and should\nnot pass) the `title` argument.",
+          "type": "string"
+        },
+        "title": {
+          "description": "**Prefer omitting this.** ai-memory derives the title from the first\n`# H1` in `body` (or the path stem if there is no heading), so the\nsafest call is to leave this out and put the title as a markdown H1\non the first line of `body`. Passing a title here forces the agent\nto JSON-escape the string correctly \u2014 a known source of `JSON parsing`\nerrors when the title contains quotes, colons, or other punctuation\n(issue #67). Only set this when there's no usable H1 in the body.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tier": {
+          "description": "Tier (`working`, `episodic`, `semantic`, `procedural`). Default semantic.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "description": "Tags to attach to the page.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "pinned": {
+          "description": "Pin the page so the decay sweep skips it.",
+          "type": "boolean",
+          "default": false
+        },
+        "project": {
+          "description": "Project to write into. Session-aware clients may omit it for the current\nproject. Static MCP clients must pass it together with `workspace` for\nevery project-scoped call. Omit it when `scope: \"global\"`. When set to a\nname that doesn't exist yet, the project is **created**.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "workspace": {
+          "description": "Workspace to write into. Only honoured together with an explicit\n`project`; created if it doesn't exist. Session-aware clients may omit\nboth for the current project; static MCP clients must pass both. Omit\nboth when `scope: \"global\"`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scope": {
+          "description": "Set to `\"profile\"` to add a standing preference to the cross-project\nprofile (the path is placed under `profile/`; every project receives\nit as a default), or to `\"global\"` to write the reserved `_global`\npreferences scope directly. Both are unioned into default\n`memory_query` reads. Cannot be combined with `workspace`/`project`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "expires_at": {
+          "description": "Optional TTL: RFC3339 instant (`2026-09-01T12:00:00Z`) or bare\ndate (`2026-09-01` = end of that day, UTC). After this instant\nthe page is hidden from search/recent/briefing and hard-deleted\nby the next forget sweep. Omit for pages that never expire.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "session_id": {
+          "description": "Optional session this page was written from. The session must belong\nto the project the page is written to. The page records it as\nevidence, as `memory_consolidate` does, and refuses to overwrite a\npinned page. Writing `sessions/<session_id>.md` also stamps the\nsession-page frontmatter and marks the session's pending\nconsolidation job completed, so the agent can write the session page\nwith its own model. Not combinable with `scope: \"global\"`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Write memory page",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  }
+]
