@@ -180,7 +180,7 @@ def test_pre_llm_call_translates_to_canonical_event() -> None:
     assert ident["source_event_id"] == "hermes:20261016_190000_abc123:t-1:pre_llm_call"
     assert len(event["content_hash"]) == 64
     again = hm.translate_hook("pre_llm_call", fired, project="proj-a")
-    assert hm.logical_digest(event) == hm.logical_digest(again)
+    assert hm._logical_digest(event) == hm._logical_digest(again)
 
 
 def test_unsupported_hook_is_explicit() -> None:
@@ -378,7 +378,7 @@ def _bridge(
             loaded.append(blob)
         return Event(json.loads(blob))
 
-    backend = hm.LifecycleBackendAdapter(fake, load_event=load_event, make_query=Query)
+    backend = hm._LifecycleBackendAdapter(fake, load_event=load_event, make_query=Query)
     return hm.HermesMemoryBridge(
         provider=backend,
         outbox=hm.BoundedJsonlOutbox(tmp_path / "outbox.jsonl", max_events=max_events),
@@ -462,7 +462,7 @@ def test_event_carries_hook_fire_time_as_created_at_for_p_contract() -> None:
     first = hm.translate_hook("post_llm_call", payload, project="proj-a")
     again = hm.translate_hook("post_llm_call", payload, project="proj-a")
     assert first["created_at"] == 1760655600.25
-    assert hm.logical_digest(first) == hm.logical_digest(again)
+    assert hm._logical_digest(first) == hm._logical_digest(again)
     assert first["provenance"]["created_at_source"] == "hermes_hook_fire"
     missing = hm.translate_hook("post_llm_call", _fixture("post_llm_call.json"), project="proj-a")
     assert isinstance(missing["created_at"], float)

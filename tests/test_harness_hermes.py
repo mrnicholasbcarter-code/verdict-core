@@ -188,3 +188,45 @@ def test_certify_reports_source_evidenced_plugin_hooks_as_partial(tmp_path: Path
     joined = " ".join(report.notes)
     assert "no native hook system" not in joined.lower()
     assert "source-evidenced" in joined and "v0.21.3" in joined
+
+
+def test_enable_installs_and_disable_uninstalls_memory_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict import harness_hermes_memory as hm
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    paths = resolve_paths(hermes_home=hermes_home)
+    paths.config.parent.mkdir(parents=True)
+    paths.config.write_text(ORIGINAL_YAML, encoding="utf-8")
+
+    enable(hermes_home=hermes_home, health_check=_healthy)
+    plugin_dir = hermes_home / "plugins" / hm.PLUGIN_NAME
+    assert (plugin_dir / hm.OWNERSHIP_MARKER).is_file()
+    config = yaml.safe_load(paths.config.read_text(encoding="utf-8"))
+    assert hm.PLUGIN_NAME in config["plugins"]["enabled"]
+    assert config["model"]["provider"] == PROVIDER_NAME
+
+    disable(hermes_home=hermes_home)
+    assert not plugin_dir.exists()
+    assert not (hermes_home / hm.BACKUP_NAME).exists()
+    assert paths.config.read_text(encoding="utf-8") == ORIGINAL_YAML
+    assert not (tmp_path / "home" / ".hermes").exists()
+
+
+def test_enable_surfaces_memory_plugin_collision_as_named_gap(tmp_path: Path) -> None:
+    from verdict import harness_hermes
+    from verdict import harness_hermes_memory as hm
+
+    hermes_home = tmp_path / "hermes"
+    user_owned = hermes_home / "plugins" / hm.PLUGIN_NAME
+    user_owned.mkdir(parents=True)
+
+    with pytest.raises(HarnessHermesError, match=harness_hermes.GAP_MEMORY_PLUGIN_INSTALL):
+        enable(hermes_home=hermes_home, health_check=_healthy)
+    assert user_owned.is_dir()
+    with pytest.raises(HarnessHermesError, match=harness_hermes.GAP_MEMORY_PLUGIN_UNINSTALL):
+        disable(hermes_home=hermes_home)
+    assert user_owned.is_dir()

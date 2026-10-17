@@ -15,6 +15,11 @@ a bounded JSON payload to:
 python -m verdict.harness_hermes_memory hook <hook-name>
 ```
 
+`verdict harness hermes enable` now installs this plugin after switching the
+provider, and `verdict harness hermes disable` uninstalls it before restoring the
+config backup. A plugin collision fails the command with the named gap
+`hermes_memory_plugin_install_failed` / `hermes_memory_plugin_uninstall_failed`.
+
 Verdict then turns the payload into a `lifecycle-event/v1` event and handles
 recall or capture. The plugin itself contains no capture policy. It uses only the
 standard library and catches every error, so a memory failure never breaks a
@@ -122,7 +127,7 @@ longer says Hermes has no hook system.
 
 ## Backend seam
 
-`LifecycleBackendAdapter(provider, load_event=..., make_query=...)` connects the
+`_LifecycleBackendAdapter(provider, load_event=..., make_query=...)` connects the
 bridge to a provider with P's `put(event)` / `search(RecallQuery)` interface:
 - each event is passed to `load_event` as P canonical `lifecycle-event/v1` bytes;
   with P, that function is `verdict_memory.loads_lifecycle_event`;

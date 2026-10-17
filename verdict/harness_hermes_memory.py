@@ -31,6 +31,7 @@ from typing import Any, Literal, Protocol
 import yaml
 
 from verdict.harness_hermes import resolve_paths
+from verdict.hermes_plugin import verdict_memory as _bundled_plugin
 from verdict.shared_memory import redact_secrets
 
 PLUGIN_NAME = "verdict-memory"
@@ -107,7 +108,7 @@ def canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def logical_digest(event: Mapping[str, Any]) -> str:
+def _logical_digest(event: Mapping[str, Any]) -> str:
     """SHA-256 of canonical JSON excluding observation clocks (P-INTERFACE rule)."""
     body = {k: v for k, v in event.items() if k not in ("observed_at", "deadline_at")}
     return hashlib.sha256(canonical_json(body)).hexdigest()
@@ -283,7 +284,7 @@ class HermesMemoryBridge:
 _AVAILABLE = "available"
 
 
-class LifecycleBackendAdapter:
+class _LifecycleBackendAdapter:
     """Adapt a P ``MemoryProvider`` (put/search) to this bridge's ``MemoryBackend``.
 
     Events cross the seam as P canonical ``lifecycle-event/v1`` bytes via
@@ -365,6 +366,10 @@ def install(
     *, hermes_home: Path | None = None, command: Sequence[str] | None = None, timeout_s: float = 8.0
 ) -> InstallResult:
     """Install the plugin and enable it. Idempotent; refuses a user-owned collision."""
+    if not callable(_bundled_plugin.register) or set(_bundled_plugin.HOOKS) != set(HOOKS_USED):
+        raise HermesMemoryCollisionError(
+            "bundled Hermes plugin does not expose register() for exactly HOOKS_USED"
+        )
     home = _home(hermes_home)
     config_path = home / "config.yaml"
     plugin_dir = _plugin_dir(home)

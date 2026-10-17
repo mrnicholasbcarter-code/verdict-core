@@ -139,6 +139,7 @@ def enable(
         data, base_url=resolved_base, token_env=resolved_token_env, model=resolved_model
     )
     _atomic_write_yaml(paths.config, updated)
+    _install_memory_plugin(hermes_home)
     return EnableResult(
         config_path=paths.config,
         backup_path=paths.backup,
@@ -151,9 +152,11 @@ def enable(
 
 
 def disable(*, hermes_home: Path | None = None) -> None:
-    """Restore the pre-enable Hermes config backup exactly."""
+    """Uninstall the Verdict memory plugin, then restore the pre-enable config exactly."""
 
     paths = resolve_paths(hermes_home=hermes_home)
+    if paths.absent_marker.exists() or paths.backup.is_file():
+        _uninstall_memory_plugin(hermes_home)
     if paths.absent_marker.exists():
         if paths.config.exists():
             paths.config.unlink()
@@ -167,6 +170,45 @@ def disable(*, hermes_home: Path | None = None) -> None:
         )
     shutil.copy2(paths.backup, paths.config)
     paths.backup.unlink()
+
+
+GAP_MEMORY_PLUGIN_INSTALL = "hermes_memory_plugin_install_failed"
+GAP_MEMORY_PLUGIN_UNINSTALL = "hermes_memory_plugin_uninstall_failed"
+
+
+def _install_memory_plugin(hermes_home: Path | None) -> None:
+    """Install the Verdict memory hooks; a failure is a named gap, never silent."""
+
+    # Imported here: harness_hermes_memory imports resolve_paths from this module.
+    from verdict import harness_hermes_memory
+
+    try:
+        harness_hermes_memory.install(hermes_home=hermes_home)
+    except (harness_hermes_memory.HermesMemoryCollisionError, OSError) as exc:
+        raise HarnessHermesError(
+            f"{GAP_MEMORY_PLUGIN_INSTALL}: Hermes provider switched to Verdict but the "
+            f"memory plugin was not installed ({exc}). Run `verdict harness hermes disable` "
+            "to restore the previous config."
+        ) from exc
+
+
+def _uninstall_memory_plugin(hermes_home: Path | None) -> None:
+    """Remove the Verdict memory hooks before the config restore; failures are surfaced."""
+
+    from verdict import harness_hermes_memory
+
+    try:
+        harness_hermes_memory.uninstall(hermes_home=hermes_home)
+    except (harness_hermes_memory.HermesMemoryCollisionError, OSError) as exc:
+        raise HarnessHermesError(
+            f"{GAP_MEMORY_PLUGIN_UNINSTALL}: memory plugin not removed ({exc}); "
+            "Hermes config left unchanged."
+        ) from exc
+    memory_backup = (
+        resolve_paths(hermes_home=hermes_home).config.parent / harness_hermes_memory.BACKUP_NAME
+    )
+    # The harness backup restore below supersedes the plugin's own config backup.
+    memory_backup.unlink(missing_ok=True)
 
 
 def status(*, hermes_home: Path | None = None) -> StatusReport:
