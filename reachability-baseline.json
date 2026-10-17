@@ -520,14 +520,6 @@
     "reason": "UNTRIAGED: free_tier_feed_identities has only non-production references; Serve-path cutover: ``optimize_execution_path`` is sole strategy authority on serve (verdict/serve_path.py)."
   },
   {
-    "qualified_name": "verdict.shared_memory.FakeSharedMemoryProvider",
-    "reason": "UNTRIAGED: FakeSharedMemoryProvider has only non-production references; Versioned boundary for optional, advisory shared memory providers (verdict/shared_memory.py)."
-  },
-  {
-    "qualified_name": "verdict.shared_memory.normalize_hit_to_memory_record",
-    "reason": "UNTRIAGED: normalize_hit_to_memory_record has only non-production references; Versioned boundary for optional, advisory shared memory providers (verdict/shared_memory.py)."
-  },
-  {
     "qualified_name": "verdict.strength_profiles.aggregate_strength",
     "reason": "UNTRIAGED: aggregate_strength has only non-production references; Deterministic, evidence-backed task-strength profiles (verdict/strength_profiles.py)."
   },

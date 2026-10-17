@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tests.helpers.fake_shared_memory import FakeSharedMemoryProvider
 from verdict.memory_capture_policy import MemoryCapturePolicy
 from verdict.memory_mirror import MemoryMirrorWorker
 from verdict.memory_outbox import MemoryOutbox
@@ -13,7 +14,6 @@ from verdict.memory_plane import MemoryPlane, MemoryRecord
 from verdict.shared_memory import (
     CertificationState,
     ExternalMemoryRef,
-    FakeSharedMemoryProvider,
     ProviderErrorCode,
     ProviderHealth,
     ProviderResultStatus,
