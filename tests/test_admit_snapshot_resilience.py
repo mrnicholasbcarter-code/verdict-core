@@ -241,3 +241,28 @@ def test_census_code_path_has_no_test_batch_call() -> None:
         verdict.omniroute_health,
     ):
         assert "test-batch" not in Path(str(module.__file__)).read_text(encoding="utf-8")
+
+
+def test_provider_model_ids_are_upstream_ids_and_always_get_the_provider_prefix() -> None:
+    # Verified 2026-10-17 on OmniRoute 3.8.51: GET /api/v1/providers/nvidia/models
+    # returns {object, data[119]} with upstream ids; the unified /v1/models id is
+    # always "<provider>/<upstream id>" (47 of them are nvidia/nvidia/...).
+    from verdict.free_tier_admit import _merge_provider_catalogs
+
+    merged = _merge_provider_catalogs(
+        {
+            "nvidia": {
+                "object": "list",
+                "data": [
+                    {"id": "nvidia/nemotron-mini", "object": "model", "owned_by": "nvidia"},
+                    {"id": "meta/llama-3.1-8b", "object": "model", "owned_by": "nvidia"},
+                    {"id": "plain-model", "object": "model", "owned_by": "nvidia"},
+                ],
+            }
+        }
+    )
+    assert [row["id"] for row in merged["data"]] == [  # type: ignore[index]
+        "nvidia/nvidia/nemotron-mini",
+        "nvidia/meta/llama-3.1-8b",
+        "nvidia/plain-model",
+    ]

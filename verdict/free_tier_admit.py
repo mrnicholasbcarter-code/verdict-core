@@ -1491,9 +1491,12 @@ def _gated_providers(free_tier: object, providers: object, account_status: objec
 def _merge_provider_catalogs(by_provider: Mapping[str, object]) -> dict[str, object]:
     """Merge per-provider model lists into one /v1/models-shaped catalog.
 
-    Rows whose id lacks the ``provider/`` prefix get it, so identities match
-    the unified catalog. The per-provider row shape is OpenAI-list compatible
-    (``{"object": "list", "data": [...]}``); a non-list body contributes none.
+    Per-provider ids are upstream ids (verified on OmniRoute 3.8.51: nvidia
+    returns ``nvidia/nemotron-...`` and ``meta/llama-...``), while the unified
+    catalog id is always ``<provider>/<upstream id>``, so every id gets the
+    provider prefix, even one that already starts with the provider name.
+    The body is ``{"object": "list", "data": [...]}``; a non-list body
+    contributes none.
     """
     rows: list[object] = []
     for provider, payload in sorted(by_provider.items()):
@@ -1502,9 +1505,7 @@ def _merge_provider_catalogs(by_provider: Mapping[str, object]) -> dict[str, obj
             continue
         for row in data:
             if isinstance(row, Mapping) and isinstance(row.get("id"), str):
-                ident = row["id"]
-                if not ident.startswith(f"{provider}/"):
-                    row = {**row, "id": f"{provider}/{ident}"}
+                row = {**row, "id": f"{provider}/{row['id']}"}
             rows.append(row)
     return {"object": "list", "data": rows}
 
