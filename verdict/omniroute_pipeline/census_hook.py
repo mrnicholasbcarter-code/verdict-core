@@ -183,21 +183,35 @@ def run_context_probes(
     states: dict[str, Any],
     blocklist: Any,
     free_status: Mapping[str, str] | None = None,
-) -> int:
+    catalog_max: Mapping[str, int | None] | None = None,
+    max_candidates: int | None = None,
+    max_tokens: int | None = None,
+) -> tuple[int, int]:
     """At most ``max_per_tick`` one-step context probes on proven FREE routes.
 
     ``free_status`` carries the tick's rule 0.2 verdicts (FreeStatus values);
-    a route without positive FREE evidence is never sent a needle."""
+    a route without positive FREE evidence is never sent a needle.
+    ``catalog_max`` maps routes to their catalog context limit, so a needle
+    never exceeds it. A needle dispatches only when the remaining
+    ``max_candidates``/``max_tokens`` budgets cover its input+output tokens,
+    and its reservation is returned with the dispatch count:
+    ``(probes_dispatched, tokens_reserved)``.
+    """
     from verdict.omniroute_pipeline.context_store import (
         context_due,
         load_usable_context,
         record_usable_context,
     )
-    from verdict.omniroute_pipeline.probes import next_context_step, probe_allowed
+    from verdict.omniroute_pipeline.probes import (
+        NEEDLE_OUTPUT_TOKENS,
+        next_context_step,
+        probe_allowed,
+    )
     from verdict.omniroute_pipeline.state import ModelState, should_probe, transition
 
     rows = load_usable_context(store_path)
     done = 0
+    reserved = 0
     for route in candidates:
         if done >= max_per_tick:
             break
@@ -216,10 +230,24 @@ def run_context_probes(
         if not context_due(row, now):
             continue
         current = row.get("usable_context") if row else None
-        step = next_context_step(current if isinstance(current, int) else None, None)
+        step = next_context_step(
+            current if isinstance(current, int) else None,
+            catalog_max.get(route) if catalog_max is not None else None,
+        )
         if step is None:
             continue
+        # Reserve the needle's actual input+output tokens before dispatch.
+        cost = step + NEEDLE_OUTPUT_TOKENS
+        if max_candidates is not None and max_candidates < 1:
+            continue
+        if max_tokens is not None and max_tokens < cost:
+            continue
         outcome = prober(route, step)
+        if max_candidates is not None:
+            max_candidates -= 1
+        if max_tokens is not None:
+            max_tokens -= cost
+        reserved += cost
         family_used[family] = family_used.get(family, 0) + 1
         done += 1
         states[route] = transition(
@@ -236,7 +264,7 @@ def run_context_probes(
             now=now,
             failed_step=None if passed else step,
         )
-    return done
+    return done, reserved
 
 
 CENSUS_PROBE_KEY_RELPATH = ".config/verdict/omniroute-api-key"

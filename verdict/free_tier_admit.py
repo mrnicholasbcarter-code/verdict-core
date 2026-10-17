@@ -167,6 +167,10 @@ class CatalogIdentity:
     price_known: bool = False
     input_cost: float | None = None
     output_cost: float | None = None
+    # Catalog context limit when the inventory row carries one
+    # (context_window / context_length / context); None means the catalog
+    # did not say. Caps the census needle steps for the route.
+    max_context_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1146,6 +1150,15 @@ def _catalog_prices(row: Mapping[str, Any]) -> tuple[bool, float | None, float |
     return input_price is not None and output_price is not None, input_price, output_price
 
 
+def _catalog_context_limit(row: Mapping[str, Any]) -> int | None:
+    """Positive context limit from the inventory row; absent means unknown."""
+    for key in ("context_window", "context_length", "context"):
+        value = row.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            return int(value)
+    return None
+
+
 def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
     """Parse OpenAI-compatible ``/v1/models`` or a management catalog envelope."""
     rows: list[Any]
@@ -1193,6 +1206,7 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
                 price_known=price_known,
                 input_cost=input_cost,
                 output_cost=output_cost,
+                max_context_tokens=_catalog_context_limit(row),
             )
         )
     return tuple(out)

@@ -249,6 +249,11 @@ def run_census(
 
     # Rule 0.2 once per tick, before any live probing (finding B1).
     free_verdicts = classify_snapshot_free(snapshot, free_flags)
+    # Catalog context limit per route, so needles never exceed it (B2).
+    catalog_max = {
+        identity.identity_id: identity.max_context_tokens
+        for identity in getattr(snapshot, "catalog", ())
+    }
 
     def free_evidence(route: str) -> str:
         # Positive FREE evidence only; unknown routes fail closed.
@@ -383,6 +388,7 @@ def run_census(
         if pipeline_state:
             states[model] = _pipeline_state(model, outcome, blocklist, transition, ModelState)
     context_probed = 0
+    context_reserved = 0
     if pipeline_probes and context_prober is not None and context_probe_max_per_tick > 0:
         from verdict.omniroute_pipeline.census_hook import run_context_probes
         from verdict.omniroute_pipeline.context_store import default_context_store_path
@@ -392,7 +398,16 @@ def run_census(
         needle_pool = [
             route for route in candidates if free_evidence(route) == FreeStatus.FREE.value
         ][:5]
-        context_probed = run_context_probes(
+        # The context pass shares the tick's budgets: what the passive
+        # renewal and the full probes left of max_candidates/max_tokens is all
+        # the needle work may spend, and its reservations are reported (B2).
+        remaining_candidates = (
+            None
+            if max_candidates is None
+            else max(0, max_candidates - refreshed["updated"] - probed)
+        )
+        remaining_tokens = None if max_tokens is None else max(0, max_tokens - probed * 256)
+        context_probed, context_reserved = run_context_probes(
             needle_pool,
             proven=proven,
             family_used=family_used,
@@ -404,6 +419,9 @@ def run_census(
             states=states,
             blocklist=blocklist,
             free_status={route: status.value for route, status in free_verdicts.items()},
+            catalog_max=catalog_max,
+            max_candidates=remaining_candidates,
+            max_tokens=remaining_tokens,
         )
     cache.save()
     after = passive_refresh(cache, refresh_cap, passport_store_path, now, set(candidates))
@@ -416,7 +434,7 @@ def run_census(
         "non_chat_skipped": len(non_chat),
         "candidates": len(candidates),
         "probed": probed,
-        "reserved_tokens": probed * 256,
+        "reserved_tokens": probed * 256 + context_reserved,
         **({"context_probed": context_probed} if pipeline_probes else {}),
         **(
             {

@@ -115,6 +115,11 @@ def judge_tool(status: int, body: object) -> ProbeOutcome:
     return ProbeOutcome.PASS
 
 
+# The needle payload's capped output; its input is sized to ``size_tokens``
+# by the filler, so one needle reserves NEEDLE_OUTPUT_TOKENS + step tokens.
+NEEDLE_OUTPUT_TOKENS = 32
+
+
 def needle_payload(route: str, size_tokens: int, needle: str) -> dict[str, object]:
     """Filler of about ``size_tokens`` with the needle at 50% depth (4 chars per token)."""
     half = "lorem ipsum " * max(1, (size_tokens * 4) // 24)
@@ -122,7 +127,7 @@ def needle_payload(route: str, size_tokens: int, needle: str) -> dict[str, objec
     return {
         "model": route,
         "stream": False,
-        "max_tokens": 32,
+        "max_tokens": NEEDLE_OUTPUT_TOKENS,
         "messages": [
             {"role": "user", "content": text + "\nWhat is the secret code? Reply with it only."}
         ],
