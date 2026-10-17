@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,8 +86,30 @@ def passive_refresh(
     }
 
 
+_log = logging.getLogger(__name__)
 DEFAULT_MAX_PER_PROVIDER = 2
 PASSIVE_EVIDENCE_MAX_AGE_SECONDS = 30 * 60
+# Only evidence with an explicit success count (>=1 non-stream 2xx in the
+# window, or a provider-stats / call-logs?excludeTests=1 success count) may
+# renew a passport. OmniRoute 3.8.51 latency stats ("passive_success") are a
+# 24-168h aggregate with no such count, so they never qualify: no producer of
+# this category exists yet and those routes are left to the probe.
+RECENT_SUCCESS_CATEGORY = "recent_success"
+# Admit/health surface -> evidence source marker; stale surfaces renew nothing.
+_SURFACE_SOURCE_MARKERS = {
+    "latency_stats": "model-latency-stats",
+    "connections": "resilience/connections",
+    "provider_stats": "provider-stats",
+    "call_logs": "call-logs",
+    "providers": "/api/providers",
+}
+
+
+def _from_stale_surface(source: str, stale_served: Any) -> bool:
+    return any(
+        surface in source or _SURFACE_SOURCE_MARKERS.get(surface, "\0") in source
+        for surface in stale_served or ()
+    )
 
 
 def refresh_from_passive_evidence(
@@ -97,20 +120,29 @@ def refresh_from_passive_evidence(
     *,
     max_age_seconds: float = PASSIVE_EVIDENCE_MAX_AGE_SECONDS,
 ) -> set[str]:
-    """Renew passports from recent gateway success before spending probes.
+    """Renew basic liveness passports from recent counted success before probing.
 
-    A route qualifies when the admit snapshot's passive health (latency stats
-    joined with live healthy connections) marks it healthy, unexpired, and
-    observed within ``max_age_seconds``. The passport keeps that observation
-    time, so passive evidence never extends its own age.
+    Only ``RECENT_SUCCESS_CATEGORY`` evidence (an explicit success count) that
+    is healthy, unexpired and observed within ``max_age_seconds`` qualifies;
+    latency-only evidence never does. Evidence from a surface listed in
+    ``snapshot.stale_served`` renews nothing. The renewed passport is liveness
+    only (``tool_support=False``) and keeps the observation time. A route
+    holding an agentic/tool-capability pass is never touched: that pass keeps
+    its own TTL and only an agentic probe renews it.
     """
     from verdict.admission import RuntimeEvidence
 
     store = ProveAtRestStore(path=passport_store_path)
+    existing = load_healthy_passports(passport_store_path)
+    stale_served = getattr(snapshot, "stale_served", ())
     results: dict[str, ProofResult] = {}
     for row in (snapshot.passive_health or RuntimeEvidence()).observations:
         route = row.key.removeprefix("route:")
         if not row.key.startswith("route:") or route not in eligible_routes:
+            continue
+        if row.category != RECENT_SUCCESS_CATEGORY or _from_stale_surface(row.source, stale_served):
+            continue
+        if route in existing and existing[route].tool_support:
             continue
         if row.state != "healthy" or row.until is None or row.observed_at is None:
             continue
@@ -129,6 +161,7 @@ def refresh_from_passive_evidence(
                 model_id=route, availability_state="ready", status="ok", observed_at=observed
             ),
         )
+        passport = replace(passport, tool_support=False)
         if passport.expires_at <= now:
             continue
         results[route] = ProofResult(
@@ -249,6 +282,18 @@ def run_census(
         if model not in passive
         and (model not in passports or passports[model].expires_at <= renew_before)
     ]
+    families = {canonical_route(model).split("/", 1)[0] for model in candidates}
+    probe_budget = len(families) * max_per_provider if max_per_provider is not None else None
+    stale_served = list(getattr(snapshot, "stale_served", ()))
+    _log.info(
+        "census probe budget: %s (%d providers x max_per_provider=%s); stale_served=%s",
+        probe_budget,
+        len(families),
+        max_per_provider,
+        stale_served,
+    )
+    if stale_served:
+        _log.warning("census tick uses stale admit surfaces: %s", ", ".join(stale_served))
     if max_per_provider is not None:
         per_family: dict[str, int] = {}
         budgeted = []
@@ -290,6 +335,8 @@ def run_census(
     return {
         **after,
         "passive_refreshed": len(passive),
+        "probe_budget": probe_budget,
+        "stale_served": stale_served,
         "non_chat_skipped": len(non_chat),
         "candidates": len(candidates),
         "probed": probed,
@@ -329,14 +376,22 @@ def load_census_cooldowns(
 def _worker_capable_routes(base_url: str, api_key: str | None) -> frozenset[str]:
     """Catalog routes with the capabilities worker and reviewer roles require.
 
-    Reads the catalog the admit snapshot just cached; no extra gateway call.
+    Reads the gated census catalog the admit snapshot just cached; no extra
+    gateway call.
     """
     from verdict.availability import normalize_catalog
     from verdict.catalog_cache import get_cached_catalog
-    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.free_tier_admit import (
+        default_census_catalog_cache_path,
+        normalize_omniroute_origin,
+    )
     from verdict.subagent_models import SUBAGENT_ROLE_REQUIREMENTS
 
-    catalog = get_cached_catalog(normalize_omniroute_origin(base_url), api_key)
+    catalog = get_cached_catalog(
+        normalize_omniroute_origin(base_url),
+        api_key,
+        cache_path=default_census_catalog_cache_path(),
+    )
     required = (
         SUBAGENT_ROLE_REQUIREMENTS["worker"].required
         | SUBAGENT_ROLE_REQUIREMENTS["reviewer"].required
@@ -377,7 +432,7 @@ def cmd_census(
         key_path = Path.home() / ".config/verdict/omniroute-api-key"
         if key_path.is_file():
             key = key_path.read_text().strip()
-        snapshot = load_omniroute_admit_snapshot(base_url, api_key=key)
+        snapshot = load_omniroute_admit_snapshot(base_url, api_key=key, catalog_scope="gated")
         role_routes = _worker_capable_routes(base_url, key)
         # A cooldown-endpoint outage must not kill the timer's census run; the
         # census then just spends its probe budget without cooldown hints.

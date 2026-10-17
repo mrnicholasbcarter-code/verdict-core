@@ -406,11 +406,10 @@ def test_census_active_candidates_filtered_and_budgeted(tmp_path):
         max_candidates=1,
         max_tokens=256,
     )
-    # Passively healthy eligible routes renew without spending probes (S5).
-    assert result["probed"] == 0
-    assert result["passive_refreshed"] == 2
-    assert calls == []
-    assert set(load_healthy_passports(tmp_path / "state.json")) == {"good/a", "good/b"}
+    assert result["probed"] == 1
+    assert {model for model, _ in calls} == {"good/a"}
+    assert len(calls) == 2
+    assert set(load_healthy_passports(tmp_path / "state.json")) == {"good/a"}
 
 
 def test_census_token_budget_prevents_dispatch(tmp_path):
