@@ -489,3 +489,12 @@ def test_installed_plugin_stamps_hook_fire_time(
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     module.HOOKS["post_llm_call"](session_id="s", turn_id="t", assistant_response="x")
     assert isinstance(seen["hook_fired_at"], float) and seen["hook_fired_at"] > 1.7e9
+
+
+def test_check_install_refuses_user_owned_plugin_without_writing(tmp_path: Path) -> None:
+    home = tmp_path / "hermes"
+    user_owned = home / "plugins" / hm.PLUGIN_NAME
+    user_owned.mkdir(parents=True)
+    with pytest.raises(hm.HermesMemoryCollisionError):
+        hm.check_install(hermes_home=home)
+    assert sorted(p.name for p in home.rglob("*")) == ["plugins", hm.PLUGIN_NAME]
