@@ -164,3 +164,115 @@ def test_cli_help_lists_hermes(
     assert "disable" in out
     assert "status" in out
     assert SECRET not in out
+
+
+# BOD80 lane C: Hermes v0.21.3 plugin hooks are source-evidenced, not yet observed live.
+def test_certify_reports_source_evidenced_plugin_hooks_as_partial(tmp_path: Path) -> None:
+    from verdict.harness_hermes import certify
+
+    report = certify(
+        hermes_home=tmp_path,
+        force=True,
+        health_check=lambda _u: True,
+        which=lambda _n: "/usr/bin/hermes",
+    )
+    for facet in (
+        "hooks",
+        "session_start",
+        "before_first_turn",
+        "session_end",
+        "mutation_capability",
+    ):
+        assert report.facets[facet] == "partial", facet
+    assert report.facets["tool_pre_post"] == "unsupported"  # not wired by the adapter
+    joined = " ".join(report.notes)
+    assert "no native hook system" not in joined.lower()
+    assert "source-evidenced" in joined and "v0.21.3" in joined
+
+
+def test_enable_installs_and_disable_uninstalls_memory_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict import harness_hermes_memory as hm
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    paths = resolve_paths(hermes_home=hermes_home)
+    paths.config.parent.mkdir(parents=True)
+    paths.config.write_text(ORIGINAL_YAML, encoding="utf-8")
+
+    enable(hermes_home=hermes_home, health_check=_healthy)
+    plugin_dir = hermes_home / "plugins" / hm.PLUGIN_NAME
+    assert (plugin_dir / hm.OWNERSHIP_MARKER).is_file()
+    config = yaml.safe_load(paths.config.read_text(encoding="utf-8"))
+    assert hm.PLUGIN_NAME in config["plugins"]["enabled"]
+    assert config["model"]["provider"] == PROVIDER_NAME
+
+    disable(hermes_home=hermes_home)
+    assert not plugin_dir.exists()
+    assert not (hermes_home / hm.BACKUP_NAME).exists()
+    assert paths.config.read_text(encoding="utf-8") == ORIGINAL_YAML
+    assert not (tmp_path / "home" / ".hermes").exists()
+
+
+def test_enable_fails_closed_before_config_write_on_plugin_collision(tmp_path: Path) -> None:
+    """F899-1: a user-owned plugin folder must refuse enable with nothing changed."""
+    from verdict import harness_hermes
+    from verdict import harness_hermes_memory as hm
+
+    hermes_home = tmp_path / "hermes"
+    paths = resolve_paths(hermes_home=hermes_home)
+    paths.config.parent.mkdir(parents=True)
+    paths.config.write_text(ORIGINAL_YAML, encoding="utf-8")
+    user_owned = hermes_home / "plugins" / hm.PLUGIN_NAME
+    user_owned.mkdir(parents=True)
+    (user_owned / "mine.txt").write_text("user data\n", encoding="utf-8")
+
+    with pytest.raises(HarnessHermesError, match=harness_hermes.GAP_MEMORY_PLUGIN_INSTALL):
+        enable(hermes_home=hermes_home, health_check=_healthy, force=True)
+    assert paths.config.read_text(encoding="utf-8") == ORIGINAL_YAML
+    assert not paths.backup.exists()
+    assert not paths.absent_marker.exists()
+    assert (user_owned / "mine.txt").read_text(encoding="utf-8") == "user data\n"
+
+
+def test_enable_rolls_back_config_when_install_fails_after_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict import harness_hermes
+    from verdict import harness_hermes_memory as hm
+
+    hermes_home = tmp_path / "hermes"
+    paths = resolve_paths(hermes_home=hermes_home)
+    paths.config.parent.mkdir(parents=True)
+    paths.config.write_text(ORIGINAL_YAML, encoding="utf-8")
+
+    def _boom(**_: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(hm, "install", _boom)
+    with pytest.raises(HarnessHermesError, match=harness_hermes.GAP_MEMORY_PLUGIN_INSTALL):
+        enable(hermes_home=hermes_home, health_check=_healthy)
+    assert paths.config.read_text(encoding="utf-8") == ORIGINAL_YAML
+    assert not paths.backup.exists()
+
+
+def test_disable_restores_config_even_when_plugin_is_not_ours(tmp_path: Path) -> None:
+    """F899-1: disable restores config.yaml, then still reports the uninstall gap."""
+    from verdict import harness_hermes
+    from verdict import harness_hermes_memory as hm
+
+    hermes_home = tmp_path / "hermes"
+    paths = resolve_paths(hermes_home=hermes_home)
+    paths.config.parent.mkdir(parents=True)
+    paths.config.write_text(ORIGINAL_YAML, encoding="utf-8")
+    enable(hermes_home=hermes_home, health_check=_healthy)
+    plugin_dir = hermes_home / "plugins" / hm.PLUGIN_NAME
+    (plugin_dir / hm.OWNERSHIP_MARKER).unlink()  # the folder is no longer Verdict-owned
+
+    with pytest.raises(HarnessHermesError, match=harness_hermes.GAP_MEMORY_PLUGIN_UNINSTALL):
+        disable(hermes_home=hermes_home)
+    assert paths.config.read_text(encoding="utf-8") == ORIGINAL_YAML
+    assert not paths.backup.exists()
+    assert plugin_dir.is_dir()

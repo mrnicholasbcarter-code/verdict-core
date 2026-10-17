@@ -289,11 +289,11 @@
   },
   {
     "qualified_name": "verdict.harness_hermes.format_certify",
-    "reason": "UNTRIAGED: format_certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+    "reason": "KEEP: public text renderer (format_certify) in verdict/harness_hermes.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_hermes.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_hermes.format_status",
-    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+    "reason": "KEEP: public text renderer (format_status) in verdict/harness_hermes.py __all__, matching the format_* surface of the other harness modules (e.g. verdict/harness_cline.py); test_only_caller (tests/test_harness_hermes.py). Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_opencode.format_certify",
@@ -370,10 +370,6 @@
   {
     "qualified_name": "verdict.memory_mirror.MemoryMirrorWorker",
     "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
-  },
-  {
-    "qualified_name": "verdict.memory_providers.ai_memory_experimental.AiMemoryExperimentalProvider",
-    "reason": "UNTRIAGED: AiMemoryExperimentalProvider has only non-production references; EXPERIMENTAL: HTTP adapter for akitaonrails/ai-memory as a SharedMemoryProvider (verdict/memory_providers/ai_memory_experimental.py)."
   },
   {
     "qualified_name": "verdict.memory_session_adapter.import_session",
@@ -592,10 +588,6 @@
     "reason": "UNTRIAGED: WorkerPool has only non-production references; Bounded worker execution against an OpenAI-compatible OmniRoute gateway (verdict/workers.py)."
   },
   {
-    "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
-    "reason": "UNTRIAGED: AutoDevWorkflow has no resolved reference; 12-Stage Autonomous Software Development Workflow (issue #259) (verdict/workflows/autodev.py)."
-  },
-  {
     "qualified_name": "verdict.benchmarking.format_comparison_report",
     "reason": "UNTRIAGED: format_comparison_report has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
   },
@@ -701,15 +693,15 @@
   },
   {
     "qualified_name": "verdict.harness_hermes.certify",
-    "reason": "UNTRIAGED: certify has no resolved reference; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+    "reason": "KEEP: public certification surface (certify) in verdict/harness_hermes.py __all__, matching the certify() of the other harness modules (e.g. verdict/harness_claude.py); no harness.hermes.certify action is registered yet, so its only caller is tests/test_harness_hermes.py. Documented harness API surface, not dead code."
   },
   {
     "qualified_name": "verdict.harness_hermes.disable",
-    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+    "reason": "KEEP: harness lifecycle entry point (disable) of verdict/harness_hermes.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.hermes.disable action that `verdict harness hermes disable` (cli.cmd_harness_hermes) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_hermes.enable",
-    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Hermes harness switching for Verdict-managed mode (verdict/harness_hermes.py)."
+    "reason": "KEEP: harness lifecycle entry point (enable) of verdict/harness_hermes.py; reached dynamically by verdict/actions/extra.py _harness_module() via importlib.import_module(f\"verdict.harness_{name}\") for the harness.hermes.enable action that `verdict harness hermes enable` (cli.cmd_harness_hermes) runs, so static analysis sees no caller. Not dead code."
   },
   {
     "qualified_name": "verdict.harness_opencode.certify",

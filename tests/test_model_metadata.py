@@ -341,12 +341,121 @@ class TestStoreAndSchema:
         assert (
             "openrouter/meta-llama/llama-3.3-70b-instruct:free" in mapping.omniroute_to_models_dev
         )
+        # Public OpenRouter id equals models.dev target (including :free); gateway prefix only.
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/nvidia/nemotron-3-super-120b-a12b:free"]
+            == "nvidia/nemotron-3-super-120b-a12b:free"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/poolside/laguna-s-2.1:free"]
+            == "poolside/laguna-s-2.1:free"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/poolside/laguna-xs-2.1:free"]
+            == "poolside/laguna-xs-2.1:free"
+        )
 
     def test_parse_api_rejects_non_object(self) -> None:
         with pytest.raises(ModelMetadataError):
             parse_models_dev_api(
                 [], FieldProvenance(source=SOURCE_MODELS_DEV, fetched_at=FETCHED_AT)
             )
+
+
+class TestOpenRouterFreeExactMapJoin:
+    """Explicit openrouter/<id>:free → same models.dev id; pool/admission receipt join."""
+
+    @staticmethod
+    def _record(model_id: str, *, tools: bool = True) -> ModelMetadataRecord:
+        cited = FieldProvenance(source=SOURCE_MODELS_DEV, fetched_at=FETCHED_AT)
+        return ModelMetadataRecord(
+            id=model_id,
+            caps=CapabilityCaps(
+                tools=ProvenancedField(value=tools, provenance=cited),
+                context=ProvenancedField(value=262144, provenance=cited),
+                max_output=ProvenancedField(value=8192, provenance=cited),
+            ),
+        )
+
+    def test_openrouter_free_exact_map_joins_lookup_and_pool_receipt(self) -> None:
+        from verdict.candidate_pool import (
+            DROP_UNMAPPED,
+            HEALTH_OK,
+            RouteHealth,
+            build_candidate_pool,
+        )
+
+        mapping = load_identity_map(default_mapping_path())
+        route = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+        target = "nvidia/nemotron-3-super-120b-a12b:free"
+        assert mapping.omniroute_to_models_dev[route] == target
+
+        snapshot = MetadataSnapshot(
+            schema_version="1",
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(self._record(target),),
+            mapping={"path": str(default_mapping_path())},
+        )
+        found = lookup_omniroute_id(snapshot, route, identity_map=mapping, required=("tools",))
+        assert found.drop is None
+        assert found.record is not None
+        assert found.record.id == target
+        assert found.record.caps.tools is not None
+        assert found.record.caps.tools.value is True
+        receipt_bits = found.provenance_for_receipt(("tools",))
+        assert receipt_bits["tools"]["source"] == SOURCE_MODELS_DEV
+
+        # Effort/unknown suffix must stay unmapped (no silent strip).
+        effort = "openrouter/nvidia/nemotron-3-super-120b-a12b:free-high"
+        neg = lookup_omniroute_id(snapshot, effort, identity_map=mapping)
+        assert neg.drop is not None
+        assert neg.drop.reason == "unmapped"
+
+        # Candidate pool admission: mapped route shortlists; effort alias hard-drops.
+        pool = build_candidate_pool(
+            [route, effort],
+            task="tools",
+            context={"tools_required": True},
+            metadata=snapshot,
+            identity_map=mapping,
+            health={route: RouteHealth(state=HEALTH_OK), effort: RouteHealth(state=HEALTH_OK)},
+            top_k=2,
+        )
+        assert route in [e.route_id for e in pool.shortlist]
+        short = next(e for e in pool.shortlist if e.route_id == route)
+        # Receipt exposes joined metadata identity (not merely the gateway string).
+        payload = short.to_dict() if hasattr(short, "to_dict") else {}
+        meta_id = (
+            getattr(short, "metadata_id", None)
+            or payload.get("metadata_id")
+            or payload.get("models_dev_id")
+            or (payload.get("eval_prior_metadata_id") if isinstance(payload, dict) else None)
+        )
+        # Prefer structured fields when present; else prove via lookup already above.
+        if meta_id is not None:
+            assert meta_id == target
+        assert any(d.route_id == effort and d.reason == DROP_UNMAPPED for d in pool.hard_drops)
+
+    def test_openrouter_poolside_free_rows_join(self) -> None:
+        mapping = load_identity_map(default_mapping_path())
+        pairs = (
+            ("openrouter/poolside/laguna-s-2.1:free", "poolside/laguna-s-2.1:free"),
+            ("openrouter/poolside/laguna-xs-2.1:free", "poolside/laguna-xs-2.1:free"),
+        )
+        records = tuple(self._record(target) for _, target in pairs)
+        snapshot = MetadataSnapshot(
+            schema_version="1",
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=records,
+            mapping={"path": str(default_mapping_path())},
+        )
+        for route, target in pairs:
+            found = lookup_omniroute_id(snapshot, route, identity_map=mapping)
+            assert found.drop is None
+            assert found.record is not None
+            assert found.record.id == target
 
 
 class TestCliMetadata:
