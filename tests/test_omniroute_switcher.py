@@ -8,7 +8,7 @@ D12/D13 defaults: recommend-only on prime-free-chain; 700k gate, 650k compaction
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import ModuleType
 from typing import Any
 
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.xfail(
     strict=True, raises=ImportError, reason="phase e: switcher not implemented yet"
 )
 
-T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
+T0 = datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
 
 
 def _sw() -> ModuleType:

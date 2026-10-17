@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,7 +10,7 @@ import pytest
 pytestmark = pytest.mark.xfail(
     strict=True, raises=ImportError, reason="phase d: ranking/names not implemented yet"
 )
-NOW = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
 
 
 def test_name_map_family_version_variant() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,7 @@ from verdict.omniroute_pipeline.free_rule import (
     write_free_flags,
 )
 
-NOW = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
 
 
 def _flags(entries: dict[str, dict[str, bool | float | None]]) -> ProviderFreeFlags:

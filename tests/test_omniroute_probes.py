@@ -118,7 +118,7 @@ def test_probe_policy_needle_and_steps() -> None:
 
 
 def test_usable_context_store_seeds_and_records(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from verdict.omniroute_pipeline.context_store import (
         context_due,
@@ -127,7 +127,7 @@ def test_usable_context_store_seeds_and_records(tmp_path) -> None:  # type: igno
     )
 
     path = tmp_path / "usable-context.json"
-    now = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
+    now = datetime(2026, 10, 17, 9, 0, tzinfo=timezone.utc)
     rows = load_usable_context(path)
     assert rows["nvidia/z-ai/glm-5.3"]["usable_context"] == 825_000
     assert context_due(rows["nvidia/z-ai/glm-5.3"], now) is False
