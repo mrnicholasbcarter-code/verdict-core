@@ -1,0 +1,11 @@
+{
+  "_synthetic": true,
+  "_note": "synthetic: shaped like Codex 0.161.0 hook stdin, not yet live-observed",
+  "session_id": "sess-b-0001",
+  "turn_id": "turn-b-0",
+  "cwd": "/work/project-b",
+  "hook_event_name": "SessionStart",
+  "transcript_path": "/home/u/.codex/sessions/2026/10/16/rollout-sess-b.jsonl",
+  "model": "gpt-5",
+  "source": "startup"
+}
