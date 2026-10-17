@@ -24,7 +24,7 @@ from verdict.omniroute_pipeline.free_rule import (
     load_free_flags,
     write_free_flags,
 )
-from verdict.omniroute_pipeline.probes import is_fake_200
+from verdict.omniroute_pipeline.probes import ProbeOutcome, judge_chat
 
 FLAG_ENV = "VERDICT_PIPELINE_FREE_RULE"
 
@@ -80,7 +80,8 @@ def guard_transport(transport: Callable[..., Any]) -> Callable[..., Any]:
     def guarded(*args: Any, **kwargs: Any) -> Any:
         exchange = transport(*args, **kwargs)
         body = getattr(exchange, "response_body", None)
-        if getattr(exchange, "ok", False) and is_fake_200(body):
+        status = getattr(exchange, "http_status", None) or 0
+        if getattr(exchange, "ok", False) and judge_chat(status, body) is ProbeOutcome.FAIL_FAKE:
             return dataclasses.replace(
                 exchange,
                 ok=False,
