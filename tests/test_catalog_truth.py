@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from verdict.classifier import classify_known
 from verdict.openrouter_free_set import (
     DEFAULT_TTL_SECONDS,
     OpenRouterFreeEntry,
@@ -1138,3 +1139,186 @@ class TestCatalogGhostWiring:
         assert not is_catalog_stale_error("unsupported")
         assert not is_catalog_stale_error("bad_request")
         assert not is_catalog_stale_error("unservable")
+
+
+# -----------------------------------------------------------------------
+# H. CAPABILITY CLASSIFIER - FREE CATALOG FAMILIES (BOD-419)
+# -----------------------------------------------------------------------
+
+_TIER_MEANING = """
+Tier semantics (verdict/classifier.py CAPABILITY_PATTERNS):
+- Tier 0 = frontier spend guard (opus/fable/gpt-6-sol/gpt-5.5/5.6/grok-4/o3).
+  The strong free families are NOT tier 0 by default.
+- Tier 1 = strong near-frontier work models (sonnet-4/5, gpt-5.4, gpt-4o,
+  deepseek-r1, qwen-235b, gemini-pro).
+- Tier 2 = mid tier (sonnet-3, gpt-4o-mini, deepseek-v3, llama-70b,
+  qwen-72b, mistral-large, command-r-plus).
+- Tier 3 = cheapest/fastest (haiku/flash/mini/nano/lite/small sizes).
+"""
+
+
+class TestFreeCatalogCapabilityClassification:
+    """BOD-419: the strong free families from the live /api/free-models
+    snapshot (glm, kimi, deepseek-v4, minimax, qwen3, mistral, gpt-oss,
+    gemma, zai) must be recognized by the classifier pattern tables.
+
+    Every route id below is a real row from that snapshot (2026-10-17,
+    489 free ids).  Without the fix these all return None from
+    classify_known and the ladder drops them as ``unknown_capability``
+    whenever ``max_capability_tier < 3`` (eligibility.py:711-716), so
+    ``orchestrate --capacity free`` cannot plan on them.
+    """
+
+    @pytest.mark.parametrize(
+        ("route_id", "tier"),
+        [
+            # --- glm / zai (Z.ai GLM-5 series): strong coding class,
+            # on par with the tier-1 sonnet/deepseek-r1 cohort, below the
+            # tier-0 frontier guard.
+            ("qoder/glm-5.2", 1),
+            ("bazaarlink/glm-5", 1),
+            ("fireworks/glm-5p1", 1),
+            ("bluesminds/glm-4.7", 1),
+            ("cerebras/zai-glm-4.7", 1),
+            # --- kimi (Moonshot K2/K3 agentic coding series): tier 1.
+            ("deepinfra/moonshotai/Kimi-K2.6", 1),
+            ("bluesminds/kimi-k2-thinking", 1),
+            ("qoder/kimi-k3", 1),
+            # --- deepseek v4 flagship: successor to deepseek-r1 (tier 1).
+            ("deepseek/deepseek-v4-pro", 1),
+            ("bluesminds/deepseek-reasoner", 1),
+            # --- minimax (M2/M3 agentic series): tier 1.
+            ("xkiro/minimax/minimax-m3:free", 1),
+            ("sambanova/MiniMax-M2.7", 1),
+            # --- qwen3 flagship lines (max, flagship coder): tier 1,
+            # matching the existing qwen-235b tier-1 row.
+            ("xkiro/qwen/qwen3-max:free", 1),
+            ("bluesminds/qwen-max", 1),
+            ("xkiro/qwen/qwen3.6-max-preview:free", 1),
+            ("siliconflow/Qwen/Qwen3-Coder-480B-A35B-Instruct", 1),
+            ("xkiro/qwen/qwen3-coder-plus:free", 1),
+            ("kiro/qwen3-coder-next", 1),
+            # --- deepseek chat class: tier 2 like the existing
+            # deepseek-v3 row; r1 distills are mid models.
+            ("bluesminds/deepseek-chat", 2),
+            ("kiro/deepseek-3.2", 2),
+            ("xkiro/deepseek/deepseek-chat-v3.1", 2),
+            ("cloudflare-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", 2),
+            # --- qwen mid lines (plus serving tier, 32B coder/rewl,
+            # qwq reasoning, 122B/next MoE): tier 2 like qwen-72b.
+            ("xkiro/qwen/qwen3.5-plus:free", 2),
+            ("xkiro/qwen/qwen3-vl-plus:free", 2),
+            ("xkiro/qwen/qwen3.7-plus:free", 2),
+            ("bluesminds/qwen-plus", 2),
+            ("cloudflare-ai/@cf/qwen/qwen2.5-coder-32b-instruct", 2),
+            ("hyperbolic/Qwen/QwQ-32B", 2),
+            ("siliconflow/Qwen/Qwen3-32B", 2),
+            ("deepinfra/Qwen/Qwen3.5-122B-A10B", 2),
+            ("vertex/qwen/qwen3-next-80b-a3b-instruct-maas", 2),
+            # --- mistral family: medium tier 2 (large already is),
+            # devstral/codestral mid coders tier 2.
+            ("xkiro/mistralai/mistral-medium-3.5", 2),
+            ("nara/mistral-medium-3-5", 2),
+            ("xkiro/mistralai/devstral-medium", 2),
+            ("xkiro/mistralai/codestral-2508", 2),
+            # --- gemma 31B flagship: mid tier 2.
+            ("nvidia/google/gemma-4-31b-it", 2),
+            ("ollama-cloud/gemma4:31b", 2),
+            # --- gpt-oss 120B: strong open model below the sonnet/4o
+            # cohort, so tier 2, not tier 1.
+            ("siliconflow/openai/gpt-oss-120b", 2),
+            ("agy/gpt-oss-120b-medium", 2),
+            # --- gpt-oss 20B (and the safeguard build): small, tier 3.
+            ("deepinfra/openai/gpt-oss-20b", 3),
+            ("groq/openai/gpt-oss-safeguard-20b", 3),
+            # --- mistral small lines: cheapest tier 3.
+            ("xkiro/mistralai/mistral-small-2603", 3),
+            ("mistral/mistral-small-latest", 3),
+            ("xkiro/mistralai/ministral-14b", 3),
+            ("xkiro/mistralai/ministral-3b", 3),
+            # --- qwen cheap serving/small sizes: tier 3.
+            ("bluesminds/qwen-turbo", 3),
+            ("ainative/qwen3-14b", 3),
+            ("xkiro/qwen/qwen3.6-35b-a3b:free", 3),
+            # --- gemma small models (9B, 26B with a4b active): tier 3.
+            ("huggingface/google/gemma-2-9b-it", 3),
+            ("cloudflare-ai/@cf/google/gemma-4-26b-a4b-it", 3),
+        ],
+    )
+    def test_free_family_ids_get_documented_tiers(self, route_id: str, tier: int) -> None:
+        """Each newly recognized family lands at the tier its class of work
+        justifies; no catch-all tier is invented (see _TIER_MEANING)."""
+        assert classify_known(route_id) == tier, _TIER_MEANING
+
+    @pytest.mark.parametrize(
+        "route_id",
+        [
+            # Representative still-unknown rows from the same live free
+            # snapshot: real model families outside the BOD-419 scope stay
+            # unknown until they are added deliberately.
+            "opencode/ling-2.6-1t-free",
+            "tencent/hunyuan-pro",
+            "nous-research/Hermes-4-405B",
+            "cohere/command-a-03-2025",
+            "api-airforce/x-ai/grok-2-1212",
+            "bluesminds/gpt-4.1",
+        ],
+    )
+    def test_families_outside_scope_stay_unknown(self, route_id: str) -> None:
+        """AC 2 keeps the unknown drop strict: recognizing the nine free
+        families must not blanket-admit everything else in the catalog."""
+        assert classify_known(route_id) is None
+
+    @pytest.mark.parametrize(
+        "route_id",
+        [
+            "mystery-model-x7",
+            # Real non-model rows from the same snapshot: auto routers,
+            # pool aliases, marketing rows and vendor-family alias ids
+            # without a distinct model. Capability stays unknown.
+            "bazaarlink/auto:free",
+            "openrouter/auto",
+            "kilo-gateway/openrouter/auto-beta",
+            "kilo-gateway/kilo-auto/free",
+            "kilo-gateway/openrouter/free",
+            "navy/shared-pool",
+            "glm-cn/glm-signup-bonus",
+            "blackbox/blackboxai",
+            "opencode/big-pickle",
+            "pollinations/claude-fast",
+            "pollinations/gemini-large",
+            "pollinations/midijourney",
+            "pollinations/kimi",
+            "pollinations/minimax",
+            "pollinations/mistral",
+        ],
+    )
+    def test_non_model_and_alias_rows_stay_unknown(self, route_id: str) -> None:
+        """Non-model and alias rows never gain a tier; only explicit
+        family patterns do."""
+        assert classify_known(route_id) is None
+
+    @pytest.mark.parametrize(
+        ("route_id", "tier"),
+        [
+            ("cx/claude-opus-4-8", 0),
+            ("openai/gpt-5.6", 0),
+            ("openai/o3", 0),
+            ("openai/grok-4", 0),
+            ("cc/claude-sonnet-5", 1),
+            ("openai/gpt-5.4", 1),
+            ("openai/gpt-4o", 1),
+            ("deepseek/deepseek-r1", 1),
+            ("antigravity/gemini-3.1-pro-high", 1),
+            ("openai/gpt-4o-mini", 2),
+            ("deepseek/deepseek-v3", 2),
+            ("openrouter/mistralai/mistral-large", 2),
+            ("cc/claude-haiku-4-5", 3),
+            ("openai/gpt-5.5-mini", 3),
+            ("gemini-2.5-flash", 3),
+        ],
+    )
+    def test_existing_assignments_are_unchanged(self, route_id: str, tier: int) -> None:
+        """The widening recognizes unknown ids; it never re-tiers rows the
+        pattern tables already classified."""
+        assert classify_known(route_id) == tier

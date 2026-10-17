@@ -38,7 +38,9 @@ def test_cheap_variants_stay_cheap(route):
 
 def test_existing_explicit_medium_mini_variant_is_preserved():
     assert classify_known("gpt-4o-mini") == 2
-    assert classify_known("minimax-m2") is None
+    # BOD-419: MiniMax M2 is a recognized strong free family (tier 1) and
+    # still must never match the generic "mini" cheap-variant marker.
+    assert classify_known("minimax-m2") == 1
 
 
 @pytest.mark.parametrize("route", ["cx/gpt-6-sol", "cx/gpt-6.1-sol", "cx/gpt-6.1-sol-high"])

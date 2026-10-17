@@ -31,6 +31,16 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"deepseek-r1(?!.*distill)",
         r"qwen.*235b",
         r"^gemini-(?:2\.5|3(?:\.1)?)-pro(?:-(?:preview|low|medium|high|xhigh|thinking|latest))*$",
+        # BOD-419: strong free families from the live /api/free-models
+        # snapshot. Tier 0 stays the frontier spend guard, so these land at
+        # tier 1 (sonnet-4/5 / deepseek-r1 / qwen-235b class), not tier 0.
+        r"glm-(?:4\.[5-9]|5)",  # Z.ai GLM 4.5+/5.x (incl. zai- vendor ids)
+        r"kimi-k\d",  # Moonshot Kimi K2/K3 agentic coding series
+        r"deepseek-v4",  # DeepSeek V4 flagship (R1 successor)
+        r"deepseek-reasoner",  # DeepSeek R1 API alias
+        r"minimax-m\d",  # MiniMax M2/M3 agentic series
+        r"qwen[\d.]*-max",  # Qwen Max flagship line
+        r"qwen[\d.]*-coder-(?:480b|plus|next)",  # flagship Qwen Coder line
     ],
     2: [
         r"sonnet-3",
@@ -41,6 +51,22 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"mistral-large",
         r"deepseek-v3",
         r"command-r-plus",
+        # BOD-419 free families, mid tier (deepseek-v3 / mistral-large /
+        # qwen-72b class). Size lookaheads keep explicit cheap sizes (7b,
+        # 128b, ...) on the tier-3 markers they already match.
+        r"deepseek-(?:chat|3\.2)",  # DeepSeek chat class
+        r"deepseek-r1.*distill",  # R1 distills into mid-size open models
+        r"qwen2\.5-coder-32b",  # 32B Qwen Coder
+        r"qwq",  # QwQ reasoning models
+        r"qwen[\d.]*-32b",
+        r"qwen[\d.]*-122b",
+        r"qwen[\d.]*-next",  # Qwen3-Next efficient line
+        r"qwen[\d.]*-(?:vl-|omni-)?plus",  # mid serving tier (below max)
+        r"gpt-oss-120b",  # 120B open model, below the sonnet/4o cohort
+        r"mistral-medium(?![\w.-]*\d+b)",  # mid Mistral line
+        r"codestral(?![\w.-]*\d+b)",  # ~22B Mistral code model
+        r"devstral",  # ~24B Mistral coder
+        r"gemma.*31b",  # Gemma 31B flagship
     ],
     3: [
         r"haiku",
@@ -55,6 +81,16 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"tiny",
         r"phi-4",
         r"gemma.*2b",
+        # BOD-419 free families, cheapest tier (small sizes / fast serving
+        # tiers / small-active MoE markers, in the spirit of the existing
+        # 7b/8b/mini markers).
+        r"gpt-oss(?:-safeguard)?-20b",  # 20B small open model
+        r"mistral-small",  # small Mistral line
+        r"ministral",  # Mistral's small models
+        r"qwen[\d.]*-turbo",  # fast/cheap serving tier
+        r"qwen[\d.]*-14b",
+        r"gemma.*9b",  # Gemma 2 9B
+        r"-a[1-4]b",  # small-active MoE suffix (a3b/a4b)
     ],
 }
 

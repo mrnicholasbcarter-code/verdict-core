@@ -200,10 +200,12 @@ async def test_provider_terminal_failure_rolls_to_next_provider_on_first_failure
 
 def test_worker_capability_floor_drops_unknown_and_insufficient_before_ranking() -> None:
     """BOD-271 on the Prime worker path: the live kr lanes landed on unrecognized
-    models (qwen3-coder-next, minimax-m2.5) that rejected Prime requests."""
+    models that rejected Prime requests.  BOD-419 recognized qwen3-coder-next and
+    minimax-m2.5 (tier 1), so the unknown-rank-last behaviour is exercised with
+    still-unknown exemplar ids."""
     rows = [
-        _row("kr/qwen3-coder-next"),
-        _row("kr/minimax-m2.5"),
+        _row("kr/mystery-coder-a1"),
+        _row("kr/mystery-model-b2"),
         _row("kr/claude-haiku-4.5"),
         _row("kr/claude-sonnet-5"),
         _row("kr/claude-opus-5.5"),
@@ -224,7 +226,7 @@ def test_worker_capability_floor_drops_unknown_and_insufficient_before_ranking()
     ranked = [c.route_id for c in eligible_worker_candidates(bounded, rows, visible)]
     # Any tier accepted: known small model first, unknown models rank last.
     assert ranked[0] == "kr/claude-haiku-4.5"
-    assert set(ranked[-2:]) == {"kr/qwen3-coder-next", "kr/minimax-m2.5"}
+    assert set(ranked[-2:]) == {"kr/mystery-coder-a1", "kr/mystery-model-b2"}
 
 
 def test_worker_task_config_rejects_invalid_capability_floor() -> None:
@@ -238,6 +240,8 @@ def test_worker_task_config_rejects_invalid_capability_floor() -> None:
 def test_minimax_is_not_classified_as_a_mini_variant() -> None:
     from verdict.classifier import classify_known
 
-    assert classify_known("kr/minimax-m2.5") is None
+    # BOD-419: MiniMax M2 is recognized as a strong free family (tier 1),
+    # never as a "mini" cheap variant.
+    assert classify_known("kr/minimax-m2.5") == 1
     assert classify_known("cx/gpt-5.4-mini") == 3
     assert classify_known("gpt-4o-mini") == 2
