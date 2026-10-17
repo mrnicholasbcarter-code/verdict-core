@@ -872,6 +872,8 @@ def _build_intelligence() -> IntelligenceService:
     primary_model = resolved["primary_model"]
     log_path = resolved["log_path"]
     providers: dict[str, ProviderConfig] = {}
+    from verdict.outcome_shadow import resolve_outcome_shadow_roots
+
     return IntelligenceService(
         primary_model=primary_model,
         providers=providers,
@@ -886,6 +888,8 @@ def _build_intelligence() -> IntelligenceService:
         # CLI ``verdict route`` keeps its own execute_offload default.
         execute_offload=False,
         workspace_root=os.getenv("VERDICT_WORKSPACE_ROOT") or os.getcwd(),
+        # BOD-304: default empty unless VERDICT_OUTCOME_SHADOW_ROOTS is set.
+        outcome_shadow_roots=resolve_outcome_shadow_roots(None),
     )
 
 

@@ -372,10 +372,6 @@
     "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
   },
   {
-    "qualified_name": "verdict.memory_providers.ai_memory_experimental.AiMemoryExperimentalProvider",
-    "reason": "UNTRIAGED: AiMemoryExperimentalProvider has only non-production references; EXPERIMENTAL: HTTP adapter for akitaonrails/ai-memory as a SharedMemoryProvider (verdict/memory_providers/ai_memory_experimental.py)."
-  },
-  {
     "qualified_name": "verdict.memory_session_adapter.import_session",
     "reason": "UNTRIAGED: import_session has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
@@ -590,10 +586,6 @@
   {
     "qualified_name": "verdict.workers.WorkerPool",
     "reason": "UNTRIAGED: WorkerPool has only non-production references; Bounded worker execution against an OpenAI-compatible OmniRoute gateway (verdict/workers.py)."
-  },
-  {
-    "qualified_name": "verdict.workflows.autodev.AutoDevWorkflow",
-    "reason": "UNTRIAGED: AutoDevWorkflow has no resolved reference; 12-Stage Autonomous Software Development Workflow (issue #259) (verdict/workflows/autodev.py)."
   },
   {
     "qualified_name": "verdict.benchmarking.format_comparison_report",
