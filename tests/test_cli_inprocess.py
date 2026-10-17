@@ -24,6 +24,10 @@ def _fake_timer_state_active(unit: str) -> dict[str, object]:
     return {"installed": True, "failed": False, "active": True, "state": "active"}
 
 
+def _no_tracked_unit_loaded(unit: str) -> dict[str, str]:
+    return {}
+
+
 @pytest.fixture(autouse=True)
 def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -41,6 +45,21 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     ``verdict.prove_at_rest_service.timer_state`` again, explicitly.
     """
     monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_service_code_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No doctor test reads the host's tracked units or runs their interpreter (BOD-428).
+
+    ``service_code_path_rows`` runs ``systemctl --user show`` and then the
+    unit's ExecStart interpreter. On a host where verdict-prime-sync.service
+    is loaded, its row depends on that unit and on this process's env: with
+    ``PYTHONPATH`` pointing at a worktree, the neutral-cwd import resolves to
+    the worktree, the row fails and doctor exits 1. An empty property map is
+    the CI runner state (unit not loaded, row skipped). The check itself is
+    covered with injected units in ``test_doctor_service_code_path.py``.
+    """
+    monkeypatch.setattr(dd, "_systemctl_show_props", _no_tracked_unit_loaded)
 
 
 def test_cmd_route_terse_uses_configured_primary(

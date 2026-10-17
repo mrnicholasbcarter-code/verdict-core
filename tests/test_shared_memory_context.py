@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.helpers.fake_shared_memory import FakeSharedMemoryProvider
 from verdict.context_intelligence import (
     NativeCapabilityResolver,
     execute_context_query,
@@ -12,11 +13,7 @@ from verdict.context_intelligence import (
 from verdict.context_pack import ContextPackCompiler, ContextPlan
 from verdict.context_sources import SharedMemoryCapabilityProvider, build_native_providers
 from verdict.memory_plane import MemoryPlane, MemoryRecord
-from verdict.shared_memory import (
-    FakeSharedMemoryProvider,
-    ProviderResultStatus,
-    SharedMemoryEnvelope,
-)
+from verdict.shared_memory import ProviderResultStatus, SharedMemoryEnvelope
 
 
 def _envelope(**overrides: object) -> SharedMemoryEnvelope:

@@ -9,18 +9,18 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.helpers.fake_shared_memory import FakeSharedMemoryProvider
 from verdict.shared_memory import (
     ENVELOPE_SCHEMA_VERSION,
     CertificationState,
-    FakeSharedMemoryProvider,
     ProviderErrorCode,
     ProviderResultStatus,
     SharedMemoryEnvelope,
     SharedMemoryProviderError,
     SharedMemoryQuery,
+    _normalize_hit_to_memory_record,
     discover_shared_memory_setup,
     doctor_shared_memory_report,
-    normalize_hit_to_memory_record,
     redact_secrets,
 )
 from verdict.shared_memory_mcp import MCPMemoryServiceProvider
@@ -78,7 +78,7 @@ def test_normalize_never_grants_authority() -> None:
     )
     hit = provider.search(SharedMemoryQuery("advisory", project="verdict")).hits[0]
     assert hit.ref == ref
-    record = normalize_hit_to_memory_record(hit)
+    record = _normalize_hit_to_memory_record(hit)
     assert record.authority_verified is False
     assert record.authority == "shared-memory-advisory"
     assert record.provenance is not None

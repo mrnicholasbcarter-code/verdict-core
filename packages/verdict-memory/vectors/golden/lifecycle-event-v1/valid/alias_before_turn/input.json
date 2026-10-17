@@ -1,0 +1,11 @@
+{
+  "kind": "before_turn",
+  "content": "first turn about to run",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-alias"
+  },
+  "created_at": 1700000200.0
+}

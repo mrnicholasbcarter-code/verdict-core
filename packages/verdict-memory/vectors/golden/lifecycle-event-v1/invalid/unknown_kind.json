@@ -1,0 +1,11 @@
+{
+  "kind": "teleport",
+  "content": "x",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-0001"
+  },
+  "created_at": 1700000000.0
+}

@@ -1,0 +1,20 @@
+{
+  "kind": "after_tool",
+  "content": "tool finished",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-ext",
+    "x_future_id": "ignored"
+  },
+  "created_at": 1700000300.0,
+  "x_future_field": {
+    "nested": [
+      1,
+      2,
+      3
+    ]
+  },
+  "x_flag": true
+}

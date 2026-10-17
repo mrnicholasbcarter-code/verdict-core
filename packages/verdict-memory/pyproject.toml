@@ -26,6 +26,7 @@ include = [
     "/src",
     "/tests",
     "/vectors",
+    "/scripts/gen_golden_vectors.py",
     "/docs",
     "/README.md",
     "/pyproject.toml",
@@ -33,6 +34,13 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/verdict_memory"]
+
+# Ship the same-byte golden set, its generator and SHA256SUMS inside the wheel so
+# a native (Rust) consumer can reach them. The layout mirrors the source tree, so
+# the installed generator's --check finds the vectors next to it.
+[tool.hatch.build.targets.wheel.force-include]
+"vectors/golden" = "verdict_memory/vectors/golden"
+"scripts/gen_golden_vectors.py" = "verdict_memory/scripts/gen_golden_vectors.py"
 
 [tool.pytest.ini_options]
 addopts = "-ra"

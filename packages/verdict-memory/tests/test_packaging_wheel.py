@@ -18,6 +18,12 @@ REQUIRED_MODULE_PREFIXES = (
     "verdict_memory/outbox.py",
     "verdict_memory/client.py",
     "verdict_memory/vectors/lifecycle_event_v1_minimal.json",
+    "verdict_memory/vectors/golden/lifecycle-event-v1/SHA256SUMS",
+    "verdict_memory/vectors/golden/lifecycle-event-v1/manifest.json",
+    "verdict_memory/vectors/golden/lifecycle-event-v1/README.md",
+    "verdict_memory/vectors/golden/lifecycle-event-v1/valid/minimal_source_event/canonical.json",
+    "verdict_memory/vectors/golden/lifecycle-event-v1/invalid/unknown_kind.json",
+    "verdict_memory/scripts/gen_golden_vectors.py",
 )
 
 
@@ -81,3 +87,17 @@ def test_isolated_install_imports_without_source(tmp_path: Path) -> None:
     )
     assert "ok" in result.stdout
     assert "packages/verdict-memory/src" not in result.stdout
+    # The shipped generator must verify the shipped golden bytes from the install.
+    installed_pkg = Path(result.stdout.split()[-1]).parent
+    gen = installed_pkg / "scripts" / "gen_golden_vectors.py"
+    check = subprocess.run(
+        [str(py), str(gen), "--check"],
+        cwd=outside,
+        env={**env, "PYTHONPATH": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    sums = installed_pkg / "vectors" / "golden" / "lifecycle-event-v1" / "SHA256SUMS"
+    assert sums.is_file()

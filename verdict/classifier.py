@@ -41,6 +41,27 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"minimax-m\d",  # MiniMax M2/M3 agentic series
         r"qwen[\d.]*-max",  # Qwen Max flagship line
         r"qwen[\d.]*-coder-(?:480b|plus|next)",  # flagship Qwen Coder line
+        # BOD-427 leftover free families, evidence per family in
+        # docs/providers/bod-427-free-family-capability-evidence.md. Strong
+        # near-frontier work models; tier 0 stays the spend guard.
+        # PR #912 review: model-token boundaries (?:^|[-/]) keep prose
+        # (family name preceded by a space) from classifying as tier 1,
+        # while vendor-prefixed ids (nvidia-nemotron-...) still match;
+        # (?![\d]) version boundaries keep malformed versions (longcat-20,
+        # claude-3.70) out while dotted route tokens (longcat-2.0,
+        # claude-3.7) stay.
+        r"(?:^|[-/])claude-3[.-]7(?!\d)",  # Claude 3.7 Sonnet (not 3.70)
+        r"(?:^|[-/])claude-4-sonnet",  # vendor-order alias of claude-sonnet-4
+        r"(?:^|[-/])gpt-4\.1(?!\d)",  # GPT-4.1 (beats gpt-4o); -mini/-nano stay cheap
+        r"^gpt-5(?:\.3-codex)?(?:-(?:low|medium|high|xhigh))?$",  # pre-5.4 line
+        r"(?:^|[-/])mimo-v2\.5-pro",  # Xiaomi MiMo-V2.5-Pro 1.02T/42B
+        r"(?:^|[-/])ling-2\.6-1t",  # inclusionAI Ling-2.6-1T flagship
+        r"(?:^|[-/])longcat-2(?!\d)",  # Meituan LongCat-2.0 1.6T/48B (not -20)
+        r"(?:^|[-/])nemotron-3-ultra",  # NVIDIA Nemotron 3 Ultra 550B/55B
+        r"(?:^|/)hy3(?![\w.])",  # Tencent Hy3 295B/21B
+        r"(?:^|[-/])kat-coder-pro",  # Kwaipilot KAT-Coder-Pro agentic coder
+        r"(?:^|[-/])laguna-(?:m\.1|s-2\.1)(?!\d)",  # Poolside Laguna M.1 / S 2.1
+        r"(?:^|[-/])muse-spark",  # Meta Muse Spark reasoning model
     ],
     2: [
         r"sonnet-3",
@@ -67,6 +88,19 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"codestral(?![\w.-]*\d+b)",  # ~22B Mistral code model
         r"devstral",  # ~24B Mistral coder
         r"gemma.*31b",  # Gemma 31B flagship
+        # BOD-427 leftover free families, mid tier (evidence doc above).
+        r"jamba-large(?![\w.:-]*\d+b)",  # AI21 Jamba Large 398B/94B (small sizes stay 3)
+        r"llama-4-maverick(?![\w.:-]*\d+b)",  # Maverick 400B/17B (17b ids stay 3)
+        r"trinity-large(?![\w.:-]*\d+b)",  # Arcee Trinity Large (Maverick-class)
+        r"aion-[23]\.\d(?![\w.:-]*mini)",  # AionLabs roleplay builds (-mini stays 3)
+        r"grok-2(?![\w.:-]*mini)",  # xAI Grok 2 (grok-3 predecessor)
+        r"mimo-v2\.5(?![\w.:-]*(?:pro|flash|mini|lite))",  # MiMo-V2.5 310B/15B
+        r"nemotron-3-super(?![\w.:-]*-(?:\d{1,2})b)",  # Super; 8b-class sizes stay 3, 120b stays 2
+        r"command-a(?:-|$)",  # Cohere Command A 111B line
+        r"hermes-[34]-(?:llama-3\.1-)?(?:70|405)b",  # Llama-3.1 Hermes finetunes
+        r"qwen\d+p\d+-plus",  # Fireworks spelling of qwen3.6-plus
+        r"sea-lion-v4-32b",  # Qwen3-32B based SEA-LION
+        r"olmo-3-32b",  # Ai2 Olmo 3 32B
     ],
     3: [
         r"haiku",
@@ -91,6 +125,26 @@ CAPABILITY_PATTERNS: dict[int, list[str]] = {
         r"qwen[\d.]*-14b",
         r"gemma.*9b",  # Gemma 2 9B
         r"-a[1-4]b",  # small-active MoE suffix (a3b/a4b)
+        # BOD-427 leftover free families, cheapest tier: small sizes and
+        # cost tiers, plus legacy models with only weak evidence
+        # (conservative, see the evidence doc).
+        r"gpt-5\.6-luna",  # cost-sensitive high-volume GPT-5.6 tier
+        r"llama-4-scout",  # Llama 4 Scout (flash-lite class)
+        r"llama-3\.2-(?:1|3|11)b",  # Llama 3.2 small/edge sizes
+        r"cydonia-24b",  # Mistral Small 24B roleplay finetune
+        r"skyfall-31b",  # upscaled Magistral Small finetune
+        r"nous-?coder",  # NousCoder-14B (Qwen3-14B)
+        r"command-r(?:-\d{2}-\d{4})?$",  # Command R ~32B (r-plus stays tier 2)
+        r"laguna-xs",  # Poolside Laguna XS 33B/3B
+        r"lfm-(?:40b|2\.5-\d)",  # Liquid LFM 40B/12B active and LFM2.5 2.6B
+        r"apertus-70b",  # trails llama-3.1-70b on reasoning/coding
+        r"reka-edge",  # Reka Edge 7B
+        r"baichuan4",  # legacy 2024 models, weak evidence (conservative)
+        r"ernie-4\.0",
+        r"doubao-pro-32k",
+        r"hunyuan-pro",
+        r"generalv3\.5",
+        r"step-1v",
     ],
 }
 

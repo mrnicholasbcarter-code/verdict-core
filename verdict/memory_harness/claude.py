@@ -1,7 +1,8 @@
 """Claude Code memory-bridge installer.
 
 Installs one stdin-driven hook per Claude lifecycle event. Each hook command is
-``HOOK_COMMAND_TEMPLATE`` from :mod:`verdict.harness_claude`; Claude Code pipes
+:func:`verdict.harness_claude.hook_command` (the absolute, shell-quoted interpreter
+that ran the install, ``-m verdict.memory_harness.claude <Event>``); Claude Code pipes
 the hook JSON (session_id, cwd, prompt, ...) to the command on stdin, so no
 global temp prompt files are read. Legacy ``/tmp/claude_*`` Verdict hooks are
 migrated away on install. ``shared_db`` is accepted and unused.
@@ -13,20 +14,24 @@ import json
 from pathlib import Path
 from typing import Any
 
-from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_COMMAND_TEMPLATE, main
+from verdict.harness_claude import CLAUDE_HOOK_EVENT_KINDS, HOOK_MODULE, hook_command, main
+from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is_module_hook
 
-_HOOK_COMMAND_PREFIX = HOOK_COMMAND_TEMPLATE.split("{event}", 1)[0]
+# Provisional entry point ``<python> -m verdict.harness_claude hook <Event>`` shipped
+# before the controller's 23:10Z decision; migrated away like the legacy /tmp hooks.
+_PROVISIONAL_MODULE = "verdict.harness_claude"
+_LEGACY_PROMPT_FILES = ("/tmp/claude_last_prompt", "/tmp/claude_session_prompt")
 
 
-# Provisional entry point shipped before the controller's 23:10Z decision;
-# migrated away on install/uninstall like the legacy /tmp hooks.
-_PROVISIONAL_COMMAND_PREFIX = "python -m verdict.harness_claude hook "
-
-
-def _is_verdict_command(command: str) -> bool:
-    if command.startswith((_HOOK_COMMAND_PREFIX, _PROVISIONAL_COMMAND_PREFIX)):
-        return True
-    return "verdict hook" in command and "/tmp/claude_" in command
+def _is_verdict_command(command: object) -> bool:
+    """Exact parsed match only (see ``_hook_ownership``); everything else is a user hook."""
+    return (
+        is_module_hook(command, HOOK_MODULE, CLAUDE_HOOK_EVENT_KINDS)
+        or is_module_hook(
+            command, _PROVISIONAL_MODULE, CLAUDE_HOOK_EVENT_KINDS, subcommand=("hook",)
+        )
+        or is_legacy_tmp_prompt_hook(command, _LEGACY_PROMPT_FILES)
+    )
 
 
 def _load(settings_file: Path) -> dict[str, Any]:
@@ -57,7 +62,7 @@ def _strip_verdict_hooks(settings: dict[str, Any]) -> bool:
             kept = [
                 h
                 for h in inner
-                if not (isinstance(h, dict) and _is_verdict_command(str(h.get("command", ""))))
+                if not (isinstance(h, dict) and _is_verdict_command(h.get("command")))
             ]
             if len(kept) == len(inner):
                 kept_matchers.append(matcher)
@@ -85,10 +90,7 @@ def install_claude_hooks(settings_file: Path, shared_db: Path) -> None:
     if not isinstance(hooks, dict):
         hooks = settings["hooks"] = {}
     for event in CLAUDE_HOOK_EVENT_KINDS:
-        entry = {
-            "matcher": "",
-            "hooks": [{"type": "command", "command": HOOK_COMMAND_TEMPLATE.format(event=event)}],
-        }
+        entry = {"matcher": "", "hooks": [{"type": "command", "command": hook_command(event)}]}
         existing = hooks.get(event)
         if isinstance(existing, list):
             existing.append(entry)

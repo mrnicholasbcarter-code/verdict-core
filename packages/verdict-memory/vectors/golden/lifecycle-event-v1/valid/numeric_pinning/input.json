@@ -1,0 +1,26 @@
+{
+  "kind": "verification_result",
+  "content": "numbers",
+  "identity": {
+    "source_harness": "prime",
+    "project": "bod80-golden",
+    "session_id": "sess-golden-1",
+    "source_event_id": "src-evt-num"
+  },
+  "created_at": 1700000000.0,
+  "payload": {
+    "float_one": 1.0,
+    "float_zero": 0.0,
+    "float_neg_zero": -0.0,
+    "float_half": 0.5,
+    "float_neg": -2.25,
+    "float_frac": 123456.789,
+    "float_small": 0.0001,
+    "float_big": 999999999999999.9,
+    "int_zero": 0,
+    "int_neg": -7,
+    "int_big": 9007199254740993,
+    "bool_true": true,
+    "null_value": null
+  }
+}

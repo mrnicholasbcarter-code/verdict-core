@@ -13,10 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is_module_hook
 
 CODEX_HOOK_EVENTS: tuple[str, ...] = (
     "SessionStart",
@@ -34,13 +37,23 @@ CODEX_HOOK_EVENTS: tuple[str, ...] = (
 
 HOOK_TIMEOUT_SECONDS = 10
 
+HOOK_MODULE = "verdict.memory_harness.codex"
+_LEGACY_PROMPT_FILES = ("/tmp/codex_last_prompt", "/tmp/codex_session_prompt")
+
 
 def hook_command(event: str) -> str:
     """Return the shell command Codex runs for ``event``.
 
     Single switch point for the hook entry form; the payload arrives on stdin.
+    The interpreter is the absolute, shell-quoted ``sys.executable`` that ran
+    the install, so the hook still finds verdict on pipx and uv installs where
+    a bare ``python`` on PATH would not have it.
     """
-    return f"python -m verdict.memory_harness.codex {event}"
+    # sys.executable can be empty or None (embedded or frozen interpreters), and
+    # shlex.quote("") would write an unrunnable ''. The bare-python fallback is
+    # the pre-BOD-422 form: no worse than before, and still matched by the
+    # ownership predicate, so a later reinstall from a real interpreter replaces it.
+    return f"{shlex.quote(sys.executable or 'python')} -m {HOOK_MODULE} {event}"
 
 
 def _verdict_hook(event: str) -> dict[str, Any]:
@@ -52,9 +65,11 @@ def _verdict_hook(event: str) -> dict[str, Any]:
 
 
 def _is_verdict_command(command: object) -> bool:
-    if not isinstance(command, str):
-        return False
-    return command.startswith(hook_command("").rstrip()) or "verdict hook" in command
+    # Exact parsed match only (see _hook_ownership); wrapped or extended commands
+    # that merely mention the module are user hooks and are preserved.
+    return is_module_hook(command, HOOK_MODULE, CODEX_HOOK_EVENTS) or is_legacy_tmp_prompt_hook(
+        command, _LEGACY_PROMPT_FILES
+    )
 
 
 def _strip_verdict(groups: list[Any]) -> list[Any]:
@@ -184,7 +199,7 @@ def install_codex_instructions(codex_dir: Path, bridge_instruction: str) -> None
 
 
 # ---------------------------------------------------------------------------
-# Hook entrypoint: ``python -m verdict.memory_harness.codex <Event>``
+# Hook entrypoint: ``<python> -m verdict.memory_harness.codex <Event>``
 # ---------------------------------------------------------------------------
 
 OUTBOX_DIR_ENV = "VERDICT_CODEX_OUTBOX_DIR"

@@ -3,7 +3,8 @@
 SECURITY: configured project/workspace is authority. Event/query project
 overrides are rejected. Hits missing scope are not relabeled. Remote paths
 use full namespaced identity. Write ACK requires scoped readback. Nested
-secrets are redacted before remote write. Malformed RPC is typed failure.
+secrets are redacted before remote write. Every outbound JSON-RPC body passes a
+fail-closed bare API-token guard (BOD-423). Malformed RPC is typed failure.
 Token loaded from file in-process only; never printed.
 """
 
@@ -34,6 +35,7 @@ from verdict_memory.contracts import (
     RecallQuery,
     RecallResult,
     canonicalize,
+    guard_outbound,
     redact_mapping,
     redact_secrets,
     sanitize_event,
@@ -190,6 +192,16 @@ class AiMemoryClient:
                 f"ai-memory rejected request ({response.status_code})",
             )
 
+    def _post(self, client: httpx.Client, headers: dict[str, str], body: Any) -> httpx.Response:
+        """Single choke point for every JSON-RPC POST (BOD-423, PR #906 review).
+
+        Handshake (``initialize``, ``notifications/initialized``) and caller bodies all
+        go through :func:`guard_outbound` here; a guard failure raises before sending.
+        """
+        return client.post(
+            f"{self.config.endpoint}/mcp", headers=headers, json=guard_outbound(body)
+        )
+
     def _mcp(
         self, method: str, params: dict[str, Any] | None = None, *, notify: bool = False
     ) -> Any:
@@ -205,14 +217,21 @@ class AiMemoryClient:
             payload["id"] = req_id
         if params is not None:
             payload["params"] = params
+        # BOD-423: fail closed. Check the caller's payload before connecting so a payload
+        # the guard cannot clean never even triggers the handshake; ``_post`` guards again.
+        try:
+            payload = guard_outbound(payload)
+        except MemoryProviderError as exc:
+            self._record_error(method, exc)
+            raise
         try:
             with self._client() as client:
                 if method != "initialize" and not self._initialized:
                     init_id = self._next_id()
-                    init = client.post(
-                        f"{self.config.endpoint}/mcp",
-                        headers=headers,
-                        json={
+                    init = self._post(
+                        client,
+                        headers,
+                        {
                             "jsonrpc": "2.0",
                             "id": init_id,
                             "method": "initialize",
@@ -235,13 +254,11 @@ class AiMemoryClient:
                         raise MemoryProviderError(
                             ProviderErrorCode.MALFORMED, "initialize malformed"
                         )
-                    client.post(
-                        f"{self.config.endpoint}/mcp",
-                        headers=headers,
-                        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    self._post(
+                        client, headers, {"jsonrpc": "2.0", "method": "notifications/initialized"}
                     )
                     self._initialized = True
-                response = client.post(f"{self.config.endpoint}/mcp", headers=headers, json=payload)
+                response = self._post(client, headers, payload)
         except MemoryProviderError as exc:
             self._record_error(method, exc)
             raise

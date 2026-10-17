@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -111,7 +112,7 @@ def test_installer_reads_stdin_not_tmp_files(codex_home: Path, tmp_path: Path) -
     for cmd in commands:
         assert "/tmp/codex_" not in cmd
         assert "$(cat" not in cmd
-        assert cmd.startswith("python -m verdict.memory_harness.codex ")
+        assert cmd.startswith(f"{shlex.quote(sys.executable)} -m verdict.memory_harness.codex ")
 
 
 def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path) -> None:
@@ -120,7 +121,107 @@ def test_installer_registers_every_codex_event(codex_home: Path, tmp_path: Path)
     data = json.loads(hooks_file.read_text("utf-8"))
     for event in CODEX_EVENTS:
         cmds = [h["command"] for g in data["hooks"].get(event, []) for h in g["hooks"]]
-        assert any(c == f"python -m verdict.memory_harness.codex {event}" for c in cmds), event
+        assert any(c == codex_installer.hook_command(event) for c in cmds), event
+
+
+def test_hook_command_uses_the_installing_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pipx/uv installs: a bare `python` on PATH would not have verdict.
+    monkeypatch.setattr(sys, "executable", "/opt/pipx venvs/verdict/bin/python")
+    cmd = codex_installer.hook_command("Stop")
+    assert cmd == "'/opt/pipx venvs/verdict/bin/python' -m verdict.memory_harness.codex Stop"
+    assert shlex.split(cmd)[0] == "/opt/pipx venvs/verdict/bin/python"
+
+
+def test_reinstall_replaces_legacy_bare_python_hooks(codex_home: Path, tmp_path: Path) -> None:
+    hooks_file = codex_home / "hooks.json"
+    legacy = {
+        "type": "command",
+        "command": "python -m verdict.memory_harness.codex Stop",
+        "timeout": 10,
+    }
+    hooks_file.write_text(
+        json.dumps({"hooks": {"Stop": [{"hooks": [legacy]}, USER_HOOK]}}), "utf-8"
+    )
+    codex_installer.install_codex_hooks(hooks_file, tmp_path / "plane.db")
+    data = json.loads(hooks_file.read_text("utf-8"))
+    stop = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
+    assert stop.count(codex_installer.hook_command("Stop")) == 1
+    assert "python -m verdict.memory_harness.codex Stop" not in stop
+    assert "my-own-audit --log" in stop
+
+
+# Ownership is an exact parsed match: [python, "-m", module, Event]. These mention
+# the module but are user hooks and must survive uninstall and reinstall.
+CODEX_FOREIGN_COMMANDS = (
+    "logger -- 'python -m verdict.memory_harness.codex Stop'",
+    "sh -c 'python -m verdict.memory_harness.codex Stop'",
+    "python -m verdict.memory_harness.codex Stop --extra-arg",
+    "python -m verdict.memory_harness.codex_extra Stop",
+    "echo -m verdict.memory_harness.codex Stop",
+    "ipython -m verdict.memory_harness.codex Stop",
+    "python -m verdict.memory_harness.codex NotACodexEvent",
+    "python -m verdict.memory_harness.codex 'Stop",
+    "logger -- 'verdict hook recall $(cat /tmp/codex_session_prompt)'",
+)
+CODEX_OWNED_COMMANDS = (
+    f"{shlex.quote(sys.executable)} -m verdict.memory_harness.codex Stop",
+    "'/opt/pipx venvs/verdict/bin/python' -m verdict.memory_harness.codex Stop",
+    "python -m verdict.memory_harness.codex Stop",
+    "python3 -m verdict.memory_harness.codex Stop",
+    "/usr/bin/python3.12 -m verdict.memory_harness.codex Stop",
+    ".venv/bin/python -m verdict.memory_harness.codex Stop",
+    "verdict hook recall '$(cat /tmp/codex_session_prompt)'",
+)
+
+
+def _stop_hooks(*commands: str) -> dict:
+    hooks = [{"type": "command", "command": c, "timeout": 5} for c in commands]
+    return {"hooks": {"Stop": [{"hooks": hooks}]}}
+
+
+def _stop_commands(hooks_file: Path) -> list[str]:
+    data = json.loads(hooks_file.read_text("utf-8"))
+    return [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
+
+
+@pytest.mark.parametrize("foreign", CODEX_FOREIGN_COMMANDS)
+def test_uninstall_preserves_foreign_hooks_that_mention_the_module(
+    codex_home: Path, foreign: str
+) -> None:
+    hooks_file = codex_home / "hooks.json"
+    hooks_file.write_text(json.dumps(_stop_hooks(foreign)), "utf-8")
+    codex_installer.uninstall_codex_hooks(hooks_file)
+    assert json.loads(hooks_file.read_text("utf-8")) == _stop_hooks(foreign)
+
+
+@pytest.mark.parametrize("foreign", CODEX_FOREIGN_COMMANDS)
+def test_reinstall_migration_preserves_foreign_hooks(
+    codex_home: Path, tmp_path: Path, foreign: str
+) -> None:
+    hooks_file = codex_home / "hooks.json"
+    legacy = "python -m verdict.memory_harness.codex Stop"
+    hooks_file.write_text(json.dumps(_stop_hooks(foreign, legacy)), "utf-8")
+    codex_installer.install_codex_hooks(hooks_file, tmp_path / "plane.db")
+    stop = _stop_commands(hooks_file)
+    assert foreign in stop
+    assert legacy not in stop
+    assert stop.count(codex_installer.hook_command("Stop")) == 1
+
+
+@pytest.mark.parametrize("owned", CODEX_OWNED_COMMANDS)
+def test_pinned_bare_and_relative_verdict_hooks_are_owned(
+    codex_home: Path, tmp_path: Path, owned: str
+) -> None:
+    hooks_file = codex_home / "hooks.json"
+    hooks_file.write_text(json.dumps(_stop_hooks(owned, "my-own-audit --log")), "utf-8")
+    codex_installer.uninstall_codex_hooks(hooks_file)
+    assert json.loads(hooks_file.read_text("utf-8")) == _stop_hooks("my-own-audit --log")
+    hooks_file.write_text(json.dumps(_stop_hooks(owned, "my-own-audit --log")), "utf-8")
+    codex_installer.install_codex_hooks(hooks_file, tmp_path / "plane.db")
+    stop = _stop_commands(hooks_file)
+    assert stop.count(codex_installer.hook_command("Stop")) == 1
+    assert "my-own-audit --log" in stop
+    assert owned not in stop or owned == codex_installer.hook_command("Stop")
 
 
 def test_two_sessions_in_different_projects_stay_isolated() -> None:

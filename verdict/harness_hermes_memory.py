@@ -17,6 +17,7 @@ Events follow P's ``lifecycle-event/v1`` field names and canonical JSON.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -401,6 +402,11 @@ def install(
     }
     wanted = {name: (_PLUGIN_SOURCE / name).read_bytes() for name in _PLUGIN_FILES}
     wanted["config.json"] = canonical_json(settings)
+    # Remember whether this install created ``<HERMES_HOME>/plugins`` so a clean
+    # uninstall can remove it again, and only then, when it is still empty.
+    created_plugins_dir = (
+        bool(marker.get("created_plugins_dir")) if marker else not plugin_dir.parent.exists()
+    )
     plugin_dir.mkdir(parents=True, exist_ok=True)
     for name, blob in wanted.items():
         target = plugin_dir / name
@@ -424,6 +430,7 @@ def install(
             "owner": "verdict",
             "plugin": PLUGIN_NAME,
             "created_plugins_key": bool(created_plugins_key),
+            "created_plugins_dir": created_plugins_dir,
         }
     )
     marker_path = plugin_dir / OWNERSHIP_MARKER
@@ -459,6 +466,10 @@ def uninstall(*, hermes_home: Path | None = None) -> UninstallResult:
     if marker is not None:
         shutil.rmtree(plugin_dir)
         removed = True
+        plugins_root = plugin_dir.parent
+        if marker.get("created_plugins_dir") and plugins_root.is_dir():
+            with contextlib.suppress(OSError):  # rmdir fails on non-empty: user plugins stay
+                plugins_root.rmdir()
     return UninstallResult(removed=removed)
 
 
