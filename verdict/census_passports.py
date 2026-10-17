@@ -443,9 +443,11 @@ def cmd_census(
             cooling = load_census_cooldowns(base_url, key)
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             cooling = frozenset()
+        from verdict.omniroute_pipeline.census_hook import guard_transport
+
         report = run_census(
             snapshot,
-            live_transport(base_url, api_key=key),
+            guard_transport(live_transport(base_url, api_key=key)),
             cache=HealthCache(health_cache_path or default_cache_path()),
             passport_store_path=passport_store_path or default_state_path(),
             now=datetime.now(timezone.utc),

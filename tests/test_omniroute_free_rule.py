@@ -177,3 +177,28 @@ def test_census_hook_dark_by_default_and_falls_back_to_last_good(
     assert later is not None and later["flags_source"] == "last_good"
     expired = free_rule_tick(snap, now=NOW + timedelta(hours=49), cache_dir=tmp_path, get=down)
     assert expired is not None and expired["routes"] == {"free": 1, "unverified_free": 2}
+
+
+def test_census_transport_guard_turns_fake_200_into_billing_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.omniroute_pipeline.census_hook import FLAG_ENV, guard_transport
+    from verdict.prove_at_rest import CATEGORY_PAYMENT, ProbeExchange, category_for
+
+    fake = ProbeExchange(
+        http_status=200, ok=True, response_body={"id": "chatcmpl-fake-1", "choices": []}
+    )
+    real = ProbeExchange(
+        http_status=200, ok=True, response_body={"id": "c1", "choices": [{"message": {}}]}
+    )
+
+    def transport(route: str, payload: object, timeout: float) -> ProbeExchange:
+        return fake if route == "ahm/x" else real
+
+    monkeypatch.delenv(FLAG_ENV, raising=False)
+    assert guard_transport(transport) is transport
+    monkeypatch.setenv(FLAG_ENV, "1")
+    guarded = guard_transport(transport)
+    out = guarded("ahm/x", {}, 1.0)
+    assert out.ok is False and category_for(out) == CATEGORY_PAYMENT
+    assert guarded("nvidia/z-ai/glm-5.3", {}, 1.0) is real
