@@ -13,6 +13,8 @@ import sys
 import uuid
 from pathlib import Path
 
+import httpx
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -43,6 +45,7 @@ def main() -> int:
         EventIdentity,
         ExternalMemoryRef,
         LifecycleEvent,
+        MemoryProviderError,
         RecallQuery,
     )
 
@@ -125,8 +128,7 @@ def main() -> int:
             raise ValueError("readback lifecycle identity/content/scope mismatch")
         print("VERIFIED", hit.ref.external_id, hit.event.digest(), "untrusted", hit.untrusted)
         result_code = 0
-    except Exception as exc:
-        # Exception messages may include remote payloads; expose class only.
+    except (httpx.HTTPError, ValueError, KeyError, MemoryProviderError) as exc:
         print("FAIL", type(exc).__name__)
     finally:
         if attempted:
@@ -135,7 +137,7 @@ def main() -> int:
                 print("CLEANUP_DELETE", expected.external_id, deleted)
                 if not deleted:
                     result_code = 6
-            except Exception as exc:
+            except (httpx.HTTPError, ValueError, KeyError, MemoryProviderError) as exc:
                 print("CLEANUP_DELETE_FAIL", type(exc).__name__)
                 result_code = 6
     if result_code == 0:

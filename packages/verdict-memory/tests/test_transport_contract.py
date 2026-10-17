@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
+
 from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig
 from verdict_memory.contracts import (
     EventIdentity,
@@ -20,12 +21,12 @@ from verdict_memory.outbox import MemoryOutbox
 
 
 def event(**kwargs):
-    base = dict(
-        kind="after_edit",
-        content="safe marker",
-        created_at=1.0,
-        identity=EventIdentity("prime", "allowed", "session", source_event_id="source"),
-    )
+    base = {
+        "kind": "after_edit",
+        "content": "safe marker",
+        "created_at": 1.0,
+        "identity": EventIdentity("prime", "allowed", "session", source_event_id="source"),
+    }
     base.update(kwargs)
     return LifecycleEvent(**base)
 

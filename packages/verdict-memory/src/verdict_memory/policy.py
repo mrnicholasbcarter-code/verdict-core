@@ -30,9 +30,9 @@ class MemoryCapturePolicy:
         if meta.get("mirror_capture") is False:
             return CaptureDecision(False, "capture_disabled", digest)
         kind = event.memory_kind.casefold()
-        if (
-            kind in _NOISE_KINDS or event.kind in _NOISE_EVENT_KINDS
-        ) and meta.get("mirror_capture") is not True:
+        if (kind in _NOISE_KINDS or event.kind in _NOISE_EVENT_KINDS) and meta.get(
+            "mirror_capture"
+        ) is not True:
             return CaptureDecision(False, "low_value_tool_noise", digest)
         return CaptureDecision(True, "eligible", digest)
 

@@ -373,7 +373,7 @@ class AiMemoryClient:
                     )
                 if st.status_code == 200:
                     version = st.json().get("version")
-            except Exception:
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError):
                 version = None
             return ProviderHealth(
                 self.provider_id,
@@ -520,7 +520,11 @@ class AiMemoryClient:
             if not isinstance(envelope, dict) or envelope.get("schema") != "verdict-memory-page/v1":
                 raise ValueError("envelope schema")
             ev_data = envelope["event"]
-            if isinstance(ev_data, dict) and "idempotency_hash" in ev_data and "idempotency_key" not in ev_data:
+            if (
+                isinstance(ev_data, dict)
+                and "idempotency_hash" in ev_data
+                and "idempotency_key" not in ev_data
+            ):
                 ev_data["idempotency_key"] = ev_data.pop("idempotency_hash")
             event = LifecycleEvent.from_dict(ev_data)
             raw = event.to_dict()

@@ -6,33 +6,33 @@ from pathlib import Path
 
 import pytest
 
-from verdict_memory import IdempotencyConflictError, LifecycleEvent, source_idempotency_key
+from verdict_memory import IdempotencyConflictError, LifecycleEvent
 from verdict_memory.contracts import EventIdentity
 from verdict_memory.outbox import MemoryOutbox
 
 
 def _id(**overrides):
-    base = dict(
-        source_harness="verdict",
-        project="bod80-memory-test",
-        session_id="sess-1",
-        source_event_id="src-evt-stable-1",
-        tenant="default",
-        workspace="default",
-        source_agent="worker-a",
-    )
+    base = {
+        "source_harness": "verdict",
+        "project": "bod80-memory-test",
+        "session_id": "sess-1",
+        "source_event_id": "src-evt-stable-1",
+        "tenant": "default",
+        "workspace": "default",
+        "source_agent": "worker-a",
+    }
     base.update(overrides)
     return EventIdentity(**base)
 
 
 def _event(**overrides):
-    base = dict(
-        kind="after_edit",
-        content="original source payload",
-        identity=_id(),
-        created_at=1_700_000_000.0,
-        observed_at=1_700_000_001.0,
-    )
+    base = {
+        "kind": "after_edit",
+        "content": "original source payload",
+        "identity": _id(),
+        "created_at": 1_700_000_000.0,
+        "observed_at": 1_700_000_001.0,
+    }
     base.update(overrides)
     return LifecycleEvent(**base)
 

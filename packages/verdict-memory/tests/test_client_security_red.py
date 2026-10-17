@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from verdict_memory.client import AiMemoryClient, AiMemoryClientConfig
 from verdict_memory.contracts import (
     EventIdentity,
@@ -31,31 +32,31 @@ from verdict_memory.outbox import MemoryOutbox
 
 
 def _cfg(**overrides):
-    base = dict(
-        endpoint="http://127.0.0.1:49374",
-        token="test-token-not-real",
-        token_file=None,
-        workspace="default",
-        project="bod80-memory-test",
-        timeout=5.0,
-    )
+    base = {
+        "endpoint": "http://127.0.0.1:49374",
+        "token": "test-token-not-real",
+        "token_file": None,
+        "workspace": "default",
+        "project": "bod80-memory-test",
+        "timeout": 5.0,
+    }
     base.update(overrides)
     return AiMemoryClientConfig(**base)
 
 
 def _event(**overrides):
-    base = dict(
-        kind="manual_capture",
-        content="safe content",
-        identity=EventIdentity(
+    base = {
+        "kind": "manual_capture",
+        "content": "safe content",
+        "identity": EventIdentity(
             source_harness="verdict-memory-proof",
             project="bod80-memory-test",
             session_id="sess-a",
             source_event_id="src-1",
             workspace="default",
         ),
-        created_at=1_700_000_000.0,
-    )
+        "created_at": 1_700_000_000.0,
+    }
     base.update(overrides)
     return LifecycleEvent(**base)
 

@@ -59,12 +59,25 @@ Identity known fields: `source_harness`, `project`, `session_id`, `parent_sessio
 ## Python public API
 ```python
 from verdict_memory import (
-    LifecycleEvent, CaptureDecision, RecallQuery, RecallResult,
-    FakeMemoryProvider, MemoryCapturePolicy, MemoryProvider,
-    ProviderResultStatus, ProviderHealth, ProviderErrorCode,
-    CANONICAL_EVENT_KINDS, ALLOWED_EVENT_KINDS, EVENT_KIND_ALIASES,
-    canonicalize, event_digest, loads_lifecycle_event, redact_secrets,
-    CONTRACT_API_VERSION, LIFECYCLE_EVENT_SCHEMA,
+    LifecycleEvent,
+    CaptureDecision,
+    RecallQuery,
+    RecallResult,
+    FakeMemoryProvider,
+    MemoryCapturePolicy,
+    MemoryProvider,
+    ProviderResultStatus,
+    ProviderHealth,
+    ProviderErrorCode,
+    CANONICAL_EVENT_KINDS,
+    ALLOWED_EVENT_KINDS,
+    EVENT_KIND_ALIASES,
+    canonicalize,
+    event_digest,
+    loads_lifecycle_event,
+    redact_secrets,
+    CONTRACT_API_VERSION,
+    LIFECYCLE_EVENT_SCHEMA,
 )
 from verdict_memory.contracts import EventIdentity
 from verdict_memory.outbox import MemoryOutbox

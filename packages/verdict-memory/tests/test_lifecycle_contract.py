@@ -8,20 +8,18 @@ from pathlib import Path
 import pytest
 
 from verdict_memory import (
-    source_idempotency_key,
     ALLOWED_EVENT_KINDS,
     CANONICAL_EVENT_KINDS,
     CONTRACT_API_VERSION,
     EVENT_KIND_ALIASES,
     LIFECYCLE_EVENT_SCHEMA,
-    CaptureDecision,
     FakeMemoryProvider,
     LifecycleEvent,
     ProviderResultStatus,
     RecallQuery,
     canonicalize,
-    loads_lifecycle_event,
     redact_secrets,
+    source_idempotency_key,
 )
 from verdict_memory.contracts import EventIdentity
 from verdict_memory.outbox import MemoryOutbox
@@ -31,10 +29,10 @@ VECTORS = Path(__file__).resolve().parents[1] / "vectors"
 
 
 def _event(**overrides):
-    base = dict(
-        kind="manual_capture",
-        content="shared note about routing budgets",
-        identity=EventIdentity(
+    base = {
+        "kind": "manual_capture",
+        "content": "shared note about routing budgets",
+        "identity": EventIdentity(
             source_harness="verdict",
             project="verdict",
             session_id="sess-1",
@@ -45,11 +43,11 @@ def _event(**overrides):
             workspace="default",
             source_agent="worker-a",
         ),
-        created_at=1_700_000_000.0,
-        observed_at=1_700_000_001.0,
-        scope="default",
-        metadata={"extension": {"k": 1}},
-    )
+        "created_at": 1_700_000_000.0,
+        "observed_at": 1_700_000_001.0,
+        "scope": "default",
+        "metadata": {"extension": {"k": 1}},
+    }
     base.update(overrides)
     return LifecycleEvent(**base)
 
@@ -123,7 +121,9 @@ def test_stable_source_event_id_across_replay_timestamps():
         created_at=1_700_000_000.0,
         observed_at=1.0,
         identity=EventIdentity(
-            source_harness="verdict", project="verdict", session_id="s",
+            source_harness="verdict",
+            project="verdict",
+            session_id="s",
             source_event_id="stable-1",
         ),
     )
@@ -131,7 +131,9 @@ def test_stable_source_event_id_across_replay_timestamps():
         created_at=9_999.0,
         observed_at=99.0,
         identity=EventIdentity(
-            source_harness="verdict", project="verdict", session_id="s",
+            source_harness="verdict",
+            project="verdict",
+            session_id="s",
             source_event_id="stable-1",
         ),
     )
@@ -161,15 +163,39 @@ def test_canonical_golden_vectors():
 
 def test_fake_provider_scope_filter_and_healthy_empty():
     provider = FakeMemoryProvider()
-    kept = provider.put(_event(content="alpha budget note", identity=EventIdentity(
-        source_harness="verdict", project="verdict", session_id="s1",
-    ), scope="alpha"))
-    provider.put(_event(content="beta budget note", identity=EventIdentity(
-        source_harness="verdict", project="verdict", session_id="s2",
-    ), scope="beta"))
-    provider.put(_event(content="other project", identity=EventIdentity(
-        source_harness="verdict", project="other", session_id="s3",
-    ), scope="alpha"))
+    kept = provider.put(
+        _event(
+            content="alpha budget note",
+            identity=EventIdentity(
+                source_harness="verdict",
+                project="verdict",
+                session_id="s1",
+            ),
+            scope="alpha",
+        )
+    )
+    provider.put(
+        _event(
+            content="beta budget note",
+            identity=EventIdentity(
+                source_harness="verdict",
+                project="verdict",
+                session_id="s2",
+            ),
+            scope="beta",
+        )
+    )
+    provider.put(
+        _event(
+            content="other project",
+            identity=EventIdentity(
+                source_harness="verdict",
+                project="other",
+                session_id="s3",
+            ),
+            scope="alpha",
+        )
+    )
 
     alpha = provider.search(RecallQuery("budget", project="verdict", scope="alpha"))
     assert alpha.status is ProviderResultStatus.AVAILABLE

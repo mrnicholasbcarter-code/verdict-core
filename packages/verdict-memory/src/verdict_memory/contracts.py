@@ -478,7 +478,7 @@ class LifecycleEvent:
         raw = {k: v for k, v in incoming.items() if k in LIFECYCLE_EVENT_KNOWN_FIELDS}
         identity = raw.pop("identity", None)
         if not isinstance(identity, Mapping):
-            raise ValueError("identity must be an object")
+            raise TypeError("identity must be an object")
         id_raw = {k: v for k, v in dict(identity).items() if k in EVENT_IDENTITY_KNOWN_FIELDS}
         raw["identity"] = EventIdentity(**id_raw)
         raw["derived_from"] = tuple(raw.get("derived_from") or ())

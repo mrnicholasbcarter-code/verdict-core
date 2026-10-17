@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from verdict_memory.contracts import (
+    CertificationState,
     EventIdentity,
     ExternalMemoryRef,
     LifecycleEvent,
@@ -13,7 +14,6 @@ from verdict_memory.contracts import (
     ProviderErrorCode,
     ProviderHealth,
     ProviderResultStatus,
-    CertificationState,
     RecallQuery,
     RecallResult,
 )
@@ -64,18 +64,18 @@ class _ScriptedProvider:
 
 
 def _event(**overrides):
-    base = dict(
-        kind="manual_capture",
-        content="drain payload",
-        identity=EventIdentity(
+    base = {
+        "kind": "manual_capture",
+        "content": "drain payload",
+        "identity": EventIdentity(
             source_harness="verdict",
             project="bod80-memory-test",
             session_id="s1",
             source_event_id="drain-evt-1",
             workspace="default",
         ),
-        created_at=1_700_000_000.0,
-    )
+        "created_at": 1_700_000_000.0,
+    }
     base.update(overrides)
     return LifecycleEvent(**base)
 
