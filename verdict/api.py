@@ -687,12 +687,13 @@ def _serve_gateway_lifecycle(
     start command. An injected ``probe`` opts into the report-only path: the
     caller supplied the transport, so the caller decides whether I/O happens.
     """
-    from verdict.credentials_store import resolve_gateway_binding
+    from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, resolve_gateway_binding
     from verdict.gateway_lifecycle import (
         authenticated_gateway_probe,
         ensure_gateway_ready,
         inspect_gateway,
     )
+    from verdict.provider_bootstrap import load_credential_store_env
 
     ensure = os.getenv("VERDICT_SERVE_ENSURE_GATEWAY", "false").lower() in {
         "1",
@@ -717,6 +718,22 @@ def _serve_gateway_lifecycle(
         # Match transport: bind the canonical URL/key resolver to lifecycle
         # discovery and never call the raw unauthenticated probe here.
         gateway_url, api_key = resolve_gateway_binding(base_url=bootstrap.gateway_url)
+        custom_key_names = [
+            binding.api_key_env
+            for binding in bootstrap.providers.values()
+            if binding.api_key_env
+            and binding.api_key_env not in GATEWAY_KEY_ENV_NAMES
+            and binding.base_url.rstrip("/") == gateway_url.rstrip("/")
+        ]
+        if custom_key_names:
+            stored = load_credential_store_env()
+            api_key = None
+            for name in custom_key_names:
+                api_key = (
+                    (os.getenv(name) or "").strip() or (stored.get(name) or "").strip() or None
+                )
+                if api_key:
+                    break
         bootstrap = replace(bootstrap, gateway_url=gateway_url)
         probe_fn = authenticated_gateway_probe(api_key)
     try:
