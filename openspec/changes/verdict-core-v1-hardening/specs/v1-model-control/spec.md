@@ -50,7 +50,7 @@ Selection feedback SHALL consume idempotently joined, verified, task-compatible 
 
 ### Requirement: Metadata maintenance has one visible scheduled provenance
 
-The system SHALL install and report one six-hour metadata refresh schedule through its supported setup and doctor paths. Refresh results SHALL preserve source identity, observation and fetch times, method and scale, explicit missingness, and valid original-deadline last-good facts when a source partially fails. Unsupported sources SHALL NOT be represented as live integrations.
+The system SHALL install and report one six-hour metadata refresh schedule through its supported setup and doctor paths only after an explicit setup opt-in or install-service action. Dry-run and declined setup SHALL perform no persistent writes, systemd changes, or provider calls. Refresh results SHALL preserve source identity, observation and fetch times, method and scale, explicit missingness, and valid original-deadline last-good facts when a source partially fails. Unsupported sources SHALL NOT be represented as live integrations.
 
 #### Scenario: Partial scheduled refresh
 - **WHEN** a scheduled refresh has a partial or malformed source result
