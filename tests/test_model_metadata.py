@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,6 +124,16 @@ class TestProvenanceContract:
 
 
 class TestP0Normalize:
+    def test_refresh_initializes_missing_store_parent(self, tmp_path: Path) -> None:
+        store_dir = tmp_path / "new-profile" / ".verdict"
+        assert not store_dir.exists()
+
+        snapshot = _refresh(store_dir)
+
+        persisted = load_store(store_dir / "model-metadata.json")
+        assert persisted == snapshot
+        assert persisted.record_by_id("openai/gpt-4o-mini") is not None
+
     def test_models_dev_captures_tools_vision_structured_context(self, tmp_path: Path) -> None:
         snapshot = _refresh(tmp_path)
         mini = snapshot.record_by_id("openai/gpt-4o-mini")
@@ -545,6 +557,210 @@ def test_models_dev_and_litellm_ingest_streaming_with_source_provenance() -> Non
 
 
 class TestOpenRouterAAMirror:
+    def test_partial_openrouter_failure_retains_last_good_score_and_p0_caps(
+        self, tmp_path: Path
+    ) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+
+        p0 = file_transport(
+            models_dev_api=_load("models_dev_api.json"),
+            models_dev_models=_load("models_dev_models.json"),
+            litellm=_load("litellm_prices.json"),
+            fetched_at="2026-09-19T14:00:00Z",
+        )
+
+        class PartialFailure:
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    raise ModelMetadataError("temporary mirror failure")
+                return p0.get_json(url)
+
+        refreshed = refresh_metadata(
+            transport=PartialFailure(),  # type: ignore[arg-type]
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            now=NOW + timedelta(days=1),
+            persist=True,
+            include_p1=True,
+        )
+
+        mini = refreshed.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None
+        assert mini.scores.aa_coding is not None
+        assert mini.scores.aa_coding.value == 80.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_OPENROUTER_AA
+        assert mini.caps.tools is not None and mini.caps.tools.value is True
+        assert mini.caps.tools.provenance.source == SOURCE_MODELS_DEV
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].status == "error"
+
+    def test_partial_openrouter_page_keeps_unreturned_last_good_score(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        p0 = file_transport(
+            models_dev_api=_load("models_dev_api.json"),
+            models_dev_models=_load("models_dev_models.json"),
+            litellm=_load("litellm_prices.json"),
+            fetched_at="2026-09-19T14:00:00Z",
+        )
+
+        class PartialPage:
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    from verdict.metadata.sources import FetchedDocument
+
+                    return FetchedDocument(
+                        url=url,
+                        data={
+                            "data": [
+                                {
+                                    "id": "openai/gpt-4o-mini",
+                                    "benchmarks": {
+                                        "artificial_analysis": {"intelligence_index": 11.0}
+                                    },
+                                }
+                            ],
+                            "total_count": 50,
+                        },
+                        fetched_at="2026-09-19T14:00:00Z",
+                    )
+                return p0.get_json(url)
+
+        refreshed = refresh_metadata(
+            transport=PartialPage(),  # type: ignore[arg-type]
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            now=NOW + timedelta(days=1),
+            persist=True,
+            include_p1=True,
+        )
+        mini = refreshed.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None
+        assert mini.scores.aa_intelligence is not None
+        assert mini.scores.aa_intelligence.value == 11.0
+        assert mini.scores.aa_coding is not None and mini.scores.aa_coding.value == 80.0
+        assert mini.scores.aa_coding.provenance.source == SOURCE_OPENROUTER_AA
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].status == "ok"
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].reason is not None
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].reason.startswith("partial:")
+
+    def test_slow_refresh_cannot_overwrite_newer_manual_store_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import verdict.metadata.store as metadata_store
+
+        store_path = tmp_path / "model-metadata.json"
+        initial = _refresh(
+            tmp_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+        )
+        mini = initial.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None and mini.caps.tools is not None
+        assert mini.scores.aa_coding is not None
+        latest_at = "2026-09-20T14:00:00Z"
+        latest_tools = ProvenancedField(
+            value=False,
+            provenance=FieldProvenance(
+                source=SOURCE_MODELS_DEV, fetched_at=latest_at, version="manual-newer"
+            ),
+        )
+        latest_coding = ProvenancedField(
+            value=81.0,
+            provenance=FieldProvenance(
+                source=SOURCE_OPENROUTER_AA, fetched_at=latest_at, version="manual-newer"
+            ),
+        )
+        latest_mini = replace(
+            mini,
+            caps=replace(mini.caps, tools=latest_tools),
+            scores=replace(mini.scores, aa_coding=latest_coding),
+        )
+        latest = replace(
+            initial,
+            refreshed_at=latest_at,
+            records=tuple(latest_mini if item.id == mini.id else item for item in initial.records),
+        )
+        p0 = file_transport(
+            models_dev_api=_load("models_dev_api.json"),
+            models_dev_models=_load("models_dev_models.json"),
+            litellm=_load("litellm_prices.json"),
+            fetched_at=FETCHED_AT,
+        )
+
+        class FailedMirror:
+            def get_json(self, url: str):
+                if "openrouter.ai" in url:
+                    raise ModelMetadataError("temporary mirror failure")
+                return p0.get_json(url)
+
+        merge_started = threading.Event()
+        allow_merge = threading.Event()
+        writer_started = threading.Event()
+        writer_done = threading.Event()
+        failures: list[BaseException] = []
+        original_merge = metadata_store._retain_failed_source_fields
+
+        def pause_merge(*args):
+            merge_started.set()
+            if not allow_merge.wait(5):
+                raise TimeoutError("timed out waiting to resume refresh merge")
+            return original_merge(*args)
+
+        def refresh_worker() -> None:
+            try:
+                refresh_metadata(
+                    transport=FailedMirror(),  # type: ignore[arg-type]
+                    mapping_path=FIXTURES / "omniroute_map.json",
+                    store_path=store_path,
+                    now=NOW + timedelta(days=1),
+                    persist=True,
+                    include_p1=True,
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        def manual_writer() -> None:
+            writer_started.set()
+            try:
+                from verdict.metadata.store import save_store
+
+                save_store(latest, store_path)
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                writer_done.set()
+
+        monkeypatch.setattr(metadata_store, "_retain_failed_source_fields", pause_merge)
+        refresh_thread = threading.Thread(target=refresh_worker)
+        writer_thread = threading.Thread(target=manual_writer)
+        refresh_thread.start()
+        assert merge_started.wait(5)
+        writer_thread.start()
+        assert writer_started.wait(5)
+        assert not writer_done.wait(0.1)
+        allow_merge.set()
+        refresh_thread.join(5)
+        writer_thread.join(5)
+
+        assert not refresh_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert failures == []
+        final = load_store(store_path)
+        final_mini = final.record_by_id("openai/gpt-4o-mini")
+        assert final.refreshed_at == latest_at
+        assert final_mini is not None
+        assert final_mini.caps.tools == latest_tools
+        assert final_mini.scores.aa_coding == latest_coding
+
     def test_include_p1_fixture_attaches_exact_id_scores(self, tmp_path: Path) -> None:
         snapshot = _refresh(
             tmp_path,

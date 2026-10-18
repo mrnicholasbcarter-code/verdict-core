@@ -277,3 +277,26 @@ def _warm_cache(
             notes.append(f"Warm-cache: service installer failed ({exc}); timer is {current}.")
     else:
         notes.append(f"Warm-cache: unchanged; timer is {current}.")
+
+    metadata_choice = _choice(
+        tui, reader, "6 / Metadata refresh timer", "not checked", "off", ["off", "on"]
+    )
+    tui.console.print(
+        Text("Enables the six-hour public metadata refresh, including the AA mirror.")
+    )
+    if metadata_choice == "on":
+        from verdict.metadata_service import TIMER as METADATA_TIMER
+        from verdict.metadata_service import manage_service as manage_metadata_service
+        from verdict.metadata_service import timer_state as metadata_timer_state
+
+        try:
+            result = manage_metadata_service(dry_run=False)
+            state = metadata_timer_state(METADATA_TIMER)
+            notes.append(
+                f"Metadata refresh: {METADATA_TIMER} installed (changed={result['changed']}); "
+                f"timer is {state['state']}."
+            )
+        except Exception as exc:
+            notes.append(f"Metadata refresh timer installation failed: {exc}")
+    else:
+        notes.append("Metadata refresh timer: unchanged; explicit opt-in declined.")

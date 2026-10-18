@@ -70,3 +70,29 @@ def test_warm_cache_choosing_off_leaves_timer_untouched(
 
     assert not install_calls
     assert any("unchanged" in note for note in notes)
+
+
+def test_declined_metadata_timer_opt_in_does_not_read_or_install_state(
+    ui: TerminalUI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict import metadata_service
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        metadata_service, "timer_state", lambda *_args, **_kwargs: calls.append("state")
+    )
+    monkeypatch.setattr(
+        metadata_service, "manage_service", lambda **_kwargs: calls.append("install")
+    )
+    monkeypatch.setattr(
+        prove_at_rest_service,
+        "timer_state",
+        lambda unit: {"state": "inactive", "installed": False, "failed": False, "active": False},
+    )
+    monkeypatch.setattr(prove_at_rest_service, "manage_service", lambda **_kwargs: {})
+
+    notes: list[str] = []
+    _warm_cache(ui, iter(["off", "y", "off", "y"]).__next__, "http://localhost:20128", notes)
+
+    assert calls == []
+    assert any("explicit opt-in declined" in note for note in notes)
