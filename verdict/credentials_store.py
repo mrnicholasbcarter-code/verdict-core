@@ -257,6 +257,26 @@ def resolve_gateway_key(environ: Mapping[str, str] | None = None) -> tuple[str, 
     return next(_gateway_key_candidates(source), None)
 
 
+def resolve_gateway_binding(
+    *, base_url: str | None = None, environ: Mapping[str, str] | None = None
+) -> tuple[str, str | None]:
+    """Resolve the canonical OpenAI-compatible gateway URL and its credential.
+
+    An explicit URL wins over ``OMNIROUTE_BASE_URL``. The built-in gateway is
+    localhost:20128, matching the supported OmniRoute service. The key follows
+    :func:`resolve_gateway_key` precedence and is returned only to trusted
+    callers that need to bind a transport or authenticated probe.
+    """
+    source = os.environ if environ is None else environ
+    configured_url = (base_url or "").strip() or (source.get("OMNIROUTE_BASE_URL") or "").strip()
+    url = configured_url or "http://127.0.0.1:20128"
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        url = f"{url}/v1"
+    resolved = resolve_gateway_key(source)
+    return url, resolved[0] if resolved else None
+
+
 def resolve_api_key() -> str | None:
     """The gateway key for this process; never logged, never persisted by Verdict."""
     found = resolve_gateway_key()

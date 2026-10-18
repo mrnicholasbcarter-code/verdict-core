@@ -302,6 +302,116 @@ def test_proxy_preserves_unknown_request_fields_and_uses_server_auth(monkeypatch
     assert json.loads(response.content)["usage"]["total_tokens"] == 4
 
 
+def test_canonical_gateway_binding_is_shared_by_discovery_and_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery and transport resolve one canonical URL/key without exposing credentials."""
+    from verdict.credentials_store import CredentialsStore
+    from verdict.gateway_lifecycle import GatewayHealth
+    from verdict.provider_bootstrap import load_credential_store_env, resolve_provider_bootstrap
+
+    config_dir = tmp_path / "config" / "verdict"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+    monkeypatch.delenv("LLMGATE_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLMGATE_UPSTREAM_API_KEY", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    CredentialsStore(config_dir=config_dir).set("VERDICT_OMNIROUTE_API_KEY", "stored-fixture-key")
+
+    bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
+    discovery: dict[str, str | None] = {}
+
+    def bind_key(key: str | None):
+        discovery["key"] = key
+
+        def probe(url: str) -> GatewayHealth:
+            discovery["url"] = url
+            return GatewayHealth(reachable=True, responded=True, detail="fixture")
+
+        return probe
+
+    monkeypatch.setattr("verdict.gateway_lifecycle.authenticated_gateway_probe", bind_key)
+
+    def inspect(result, *, probe):
+        probe(result.gateway_url)
+        return type("Outcome", (), {"to_dict": lambda _self: {"state": "ready"}})()
+
+    monkeypatch.setattr("verdict.gateway_lifecycle.ensure_gateway_ready", inspect)
+    monkeypatch.setenv("VERDICT_SERVE_ENSURE_GATEWAY", "true")
+    lifecycle = api._serve_gateway_lifecycle(bootstrap)
+    proxy = api._build_proxy()
+
+    assert discovery == {"url": "http://127.0.0.1:20128/v1", "key": "stored-fixture-key"}
+    assert proxy.base_url == "http://127.0.0.1:20128/v1"
+    assert proxy.api_key == "stored-fixture-key"
+    assert "stored-fixture-key" not in repr(proxy)
+    assert "stored-fixture-key" not in json.dumps(lifecycle)
+
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "canonical-env-fixture")
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "legacy-env-fixture")
+    env_proxy = api._build_proxy()
+    assert env_proxy.api_key == "canonical-env-fixture"
+    lifecycle = api._serve_gateway_lifecycle(bootstrap)
+    assert discovery["key"] == "canonical-env-fixture"
+    assert "canonical-env-fixture" not in json.dumps(lifecycle)
+
+    monkeypatch.setenv("LLMGATE_UPSTREAM_BASE_URL", "http://explicit.example/v1")
+    monkeypatch.setenv("LLMGATE_UPSTREAM_API_KEY", "explicit-upstream-fixture")
+    explicit_proxy = api._build_proxy()
+    assert explicit_proxy.base_url == "http://explicit.example/v1"
+    assert explicit_proxy.api_key == "explicit-upstream-fixture"
+    monkeypatch.delenv("LLMGATE_UPSTREAM_BASE_URL")
+    monkeypatch.delenv("LLMGATE_UPSTREAM_API_KEY")
+    monkeypatch.delenv("OMNIROUTE_BASE_URL")
+    default_proxy = api._build_proxy()
+    assert default_proxy.base_url == "http://127.0.0.1:20128/v1"
+
+
+def test_gateway_discovery_honors_custom_provider_key_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider's declared custom key name remains authoritative for discovery."""
+    from dataclasses import replace
+
+    from verdict.gateway_lifecycle import GatewayHealth
+    from verdict.provider_bootstrap import resolve_provider_bootstrap
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+    monkeypatch.setenv("CUSTOM_GATEWAY_KEY", "custom-binding-fixture")
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    bootstrap = resolve_provider_bootstrap()
+    providers = dict(bootstrap.providers)
+    providers["omniroute"] = replace(providers["omniroute"], api_key_env="CUSTOM_GATEWAY_KEY")
+    bootstrap = replace(bootstrap, providers=providers)
+    observed: dict[str, str | None] = {}
+
+    def bind_key(key: str | None):
+        observed["key"] = key
+
+        def probe(url: str) -> GatewayHealth:
+            observed["url"] = url
+            return GatewayHealth(reachable=True, responded=True, detail="fixture")
+
+        return probe
+
+    def inspect(result, *, probe):
+        probe(result.gateway_url)
+        return type("Outcome", (), {"to_dict": lambda _self: {"state": "ready"}})()
+
+    monkeypatch.setattr("verdict.gateway_lifecycle.authenticated_gateway_probe", bind_key)
+    monkeypatch.setattr("verdict.gateway_lifecycle.ensure_gateway_ready", inspect)
+    monkeypatch.setenv("VERDICT_SERVE_ENSURE_GATEWAY", "true")
+
+    api._serve_gateway_lifecycle(bootstrap)
+
+    assert observed["key"] == "custom-binding-fixture"
+    assert observed["url"] == "http://127.0.0.1:20128/v1"
+
+
 def test_proxy_fails_closed_when_provider_serves_wrong_model(monkeypatch) -> None:
     transport = WrongModelTransport()
     _configure_test_app(monkeypatch, transport)
