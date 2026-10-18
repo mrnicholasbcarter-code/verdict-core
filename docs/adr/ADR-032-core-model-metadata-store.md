@@ -55,5 +55,6 @@ Refreshes and manual saves share a per-store lock around read/merge/atomic
 replacement. Partial-source failure preserves last-good fields and their
 original provenance. This does not refresh the observation time of retained
 fields or turn unavailable sources into ratings. Doctor checks timer state,
-actual service completion, service result, and source ages; unknown results or
-missing completion evidence fail the diagnostic.
+actual service completion, service result, and source ages. An absent optional
+timer is an explicit opt-in warning; unknown results or missing completion
+evidence for an installed timer fail the diagnostic.

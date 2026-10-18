@@ -56,6 +56,14 @@ The system SHALL install and report one six-hour metadata refresh schedule throu
 - **WHEN** a scheduled refresh has a partial or malformed source result
 - **THEN** valid fresh facts and still-valid last-good facts SHALL remain distinguishable by source provenance and age, and failed or missing facts SHALL NOT be fabricated
 
+#### Scenario: Metadata maintenance was not selected
+- **WHEN** the optional metadata timer is absent because the operator has not installed it
+- **THEN** doctor SHALL report an explicit opt-in warning without treating the absent feature as healthy or failing unrelated diagnostics
+
+#### Scenario: Timer triggered without a completed refresh
+- **WHEN** an installed metadata timer has triggered but has no valid service-completion evidence
+- **THEN** doctor SHALL report an incomplete refresh even if the service result still has its default success value
+
 ### Requirement: V1 acceptance remains explicit and falsifiable
 
 The system SHALL evaluate all acceptance cases A01–A30 in the coordinated 13-story plan. Spec conformance, fixture tests, implementation completion, and live end-to-end proof SHALL remain distinct states; the system SHALL NOT claim delivery completion until the required merged-main proof and independent parent rerun are recorded.

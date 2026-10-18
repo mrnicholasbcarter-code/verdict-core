@@ -322,8 +322,9 @@ verdict metadata install-service --uninstall
 
 Dry-run renders the units without writing files or calling systemd. Repeated
 installation with unchanged units leaves them untouched. `verdict doctor`
-reports missing/inactive timers, failed or never-completed refreshes, and source
-ages. Completion or source evidence older than twelve hours fails the check;
+reports the uninstalled optional timer as an explicit opt-in warning. Once
+installed, inactive timers, failed or never-completed refreshes, and stale source
+ages fail the check. Completion or source evidence older than twelve hours fails;
 missing, invalid, or future source timestamps remain explicit failures.
 
 ## Environment variable overrides
