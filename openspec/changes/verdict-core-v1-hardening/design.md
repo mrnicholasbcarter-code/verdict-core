@@ -2,30 +2,35 @@
 
 ## Context
 
-This is an umbrella contract for the reviewed V1 plan. Existing OpenSpec changes remain authoritative for their component details; this change records only cross-component behavior that must hold together. The plan and its A01–A30 matrix are the implementation source of truth.
+This change defines the architecture for the Wave 1 Foundation of V1 hardening, covering S01 / BOD-416 (shared gateway binding) and S08 / BOD-436 (scheduled metadata maintenance). The full 13-story umbrella plan spanning Waves 1–7 (acceptance criteria A01–A30) is preserved byte-for-byte in `docs/contracts/v1-hardening-umbrella-plan.md`.
 
 ## Goals / Non-Goals
 
-**Goals:** Coordinate the 13 existing stories; retain their dependency order and explicit acceptance coverage; keep unknown evidence visible and authority boundaries intact.
+**Goals:**
+- Bind discovery and transport callers to canonical credentials and explicit URL precedence with default `http://127.0.0.1:20128/v1`.
+- Provide an optional 6-hour metadata refresh timer with 5-minute boot delay, explicit setup opt-in, non-destructive dry-run, source provenance, partial-source retention, concurrent lock, and doctor diagnostics.
+- Record accurate pre-merge code implementation and automated test verification for foundation tasks.
 
-**Non-Goals:** Replace existing component specs, introduce a second router/coordinator/ledger, claim any acceptance row already passes, or authorize deployment, service cutover, or DoD closure.
+**Non-Goals:**
+- Activate requirements for future waves (S02–S13: task authority, durable dispatch, shared qualification, SSE terminal semantics, joined outcome ledger, task history demotion, or complete acceptance matrix); these remain in `docs/contracts/v1-hardening-umbrella-plan.md`.
+- Claim full story DoD, Done status, or archive this change prior to operator live verification on merged main.
+- Authorize live host service installation or mutate running systemd units during build/test.
 
 ## Decisions
 
-1. Keep one umbrella capability, `v1-model-control`, for observable cross-cutting guarantees. Existing active and canonical specs continue to own detailed component behavior; this delta adds only requirements not represented there as a coherent end-to-end contract.
-2. Preserve one shared qualification coordinator and current evidence/receipt stores. All producers share scoped reservations and bounded budgets; unknown topology uses an exclusive Core lane. Unknown values remain explicit and never become positive evidence.
-3. Apply admission and hard task/access constraints before ranking. Rank eligible choices by task performance and fit, with no price preference. Price is a hard constraint only when an explicit spend limit requires it.
-4. Bind final sends and handoffs to scoped, unexpired permits. Preserve protocol terminal states and reported identity, close stream transports once, and join attempts to independent checked outcomes.
-5. Feed selection only with verified task-matched outcomes in the checked 30-day window, weighted with a seven-day half-life. Demote only below 0.4 with at least three unique checked attempts; zero observations retain the 0.5 prior and unknown status.
-6. Install one six-hour metadata refresh timer with visible source provenance through existing setup and doctor paths. Preserve the supported opt-in mirror and partial-source last-good facts under original deadlines.
-7. Use the 13 story groups and their A01–A30 mappings in `tasks.md` as the delivery map. Implementation checkboxes remain open until the owning story performs its required work and validation.
+1. **Foundation Scope**: Scope `v1-model-control` in this active change strictly to Wave 1 foundation capabilities. Subsequent waves enter OpenSpec in dedicated follow-on PRs.
+2. **Canonical Credential and Gateway Resolution**: Enforce strict precedence: configured URL > environment variable > default `http://127.0.0.1:20128/v1`. Canonical stored credentials bind both discovery and transport identically. Errors sanitize and omit secret keys.
+3. **Scheduled Metadata Refresh**: Install one optional 6-hour timer (`OnUnitActiveSec=6h`) with 5-minute boot delay (`OnBootSec=5m`). Setup requires explicit opt-in (`verdict setup --install-service` or interactive confirmation). Dry-run mode performs no persistent file or systemd writes. Scheduled runs acquire an exclusive file lock to prevent concurrent executions.
+4. **Source Provenance and Partial Failure**: Metadata refreshes record source identity, fetch timestamps, method, and scale. When a single source fails or is malformed, valid last-good facts for other sources are retained within original deadlines. Unsupported sources are never fabricated as live integrations.
+5. **Doctor Diagnostic Freshness**: `verdict doctor` reports timer installation status, completion evidence, and source freshness. If the timer is not installed, doctor emits an opt-in warning without failing unrelated checks. If the timer triggered without valid completion evidence, doctor reports an incomplete refresh even if unit status is active.
+6. **Task and Lifecycle Accounting**: Tasks in `tasks.md` reflect pre-merge code and automated test verification. Stories S01 and S08 remain open in Linear and this change remains unarchived until the parent verifies live commands on merged main.
 
 ## Risks / Trade-offs
 
-- [Umbrella scope can drift into duplicate component design] → keep component requirements in their current changes and update this delta only for cross-component behavior.
-- [Some upstream identity, retry, or pool-topology facts may be unavailable] → preserve explicit unknown/unsupported outcomes and bound claims to Core-coordinated behavior.
-- [Integration proof depends on live operator state] → defer live acceptance and parent evidence to the dedicated final stories; fixtures and strict spec validation do not count as live proof.
+- [Partial metadata failure leaves stale facts] → Retain valid last-good facts within original deadlines and record explicit source provenance.
+- [Active change divergence from umbrella plan] → Full 13-story plan is preserved byte-for-byte with cryptographic hashes in `docs/contracts/v1-hardening-umbrella-plan.md`.
+- [Premature DoD claim] → Clear disclaimer that pre-merge automated tests do not constitute live host acceptance (`test != Done`).
 
 ## Migration Plan
 
-Deliver stories in the waves in `tasks.md`, requiring verified merged-main prerequisites between dependent waves. Do not archive this change, mark implementation tasks complete, publish DoD evidence, or switch installed services until their own proof gates pass.
+Deliver Wave 1 foundation code and test verification. Subsequent waves S02–S13 will be delivered in their respective follow-on PRs according to `docs/contracts/v1-hardening-umbrella-plan.md`. Do not archive this change until live verification is complete.
