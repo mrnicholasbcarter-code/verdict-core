@@ -7,8 +7,8 @@ This change defines the architecture for the Wave 1 Foundation of V1 hardening, 
 ## Goals / Non-Goals
 
 **Goals:**
-- Bind discovery and transport callers to canonical credentials and explicit URL precedence with default `http://127.0.0.1:20128/v1`.
-- Provide an optional 6-hour metadata refresh timer with 5-minute boot delay, explicit setup opt-in, non-destructive dry-run, source provenance, partial-source retention, concurrent lock, and doctor diagnostics.
+- Bind discovery and transport callers to canonical credentials and explicit URL precedence with default `http://127.0.0.1:20128` normalized to `/v1`.
+- Provide an optional 6-hour metadata refresh timer (`OnUnitInactiveSec=6h`, `OnBootSec=5m`) with opt-in via interactive `verdict setup` prompt or `verdict metadata install-service`, non-destructive dry-run, per-store lock covering read/merge/atomic replacement, source provenance, partial-source retention, and doctor diagnostics.
 - Record accurate pre-merge code implementation and automated test verification for foundation tasks.
 
 **Non-Goals:**
@@ -19,10 +19,10 @@ This change defines the architecture for the Wave 1 Foundation of V1 hardening, 
 ## Decisions
 
 1. **Foundation Scope**: Scope `v1-model-control` in this active change strictly to Wave 1 foundation capabilities. Subsequent waves enter OpenSpec in dedicated follow-on PRs.
-2. **Canonical Credential and Gateway Resolution**: Enforce strict precedence: configured URL > environment variable > default `http://127.0.0.1:20128/v1`. Canonical stored credentials bind both discovery and transport identically. Errors sanitize and omit secret keys.
-3. **Scheduled Metadata Refresh**: Install one optional 6-hour timer (`OnUnitActiveSec=6h`) with 5-minute boot delay (`OnBootSec=5m`). Setup requires explicit opt-in (`verdict setup --install-service` or interactive confirmation). Dry-run mode performs no persistent file or systemd writes. Scheduled runs acquire an exclusive file lock to prevent concurrent executions.
+2. **Canonical Credential and Gateway Resolution**: Enforce explicit precedence for gateway URL: explicit `base_url` argument > `OMNIROUTE_BASE_URL` environment variable > default `http://127.0.0.1:20128` (normalized to `/v1`). Credential precedence follows `resolve_gateway_key`: environment `VERDICT_OMNIROUTE_API_KEY` then `OMNIROUTE_API_KEY`, then `credentials.env`, then the owner-only key file, then Prime auth. Stored credentials bind both discovery and transport identically. Errors sanitize and omit secret keys.
+3. **Scheduled Metadata Refresh**: Install one optional 6-hour timer (`OnUnitInactiveSec=6h`, counting six hours after the previous run completes) with 5-minute boot delay (`OnBootSec=5m`). Setup opt-in is supported through the interactive `verdict setup` prompt or `verdict metadata install-service`. Dry-run mode performs no persistent file or systemd writes. A per-store lock covers read/merge/atomic replacement for refreshes and manual saves.
 4. **Source Provenance and Partial Failure**: Metadata refreshes record source identity, fetch timestamps, method, and scale. When a single source fails or is malformed, valid last-good facts for other sources are retained within original deadlines. Unsupported sources are never fabricated as live integrations.
-5. **Doctor Diagnostic Freshness**: `verdict doctor` reports timer installation status, completion evidence, and source freshness. If the timer is not installed, doctor emits an opt-in warning without failing unrelated checks. If the timer triggered without valid completion evidence, doctor reports an incomplete refresh even if unit status is active.
+5. **Doctor Diagnostic Freshness**: `verdict doctor` reports timer installation status, completion evidence, and source freshness. If the timer is not installed, doctor emits an opt-in warning without failing unrelated checks. If the timer triggered without valid completion evidence, doctor reports an incomplete refresh even if the service Result still has its default success value.
 6. **Task and Lifecycle Accounting**: Tasks in `tasks.md` reflect pre-merge code and automated test verification. Stories S01 and S08 remain open in Linear and this change remains unarchived until the parent verifies live commands on merged main.
 
 ## Risks / Trade-offs
