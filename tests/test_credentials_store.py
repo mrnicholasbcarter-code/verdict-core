@@ -209,3 +209,60 @@ def test_store_survives_empty_lines_and_comments(store: CredentialsStore) -> Non
     loaded = store.load()
     assert "KEY_ONE" in loaded
     assert "KEY_TWO" in loaded
+
+
+def test_resolve_gateway_binding_normalizes_url_and_uses_stored_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical binding combines the normalized gateway with stored credentials."""
+    from verdict.credentials_store import resolve_gateway_binding
+
+    config_dir = tmp_path / "config" / "verdict"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/")
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    CredentialsStore(config_dir=config_dir).set("VERDICT_OMNIROUTE_API_KEY", "stored-fixture-key")
+
+    assert resolve_gateway_binding() == ("http://127.0.0.1:20128/v1", "stored-fixture-key")
+
+
+def test_resolve_gateway_binding_explicit_url_and_default_are_canonical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit URL wins, and an absent setting uses the supported 20128 gateway."""
+    from verdict.credentials_store import resolve_gateway_binding
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+    monkeypatch.delenv("LLMGATE_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+
+    assert resolve_gateway_binding(base_url="http://gateway.example/custom") == (
+        "http://gateway.example/custom/v1",
+        None,
+    )
+    assert resolve_gateway_binding() == ("http://127.0.0.1:20128/v1", None)
+
+
+def test_cli_gate_bootstrap_uses_canonical_stored_gateway_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared CLI gate sees the canonical stored key and gateway binding."""
+    from verdict.actions.helpers import _cli_bootstrap
+
+    config_dir = tmp_path / "config" / "verdict"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    CredentialsStore(config_dir=config_dir).set("VERDICT_OMNIROUTE_API_KEY", "stored-fixture-key")
+
+    bootstrap = _cli_bootstrap()
+
+    assert bootstrap.providers["omniroute"].base_url == "http://127.0.0.1:20128/v1"
+    assert bootstrap.providers["omniroute"].api_key_env == "OMNIROUTE_API_KEY"
+    assert "credential_env_missing" not in {note.code for note in bootstrap.notes()}

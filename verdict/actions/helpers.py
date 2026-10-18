@@ -74,13 +74,23 @@ def _cli_bootstrap(*, require_authoritative: bool = False) -> Any:
     auth.json) that ``api.py`` and ``worker_runtime.py`` already check; without
     it a key held only in the key file was reported as missing (BOD-416).
     """
+    from verdict.credentials_store import resolve_gateway_binding
     from verdict.provider_bootstrap import load_credential_store_env, resolve_provider_bootstrap
+
+    gateway_url, gateway_key = resolve_gateway_binding()
+    credential_store_env = load_credential_store_env()
+    if gateway_key:
+        # The bootstrap provider contract names OMNIROUTE_API_KEY. Supply the
+        # canonical resolver result through that internal seam; exported
+        # environment values still override this mapping in the resolver.
+        credential_store_env["OMNIROUTE_API_KEY"] = gateway_key
+    default_providers = {**_CLI_DEFAULT_PROVIDERS, "omniroute": gateway_url}
 
     return resolve_provider_bootstrap(
         allow_default_providers=True,
-        default_providers=_CLI_DEFAULT_PROVIDERS,
+        default_providers=default_providers,
         require_authoritative=require_authoritative,
-        credential_store_env=load_credential_store_env(),
+        credential_store_env=credential_store_env,
     )
 
 
