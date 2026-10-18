@@ -177,6 +177,11 @@ def register(subparsers: Any) -> None:
     metadata_refresh_p.add_argument(
         "--json", action="store_true", help="Output machine-readable JSON"
     )
+    metadata_service_p = metadata_sub.add_parser(
+        "install-service", help="Install or remove the six-hour metadata refresh timer"
+    )
+    metadata_service_p.add_argument("--dry-run", action="store_true")
+    metadata_service_p.add_argument("--uninstall", action="store_true")
     metadata_show_p = metadata_sub.add_parser(
         "show", help="Summarize the on-disk Core metadata store"
     )

@@ -122,6 +122,36 @@ def test_installed_service_rows_fails_when_prove_at_rest_timer_missing(
     assert PROVE_AT_REST_TIMER in prove_row["detail"]
 
 
+def test_installed_service_rows_reports_metadata_timer_never_completed(
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+
+    from verdict.metadata_service import TIMER as METADATA_TIMER
+
+    states = {
+        METADATA_TIMER: {
+            "installed": True,
+            "failed": False,
+            "active": True,
+            "state": "active",
+            "last_trigger": None,
+        }
+    }
+
+    rows = dd.installed_service_rows(
+        now=NOW,
+        timer_state=lambda unit: states.get(
+            unit, {"installed": True, "failed": False, "active": True, "state": "active"}
+        ),
+    )
+
+    metadata_row = next(row for row in rows if row["label"] == "Metadata refresh timer")
+    assert metadata_row["status"] == "failed"
+    assert "never completed" in metadata_row["detail"]
+
+
 def test_installed_service_rows_fails_when_prime_sync_timer_is_failed(
     _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -144,18 +174,235 @@ def test_installed_service_rows_fails_when_prime_sync_timer_is_failed(
 
 
 def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
-    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    from verdict.metadata import METADATA_SCHEMA_VERSION, SourceStatus, save_store
+    from verdict.metadata.store import MetadataSnapshot
 
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    source_names = ("models.dev", "models.dev.models", "litellm")
+    save_store(
+        MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=NOW.isoformat().replace("+00:00", "Z"),
+            sources={
+                source: SourceStatus(
+                    source=source,
+                    status="ok",
+                    fetched_at=NOW.isoformat().replace("+00:00", "Z"),
+                    record_count=1,
+                )
+                for source in source_names
+            },
+            records=(),
+        )
+    )
+
+    import verdict.metadata_service as metadata_service
     import verdict.prove_at_rest_service as pars
 
-    monkeypatch.setattr(
-        pars,
-        "timer_state",
-        lambda unit: {"installed": True, "failed": False, "active": True, "state": "active"},
-    )
+    def fake_timer(unit: str) -> dict[str, object]:
+        del unit
+        return {
+            "installed": True,
+            "failed": False,
+            "active": True,
+            "state": "active",
+            "last_trigger": "Fri 2026-10-16 11:55:00 UTC",
+            "last_completion": "Fri 2026-10-16 11:56:00 UTC",
+            "result": "success",
+        }
+
+    monkeypatch.setattr(pars, "timer_state", fake_timer)
+    monkeypatch.setattr(metadata_service, "timer_state", fake_timer)
 
     rows = dd.installed_service_rows(now=NOW)
 
     assert all(r["status"] == "ok" for r in rows)
+
+
+def test_metadata_timer_doctor_failure_recovers_after_successful_refresh(
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from verdict.metadata import METADATA_SCHEMA_VERSION, SourceStatus, save_store
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.metadata_service import TIMER
+
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    fetched_at = NOW.isoformat().replace("+00:00", "Z")
+    save_store(
+        MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=fetched_at,
+            sources={
+                source: SourceStatus(
+                    source=source, status="ok", fetched_at=fetched_at, record_count=1
+                )
+                for source in ("models.dev", "models.dev.models", "litellm")
+            },
+            records=(),
+        )
+    )
+    states = {
+        "metadata": {
+            "installed": True,
+            "failed": True,
+            "active": False,
+            "state": "failed",
+            "last_trigger": None,
+            "result": "exit-code",
+        }
+    }
+
+    def timer(unit: str) -> dict[str, object]:
+        if unit == TIMER:
+            return states["metadata"]
+        return {"installed": True, "failed": False, "active": True, "state": "active"}
+
+    failed = dd.installed_service_rows(now=NOW, timer_state=timer)
+    failed_row = next(row for row in failed if row["label"] == "Metadata refresh timer")
+    assert failed_row["status"] == "failed"
+    assert "never completed" in failed_row["detail"]
+
+    states["metadata"] = {
+        "installed": True,
+        "failed": False,
+        "active": True,
+        "state": "active",
+        "last_trigger": "Fri 2026-10-16 11:55:00 UTC",
+        "result": "success",
+    }
+    started = dd.installed_service_rows(now=NOW, timer_state=timer)
+    started_row = next(row for row in started if row["label"] == "Metadata refresh timer")
+    assert started_row["status"] == "failed"
+    assert "never completed" in started_row["detail"]
+
+    states["metadata"]["last_completion"] = "Fri 2026-10-16 11:56:00 UTC"
+    recovered = dd.installed_service_rows(now=NOW, timer_state=timer)
+    recovered_row = next(row for row in recovered if row["label"] == "Metadata refresh timer")
+    assert recovered_row["status"] == "ok"
+    assert "models.dev=0s" in recovered_row["detail"]
+
+
+def test_metadata_doctor_reports_stale_source_age(
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from verdict.metadata import METADATA_SCHEMA_VERSION, SourceStatus, save_store
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.metadata_service import TIMER
+
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    fetched_at = (NOW - timedelta(hours=13)).isoformat().replace("+00:00", "Z")
+    save_store(
+        MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=fetched_at,
+            sources={
+                source: SourceStatus(
+                    source=source, status="ok", fetched_at=fetched_at, record_count=1
+                )
+                for source in ("models.dev", "models.dev.models", "litellm")
+            },
+            records=(),
+        )
+    )
+    rows = dd.installed_service_rows(
+        now=NOW,
+        timer_state=lambda unit: {
+            "installed": True,
+            "failed": False,
+            "active": True,
+            "state": "active",
+            "last_trigger": "Fri 2026-10-16 11:00:00 UTC" if unit == TIMER else None,
+            "result": "success",
+        },
+    )
+
+    metadata_row = next(row for row in rows if row["label"] == "Metadata refresh timer")
+    assert metadata_row["status"] == "failed"
+    assert "older than 12 hours" in metadata_row["detail"]
+
+
+@pytest.mark.parametrize(
+    ("fetched_at", "expected_detail"),
+    [
+        ("2026-10-16T12:00:00", "unreadable fetch time"),
+        ("not-a-time", "unreadable fetch time"),
+        ("2026-10-16T13:00:00Z", "fetch time is in the future"),
+        (42, "unreadable fetch time"),  # type: ignore[arg-type]
+    ],
+)
+def test_metadata_doctor_fails_closed_on_invalid_source_timestamps(
+    _isolated_health_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fetched_at: str,
+    expected_detail: str,
+) -> None:
+    from verdict.metadata import METADATA_SCHEMA_VERSION, SourceStatus, save_store
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.metadata_service import TIMER
+
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    sources = {
+        source: SourceStatus(
+            source=source,
+            status="ok",
+            fetched_at=NOW.isoformat().replace("+00:00", "Z"),
+            record_count=1,
+        )
+        for source in ("models.dev", "models.dev.models", "litellm")
+    }
+    sources["models.dev"] = SourceStatus(
+        source="models.dev", status="ok", fetched_at=fetched_at, record_count=1
+    )
+    save_store(
+        MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=NOW.isoformat().replace("+00:00", "Z"),
+            sources=sources,
+            records=(),
+        )
+    )
+    rows = dd.installed_service_rows(
+        now=NOW,
+        timer_state=lambda unit: {
+            "installed": True,
+            "failed": False,
+            "active": True,
+            "state": "active",
+            "last_trigger": "Fri 2026-10-16 11:55:00 UTC" if unit == TIMER else None,
+            "result": "success",
+        },
+    )
+
+    metadata_row = next(row for row in rows if row["label"] == "Metadata refresh timer")
+    assert metadata_row["status"] == "failed"
+    assert expected_detail in metadata_row["detail"]
+
+
+def test_metadata_doctor_keeps_missing_service_result_explicit(
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from verdict.metadata_service import TIMER
+
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    rows = dd.installed_service_rows(
+        now=NOW,
+        timer_state=lambda unit: {
+            "installed": True,
+            "failed": False,
+            "active": True,
+            "state": "active",
+            "last_trigger": "Fri 2026-10-16 11:55:00 UTC" if unit == TIMER else None,
+        },
+    )
+
+    metadata_row = next(row for row in rows if row["label"] == "Metadata refresh timer")
+    assert metadata_row["status"] == "failed"
+    assert "last service result is unknown" in metadata_row["detail"]

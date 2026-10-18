@@ -676,7 +676,17 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "failover-proof":
         legacy.cmd_failover_proof(memory_path=args.memory_path, output_json=args.json)
     elif args.command == "metadata":
-        legacy.cmd_metadata(args)
+        if args.metadata_command == "install-service":
+            from verdict.actions.registry import run_action
+
+            result = run_action(
+                "metadata.install-service", {"dry_run": args.dry_run, "uninstall": args.uninstall}
+            )
+            print(json.dumps(result.data, indent=2))
+            if not result.ok:
+                raise SystemExit(result.exit_code)
+        else:
+            legacy.cmd_metadata(args)
     elif args.command == "outcome":
         if args.outcome_command == "record":
             legacy.cmd_outcome_record(
