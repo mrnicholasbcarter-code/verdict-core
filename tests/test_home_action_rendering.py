@@ -89,7 +89,7 @@ def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
     save_setup_config({"primary_model": "fixture"})
     monkeypatch.setattr("verdict.home.probe_gateway", lambda *a, **k: (True, 2, None))
     # gateway + check; three choices/confirms; five catalog reviews; three manual;
-    # warm-cache choice/confirm; final save.
+    # warm-cache and metadata choices/confirms; final save.
     answers = [
         "http://fixture",
         "y",
@@ -100,6 +100,8 @@ def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
         "keep",
         "n",
         *(["n"] * 8),
+        "off",
+        "n",
         "off",
         "n",
         "y",

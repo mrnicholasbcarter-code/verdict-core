@@ -810,6 +810,17 @@ def installed_service_rows(
         if injected_timer_state is not None
         else metadata_timer_state(METADATA_TIMER)
     )
+    if metadata_state.get("state") == "missing" and metadata_state.get("installed") is False:
+        rows.append(
+            {
+                "label": "Metadata refresh timer",
+                "status": "warning",
+                "detail": f"{METADATA_TIMER} is not installed; explicit opt-in is available "
+                "through 'verdict metadata install-service' or 'verdict setup'.",
+            }
+        )
+        rows.append(health_cache_row(now=now))
+        return rows
     checked_at = now or datetime.now(timezone.utc)
     metadata_issues: list[str] = []
     if metadata_state.get("state") in {"missing", "failed", "inactive"}:

@@ -222,6 +222,27 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
     assert all(r["status"] == "ok" for r in rows)
 
 
+def test_metadata_timer_absent_is_an_explicit_opt_in_warning(
+    _isolated_health_cache: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.metadata_service import TIMER
+
+    _record_one_route(_isolated_health_cache, checked_at=NOW)
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+
+    def timer(unit: str) -> dict[str, object]:
+        if unit == TIMER:
+            return {"installed": False, "state": "missing", "active": False, "failed": False}
+        return {"installed": True, "state": "active", "active": True, "failed": False}
+
+    rows = dd.installed_service_rows(now=NOW, timer_state=timer)
+    row = next(item for item in rows if item["label"] == "Metadata refresh timer")
+    assert row["status"] == "warning"
+    assert "not installed" in row["detail"]
+    assert "explicit opt-in" in row["detail"]
+    assert not (tmp_path / ".verdict").exists()
+
+
 def test_metadata_timer_doctor_failure_recovers_after_successful_refresh(
     _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
