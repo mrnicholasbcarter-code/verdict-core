@@ -489,7 +489,7 @@ def test_cli_route_gate_default_includes_local_gateway(
     gate = _build_route_gate(allow_offline=True)
 
     assert "omniroute" in gate.providers
-    assert gate.providers["omniroute"].base_url == "http://localhost:20128/v1"
+    assert gate.providers["omniroute"].base_url == "http://127.0.0.1:20128/v1"
     assert "public_ollama" in gate.providers
 
 
