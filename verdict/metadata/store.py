@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import os
+import tempfile
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -61,7 +64,9 @@ from verdict.metadata.sources import (
 
 
 def default_store_path() -> Path:
-    return Path.home() / ".verdict" / "model-metadata.json"
+    from verdict.paths import verdict_home
+
+    return verdict_home() / "model-metadata.json"
 
 
 @dataclass(frozen=True)
@@ -163,13 +168,47 @@ def load_store(path: Path | str | None = None) -> MetadataSnapshot:
     return MetadataSnapshot.from_dict(document)
 
 
-def save_store(snapshot: MetadataSnapshot, path: Path | str | None = None) -> Path:
+def save_store(
+    snapshot: MetadataSnapshot, path: Path | str | None = None, *, _lock_held: bool = False
+) -> Path:
     resolved = Path(path) if path is not None else default_store_path()
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(
-        json.dumps(snapshot.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    if _lock_held:
+        _save_store_unlocked(snapshot, resolved)
+    else:
+        with _store_lock(resolved):
+            _save_store_unlocked(snapshot, resolved)
     return resolved
+
+
+@contextmanager
+def _store_lock(path: Path) -> Iterator[None]:
+    """Serialize atomic read/merge/write transactions for one metadata file."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _save_store_unlocked(snapshot: MetadataSnapshot, resolved: Path) -> None:
+    payload = json.dumps(snapshot.to_dict(), indent=2, sort_keys=True) + "\n"
+    fd, temporary = tempfile.mkstemp(prefix=f".{resolved.name}.", dir=resolved.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, resolved)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def model_id_leaf(model_id: str) -> str:
@@ -554,18 +593,100 @@ def refresh_metadata(
         records[models_dev_id] = target.with_omniroute_ids((omni_id,))
 
     ordered = tuple(sorted(records.values(), key=lambda item: item.id))
-    snapshot = MetadataSnapshot(
-        schema_version=METADATA_SCHEMA_VERSION,
-        refreshed_at=fetched_at,
-        sources=sources,
-        records=ordered,
-        mapping=identity_map.to_summary(),
-        drops=tuple(map_drops),
-        conflicts=tuple(conflicts),
-    )
-    if persist:
-        save_store(snapshot, store_path)
+    resolved_store = Path(store_path) if store_path is not None else default_store_path()
+    with _store_lock(resolved_store) if persist else nullcontext():
+        # Hold the same lock as manual save_store calls from the last-good read
+        # through atomic replacement, so an in-flight refresh cannot win over a
+        # newer manual write.
+        prior: MetadataSnapshot | None = None
+        if persist:
+            try:
+                prior = load_store(resolved_store)
+            except (OSError, json.JSONDecodeError, ModelMetadataError):
+                prior = None
+        if prior is not None:
+            ordered = _retain_failed_source_fields(ordered, prior, sources)
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=fetched_at,
+            sources=sources,
+            records=ordered,
+            mapping=identity_map.to_summary(),
+            drops=tuple(map_drops),
+            conflicts=tuple(conflicts),
+        )
+        if persist:
+            save_store(snapshot, resolved_store, _lock_held=True)
     return snapshot
+
+
+def _retain_failed_source_fields(
+    current: tuple[ModelMetadataRecord, ...],
+    previous: MetadataSnapshot,
+    sources: Mapping[str, SourceStatus],
+) -> tuple[ModelMetadataRecord, ...]:
+    """Retain last-good fields after incomplete or out-of-order source results."""
+    from dataclasses import replace
+
+    from verdict.metadata.records import CAP_FIELDS, SCORE_FIELDS
+
+    incomplete = {
+        name
+        for name, status in sources.items()
+        if status.status == "error" or (status.reason or "").startswith("partial:")
+    }
+    if not incomplete:
+        return current
+    prior_by_id = {record.id: record for record in previous.records}
+    merged: list[ModelMetadataRecord] = []
+    for record in current:
+        old = prior_by_id.get(record.id)
+        if old is None:
+            merged.append(record)
+            continue
+        caps: dict[str, Any] = {}
+        scores: dict[str, Any] = {}
+        for field_name in CAP_FIELDS:
+            new_field = record.caps.field(field_name)
+            old_field = old.caps.field(field_name)
+            if old_field is not None and (
+                (new_field is None and old_field.provenance.source in incomplete)
+                or _field_is_newer(old_field, new_field)
+            ):
+                caps[field_name] = old_field
+        for field_name in SCORE_FIELDS:
+            new_field = getattr(record.scores, field_name)
+            old_field = getattr(old.scores, field_name)
+            if old_field is not None and (
+                (new_field is None and old_field.provenance.source in incomplete)
+                or _field_is_newer(old_field, new_field)
+            ):
+                scores[field_name] = old_field
+        merged.append(
+            replace(
+                record,
+                caps=replace(record.caps, **caps) if caps else record.caps,
+                scores=replace(record.scores, **scores) if scores else record.scores,
+            )
+        )
+    return tuple(merged)
+
+
+def _field_is_newer(previous: Any, current: Any) -> bool:
+    if current is None:
+        return False
+    previous_at = previous.provenance.fetched_at
+    current_at = current.provenance.fetched_at
+    if not previous_at or not current_at:
+        return False
+    try:
+        previous_time = datetime.fromisoformat(previous_at.replace("Z", "+00:00"))
+        current_time = datetime.fromisoformat(current_at.replace("Z", "+00:00"))
+        if previous_time.tzinfo is None or current_time.tzinfo is None:
+            return False
+        return previous_time > current_time
+    except ValueError:
+        return False
 
 
 def file_transport(

@@ -13,14 +13,12 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import yaml
 from rich.prompt import Prompt
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # _cli_bootstrap is canonical in verdict.actions.helpers; import it here so
@@ -781,6 +779,7 @@ def installed_service_rows(
     from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
     from verdict.prove_at_rest_service import timer_state as _real_timer_state
 
+    injected_timer_state = timer_state
     timer_state = timer_state or _real_timer_state
 
     rows: list[dict[str, str]] = []
@@ -802,8 +801,117 @@ def installed_service_rows(
         else:
             rows.append({"label": label, "status": "ok", "detail": f"{unit} is active"})
 
+    from verdict.metadata import default_store_path, load_store
+    from verdict.metadata_service import TIMER as METADATA_TIMER
+    from verdict.metadata_service import timer_state as metadata_timer_state
+
+    metadata_state = (
+        injected_timer_state(METADATA_TIMER)
+        if injected_timer_state is not None
+        else metadata_timer_state(METADATA_TIMER)
+    )
+    if metadata_state.get("state") == "missing" and metadata_state.get("installed") is False:
+        rows.append(
+            {
+                "label": "Metadata refresh timer",
+                "status": "warning",
+                "detail": f"{METADATA_TIMER} is not installed; explicit opt-in is available "
+                "through 'verdict metadata install-service' or 'verdict setup'.",
+            }
+        )
+        rows.append(health_cache_row(now=now))
+        return rows
+    checked_at = now or datetime.now(timezone.utc)
+    metadata_issues: list[str] = []
+    if metadata_state.get("state") in {"missing", "failed", "inactive"}:
+        metadata_issues.append(f"{METADATA_TIMER} is {metadata_state.get('state')}")
+    last_trigger = metadata_state.get("last_trigger")
+    if not last_trigger:
+        metadata_issues.append("timer has never triggered a refresh")
+    else:
+        try:
+            triggered = _parse_systemd_time(str(last_trigger))
+            if checked_at - triggered > timedelta(hours=12):
+                metadata_issues.append("last timer trigger is older than 12 hours")
+        except (TypeError, ValueError):
+            metadata_issues.append("last timer trigger time is unreadable")
+    last_completion = metadata_state.get("last_completion")
+    if not last_completion:
+        metadata_issues.append("service has never completed a refresh")
+    else:
+        try:
+            completed = _parse_systemd_time(str(last_completion))
+            completion_age = checked_at - completed
+            if completion_age < timedelta(0):
+                metadata_issues.append("last service completion time is in the future")
+            elif completion_age > timedelta(hours=12):
+                metadata_issues.append("last service completion is older than 12 hours")
+        except (TypeError, ValueError):
+            metadata_issues.append("last service completion time is unreadable")
+    service_result = metadata_state.get("result")
+    if metadata_state.get("failed") or service_result != "success":
+        metadata_issues.append(f"last service result is {service_result or 'unknown'}")
+    source_ages: list[str] = []
+    try:
+        snapshot = load_store(default_store_path())
+        if not snapshot.sources:
+            metadata_issues.append("metadata snapshot has no source status")
+        for source, status in sorted(snapshot.sources.items()):
+            if status.status == "skipped":
+                source_ages.append(f"{source}=skipped")
+                continue
+            if status.status == "error":
+                metadata_issues.append(f"source {source} failed")
+                source_ages.append(f"{source}=error")
+                continue
+            stamp = status.fetched_at
+            if not stamp:
+                metadata_issues.append(f"source {source} has no fetch time")
+                source_ages.append(f"{source}=unknown age")
+                continue
+            try:
+                if not isinstance(stamp, str):
+                    raise ValueError("timestamp is not text")
+                fetched = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                if fetched.tzinfo is None:
+                    raise ValueError("timestamp has no timezone")
+                age_seconds = (checked_at - fetched).total_seconds()
+                if age_seconds < 0:
+                    metadata_issues.append(f"source {source} fetch time is in the future")
+                    source_ages.append(f"{source}=future")
+                    continue
+                age = int(age_seconds)
+            except (TypeError, ValueError, OverflowError):
+                metadata_issues.append(f"source {source} has an unreadable fetch time")
+                source_ages.append(f"{source}=unknown age")
+                continue
+            source_ages.append(f"{source}={age}s")
+            if age > 12 * 60 * 60:
+                metadata_issues.append(f"source {source} is older than 12 hours")
+    except (OSError, ValueError):
+        metadata_issues.append(f"metadata snapshot missing or unreadable at {default_store_path()}")
+    rows.append(
+        {
+            "label": "Metadata refresh timer",
+            "status": "failed" if metadata_issues else "ok",
+            "detail": "; ".join(metadata_issues)
+            if metadata_issues
+            else f"{METADATA_TIMER} active; " + ", ".join(source_ages),
+        }
+    )
+
     rows.append(health_cache_row(now=now))
     return rows
+
+
+def _parse_systemd_time(value: str) -> datetime:
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = datetime.strptime(value, "%a %Y-%m-%d %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:

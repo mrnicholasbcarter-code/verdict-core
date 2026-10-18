@@ -43,3 +43,18 @@ mirroring Artificial Analysis indices into Core SoftScores (fill-null,
 `source=openrouter.artificial_analysis`). models.dev remains P0 hard-cap
 authority; OmniRoute remains non-SoT. Prior docs that categorically barred
 OpenRouter as any metadata source are superseded for this ratings path only.
+
+## Addendum 2026-10-18 (BOD-436)
+
+One optional systemd user timer refreshes the existing store with `--include-p1`
+five minutes after boot and every six hours after the preceding run completes.
+Installation requires an explicit setup choice or `metadata install-service`;
+dry-run writes no units and invokes no systemd or provider operation.
+
+Refreshes and manual saves share a per-store lock around read/merge/atomic
+replacement. Partial-source failure preserves last-good fields and their
+original provenance. This does not refresh the observation time of retained
+fields or turn unavailable sources into ratings. Doctor checks timer state,
+actual service completion, service result, and source ages. An absent optional
+timer is an explicit opt-in warning; unknown results or missing completion
+evidence for an installed timer fail the diagnostic.

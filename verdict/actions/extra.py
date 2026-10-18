@@ -1005,6 +1005,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
 
     from verdict.metadata import ModelMetadataError
     from verdict.metadata.store import file_transport, refresh_metadata
+    from verdict.paths import verdict_home
 
     store_path = kwargs.get("store_path")
     mapping_path = kwargs.get("mapping_path")
@@ -1051,9 +1052,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     except (ModelMetadataError, OSError, json.JSONDecodeError) as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=1)
     resolved_store = str(
-        Path(store_path).expanduser()
-        if store_path
-        else Path.home() / ".verdict" / "model-metadata.json"
+        Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
     )
     return ActionResult(
         data={
@@ -1067,6 +1066,18 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
             "store": resolved_store,
         }
     )
+
+
+def _action_metadata_install_service(**kwargs: Any) -> ActionResult:
+    """Explicitly manage the metadata refresh timer."""
+    from verdict.metadata_service import manage_service
+
+    result = manage_service(
+        unit_dir=Path(kwargs["unit_dir"]) if kwargs.get("unit_dir") else None,
+        dry_run=bool(kwargs.get("dry_run", False)),
+        uninstall=bool(kwargs.get("uninstall", False)),
+    )
+    return ActionResult(data=result)
 
 
 # ---------------------------------------------------------------------------

@@ -56,7 +56,6 @@ from verdict.evidence import (
 )
 from verdict.execution_path import ExecutionPathOffer, ExecutionPathRequest
 from verdict.expected_cost import build_strategy_from_assistance
-from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.gate import Gate
 from verdict.guidance import (
     GuidanceConfig,
@@ -572,7 +571,7 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     return cache, gate
 
 
-DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20132/v1"
+DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:20128/v1"
 DEFAULT_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_ALLOWED_PRIVATE_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -584,11 +583,6 @@ def _allowed_private_hosts() -> set[str]:
     }
 
 
-def _openai_compatible_upstream_base(raw: str) -> str:
-    """Normalize an OmniRoute origin or ``/v1`` URL to an OpenAI-compatible base."""
-    return f"{normalize_omniroute_origin(raw)}/v1"
-
-
 def _resolve_upstream_base_url() -> str:
     """Prefer explicit llmgate upstream, else OmniRoute via ``OMNIROUTE_BASE_URL``.
 
@@ -596,13 +590,10 @@ def _resolve_upstream_base_url() -> str:
     :func:`server_bootstrap_diagnostics` as a ``default`` source, never applied
     silently.
     """
-    explicit = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip()
-    if explicit:
-        return explicit
-    omni = (os.getenv("OMNIROUTE_BASE_URL") or "").strip()
-    if omni:
-        return _openai_compatible_upstream_base(omni)
-    return DEFAULT_UPSTREAM_BASE_URL
+    from verdict.credentials_store import resolve_gateway_binding
+
+    explicit = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip() or None
+    return resolve_gateway_binding(base_url=explicit)[0]
 
 
 def _upstream_base_url_source() -> str:
@@ -696,6 +687,7 @@ def _serve_gateway_lifecycle(
     start command. An injected ``probe`` opts into the report-only path: the
     caller supplied the transport, so the caller decides whether I/O happens.
     """
+    from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, resolve_gateway_binding
     from verdict.gateway_lifecycle import (
         authenticated_gateway_probe,
         ensure_gateway_ready,
@@ -723,26 +715,26 @@ def _serve_gateway_lifecycle(
     if probe is not None:
         probe_fn = probe
     else:
-        # Match the CLI/doctor binding: resolve the key named by the provider
-        # binding for this gateway, preferring the exported environment and then
-        # the credential store.  Bind it to the lifecycle seam; never call the
-        # raw unauthenticated probe here.
-        names = [
+        # Match transport: bind the canonical URL/key resolver to lifecycle
+        # discovery and never call the raw unauthenticated probe here.
+        gateway_url, api_key = resolve_gateway_binding(base_url=bootstrap.gateway_url)
+        custom_key_names = [
             binding.api_key_env
             for binding in bootstrap.providers.values()
-            if getattr(binding, "api_key_env", None)
-            and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+            if binding.api_key_env
+            and binding.api_key_env not in GATEWAY_KEY_ENV_NAMES
+            and binding.base_url.rstrip("/") == gateway_url.rstrip("/")
         ]
-        api_key: str | None = None
-        stored: dict[str, str] | None = None
-        for name in names:
-            api_key = (os.getenv(str(name)) or "").strip() or None
-            if api_key is None:
-                if stored is None:
-                    stored = load_credential_store_env()
-                api_key = (stored.get(str(name)) or "").strip() or None
-            if api_key is not None:
-                break
+        if custom_key_names:
+            stored = load_credential_store_env()
+            api_key = None
+            for name in custom_key_names:
+                api_key = (
+                    (os.getenv(name) or "").strip() or (stored.get(name) or "").strip() or None
+                )
+                if api_key:
+                    break
+        bootstrap = replace(bootstrap, gateway_url=gateway_url)
         probe_fn = authenticated_gateway_probe(api_key)
     try:
         outcome = (
@@ -765,8 +757,12 @@ def _build_proxy() -> UpstreamProxy:
     Verdict at OmniRoute (``OMNIROUTE_BASE_URL``) unless
     ``LLMGATE_UPSTREAM_BASE_URL`` is set explicitly.
     """
-    base_url = _resolve_upstream_base_url()
-    api_key = os.getenv("LLMGATE_UPSTREAM_API_KEY") or os.getenv("OMNIROUTE_API_KEY")
+    from verdict.credentials_store import resolve_gateway_binding
+
+    explicit_url = (os.getenv("LLMGATE_UPSTREAM_BASE_URL") or "").strip() or None
+    base_url, api_key = resolve_gateway_binding(base_url=explicit_url)
+    # Preserve the legacy per-proxy credential override.
+    api_key = (os.getenv("LLMGATE_UPSTREAM_API_KEY") or "").strip() or api_key
     timeout_ms = int(os.getenv("LLMGATE_UPSTREAM_TIMEOUT_MS", "30000"))
     if timeout_ms <= 0:
         raise ValueError("LLMGATE_UPSTREAM_TIMEOUT_MS must be positive")

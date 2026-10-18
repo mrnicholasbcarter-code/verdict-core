@@ -1345,6 +1345,7 @@ def _register_builtins() -> None:
         _action_memory_put,
         _action_memory_search,
         _action_memory_setup,
+        _action_metadata_install_service,
         _action_metadata_lookup,
         _action_metadata_refresh,
         _action_metadata_show,
@@ -1981,6 +1982,16 @@ def _register_builtins() -> None:
                 "Models",
             ),
             _action_metadata_refresh,
+        ),
+        (
+            ActionSpec(
+                "metadata.install-service",
+                "models",
+                "mutation",
+                "Install or remove the six-hour metadata refresh timer",
+                "Models",
+            ),
+            _action_metadata_install_service,
         ),
         # receipt family (per subcommand)
         (
