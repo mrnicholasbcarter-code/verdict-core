@@ -303,6 +303,29 @@ echo secret material:
 
 ---
 
+## Model metadata refresh
+
+`verdict metadata refresh` updates Core's metadata store. The OpenRouter mirror
+of Artificial Analysis scores is fetched only with `--include-p1`; unavailable
+sources remain explicit and do not create ratings. Partial source failures retain
+last-good fields with their original provenance.
+
+The optional user timer runs `metadata refresh --include-p1` five minutes after
+boot and every six hours after completion. `verdict setup` asks for explicit opt-in
+before installing it. To preview, install, or remove the timer directly:
+
+```bash
+verdict metadata install-service --dry-run
+verdict metadata install-service
+verdict metadata install-service --uninstall
+```
+
+Dry-run renders the units without writing files or calling systemd. Repeated
+installation with unchanged units leaves them untouched. `verdict doctor`
+reports missing/inactive timers, failed or never-completed refreshes, and source
+ages. Completion or source evidence older than twelve hours fails the check;
+missing, invalid, or future source timestamps remain explicit failures.
+
 ## Environment variable overrides
 
 ### Gateway / OmniRoute
