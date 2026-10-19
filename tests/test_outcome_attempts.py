@@ -583,3 +583,34 @@ def test_relay_rejected_before_send_keeps_lineage_without_a_send(
     assert len(str(row["attempt_id"])) == 32
     assert row["quality_credit"] is None
     assert row["tokens_in"] is None and row["cost_usd"] is None
+
+
+def test_concurrent_writers_append_whole_rows_only(tmp_path: Path) -> None:
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    procs = [ctx.Process(target=_write_many, args=(str(tmp_path), n)) for n in range(4)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(60)
+        assert proc.exitcode == 0
+
+    rows = _ledger_rows(tmp_path)
+    assert len(rows) == 4 * 50
+    assert {r["story_id"] for r in rows} == {f"W-{n}" for n in range(4)}
+
+
+def _write_many(store: str, writer: int) -> None:
+    for i in range(50):
+        record = build_attempt_record(
+            task_kind="implement",
+            harness="prime",
+            model="gh/gpt-5",
+            outcome="failed",
+            failure_class="timeout",
+            source="test",
+            story_id=f"W-{writer}",
+            effective_parameters={"pad": "x" * 6000, "i": i},
+        )
+        write_attempt_record(record, store_dir=store)
