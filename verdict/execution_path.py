@@ -49,6 +49,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Literal
 
 from verdict.bounded_recovery import RecoveryBounds
@@ -231,6 +232,14 @@ class ExecutionPathRequest:
     )
     prequalified_stronger_route_ids: frozenset[str] = field(default_factory=frozenset)
     evidence_conflicts: tuple[str, ...] = ()
+    task_family: str | None = None
+    min_context_tokens: int | None = None
+    reasoning_required: bool = False
+    tools_required: bool = False
+    structured_output_required: bool = False
+    streaming_required: bool = False
+    vision_required: bool = False
+    hard_spend_budget: float | None = None
 
     def __post_init__(self) -> None:
         if not self.trajectory_id or not str(self.trajectory_id).strip():
@@ -247,6 +256,10 @@ class ExecutionPathRequest:
         object.__setattr__(self, "evidence_conflicts", tuple(self.evidence_conflicts))
         if self.now is not None and self.now.tzinfo is None:
             raise ExecutionPathError("now must be timezone-aware when provided")
+        if self.min_context_tokens is not None and (
+            isinstance(self.min_context_tokens, bool) or self.min_context_tokens <= 0
+        ):
+            raise ExecutionPathError("min_context_tokens must be positive")
 
 
 @dataclass(frozen=True)
@@ -344,6 +357,13 @@ def _qualify_offer(
     hard_excluded_ids: frozenset[str],
     allow_degraded_certification: bool,
     require_complete_cost_kinds: frozenset[str],
+    hard_spend_budget: float | None = None,
+    min_context_tokens: int | None = None,
+    reasoning_required: bool = False,
+    tools_required: bool = False,
+    structured_output_required: bool = False,
+    streaming_required: bool = False,
+    vision_required: bool = False,
 ) -> str | None:
     """Return a rejection reason, or None if the offer is qualified."""
 
@@ -402,17 +422,30 @@ def _qualify_offer(
         return "degraded_certification_requires_explicit_policy"
     if offer.certification_state is None:
         return "certification_required_for_qualify"
-    if offer.expected_cost.has_unknown_cash:
-        return "unknown_price_not_treated_as_free"
-    if not offer.expected_cost.qualified:
-        return "expected_cost_not_qualified"
-    required_kinds = _required_cost_kinds_for_offer(
-        offer, task_slice=task_slice, base_kinds=require_complete_cost_kinds
-    )
+    extras = _STRATEGY_EXTRA_COST_KINDS.get(offer.strategy)
     present_kinds = {term.kind for term in offer.expected_cost.terms}
-    missing = sorted(required_kinds - present_kinds)
-    if missing:
-        return f"incomplete_expected_cost_missing:{','.join(missing)}"
+    if extras:
+        missing_extras = sorted(extras - present_kinds)
+        if missing_extras:
+            return f"incomplete_expected_cost_missing:{','.join(missing_extras)}"
+    if hard_spend_budget is not None:
+        if offer.expected_cost.has_unknown_cash:
+            return "unknown_price_not_treated_as_free"
+        if not offer.expected_cost.qualified:
+            return "expected_cost_not_qualified"
+        required_kinds = _required_cost_kinds_for_offer(
+            offer, task_slice=task_slice, base_kinds=require_complete_cost_kinds
+        )
+        missing = sorted(required_kinds - present_kinds)
+        if missing:
+            return f"incomplete_expected_cost_missing:{','.join(missing)}"
+        if offer.expected_cost.cash_usd is not None and offer.expected_cost.cash_usd > Decimal(
+            str(hard_spend_budget)
+        ):
+            return "exceeds_hard_spend_budget"
+    else:
+        if not offer.expected_cost.qualified:
+            return "expected_cost_not_qualified"
     # Opaque auto/* identities never satisfy execution evidence.
     for field_name in ("route_id", "gateway", "provider", "model"):
         value = getattr(offer.route, field_name)
@@ -574,6 +607,13 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             hard_excluded_ids=frozenset(hard_ids),
             allow_degraded_certification=request.allow_degraded_certification,
             require_complete_cost_kinds=request.require_complete_cost_kinds,
+            hard_spend_budget=request.hard_spend_budget,
+            min_context_tokens=request.min_context_tokens,
+            reasoning_required=request.reasoning_required,
+            tools_required=request.tools_required,
+            structured_output_required=request.structured_output_required,
+            streaming_required=request.streaming_required,
+            vision_required=request.vision_required,
         )
         if reason is not None:
             if "unknown" in reason:
@@ -587,6 +627,16 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
                 )
             )
             continue
+        if request.hard_spend_budget is None:
+            if offer.expected_cost.has_unknown_cash:
+                unknowns.append(f"{offer.candidate_id}:unknown_price")
+            required_kinds = _required_cost_kinds_for_offer(
+                offer, task_slice=request.task_slice, base_kinds=request.require_complete_cost_kinds
+            )
+            present_kinds = {term.kind for term in offer.expected_cost.terms}
+            missing = sorted(required_kinds - present_kinds)
+            if missing:
+                unknowns.append(f"{offer.candidate_id}:incomplete_cost:{','.join(missing)}")
         qualified.append(offer)
 
     # P0: never STAY on an EC-incapable current route.
@@ -666,71 +716,128 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
                 )
             rank_pool = session_offers
 
-    # Duplicate strategy_id among the rank pool would map selection ambiguously.
-    seen_ids: dict[str, str] = {}
-    for offer in rank_pool:
-        sid = offer.expected_cost.strategy_id
-        if sid in seen_ids:
-            raise ExecutionPathError(
-                f"duplicate expected_cost.strategy_id {sid!r} among qualified offers "
-                f"({seen_ids[sid]!r} and {offer.candidate_id!r})"
-            )
-        seen_ids[sid] = offer.candidate_id
-
-    selection = select_strategy(
-        [offer.expected_cost for offer in rank_pool], mode="expected_cost", free_first=False
-    )
-
     selected_offer: ExecutionPathOffer | None = None
-    if selection.selected_strategy_id is not None:
-        for offer in rank_pool:
-            if offer.expected_cost.strategy_id == selection.selected_strategy_id:
-                selected_offer = offer
-                break
-
-    # If economics returned None (unknown cash among all), fall through to blocked.
-    if selected_offer is None:
-        for offer in rank_pool:
+    if request.pool_receipt is not None:
+        shortlist = request.pool_receipt.shortlist
+        if not shortlist:
+            for offer in rank_pool:
+                rejected.append(
+                    RejectedStrategy(
+                        strategy=offer.strategy,
+                        candidate_id=offer.candidate_id,
+                        reason="missing_trusted_live_ranking",
+                        expected_cost_strategy_id=offer.expected_cost.strategy_id,
+                    )
+                )
+            unranked_payload: dict[str, Any] = {
+                "trajectory_id": request.trajectory_id,
+                "selected_strategy": "blocked",
+                "reason": "missing_trusted_live_ranking",
+                "when": _format_datetime(when),
+            }
+            return ExecutionPathDecision(
+                selected_strategy="blocked",
+                selected_candidate_id=None,
+                selected_route=None,
+                rejected=tuple(rejected),
+                assistance_plan_id=None,
+                assistance_plan_digest=None,
+                expected_cost=None,
+                expected_cost_terms=(),
+                budget_state=None,
+                tools_surface=(),
+                session_decision=None
+                if request.session_decision is None
+                else request.session_decision.to_dict(),
+                recovery_policy=_recovery_policy_dict(request.recovery_bounds),
+                verification_requirements=tuple(request.task_slice.proof_criteria),
+                assumptions=tuple(assumptions),
+                unknowns=tuple(dict.fromkeys([*unknowns, "missing_trusted_live_ranking"])),
+                freshness={"decision_at": _format_datetime(when)},
+                evidence_digests={},
+                why_selected="blocked:missing_trusted_live_ranking",
+                decision_digest=_digest(unranked_payload),
+                trajectory_id=request.trajectory_id,
+                task_slice_id=request.task_slice.slice_id,
+                strategy_selection_reason="missing_trusted_live_ranking",
+            )
+        shortlist_map = {entry.route_id: idx for idx, entry in enumerate(shortlist)}
+        rank_pool.sort(key=lambda o: (shortlist_map.get(o.candidate_id, 999999), o.candidate_id))
+        selected_offer = rank_pool[0]
+        for offer in rank_pool[1:]:
             rejected.append(
                 RejectedStrategy(
                     strategy=offer.strategy,
                     candidate_id=offer.candidate_id,
-                    reason="unknown_or_unranked_complete_cost",
+                    reason="shortlist_rank_or_candidate_tie_break",
                     expected_cost_strategy_id=offer.expected_cost.strategy_id,
                 )
             )
-        unranked_payload: dict[str, Any] = {
-            "trajectory_id": request.trajectory_id,
-            "selected_strategy": "blocked",
-            "reason": selection.reason,
-            "when": _format_datetime(when),
-        }
-        return ExecutionPathDecision(
-            selected_strategy="blocked",
-            selected_candidate_id=None,
-            selected_route=None,
-            rejected=tuple(rejected),
-            assistance_plan_id=None,
-            assistance_plan_digest=None,
-            expected_cost=None,
-            expected_cost_terms=(),
-            budget_state=None,
-            tools_surface=(),
-            session_decision=None
-            if request.session_decision is None
-            else request.session_decision.to_dict(),
-            recovery_policy=_recovery_policy_dict(request.recovery_bounds),
-            verification_requirements=tuple(request.task_slice.proof_criteria),
-            assumptions=tuple(assumptions),
-            unknowns=tuple(dict.fromkeys([*unknowns, "complete_cost_unranked"])),
-            freshness={"decision_at": _format_datetime(when)},
-            evidence_digests={},
-            why_selected=f"blocked:{selection.reason}",
-            decision_digest=_digest(unranked_payload),
-            trajectory_id=request.trajectory_id,
-            task_slice_id=request.task_slice.slice_id,
-            strategy_selection_reason=selection.reason,
+    else:
+        # Duplicate strategy_id among the rank pool would map selection ambiguously.
+        seen_ids: dict[str, str] = {}
+        for offer in rank_pool:
+            sid = offer.expected_cost.strategy_id
+            if sid in seen_ids:
+                raise ExecutionPathError(
+                    f"duplicate expected_cost.strategy_id {sid!r} among qualified offers "
+                    f"({seen_ids[sid]!r} and {offer.candidate_id!r})"
+                )
+            seen_ids[sid] = offer.candidate_id
+
+        selection = select_strategy(
+            [offer.expected_cost for offer in rank_pool], mode="expected_cost", free_first=False
         )
+
+        if selection.selected_strategy_id is not None:
+            for offer in rank_pool:
+                if offer.expected_cost.strategy_id == selection.selected_strategy_id:
+                    selected_offer = offer
+                    break
+
+        # If economics returned None (unknown cash among all), fall through to blocked.
+        if selected_offer is None:
+            for offer in rank_pool:
+                rejected.append(
+                    RejectedStrategy(
+                        strategy=offer.strategy,
+                        candidate_id=offer.candidate_id,
+                        reason="unknown_or_unranked_complete_cost",
+                        expected_cost_strategy_id=offer.expected_cost.strategy_id,
+                    )
+                )
+            unranked_payload = {
+                "trajectory_id": request.trajectory_id,
+                "selected_strategy": "blocked",
+                "reason": selection.reason,
+                "when": _format_datetime(when),
+            }
+            return ExecutionPathDecision(
+                selected_strategy="blocked",
+                selected_candidate_id=None,
+                selected_route=None,
+                rejected=tuple(rejected),
+                assistance_plan_id=None,
+                assistance_plan_digest=None,
+                expected_cost=None,
+                expected_cost_terms=(),
+                budget_state=None,
+                tools_surface=(),
+                session_decision=None
+                if request.session_decision is None
+                else request.session_decision.to_dict(),
+                recovery_policy=_recovery_policy_dict(request.recovery_bounds),
+                verification_requirements=tuple(request.task_slice.proof_criteria),
+                assumptions=tuple(assumptions),
+                unknowns=tuple(dict.fromkeys([*unknowns, "complete_cost_unranked"])),
+                freshness={"decision_at": _format_datetime(when)},
+                evidence_digests={},
+                why_selected=f"blocked:{selection.reason}",
+                decision_digest=_digest(unranked_payload),
+                trajectory_id=request.trajectory_id,
+                task_slice_id=request.task_slice.slice_id,
+                strategy_selection_reason=selection.reason,
+            )
 
     # Prefer explicit session STAY/SWITCH strategy label when that route won.
     selected_strategy: StrategyName = selected_offer.strategy
@@ -797,10 +904,19 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     if request.session_decision is not None:
         freshness["session"] = dict(request.session_decision.freshness)
 
-    why = (
-        f"selected_{selected_strategy}_via_{selection.reason}; "
-        f"complete_expected_cost beats {len(rank_pool) - 1} ranked alternative(s)"
-    )
+    if request.pool_receipt is not None:
+        selection_reason = "candidate_pool_shortlist"
+        rank_idx = shortlist_map.get(selected_offer.candidate_id, 0)
+        why = (
+            f"selected_{selected_strategy}_via_candidate_pool_shortlist; "
+            f"shortlist_position={rank_idx} beats {len(rank_pool) - 1} alternative(s)"
+        )
+    else:
+        selection_reason = selection.reason
+        why = (
+            f"selected_{selected_strategy}_via_{selection.reason}; "
+            f"complete_expected_cost beats {len(rank_pool) - 1} ranked alternative(s)"
+        )
     if selected_offer.expected_cost.cash_usd is not None:
         why += f"; cash_usd={selected_offer.expected_cost.cash_usd}"
 
@@ -813,7 +929,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
         "assistance_plan_digest": plan.evidence_digest,
         "expected_cost": selected_offer.expected_cost.to_dict(),
         "rejected": [item.to_dict() for item in rejected],
-        "selection_reason": selection.reason,
+        "selection_reason": selection_reason,
         "when": _format_datetime(when),
     }
     decision_digest = _digest(receipt_body)
@@ -842,7 +958,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
         decision_digest=decision_digest,
         trajectory_id=request.trajectory_id,
         task_slice_id=request.task_slice.slice_id,
-        strategy_selection_reason=selection.reason,
+        strategy_selection_reason=selection_reason,
     )
 
 

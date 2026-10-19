@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -19,7 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
     from starlette.responses import JSONResponse, Response, StreamingResponse
 except ImportError as exc:
     raise ImportError(
@@ -1069,9 +1069,14 @@ class RouteRequest(BaseModel):
     correlation_id: str | None = None
     execution_path_request: dict[str, Any] | None = None
     execution_path_decision: dict[str, Any] | None = None
+    task_family: str | None = None
+    min_context_tokens: int | None = Field(default=None, gt=0)
+    reasoning_required: bool = False
 
 
-def _public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathRequest:
+def _public_execution_path_request(
+    raw: Any, *, task: str, context: Mapping[str, Any] | None = None
+) -> ExecutionPathRequest:
     """Validate the public JSON optimizer contract and construct trusted types."""
 
     from verdict.execution_path import EXECUTION_PATH_SCHEMA_VERSION, ExecutionPathError
@@ -1186,10 +1191,7 @@ def _public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathReque
                 observed_at=now.isoformat(),
                 evidence_id=evidence_digest,
             )
-        if price is None:
-            raise ExecutionPathError(
-                f"execution_path_request.candidates[{index}].price is required for non-free routes"
-            )
+        # Missing price alone is not a gate without an explicit hard spend budget
         route = ConcreteRoute(
             route_id=route_id,
             gateway=candidate["gateway"].strip(),
@@ -1226,13 +1228,59 @@ def _public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathReque
                 is_frontier=candidate.get("is_frontier") is True,
             )
         )
+    ctx_map = context or {}
+    task_family = raw.get("task_family") or ctx_map.get("task_family")
+    if not isinstance(task_family, str) or not task_family.strip():
+        task_family = None
+    else:
+        task_family = task_family.strip().lower()
+
+    raw_min_ctx = raw.get("min_context_tokens") or ctx_map.get("min_context_tokens")
+    min_context_tokens = None
+    if isinstance(raw_min_ctx, int) and not isinstance(raw_min_ctx, bool):
+        if raw_min_ctx <= 0:
+            raise ExecutionPathError("min_context_tokens must be positive")
+        min_context_tokens = raw_min_ctx
+
+    reasoning_required = bool(raw.get("reasoning_required") or ctx_map.get("reasoning_required"))
+    tools_required = bool(raw.get("tools_required") or ctx_map.get("tools_required"))
+    structured_output_required = bool(
+        raw.get("structured_output_required") or ctx_map.get("structured_output_required")
+    )
+    streaming_required = bool(raw.get("streaming_required") or ctx_map.get("streaming_required"))
+    vision_required = bool(raw.get("vision_required") or ctx_map.get("vision_required"))
+
     return ExecutionPathRequest(
         task_slice=task_slice,
         trajectory_id=trajectory_id.strip(),
         offers=tuple(offers),
         assumptions=("public_json_validated_at_api_boundary",),
         now=now,
+        task_family=task_family,
+        min_context_tokens=min_context_tokens,
+        reasoning_required=reasoning_required,
+        tools_required=tools_required,
+        structured_output_required=structured_output_required,
+        streaming_required=streaming_required,
+        vision_required=vision_required,
     )
+
+
+RESERVED_WEAKENING_FLAGS = frozenset(
+    {
+        "allow_legacy_selector",
+        "require_execution_path_authority",
+        "execution_path_decision",
+        "legacy_non_authority_selector",
+        "bod104_execution_path_authority",
+        "strategy_authority",
+        "client_certificate",
+        "client_cert",
+        "certificate",
+        "raw_decision",
+        "routing_decision",
+    }
+)
 
 
 def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
@@ -1240,12 +1288,26 @@ def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
 
     from verdict.execution_path import ExecutionPathError
 
-    if payload.get("execution_path_decision") is not None:
-        raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
+    for key in RESERVED_WEAKENING_FLAGS:
+        if payload.get(key) is not None:
+            if key == "execution_path_decision":
+                raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
+            raise ExecutionPathError(f"reserved control field {key!r} is not accepted")
+
     context = dict(payload)
+
+    # Server policy: critical tasks are protected and cannot be lowered by client fields
+    if (
+        str(payload.get("criticality", "")).strip().lower() == "critical"
+        or payload.get("protected") is True
+    ):
+        context["protected"] = True
+
     raw = context.get(CONTEXT_EP_REQUEST)
     if raw is not None:
-        context[CONTEXT_EP_REQUEST] = _public_execution_path_request(raw, task=task)
+        context[CONTEXT_EP_REQUEST] = _public_execution_path_request(
+            raw, task=task, context=context
+        )
     return context
 
 
@@ -1930,6 +1992,21 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             "idempotency_key",
             "execution_path_request",
             "execution_path_decision",
+            "allow_legacy_selector",
+            "require_execution_path_authority",
+            "legacy_non_authority_selector",
+            "bod104_execution_path_authority",
+            "strategy_authority",
+            "client_certificate",
+            "client_cert",
+            "certificate",
+            "task_family",
+            "min_context_tokens",
+            "reasoning_required",
+            "tools_required",
+            "structured_output_required",
+            "vision_required",
+            "streaming_required",
         ):
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model

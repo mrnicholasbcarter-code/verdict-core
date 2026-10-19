@@ -34,6 +34,18 @@ Canonical Core dispatch after swarm deletion is:
 Hard eligibility still precedes advisory ranking ([ADR-0001](0001-verdict-control-plane-invariants.md)).
 OmniRoute remains inventory/execute/health only ([ADR-032](ADR-032-core-model-metadata-store.md)).
 
+4. **Price-invariant selection** — `optimize_execution_path` orders surviving offers by
+   trusted `pool_receipt` shortlist position then stable candidate ID, rather than
+   expected price. Candidate pool ranking removes `cost_fit` and passport price injection,
+   retaining non-price feature coefficients (task outcomes .40, eval .25, health .15,
+   latency .05, context fit .10, uncertainty penalty -.30). Missing price remains unknown
+   and is not an extra gate without an explicit hard spend budget.
+5. **Server task authority** — Server-owned task requirements (context, reasoning, tools,
+   schema, stream) govern public entrypoints. Caller-supplied raw decisions, weakening
+   flags (`allow_legacy_selector`, `require_execution_path_authority`), and false
+   protected/client certificate fields cannot lower server policy. Offline catalog mode
+   cannot authorize execution.
+
 ## Consequences
 
 - ADR-023 is SUPERSEDED by this record (closes the cross-repo ADR lifecycle audit `MISSING_SUCCESSOR` finding).

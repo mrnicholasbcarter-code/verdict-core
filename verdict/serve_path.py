@@ -179,6 +179,12 @@ def consume_selected_route(
             "strategy_authority": STRATEGY_AUTHORITY,
         }
     if isinstance(selected_route, Mapping):
+        if (
+            selected_route.get("managed_backend_status") == "offline"
+            or selected_route.get("allow_offline") is True
+            or selected_route.get("offline") is True
+        ):
+            raise ExecutionPathError(f"{surface}: offline catalog mode cannot authorize execution")
         # Bare invented mappings are rejected: only authority-stamped identities
         # (or ExecutionPathDecision / ConcreteRoute above) may authorize dispatch.
         authority = selected_route.get("strategy_authority")
