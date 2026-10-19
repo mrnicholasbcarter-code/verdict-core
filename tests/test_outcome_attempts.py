@@ -549,3 +549,37 @@ def test_relay_buffered_attempt_records_observed_usage_only(
     assert row["quality_credit"] is None
     assert row["tokens_in"] is None and row["cost_usd"] is None
     assert row["effective_parameters"] == {"temperature": 0.2}
+
+
+def test_relay_rejected_before_send_keeps_lineage_without_a_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+    from tests.test_proxy import RecordingTransport, _configure_test_app
+    from verdict.orchestration.health_cache import HealthCache
+
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    monkeypatch.setattr(HealthCache, "commit_dispatch", lambda self, *a, **k: None)
+    store = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store))
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "preserve all fields"}]},
+        )
+    assert response.status_code == 503
+    assert not [r for r in transport.requests if "chat/completions" in r["url"]]
+
+    (row,) = _ledger_rows(store)
+    assert (row["outcome"], row["failure_class"], row["record_kind"]) == (
+        "abandoned",
+        "other",
+        "terminal",
+    )
+    assert row["request_id"] == "request-1" and row["model"] == "selected-model"
+    assert len(str(row["attempt_id"])) == 32
+    assert row["quality_credit"] is None
+    assert row["tokens_in"] is None and row["cost_usd"] is None

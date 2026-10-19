@@ -2189,6 +2189,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         attempt_id = _dispatch_attempt_id()
         if proof.scope != expected_scope or proof.qualified_at > now:
             dispatch_denial = "dispatch denied: proof scope or observation mismatch"
+            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
             continue
         permit = HealthCache(default_cache_path()).commit_dispatch(
             expected_scope,
@@ -2204,6 +2205,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         )
         if permit is None:
             dispatch_denial = "dispatch denied: permit commit rejected proof"
+            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
             continue
         try:
             if surface == "responses":
