@@ -451,3 +451,42 @@ def test_refused_retry_selection_writes_no_retry_record(
     ]
     executor_rows = [r for r in rows if r["harness"] == "verdict-autodev-executor"]
     assert all(r["model"] != "retry/model" for r in executor_rows), executor_rows
+
+
+def test_autodev_attempts_carry_stable_lineage_and_never_quality_credit(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-437: planner and executor rows link run/decision/node/attempt and settings."""
+    store_dir = tmp_path / "home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_dir))
+    ledger = ReceiptStore(":memory:")
+    report = run_autodev(
+        "fix ruff errors",
+        repo,
+        store=ledger,
+        decomposer=_decomposer(PLAN),
+        executor=_executor(repo, {"a.py": A_DIFF}),
+        mechanical=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in attempt_records_path(store_dir).read_text(encoding="utf-8").splitlines()
+    ]
+    planner = next(r for r in rows if r["harness"] == "verdict-autodev-planner")
+    executor = next(r for r in rows if r["harness"] == "verdict-autodev-executor")
+    receipt = ledger.get_receipt(report.receipt_ids[0])
+    assert receipt is not None
+    payload = receipt.payload
+
+    for row in (planner, executor):
+        assert row["record_kind"] == "terminal"
+        assert row["quality_credit"] is None and row["checker_digest"] is None
+        assert row["decision_id"] == payload["execution_path_decision_digest"]
+        assert row["run_id"] == payload["attempt_run_id"]
+    assert (planner["node_id"], planner["attempt_id"]) == ("planner", "1")
+    assert (executor["node_id"], executor["attempt_id"]) == ("fix-a", "1")
+    assert executor["effective_parameters"] == {"temperature": 0.0, "max_tokens": 16384}
+    assert executor["tokens_in"] == 100
+    # The planner entry reports no usage of its own: it stays unknown.
+    assert planner["tokens_in"] is None
