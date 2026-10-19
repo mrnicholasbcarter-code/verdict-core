@@ -381,7 +381,12 @@ def test_cycle_never_exceeds_request_cap_on_large_inventory(tmp_path: Path) -> N
     )
     stats = prober.run_once()
     assert stats.requests <= 300
-    assert stats.stopped_reason == "request_cap"
+    # BOD-297/S05-B (decision 14, item 1, same pattern as test_dead_pools_do_not_stop_healthy_pools):
+    # with 2-request full probes, max_routes = max_requests // 2 = 150
+    # binds at the SAME point as the old request cap (both landing at 100
+    # routes x 2 requests after HARD_MAX_ROUTES=50 bounds max_routes), so
+    # the coordinator labels the cap "route_cap" instead of "request_cap".
+    assert stats.stopped_reason == "route_cap"
     # Persisted entries cannot exceed the calls that were allowed.
     assert len(cache.routes()) <= 300
 
@@ -470,8 +475,16 @@ def test_two_step_probe_replays_recorded_outcomes(tmp_path: Path) -> None:
     assert ("cerebras/gpt-oss-120b", "tool") not in transport.calls
 
 
-def test_liveness_probe_does_not_call_the_tool(tmp_path: Path) -> None:
-    transport = _Script({("sub/m", "chat"): _ok()})
+def test_subscription_gets_the_full_chat_and_tool_probe(tmp_path: Path) -> None:
+    """BOD-297/S05-B (parent decision 2026-10-19, item 14.2): SUBSCRIPTION's
+    old liveness-only (chat-only) contract was replaced by decision 2 -- it
+    now gets the SAME full chat+tool probe as FREE, through the shared
+    coordinator. Chat-only liveness survives only for the consented manual
+    plan (METERED/UNKNOWN, see test_metered_unknown_never_probed_even_if_flagged
+    / probe_liveness in tests/test_verified_model_refresh.py and
+    tests/test_verified_refresh_consumers.py), which S05-B never touches.
+    """
+    transport = _Script({("sub/m", "chat"): _ok(), ("sub/m", "tool"): _ok(tool=True)})
     cache = HealthCache(tmp_path / "cache.json")
     prober = Prober(
         cache=cache,
@@ -482,24 +495,26 @@ def test_liveness_probe_does_not_call_the_tool(tmp_path: Path) -> None:
         epsilon=0,
     )
     prober.run_once()
-    assert transport.calls == [("sub/m", "chat")]
+    assert transport.calls == [("sub/m", "chat"), ("sub/m", "tool")]
     entry = cache.entry("sub/m")
-    assert entry is not None and entry.healthy and entry.tool_ok is False
+    assert entry is not None and entry.healthy and entry.tool_ok is True
     workers = cache.healthy_routes(_at(1), predicate=lambda item: item.tool_ok)
-    assert workers == ()
+    assert [w.route_id for w in workers] == ["sub/m"]
 
 
 def test_bucket_stops_a_provider_mid_cycle(tmp_path: Path) -> None:
-    # bucket_capacity=1 with 5 full-kind routes (chat+tool each):
-    # Route 0: chat consumes the 1 token (requests=1); tool: no bucket → skipped_bucket+=1.
-    # Routes 1-4: initial consume fails → skipped_bucket+=1 each.
-    # Total: requests=1, skipped_bucket=5 (1 tool-skip + 4 initial-skips).
-    routes = [_route(f"bai/{index}", "free") for index in range(5)]
+    # BOD-297/S05-B (parent decision 2026-10-19, item 14.3): the coordinator
+    # reserves a whole probe's token cost (2, for FREE) upfront, never a
+    # partial spend, so bucket_capacity must hold one full probe for the
+    # first route to be probed at all. bucket_capacity=2 with 2 routes on
+    # one provider: route 0 is fully probed (chat+tool, requests==2); route
+    # 1 is bucket-stopped with no negative written.
+    routes = [_route(f"bai/{index}", "free") for index in range(2)]
     transport = _Script(
         {(route.route_id, "chat"): _ok() for route in routes}
         | {(route.route_id, "tool"): _ok(tool=True) for route in routes}
     )
-    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1)
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=2)
     prober = Prober(
         cache=cache,
         routes_loader=lambda: routes,
@@ -509,8 +524,10 @@ def test_bucket_stops_a_provider_mid_cycle(tmp_path: Path) -> None:
         epsilon=0,
     )
     stats = prober.run_once()
-    assert stats.requests == 1
-    assert stats.skipped_bucket == 5  # 1 tool-skip (defect-1 fix) + 4 initial-skips
+    assert stats.requests == 2
+    assert stats.skipped_bucket == 1
+    assert cache.entry("bai/0") is not None and cache.entry("bai/0").healthy
+    assert cache.entry("bai/1") is None
 
 
 def test_status_report_lists_workers_and_cold_providers(tmp_path: Path) -> None:
@@ -626,16 +643,16 @@ def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_tool_skipped_no_bucket_does_not_record_negative(tmp_path: Path) -> None:
-    """Defect 1: chat succeeds, bucket exhausted for tool → route NOT marked negative.
-
-    Only the chat token is consumed; the route should remain unprobed (no
-    negative entry) because the tool was never tested.
+    """Defect 1 lives on as a bucket-denial guarantee: a bucket shortage
+    never records a negative. BOD-297/S05-B (decision 14, item 14.3): the
+    coordinator reserves a whole probe's token cost (2) upfront, so
+    bucket_capacity=1 (less than one full probe) now makes ZERO calls, not
+    a partial chat-only spend -- the route stays unprobed, never negative.
     """
     cache_path = tmp_path / "cache.json"
     cache = HealthCache(cache_path, bucket_capacity=1)
     route = _route("cx/model", "free")
-    # Only script the chat call; the tool must never be called.
-    transport = _Script({("cx/model", "chat"): _ok()})
+    transport = _Script({})
     prober = Prober(
         cache=cache,
         routes_loader=lambda: [route],
@@ -645,8 +662,8 @@ def test_tool_skipped_no_bucket_does_not_record_negative(tmp_path: Path) -> None
         epsilon=0,
     )
     stats = prober.run_once()
-    # One chat request consumed the bucket.
-    assert stats.requests == 1
+    assert stats.requests == 0
+    assert stats.skipped_bucket == 1
     # The route must NOT be marked unhealthy or cooled down.
     entry = cache.entry("cx/model")
     assert entry is None or entry.category != CATEGORY_OK or not entry.healthy, (
@@ -687,7 +704,10 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
         concurrency=1,
     )
     stats1 = prober.run_once()
-    assert stats1.stopped_reason == "request_cap"
+    # BOD-297/S05-B (decision 14, item 1/4): with 2-request full probes,
+    # max_routes = max_requests // 2 = 1 binds at the same point as the old
+    # request cap -- the coordinator labels it "route_cap".
+    assert stats1.stopped_reason == "route_cap"
     # Cursor must record the probed route ids so the next cycle resumes correctly.
     # (Defect 2 fix changed from next_index to probed_ids.)
     cursor = cache.cursor
@@ -712,7 +732,7 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
         concurrency=1,
     )
     stats2 = prober2.run_once()
-    assert stats2.stopped_reason == "request_cap"
+    assert stats2.stopped_reason == "route_cap"
     assert transport.calls == [("cx/r1", "chat"), ("cx/r1", "tool")], transport.calls
     assert set(cache.cursor.get("probed_ids") or []) == {"cx/r0", "cx/r1"}
 
@@ -946,7 +966,10 @@ def test_cursor_resume_survives_route_reorder_and_removal(tmp_path: Path) -> Non
         concurrency=1,
     )
     stats1 = prober1.run_once()
-    assert stats1.stopped_reason == "request_cap"
+    # BOD-297/S05-B (decision 14, item 1/4): with 2-request full probes,
+    # max_routes = max_requests // 2 = 2 binds at the same point as the old
+    # request cap -- the coordinator labels it "route_cap".
+    assert stats1.stopped_reason == "route_cap"
     cycle1 = {rid for rid, _ in transcript}
     assert cycle1 == {r0.route_id, r1.route_id}, f"cycle 1 probed {sorted(cycle1)}"
     assert cache.cursor.get("cycle_open") is True

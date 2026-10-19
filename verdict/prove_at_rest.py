@@ -58,7 +58,7 @@ import urllib.request
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -996,50 +996,206 @@ class Prober:
     def _run_chat_phase(
         self, routes: Sequence[AdmittedRoute], started: float, stats: CycleStats
     ) -> None:
+        """BOD-297/S05-B: a bounded RefreshCoordinator client, not its own loop.
+
+        Scoped to FREE+SUBSCRIPTION only (automatic trigger: ``authorized``
+        is never passed, so METERED/UNKNOWN never enter -- that liveness
+        probing is out of scope for this slice; it stays available only
+        through the consented manual plan).
+
+        Parent decision (BOD-297/S05-B, 2026-10-19, BOD-297/BOD-342): prove-at-
+        rest does NOT run at census's maintenance size (4 routes/16 requests
+        -- too small: it would cut the daemon's fresh set from ~44 routes to
+        ~8 per 300 s tick). It goes through the SAME coordinator (flock,
+        marker, buckets, auth_gate) but with its OWN bounded config:
+        ``maintenance_from_env()`` values, except ``max_routes = min(daemon
+        max_requests // 2, HARD_MAX_ROUTES)``, ``max_requests = min(daemon
+        max_requests, HARD_MAX_REQUESTS)``, ``wall_seconds = min(daemon
+        max_wall_seconds, HARD_MAX_WALL_SECONDS_MAINTENANCE)`` -- never above
+        the coordinator hard maxima. Behaviour change: 100 requests/cycle
+        cap (``HARD_MAX_REQUESTS``), not the daemon's own 300; no partial
+        probes (a probe that cannot fully fit the remaining budget is never
+        started, unlike the old loop's per-call spend).
+
+        The existing durable cursor (``cache.cursor``) is kept so a fleet
+        larger than one cycle's route cap still rotates across cycles,
+        exactly as the old loop did: already-probed ids from an open cycle
+        are excluded from this cycle's candidates, newly-probed ids are
+        merged in, and the cursor clears only once the whole fleet is
+        covered.
+        """
+        from verdict.orchestration.verified_refresh import (
+            CAPACITY_FREE,
+            CAPACITY_SUBSCRIPTION,
+            CONSUMER_PROVE_AT_REST,
+            HARD_MAX_REQUESTS,
+            HARD_MAX_ROUTES,
+            HARD_MAX_WALL_SECONDS_MAINTENANCE,
+            REASON_BUCKET,
+            REASON_PROVIDER_STOP,
+            STATUS_UNVERIFIED,
+            RefreshCoordinator,
+            RefreshSnapshot,
+            RowInput,
+            maintenance_from_env,
+        )
+
         now = self.clock()
         ordered = order_cycle(routes, self.cache, now, epsilon=self.epsilon)
         self._cycle_pools = {_pool_of(route) for route, _kind in ordered}
-        # Defect 2 fix: resume by route_id set, not by index.
-        # If routes reorder or disappear between cycles the index-based cursor
-        # would skip unprobed routes; a probed-ids set is order-independent.
         cursor = self.cache.cursor
         probed_ids: set[str] = set()
         if cursor.get("cycle_open"):
             raw_ids = cursor.get("probed_ids") or []
             if isinstance(raw_ids, list):
                 probed_ids = set(str(rid) for rid in raw_ids if isinstance(rid, str))
-        pending = [item for item in ordered if item[0].route_id not in probed_ids]
-        batch_size = self.concurrency
+        prepaid = [
+            route
+            for route, _kind in ordered
+            if route.capacity in {CapacityClass.FREE.value, CapacityClass.SUBSCRIPTION.value}
+            and route.route_id not in probed_ids
+        ]
+        rows = tuple(
+            RowInput(
+                route_id=route.route_id,
+                provider=route.provider,
+                status=STATUS_UNVERIFIED,
+                capacity_class=(
+                    CAPACITY_FREE
+                    if route.capacity == CapacityClass.FREE.value
+                    else CAPACITY_SUBSCRIPTION
+                ),
+                refreshable=True,
+                pool=route.pool,
+                capacity_evidence=route.capacity_evidence,
+                rank_hint=index,
+            )
+            for index, route in enumerate(prepaid)
+        )
 
-        def over_budget(extra: int = 0) -> str:
-            if stats.requests + extra > self.max_requests:
-                return "request_cap"
-            if self.monotonic() - started >= self.max_wall_seconds:
-                return "wall_cap"
-            return ""
+        def auth_gate(
+            route_id: str, http_status: int | None, remaining_requests: int
+        ) -> tuple[bool | None, int]:
+            """BOD-338 breaker: confirm the gateway key once per cycle.
 
-        while pending:
-            reason = over_budget()
-            if reason:
-                stats.stopped_reason = reason
-                self._persist_cursor(probed_ids, open_cycle=True)
-                self._save()
-                break
-            batch = pending[:batch_size]
-            pending = pending[batch_size:]
-            self._persist_cursor(probed_ids, open_cycle=True)
+            Both production callers (``cli.py`` daemon, ``extra.py`` once)
+            build the live daemon without an injected transport, so
+            ``gateway_auth_check`` is always set in production
+            (``build_live_daemon`` wires ``live_gateway_auth_check``). A
+            memoized single call replaces the old loop's multi-route
+            buffer: the coordinator already withholds the write for the
+            route that triggered this call, so there is nothing buffered to
+            flush on a sibling success or a later non-auth failure.
+
+            Without ``gateway_auth_check`` (test-only injected transports),
+            there is no outage confirmation: the per-route auth failure is
+            written and that provider stops, same as any other
+            provider-scope rejection (BOD-297/S05-B, parent decision
+            2026-10-19 item 16 -- the old majority-pool-of-failures
+            heuristic was deleted; the coordinator's own provider stop
+            already made it unreachable in its own fixtures).
+
+            ``remaining_requests`` is the COORDINATOR's own remaining
+            budget for this job (review finding 19, 2026-10-19: checking
+            ``stats.requests`` here was wrong -- it stays 0 for the whole
+            job until ``_run_chat_phase`` adds the coordinator's
+            ``requests_made`` back AFTER the job returns, so the old check
+            always saw a free budget and spent a live check the
+            coordinator's own cap had already used up).
+
+            Returns ``(result, requests_spent)``. ``requests_spent`` is 1 the
+            FIRST time this cycle a live gateway_auth_check call is made, 0
+            every time the memoized result is reused or no check was needed
+            at all -- so the coordinator can fold the gate's own live
+            request into ``requests_made`` (review finding 18b, 2026-10-19:
+            the check must count against the cycle's request budget, or a
+            following route could be admitted one request over it).
+
+            ``result`` is ``None`` (review finding 18a, 2026-10-19) when the
+            gate itself cannot run its own confirmation within the cycle's
+            remaining request/wall budget: the failure must still never be
+            written, but the job must stop for the REAL reason (request or
+            wall cap), not report a CONFIRMED outage that nobody actually
+            checked.
+            """
+            if self.gateway_auth_check is None:
+                return False, 0
+            spent = 0
+            if self._gateway_auth_result is None:
+                remaining_wall = self.max_wall_seconds - (self.monotonic() - self._cycle_started)
+                if remaining_requests < 1 or remaining_wall <= 0:
+                    stats.stopped_reason = "request_cap" if remaining_wall > 0 else "wall_cap"
+                    return None, 0  # cannot confirm within budget: unconfirmed, no write
+                # Not stats.requests += 1 here: the coordinator folds
+                # `spent` into its own requests_made, and _run_chat_phase
+                # adds that to stats.requests once, after this call returns.
+                spent = 1
+                try:
+                    self._gateway_auth_result = self.gateway_auth_check(
+                        min(self.probe_timeout_seconds, remaining_wall)
+                    )
+                except (TimeoutError, OSError, http.client.HTTPException):
+                    self._gateway_auth_result = ProbeExchange(http_status=None, ok=False)
+            return self._gateway_auth_result.http_status in (401, 403), spent
+
+        coordinator = RefreshCoordinator(
+            cache=self.cache,
+            transport=self.transport,
+            clock=self.clock,
+            monotonic=self.monotonic,
+            sleep=self.sleep,
+            auth_gate=auth_gate,
+        )
+        config = replace(
+            maintenance_from_env(),
+            max_routes=max(1, min(self.max_requests // 2, HARD_MAX_ROUTES)),
+            max_requests=min(self.max_requests, HARD_MAX_REQUESTS),
+            wall_seconds=min(self.max_wall_seconds, HARD_MAX_WALL_SECONDS_MAINTENANCE),
+        )
+
+        if not rows:
+            # Every prepaid route is already covered by the open cycle.
+            self.cache.clear_cursor()
             self._save()
-            newly_probed = self._run_batch(batch, stats, started)
-            probed_ids.update(newly_probed)
+            stats.stopped_reason = stats.stopped_reason or "complete"
+            return
+
+        outcome = coordinator.refresh_for_consumer(
+            RefreshSnapshot(rows=rows, gateway_origin="", scope=""),
+            consumer=CONSUMER_PROVE_AT_REST,
+            needed_ids=[row.route_id for row in rows],
+            config=config,
+            explicit=True,
+        )
+        stats.requests += outcome.requests_made
+        stats.probed += outcome.probed
+        stats.fresh += outcome.verified + outcome.alive
+        stats.negative += outcome.failed + outcome.unavailable
+        stats.skipped_bucket += sum(
+            1 for o in outcome.route_outcomes.values() if o.refresh_reason == REASON_BUCKET
+        )
+        # A route is "covered" by this cycle once the coordinator either
+        # probed it or explicitly decided not to (provider/route stop) --
+        # only a route left at its default REASON_NOT_TESTED/cap reason is
+        # truly unfinished and must carry over to the next cycle's cursor.
+        covered = {
+            rid
+            for rid, o in outcome.route_outcomes.items()
+            if o.probed or o.refresh_reason == REASON_PROVIDER_STOP
+        }
+        probed_ids.update(covered)
+        uncovered = len(prepaid) - len(covered)
+        if outcome.cap_reason == "auth_outage":
+            stats.auth_outage = True
+            stats.stopped_reason = "auth_outage"
             self._persist_cursor(probed_ids, open_cycle=True)
-            self._save()
-            if stats.stopped_reason:
-                # Cap fired inside the batch: do not drain remaining pending.
-                break
+        elif uncovered > 0:
+            stats.stopped_reason = outcome.cap_reason or "route_cap"
+            self._persist_cursor(probed_ids, open_cycle=True)
         else:
             stats.stopped_reason = stats.stopped_reason or "complete"
             self.cache.clear_cursor()
-            self._save()
+        self._save()
 
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
         """Write every buffered auth-outage-window negative as a real failure."""
@@ -1099,35 +1255,6 @@ class Prober:
     def _persist_cursor(self, probed_ids: set[str], *, open_cycle: bool) -> None:
         self.cache.set_cursor({"cycle_open": open_cycle, "probed_ids": sorted(probed_ids)})
 
-    def _run_batch(
-        self, batch: Sequence[tuple[AdmittedRoute, str]], stats: CycleStats, started: float
-    ) -> set[str]:
-        """Probe every route in *batch*; return the set of route_ids started.
-
-        Returns only the route_ids actually dispatched.  When a cap fires
-        mid-batch the remaining routes are excluded so the caller can update
-        the probed-ids cursor correctly (defect 2 fix).
-        """
-        probed: set[str] = set()
-        for route, kind in batch:
-            if stats.requests >= self.max_requests:
-                stats.stopped_reason = stats.stopped_reason or "request_cap"
-                return probed
-            if self.monotonic() - started >= self.max_wall_seconds:
-                stats.stopped_reason = "wall_cap"
-                return probed
-            before = stats.requests
-            completed = self._probe_route(route, kind, stats, started=started)
-            if stats.requests != before:
-                self._save()
-            if not completed:
-                # The probe stopped part-way (a cap or bucket fired between the
-                # chat and the tool call). The route was left unchanged, so it
-                # stays pending and the next cycle resumes with it.
-                return probed
-            probed.add(route.route_id)
-        return probed
-
     @staticmethod
     def _model_identity_matches(route_id: str, reported: str) -> bool:
         """True when *reported* is the expected model, tolerating provider-prefix.
@@ -1143,132 +1270,6 @@ class Prober:
           stripped the prefix).
         """
         return model_identity_matches(route_id, reported)
-
-    def _probe_route(
-        self, route: AdmittedRoute, kind: str, stats: CycleStats, *, started: float
-    ) -> bool:
-        now = self.clock()
-        if _pool_of(route) in _cooled_pools(self.cache, now):
-            return True
-        if not self.cache.consume(route.provider, now, pool=route.pool):
-            stats.skipped_bucket += 1
-            return True  # no token: skipped this cycle, entry unchanged
-        stats.requests += 1
-        try:
-            chat = self.transport(route.route_id, "chat", self.probe_timeout_seconds)
-        except TimeoutError:
-            chat = ProbeExchange(http_status=None, ok=False, error_category="timeout")
-        self._note_rate_limit(route, chat, now)
-        chat_ok = bool(chat.ok and chat.chat_exact and chat.http_status == 200)
-        tool_ok = False
-        latency = chat.latency_ms
-        status = chat.http_status
-        category = category_for(chat)
-        observed = chat
-
-        # Validate chat-phase model identity (defect 3 fix): check right after
-        # chat so we do not make the tool call if the gateway returned the wrong
-        # model.  An empty reported_model is treated as "matches" (provider
-        # chose not to echo).
-        if chat_ok and not self._model_identity_matches(route.route_id, chat.reported_model):
-            category = CATEGORY_MODEL_MISMATCH
-            status = chat.http_status
-            chat_ok = False
-
-        if chat_ok and kind == "full" and stats.requests >= self.max_requests:
-            # Request cap hit between chat and tool: chat succeeded but tool was
-            # never tested. Leave the route unchanged; do NOT record a negative
-            # (defect 1 fix: request-cap path).
-            stats.stopped_reason = stats.stopped_reason or "request_cap"
-            return False
-        if chat_ok and kind == "full":
-            # Check wall deadline before making the second HTTP call (defect 5).
-            if self.monotonic() - started >= self.max_wall_seconds:
-                # Wall cap hit between chat and tool: chat succeeded but tool was
-                # never tested. Leave the route unchanged (do not record a negative).
-                stats.stopped_reason = "wall_cap"
-                return False
-            now_tool = self.clock()
-            if self.cache.consume(route.provider, now_tool, pool=route.pool):
-                stats.requests += 1
-                try:
-                    tool = self.transport(route.route_id, "tool", self.probe_timeout_seconds)
-                except TimeoutError:
-                    tool = ProbeExchange(http_status=None, ok=False, error_category="timeout")
-                self._note_rate_limit(route, tool, now_tool)
-                tool_ok = bool(tool.ok and tool.tool_called and tool.http_status == 200)
-                if tool.latency_ms is not None:
-                    latency = (latency or 0.0) + tool.latency_ms
-                # Validate tool-phase model identity too.
-                if tool_ok and not self._model_identity_matches(
-                    route.route_id, tool.reported_model
-                ):
-                    tool_ok = False
-                    category = CATEGORY_MODEL_MISMATCH
-                    status = tool.http_status
-                    observed = tool
-                elif not tool_ok:
-                    status = tool.http_status
-                    category = category_for(tool)
-                    observed = tool
-            else:
-                # No bucket token for the tool call: chat succeeded but tool was
-                # never tested. Leave the route unchanged; do NOT record a
-                # negative (defect 1 fix).
-                stats.skipped_bucket += 1
-                return True  # no tool token: entry unchanged, retried next cycle
-        if chat_ok and (tool_ok or kind == "liveness"):
-            category = CATEGORY_OK
-            status = 200
-        # Defect 5 fix: compute identity from the observed reported_model.
-        # An empty reported_model means the gateway did not echo the id back;
-        # record it as "not_reported" so status output can distinguish it from
-        # a route whose identity was actively verified.
-        _reported = observed.reported_model
-        if not _reported:
-            _identity = "not_reported"
-        elif self._model_identity_matches(route.route_id, _reported):
-            _identity = "verified"
-        else:
-            _identity = "mismatch"
-        result = ProbeResult(
-            category=category,
-            chat_ok=chat_ok,
-            tool_ok=tool_ok,
-            latency_ms=latency,
-            http_status=status,
-            retry_after_seconds=observed.retry_after_seconds,
-            pool=route.pool,
-            capacity_evidence=route.capacity_evidence,
-            identity=_identity,
-        )
-        if self._buffer_auth_failure(route, result, now, stats):
-            return not stats.auth_outage and stats.stopped_reason not in {"request_cap", "wall_cap"}
-        # Liveness success is healthy for the cache state machine but not a
-        # coding worker: tool_ok stays false. ``ProbeResult.healthy`` requires
-        # tool_ok, so record it as a successful liveness entry directly.
-        if chat_ok and kind == "liveness":
-            self._record_liveness(route, result, now)
-        else:
-            self.cache.record(route.route_id, result, now)
-        stats.probed += 1
-        entry = self.cache.entry(route.route_id)
-        if entry is not None and entry.healthy:
-            stats.fresh += 1
-        elif entry is not None and not entry.healthy:
-            stats.negative += 1
-        return True
-
-    def _record_liveness(self, route: AdmittedRoute, result: ProbeResult, now: datetime) -> None:
-        """Chat-only success: fresh for liveness, but not a coding worker."""
-        self.cache.record_liveness(
-            route.route_id,
-            latency_ms=result.latency_ms,
-            pool=route.pool,
-            capacity_evidence=route.capacity_evidence,
-            now=now,
-            identity=result.identity,
-        )
 
     def _note_rate_limit(
         self, route: AdmittedRoute, exchange: ProbeExchange, now: datetime

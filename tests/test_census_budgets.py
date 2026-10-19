@@ -61,21 +61,29 @@ def _run(
     )
 
 
-def test_token_budget_no_longer_clamps_candidates_to_six(tmp_path: Path) -> None:
+def test_token_budget_bounded_by_shared_coordinator_maintenance_cap(tmp_path: Path) -> None:
+    """Census's own max_candidates is no longer the binding cap: the shared
+    coordinator's maintenance contract (S05 contract caps: 4 routes,
+    2/provider, BOD-297/S05-A) is, and it binds below census's own ask.
+    """
     models = [f"p{i}/m" for i in range(10)]
     calls: list[str] = []
     _run(tmp_path, _snapshot(models), calls, max_candidates=10)
-    assert sorted(set(calls)) == sorted(models)
+    assert set(calls) <= set(models)
+    assert len(set(calls)) == 4
 
 
 def test_default_budget_is_per_provider_not_a_global_cap(tmp_path: Path) -> None:
+    """S05 contract caps (4 routes, 2/provider; BOD-297/S05-A) now bound the
+    actual probe count below census's own ask.
+    """
     models = [f"a/m{i}" for i in range(5)] + [f"p{i}/m" for i in range(8)]
     calls: list[str] = []
     report = _run(tmp_path, _snapshot(models), calls)
     probed = set(calls)
-    assert len([m for m in probed if m.startswith("a/")]) == 2
-    assert {f"p{i}/m" for i in range(8)} <= probed
-    assert report["probed"] == 10
+    assert len([m for m in probed if m.startswith("a/")]) <= 2
+    assert len(probed) == 4
+    assert report["probed"] == 4
 
 
 def test_explicit_token_budget_still_applies_on_its_own(tmp_path: Path) -> None:

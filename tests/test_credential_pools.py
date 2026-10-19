@@ -248,57 +248,6 @@ def _auth_401(route_id: str, phase: str, timeout: float) -> ProbeExchange:
     return ProbeExchange(http_status=401, ok=False, error_category="auth")
 
 
-def test_auth_outage_breaker_trips_on_five_failures_across_three_pools(tmp_path: Path) -> None:
-    cache = HealthCache(tmp_path / "cache.json")
-    routes = [
-        _route("p1/a", "free", pool="p1"),
-        _route("p2/a", "free", pool="p2"),
-        _route("p3/a", "free", pool="p3"),
-        _route("p1/b", "free", pool="p1"),
-        _route("p2/b", "free", pool="p2"),
-    ]
-    prober = Prober(
-        cache=cache,
-        routes_loader=lambda: routes,
-        transport=_auth_401,
-        clock=lambda: NOW,
-        monotonic=lambda: 0.0,
-        epsilon=0,
-    )
-    stats = prober.run_once()
-    assert stats.auth_outage is True
-    assert stats.stopped_reason == "auth_outage"
-    # No negative was recorded for any of the 5 routes: the breaker
-    # discards the buffered outage-window failures unwritten.
-    for route in routes:
-        assert cache.entry(route.route_id) is None
-
-
-def test_auth_outage_breaker_does_not_trip_under_pool_threshold(tmp_path: Path) -> None:
-    """Five 401s from only two distinct pools are ordinary negatives, not an outage."""
-    cache = HealthCache(tmp_path / "cache.json")
-    routes = [
-        _route("p1/a", "free", pool="p1"),
-        _route("p1/b", "free", pool="p1"),
-        _route("p1/c", "free", pool="p1"),
-        _route("p2/a", "free", pool="p2"),
-        _route("p2/b", "free", pool="p2"),
-    ]
-    prober = Prober(
-        cache=cache,
-        routes_loader=lambda: routes,
-        transport=_auth_401,
-        clock=lambda: NOW,
-        monotonic=lambda: 0.0,
-        epsilon=0,
-    )
-    stats = prober.run_once()
-    assert stats.auth_outage is False
-    assert stats.stopped_reason != "auth_outage"
-    for route in routes:
-        assert cache.entry(route.route_id) is not None
-
-
 def test_auth_outage_breaker_flushes_buffer_as_negatives_once_streak_breaks(tmp_path: Path) -> None:
     """Fewer than the threshold, then a success: every buffered 401 writes as a real negative."""
     cache = HealthCache(tmp_path / "cache.json")
@@ -421,29 +370,32 @@ def test_default_epsilon_keeps_alias_and_non_chat_filters(tmp_path: Path) -> Non
     ]
 
 
-def test_main_auth_outage_skips_agentic_without_poisoning_cache(tmp_path: Path) -> None:
-    """Reviewer repro: five main-phase 401s must prevent every agentic HTTP call."""
+def test_no_gateway_check_writes_per_route_negatives_and_stops_each_provider(
+    tmp_path: Path,
+) -> None:
+    """BOD-297/S05-B (parent decision 2026-10-19, item 16): the majority-pool
+    outage heuristic was deleted from the chat phase (both production
+    callers always wire gateway_auth_check -- build_live_daemon,
+    prove_at_rest.py). Without it, a chat-phase 401 with no
+    gateway_auth_check writes a real per-route negative and stops that
+    route's provider (coordinator REASON_PROVIDER_STOP), same as any other
+    provider-scope rejection; no outage is ever claimed.
+    """
     cache = HealthCache(tmp_path / "cache.json")
-    routes = [_route(f"p{i}/model", "free", pool=f"p{i}") for i in range(5)]
-    calls: list[str] = []
-
-    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
-        calls.append(route_id)
-        return ProbeExchange(http_status=403, ok=False, error_category="permission")
-
+    routes = [_route("p1/a", "free", pool="p1"), _route("p2/a", "free", pool="p2")]
     stats = Prober(
         cache=cache,
         routes_loader=lambda: routes,
         transport=_auth_401,
-        agentic_transport=agentic,
         clock=lambda: NOW,
         monotonic=lambda: 0.0,
+        epsilon=0,
     ).run_once()
-    assert stats.auth_outage
-    assert calls == []
-    assert stats.probed == stats.negative == 0
-    assert cache.routes() == {}
-    assert HealthCache(cache.path).routes() == {}
+    assert not stats.auth_outage
+    assert stats.negative == 2
+    for route in routes:
+        entry = cache.entry(route.route_id)
+        assert entry is not None and not entry.healthy
 
 
 @pytest.mark.parametrize("count", [4, 5])
@@ -482,28 +434,6 @@ def test_agentic_auth_failures_use_the_same_outage_buffer(tmp_path: Path, count:
             assert entry.agentic_checked_at == NOW
 
 
-def test_auth_outage_streak_spans_main_and_agentic_phases(tmp_path: Path) -> None:
-    cache = HealthCache(tmp_path / "cache.json")
-    routes = [_route(f"p{i}/model", "free", pool=f"p{i}") for i in range(4)]
-    calls: list[str] = []
-
-    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
-        calls.append(route_id)
-        return ProbeExchange(http_status=403, ok=False, error_category="permission")
-
-    stats = Prober(
-        cache=cache,
-        routes_loader=lambda: routes,
-        transport=_auth_401,
-        agentic_transport=agentic,
-        clock=lambda: NOW,
-        monotonic=lambda: 0.0,
-    ).run_once()
-    assert stats.auth_outage
-    assert calls == [routes[0].route_id]
-    assert cache.routes() == {}
-
-
 @pytest.mark.parametrize("direct", [True, False])
 def test_agentic_phase_uses_the_same_filtered_plan(tmp_path: Path, direct: bool) -> None:
     """Reviewer repro: aliases and non-chat routes never get agentic cache entries."""
@@ -528,10 +458,29 @@ def test_agentic_phase_uses_the_same_filtered_plan(tmp_path: Path, direct: bool)
         calls.append(route_id)
         return ProbeExchange(http_status=403, ok=False, error_category="permission")
 
+    # BOD-297/S05-B (parent decision 2026-10-19, item 13): the chat transport
+    # must leave routes eligible for agentic, as the ``direct=True`` case
+    # does -- a 401/403 now writes a real negative immediately (the
+    # coordinator's auth_gate already confirmed it is not a gateway outage),
+    # which correctly excludes the route from the SAME cycle's agentic
+    # phase (see test_auth_gate_denies_outage_excludes_route_from_same_cycle_agentic
+    # below). A gateway-busy no-write category leaves the route UNPROBED,
+    # matching this test's original intent (aliases/non-chat routes never
+    # get agentic entries) without needing a real chat failure.
+    chat = (
+        _auth_401
+        if direct
+        else (
+            lambda rid, phase, timeout: ProbeExchange(
+                http_status=429, ok=False, error_category="gateway_busy"
+            )
+        )
+    )
+
     prober = Prober(
         cache=cache,
         routes_loader=loader,
-        transport=_auth_401,
+        transport=chat,
         agentic_transport=agentic,
         clock=lambda: NOW,
         monotonic=lambda: 0.0,
@@ -561,7 +510,12 @@ def test_alias_routes_consume_one_canonical_pool_bucket(tmp_path: Path) -> None:
 
 def test_prober_alias_routes_draw_from_one_bucket(tmp_path: Path) -> None:
     pool = pool_of("agy/model-a")
-    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=1)
+    # BOD-297/S05-B (parent decision 2026-10-19): the coordinator reserves a
+    # whole probe's token cost upfront (2, for a FREE full chat+tool probe),
+    # never a partial spend, so the bucket must hold one full probe (2) to
+    # prove the SAME thing this test always proved: the second alias in the
+    # shared pool gets zero calls.
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=2)
     routes = [
         _route("agy/model-a", "free", pool=pool),
         _route("antigravity/model-b", "free", pool=pool),

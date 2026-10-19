@@ -161,14 +161,26 @@ ENV_COOLDOWN_SECONDS = "VERDICT_REFRESH_COOLDOWN_SECONDS"
 
 # Qualification bounds (BOD-297/S05): one request reserves this many output
 # tokens, gets this long, and one provider may contribute at most this many
-# routes per cycle; a negative scoped cooldown defaults to this duration.
+# routes per cycle (maintenance lane only; interactive has no per-provider
+# cap); a negative scoped cooldown defaults to this duration.
 DEFAULT_OUTPUT_TOKENS = 4096
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+MAINTENANCE_MAX_PER_PROVIDER = 2
 DEFAULT_COOLDOWN_SECONDS = 300.0
+
+# Maintenance lane defaults: the bounded shared-owner cycle producers join.
+MAINTENANCE_MAX_ROUTES = 4
+MAINTENANCE_MAX_REQUESTS = 16
+MAINTENANCE_WALL_SECONDS = 600.0
+MAINTENANCE_CONCURRENCY = 4
+MAINTENANCE_DEBOUNCE_SECONDS = 10.0
+MAINTENANCE_OUTPUT_TOKENS = 4096
 
 HARD_MAX_OUTPUT_TOKENS = 32_768
 HARD_MAX_REQUEST_TIMEOUT_SECONDS = 120.0
 HARD_MAX_COOLDOWN_SECONDS = 3600.0
+# Only the maintenance lane may run longer than the interactive hard max.
+HARD_MAX_WALL_SECONDS_MAINTENANCE = 600.0
 
 
 class RefreshConfigError(ValueError):
@@ -195,6 +207,7 @@ class RefreshConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_per_provider: int | None = None
     cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
+    maintenance: bool = False
 
     def __post_init__(self) -> None:
         if not (1 <= self.max_routes <= HARD_MAX_ROUTES):
@@ -205,7 +218,9 @@ class RefreshConfig:
             raise RefreshConfigError(
                 f"max_requests must be in 1..{HARD_MAX_REQUESTS}, got {self.max_requests}"
             )
-        wall_hard_max = HARD_MAX_WALL_SECONDS
+        wall_hard_max = (
+            HARD_MAX_WALL_SECONDS_MAINTENANCE if self.maintenance else HARD_MAX_WALL_SECONDS
+        )
         if not (0 < self.wall_seconds <= wall_hard_max):
             raise RefreshConfigError(
                 f"wall_seconds must be in (0, {wall_hard_max}], got {self.wall_seconds}"
@@ -313,6 +328,57 @@ def config_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
     )
 
 
+def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
+    """Build the maintenance-lane :class:`RefreshConfig` from the environment.
+
+    Same env knobs and hard-max guard style as :func:`config_from_env`, with
+    the maintenance defaults (4 routes, 16 requests, 600 s wall, concurrency
+    4, 10 s debounce) and the maintenance wall hard max. Invalid values raise
+    :class:`RefreshConfigError` BEFORE any call is made.
+    """
+    source = env if env is not None else os.environ
+    auto_raw = source.get(ENV_AUTO_REFRESH, "1").strip().lower()
+    auto = auto_raw not in {"0", "false", "no", "off"}
+    return RefreshConfig(
+        max_routes=_parse_int(
+            source, ENV_MAX_ROUTES, MAINTENANCE_MAX_ROUTES, hard_max=MAINTENANCE_MAX_ROUTES
+        ),
+        max_requests=_parse_int(
+            source, ENV_MAX_REQUESTS, MAINTENANCE_MAX_REQUESTS, hard_max=MAINTENANCE_MAX_REQUESTS
+        ),
+        wall_seconds=_parse_float(
+            source,
+            ENV_WALL_SECONDS,
+            MAINTENANCE_WALL_SECONDS,
+            hard_max=HARD_MAX_WALL_SECONDS_MAINTENANCE,
+        ),
+        concurrency=_parse_int(
+            source, ENV_CONCURRENCY, MAINTENANCE_CONCURRENCY, hard_max=HARD_MAX_CONCURRENCY
+        ),
+        auto_refresh=auto,
+        debounce_seconds=MAINTENANCE_DEBOUNCE_SECONDS,
+        output_tokens=_parse_int(
+            source, ENV_OUTPUT_TOKENS, MAINTENANCE_OUTPUT_TOKENS, hard_max=MAINTENANCE_OUTPUT_TOKENS
+        ),
+        request_timeout_seconds=_parse_float(
+            source,
+            ENV_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
+        ),
+        max_per_provider=_parse_per_provider(
+            source, MAINTENANCE_MAX_PER_PROVIDER, hard_max=MAINTENANCE_MAX_PER_PROVIDER
+        ),
+        cooldown_seconds=_parse_float(
+            source,
+            ENV_COOLDOWN_SECONDS,
+            DEFAULT_COOLDOWN_SECONDS,
+            hard_max=HARD_MAX_COOLDOWN_SECONDS,
+        ),
+        maintenance=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Snapshot + outcome types
 # ---------------------------------------------------------------------------
@@ -364,6 +430,8 @@ TRIGGER_EXPLICIT = "explicit"  # picker / selection supplied exact ids
 CONSUMER_VERIFIED_VIEW = "verified_view"
 CONSUMER_PICKER = "picker"
 CONSUMER_SELECTION = "selection"
+CONSUMER_CENSUS = "census"
+CONSUMER_PROVE_AT_REST = "prove_at_rest"
 
 # Outcome kinds.
 OUTCOME_REUSED_FRESH = "reused_fresh"  # needed entries already fresh: zero calls, no wait
@@ -387,6 +455,7 @@ REASON_JOINED_NOT_COVERED = "joined_job_not_covered"
 REASON_PROVIDER_STOP = "provider_scope_stopped"
 REASON_NOT_TESTED = "not_tested"
 REASON_CANCELLED = "cancelled"
+REASON_AUTH_OUTAGE = "auth_outage"  # confirmed gateway-key outage (BOD-338 breaker)
 
 
 @dataclass(frozen=True)
@@ -402,6 +471,10 @@ class RouteOutcome:
     refresh_reason: str | None = None
     requests_made: int = 0
     alive: bool = False  # chat-only success, never coding-worker verification
+    # Sanitized provider message (e.g. a guard_transport fake-200 marker), so a
+    # consumer-side state machine can tell a fake-billing 402 apart from a
+    # genuine payment-required rejection without re-deriving it.
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -735,6 +808,37 @@ class RefreshCoordinator:
     (and its directory), a timeout-respecting ``transport``, a ``clock`` and
     ``monotonic`` source, and the lock/marker paths (defaulting beside the
     cache). ``refresh_for_consumer`` is the single public entry point.
+
+    ``auth_gate`` (BOD-338 breaker, optional) is called with ``(route_id,
+    http_status, remaining_requests)`` ONLY for a 401/403 outcome, BEFORE
+    any write. ``remaining_requests`` is THIS job's own
+    ``config.max_requests - requests_made`` (after the triggering probe's
+    own spend), so the gate checks the coordinator's real budget directly
+    instead of a separate counter that can drift from it (review finding
+    19, 2026-10-19: the gate tested ``Prober.stats.requests``, which stays
+    0 for the whole job until ``_run_chat_phase`` adds the coordinator's
+    ``requests_made`` back AFTER the job returns -- so the gate always saw
+    budget as free and spent a live check the coordinator's own cap had
+    already used up).
+
+    Returns ``(result, requests_spent)``: ``requests_spent`` is how many
+    real HTTP calls the gate itself made confirming this outcome (0 when it
+    reused a memoized result or never called out), so the coordinator can
+    fold the gate's own spend into this job's ``requests_made`` (review
+    finding 18b, 2026-10-19). ``result`` is one of three values:
+
+    - ``True``: a CONFIRMED gateway-key outage. The route's auth failure is
+      NOT written (``REASON_AUTH_OUTAGE``, no poison) and the job stops with
+      ``stats.auth_outage`` True, matching ``prove_at_rest.Prober``'s
+      existing buffer-then-confirm behaviour.
+    - ``False`` (including the default ``None`` hook, which always returns
+      False): a genuine per-route/provider auth failure, written as today.
+    - ``None``: the gate could not run its confirmation at all
+      (``remaining_requests < 1``, or its own wall budget is exhausted,
+      review finding 18a). The route's auth failure is still NOT written --
+      an unconfirmed 401/403 must never poison the cache -- but the job
+      stops for the REAL reason (``REASON_REQUEST_CAP``/``REASON_WALL_CAP``),
+      not a reported outage nobody actually checked.
     """
 
     cache: HealthCache
@@ -744,6 +848,7 @@ class RefreshCoordinator:
     sleep: Callable[[float], None] = field(default=time.sleep)
     lock_path: Path | None = None
     marker_path: Path | None = None
+    auth_gate: Callable[[str, int | None, int], tuple[bool | None, int]] | None = None
     _seq: int = field(default=0, init=False, repr=False)
 
     def _paths(self) -> tuple[Path, Path]:
@@ -995,6 +1100,47 @@ class RefreshCoordinator:
                         monotonic=self.monotonic,
                         sleep=self.sleep,
                     )
+                # BOD-338 breaker: confirm a 401/403 failure is a real
+                # per-route/provider rejection, not a broken gateway key,
+                # BEFORE any write (matches Prober._buffer_auth_failure's own
+                # (401, 403) check, not just CATEGORY_AUTH -- a 403 classifies
+                # as CATEGORY_PERMISSION, not CATEGORY_AUTH). True stops the
+                # job as a CONFIRMED outage; None means the gate itself could
+                # not run its own confirmation within budget -- the failure
+                # is still never written, but the job must report the REAL
+                # cap that stopped it (request/wall), never an outage nobody
+                # actually checked. False means a genuine per-route failure:
+                # written as today.
+                gate_result: bool | None = False
+                if (
+                    not outcome.no_write
+                    and outcome.http_status in (401, 403)
+                    and self.auth_gate is not None
+                ):
+                    remaining_requests = config.max_requests - requests_made
+                    gate_result, gate_requests = self.auth_gate(
+                        row.route_id, outcome.http_status, remaining_requests
+                    )
+                    requests_made += gate_requests
+                if gate_result is not False:
+                    outcomes[row.route_id] = RouteOutcome(
+                        row.route_id,
+                        row.provider,
+                        False,
+                        False,
+                        category=outcome.category,
+                        http_status=outcome.http_status,
+                        refresh_reason=(REASON_AUTH_OUTAGE if gate_result else REASON_NOT_TESTED),
+                        requests_made=outcome.requests_made,
+                    )
+                    cap_reason = (
+                        REASON_AUTH_OUTAGE
+                        if gate_result
+                        else (
+                            REASON_WALL_CAP if self.monotonic() >= deadline else REASON_REQUEST_CAP
+                        )
+                    )
+                    break
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
             except HealthCacheLockTimeoutError:
                 cap_reason = (
@@ -1075,9 +1221,12 @@ class RefreshCoordinator:
         elif route_capped:
             result_kind = OUTCOME_CAPPED
             cap_reason = REASON_ROUTE_CAP
-        elif any(
-            o.refresh_reason in {REASON_BUCKET, REASON_PROVIDER_STOP} for o in outcomes.values()
-        ):
+        elif any(o.refresh_reason == REASON_BUCKET for o in outcomes.values()):
+            # A real bucket denial (no token to spend) caps the job. A
+            # provider/route stop (REASON_PROVIDER_STOP) is a per-route
+            # outcome only -- every candidate was still probed or correctly
+            # skipped because a sibling already stopped that scope, so it
+            # never demotes an otherwise-complete job to "capped".
             result_kind = OUTCOME_CAPPED
             cap_reason = cap_reason or REASON_BUCKET
         else:
@@ -1260,6 +1409,7 @@ class RefreshCoordinator:
             http_status=outcome.http_status,
             refresh_reason=None,
             requests_made=outcome.requests_made,
+            detail=outcome.detail,
         )
 
     # -- join path ---------------------------------------------------------
@@ -1768,7 +1918,9 @@ __all__ = [
     "CAPACITY_ORDER",
     "CAPACITY_SUBSCRIPTION",
     "CAPACITY_UNKNOWN",
+    "CONSUMER_CENSUS",
     "CONSUMER_PICKER",
+    "CONSUMER_PROVE_AT_REST",
     "CONSUMER_SELECTION",
     "CONSUMER_VERIFIED_VIEW",
     "DEBOUNCE_SECONDS",
@@ -1817,6 +1969,7 @@ __all__ = [
     "VerifiedRow",
     "capacity_group",
     "config_from_env",
+    "maintenance_from_env",
     "refresh_for_consumer",
     "select_candidates",
 ]
