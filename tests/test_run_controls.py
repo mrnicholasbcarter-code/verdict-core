@@ -618,6 +618,23 @@ async def test_cancel_node_running_state(repo: Path, tmp_path: Path) -> None:
     assert len(cancel_events) >= 0  # Non-crash guarantee
 
 
+def _describe_leaked_pid(pid: int) -> str:
+    """One leaked pid's cmdline and start time, so the cause is visible on failure."""
+    try:
+        cmdline = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\x00")
+        cmdline_str = " ".join(p.decode("utf-8", "replace") for p in cmdline if p)
+    except OSError:
+        cmdline_str = "<cmdline unavailable>"
+    try:
+        stat_fields = (Path("/proc") / str(pid) / "stat").read_text().split(") ")[-1].split()
+        ppid = stat_fields[1]
+        starttime_ticks = stat_fields[19]
+    except (OSError, ValueError, IndexError):
+        ppid = "?"
+        starttime_ticks = "?"
+    return f"pid={pid} ppid={ppid} starttime_ticks={starttime_ticks} cmdline={cmdline_str!r}"
+
+
 @pytest.mark.asyncio
 async def test_prime_headless_executor_kills_subprocess_on_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -653,14 +670,17 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
     async def _launch() -> None:
         await exe.run(prompt="", route_id="kr/test-model", cwd=tmp_path, timeout_seconds=60.0)
 
-    task = asyncio.create_task(_launch())
-    # Wait until the sleep child exists. A fixed sleep races the spawn:
-    # cancelling before create_subprocess_exec returns looks like a leak
-    # because the child is reparented and the test never sees it die.
     my_pid = os.getpid()
 
-    def _children() -> list[int]:
-        found: list[int] = []
+    def _cmdline(pid: int) -> str:
+        try:
+            raw = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\x00")
+            return " ".join(p.decode("utf-8", "replace") for p in raw if p)
+        except OSError:
+            return ""
+
+    def _children() -> set[int]:
+        found: set[int] = set()
         for entry in Path("/proc").iterdir():
             if not entry.name.isdigit():
                 continue
@@ -670,13 +690,23 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
             except (OSError, ValueError, IndexError):
                 continue
             if ppid == my_pid:
-                found.append(int(entry.name))
+                found.add(int(entry.name))
         return found
 
+    # Other tests in this xdist worker can leave long-lived children behind
+    # (e.g. multiprocessing resource_tracker/forkserver helpers) that are not
+    # owned by this executor. Snapshot them before launching so only a NEW
+    # child running the scripted `sleep 60` is treated as the executor's own.
+    pre_existing = _children()
+
+    task = asyncio.create_task(_launch())
+    # Wait until the sleep child exists. A fixed sleep races the spawn:
+    # cancelling before create_subprocess_exec returns looks like a leak
+    # because the child is reparented and the test never sees it die.
     deadline = asyncio.get_event_loop().time() + 5.0
     child_pids: list[int] = []
     while asyncio.get_event_loop().time() < deadline:
-        child_pids = _children()
+        child_pids = [pid for pid in _children() - pre_existing if "sleep 60" in _cmdline(pid)]
         if child_pids:
             break
         await asyncio.sleep(0.05)
@@ -696,10 +726,12 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
                 pass
         return alive
 
-    # SIGTERM is ignored by sleep; the executor escalates after its 5s grace.
-    deadline = asyncio.get_event_loop().time() + 8.0
+    # SIGTERM is ignored by sleep; the executor escalates after its real
+    # grace constant. Derive the deadline from that constant plus margin
+    # instead of hard-coding a number disconnected from production.
+    grace_deadline = asyncio.get_event_loop().time() + (2 * ex_mod._TERM_GRACE_SECONDS) + 3.0
     alive: list[int] = list(child_pids)
-    while asyncio.get_event_loop().time() < deadline:
+    while asyncio.get_event_loop().time() < grace_deadline:
         alive = await _still_alive()
         if not alive:
             break
@@ -709,4 +741,5 @@ async def test_prime_headless_executor_kills_subprocess_on_cancel(
         for pid in alive:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, _signal.SIGKILL)
-    assert alive == [], f"cancelled executor leaked subprocess(es): {alive}"
+        details = ", ".join(_describe_leaked_pid(pid) for pid in alive)
+        pytest.fail(f"cancelled executor leaked subprocess(es): {details}")
