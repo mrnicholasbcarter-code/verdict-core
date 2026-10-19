@@ -11,8 +11,11 @@ timed-out and fail-closed nodes produce **negative** records (outcome !=
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -251,6 +254,20 @@ ATTEMPT_FAILURE_CLASSES: tuple[str, ...] = (
     "other",
 )
 
+#: BOD-437: ``terminal`` is one execution attempt; ``checker_result`` is a later,
+#: append-only independent check of that same attempt key. Legacy rows carry
+#: neither and stay unscored.
+ATTEMPT_RECORD_KINDS: tuple[str, ...] = ("terminal", "checker_result")
+
+#: Failure classes an independent checker can assign. Every other class is
+#: operational (quota, auth, transport, infrastructure, cancel, incomplete)
+#: and never carries task-quality credit.
+CHECKED_QUALITY_CLASSES: frozenset[str] = frozenset(
+    {"success", "test_failed", "review_rejected", "spec_violation", "false_report"}
+)
+
+_CREDIT_OUTCOME: Mapping[float, str] = {1.0: "accepted", 0.5: "partial", 0.0: "failed"}
+
 
 @dataclass(frozen=True)
 class AttemptRecord:
@@ -269,9 +286,31 @@ class AttemptRecord:
     tokens_out: int | None = None
     cost_usd: float | None = None
     story_id: str | None = None
+    request_id: str | None = None
+    decision_id: str | None = None
+    run_id: str | None = None
+    node_id: str | None = None
+    attempt_id: str | None = None
+    task_family: str | None = None
+    profile_digest: str | None = None
+    record_kind: str | None = None  # one of ATTEMPT_RECORD_KINDS, None for legacy rows
+    checker_digest: str | None = None
+    quality_credit: float | None = None  # 0/.5/1 only on a checker_result with evidence
+    effective_parameters: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def key(self) -> tuple[str | None, ...]:
+        """The append-only identity: one terminal and one checker row per digest."""
+        return (
+            self.run_id,
+            self.node_id,
+            self.attempt_id,
+            self.request_id,
+            self.record_kind,
+            self.checker_digest,
+        )
 
 
 def _require_text(value: str, field_name: str) -> str:
@@ -279,6 +318,35 @@ def _require_text(value: str, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} must not be blank")
     return text
+
+
+def _optional_text(value: str | None) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _validate_quality(
+    *,
+    record_kind: str | None,
+    checker_digest: str | None,
+    quality_credit: float | None,
+    outcome: str,
+    failure_class: str,
+) -> None:
+    """Quality credit exists only on an independent checker result with evidence."""
+    if record_kind is not None and record_kind not in ATTEMPT_RECORD_KINDS:
+        raise ValueError(f"record_kind must be one of {ATTEMPT_RECORD_KINDS}, got {record_kind!r}")
+    if record_kind == "checker_result" and checker_digest is None:
+        raise ValueError("checker_result requires checker_digest evidence")
+    if quality_credit is None:
+        return
+    if record_kind != "checker_result":
+        raise ValueError("quality_credit is only valid on a checker_result record")
+    if isinstance(quality_credit, bool) or quality_credit not in _CREDIT_OUTCOME:
+        raise ValueError(f"quality_credit must be 0, 0.5 or 1, got {quality_credit!r}")
+    if failure_class not in CHECKED_QUALITY_CLASSES:
+        raise ValueError(f"operational failure_class {failure_class!r} cannot carry quality_credit")
+    if outcome != _CREDIT_OUTCOME[quality_credit]:
+        raise ValueError(f"quality_credit {quality_credit} contradicts outcome {outcome!r}")
 
 
 def attempt_records_path(store_dir: Path | str) -> Path:
@@ -301,6 +369,17 @@ def build_attempt_record(
     cost_usd: float | None = None,
     story_id: str | None = None,
     ts: str | None = None,
+    request_id: str | None = None,
+    decision_id: str | None = None,
+    run_id: str | None = None,
+    node_id: str | None = None,
+    attempt_id: str | None = None,
+    task_family: str | None = None,
+    profile_digest: str | None = None,
+    record_kind: str | None = None,
+    checker_digest: str | None = None,
+    quality_credit: float | None = None,
+    effective_parameters: Mapping[str, Any] | None = None,
 ) -> AttemptRecord:
     """Validate and canonicalize one attempt into an :class:`AttemptRecord`.
 
@@ -309,6 +388,10 @@ def build_attempt_record(
     the same model id. ``outcome`` and ``failure_class`` must be members of the
     fixed BOD-353 taxonomy; any other value is a programmer error, not data to
     silently coerce.
+
+    BOD-437 lineage fields are optional; missing usage or settings stay
+    ``None``. ``quality_credit`` is accepted only on a ``checker_result`` that
+    names its ``checker_digest`` evidence and a checker-assignable class.
     """
     from verdict.admission import canonical_route_id
 
@@ -327,8 +410,17 @@ def build_attempt_record(
             f"failure_class must be one of {ATTEMPT_FAILURE_CLASSES}, got {failure_class!r}"
         )
 
-    story_id = story_id.strip() if isinstance(story_id, str) and story_id.strip() else None
-    effort = effort.strip() if isinstance(effort, str) and effort.strip() else None
+    story_id = _optional_text(story_id)
+    effort = _optional_text(effort)
+    record_kind = _optional_text(record_kind)
+    checker_digest = _optional_text(checker_digest)
+    _validate_quality(
+        record_kind=record_kind,
+        checker_digest=checker_digest,
+        quality_credit=quality_credit,
+        outcome=outcome,
+        failure_class=failure_class,
+    )
 
     return AttemptRecord(
         ts=ts or datetime.now(timezone.utc).isoformat(),
@@ -344,16 +436,80 @@ def build_attempt_record(
         tokens_out=tokens_out,
         cost_usd=cost_usd,
         story_id=story_id,
+        request_id=_optional_text(request_id),
+        decision_id=_optional_text(decision_id),
+        run_id=_optional_text(run_id),
+        node_id=_optional_text(node_id),
+        attempt_id=_optional_text(attempt_id),
+        task_family=_optional_text(task_family),
+        profile_digest=_optional_text(profile_digest),
+        record_kind=record_kind,
+        checker_digest=checker_digest,
+        quality_credit=None if quality_credit is None else float(quality_credit),
+        effective_parameters=dict(effective_parameters) if effective_parameters else None,
     )
+
+
+def _append_lines(target: Path, records: list[AttemptRecord], *, skip_existing: bool) -> int:
+    """Append complete JSONL rows under an exclusive file lock, then fsync.
+
+    One ``write`` of whole lines while holding ``flock`` keeps concurrent
+    writers from interleaving rows; it does not make a crash mid-write atomic.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if skip_existing:
+            with open(fd, encoding="utf-8", closefd=False) as existing:
+                seen = {key for key in _row_keys(existing)}
+            records = [r for r in records if r.key() not in seen]
+        if not records:
+            return 0
+        payload = "".join(
+            json.dumps(r.to_dict(), sort_keys=True, ensure_ascii=False) + "\n" for r in records
+        ).encode("utf-8")
+        os.write(fd, payload)
+        os.fsync(fd)
+        return len(records)
+    finally:
+        os.close(fd)
+
+
+def _row_keys(lines: Iterable[str]) -> Iterable[tuple[Any, ...]]:
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("record_kind"):
+            yield tuple(
+                row.get(k)
+                for k in (
+                    "run_id",
+                    "node_id",
+                    "attempt_id",
+                    "request_id",
+                    "record_kind",
+                    "checker_digest",
+                )
+            )
 
 
 def write_attempt_record(record: AttemptRecord, *, store_dir: Path | str) -> Path:
     """Append one attempt record as a JSONL line under ``store_dir``."""
     target = attempt_records_path(store_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record.to_dict(), sort_keys=True, ensure_ascii=False) + "\n")
+    _append_lines(target, [record], skip_existing=False)
     return target
+
+
+def append_new_attempt_records(records: Iterable[AttemptRecord], *, store_dir: Path | str) -> int:
+    """Append only records whose :meth:`AttemptRecord.key` is not yet stored.
+
+    Re-recording the same run is therefore idempotent and never rewrites an
+    earlier row. Returns the number of rows appended.
+    """
+    return _append_lines(attempt_records_path(store_dir), list(records), skip_existing=True)
 
 
 _STORY_ID_RE = re.compile(r"\b([A-Z]{2,}-\d+)\b")

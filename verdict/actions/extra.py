@@ -333,6 +333,21 @@ def _action_simulate(**kwargs: Any) -> ActionResult:
     return ActionResult(data=forecast.to_dict())
 
 
+_ATTEMPT_LINEAGE_FIELDS = (
+    "request_id",
+    "decision_id",
+    "run_id",
+    "node_id",
+    "attempt_id",
+    "task_family",
+    "profile_digest",
+    "record_kind",
+    "checker_digest",
+    "quality_credit",
+    "effective_parameters",
+)
+
+
 def _action_outcome_record(**kwargs: Any) -> ActionResult:
     """Record one classified model attempt (BOD-353 outcome writer)."""
     from verdict.outcome_records import build_attempt_record, write_attempt_record
@@ -354,6 +369,7 @@ def _action_outcome_record(**kwargs: Any) -> ActionResult:
             tokens_out=kwargs.get("tokens_out"),
             cost_usd=kwargs.get("cost_usd"),
             story_id=kwargs.get("story_id"),
+            **{field: kwargs.get(field) for field in _ATTEMPT_LINEAGE_FIELDS},
         )
     except ValueError as exc:
         return ActionResult(data={"error": str(exc)}, ok=False, exit_code=2)
