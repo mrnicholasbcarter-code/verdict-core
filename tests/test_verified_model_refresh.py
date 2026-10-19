@@ -6,6 +6,7 @@ marker paths. No real gateway or model is ever contacted.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
@@ -1588,13 +1589,20 @@ class InFlightTransport:
                 self.in_flight[pool] -= 1
 
 
-class _BarrierOnceTransport:
-    """Forces exactly ``parties`` probes to be in flight together, then lets
-    them (and any later probe) proceed. Unlike a sleep-based hold, this makes
-    "3 probes overlap" a deterministic event instead of a timing race: the
-    first ``parties`` chat calls each block on a shared ``threading.Barrier``
-    until all ``parties`` have arrived, so admission of a 4th probe next to 3
-    in flight can be tested without depending on how fast a slow runner is.
+class _BarrierChatTransport:
+    """Every chat call waits on a shared ``threading.Barrier(parties=4,
+    timeout=0.5)`` before returning, so the test can tell, deterministically,
+    how many probes the coordinator actually let run together.
+
+    If 4 chat calls truly arrive together, the barrier releases them all at
+    once and every one of them observes the full set in flight: the shared
+    counters below (max_total) become exact, not a timing race. If only 3
+    (or fewer) chat calls ever arrive, the barrier times out after 0.5 s and
+    those callers proceed via ``BrokenBarrierError``, having correctly never
+    seen a 4th caller join. Either way max_total reports the true number of
+    chat calls that overlapped, so the test can assert "no 4th probe admits
+    next to 3 in flight" and also prove (by raising the cap so a 4th really
+    is allowed) that this transport would have caught it if it happened.
 
     The barrier sits on the chat phase only: each full probe makes a chat
     call and then a tool call (REQUESTS_PER_FULL_PROBE == 2), and blocking
@@ -1602,7 +1610,7 @@ class _BarrierOnceTransport:
     the barrier arithmetic (which phase, which call) harder to reason about.
     """
 
-    def __init__(self, parties: int = 3, timeout: float = 5.0):
+    def __init__(self, parties: int = 4, timeout: float = 0.5):
         self.lock = threading.Lock()
         self.calls: list[tuple[str, str]] = []
         self.in_flight: dict[str, int] = {}
@@ -1610,8 +1618,6 @@ class _BarrierOnceTransport:
         self.max_per_pool: dict[str, int] = {}
         self.total_at_call: dict[str, int] = {}
         self._barrier = threading.Barrier(parties, timeout=timeout)
-        self._barrier_slots_left = parties
-        self._barrier_lock = threading.Lock()
 
     def __call__(self, route_id: str, phase: str, timeout: float) -> ProbeExchange:
         from verdict.orchestration.credential_pools import pool_of
@@ -1626,11 +1632,7 @@ class _BarrierOnceTransport:
             self.max_per_pool[pool] = max(self.max_per_pool.get(pool, 0), self.in_flight[pool])
         try:
             if phase == "chat":
-                with self._barrier_lock:
-                    take_slot = self._barrier_slots_left > 0
-                    if take_slot:
-                        self._barrier_slots_left -= 1
-                if take_slot:
+                with contextlib.suppress(threading.BrokenBarrierError):
                     self._barrier.wait()
             return _ok(route_id, phase)
         finally:
@@ -1696,11 +1698,13 @@ def test_unknown_pool_probe_runs_alone(tmp_path: Path) -> None:
 
 
 def test_concurrent_requests_never_exceed_the_cap(tmp_path: Path) -> None:
-    # Barrier-forced overlap (see _BarrierOnceTransport): exactly 3 probes
-    # MUST be in flight together before any of them returns, so a 4th probe
-    # is never admitted next to 3 in flight is a deterministic assertion,
-    # not a timing race against a slow runner.
-    transport = _BarrierOnceTransport(parties=3)
+    # Every chat call waits on a shared Barrier(parties=4, timeout=0.5) (see
+    # _BarrierChatTransport): if the coordinator ever let a 4th probe start
+    # its chat call next to 3 already in flight, all 4 would release the
+    # barrier together and max_total would report 4. With cap 6 (3 probes
+    # fit: 3 x 2 requests = 6), only 3 chat calls ever arrive, the barrier
+    # times out at 0.5 s, and max_total deterministically reports 3.
+    transport = _BarrierChatTransport(parties=4, timeout=0.5)
     rows = [_row(f"p{i}/m") for i in range(8)]
     events: list[Any] = []
     coord = _coordinator(tmp_path, transport)
@@ -1717,6 +1721,24 @@ def test_concurrent_requests_never_exceed_the_cap(tmp_path: Path) -> None:
     # is never admitted next to 3 in flight.
     assert transport.max_total == 3
     assert all(e.requests_reserved <= 6 for e in events)
+
+
+def test_the_barrier_transport_would_catch_a_4th_probe_admitted(tmp_path: Path) -> None:
+    # Mutation check: raising the cap to 8 lets a 4th probe start next to the
+    # first 3 in flight. This proves _BarrierChatTransport actually detects
+    # that case (max_total == 4), so its "3" result above is not a transport
+    # that always reports 3 regardless of what the coordinator does.
+    transport = _BarrierChatTransport(parties=4, timeout=0.5)
+    rows = [_row(f"p{i}/m") for i in range(8)]
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4, max_requests=8),
+    )
+    assert transport.max_total == 4
+    assert out.requests_made == len(transport.calls) == 8
 
 
 def test_confirmed_outage_drops_every_in_flight_probe(tmp_path: Path) -> None:
