@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,26 @@ def test_measure_counts_unserved_listed_routes_against_precision() -> None:
     assert quality["recall_estimate"] == pytest.approx(0.5)
 
 
+def test_measure_treats_v1_models_routes_as_served_even_when_synced_omits_the_provider() -> None:
+    # ollama-cloud is entirely absent from the synced payload (A39/BOD-439): the
+    # gateway's /v1/models catalog is the second evidence source that must be
+    # unioned in before a listed route is called "unserved".
+    listed = [_verdict("p/a", eligible=True), _verdict("ollama-cloud/gemma4:31b", eligible=True)]
+    synced = {"p": [{"id": "a"}]}
+    catalog = {"data": [{"id": "ollama-cloud/gemma4:31b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        listed,
+        synced=synced,
+        catalog=catalog,
+        cooling=set(),
+        post=_good_tool_gateway(),
+        seed="s",
+    )
+    assert quality["listed_unserved"] == []
+    assert {c["route"] for c in quality["checks"]} == {"p/a", "ollama-cloud/gemma4:31b"}
+
+
 def test_cooling_providers_need_every_connection_cooling() -> None:
     later = (NOW + timedelta(hours=1)).isoformat()
     rows = [
@@ -127,6 +148,29 @@ def live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     )
     monkeypatch.setattr(acceptance_toolcheck, "gateway_post", lambda *a, **k: _good_tool_gateway())
     return tmp_path
+
+
+def test_v1_models_failure_falls_back_to_synced_only_served_set(
+    live: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # synced and providers succeed; /v1/models raises -> measure() still runs
+    # on the synced-only served set (the old behaviour), not skipped entirely.
+    def gateway_get(base: str, key: str | None, path: str, timeout: float = 60) -> Any:
+        if "synced" in path:
+            return {"p": [{"id": "a"}]}
+        if path == "/v1/models":
+            raise urllib.error.URLError("boom")
+        return {"connections": []}
+
+    monkeypatch.setattr(acceptance, "gateway_get", gateway_get)
+    payload = {"verdicts": [_verdict("p/a", eligible=True)]}
+    monkeypatch.setattr(acceptance, "run_cli", _fake_cli(payload))
+    result = acceptance.run_acceptance(gateway="http://gw")
+    eligibility = next(c for c in result["checks"] if c["name"] == "eligibility")
+    quality = eligibility["detail"]["independent_check"]
+    assert quality["served_set_source"] == "synced_only"
+    assert eligibility["detail"]["v1_models_error"] == "URLError"
+    assert quality["listed_unserved"] == []
 
 
 def test_run_is_never_green_while_no_free_route_is_eligible(

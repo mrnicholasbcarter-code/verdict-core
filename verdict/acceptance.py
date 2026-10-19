@@ -368,6 +368,19 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
         except (OSError, ValueError, urllib.error.URLError) as exc:
             check.reason = f"gateway evidence unavailable: {type(exc).__name__}"
         else:
+            # /v1/models is a second served-set source, fetched separately: the
+            # synced endpoint can omit an active provider (observed: ollama-cloud)
+            # that /v1/models still lists as live, and each source also carries
+            # ids the other lacks. A failure here must not skip the whole check
+            # (A3 still runs the independent probe) -- it only drops back to the
+            # synced-only served set the check used before.
+            served_set_source = "synced+v1_models"
+            try:
+                catalog: Mapping[str, Any] | None = gateway_get(gateway, api_key, "/v1/models")
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                catalog = None
+                served_set_source = "synced_only"
+                check.detail["v1_models_error"] = type(exc).__name__
             connections = providers.get("connections") if isinstance(providers, dict) else []
             cooling = cooling_providers(connections or [], datetime.now(timezone.utc))
             # Runs even with nothing listed: the sample shows what Verdict misses.
@@ -375,10 +388,12 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 listed,
                 verdicts,
                 synced=synced if isinstance(synced, dict) else {},
+                catalog=catalog if isinstance(catalog, dict) else None,
                 cooling=cooling,
                 post=gateway_post(gateway, api_key, timeout=60),
                 seed=seed,
             )
+            quality["served_set_source"] = served_set_source
             check.detail["independent_check"] = quality
             precision, recall = quality["precision"], quality["recall_estimate"]
             failures = []
