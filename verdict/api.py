@@ -1584,6 +1584,108 @@ def _record_execution_outcome(
     )
 
 
+# BOD-437: relay failure classes mapped onto the fixed BOD-353 attempt taxonomy.
+_RELAY_LEDGER_CLASS: dict[str, str] = {
+    "transport_timeout": "timeout",
+    "transport_connection": "stream_drop",
+    "auth_failure": "auth_error",
+    "transport_upstream": "provider_5xx",
+}
+_STREAM_LEDGER: dict[StreamState, tuple[str, str]] = {
+    StreamState.SUCCESS: ("accepted", "success"),
+    StreamState.FAILED: ("failed", "other"),
+    StreamState.INCOMPLETE: ("partial", "stream_drop"),
+    StreamState.ABORTED: ("abandoned", "other"),
+    StreamState.PROTOCOL_ERROR: ("failed", "stream_drop"),
+    StreamState.ABRUPT_EOF: ("failed", "stream_drop"),
+    StreamState.TRANSPORT_ERROR: ("failed", "stream_drop"),
+}
+_EFFECTIVE_PARAMETER_KEYS = (
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "reasoning_effort",
+    "reasoning",
+)
+
+
+def _ledger_failure_class(
+    status_code: int | None = None, error: BaseException | None = None
+) -> str:
+    if isinstance(error, StreamProtocolError):
+        return "stream_drop"
+    if status_code == 429:
+        return "quota_429"
+    if status_code == 408:
+        return "timeout"
+    return _RELAY_LEDGER_CLASS.get(failure_class(status_code, error), "other")
+
+
+def _stream_ledger_outcome(outcome: StreamOutcome | None) -> tuple[str, str]:
+    """Map the stream's one terminal state; only a semantic success is accepted.
+
+    A success here is transport and protocol completion, not checked quality:
+    the row is a ``terminal`` record and never carries quality credit.
+    """
+    if outcome is None:
+        return "failed", "stream_drop"
+    if outcome.state is StreamState.TRANSPORT_ERROR and "Timeout" in (outcome.detail or ""):
+        return "failed", "timeout"
+    return _STREAM_LEDGER[outcome.state]
+
+
+def _record_attempt_ledger(
+    *,
+    request_id: str,
+    decision_id: str | None,
+    attempt_id: str,
+    model: str,
+    surface: str,
+    profile_digest: str | None,
+    task_family: str | None,
+    outcome: str,
+    failure_class: str,
+    forwarded: Mapping[str, Any],
+    headers: Any = (),
+    body: bytes | None = None,
+) -> None:
+    """Append one relay attempt's terminal row to the shared attempt ledger.
+
+    Usage and cost come only from observed headers or body; missing values stay
+    ``None``. A ledger failure is logged and never disturbs serving.
+    """
+    from verdict.outcome_log import observe_execution
+    from verdict.outcome_records import build_attempt_record, write_attempt_record
+    from verdict.paths import verdict_home
+
+    try:
+        observed = observe_execution(headers=headers, body=body)
+        parameters = {k: forwarded[k] for k in _EFFECTIVE_PARAMETER_KEYS if k in forwarded}
+        record = build_attempt_record(
+            task_kind=surface,
+            harness="verdict-relay",
+            model=model,
+            outcome=outcome,
+            failure_class=failure_class,
+            source="verdict.api",
+            tokens_in=observed["observed_tokens_in"],
+            tokens_out=observed["observed_tokens_out"],
+            cost_usd=observed["observed_cost_usd"],
+            request_id=request_id,
+            decision_id=decision_id,
+            attempt_id=attempt_id,
+            task_family=task_family,
+            profile_digest=profile_digest,
+            record_kind="terminal",
+            effective_parameters=parameters or None,
+        )
+        write_attempt_record(record, store_dir=verdict_home())
+    except Exception:
+        logger.warning("attempt ledger write failed for request %s", request_id, exc_info=True)
+
+
 def _relay_response_headers(
     result: BufferedUpstreamResponse | StreamedUpstreamResponse,
 ) -> dict[str, str]:
@@ -1999,12 +2101,30 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     # Proofs are bound to the task profile of the request actually being sent,
     # recomputed with the same helper preparation used to mint them.
     relay_profile_digest: str | None
+    relay_task_family: str | None = None
     try:
-        relay_profile_digest = prepared_task_profile(
+        relay_profile = prepared_task_profile(
             task, authority_context, planner=getattr(intelligence_instance, "planner", None)
-        )[1].digest
+        )[1]
+        relay_profile_digest = relay_profile.digest
+        relay_task_family = relay_profile.task_family
     except TaskProfileError:
         relay_profile_digest = None
+    stream_ledger: dict[str, Any] = {}
+
+    def ledger(attempt_id: str, model: str, sent: Mapping[str, Any], **row: Any) -> None:
+        _record_attempt_ledger(
+            request_id=decision.request_id,
+            decision_id=route_evidence.routing_decision.decision_id,
+            attempt_id=attempt_id,
+            model=model,
+            surface=surface,
+            profile_digest=relay_profile_digest,
+            task_family=relay_task_family,
+            forwarded=sent,
+            **row,
+        )
+
     selected_route_id = next(
         (
             flag.split(":", 1)[1]
@@ -2131,6 +2251,28 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 attempt.model, served_model, attested=result.actual_route is not None
             )
             if identity_status == "identity_mismatch":
+                ledger(
+                    attempt_id, attempt.model, forwarded, outcome="failed", failure_class="other"
+                )
+            elif isinstance(result, BufferedUpstreamResponse):
+                ok = result.status_code < 400
+                ledger(
+                    attempt_id,
+                    attempt.model,
+                    forwarded,
+                    outcome="accepted" if ok else "failed",
+                    failure_class="success" if ok else _ledger_failure_class(result.status_code),
+                    headers=result.headers,
+                    body=result.body,
+                )
+            else:
+                stream_ledger.update(
+                    attempt_id=attempt_id,
+                    model=attempt.model,
+                    sent=forwarded,
+                    headers=result.headers,
+                )
+            if identity_status == "identity_mismatch":
                 HealthCache(default_cache_path()).record_revocation(
                     proof.scope,
                     route_id=proof.route_id,
@@ -2209,6 +2351,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 break
             last_error = None
         except asyncio.CancelledError:
+            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
             outcome = build_outcome_event(
                 route_evidence.routing_decision,
                 event_type=f"{event_prefix}_cancelled",
@@ -2223,6 +2366,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         except Exception as exc:
             result = None
             last_error = exc
+            ledger(
+                attempt_id,
+                attempt.model,
+                forwarded,
+                outcome="failed",
+                failure_class=_ledger_failure_class(error=exc),
+            )
             attempts_used.append(
                 {
                     "model": attempt.model,
@@ -2325,6 +2475,17 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
 
         def finalize_stream(event: Any) -> None:
             _finish_evidence(route_evidence, event, evidence_key)
+            label, cls = _stream_ledger_outcome(validated_stream.outcome)
+            usage = validated_stream.outcome.usage if validated_stream.outcome else None
+            ledger(
+                stream_ledger["attempt_id"],
+                stream_ledger["model"],
+                stream_ledger["sent"],
+                outcome=label,
+                failure_class=cls,
+                headers=stream_ledger["headers"],
+                body=json.dumps({"usage": usage}).encode() if usage else None,
+            )
 
         def stream_event(
             event_type: str,

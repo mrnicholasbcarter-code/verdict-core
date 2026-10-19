@@ -471,7 +471,10 @@ def _append_lines(target: Path, records: list[AttemptRecord], *, skip_existing: 
         ).encode("utf-8")
         view = memoryview(payload)
         while view:
-            view = view[os.write(fd, view) :]
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError(f"attempt ledger write made no progress: {target}")
+            view = view[written:]
         os.fsync(fd)
         return len(records)
     finally:

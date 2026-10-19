@@ -436,3 +436,116 @@ def test_rewritten_checker_row_is_tampered_not_joined(
     )
     assert {(j.node_id, j.attempt_id) for j in joined} == {("b", "1")}
     assert all(j.checked_at == datetime(2026, 10, 19, 6, tzinfo=timezone.utc) for j in joined)
+
+
+def test_zero_byte_write_raises_instead_of_spinning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.outcome_records as outcome_records
+
+    monkeypatch.setattr(outcome_records.os, "write", lambda fd, data: 0)
+    record = build_attempt_record(
+        task_kind="implement",
+        harness="prime",
+        model="gh/gpt-5",
+        outcome="failed",
+        failure_class="timeout",
+        source="test",
+    )
+    with pytest.raises(OSError, match="no progress"):
+        write_attempt_record(record, store_dir=tmp_path)
+
+
+# --- slice 2: the HTTP relay records one terminal attempt row per sent attempt ---
+
+_RESP_DELTA = b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+
+
+def _resp_terminal(kind: str) -> bytes:
+    return b"data: " + json.dumps({"type": kind, "response": {}}).encode() + b"\n\n"
+
+
+@pytest.mark.parametrize(
+    ("surface", "chunks", "error", "outcome", "failure_class"),
+    [
+        ("chat", "standard", None, "accepted", "success"),
+        ("responses", "response.completed", None, "accepted", "success"),
+        ("responses", "response.failed", None, "failed", "other"),
+        ("responses", "response.incomplete", None, "partial", "stream_drop"),
+        ("chat", "first_only", "timeout", "failed", "timeout"),
+        ("chat", "no_terminal", None, "failed", "stream_drop"),
+    ],
+)
+def test_relay_stream_attempt_reaches_ledger_with_its_terminal_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+    chunks: str,
+    error: str | None,
+    outcome: str,
+    failure_class: str,
+) -> None:
+    import httpx
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+    from tests.test_proxy import _configure_test_app
+    from tests.test_stream_relay_wiring import CHAT_STANDARD, StreamTransport, _post
+
+    wire = {
+        "standard": CHAT_STANDARD,
+        "first_only": CHAT_STANDARD[:1],
+        "no_terminal": CHAT_STANDARD[:1],
+    }.get(chunks) or [_RESP_DELTA, _resp_terminal(chunks)]
+    transport = StreamTransport(wire, error=httpx.ReadTimeout("slow") if error else None)
+    _configure_test_app(monkeypatch, transport)
+    store = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store))
+
+    with TestClient(api.app, raise_server_exceptions=False) as client:
+        _post(client, surface, f"ledger-{surface}-{chunks}")
+
+    (row,) = _ledger_rows(store)
+    assert (row["outcome"], row["failure_class"]) == (outcome, failure_class)
+    assert row["record_kind"] == "terminal"
+    # Transport or stream success is execution evidence, never checked quality.
+    assert row["quality_credit"] is None and row["checker_digest"] is None
+    assert row["request_id"] == "request-1"
+    assert row["model"] == "selected-model"
+    assert row["task_kind"] == surface
+    assert len(str(row["attempt_id"])) == 32  # the committed dispatch permit's attempt id
+    assert str(row["profile_digest"]).startswith("sha256:")
+    # The fixture stream reports only total_tokens: in/out are unknown, not zero.
+    assert row["tokens_in"] is None and row["tokens_out"] is None
+
+
+def test_relay_buffered_attempt_records_observed_usage_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+    from tests.test_proxy import RecordingTransport, _configure_test_app
+
+    _configure_test_app(monkeypatch, RecordingTransport())
+    store = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store))
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "temperature": 0.2,
+            },
+        )
+    assert response.status_code == 200
+
+    (row,) = _ledger_rows(store)
+    assert (row["outcome"], row["failure_class"], row["record_kind"]) == (
+        "accepted",
+        "success",
+        "terminal",
+    )
+    assert row["quality_credit"] is None
+    assert row["tokens_in"] is None and row["cost_usd"] is None
+    assert row["effective_parameters"] == {"temperature": 0.2}
