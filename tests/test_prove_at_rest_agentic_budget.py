@@ -823,3 +823,29 @@ def test_daemon_cli_prints_one_stats_line_per_cycle(
         json.loads(lines[0].removeprefix("prove-at-rest cycle: "))
         == CycleStats(stopped_reason="complete").to_dict()
     )
+
+
+def test_run_forever_survives_an_on_cycle_error(tmp_path: Path) -> None:
+    """A failing on_cycle (e.g. BrokenPipeError) goes to on_cycle_error; the loop continues."""
+    cycles: list[CycleStats] = []
+    errors: list[Exception] = []
+
+    def on_cycle(stats: CycleStats) -> None:
+        cycles.append(stats)
+        if len(cycles) == 1:
+            raise BrokenPipeError("stdout closed")
+
+    prober = Prober(
+        HealthCache(tmp_path / "cache.json"),
+        lambda: [],
+        _dead_chat,
+        agentic_max_routes=0,
+        interval_seconds=0.25,
+        clock=lambda: NOW,
+        sleep=lambda _s: prober.stop() if len(cycles) >= 2 else None,
+        on_cycle=on_cycle,
+        on_cycle_error=errors.append,
+    )
+    prober.run_forever()
+    assert len(cycles) == 2
+    assert [type(e) for e in errors] == [BrokenPipeError]

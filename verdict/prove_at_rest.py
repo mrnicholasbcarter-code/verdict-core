@@ -1737,12 +1737,11 @@ class Prober:
         while not self._stop.is_set():
             try:
                 last = self.run_once()
+                if self.on_cycle is not None:
+                    self.on_cycle(last)
             except Exception as exc:
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)
-            else:
-                if self.on_cycle is not None:
-                    self.on_cycle(last)
             remaining = float(self.interval_seconds)
             while remaining > 0 and not self._stop.is_set():
                 step = min(0.25, remaining)
