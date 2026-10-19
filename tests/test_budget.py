@@ -19,8 +19,6 @@ from tests.test_cost_ledger import (  # noqa: F401
     test_subscription_pressure_distinct_from_cash,
 )
 from tests.test_expected_cost import (  # noqa: F401
-    test_cheapest_qualified_vs_expected_cost_modes,
-    test_free_first_preference_vs_expected_cost_optimality,
     test_strategy_receipt_shows_observed_estimated_unknown_assumed,
     test_subscription_and_quota_dimensions_on_strategy,
 )
