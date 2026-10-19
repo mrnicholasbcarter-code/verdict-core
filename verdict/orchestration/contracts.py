@@ -712,6 +712,19 @@ def executor_gateway_origin(
     return origin if isinstance(origin, str) and origin else None
 
 
+def release_executor_origin_pin(
+    executor: object, node_id: str, *, route_id: str, cwd: Path
+) -> None:
+    """Tell ``executor`` the checked send on ``route_id`` in ``cwd`` will not run.
+
+    Executors that pin launch state in ``gateway_origin_for`` free it in an
+    optional ``release_origin_pin(node_id, *, route_id, cwd)`` method.
+    """
+    release = getattr(executor, "release_origin_pin", None)
+    if callable(release):
+        release(node_id, route_id=route_id, cwd=cwd)
+
+
 def gateway_origin_matches(reported: str, bound: str) -> bool:
     """True only when both origins parse and are the same; an unparseable one fails closed.
 

@@ -110,7 +110,9 @@ launch re-reads the copy it is about to exec: a checked send uses only its pinne
 dir, and any other send on an executor that has reported an origin must still name
 a checked origin; otherwise it ends with `executor origin changed` and nothing is
 executed. Executors never checked (planner, no dispatch authority) keep a fresh
-dir. A missing, unparseable or non-gateway `baseUrl` reports `None`. Executors that never touch the network (fake, offline demo)
+dir. A missing, unparseable or non-gateway `baseUrl` reports `None`. A re-pin
+removes the previous dir, and a send denied after the check releases its pin
+(`release_executor_origin_pin`), so no launch dir is left behind. Executors that never touch the network (fake, offline demo)
 declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no
 executor that sends to a gateway may declare it. `ScriptedExecutor` runs arbitrary
 code, so it has no origin unless its constructor is given one. `MixedExecutor` and `FaultInjectingExecutor` resolve the

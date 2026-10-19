@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +22,10 @@ from tests.test_dagruntime_dispatch_permits import (
     _id,
     _make,
     _passport,
+    _scope,
 )
 from tests.test_orch_executors import make_fake_prime, success_payload
-from tests.test_orch_runtime import Executor
+from tests.test_orch_runtime import NOW, Executor
 from tests.test_orch_runtime import repo as repo
 from verdict.orchestration.contracts import (
     LOCAL_EXECUTOR_ORIGIN,
@@ -33,6 +35,7 @@ from verdict.orchestration.contracts import (
     executor_gateway_origin,
     gateway_origin_matches,
     normalize_gateway_origin,
+    release_executor_origin_pin,
 )
 from verdict.orchestration.executors import (
     DirectGatewayExecutor,
@@ -324,3 +327,64 @@ def test_normalize_gateway_origin() -> None:
 def test_unparseable_origin_matches_nothing(url: str) -> None:
     assert normalize_gateway_origin(url) is None
     assert not gateway_origin_matches(url, url)
+
+
+def _launch_dirs(root: Path) -> list[Path]:
+    return sorted(root.glob("verdict-prime-*"))
+
+
+@pytest.fixture
+def tmp_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Launch dirs are created here, so a test can count leftovers."""
+    root = tmp_path / "tmp-root"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(root))
+    return root
+
+
+def test_repinning_the_same_send_and_releasing_it_leave_no_launch_dirs(
+    tmp_path: Path, tmp_root: Path
+) -> None:
+    cwd = tmp_path / "run" / "worktrees" / "a-a1"
+    ex = PrimeSpy(_agent_dir(tmp_path, _models(ORIGIN + "/v1")))
+    wrapped = FaultInjectingExecutor(MixedExecutor({}, default=ex), {})
+    for _ in range(3):
+        assert executor_gateway_origin(wrapped, "a", route_id="cc/s", cwd=cwd) == ORIGIN + "/v1"
+    assert len(_launch_dirs(tmp_root)) == 1
+    release_executor_origin_pin(wrapped, "a", route_id="cc/s", cwd=cwd)
+    assert _launch_dirs(tmp_root) == []
+
+
+async def test_runtime_denials_release_the_pinned_launch_dir(repo: Path, tmp_root: Path) -> None:
+    ex = PrimeSpy(_agent_dir(repo.parent, _models("http://127.0.0.1:20128/v1")))
+    for n in range(3):
+        rt, _ = _make(
+            repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}), run_name=f"run{n}"
+        )
+        result = await rt.run()
+        assert "executor origin mismatch" in result.nodes["a"].reason
+    assert ex.sends == []
+    assert _launch_dirs(tmp_root) == []
+
+
+async def test_permit_denial_releases_the_pinned_launch_dir(repo: Path, tmp_root: Path) -> None:
+    ex = PrimeSpy(_agent_dir(repo.parent, _models(ORIGIN + "/v1")))
+    rt, ev = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    real_bind = rt._bind_proof
+
+    def bind_then_revoke(work_node: Any, route_id: str) -> Any:
+        bound = real_bind(work_node, route_id)
+        _cache().record_revocation(
+            _scope(route_id),
+            route_id=route_id,
+            event_id="denied-after-the-origin-check",
+            source_revision=None,
+            observed_at=NOW,
+        )
+        return bound
+
+    rt._bind_proof = bind_then_revoke  # type: ignore[method-assign]
+    await rt.run()
+    assert ex.sends == []
+    assert ev.of("failure", "a")[0]["category"] == "permit_denied"
+    assert _launch_dirs(tmp_root) == []

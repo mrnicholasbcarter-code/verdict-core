@@ -38,6 +38,7 @@ from verdict.orchestration.contracts import (
     executor_gateway_origin,
     gateway_origin_matches,
     normalize_gateway_origin,
+    release_executor_origin_pin,
     run_executor,
 )
 from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
@@ -290,10 +291,16 @@ class PrimeHeadlessExecutor:
         if origin is None:
             launch.cleanup()
             return None
-        # A replaced, never-launched dir is removed when it is collected.
+        self.release_origin_pin(node_id, route_id=route_id, cwd=cwd)
         self._pinned[(route_id, str(cwd))] = (launch, origin)
         self._checked_origins.add(origin)
         return origin
+
+    def release_origin_pin(self, node_id: str, *, route_id: str, cwd: Path) -> None:
+        """Remove the launch dir pinned for a send that will not run."""
+        pinned = self._pinned.pop((route_id, str(cwd)), None)
+        if pinned is not None:
+            pinned[0].cleanup()
 
     def _origin_problem(self, launch_dir: Path, expected: set[str]) -> str | None:
         """Why the launch from ``launch_dir`` must not exec, or None when it may.
@@ -738,6 +745,9 @@ class FaultInjectingExecutor:
 
     def gateway_origin_for(self, node_id: str, *, route_id: str, cwd: Path) -> str | None:
         return executor_gateway_origin(self.inner, node_id, route_id=route_id, cwd=cwd)
+
+    def release_origin_pin(self, node_id: str, *, route_id: str, cwd: Path) -> None:
+        release_executor_origin_pin(self.inner, node_id, route_id=route_id, cwd=cwd)
 
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
@@ -1775,6 +1785,11 @@ class MixedExecutor:
 
     def gateway_origin_for(self, node_id: str, *, route_id: str, cwd: Path) -> str | None:
         return executor_gateway_origin(
+            self._map.get(node_id, self._default), node_id, route_id=route_id, cwd=cwd
+        )
+
+    def release_origin_pin(self, node_id: str, *, route_id: str, cwd: Path) -> None:
+        release_executor_origin_pin(
             self._map.get(node_id, self._default), node_id, route_id=route_id, cwd=cwd
         )
 
