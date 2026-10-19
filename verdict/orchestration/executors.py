@@ -36,6 +36,8 @@ from verdict.orchestration.contracts import (
     WorkerExecutor,
     WorkerTerminal,
     executor_gateway_origin,
+    gateway_origin_matches,
+    normalize_gateway_origin,
     run_executor,
 )
 from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
@@ -244,7 +246,10 @@ class PrimeHeadlessExecutor:
         self.extra_args = tuple(extra_args)
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
-        self._pinned: dict[str, tempfile.TemporaryDirectory[str]] = {}
+        # Launch dirs pinned by an origin check, keyed by what ``run`` receives.
+        self._pinned: dict[tuple[str, str], tuple[tempfile.TemporaryDirectory[str], str]] = {}
+        # Every origin this executor reported to a dispatch check.
+        self._checked_origins: set[str] = set()
 
     def _child_env(self) -> dict[str, str]:
         return {**os.environ, **self.env} if self.env is not None else dict(os.environ)
@@ -259,23 +264,53 @@ class PrimeHeadlessExecutor:
         )
         return launch
 
-    def gateway_origin_for(self, node_id: str) -> str | None:
-        """Pin ``node_id``'s next launch dir and report its provider ``baseUrl``.
+    def _launch_origin(self, launch_dir: Path) -> str | None:
+        """This provider's ``baseUrl`` in ``launch_dir``'s private ``models.json`` copy.
 
-        The URL is read from the launch dir's private ``models.json`` copy, the
-        exact file that launch's Prime reads, so a later change to the operator's
-        ``models.json`` cannot move the send to another gateway. None when the
-        copy, the provider or its URL is missing or unparseable.
+        None when the copy, the provider or its URL is missing, or the URL is not
+        a gateway origin (so a ``baseUrl`` cannot claim ``LOCAL_EXECUTOR_ORIGIN``).
         """
-        launch = self._prepare_launch()
-        # A replaced, never-launched dir is removed when it is collected.
-        self._pinned[node_id] = launch
         try:
-            data = json.loads((Path(launch.name) / "models.json").read_text())
+            data = json.loads((launch_dir / "models.json").read_text())
             url = data["providers"][self.provider]["baseUrl"]
         except (OSError, ValueError, TypeError, KeyError):
             return None
-        return url if isinstance(url, str) and url else None
+        if not isinstance(url, str) or normalize_gateway_origin(url) is None:
+            return None
+        return url
+
+    def gateway_origin_for(self, node_id: str, *, route_id: str, cwd: Path) -> str | None:
+        """Pin the launch dir for the send on ``route_id`` in ``cwd``; report its origin.
+
+        The origin is read from that dir's private ``models.json`` copy, the
+        exact file the launch's Prime reads, and ``run`` launches with that dir.
+        """
+        launch = self._prepare_launch()
+        origin = self._launch_origin(Path(launch.name))
+        if origin is None:
+            launch.cleanup()
+            return None
+        # A replaced, never-launched dir is removed when it is collected.
+        self._pinned[(route_id, str(cwd))] = (launch, origin)
+        self._checked_origins.add(origin)
+        return origin
+
+    def _origin_problem(self, launch_dir: Path, expected: set[str]) -> str | None:
+        """Why the launch from ``launch_dir`` must not exec, or None when it may.
+
+        Every launch re-reads the copy it is about to exec. After an origin check,
+        that copy must still name a checked origin; without any check (planner,
+        no dispatch authority) there is nothing to hold it to.
+        """
+        if not expected:
+            return None
+        origin = self._launch_origin(launch_dir)
+        if origin is not None and any(gateway_origin_matches(origin, e) for e in expected):
+            return None
+        return (
+            "harness_configuration: executor origin changed since the dispatch check "
+            f"(launch has {origin or 'no gateway origin'})"
+        )
 
     def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
         cmd = [
@@ -320,14 +355,24 @@ class PrimeHeadlessExecutor:
         # Verdict-owned launches are one-shot, so the policy travels in a
         # per-launch agent dir, not in the tracked project file that every
         # session in this checkout would otherwise inherit.
-        # A worker attempt reuses the dir its gateway origin was checked against.
-        pinned = (
-            self._pinned.pop(cwd.name.rsplit("-a", 1)[0], None)
-            if _WORKER_ATTEMPT_DIR_RE.fullmatch(cwd.name)
-            else None
-        )
-        launch_config = pinned or self._prepare_launch()
+        # A checked send launches with the dir its origin was read from.
+        pinned = self._pinned.pop((route_id, str(cwd)), None)
+        if pinned is not None:
+            launch_config, checked = pinned
+            expected = {checked}
+        else:
+            launch_config, expected = self._prepare_launch(), set(self._checked_origins)
         config_dir = Path(launch_config.name)
+        origin_problem = self._origin_problem(config_dir, expected)
+        if origin_problem is not None:
+            launch_config.cleanup()
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                model="",
+                error=origin_problem,
+                duration_seconds=time.monotonic() - started,
+            )
         child_env[PRIME_AGENT_DIR_ENV] = str(config_dir)
         # Project settings win over this per-launch config dir in Prime, and
         # Prime 0.9.6 has no per-launch escape, so assert the EFFECTIVE merge.
@@ -691,8 +736,8 @@ class FaultInjectingExecutor:
         self.inner = inner
         self._state = state or FaultInjectionState(faults)
 
-    def gateway_origin_for(self, node_id: str) -> str | None:
-        return executor_gateway_origin(self.inner, node_id)
+    def gateway_origin_for(self, node_id: str, *, route_id: str, cwd: Path) -> str | None:
+        return executor_gateway_origin(self.inner, node_id, route_id=route_id, cwd=cwd)
 
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
@@ -1728,8 +1773,10 @@ class MixedExecutor:
                 return parts[0]
         return None
 
-    def gateway_origin_for(self, node_id: str) -> str | None:
-        return executor_gateway_origin(self._map.get(node_id, self._default), node_id)
+    def gateway_origin_for(self, node_id: str, *, route_id: str, cwd: Path) -> str | None:
+        return executor_gateway_origin(
+            self._map.get(node_id, self._default), node_id, route_id=route_id, cwd=cwd
+        )
 
     def _pick(self, cwd: Path) -> WorkerExecutor:
         """Return the executor for this call."""

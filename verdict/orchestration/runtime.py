@@ -1420,7 +1420,9 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
-                origin = executor_gateway_origin(self.executor, node.node_id)
+                origin = executor_gateway_origin(
+                    self.executor, node.node_id, route_id=run.route_id, cwd=worktree
+                )
                 if self.dispatch_authority is not None and (
                     origin is None
                     or not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)

@@ -99,7 +99,7 @@ async def test_same_gateway_origin_mints_a_permit_and_sends(repo: Path, base_url
 
 async def test_executor_without_an_origin_is_denied_before_any_permit_or_send(repo: Path) -> None:
     ex = Executor({}, delay=0)
-    assert executor_gateway_origin(ex, "a") is None
+    assert executor_gateway_origin(ex, "a", route_id="cc/s", cwd=Path("x")) is None
     rt, ev = _make(repo, ex, ["cc/s", "cx/g"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
@@ -112,7 +112,7 @@ async def test_executor_without_an_origin_is_denied_before_any_permit_or_send(re
 
 async def test_local_executor_sentinel_is_allowed(repo: Path) -> None:
     ex = PermitSpy()
-    assert executor_gateway_origin(ex, "a") == LOCAL_EXECUTOR_ORIGIN
+    assert executor_gateway_origin(ex, "a", route_id="cc/s", cwd=Path("x")) == LOCAL_EXECUTOR_ORIGIN
     rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
@@ -134,7 +134,7 @@ async def test_scripted_executor_has_no_origin_unless_declared(repo: Path) -> No
         return _write_owned(prompt, route_id, cwd)
 
     ex = ScriptedExecutor(script)
-    assert executor_gateway_origin(ex, "a") is None
+    assert executor_gateway_origin(ex, "a", route_id="cc/s", cwd=Path("x")) is None
     rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
@@ -150,8 +150,8 @@ async def test_scripted_executor_with_the_declared_local_sentinel_is_allowed(rep
     assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
 
 
-def test_prime_launch_uses_the_models_json_pinned_at_bind_time(tmp_path: Path) -> None:
-    """Changing the operator's models.json after the origin check does not reach the launch."""
+def _url_capturing_prime(tmp_path: Path) -> tuple[str, Path]:
+    """A fake prime binary that records the baseUrl of the models.json it launched with."""
     capture = tmp_path / "seen.json"
     prime = make_fake_prime(
         tmp_path,
@@ -161,15 +161,70 @@ def test_prime_launch_uses_the_models_json_pinned_at_bind_time(tmp_path: Path) -
         f"Path({str(capture)!r}).write_text(json.dumps(url))\n"
         f"print({success_payload(model='cc/s')!r})\n",
     )
+    return prime, capture
+
+
+def _checked_prime(tmp_path: Path, cwd: Path) -> tuple[PrimeHeadlessExecutor, Path, Path]:
+    """A Prime executor whose origin was checked for ``cwd`` on ``cc/s`` (on ORIGIN)."""
+    prime, capture = _url_capturing_prime(tmp_path)
     agent_dir = _agent_dir(tmp_path, _models(ORIGIN + "/v1"))
     ex = PrimeHeadlessExecutor(prime_bin=prime, env={PRIME_AGENT_DIR_ENV: str(agent_dir)})
-    assert executor_gateway_origin(ex, "a") == ORIGIN + "/v1"
-    (agent_dir / "models.json").write_text(_models("http://attacker.test/v1"))
+    assert executor_gateway_origin(ex, "a", route_id="cc/s", cwd=cwd) == ORIGIN + "/v1"
+    return ex, agent_dir, capture
+
+
+def _launch(ex: PrimeHeadlessExecutor, cwd: Path, route_id: str = "cc/s") -> WorkerTerminal:
+    cwd.mkdir(parents=True, exist_ok=True)
+    return asyncio.run(ex.run("a: go", route_id=route_id, cwd=cwd, timeout_seconds=30))
+
+
+def test_prime_launch_uses_the_models_json_pinned_at_bind_time(tmp_path: Path) -> None:
+    """Changing the operator's models.json after the origin check does not reach the launch."""
     cwd = tmp_path / "run" / "worktrees" / "a-a1"
-    cwd.mkdir(parents=True)
-    terminal = asyncio.run(ex.run("a: go", route_id="cc/s", cwd=cwd, timeout_seconds=30))
+    ex, agent_dir, capture = _checked_prime(tmp_path, cwd)
+    (agent_dir / "models.json").write_text(_models("http://attacker.test/v1"))
+    terminal = _launch(ex, cwd)
     assert terminal.ok, terminal.error
     assert json.loads(capture.read_text()) == ORIGIN + "/v1"
+
+
+@pytest.mark.parametrize("cwd_name", ["elsewhere", "worktrees/a-a2", "worktrees/b-a1"])
+def test_prime_launch_off_the_checked_cwd_never_execs_a_changed_origin(
+    tmp_path: Path, cwd_name: str
+) -> None:
+    ex, agent_dir, capture = _checked_prime(tmp_path, tmp_path / "run" / "worktrees" / "a-a1")
+    (agent_dir / "models.json").write_text(_models("http://attacker.test/v1"))
+    terminal = _launch(ex, tmp_path / "run" / cwd_name)
+    assert not terminal.ok
+    assert "executor origin changed" in terminal.error
+    assert not capture.exists()
+
+
+def test_prime_launch_off_the_checked_cwd_on_the_same_origin_still_runs(tmp_path: Path) -> None:
+    ex, _, capture = _checked_prime(tmp_path, tmp_path / "run" / "worktrees" / "a-a1")
+    terminal = _launch(ex, tmp_path / "elsewhere")
+    assert terminal.ok, terminal.error
+    assert json.loads(capture.read_text()) == ORIGIN + "/v1"
+
+
+def test_prime_launch_with_a_missing_pinned_dir_never_execs(tmp_path: Path) -> None:
+    cwd = tmp_path / "run" / "worktrees" / "a-a1"
+    ex, _, capture = _checked_prime(tmp_path, cwd)
+    for pinned in ex._pinned.values():
+        pinned[0].cleanup()
+    terminal = _launch(ex, cwd)
+    assert not terminal.ok
+    assert "executor origin changed" in terminal.error
+    assert not capture.exists()
+
+
+def test_prime_launch_without_an_origin_check_uses_a_fresh_dir(tmp_path: Path) -> None:
+    prime, capture = _url_capturing_prime(tmp_path)
+    agent_dir = _agent_dir(tmp_path, _models("http://other.test/v1"))
+    ex = PrimeHeadlessExecutor(prime_bin=prime, env={PRIME_AGENT_DIR_ENV: str(agent_dir)})
+    terminal = _launch(ex, tmp_path / "planner")
+    assert terminal.ok, terminal.error
+    assert json.loads(capture.read_text()) == "http://other.test/v1"
 
 
 class PrimeSpy(PrimeHeadlessExecutor):
@@ -202,7 +257,7 @@ def _models(base_url: str, provider: str = "omniroute") -> str:
 
 async def test_prime_executor_on_the_bound_gateway_mints_a_permit_and_sends(repo: Path) -> None:
     ex = PrimeSpy(_agent_dir(repo.parent, _models(ORIGIN + "/v1")))
-    assert executor_gateway_origin(ex, "a") == ORIGIN + "/v1"
+    assert executor_gateway_origin(ex, "a", route_id="cc/s", cwd=Path("x")) == ORIGIN + "/v1"
     rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
@@ -218,6 +273,7 @@ async def test_prime_executor_on_the_bound_gateway_mints_a_permit_and_sends(repo
         ("{not json", "executor origin unknown"),
         (_models(ORIGIN + "/v1", provider="openai-compatible"), "executor origin unknown"),
         (json.dumps({"providers": {"omniroute": {"baseUrl": 7}}}), "executor origin unknown"),
+        (_models(LOCAL_EXECUTOR_ORIGIN), "executor origin unknown"),
     ],
 )
 async def test_prime_executor_off_the_bound_gateway_is_denied(
@@ -237,11 +293,20 @@ def test_wrappers_report_the_origin_of_the_executor_that_runs_the_node() -> None
     other = DirectGatewayExecutor(base_url="http://other:9/v1", api_key="fixture-only")
     plain: Any = Executor({})
     mixed = MixedExecutor({"b": other}, default=plain)
-    assert executor_gateway_origin(mixed, "a") is None
-    assert executor_gateway_origin(mixed, "b") == "http://other:9/v1"
+    assert executor_gateway_origin(mixed, "a", route_id="cc/s", cwd=Path("x")) is None
+    assert (
+        executor_gateway_origin(mixed, "b", route_id="cc/s", cwd=Path("x")) == "http://other:9/v1"
+    )
     wrapped = FaultInjectingExecutor(mixed, {})
-    assert executor_gateway_origin(wrapped, "b") == "http://other:9/v1"
-    assert executor_gateway_origin(FaultInjectingExecutor(other, {}), "a") == "http://other:9/v1"
+    assert (
+        executor_gateway_origin(wrapped, "b", route_id="cc/s", cwd=Path("x")) == "http://other:9/v1"
+    )
+    assert (
+        executor_gateway_origin(
+            FaultInjectingExecutor(other, {}), "a", route_id="cc/s", cwd=Path("x")
+        )
+        == "http://other:9/v1"
+    )
 
 
 def test_normalize_gateway_origin() -> None:
