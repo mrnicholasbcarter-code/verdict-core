@@ -1282,6 +1282,26 @@ RESERVED_WEAKENING_FLAGS = frozenset(
     }
 )
 
+#: Verdict-local fields stripped from relayed bodies before any upstream send.
+#: Derived from the reserved weakening flags plus the typed-requirement keys so
+#: the two lists cannot drift apart.
+_RELAY_LOCAL_FIELDS: frozenset[str] = RESERVED_WEAKENING_FLAGS | frozenset(
+    {
+        "request_id",
+        "correlation_id",
+        "criticality",
+        "idempotency_key",
+        "execution_path_request",
+        "task_family",
+        "min_context_tokens",
+        "reasoning_required",
+        "tools_required",
+        "structured_output_required",
+        "vision_required",
+        "streaming_required",
+    }
+)
+
 
 def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
     """Reject raw decisions and replace public JSON with a trusted request."""
@@ -1985,29 +2005,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             edge = None
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
-        for local_field in (
-            "request_id",
-            "correlation_id",
-            "criticality",
-            "idempotency_key",
-            "execution_path_request",
-            "execution_path_decision",
-            "allow_legacy_selector",
-            "require_execution_path_authority",
-            "legacy_non_authority_selector",
-            "bod104_execution_path_authority",
-            "strategy_authority",
-            "client_certificate",
-            "client_cert",
-            "certificate",
-            "task_family",
-            "min_context_tokens",
-            "reasoning_required",
-            "tools_required",
-            "structured_output_required",
-            "vision_required",
-            "streaming_required",
-        ):
+        for local_field in _RELAY_LOCAL_FIELDS:
             forwarded.pop(local_field, None)
         forwarded["model"] = attempt.model
         # cheap-path pack: the hydrated pack the receipt describes is what the upstream

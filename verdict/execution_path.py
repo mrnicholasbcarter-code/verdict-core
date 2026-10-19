@@ -56,11 +56,7 @@ from verdict.bounded_recovery import RecoveryBounds
 from verdict.candidate_pool import CandidatePoolReceipt
 from verdict.context_budget import BudgetReceipt
 from verdict.effective_capability import AssistancePlan, TaskSlice
-from verdict.expected_cost import (
-    EXPECTED_COST_SCHEMA_VERSION,
-    ExpectedStrategyCost,
-    select_strategy,
-)
+from verdict.expected_cost import EXPECTED_COST_SCHEMA_VERSION, ExpectedStrategyCost
 from verdict.runtime_certification import CertificationState
 from verdict.session_economics import ConcreteRoute, SessionRouteDecision
 
@@ -454,6 +450,63 @@ def _qualify_offer(
     return None
 
 
+def _blocked_missing_live_ranking(
+    request: ExecutionPathRequest,
+    rank_pool: Sequence[ExecutionPathOffer],
+    rejected: list[RejectedStrategy],
+    assumptions: list[str],
+    unknowns: list[str],
+    when: datetime,
+) -> ExecutionPathDecision:
+    """Blocked decision whenever no trusted live ranking exists (S02/A25).
+
+    Used both when ``pool_receipt`` is absent and when its shortlist is
+    empty: price-based ranking must never run as a fallback.
+    """
+
+    for offer in rank_pool:
+        rejected.append(
+            RejectedStrategy(
+                strategy=offer.strategy,
+                candidate_id=offer.candidate_id,
+                reason="missing_trusted_live_ranking",
+                expected_cost_strategy_id=offer.expected_cost.strategy_id,
+            )
+        )
+    payload: dict[str, Any] = {
+        "trajectory_id": request.trajectory_id,
+        "selected_strategy": "blocked",
+        "reason": "missing_trusted_live_ranking",
+        "when": _format_datetime(when),
+    }
+    return ExecutionPathDecision(
+        selected_strategy="blocked",
+        selected_candidate_id=None,
+        selected_route=None,
+        rejected=tuple(rejected),
+        assistance_plan_id=None,
+        assistance_plan_digest=None,
+        expected_cost=None,
+        expected_cost_terms=(),
+        budget_state=None,
+        tools_surface=(),
+        session_decision=None
+        if request.session_decision is None
+        else request.session_decision.to_dict(),
+        recovery_policy=_recovery_policy_dict(request.recovery_bounds),
+        verification_requirements=tuple(request.task_slice.proof_criteria),
+        assumptions=tuple(assumptions),
+        unknowns=tuple(dict.fromkeys([*unknowns, "missing_trusted_live_ranking"])),
+        freshness={"decision_at": _format_datetime(when)},
+        evidence_digests={},
+        why_selected="blocked:missing_trusted_live_ranking",
+        decision_digest=_digest(payload),
+        trajectory_id=request.trajectory_id,
+        task_slice_id=request.task_slice.slice_id,
+        strategy_selection_reason="missing_trusted_live_ranking",
+    )
+
+
 def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecision:
     """Qualify offers, rank complete expected costs, emit an inspectable receipt."""
 
@@ -590,7 +643,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     for offer in request.offers:
         if shortlist_ids is not None and offer.candidate_id not in shortlist_ids:
             drop_reason = pool_drop_reasons.get(offer.candidate_id)
-            rejection_reason = drop_reason if drop_reason else "not_in_candidate_pool_shortlist"
+            rejection_reason = drop_reason if drop_reason else "not_on_trusted_shortlist"
             rejected.append(
                 RejectedStrategy(
                     strategy=offer.strategy,
@@ -657,6 +710,16 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             )
             session_pref = None
 
+    if (
+        not qualified
+        and shortlist_ids
+        and not any(
+            offer.candidate_id in shortlist_ids or offer.candidate_id in pool_drop_reasons
+            for offer in request.offers
+        )
+    ):
+        return _blocked_missing_live_ranking(request, (), rejected, assumptions, unknowns, when)
+
     if not qualified:
         blocked_payload: dict[str, Any] = {
             "trajectory_id": request.trajectory_id,
@@ -717,127 +780,30 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             rank_pool = session_offers
 
     selected_offer: ExecutionPathOffer | None = None
-    if request.pool_receipt is not None:
-        shortlist = request.pool_receipt.shortlist
-        if not shortlist:
-            for offer in rank_pool:
-                rejected.append(
-                    RejectedStrategy(
-                        strategy=offer.strategy,
-                        candidate_id=offer.candidate_id,
-                        reason="missing_trusted_live_ranking",
-                        expected_cost_strategy_id=offer.expected_cost.strategy_id,
-                    )
-                )
-            unranked_payload: dict[str, Any] = {
-                "trajectory_id": request.trajectory_id,
-                "selected_strategy": "blocked",
-                "reason": "missing_trusted_live_ranking",
-                "when": _format_datetime(when),
-            }
-            return ExecutionPathDecision(
-                selected_strategy="blocked",
-                selected_candidate_id=None,
-                selected_route=None,
-                rejected=tuple(rejected),
-                assistance_plan_id=None,
-                assistance_plan_digest=None,
-                expected_cost=None,
-                expected_cost_terms=(),
-                budget_state=None,
-                tools_surface=(),
-                session_decision=None
-                if request.session_decision is None
-                else request.session_decision.to_dict(),
-                recovery_policy=_recovery_policy_dict(request.recovery_bounds),
-                verification_requirements=tuple(request.task_slice.proof_criteria),
-                assumptions=tuple(assumptions),
-                unknowns=tuple(dict.fromkeys([*unknowns, "missing_trusted_live_ranking"])),
-                freshness={"decision_at": _format_datetime(when)},
-                evidence_digests={},
-                why_selected="blocked:missing_trusted_live_ranking",
-                decision_digest=_digest(unranked_payload),
-                trajectory_id=request.trajectory_id,
-                task_slice_id=request.task_slice.slice_id,
-                strategy_selection_reason="missing_trusted_live_ranking",
-            )
-        shortlist_map = {entry.route_id: idx for idx, entry in enumerate(shortlist)}
-        rank_pool.sort(key=lambda o: (shortlist_map.get(o.candidate_id, 999999), o.candidate_id))
-        selected_offer = rank_pool[0]
-        for offer in rank_pool[1:]:
-            rejected.append(
-                RejectedStrategy(
-                    strategy=offer.strategy,
-                    candidate_id=offer.candidate_id,
-                    reason="shortlist_rank_or_candidate_tie_break",
-                    expected_cost_strategy_id=offer.expected_cost.strategy_id,
-                )
-            )
-    else:
-        # Duplicate strategy_id among the rank pool would map selection ambiguously.
-        seen_ids: dict[str, str] = {}
-        for offer in rank_pool:
-            sid = offer.expected_cost.strategy_id
-            if sid in seen_ids:
-                raise ExecutionPathError(
-                    f"duplicate expected_cost.strategy_id {sid!r} among qualified offers "
-                    f"({seen_ids[sid]!r} and {offer.candidate_id!r})"
-                )
-            seen_ids[sid] = offer.candidate_id
-
-        selection = select_strategy(
-            [offer.expected_cost for offer in rank_pool], mode="expected_cost", free_first=False
+    if request.pool_receipt is None:
+        # S02/A25: without the trusted live shortlist there is no ranking
+        # authority. Price-based ordering must never run; fail closed.
+        return _blocked_missing_live_ranking(
+            request, rank_pool, rejected, assumptions, unknowns, when
         )
-
-        if selection.selected_strategy_id is not None:
-            for offer in rank_pool:
-                if offer.expected_cost.strategy_id == selection.selected_strategy_id:
-                    selected_offer = offer
-                    break
-
-        # If economics returned None (unknown cash among all), fall through to blocked.
-        if selected_offer is None:
-            for offer in rank_pool:
-                rejected.append(
-                    RejectedStrategy(
-                        strategy=offer.strategy,
-                        candidate_id=offer.candidate_id,
-                        reason="unknown_or_unranked_complete_cost",
-                        expected_cost_strategy_id=offer.expected_cost.strategy_id,
-                    )
-                )
-            unranked_payload = {
-                "trajectory_id": request.trajectory_id,
-                "selected_strategy": "blocked",
-                "reason": selection.reason,
-                "when": _format_datetime(when),
-            }
-            return ExecutionPathDecision(
-                selected_strategy="blocked",
-                selected_candidate_id=None,
-                selected_route=None,
-                rejected=tuple(rejected),
-                assistance_plan_id=None,
-                assistance_plan_digest=None,
-                expected_cost=None,
-                expected_cost_terms=(),
-                budget_state=None,
-                tools_surface=(),
-                session_decision=None
-                if request.session_decision is None
-                else request.session_decision.to_dict(),
-                recovery_policy=_recovery_policy_dict(request.recovery_bounds),
-                verification_requirements=tuple(request.task_slice.proof_criteria),
-                assumptions=tuple(assumptions),
-                unknowns=tuple(dict.fromkeys([*unknowns, "complete_cost_unranked"])),
-                freshness={"decision_at": _format_datetime(when)},
-                evidence_digests={},
-                why_selected=f"blocked:{selection.reason}",
-                decision_digest=_digest(unranked_payload),
-                trajectory_id=request.trajectory_id,
-                task_slice_id=request.task_slice.slice_id,
-                strategy_selection_reason=selection.reason,
+    shortlist = request.pool_receipt.shortlist
+    if not shortlist:
+        return _blocked_missing_live_ranking(
+            request, rank_pool, rejected, assumptions, unknowns, when
+        )
+    shortlist_map = {entry.route_id: idx for idx, entry in enumerate(shortlist)}
+    # Qualification already dropped every offer that is not on the shortlist.
+    rank_pool.sort(key=lambda o: shortlist_map[o.candidate_id])
+    selected_offer = rank_pool[0]
+    for offer in rank_pool[1:]:
+        rejected.append(
+            RejectedStrategy(
+                strategy=offer.strategy,
+                candidate_id=offer.candidate_id,
+                reason="shortlist_rank_or_candidate_tie_break",
+                expected_cost_strategy_id=offer.expected_cost.strategy_id,
             )
+        )
 
     # Prefer explicit session STAY/SWITCH strategy label when that route won.
     selected_strategy: StrategyName = selected_offer.strategy
@@ -904,19 +870,13 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     if request.session_decision is not None:
         freshness["session"] = dict(request.session_decision.freshness)
 
-    if request.pool_receipt is not None:
-        selection_reason = "candidate_pool_shortlist"
-        rank_idx = shortlist_map.get(selected_offer.candidate_id, 0)
-        why = (
-            f"selected_{selected_strategy}_via_candidate_pool_shortlist; "
-            f"shortlist_position={rank_idx} beats {len(rank_pool) - 1} alternative(s)"
-        )
-    else:
-        selection_reason = selection.reason
-        why = (
-            f"selected_{selected_strategy}_via_{selection.reason}; "
-            f"complete_expected_cost beats {len(rank_pool) - 1} ranked alternative(s)"
-        )
+    # pool_receipt is guaranteed present here: its absence returned blocked above.
+    selection_reason = "candidate_pool_shortlist"
+    rank_idx = shortlist_map.get(selected_offer.candidate_id, 0)
+    why = (
+        f"selected_{selected_strategy}_via_candidate_pool_shortlist; "
+        f"shortlist_position={rank_idx} beats {len(rank_pool) - 1} alternative(s)"
+    )
     if selected_offer.expected_cost.cash_usd is not None:
         why += f"; cash_usd={selected_offer.expected_cost.cash_usd}"
 

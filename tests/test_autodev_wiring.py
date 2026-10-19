@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -353,7 +354,10 @@ def _public_request_payload() -> dict[str, Any]:
         "candidates": [
             {
                 "strategy": "direct_cheap",
-                "route_id": "route-selected-model",
+                # Route id must match the fixture live snapshot's admitted id
+                # (BOD-432 preparation path) so the pool can build a trusted
+                # receipt for it.
+                "route_id": "provider/model",
                 "gateway": "http://gateway.test/v1",
                 "provider": "provider-a",
                 "model": "provider/model",
@@ -373,6 +377,93 @@ def _write_request(path: Path) -> None:
     path.write_text(json.dumps(_public_request_payload()), encoding="utf-8")
 
 
+def _cli_preparation_service() -> Any:
+    """Fixture-loaded IntelligenceService for CLI public-request preparation.
+
+    Mirrors the API's live preparation path (BOD-432): an admit snapshot,
+    Core metadata and fresh passports for the requested route, so the pool
+    receipt is built without any network call.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.intelligence import IntelligenceService
+    from verdict.metadata.records import (
+        SOURCE_MODELS_DEV,
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.model_passports import ModelPassport
+
+    fetched = "2026-10-19T00:00:00Z"
+
+    def prov(value: bool | int | float) -> ProvenancedField:
+        return ProvenancedField(
+            value=value, provenance=FieldProvenance(source=SOURCE_MODELS_DEV, fetched_at=fetched)
+        )
+
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": "provider/model", "owned_by": "provider-a"}]},
+        free_tier={
+            "perModel": [{"modelId": "model", "provider": "provider-a", "freeType": "keyless"}]
+        },
+        providers={
+            "connections": [{"provider": "provider-a", "isActive": True, "testStatus": "active"}]
+        },
+    )
+    metadata = MetadataSnapshot(
+        schema_version="1",
+        refreshed_at=fetched,
+        sources={},
+        records=(
+            ModelMetadataRecord(
+                id="provider/model",
+                provider="provider-a",
+                omniroute_ids=("provider/model",),
+                caps=CapabilityCaps(tools=prov(True), context=prov(128_000)),
+                scores=SoftScores(aa_coding=prov(90.0)),
+            ),
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    passport = ModelPassport(
+        provider="provider-a",
+        model_id="provider/model",
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=now - timedelta(minutes=1),
+        last_verified_timestamp=now - timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=10),
+        latency_p95=1.0,
+        tool_support=True,
+    )
+    return IntelligenceService(
+        primary_model="provider/model",
+        providers={},
+        profile="production",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=snapshot,
+        metadata_snapshot=metadata,
+        passports={"provider/model": passport},
+        admit_now=now,
+        context_roots=(),
+        mcp_root="",
+    )
+
+
+def _patch_cli_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the CLI/resolver preparation boundary at fixture live evidence."""
+    monkeypatch.setattr(
+        "verdict.subagent_resolver._preparation_intelligence", _cli_preparation_service
+    )
+
+
 def test_cli_request_file_builds_in_process_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -385,6 +476,7 @@ def test_cli_request_file_builds_in_process_decision(
     _write_request(path)
     # The core CLI must work without importing the optional FastAPI server module.
     monkeypatch.setitem(sys.modules, "verdict.api", None)
+    _patch_cli_preparation(monkeypatch)
     decision = _execution_path_decision_from_request_file(str(path), task="bounded task")
     trusted = _require_launch_decision(decision, surface="test")
     assert trusted.selected_route.model == "provider/model"
@@ -417,6 +509,7 @@ def test_cli_main_supplies_in_process_decision_to_autodev(
         captured.update(kwargs)
 
     monkeypatch.setattr(cli, "cmd_autodev", fake_cmd_autodev)
+    _patch_cli_preparation(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -454,6 +547,7 @@ def test_cli_packet_execute_binds_request_to_packet_objective(
         captured.update(kwargs)
 
     monkeypatch.setattr(cli, "cmd_autodev_packet_execute", fake_execute)
+    _patch_cli_preparation(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -485,6 +579,7 @@ def test_resolver_main_launches_from_public_request_file(
 
     path = tmp_path / "request.json"
     _write_request(path)
+    _patch_cli_preparation(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -685,8 +780,15 @@ def _two_candidate_decision() -> Any:
             "certification_state": "ready",
             "certification_freshness": "fresh",
             "probe_observed_at": 1_760_000_000.0,
-            "probe_headers": {"x-omniroute-response-cost": "0"},
+            "probe_headers": {
+                "x-omniroute-model": route_id.split("/", 1)[1],
+                "x-omniroute-response-cost": "0",
+            },
         }
+
+    from dataclasses import replace
+
+    from verdict.candidate_pool import build_live_probe_receipt
 
     request = {
         "schema_version": "1",
@@ -696,7 +798,17 @@ def _two_candidate_decision() -> Any:
         "proof_criteria": ["ruff check --select F401 a.py"],
         "candidates": [candidate(FREE_A), candidate(FREE_B)],
     }
-    return optimize_execution_path(public_execution_path_request(request, task="fix ruff errors"))
+    prepared = public_execution_path_request(request, task="fix ruff errors")
+    prepared = replace(
+        prepared,
+        pool_receipt=build_live_probe_receipt(
+            objective="fix ruff errors",
+            candidates=request["candidates"],
+            requirements=request["proof_criteria"],
+            now=1_760_000_000.0,
+        ),
+    )
+    return optimize_execution_path(prepared)
 
 
 def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
@@ -1750,8 +1862,11 @@ def _ad03_candidate(route_id: str) -> dict[str, Any]:
         "is_free": True,
         "certification_state": "ready",
         "certification_freshness": "fresh",
-        "probe_observed_at": 1_760_000_000.0,
-        "probe_headers": {"x-omniroute-response-cost": "0"},
+        "probe_observed_at": time.time(),
+        "probe_headers": {
+            "x-omniroute-model": route_id.split("/", 1)[1],
+            "x-omniroute-response-cost": "0",
+        },
     }
 
 
@@ -2119,3 +2234,76 @@ def test_retry_selection_accepts_subscription_candidates_from_live_selection(
     assert [c["selection_reason"] for c in remaining]
     assert retry.selected_route.model == remaining[0]["route_id"]
     assert "capacity=subscription" in remaining[0]["selection_reason"]
+
+
+# ── BOD-432: live-probe receipt freshness and named refusals ────────────────
+
+
+def test_retry_selection_refuses_stale_probe_evidence(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    stale = {
+        **_ad03_candidate(FREE_A),
+        "probe_observed_at": time.time() - 86_400,
+        "probe_headers": {"x-omniroute-model": "alpha:free"},
+    }
+    plan = _decomposer(PLAN).decompose("fix ruff errors", repo_root=repo)
+    with pytest.raises(AutodevError, match=r"retry selection refused.*probe_observed_at"):
+        autodev._select_retry_route(plan.units[0], [stale], "fix ruff errors")
+
+
+def test_prepare_live_autodev_selected_names_receipt_refusal_as_autodev_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.candidate_pool import CandidatePoolError
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder([_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]),
+    )
+    _scripted_probe(monkeypatch)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    def refuse(**kwargs: Any) -> Any:
+        raise CandidatePoolError("live probe receipt requires probe_headers")
+
+    monkeypatch.setattr("verdict.candidate_pool.build_live_probe_receipt", refuse)
+    with pytest.raises(AutodevError, match="receipt refused"):
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+
+
+def test_prepare_live_autodev_names_receipt_refusal_as_autodev_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.candidate_pool import CandidatePoolError
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": "model:free", "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    def refuse(**kwargs: Any) -> Any:
+        raise CandidatePoolError("live probe receipt requires probe_headers")
+
+    monkeypatch.setattr("verdict.candidate_pool.build_live_probe_receipt", refuse)
+    with pytest.raises(AutodevError, match="receipt refused"):
+        autodev.prepare_live_autodev(
+            "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+        )

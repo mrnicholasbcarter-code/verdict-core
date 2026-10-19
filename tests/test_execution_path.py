@@ -215,6 +215,34 @@ def _offer(
     )
 
 
+def _receipt(*route_ids: str):
+    """Trusted pool-receipt fixture: shortlist in the given rank order (BOD-432)."""
+    from verdict.candidate_pool import CandidatePoolReceipt, ShortlistEntry, TaskFingerprint
+
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="test"),
+        discovered_count=len(route_ids),
+        hard_drops=(),
+        probes=(),
+        shortlist=tuple(
+            ShortlistEntry(
+                route_id=route_id,
+                metadata_id=None,
+                provider=route_id.split("/", 1)[0],
+                family_key=route_id,
+                score=1.0,
+                confidence=1.0,
+                score_features={},
+                inclusion_reason="fixture_shortlist",
+            )
+            for route_id in route_ids
+        ),
+        uncertainty=(),
+        evidence_digest="sha256:pool-evidence",
+        shortlist_digest="sha256:pool-shortlist",
+    )
+
+
 def test_direct_cheap_wins_when_intrinsically_sufficient() -> None:
     cheap = _route("cheap-1")
     paid = _route("paid-1", model="paid-model", provider="provider-b", tier=3)
@@ -246,7 +274,13 @@ def test_direct_cheap_wins_when_intrinsically_sufficient() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("cheap-1", "paid-1"),
+            now=NOW,
+        )
     )
     assert decision.selected_strategy == "direct_cheap"
     assert decision.selected_candidate_id == "cheap-1"
@@ -255,7 +289,8 @@ def test_direct_cheap_wins_when_intrinsically_sufficient() -> None:
     assert decision.selected_route.provider == "provider-a"
     assert decision.selected_route.model == "cheap-model"
     assert any(r.strategy == "direct_paid" for r in decision.rejected)
-    assert "expected_cost" in decision.why_selected or "cheaper" in decision.why_selected.lower()
+    # A25: price no longer ranks; selection follows the trusted pool shortlist.
+    assert "candidate_pool_shortlist" in decision.why_selected
     assert decision.assistance_plan_digest == "sha256:plan"
     assert decision.verification_requirements == ("pytest green",)
     assert decision.decision_digest.startswith("sha256:")
@@ -303,7 +338,13 @@ def test_cheap_with_assistance_beats_paid_on_complete_cost() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("cheap-assist", "paid-2"),
+            now=NOW,
+        )
     )
     assert decision.selected_strategy == "cheap_with_assistance"
     assert decision.selected_candidate_id == "cheap-assist"
@@ -353,7 +394,13 @@ def test_frontier_plan_then_cheap_beats_frontier_direct() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("cheap-decomp", "frontier-1"),
+            now=NOW,
+        )
     )
     assert decision.selected_strategy == "frontier_plan_then_cheap_execute"
     assert decision.selected_candidate_id == "cheap-decomp"
@@ -382,10 +429,7 @@ def test_expensive_assistance_allows_paid_to_win() -> None:
             route=cheap,
             plan=cheap_plan,
             expected=_cost(
-                "cheap_with_assistance:cheap-heavy",
-                assistance=heavy,
-                execution_tokens=10_000,
-                is_free=True,
+                "cheap_with_assistance:cheap-heavy", assistance=heavy, execution_tokens=10_000
             ),
             is_cheap=True,
         ),
@@ -401,8 +445,17 @@ def test_expensive_assistance_allows_paid_to_win() -> None:
             is_paid=True,
         ),
     )
+    # A25: price no longer ranks; the hard spend budget excludes the
+    # over-budget expensive-assistance offer so the paid route wins.
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("cheap-heavy", "paid-light"),
+            hard_spend_budget=0.5,
+            now=NOW,
+        )
     )
     assert decision.selected_strategy == "direct_paid"
     assert decision.selected_candidate_id == "paid-light"
@@ -452,6 +505,7 @@ def test_hard_gate_excluded_never_selected() -> None:
             trajectory_id="traj-104",
             offers=offers,
             hard_excluded_ids=frozenset({"excluded-cheap"}),
+            pool_receipt=_receipt("excluded-cheap", "paid-ok"),
             now=NOW,
         )
     )
@@ -498,13 +552,19 @@ def test_unknown_capability_never_promoted_to_sufficient() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("unknown-cap", "known-paid"),
+            now=NOW,
+        )
     )
     assert decision.selected_candidate_id == "known-paid"
     assert any("unknown" in r.reason for r in decision.rejected)
 
 
-def test_unknown_price_not_treated_as_free() -> None:
+def _unknown_vs_known_price_offers() -> tuple[ExecutionPathOffer, ...]:
     unknown_price = _route("mystery-price")
     known = _route("known-price", model="mid", provider="provider-b", tier=2)
     plan_u = _plan(candidate_id="mystery-price", digest="sha256:mystery")
@@ -526,7 +586,7 @@ def test_unknown_price_not_treated_as_free() -> None:
         is_free=False,
         qualified=True,
     )
-    offers = (
+    return (
         _offer(
             strategy="direct_cheap",
             route=unknown_price,
@@ -546,14 +606,74 @@ def test_unknown_price_not_treated_as_free() -> None:
             is_paid=True,
         ),
     )
+
+
+def test_unknown_price_not_treated_as_free() -> None:
+    # A25: price no longer ranks; under a hard spend budget unknown cash is
+    # rejected outright, so even a first-ranked unknown-price route cannot win.
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=_unknown_vs_known_price_offers(),
+            pool_receipt=_receipt("mystery-price", "known-price"),
+            hard_spend_budget=10.0,
+            now=NOW,
+        )
     )
     # Conservative: unknown cash cannot claim free/optimal win over known qualified cash.
     assert decision.selected_candidate_id == "known-price"
     assert any("unknown" in r.reason and "price" in r.reason for r in decision.rejected) or (
         decision.selected_strategy == "direct_paid"
     )
+
+
+def test_unknown_price_selectable_without_hard_budget_per_a25() -> None:
+    # S02 AC3: "missing price alone is not a gate". Without an explicit hard
+    # spend budget an unknown-price route that the trusted shortlist ranks first
+    # is selectable; price never reorders the shortlist (A25).
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=_unknown_vs_known_price_offers(),
+            pool_receipt=_receipt("mystery-price", "known-price"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "mystery-price"
+    assert "candidate_pool_shortlist" in decision.why_selected
+
+
+def test_offers_not_on_trusted_shortlist_block_never_ordered_by_candidate_id() -> None:
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=tuple(reversed(_unknown_vs_known_price_offers())),
+            pool_receipt=_receipt("zzz"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert decision.selected_candidate_id is None
+    assert decision.why_selected == "blocked:missing_trusted_live_ranking"
+    assert {r.candidate_id for r in decision.rejected} == {"mystery-price", "known-price"}
+
+
+def test_offer_off_the_shortlist_is_rejected_while_a_shortlisted_offer_wins() -> None:
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=_unknown_vs_known_price_offers(),
+            pool_receipt=_receipt("known-price"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "known-price"
+    off = [r for r in decision.rejected if r.candidate_id == "mystery-price"]
+    assert [r.reason for r in off] == ["not_on_trusted_shortlist"]
 
 
 def test_missing_mandatory_tool_not_sufficient_despite_context() -> None:
@@ -593,7 +713,13 @@ def test_missing_mandatory_tool_not_sufficient_despite_context() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("no-tools", "with-tools"),
+            now=NOW,
+        )
     )
     assert decision.selected_candidate_id == "with-tools"
     assert any("tool" in r.reason or "insufficient" in r.reason for r in decision.rejected)
@@ -630,7 +756,13 @@ def test_budget_drop_mandatory_proof_blocks_sufficiency() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("budget-tight", "budget-ok"),
+            now=NOW,
+        )
     )
     assert decision.selected_candidate_id == "budget-ok"
     assert any("budget" in r.reason for r in decision.rejected)
@@ -671,7 +803,13 @@ def test_stale_runtime_certification_blocks_optimistic_selection() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("stale-route", "fresh-route"),
+            now=NOW,
+        )
     )
     assert decision.selected_candidate_id == "fresh-route"
     assert any("stale" in r.reason or "certif" in r.reason for r in decision.rejected)
@@ -779,7 +917,13 @@ def test_frontier_direct_loses_to_cheaper_qualified_complete_path() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("complete-cheap", "frontier-only"),
+            now=NOW,
+        )
     )
     assert decision.selected_strategy == "cheap_execute_then_verify"
     assert decision.selected_strategy != "frontier_direct"
@@ -824,6 +968,7 @@ def test_session_stay_and_switch_surface_in_receipt() -> None:
             trajectory_id="traj-104",
             offers=offers,
             session_decision=session,
+            pool_receipt=_receipt("stay-route"),
             now=NOW,
         )
     )
@@ -941,6 +1086,7 @@ def test_hard_excluded_ids_cannot_be_restored_by_session_switch() -> None:
             offers=offers,
             session_decision=session,
             hard_excluded_ids=frozenset({"ex-switch"}),
+            pool_receipt=_receipt("ex-switch", "ok-route"),
             now=NOW,
         )
     )
@@ -970,6 +1116,7 @@ def test_provenance_and_concrete_identity_survive_selection() -> None:
                     is_cheap=True,
                 ),
             ),
+            pool_receipt=_receipt("id-1"),
             now=NOW,
         )
     )
@@ -1011,6 +1158,7 @@ def test_complete_cost_includes_retry_verification_recovery_terms() -> None:
                 ),
             ),
             recovery_bounds=RecoveryBounds(max_attempts=3),
+            pool_receipt=_receipt("complete-terms"),
             now=NOW,
         )
     )
@@ -1298,7 +1446,13 @@ def test_ep_s14_bad_decomposition_replans_preserving_parent_ac_proof() -> None:
         ),
     )
     decision = optimize_execution_path(
-        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=offers,
+            pool_receipt=_receipt("bad-decomp", "good-replan"),
+            now=NOW,
+        )
     )
     assert decision.selected_candidate_id == "good-replan"
     assert "pytest green" in decision.verification_requirements
@@ -1733,6 +1887,7 @@ def test_ep_s24_gateway_provider_aliases_preserve_concrete_route() -> None:
                     is_paid=True,
                 ),
             ),
+            pool_receipt=_receipt("auto/best-coding", "concrete"),
             now=NOW,
         )
     )
@@ -1769,6 +1924,7 @@ def test_ep_legacy_selector_yields_to_bod104_authority() -> None:
                     is_cheap=True,
                 ),
             ),
+            pool_receipt=_receipt("auth-1"),
             now=NOW,
         )
     )
@@ -1820,6 +1976,7 @@ def test_ep_context_trust_not_admitted_blocks() -> None:
                     context_trust_admitted=True,
                 ),
             ),
+            pool_receipt=_receipt("untrusted", "trusted"),
             now=NOW,
         )
     )
@@ -1885,6 +2042,7 @@ def test_ep_session_stay_overridden_when_current_not_capable() -> None:
                 ),
             ),
             session_decision=session,
+            pool_receipt=_receipt("incapable", "capable"),
             now=NOW,
         )
     )
@@ -1943,6 +2101,7 @@ def test_ep_authoritative_session_stay_beats_cheaper_alternate() -> None:
                 ),
             ),
             session_decision=session,
+            pool_receipt=_receipt("current", "alt"),
             now=NOW,
         )
     )
@@ -2258,6 +2417,7 @@ def test_ep_escalate_strategy_requires_escalation_cost_term() -> None:
                     is_paid=True,
                 ),
             ),
+            pool_receipt=_receipt("cheap-1", "paid-1"),
             now=NOW,
         )
     )
@@ -2266,3 +2426,46 @@ def test_ep_escalate_strategy_requires_escalation_cost_term() -> None:
         "incomplete_expected_cost_missing" in r.reason and r.candidate_id == "cheap-1"
         for r in decision.rejected
     )
+
+
+def test_missing_pool_receipt_fails_closed_never_price_ranking() -> None:
+    """S02/A25 H2: without a trusted pool receipt the optimizer must not rank by price."""
+    cheap = _route("cheap-1")
+    paid = _route("paid-1", model="paid-model", provider="provider-b", tier=3)
+    cheap_plan = _plan(candidate_id="cheap-1", intrinsic=True)
+    paid_plan = _plan(candidate_id="paid-1", intrinsic=True, digest="sha256:paid-plan")
+    offers = (
+        _offer(
+            strategy="direct_cheap",
+            route=cheap,
+            plan=cheap_plan,
+            expected=_cost(
+                "direct_cheap:cheap-1",
+                assistance=cheap_plan.assistance_cost,
+                execution_tokens=10_000,
+                is_free=True,
+            ),
+            is_cheap=True,
+        ),
+        _offer(
+            strategy="direct_paid",
+            route=paid,
+            plan=paid_plan,
+            expected=_cost(
+                "direct_paid:paid-1", assistance=paid_plan.assistance_cost, execution_tokens=50_000
+            ),
+            is_paid=True,
+        ),
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+    )
+    assert decision.selected_strategy == "blocked"
+    assert decision.selected_candidate_id is None
+    assert decision.selected_route is None
+    assert decision.why_selected == "blocked:missing_trusted_live_ranking"
+    assert decision.strategy_selection_reason == "missing_trusted_live_ranking"
+    assert "missing_trusted_live_ranking" in decision.unknowns
+    assert {
+        r.candidate_id for r in decision.rejected if r.reason == "missing_trusted_live_ranking"
+    } == {"cheap-1", "paid-1"}

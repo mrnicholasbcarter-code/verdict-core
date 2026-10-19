@@ -669,3 +669,67 @@ def test_caller_eval_score_wins_and_is_not_attributed_to_metadata() -> None:
     assert entry.eval_prior_value == 15.0
     assert entry.eval_prior_provenance is None
     assert abs(entry.score_features["eval_score"] - 0.15) < 1e-9
+
+
+# ── BOD-432: trusted live-probe receipt (S02/A25) ───────────────────────────
+
+PROBE_NOW = 1_800_000_000.0
+
+
+def _probed(route_id: str, **overrides: Any) -> dict[str, Any]:
+    candidate: dict[str, Any] = {
+        "route_id": route_id,
+        "eligible": True,
+        "probe_observed_at": PROBE_NOW - 10,
+        "probe_headers": {"x-omniroute-model": route_id.split("/", 1)[-1]},
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def _live_receipt(*candidates: dict[str, Any], now: Any = PROBE_NOW) -> Any:
+    from verdict.candidate_pool import build_live_probe_receipt
+
+    return build_live_probe_receipt(objective="fix", candidates=candidates, now=now)
+
+
+def test_live_probe_receipt_keeps_server_rank_order_for_fresh_probes() -> None:
+    receipt = _live_receipt(_probed("free/a"), _probed("free/b"))
+    assert [e.route_id for e in receipt.shortlist] == ["free/a", "free/b"]
+    assert all(p.passed for p in receipt.probes)
+
+
+def test_live_probe_receipt_accepts_aware_datetime_now() -> None:
+    now = datetime.fromtimestamp(PROBE_NOW, tz=timezone.utc)
+    assert _live_receipt(_probed("free/a"), now=now).shortlist
+
+
+@pytest.mark.parametrize("age", [-1.0, 3600.0 + 1, 86_400.0])
+def test_live_probe_receipt_rejects_future_and_stale_probes(age: float) -> None:
+    with pytest.raises(CandidatePoolError, match="probe_observed_at"):
+        _live_receipt(_probed("free/a", probe_observed_at=PROBE_NOW - age))
+
+
+def test_live_probe_receipt_accepts_probe_exactly_at_the_age_bound() -> None:
+    assert _live_receipt(_probed("free/a", probe_observed_at=PROBE_NOW - 3600.0)).shortlist
+
+
+@pytest.mark.parametrize("headers", [{}, {"x-omniroute-response-cost": "0"}])
+def test_live_probe_receipt_requires_the_served_model_header(headers: dict[str, str]) -> None:
+    with pytest.raises(CandidatePoolError, match="x-omniroute-model"):
+        _live_receipt(_probed("free/a", probe_headers=headers))
+
+
+def test_live_probe_receipt_never_records_unpassed_candidates_as_passed() -> None:
+    bad = _probed("free/bad", eligible=False, certification_state="stale", probe_headers={})
+    receipt = _live_receipt(bad, _probed("free/ok"))
+    assert [e.route_id for e in receipt.shortlist] == ["free/ok"]
+    by_route = {p.route_id: p for p in receipt.probes}
+    assert by_route["free/ok"].passed is True
+    assert by_route["free/bad"].passed is False
+    assert by_route["free/bad"].detail
+
+
+def test_live_probe_receipt_without_a_passed_candidate_raises() -> None:
+    with pytest.raises(CandidatePoolError, match="passed"):
+        _live_receipt(_probed("free/bad", eligible=False))

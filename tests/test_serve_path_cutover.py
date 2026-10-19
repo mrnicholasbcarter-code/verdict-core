@@ -151,6 +151,34 @@ def _offer(*, strategy: str, route: ConcreteRoute, plan: AssistancePlan) -> Exec
     )
 
 
+def _receipt(*route_ids: str):
+    """Trusted pool receipt fixture: shortlist in the given rank order."""
+    from verdict.candidate_pool import CandidatePoolReceipt, ShortlistEntry, TaskFingerprint
+
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="chat"),
+        discovered_count=len(route_ids),
+        hard_drops=(),
+        probes=(),
+        shortlist=tuple(
+            ShortlistEntry(
+                route_id=route_id,
+                metadata_id=None,
+                provider="provider-a",
+                family_key=route_id,
+                score=1.0,
+                confidence=1.0,
+                score_features={},
+                inclusion_reason="fixture_shortlist",
+            )
+            for route_id in route_ids
+        ),
+        uncertainty=(),
+        evidence_digest="sha256:pool-evidence",
+        shortlist_digest="sha256:pool-shortlist",
+    )
+
+
 def _decision():
     cheap = _route("auth-1")
     plan = _plan(candidate_id="auth-1")
@@ -159,6 +187,7 @@ def _decision():
             task_slice=_slice(),
             trajectory_id="traj-127",
             offers=(_offer(strategy="direct_cheap", route=cheap, plan=plan),),
+            pool_receipt=_receipt("auth-1"),
             now=NOW,
         )
     )
@@ -252,6 +281,7 @@ def test_resolve_and_dispatch_from_ep_request() -> None:
         task_slice=_slice(),
         trajectory_id="traj-127",
         offers=(_offer(strategy="direct_cheap", route=cheap, plan=plan),),
+        pool_receipt=_receipt("auth-1"),
         now=NOW,
     )
     decision = resolve_execution_path_decision({CONTEXT_EP_REQUEST: request})
