@@ -937,26 +937,15 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     """
     import multiprocessing
 
-    from verdict.orchestration.verified_refresh import (
-        OUTCOME_LOCK_TIMEOUT,
-        REASON_LOCK_TIMEOUT,
-        maintenance_from_env,
-    )
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT, REASON_LOCK_TIMEOUT
 
-    # -- configuration knobs (A09 maintenance lane + qualification bounds) --
+    # -- configuration knobs (qualification bounds) --
     base = config_from_env({})
     assert base.output_tokens == 4096
     assert base.request_timeout_seconds == 30.0
     assert base.max_per_provider is None  # interactive: no per-provider cap
     assert base.cooldown_seconds == 300.0
-    assert base.maintenance is False
-    maintenance = maintenance_from_env({})
-    assert maintenance.maintenance is True
-    assert maintenance.max_routes == 4
-    assert maintenance.max_requests == 16
-    assert maintenance.wall_seconds == 600.0
-    assert maintenance.concurrency == 4
-    assert maintenance.debounce_seconds == 10.0
+    bounded = RefreshConfig(max_routes=4, max_requests=16, concurrency=4)
     # Env keeps precedence and the hard-max guard style.
     assert config_from_env({"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"}).max_per_provider == 3
     with pytest.raises(RefreshConfigError):
@@ -964,11 +953,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     with pytest.raises(RefreshConfigError):
         config_from_env({"VERDICT_REFRESH_OUTPUT_TOKENS": "0"})
     with pytest.raises(RefreshConfigError):
-        maintenance_from_env({"VERDICT_REFRESH_MAX_ROUTES": "51"})
-    assert maintenance.max_per_provider == 2
-    with pytest.raises(RefreshConfigError):
         RefreshConfig(wall_seconds=600.0)
-    assert RefreshConfig(wall_seconds=600.0, maintenance=True).wall_seconds == 600.0
 
     # -- 9,000 fake ids: caps apply before any screening call (A12) --
     caps_dir = tmp_path / "caps"
@@ -989,12 +974,12 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_A),
         consumer="picker",
         needed_ids=manual_ids,
-        config=maintenance,
+        config=bounded,
         explicit=True,
     )
     assert out.probed == 4
     assert out.requests_made == 8  # 4 routes x 2 full-probe requests
-    assert out.requests_made <= maintenance.max_requests
+    assert out.requests_made <= bounded.max_requests
     assert len(t_manual.calls) == 8
     assert {rid for rid, _phase in t_manual.calls} == {
         rid for rid in manual_ids if rid in out.route_outcomes and out.route_outcomes[rid].probed
@@ -1009,10 +994,10 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_A, generation="rev2"),
         consumer="census",
         needed_ids=census_ids,
-        config=maintenance,
+        config=bounded,
     )
     assert out_census.probed == 4
-    assert out_census.requests_made <= maintenance.max_requests
+    assert out_census.requests_made <= bounded.max_requests
     census_probed = {rid for rid, o in out_census.route_outcomes.items() if o.probed}
     assert census_probed.isdisjoint(manual_probed)
 
@@ -1023,11 +1008,11 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_A, generation="rev3"),
         consumer="admit_confirm",
         needed_ids=confirm_ids,
-        config=maintenance,
+        config=bounded,
         authorized=True,
     )
     assert out_confirm.probed == 4
-    assert out_confirm.requests_made <= maintenance.max_requests
+    assert out_confirm.requests_made <= bounded.max_requests
     confirm_probed = {rid for rid, o in out_confirm.route_outcomes.items() if o.probed}
     assert confirm_probed.isdisjoint(manual_probed | census_probed)
 
@@ -1041,7 +1026,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_A, generation="rev9"),
         consumer="census",
         needed_ids=confirm_ids[:4],
-        config=maintenance,
+        config=bounded,
     )
     assert out_again.outcome == OUTCOME_DEBOUNCED
     assert t_again.calls == []
@@ -1054,7 +1039,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_B, generation="rev9"),
         consumer="census",
         needed_ids=confirm_ids,
-        config=maintenance,
+        config=bounded,
     )
     assert out_other.outcome != OUTCOME_DEBOUNCED
     assert out_other.outcome == OUTCOME_CAPPED  # its own bounded job, route cap labelled
@@ -1068,7 +1053,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(rows, scope=SCOPE_A, generation="rev9"),
         consumer="census",
         needed_ids=confirm_ids,
-        config=maintenance,
+        config=bounded,
     )
     assert out_back.outcome == OUTCOME_CAPPED  # again its own job, never a reuse
     assert t_back.calls
@@ -1371,39 +1356,6 @@ def test_scope_mismatch_does_not_leak_foreign_job_id(tmp_path: Path) -> None:
     assert out.job_id != "foreign-job"
 
 
-@pytest.mark.parametrize(
-    "env",
-    [
-        {"VERDICT_REFRESH_MAX_ROUTES": "5"},
-        {"VERDICT_REFRESH_MAX_REQUESTS": "17"},
-        {"VERDICT_REFRESH_WALL_SECONDS": "601"},
-        {"VERDICT_REFRESH_CONCURRENCY": "5"},
-        {"VERDICT_REFRESH_OUTPUT_TOKENS": "4097"},
-        {"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"},
-    ],
-)
-def test_maintenance_env_can_never_exceed_contract_caps(env: dict[str, str]) -> None:
-    from verdict.orchestration.verified_refresh import maintenance_from_env
-
-    with pytest.raises(RefreshConfigError):
-        maintenance_from_env(env)
-
-
-def test_maintenance_env_may_lower_caps() -> None:
-    from verdict.orchestration.verified_refresh import maintenance_from_env
-
-    lowered = maintenance_from_env(
-        {
-            "VERDICT_REFRESH_MAX_ROUTES": "2",
-            "VERDICT_REFRESH_MAX_REQUESTS": "8",
-            "VERDICT_REFRESH_OUTPUT_TOKENS": "1024",
-            "VERDICT_REFRESH_MAX_PER_PROVIDER": "1",
-        }
-    )
-    assert (lowered.max_routes, lowered.max_requests) == (2, 8)
-    assert (lowered.output_tokens, lowered.max_per_provider) == (1024, 1)
-
-
 def test_per_provider_cap_normalizes_provider_names() -> None:
     providers = ["OpenAI", "openai", "OpenAI ", "OPENAI"]
     rows = [_row(f"x/m{i}", provider=p) for i, p in enumerate(providers)]
@@ -1416,12 +1368,9 @@ def test_per_provider_cap_normalizes_provider_names() -> None:
     assert len(picked) == 2
 
 
-def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
-    from verdict.orchestration.verified_refresh import maintenance_from_env
-
+def test_interactive_has_no_per_provider_cap() -> None:
     assert RefreshConfig().max_per_provider is None
     assert config_from_env({}).max_per_provider is None
-    assert maintenance_from_env({}).max_per_provider == 2
     rows = [_row(f"cc/r{i}") for i in range(5)]
     picked = select_candidates(
         _snapshot(rows),
