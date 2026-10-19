@@ -1715,6 +1715,10 @@ def test_concurrent_requests_never_exceed_the_cap(tmp_path: Path) -> None:
         config=RefreshConfig(concurrency=4, max_requests=6),
         on_progress=events.append,
     )
+    # requests_made == len(transport.calls) == 6 is the timing-independent
+    # check: a 4th admitted probe makes 2 more transport calls regardless of
+    # how fast or slow it runs, so this assertion alone would already fail
+    # if a 4th probe were ever admitted next to 3 in flight.
     assert out.requests_made == len(transport.calls) == 6
     assert out.cap_reason == REASON_REQUEST_CAP
     # Requests reserved by in-flight probes count against the cap: a 4th probe
