@@ -1853,6 +1853,22 @@ class HealthCache:
         found = self._dispatch_scopes.get(scope.to_key())
         return found.epoch if found is not None else 0
 
+    def latest_revocation_at(self, scope: DispatchScope) -> datetime | None:
+        """Latest persisted revocation observation for the scope, or None.
+
+        Read-only, same path as ``revocation_epoch``: the maximum
+        ``observed_at`` among the scope's recorded revocations. Admission
+        compares a passport's ``qualified_at`` against it, so a passport
+        qualified at or before the latest revocation never re-authorizes
+        dispatch even while still fresh.
+        """
+        if not isinstance(scope, DispatchScope):
+            raise HealthCacheError("revocation lookup requires a DispatchScope")
+        found = self._dispatch_scopes.get(scope.to_key())
+        if found is None:
+            return None
+        return max((event.observed_at for event in found.revocations.values()), default=None)
+
     def permit_for_attempt(self, attempt_id: str) -> DispatchPermit | None:
         """The permit a consumed attempt minted, or None when absent."""
         found = self._dispatch_attempts.get(attempt_id)

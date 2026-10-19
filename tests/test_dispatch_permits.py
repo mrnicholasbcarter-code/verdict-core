@@ -207,3 +207,26 @@ def test_dispatch_envelope_is_additive_for_permit_free_caches(tmp_path: Path) ->
     assert "dispatch" not in json.loads(path.read_text(encoding="utf-8"))
     _commit(cache, "attempt-1")
     assert "dispatch" in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_latest_revocation_at_is_read_only_scoped_maximum(tmp_path: Path) -> None:
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
+    assert cache.latest_revocation_at(SCOPE) is None
+    assert not path.exists()
+    cache.record_revocation(
+        SCOPE, route_id=ROUTE, event_id="newer", source_revision=None, observed_at=_at(30)
+    )
+    cache.record_revocation(
+        SCOPE, route_id=ROUTE, event_id="older", source_revision=None, observed_at=NOW
+    )
+    other_scope = DispatchScope("https://other.example", "c", "p", "b")
+    cache.record_revocation(
+        other_scope, route_id=ROUTE, event_id="other", source_revision=None, observed_at=_at(60)
+    )
+    before = path.read_bytes()
+    reopened = HealthCache(path)
+    assert reopened.latest_revocation_at(SCOPE) == _at(30)
+    assert reopened.latest_revocation_at(other_scope) == _at(60)
+    assert reopened.revocation_epoch(SCOPE) == 2
+    assert path.read_bytes() == before

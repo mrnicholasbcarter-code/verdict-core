@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import ClientDisconnect
 
 import verdict.api as api
+from tests.relay_proof_helpers import with_relay_proofs
 from verdict.capability_passports import RouteIdentity
 from verdict.execution_path import ExecutionPathRequest
 from verdict.intelligence import ReadinessReport
@@ -238,14 +239,17 @@ class FixedIntelligence:
         request_id: str | None = None,
     ) -> RoutingDecision:
         assert task == "preserve all fields"
-        return RoutingDecision(
-            model="selected-model",
-            provider="omniroute",
-            tier=2,
-            reason="test selection",
-            request_id="request-1",
-            managed_backend_status="healthy",
-            quality_outcome="unknown",
+        return with_relay_proofs(
+            RoutingDecision(
+                model="selected-model",
+                provider="omniroute",
+                tier=2,
+                reason="test selection",
+                request_id="request-1",
+                managed_backend_status="healthy",
+                quality_outcome="unknown",
+            ),
+            context,
         )
 
     def readiness(self) -> ReadinessReport:
@@ -1058,13 +1062,16 @@ def test_compatibility_400_is_not_retried_unchanged_or_failed_over(monkeypatch) 
     class NvidiaIntelligence(FixedIntelligence):
         async def route(self, task, criticality="medium", context=None, *, request_id=None):
             decision = await super().route(task, criticality, context)
-            return replace(
-                decision,
-                model=NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
-                alternatives=["nvidia/backup"],
-                candidate_states=[
-                    {"model_id": "nvidia/backup", "admitted": True, "state": "ready"}
-                ],
+            return with_relay_proofs(
+                replace(
+                    decision,
+                    model=NVIDIA_RESPONSES_COMPATIBILITY_MODEL_IDS[0],
+                    alternatives=["nvidia/backup"],
+                    candidate_states=[
+                        {"model_id": "nvidia/backup", "admitted": True, "state": "ready"}
+                    ],
+                ),
+                context,
             )
 
     monkeypatch.setattr(api, "_build_intelligence", lambda: NvidiaIntelligence())
@@ -1138,10 +1145,15 @@ def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(monk
     class Alternatives(FixedIntelligence):
         async def route(self, task, criticality="medium", context=None, *, request_id=None):
             decision = await super().route(task or "preserve all fields", criticality, context)
-            return replace(
-                decision,
-                alternatives=["backup-model"],
-                candidate_states=[{"model_id": "backup-model", "admitted": True, "state": "ready"}],
+            return with_relay_proofs(
+                replace(
+                    decision,
+                    alternatives=["backup-model"],
+                    candidate_states=[
+                        {"model_id": "backup-model", "admitted": True, "state": "ready"}
+                    ],
+                ),
+                context,
             )
 
     monkeypatch.setattr(api, "_build_intelligence", lambda: Alternatives())

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -67,10 +68,16 @@ from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, Intelligen
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.orchestration.health_cache import (
+    PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    HealthCache,
+    default_cache_path,
+)
 from verdict.outcome_log import build_outcome_record, log_outcome
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
     build_attempts,
+    dispatch_scope,
     failure_class,
     fatal_identity_mismatch,
     idempotency_key,
@@ -78,7 +85,6 @@ from verdict.relay import (
     protocol_for_surface,
     response_actual_route_status,
     retry_safety,
-    retryable_exception,
     retryable_response_status,
     transition_edge,
 )
@@ -1482,6 +1488,7 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
     # The compiled pack is workspace content bound for the upstream model, not
     # a client-facing decision field (cheap-path pack). Its digest lives in the receipt.
     data.pop("context_pack_prompt", None)
+    data.pop("admission_proofs", None)
     return cast(dict[str, Any], redact_contract_secrets(data))
 
 
@@ -1815,6 +1822,10 @@ async def list_passports(request: Request, model_ids: str | None = None) -> Resp
     return JSONResponse(content={"passports": passports})
 
 
+def _dispatch_attempt_id() -> str:
+    return uuid.uuid4().hex
+
+
 async def _relay_completion(request: Request, *, surface: str) -> Response:
     """Route and transparently forward one OpenAI protocol surface."""
     if intelligence_instance is None or proxy_instance is None:
@@ -1860,6 +1871,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     request_id = safe_identifier(client_request_id, prefix="req")
     try:
         authority_context = _authority_context(payload, task=task)
+        authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -1968,6 +1980,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             evidence_key,
         )
 
+    dispatch_denial: str | None = None
     for index, attempt in enumerate(attempts):
         if index:
             edge = transition_edge(
@@ -2014,6 +2027,40 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         # receives. Injection is recorded per attempt and never claimed when
         # the pack is empty/failed or the task did not survive compilation.
         forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
+        proof = next(
+            (proof for proof in decision.admission_proofs.values() if proof.model == attempt.model),
+            None,
+        )
+        if proof is None:
+            dispatch_denial = "dispatch denied: missing route-bound admission proof"
+            continue
+        expected_scope = dispatch_scope(
+            gateway_origin=proxy_instance.base_url,
+            provider=proof.provider,
+            model=attempt.model,
+            route_id=proof.route_id,
+            profile_digest=proof.scope.profile_digest,
+        )
+        now = datetime.now(timezone.utc)
+        attempt_id = _dispatch_attempt_id()
+        if proof.scope != expected_scope or proof.qualified_at > now:
+            dispatch_denial = "dispatch denied: proof scope or observation mismatch"
+            continue
+        permit = HealthCache(default_cache_path()).commit_dispatch(
+            expected_scope,
+            route_id=proof.route_id,
+            attempt_id=attempt_id,
+            authorization_digest=proof.authorization_digest,
+            expected_epoch=proof.epoch,
+            proof_deadline=min(
+                proof.expires_at,
+                proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
+            ),
+            now=now,
+        )
+        if permit is None:
+            dispatch_denial = "dispatch denied: permit commit rejected proof"
+            continue
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
@@ -2022,6 +2069,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if isinstance(result, StreamedUpstreamResponse):
                 result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
                 result = await _prime_stream(result)
+            if HealthCache(default_cache_path()).revocation_epoch(proof.scope) != permit.epoch:
+                if isinstance(result, StreamedUpstreamResponse):
+                    close = getattr(result.body, "aclose", None)
+                    if callable(close):
+                        await close()
+                raise RuntimeError("dispatch permit revoked after commit; possibly sent")
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
             # detection).  Error responses are always BufferedUpstreamResponse, so
@@ -2030,6 +2083,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if result.status_code >= 400 and isinstance(result, BufferedUpstreamResponse):
                 _error_body = result.body[:8192].decode("utf-8", errors="replace")
             _last_error_body = _error_body
+            if result.status_code in {401, 403} or (
+                result.status_code == 404 and "model" in _error_body.lower()
+            ):
+                HealthCache(default_cache_path()).record_revocation(
+                    proof.scope,
+                    route_id=proof.route_id,
+                    event_id=f"{request_id}:{permit.permit_id}:denied",
+                    source_revision=None,
+                    observed_at=datetime.now(timezone.utc),
+                )
             # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
             _record_execution_outcome(
@@ -2041,6 +2104,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
             served_model = result.actual_route.model_id if result.actual_route is not None else None
             if fatal_identity_mismatch(attempt.model, served_model):
+                HealthCache(default_cache_path()).record_revocation(
+                    proof.scope,
+                    route_id=proof.route_id,
+                    event_id=f"{request_id}:{permit.permit_id}:identity_mismatch",
+                    source_revision=None,
+                    observed_at=datetime.now(timezone.utc),
+                )
                 attempts_used.append(
                     {
                         "model": attempt.model,
@@ -2104,6 +2174,10 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 body=_error_body,
             ):
                 break
+            # A later denial fences this request even when its rejection or
+            # idempotency key would otherwise make an alternative safe.
+            if HealthCache(default_cache_path()).revocation_epoch(proof.scope) != permit.epoch:
+                break
             last_error = None
         except asyncio.CancelledError:
             outcome = build_outcome_event(
@@ -2137,10 +2211,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "transition_edge": edge.to_dict() if edge is not None else None,
                 },
             )
-            if not retryable_exception(exc):
-                break
+            # Once committed, a transport failure may have executed upstream.
+            break
 
     if result is None:
+        if dispatch_denial is not None and not attempts_used:
+            return _proxy_error(503, dispatch_denial)
         evidence = _finish_evidence(
             route_evidence,
             build_outcome_event(
