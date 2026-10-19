@@ -4649,7 +4649,15 @@ def cmd_prove_at_rest(
                 f"code={code}: {exc}; retaining last complete state and retrying in {interval}s",
             )
 
+        def report_cycle(stats: Any) -> None:
+            if not output_json:
+                print(
+                    "prove-at-rest cycle: " + json.dumps(stats.to_dict(), sort_keys=True),
+                    flush=True,
+                )
+
         daemon.prober.on_cycle_error = report_cycle_error
+        daemon.prober.on_cycle = report_cycle
         try:
             daemon.run_forever()
         except KeyboardInterrupt:

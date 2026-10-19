@@ -717,3 +717,135 @@ def test_chat_phase_uses_the_callers_probe_timeout(tmp_path: Path) -> None:
         agentic_max_routes=0,
     ).run_once()
     assert seen == [5.0]
+
+
+@pytest.mark.parametrize("kind", ["joined", "debounced", "lock_timeout", "reused_fresh"])
+def test_chat_phase_reports_a_joined_job_by_name_and_keeps_the_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """BOD-297/S12 item 2: a run that did not own the coordinator job says so.
+
+    The owner's counts are not this process's work: probed stays 0 and the
+    durable cursor is neither advanced nor cleared.
+    """
+    from verdict.orchestration import verified_refresh
+    from verdict.orchestration.verified_refresh import RefreshOutcome, RouteOutcome
+
+    def fake_refresh(self: Any, snapshot: Any, **kwargs: Any) -> RefreshOutcome:
+        ids = [row.route_id for row in snapshot.rows]
+        return RefreshOutcome(
+            outcome=kind,
+            job_id="owner-job",
+            consumer="prove_at_rest",
+            probed=1,
+            verified=1,
+            failed=0,
+            unavailable=0,
+            requests_made=0,
+            elapsed_seconds=0.0,
+            route_outcomes={
+                rid: RouteOutcome(rid, rid.split("/", 1)[0], i == 0, i == 0)
+                for i, rid in enumerate(ids)
+            },
+            complete=True,
+        )
+
+    monkeypatch.setattr(verified_refresh.RefreshCoordinator, "refresh_for_consumer", fake_refresh)
+    cache = HealthCache(tmp_path / "cache.json")
+    cursor = {"cycle_open": True, "probed_ids": ["old/m"]}
+    cache.set_cursor(cursor)
+    cache.save()
+    calls: list[str] = []
+    stats = Prober(
+        cache,
+        lambda: [_free("a/m"), _free("b/m")],
+        lambda rid, phase, timeout: calls.append(rid) or _dead_chat(rid, phase, timeout),
+        agentic_max_routes=0,
+        clock=lambda: NOW,
+        sleep=lambda _s: None,
+    ).run_once()
+    assert stats.stopped_reason == kind
+    assert stats.probed == 0
+    assert stats.fresh == 0
+    assert stats.requests == 0
+    assert calls == []
+    assert HealthCache(cache.path).cursor == cursor
+
+
+def test_run_forever_reports_each_successful_cycle(tmp_path: Path) -> None:
+    """BOD-297/S12 item 3: the daemon hands every finished cycle to on_cycle."""
+    seen: list[CycleStats] = []
+    prober = Prober(
+        HealthCache(tmp_path / "cache.json"),
+        lambda: [],
+        _dead_chat,
+        agentic_max_routes=0,
+        interval_seconds=0.25,
+        clock=lambda: NOW,
+        sleep=lambda _s: prober.stop() if len(seen) >= 2 else None,
+        on_cycle=seen.append,
+    )
+    last = prober.run_forever()
+    assert len(seen) == 2
+    assert seen[-1] is last
+
+
+def test_daemon_cli_prints_one_stats_line_per_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BOD-297/S12 item 3: journald gets `prove-at-rest cycle: {json}` per cycle."""
+    from verdict import cli, prove_at_rest
+
+    prober = Prober(
+        HealthCache(tmp_path / "cache.json"),
+        lambda: [],
+        _dead_chat,
+        agentic_max_routes=0,
+        interval_seconds=0.25,
+        clock=lambda: NOW,
+        sleep=lambda _s: prober.stop(),
+    )
+
+    def fake_build(**_kwargs: Any) -> prove_at_rest.ProverDaemon:
+        return prove_at_rest.ProverDaemon(prober=prober, consented=True)
+
+    monkeypatch.setattr(prove_at_rest, "build_live_daemon", fake_build)
+    cli.cmd_prove_at_rest(
+        "daemon", state_path=str(tmp_path / "cache.json"), allow_live_probe=True, interval=0.25
+    )
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("prove-at-rest cycle: ")
+    ]
+    assert len(lines) == 1
+    assert (
+        json.loads(lines[0].removeprefix("prove-at-rest cycle: "))
+        == CycleStats(stopped_reason="complete").to_dict()
+    )
+
+
+def test_run_forever_survives_an_on_cycle_error(tmp_path: Path) -> None:
+    """A failing on_cycle (e.g. BrokenPipeError) goes to on_cycle_error; the loop continues."""
+    cycles: list[CycleStats] = []
+    errors: list[Exception] = []
+
+    def on_cycle(stats: CycleStats) -> None:
+        cycles.append(stats)
+        if len(cycles) == 1:
+            raise BrokenPipeError("stdout closed")
+
+    prober = Prober(
+        HealthCache(tmp_path / "cache.json"),
+        lambda: [],
+        _dead_chat,
+        agentic_max_routes=0,
+        interval_seconds=0.25,
+        clock=lambda: NOW,
+        sleep=lambda _s: prober.stop() if len(cycles) >= 2 else None,
+        on_cycle=on_cycle,
+        on_cycle_error=errors.append,
+    )
+    prober.run_forever()
+    assert len(cycles) == 2
+    assert [type(e) for e in errors] == [BrokenPipeError]

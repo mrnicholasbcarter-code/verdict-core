@@ -352,6 +352,9 @@ ProbeTransportFn = Callable[[str, str, float], ProbeExchange]
 # returns the per-model results, or None when the screen itself failed.
 ScreenTransportFn = Callable[[str, Sequence[str], float], Mapping[str, Mapping[str, Any]] | None]
 
+# RefreshOutcome.outcome values where this process did not run the probe job.
+_NOT_OWNED_OUTCOMES = frozenset({"joined", "debounced", "lock_timeout", "reused_fresh"})
+
 
 @dataclass
 class CycleStats:
@@ -900,6 +903,7 @@ class Prober:
     monotonic: Callable[[], float] = field(default=time.monotonic)
     sleep: Callable[[float], None] = field(default=time.sleep)
     on_cycle_error: Callable[[Exception], None] | None = None
+    on_cycle: Callable[[CycleStats], None] | None = None
     agentic_interval_hours: float = DEFAULT_AGENTIC_INTERVAL_HOURS
     agentic_transport: Callable[[str, dict[str, Any], float], ProbeExchange] | None = None
     # The agentic phase has its own budget: it runs even when the chat phase
@@ -1173,6 +1177,12 @@ class Prober:
             config=config,
             explicit=True,
         )
+        if outcome.outcome in _NOT_OWNED_OUTCOMES:
+            # Another producer's job (or its fresh/debounced result) answered
+            # this cycle: this process probed nothing, so report the outcome
+            # by name and leave the cursor for the next owned cycle.
+            stats.stopped_reason = outcome.outcome
+            return
         stats.requests += outcome.requests_made
         stats.probed += outcome.probed
         stats.fresh += outcome.verified + outcome.alive
@@ -1470,16 +1480,17 @@ class Prober:
         now = self.clock()
         cooled_before = _cooled_pools(self.cache, now)
         groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
-        for route in candidates:
-            key = (route.provider, _pool_of(route))
-            limit = (
-                1
-                if key[1] in cooled_before
-                else min(self.agentic_max_routes, SCREEN_TEST_ALL_MAX_MODELS)
-            )
-            group = groups.setdefault(key, [])
-            if len(group) < limit:
-                group.append(route)
+        if self.agentic_max_routes > 0:
+            for route in candidates:
+                key = (route.provider, _pool_of(route))
+                limit = (
+                    1
+                    if key[1] in cooled_before
+                    else min(self.agentic_max_routes, SCREEN_TEST_ALL_MAX_MODELS)
+                )
+                group = groups.setdefault(key, [])
+                if len(group) < limit:
+                    group.append(route)
         if not groups:
             return []
         remaining = deadline - self.monotonic()
@@ -1726,6 +1737,8 @@ class Prober:
         while not self._stop.is_set():
             try:
                 last = self.run_once()
+                if self.on_cycle is not None:
+                    self.on_cycle(last)
             except Exception as exc:
                 if self.on_cycle_error is not None:
                     self.on_cycle_error(exc)
