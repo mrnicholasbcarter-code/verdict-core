@@ -427,3 +427,148 @@ def test_metadata_doctor_keeps_missing_service_result_explicit(
     metadata_row = next(row for row in rows if row["label"] == "Metadata refresh timer")
     assert metadata_row["status"] == "failed"
     assert "last service result is unknown" in metadata_row["detail"]
+
+
+# ---------------------------------------------------------------------------
+# installed runtime provenance (BOD-414 / S11, acceptance A29)
+# ---------------------------------------------------------------------------
+
+
+def _fake_site_packages(root: Path, commit: str) -> Path:
+    """A uv-tool style install: package plus dist-info recording the git commit."""
+    package = root / "site-packages" / "verdict"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "0.5.0"\n')
+    dist = root / "site-packages" / "verdict_core-0.5.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Name: verdict-core\nVersion: 0.5.0\n")
+    (dist / "direct_url.json").write_text(
+        '{"url": "https://example.invalid/verdict-core", "vcs_info": {"vcs": "git",'
+        f' "commit_id": "{commit}"}}}}'
+    )
+    return package
+
+
+def _fake_checkout(root: Path, commit: str) -> Path:
+    """A source checkout whose HEAD is ``commit`` (detached), like a stale worktree."""
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(commit + "\n")
+    package = root / "verdict"
+    package.mkdir()
+    (package / "__init__.py").write_text('__version__ = "0.5.0"\n')
+    return package
+
+
+def _unit(cwd: Path, interpreter: str, argv: str, environment: str = "") -> dict[str, str]:
+    return {
+        "LoadState": "loaded",
+        "WorkingDirectory": str(cwd),
+        "ExecStart": f"{{ path={interpreter} ; argv[]={interpreter} {argv} ; status=0/0 }}",
+        "Environment": environment,
+    }
+
+
+def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: Path) -> None:
+    reviewed_commit = "4f642962894da7ac4c84615eac3bcc4b35f6d1f3"
+    reviewed = _fake_site_packages(tmp_path / "uv-tool", reviewed_commit)
+    tool_python = str(tmp_path / "uv-tool" / "bin" / "python")
+    # Copy 1: the operator's source checkout (prime-sync cwd + its .venv), at another commit.
+    source = _fake_checkout(
+        tmp_path / "dev" / "verdict-core", "31873e6045ce04a47f98000927c28c82270da96a"
+    )
+    source_python = str(tmp_path / "dev" / "verdict-core" / ".venv" / "bin" / "python")
+    # Copy 2: a stranded worktree with its own venv (the acceptance job today).
+    stale = _fake_checkout(
+        tmp_path / "worktrees" / "train2", "5a941b68aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
+    stale_python = str(tmp_path / "worktrees" / "train2" / ".venv" / "bin" / "python")
+    # Copy 3: the census runtime copy (package only, no recorded build).
+    runtime = tmp_path / "census-runtime" / "repo"
+    (runtime / "verdict").mkdir(parents=True)
+    (runtime / "verdict" / "__init__.py").write_text('__version__ = "0.5.0"\n')
+
+    units = {
+        "verdict-prime-sync.service": _unit(
+            source.parent, source_python, "-m verdict harness prime sync-models"
+        ),
+        "verdict-acceptance.service": _unit(
+            stale.parent, stale_python, "-m verdict acceptance run --notify dry-run"
+        ),
+        "verdict-census.service": _unit(
+            runtime, source_python, "-m verdict census --max-per-provider 2"
+        ),
+        "verdict-prove-at-rest.service": _unit(
+            tmp_path,
+            tool_python,
+            "-m verdict prove-at-rest daemon --allow-live-probe --interval 300",
+            environment=f"VERDICT_HOME={tmp_path / 'other-home'} OMNIROUTE_BASE_URL=http://gw:20128",
+        ),
+        "verdict-metadata-refresh.service": _unit(
+            reviewed.parent, tool_python, "-m verdict metadata refresh --include-p1"
+        ),
+    }
+    # What each interpreter imports from each cwd: cwd shadows, else its own install.
+    installs = {source_python: source, stale_python: stale, tool_python: reviewed}
+
+    def resolve(interpreter: str, cwd: str) -> str | None:
+        if (Path(cwd) / "verdict" / "__init__.py").is_file():
+            return str(Path(cwd) / "verdict")
+        return str(installs[interpreter])
+
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda unit: units.get(unit, {"LoadState": "not-found"}),
+        resolve=resolve,
+        reviewed_package=reviewed,
+        home=tmp_path / "home",
+        state_home=tmp_path / "home" / ".verdict",
+    )
+    by_unit = {row["unit"]: row for row in rows if "unit" in row}
+
+    # All three source-copy mismatches are named with the package they import.
+    prime = by_unit["verdict-prime-sync.service"]
+    assert prime["status"] == "failed"
+    assert str(source) in prime["detail"] and "31873e6045ce" in prime["detail"]
+    acceptance_row = by_unit["verdict-acceptance.service"]
+    assert acceptance_row["status"] == "failed"
+    assert str(stale) in acceptance_row["detail"] and "5a941b68aaaa" in acceptance_row["detail"]
+    census = by_unit["verdict-census.service"]
+    assert census["status"] == "failed"
+    assert str(runtime / "verdict") in census["detail"]
+    assert "unrecorded" in census["detail"]
+    # Reviewed build, but a different state scope cannot count as main proof.
+    prove = by_unit["verdict-prove-at-rest.service"]
+    assert prove["status"] == "failed"
+    assert "state scope" in prove["detail"] and str(tmp_path / "other-home") in prove["detail"]
+    assert "http://gw:20128" in prove["detail"]
+    # Matching build and config passes and still shows build, imports, gateway and scope.
+    metadata_row = by_unit["verdict-metadata-refresh.service"]
+    assert metadata_row["status"] == "ok", metadata_row
+    assert str(reviewed) in metadata_row["detail"]
+    assert reviewed_commit[:12] in metadata_row["detail"]
+    assert "gateway default" in metadata_row["detail"]
+    assert str(tmp_path / "home" / ".verdict") in metadata_row["detail"]
+
+    # Two independent qualification loops: the standalone census is diagnosed.
+    owner = next(row for row in rows if row["label"] == "Qualification owner")
+    assert owner["status"] == "warning"
+    assert "verdict-census.service" in owner["detail"]
+    assert "verdict-prove-at-rest.service" in owner["detail"]
+
+    # Converged host: every unit on the reviewed build and scope, one qualifier.
+    converged = {
+        name: _unit(
+            reviewed.parent, tool_python, unit["ExecStart"].split(" ; ")[1].split(" ", 1)[1]
+        )
+        for name, unit in units.items()
+        if name != "verdict-census.service"
+    }
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda unit: converged.get(unit, {"LoadState": "not-found"}),
+        resolve=resolve,
+        reviewed_package=reviewed,
+        home=tmp_path / "home",
+        state_home=tmp_path / "home" / ".verdict",
+    )
+    assert [row["status"] for row in rows] == ["ok"] * len(rows), rows
+    owner = next(row for row in rows if row["label"] == "Qualification owner")
+    assert "verdict-prove-at-rest.service" in owner["detail"]

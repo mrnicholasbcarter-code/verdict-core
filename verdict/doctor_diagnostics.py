@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -755,7 +756,7 @@ def _collect_doctor_diagnostics(
     # cache is too stale or empty to mean anything, instead of only checking
     # docs/config/gateway and leaving the actual background service unverified.
     sections.append(("Installed services", "header", ""))
-    for row in (*installed_service_rows(), *service_code_path_rows()):
+    for row in (*installed_service_rows(), *service_code_path_rows(), *installed_runtime_rows()):
         sections.append((row["label"], row["status"], row["detail"]))
         if row["status"] == "failed":
             issues_found.append(row["detail"])
@@ -994,13 +995,20 @@ def _run_systemctl_show_props(args: list[str]) -> subprocess.CompletedProcess[st
 
 
 def _systemctl_show_props(
-    unit: str,
-    run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show_props,
+    unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
 ) -> dict[str, str]:
-    """``LoadState``/``WorkingDirectory``/``ExecStart`` for one unit. Never raises."""
+    """``LoadState``/``WorkingDirectory``/``ExecStart``/``Environment`` for one unit. Never raises."""
+    run = run or _run_systemctl_show_props
     try:
         result = run(
-            ["systemctl", "--user", "show", "-p", "LoadState,WorkingDirectory,ExecStart", unit]
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "-p",
+                "LoadState,WorkingDirectory,ExecStart,Environment",
+                unit,
+            ]
         )
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -1121,4 +1129,170 @@ def service_code_path_rows(
                     "detail": f"{unit}: cwd {working_directory}, package {imported}",
                 }
             )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Installed runtime provenance (BOD-414 / S11, acceptance A29): every
+# installed Verdict unit must import the reviewed build doctor itself runs
+# from, with the same state scope. A unit on a source checkout, a stranded
+# worktree or the census runtime copy is a different source copy and its
+# results cannot count as proof of the reviewed build.
+# ---------------------------------------------------------------------------
+
+_RUNTIME_UNITS = (
+    "verdict-prove-at-rest.service",
+    "verdict-census.service",
+    "verdict-acceptance.service",
+    "verdict-prime-sync.service",
+    "verdict-metadata-refresh.service",
+)
+# Units that run their own route-qualification probe loop.
+_QUALIFIER_UNITS = ("verdict-prove-at-rest.service", "verdict-census.service")
+
+
+def _git_head(checkout: Path) -> str | None:
+    """Commit of a checkout or worktree, read from its git files (no git binary)."""
+    git = checkout / ".git"
+    if git.is_file():
+        pointer = git.read_text().strip()
+        if not pointer.startswith("gitdir:"):
+            return None
+        git = (checkout / pointer.removeprefix("gitdir:").strip()).resolve()
+    head_file = git / "HEAD"
+    if not head_file.is_file():
+        return None
+    head = head_file.read_text().strip()
+    if not head.startswith("ref:"):
+        return head or None
+    ref = head.removeprefix("ref:").strip()
+    common = git
+    if (git / "commondir").is_file():
+        common = (git / (git / "commondir").read_text().strip()).resolve()
+    for base in (git, common):
+        if (base / ref).is_file():
+            return (base / ref).read_text().strip() or None
+    packed = common / "packed-refs"
+    if packed.is_file():
+        for line in packed.read_text().splitlines():
+            sha, _, name = line.partition(" ")
+            if name == ref:
+                return sha
+    return None
+
+
+def package_build(package: Path) -> str:
+    """Recorded build of a ``verdict`` package: the git commit it was built from.
+
+    An installed distribution records it in ``direct_url.json``; a checkout in
+    its git HEAD. A copy with neither (the census runtime copy) is unrecorded.
+    """
+    root = package.parent
+    for dist in sorted(root.glob("verdict_core-*.dist-info")):
+        try:
+            payload = json.loads((dist / "direct_url.json").read_text())
+        except (OSError, ValueError):
+            continue
+        commit = payload.get("vcs_info", {}).get("commit_id") if isinstance(payload, dict) else None
+        if isinstance(commit, str) and commit:
+            return f"git {commit[:12]}"
+    try:
+        commit = _git_head(root)
+    except OSError:
+        commit = None
+    return f"git {commit[:12]}" if commit else "unrecorded"
+
+
+def _unit_environment(value: str) -> dict[str, str]:
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return {}
+    return dict(word.split("=", 1) for word in words if "=" in word)
+
+
+def installed_runtime_rows(
+    *,
+    unit_props: Callable[[str], dict[str, str]] | None = None,
+    resolve: Callable[[str, str], str | None] = _resolve_verdict_package,
+    reviewed_package: Path | None = None,
+    home: Path | None = None,
+    state_home: Path | None = None,
+) -> list[dict[str, str]]:
+    """Doctor rows: build, imported package, gateway and state scope per installed unit.
+
+    A unit fails when the package its ExecStart interpreter imports from its
+    WorkingDirectory is not ``reviewed_package`` (default: the package this
+    doctor runs from) or when its effective ``VERDICT_HOME`` differs from
+    ``state_home``. More than one loaded qualification loop is a warning.
+    Units that are not loaded are skipped, so a CI runner gets no rows.
+    """
+    from verdict.paths import verdict_home
+
+    unit_props = unit_props or _systemctl_show_props
+    reviewed = (reviewed_package or Path(__file__).resolve().parent).resolve()
+    user_home = home or Path.home()
+    scope = state_home or verdict_home()
+    reviewed_build = package_build(reviewed)
+    rows: list[dict[str, str]] = []
+    qualifiers: list[str] = []
+    for unit in _RUNTIME_UNITS:
+        props = unit_props(unit)
+        if props.get("LoadState", "not-found") != "loaded":
+            continue
+        if unit in _QUALIFIER_UNITS:
+            qualifiers.append(unit)
+        label = f"Runtime {unit.removeprefix('verdict-').removesuffix('.service')}"
+        cwd = props.get("WorkingDirectory", "")
+        interpreter = _parse_execstart_interpreter(props.get("ExecStart", ""))
+        imported = resolve(interpreter, cwd) if cwd and interpreter else None
+        if imported is None:
+            rows.append(
+                {
+                    "label": label,
+                    "unit": unit,
+                    "status": "failed",
+                    "detail": f"{unit}: cannot resolve the verdict package"
+                    f" (interpreter {interpreter}, cwd {cwd or 'unset'})",
+                }
+            )
+            continue
+        environment = _unit_environment(props.get("Environment", ""))
+        unit_scope = verdict_home({"HOME": str(user_home), **environment})
+        gateway = environment.get("OMNIROUTE_BASE_URL") or "default"
+        package = Path(imported).resolve()
+        build = package_build(package)
+        problems = []
+        if package != reviewed:
+            problems.append(f"imports {package} ({build}), not the reviewed build {reviewed}")
+        if unit_scope != scope:
+            problems.append(f"state scope {unit_scope}, not {scope}")
+        facts = f"package {package}, build {build}, gateway {gateway}, state {unit_scope}"
+        rows.append(
+            {
+                "label": label,
+                "unit": unit,
+                "status": "failed" if problems else "ok",
+                "detail": f"{unit}: "
+                + (
+                    "; ".join(problems) + f" (reviewed build {reviewed_build}; {facts})"
+                    if problems
+                    else facts
+                ),
+            }
+        )
+    if len(qualifiers) > 1:
+        rows.append(
+            {
+                "label": "Qualification owner",
+                "status": "warning",
+                "detail": "independent qualification loops "
+                + ", ".join(qualifiers)
+                + "; only one unit may own qualification",
+            }
+        )
+    elif qualifiers:
+        rows.append(
+            {"label": "Qualification owner", "status": "ok", "detail": f"{qualifiers[0]} only"}
+        )
     return rows
