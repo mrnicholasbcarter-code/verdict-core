@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.relay_proof_helpers import with_relay_proofs
 from tests.test_proxy import FixedIntelligence, ResponsesTransport, _configure_test_app
 from verdict import api
 from verdict.admission import RuntimeEvidence, RuntimeObservation, admit
@@ -92,7 +93,7 @@ def test_relay_rejects_dead_selected_route_before_upstream_call(monkeypatch: Any
     class DeadIntelligence(FixedIntelligence):
         async def route(self, task, criticality="medium", context=None, *, request_id=None):  # type: ignore[no-untyped-def]
             decision = await super().route(task, criticality, context)
-            return replace(decision, model=DEAD)
+            return with_relay_proofs(replace(decision, model=DEAD), context)
 
     monkeypatch.setattr(api, "_build_intelligence", lambda: DeadIntelligence())
     monkeypatch.setattr(api, "relay_admission_provider", _admitted)
@@ -110,11 +111,14 @@ def test_wired_hook_never_fails_over_to_admitted_out_alternative(monkeypatch: An
     class Alternatives(FixedIntelligence):
         async def route(self, task, criticality="medium", context=None, *, request_id=None):  # type: ignore[no-untyped-def]
             decision = await super().route(task, criticality, context)
-            return replace(
-                decision,
-                model="kr/ok",
-                alternatives=[DEAD],
-                candidate_states=[{"model_id": DEAD, "admitted": True, "state": "ready"}],
+            return with_relay_proofs(
+                replace(
+                    decision,
+                    model="kr/ok",
+                    alternatives=[DEAD],
+                    candidate_states=[{"model_id": DEAD, "admitted": True, "state": "ready"}],
+                ),
+                context,
             )
 
     monkeypatch.setattr(api, "_build_intelligence", lambda: Alternatives())

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from fastapi.testclient import TestClient
 
+from tests.relay_proof_helpers import with_relay_proofs
 from tests.test_proxy import FixedIntelligence, _configure_test_app
 from verdict import api
 from verdict.proxy import UpstreamProxy
@@ -80,16 +81,19 @@ class TwoModelIntelligence(FixedIntelligence):
     ) -> Any:
         from verdict.models import RoutingDecision
 
-        return RoutingDecision(
-            model="selected-model",
-            provider="omniroute",
-            tier=2,
-            reason="test selection",
-            request_id="request-ctx",
-            managed_backend_status="healthy",
-            quality_outcome="unknown",
-            alternatives=["backup-model"],
-            candidate_states=[{"model_id": "backup-model", "admitted": True, "state": "ready"}],
+        return with_relay_proofs(
+            RoutingDecision(
+                model="selected-model",
+                provider="omniroute",
+                tier=2,
+                reason="test selection",
+                request_id="request-ctx",
+                managed_backend_status="healthy",
+                quality_outcome="unknown",
+                alternatives=["backup-model"],
+                candidate_states=[{"model_id": "backup-model", "admitted": True, "state": "ready"}],
+            ),
+            context,
         )
 
 

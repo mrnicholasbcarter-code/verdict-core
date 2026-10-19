@@ -9,6 +9,8 @@ else is a named drop before select. Empty intersection fails closed.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -154,6 +156,37 @@ def _passport_evidence(
         auth_state=passport.auth_state,
         availability_state=passport.availability_state,
     )
+
+
+def passport_confirmation(
+    route_ids: Sequence[str],
+    *,
+    now: datetime,
+    passports: Mapping[str, ModelPassport] | None = None,
+    passport_store_path: Path | None = None,
+) -> dict[str, Any]:
+    """Confirmation of stored passports in the shape ``relay.admission_proof`` consumes.
+
+    Read-only: no probes and no store writes. A route is admitted only when its
+    own passport is fresh, authorized and eligible; ``qualified_at`` and
+    ``expires_at`` are the passport's, never ``now``. ``receipt_id`` is the
+    SHA-256 of the canonical JSON of the passports used.
+    """
+    loaded = load_healthy_passports(passport_store_path) if passports is None else dict(passports)
+    admitted: list[str] = []
+    rows: list[dict[str, Any]] = []
+    for route_id in route_ids:
+        passport = loaded.get(route_id)
+        evidence = _passport_evidence(route_id, passport, now=now)
+        rows.append(evidence.to_dict())
+        if evidence.fresh:
+            admitted.append(route_id)
+    canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return {
+        "admitted": admitted,
+        "receipt_id": "passports:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "passport": rows,
+    }
 
 
 def _record_refreshed_passport(
@@ -662,5 +695,6 @@ __all__ = [
     "ConfirmEvidence",
     "PassportEvidence",
     "gate_admit_prove_confirm",
+    "passport_confirmation",
     "passport_is_fresh",
 ]
