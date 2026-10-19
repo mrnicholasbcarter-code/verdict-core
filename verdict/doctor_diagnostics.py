@@ -1167,7 +1167,10 @@ def _same_build(package: Path, reviewed: Path) -> bool:
 
 
 def _gateway_origin(value: str) -> str:
-    """``scheme://host:port/path`` of a gateway URL; userinfo, query and fragment dropped."""
+    """``scheme://host:port`` of a gateway URL, plus ``/...`` when it has a path.
+
+    Userinfo, path, query and fragment can all carry tokens, so none is shown.
+    """
     from urllib.parse import urlsplit
 
     try:
@@ -1177,7 +1180,8 @@ def _gateway_origin(value: str) -> str:
         return "unparseable URL"
     if not parts.scheme or not parts.hostname:
         return "unparseable URL"
-    return f"{parts.scheme}://{parts.hostname}{port}{parts.path}"
+    path = "/..." if parts.path.strip("/") else ""
+    return f"{parts.scheme}://{parts.hostname}{port}{path}"
 
 
 def _unit_environment(value: str) -> dict[str, str]:

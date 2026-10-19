@@ -642,7 +642,7 @@ def test_installed_runtime_unrecorded_build_is_never_ok_and_gateway_is_redacted(
             checkout,
             python,
             "-m verdict harness prime sync-models",
-            environment="OMNIROUTE_BASE_URL=http://user:secret@gw:20128/v1?key=secret#frag",
+            environment="OMNIROUTE_BASE_URL=http://user:secret@gw:20128/tok-secret/v1?key=secret#frag",
         )
     }
 
@@ -660,7 +660,7 @@ def test_installed_runtime_unrecorded_build_is_never_ok_and_gateway_is_redacted(
     assert row["status"] == "failed", row
     assert "unrecorded" in row["detail"]
     assert "secret" not in row["detail"] and "user" not in row["detail"]
-    assert "gateway http://gw:20128/v1," in row["detail"]
+    assert "gateway http://gw:20128/..., " in row["detail"]
 
     # With a recorded build the same unit is OK, and the URL stays redacted.
     (checkout / ".git").mkdir()
