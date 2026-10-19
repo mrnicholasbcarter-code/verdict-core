@@ -1152,14 +1152,32 @@ _QUALIFIER_UNITS = ("verdict-prove-at-rest.service", "verdict-census.service")
 
 
 def _same_build(package: Path, reviewed: Path) -> bool:
-    """A copy is the reviewed build only when its recorded build and content match."""
+    """A package is the reviewed build only with the same recorded build and content.
+
+    An unrecorded build is unknown and never matches, even at the reviewed path.
+    """
     from verdict.census_passports_service import census_runtime_version, package_build
 
+    build = package_build(package)
+    if build == "unrecorded" or build != package_build(reviewed):
+        return False
     if package == reviewed:
         return True
-    if package_build(package) != package_build(reviewed) or package_build(package) == "unrecorded":
-        return False
     return census_runtime_version(package.parent) == census_runtime_version(reviewed.parent)
+
+
+def _gateway_origin(value: str) -> str:
+    """``scheme://host:port/path`` of a gateway URL; userinfo, query and fragment dropped."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(value)
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        return "unparseable URL"
+    if not parts.scheme or not parts.hostname:
+        return "unparseable URL"
+    return f"{parts.scheme}://{parts.hostname}{port}{parts.path}"
 
 
 def _unit_environment(value: str) -> dict[str, str]:
@@ -1227,7 +1245,8 @@ def installed_runtime_rows(
             continue
         environment = _unit_environment(props.get("Environment", ""))
         unit_scope = verdict_home({"HOME": str(user_home), **environment})
-        gateway = environment.get("OMNIROUTE_BASE_URL") or "default"
+        gateway_url = environment.get("OMNIROUTE_BASE_URL")
+        gateway = _gateway_origin(gateway_url) if gateway_url else "default"
         package = Path(imported).resolve()
         build = package_build(package)
         problems = []
@@ -1237,6 +1256,8 @@ def installed_runtime_rows(
             difference = (
                 "content differs from"
                 if build == reviewed_build and build != "unrecorded"
+                else "unknown build, not proven to be"
+                if "unrecorded" in (build, reviewed_build)
                 else "not"
             )
             problems.append(

@@ -625,3 +625,47 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
     census = next(row for row in rows if row.get("unit") == "verdict-census.service")
     assert census["status"] == "failed"
     assert f"interpreter {source_python} installs {source}" in census["detail"]
+
+
+def test_installed_runtime_unrecorded_build_is_never_ok_and_gateway_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """Review fixes on 6bf2335f: a unit importing the reviewed path itself is OK
+    only with a recorded build, and a gateway URL never leaks userinfo or query."""
+    checkout = tmp_path / "dev" / "verdict-core"
+    package = checkout / "verdict"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "0.5.0"\n')
+    python = str(checkout / ".venv" / "bin" / "python")
+    units = {
+        "verdict-prime-sync.service": _unit(
+            checkout,
+            python,
+            "-m verdict harness prime sync-models",
+            environment="OMNIROUTE_BASE_URL=http://user:secret@gw:20128/v1?key=secret#frag",
+        )
+    }
+
+    def rows() -> list[dict[str, str]]:
+        return dd.installed_runtime_rows(
+            unit_props=lambda unit: units.get(unit, {"LoadState": "not-found"}),
+            resolve=lambda interpreter, cwd: str(package),
+            reviewed_package=package,
+            home=tmp_path / "home",
+            state_home=tmp_path / "home" / ".verdict",
+        )
+
+    # Same path as the reviewed package, but no recorded build: unknown, not OK.
+    row = next(r for r in rows() if r.get("unit") == "verdict-prime-sync.service")
+    assert row["status"] == "failed", row
+    assert "unrecorded" in row["detail"]
+    assert "secret" not in row["detail"] and "user" not in row["detail"]
+    assert "gateway http://gw:20128/v1," in row["detail"]
+
+    # With a recorded build the same unit is OK, and the URL stays redacted.
+    (checkout / ".git").mkdir()
+    (checkout / ".git" / "HEAD").write_text("4f642962894da7ac4c84615eac3bcc4b35f6d1f3\n")
+    row = next(r for r in rows() if r.get("unit") == "verdict-prime-sync.service")
+    assert row["status"] == "ok", row
+    assert "git 4f642962894d" in row["detail"]
+    assert "secret" not in row["detail"]
