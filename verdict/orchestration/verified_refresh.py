@@ -460,6 +460,7 @@ REASON_PROVIDER_STOP = "provider_scope_stopped"
 REASON_NOT_TESTED = "not_tested"
 REASON_CANCELLED = "cancelled"
 REASON_AUTH_OUTAGE = "auth_outage"  # confirmed gateway-key outage (BOD-338 breaker)
+REASON_PROBE_ERROR = "probe_error"  # the probe itself raised; nothing written
 
 
 @dataclass(frozen=True)
@@ -1178,7 +1179,24 @@ class RefreshCoordinator:
                 for future in sorted(done, key=lambda f: order[inflight[f].row.route_id]):
                     job = inflight.pop(future)
                     row, reservation, probe_requests = job.row, job.reservation, job.requests
-                    outcome = future.result()
+                    try:
+                        outcome = future.result()
+                    except Exception:
+                        # The probe raised (a transport or probe bug). How many
+                        # calls it sent is unknown, so the whole reservation is
+                        # counted as sent and kept (no refund), and nothing is
+                        # written for the route: no proof, no negative.
+                        requests_made += probe_requests
+                        outcomes[row.route_id] = RouteOutcome(
+                            row.route_id,
+                            row.provider,
+                            False,
+                            False,
+                            category=REASON_PROBE_ERROR,
+                            refresh_reason=REASON_PROBE_ERROR,
+                            requests_made=probe_requests,
+                        )
+                        continue
                     requests_made += outcome.requests_made
                     if cap_reason == REASON_AUTH_OUTAGE:
                         # A sibling confirmed a gateway-key outage while this

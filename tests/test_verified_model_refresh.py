@@ -1702,3 +1702,35 @@ def test_confirmed_outage_drops_every_in_flight_probe(tmp_path: Path) -> None:
     assert all(not o.probed for o in out.route_outcomes.values())
     assert out.requests_made <= 8
     assert HealthCache(tmp_path / "health-cache.json").routes() == {}
+
+
+def test_a_raising_probe_is_recorded_and_the_job_continues(tmp_path: Path) -> None:
+    import json
+
+    from verdict.orchestration.verified_refresh import REASON_PROBE_ERROR
+
+    inner = InFlightTransport(hold=0.05)
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        if route_id == "p2/m":
+            raise RuntimeError("transport bug")
+        return inner(route_id, phase, timeout)
+
+    rows = [_row(f"p{i}/m") for i in range(4)]
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4, max_requests=8),
+    )
+    assert out.outcome == OUTCOME_COMPLETED
+    assert out.verified == 3
+    assert out.route_outcomes["p2/m"].refresh_reason == REASON_PROBE_ERROR
+    # Conservative: the raising probe's 2 reserved requests count as sent.
+    assert out.requests_made == 3 * 2 + 2 <= 8
+    marker = json.loads((tmp_path / "refresh.json").read_text())
+    assert marker["running"] is False and marker["result"] == OUTCOME_COMPLETED
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.entry("p2/m") is None
+    assert all(cache.entry(f"p{i}/m") is not None for i in (0, 1, 3))
