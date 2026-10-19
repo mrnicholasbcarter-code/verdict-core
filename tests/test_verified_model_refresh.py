@@ -415,6 +415,63 @@ def test_provider_auth_failure_stops_that_provider(tmp_path: Path) -> None:
     assert cache.cooldown_for("provider:cc", NOW) is not None
 
 
+def test_auth_gate_confirmed_outage_writes_nothing_and_stops_the_job(tmp_path: Path) -> None:
+    """BOD-338 breaker preserved through the coordinator (prove-at-rest S05-B).
+
+    An ``auth_gate`` hook is called for a CATEGORY_AUTH outcome BEFORE any
+    write. When it confirms a gateway-key outage (True), the route's auth
+    failure is NOT recorded (no provider cooldown, no negative cache entry)
+    and the job stops with ``REASON_AUTH_OUTAGE``; a sibling never reached
+    is left unprobed, not poisoned.
+    """
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
+    gate_calls: list[tuple[str, int | None]] = []
+
+    def auth_gate(route_id: str, http_status: int | None) -> bool:
+        gate_calls.append((route_id, http_status))
+        return True  # confirmed outage
+
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = auth_gate
+    rows = [
+        _row("cc/a", provider="cc", rank_hint=1),
+        _row("cc/b", provider="cc", rank_hint=2),
+        _row("kr/c", provider="kr", rank_hint=1),
+    ]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert gate_calls == [("cc/a", 401)]
+    assert out.route_outcomes["cc/a"].refresh_reason == "auth_outage"
+    assert out.route_outcomes["cc/a"].probed is False
+    # Confirmed outage stops the job: siblings are never reached or poisoned.
+    assert ("cc/b", "chat") not in transport.calls
+    assert ("kr/c", "chat") not in transport.calls
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.entry("cc/a") is None
+    assert cache.cooldown_for("provider:cc", NOW) is None
+
+
+def test_auth_gate_denied_outage_records_the_real_auth_failure(tmp_path: Path) -> None:
+    """A rejected outage (False, or no hook) writes the auth failure as today."""
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = lambda route_id, http_status: False
+    rows = [_row("cc/a", provider="cc", rank_hint=1), _row("cc/b", provider="cc", rank_hint=2)]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert out.route_outcomes["cc/b"].refresh_reason == REASON_PROVIDER_STOP
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.cooldown_for("provider:cc", NOW) is not None
+
+
 def test_429_honors_retry_after_and_zeroes_bucket(tmp_path: Path) -> None:
     transport = ScriptedTransport({("cc/a", "chat"): _fail(429, "rate_limited", retry_after=120.0)})
     coord = _coordinator(tmp_path, transport)

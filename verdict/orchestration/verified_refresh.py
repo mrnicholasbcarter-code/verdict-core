@@ -454,6 +454,7 @@ REASON_JOINED_NOT_COVERED = "joined_job_not_covered"
 REASON_PROVIDER_STOP = "provider_scope_stopped"
 REASON_NOT_TESTED = "not_tested"
 REASON_CANCELLED = "cancelled"
+REASON_AUTH_OUTAGE = "auth_outage"  # confirmed gateway-key outage (BOD-338 breaker)
 
 
 @dataclass(frozen=True)
@@ -806,6 +807,15 @@ class RefreshCoordinator:
     (and its directory), a timeout-respecting ``transport``, a ``clock`` and
     ``monotonic`` source, and the lock/marker paths (defaulting beside the
     cache). ``refresh_for_consumer`` is the single public entry point.
+
+    ``auth_gate`` (BOD-338 breaker, optional) is called with ``(route_id,
+    http_status)`` ONLY for a CATEGORY_AUTH outcome, BEFORE any write. It
+    returns True for a CONFIRMED gateway-key outage: the route's auth
+    failure is then NOT written (``REASON_AUTH_OUTAGE``, no poison) and the
+    job stops, matching ``prove_at_rest.Prober``'s existing buffer-then-
+    confirm behaviour. ``False`` (including the default ``None`` hook, which
+    always returns False) means a genuine per-route/provider auth failure:
+    written as today.
     """
 
     cache: HealthCache
@@ -815,6 +825,7 @@ class RefreshCoordinator:
     sleep: Callable[[float], None] = field(default=time.sleep)
     lock_path: Path | None = None
     marker_path: Path | None = None
+    auth_gate: Callable[[str, int | None], bool] | None = None
     _seq: int = field(default=0, init=False, repr=False)
 
     def _paths(self) -> tuple[Path, Path]:
@@ -1066,6 +1077,28 @@ class RefreshCoordinator:
                         monotonic=self.monotonic,
                         sleep=self.sleep,
                     )
+                # BOD-338 breaker: confirm a CATEGORY_AUTH failure is a real
+                # per-route/provider rejection, not a broken gateway key,
+                # BEFORE any write. A confirmed outage stops the job with
+                # zero poison; the caller's hook owns the confirmation call.
+                if (
+                    not outcome.no_write
+                    and outcome.category == CATEGORY_AUTH
+                    and self.auth_gate is not None
+                    and self.auth_gate(row.route_id, outcome.http_status)
+                ):
+                    outcomes[row.route_id] = RouteOutcome(
+                        row.route_id,
+                        row.provider,
+                        False,
+                        False,
+                        category=outcome.category,
+                        http_status=outcome.http_status,
+                        refresh_reason=REASON_AUTH_OUTAGE,
+                        requests_made=outcome.requests_made,
+                    )
+                    cap_reason = REASON_AUTH_OUTAGE
+                    break
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
             except HealthCacheLockTimeoutError:
                 cap_reason = (
