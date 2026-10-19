@@ -270,6 +270,23 @@ class VerifiedSnapshotAdapter:
             self.inventory_rows or [], self.connections, evidence, now=now, query=query
         )
 
+    def refresh_scope(self) -> str:
+        """Stable non-secret scope: gateway endpoint, local-only mode and evidence store.
+
+        Debounce and join reuse bind to it, so a different gateway or state
+        profile never reuses another scope's outcomes. No credentials enter it.
+        """
+        canonical = json.dumps(
+            {
+                "gateway_origin": self.gateway,
+                "health_cache": str(self.paths.health_cache),
+                "local_only": self.local_only,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
     def refresh_snapshot(self, view: VerifiedModelsView) -> RefreshSnapshot:
         # Generation binds evidence, not the wall clock or presentation query.
         digest = hashlib.sha256()
@@ -290,7 +307,12 @@ class VerifiedSnapshotAdapter:
             )
             for row in view.rows
         )
-        return RefreshSnapshot(rows, generation=digest.hexdigest(), gateway_origin=self.gateway)
+        return RefreshSnapshot(
+            rows,
+            generation=digest.hexdigest(),
+            gateway_origin=self.gateway,
+            scope=self.refresh_scope(),
+        )
 
 
 def action_models_verified(**kwargs: Any) -> ActionResult:
@@ -720,7 +742,9 @@ def selection_refresh_hook(
         for page in range(1, (len(metadata) + 199) // 200 + 1):
             view = scoped.load(VerifiedModelQuery(page=page, page_size=200))
             rows.extend(scoped.refresh_snapshot(view).rows)
-        snapshot = RefreshSnapshot(tuple(rows), gateway_origin=scoped.gateway)
+        snapshot = RefreshSnapshot(
+            tuple(rows), gateway_origin=scoped.gateway, scope=scoped.refresh_scope()
+        )
         remaining = config.wall_seconds - (time.monotonic() - started)
         if remaining <= 0:
             return None

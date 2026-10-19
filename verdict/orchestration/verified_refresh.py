@@ -154,6 +154,33 @@ ENV_MAX_ROUTES = "VERDICT_REFRESH_MAX_ROUTES"
 ENV_MAX_REQUESTS = "VERDICT_REFRESH_MAX_REQUESTS"
 ENV_WALL_SECONDS = "VERDICT_REFRESH_WALL_SECONDS"
 ENV_CONCURRENCY = "VERDICT_REFRESH_CONCURRENCY"
+ENV_OUTPUT_TOKENS = "VERDICT_REFRESH_OUTPUT_TOKENS"
+ENV_REQUEST_TIMEOUT_SECONDS = "VERDICT_REFRESH_REQUEST_TIMEOUT_SECONDS"
+ENV_MAX_PER_PROVIDER = "VERDICT_REFRESH_MAX_PER_PROVIDER"
+ENV_COOLDOWN_SECONDS = "VERDICT_REFRESH_COOLDOWN_SECONDS"
+
+# Qualification bounds (BOD-297/S05): one request reserves this many output
+# tokens, gets this long, and one provider may contribute at most this many
+# routes per cycle (maintenance lane only; interactive has no per-provider
+# cap); a negative scoped cooldown defaults to this duration.
+DEFAULT_OUTPUT_TOKENS = 4096
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+MAINTENANCE_MAX_PER_PROVIDER = 2
+DEFAULT_COOLDOWN_SECONDS = 300.0
+
+# Maintenance lane defaults: the bounded shared-owner cycle producers join.
+MAINTENANCE_MAX_ROUTES = 4
+MAINTENANCE_MAX_REQUESTS = 16
+MAINTENANCE_WALL_SECONDS = 600.0
+MAINTENANCE_CONCURRENCY = 4
+MAINTENANCE_DEBOUNCE_SECONDS = 10.0
+MAINTENANCE_OUTPUT_TOKENS = 4096
+
+HARD_MAX_OUTPUT_TOKENS = 32_768
+HARD_MAX_REQUEST_TIMEOUT_SECONDS = 120.0
+HARD_MAX_COOLDOWN_SECONDS = 3600.0
+# Only the maintenance lane may run longer than the interactive hard max.
+HARD_MAX_WALL_SECONDS_MAINTENANCE = 600.0
 
 
 class RefreshConfigError(ValueError):
@@ -176,6 +203,11 @@ class RefreshConfig:
     auto_refresh: bool = True
     page_size: int = DEFAULT_PAGE_SIZE
     debounce_seconds: float = DEBOUNCE_SECONDS
+    output_tokens: int = DEFAULT_OUTPUT_TOKENS
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    max_per_provider: int | None = None
+    cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
+    maintenance: bool = False
 
     def __post_init__(self) -> None:
         if not (1 <= self.max_routes <= HARD_MAX_ROUTES):
@@ -186,9 +218,12 @@ class RefreshConfig:
             raise RefreshConfigError(
                 f"max_requests must be in 1..{HARD_MAX_REQUESTS}, got {self.max_requests}"
             )
-        if not (0 < self.wall_seconds <= HARD_MAX_WALL_SECONDS):
+        wall_hard_max = (
+            HARD_MAX_WALL_SECONDS_MAINTENANCE if self.maintenance else HARD_MAX_WALL_SECONDS
+        )
+        if not (0 < self.wall_seconds <= wall_hard_max):
             raise RefreshConfigError(
-                f"wall_seconds must be in (0, {HARD_MAX_WALL_SECONDS}], got {self.wall_seconds}"
+                f"wall_seconds must be in (0, {wall_hard_max}], got {self.wall_seconds}"
             )
         if not (1 <= self.concurrency <= HARD_MAX_CONCURRENCY):
             raise RefreshConfigError(
@@ -198,6 +233,26 @@ class RefreshConfig:
             raise RefreshConfigError("page_size must be >= 1")
         if self.debounce_seconds < 0:
             raise RefreshConfigError("debounce_seconds must be >= 0")
+        if not (1 <= self.output_tokens <= HARD_MAX_OUTPUT_TOKENS):
+            raise RefreshConfigError(
+                f"output_tokens must be in 1..{HARD_MAX_OUTPUT_TOKENS}, got {self.output_tokens}"
+            )
+        if not (0 < self.request_timeout_seconds <= HARD_MAX_REQUEST_TIMEOUT_SECONDS):
+            raise RefreshConfigError(
+                "request_timeout_seconds must be in "
+                f"(0, {HARD_MAX_REQUEST_TIMEOUT_SECONDS}], got {self.request_timeout_seconds}"
+            )
+        if self.max_per_provider is not None and not (
+            1 <= self.max_per_provider <= HARD_MAX_ROUTES
+        ):
+            raise RefreshConfigError(
+                f"max_per_provider must be in 1..{HARD_MAX_ROUTES}, got {self.max_per_provider}"
+            )
+        if not (0 <= self.cooldown_seconds <= HARD_MAX_COOLDOWN_SECONDS):
+            raise RefreshConfigError(
+                f"cooldown_seconds must be in 0..{HARD_MAX_COOLDOWN_SECONDS}, "
+                f"got {self.cooldown_seconds}"
+            )
 
 
 def _parse_int(env: Mapping[str, str], name: str, default: int, *, hard_max: int) -> int:
@@ -211,6 +266,14 @@ def _parse_int(env: Mapping[str, str], name: str, default: int, *, hard_max: int
     if not (1 <= value <= hard_max):
         raise RefreshConfigError(f"{name} must be in 1..{hard_max}, got {value}")
     return value
+
+
+def _parse_per_provider(
+    env: Mapping[str, str], default: int | None, *, hard_max: int
+) -> int | None:
+    if not (env.get(ENV_MAX_PER_PROVIDER) or "").strip():
+        return default
+    return _parse_int(env, ENV_MAX_PER_PROVIDER, hard_max, hard_max=hard_max)
 
 
 def _parse_float(env: Mapping[str, str], name: str, default: float, *, hard_max: float) -> float:
@@ -246,6 +309,73 @@ def config_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
             source, ENV_CONCURRENCY, DEFAULT_CONCURRENCY, hard_max=HARD_MAX_CONCURRENCY
         ),
         auto_refresh=auto,
+        output_tokens=_parse_int(
+            source, ENV_OUTPUT_TOKENS, DEFAULT_OUTPUT_TOKENS, hard_max=HARD_MAX_OUTPUT_TOKENS
+        ),
+        request_timeout_seconds=_parse_float(
+            source,
+            ENV_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
+        ),
+        max_per_provider=_parse_per_provider(source, None, hard_max=HARD_MAX_ROUTES),
+        cooldown_seconds=_parse_float(
+            source,
+            ENV_COOLDOWN_SECONDS,
+            DEFAULT_COOLDOWN_SECONDS,
+            hard_max=HARD_MAX_COOLDOWN_SECONDS,
+        ),
+    )
+
+
+def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
+    """Build the maintenance-lane :class:`RefreshConfig` from the environment.
+
+    Same env knobs and hard-max guard style as :func:`config_from_env`, with
+    the maintenance defaults (4 routes, 16 requests, 600 s wall, concurrency
+    4, 10 s debounce) and the maintenance wall hard max. Invalid values raise
+    :class:`RefreshConfigError` BEFORE any call is made.
+    """
+    source = env if env is not None else os.environ
+    auto_raw = source.get(ENV_AUTO_REFRESH, "1").strip().lower()
+    auto = auto_raw not in {"0", "false", "no", "off"}
+    return RefreshConfig(
+        max_routes=_parse_int(
+            source, ENV_MAX_ROUTES, MAINTENANCE_MAX_ROUTES, hard_max=MAINTENANCE_MAX_ROUTES
+        ),
+        max_requests=_parse_int(
+            source, ENV_MAX_REQUESTS, MAINTENANCE_MAX_REQUESTS, hard_max=MAINTENANCE_MAX_REQUESTS
+        ),
+        wall_seconds=_parse_float(
+            source,
+            ENV_WALL_SECONDS,
+            MAINTENANCE_WALL_SECONDS,
+            hard_max=HARD_MAX_WALL_SECONDS_MAINTENANCE,
+        ),
+        concurrency=_parse_int(
+            source, ENV_CONCURRENCY, MAINTENANCE_CONCURRENCY, hard_max=HARD_MAX_CONCURRENCY
+        ),
+        auto_refresh=auto,
+        debounce_seconds=MAINTENANCE_DEBOUNCE_SECONDS,
+        output_tokens=_parse_int(
+            source, ENV_OUTPUT_TOKENS, MAINTENANCE_OUTPUT_TOKENS, hard_max=MAINTENANCE_OUTPUT_TOKENS
+        ),
+        request_timeout_seconds=_parse_float(
+            source,
+            ENV_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
+        ),
+        max_per_provider=_parse_per_provider(
+            source, MAINTENANCE_MAX_PER_PROVIDER, hard_max=MAINTENANCE_MAX_PER_PROVIDER
+        ),
+        cooldown_seconds=_parse_float(
+            source,
+            ENV_COOLDOWN_SECONDS,
+            DEFAULT_COOLDOWN_SECONDS,
+            hard_max=HARD_MAX_COOLDOWN_SECONDS,
+        ),
+        maintenance=True,
     )
 
 
@@ -259,8 +389,13 @@ class RefreshSnapshot:
     """Everything the coordinator needs from a reloaded projection snapshot.
 
     ``rows`` are the projection rows (one per canonical route). ``now`` is the
-    snapshot clock. ``generation`` is an opaque evidence-generation token used
-    for debounce/marker matching and change binding. ``gateway_origin`` is the
+    snapshot clock. ``generation`` is the legacy evidence-revision token:
+    still readable, but it is NOT scope authority -- an own evidence update
+    must not invalidate a running or debounced scope. ``scope`` is the stable
+    configuration/profile/consent scope key (gateway endpoint, route profile,
+    consent typing): debounce and join reuse bind to it, so a different
+    gateway/profile never reuses another scope's outcomes, while an external
+    epoch change (a different ``scope``) always does. ``gateway_origin`` is the
     CURRENT gateway endpoint (so a consented plan can refuse to run against a
     different endpoint than it was digest-bound to). The coordinator reads rows
     read-only; it never mutates the snapshot.
@@ -269,6 +404,19 @@ class RefreshSnapshot:
     rows: tuple[RowInput, ...]
     generation: str = ""
     gateway_origin: str = ""
+    scope: str = ""
+
+    @property
+    def effective_scope(self) -> str:
+        """The scope debounce/join bind to; an unset scope derives from the gateway.
+
+        Two snapshots for different gateways can therefore never match, even
+        when a caller supplies no explicit scope.
+        """
+        if self.scope:
+            return self.scope
+        digest = hashlib.sha256(f"gateway_origin={self.gateway_origin}".encode()).hexdigest()
+        return f"gateway:{digest}"
 
     def by_id(self) -> dict[str, RowInput]:
         return {row.route_id: row for row in self.rows}
@@ -460,7 +608,21 @@ def select_candidates(
     ordered: list[RowInput] = []
     for band in sorted(banded):
         ordered.extend(_round_robin_by_provider(banded[band]))
-    return ordered[: config.max_routes]
+    # Fairness cap: one provider may contribute at most ``max_per_provider``
+    # routes per cycle, so a large single-provider pool cannot crowd out the
+    # rest of the plan before the route cap is even reached.
+    if config.max_per_provider is None:
+        return ordered[: config.max_routes]
+    per_provider: dict[str, int] = {}
+    fair: list[RowInput] = []
+    for row in ordered:
+        key = row.provider.strip().lower()
+        taken = per_provider.get(key, 0)
+        if taken >= config.max_per_provider:
+            continue
+        per_provider[key] = taken + 1
+        fair.append(row)
+    return fair[: config.max_routes]
 
 
 def _round_robin_by_provider(rows: Sequence[RowInput]) -> list[RowInput]:
@@ -732,7 +894,9 @@ class RefreshCoordinator:
         # returns the prior result with a debounce note (no calls). Picker/
         # selection still perform their exact fresh checks above.
         prior = marker.read()
-        if prior is not None and self._debounce_match(prior, candidates, config, lock):
+        if prior is not None and self._debounce_match(
+            prior, candidates, config, lock, scope=snapshot.effective_scope
+        ):
             return self._from_marker(prior, consumer, OUTCOME_DEBOUNCED, note="debounced")
 
         if lock.acquire():
@@ -746,6 +910,7 @@ class RefreshCoordinator:
                     on_progress=on_progress,
                     cancel=cancel,
                     job_id=job_id or self._new_job_id(),
+                    scope=snapshot.effective_scope,
                 )
             finally:
                 lock.release()
@@ -758,6 +923,7 @@ class RefreshCoordinator:
                 lock=lock,
                 on_progress=on_progress,
                 cancel=cancel,
+                scope=snapshot.effective_scope,
             )
 
     # -- owned job ---------------------------------------------------------
@@ -773,6 +939,7 @@ class RefreshCoordinator:
         on_progress: Callable[[ProgressEvent], None] | None,
         cancel: Callable[[], bool],
         job_id: str,
+        scope: str = "",
     ) -> RefreshOutcome:
         started = self.monotonic()
         deadline = started + config.wall_seconds
@@ -786,7 +953,7 @@ class RefreshCoordinator:
         cancelled = False
         self._seq = 0
 
-        timeout_cap = min(PER_CALL_TIMEOUT_CAP, config.wall_seconds)
+        timeout_cap = min(PER_CALL_TIMEOUT_CAP, config.request_timeout_seconds, config.wall_seconds)
 
         # Fresh job: drop any stale shared-cancel flag so a prior cycle's Esc
         # does not pre-cancel this one. The owner cancels when its local cancel
@@ -800,7 +967,15 @@ class RefreshCoordinator:
         cancel = combined_cancel
 
         self._write_marker(
-            marker, job_id, consumer, candidates, started, deadline, outcomes, running=True
+            marker,
+            job_id,
+            consumer,
+            candidates,
+            started,
+            deadline,
+            outcomes,
+            running=True,
+            scope=scope,
         )
 
         for row in candidates:
@@ -911,7 +1086,15 @@ class RefreshCoordinator:
                 alive=alive,
             )
             self._write_marker(
-                marker, job_id, consumer, candidates, started, deadline, outcomes, running=True
+                marker,
+                job_id,
+                consumer,
+                candidates,
+                started,
+                deadline,
+                outcomes,
+                running=True,
+                scope=scope,
             )
             if cancelled:
                 break
@@ -976,6 +1159,7 @@ class RefreshCoordinator:
             running=False,
             finished_at=self._wall_now(),
             result=result_kind,
+            scope=scope,
         )
         self._emit_final(
             on_progress,
@@ -1139,11 +1323,15 @@ class RefreshCoordinator:
         lock: _JobLock,
         on_progress: Callable[[ProgressEvent], None] | None,
         cancel: Callable[[], bool],
+        scope: str = "",
     ) -> RefreshOutcome:
         """Join an in-flight job: WAIT (bounded) and read its results.
 
         A joined consumer never queues a second sweep. Ids the in-flight job
-        does not cover stay unrefreshed with ``joined_job_not_covered``.
+        does not cover stay unrefreshed with ``joined_job_not_covered``. Only a
+        MATCHING stable scope may join: a different configuration/profile/
+        consent scope never reuses another owner's outcomes; it returns a
+        bounded ``lock_timeout`` with zero calls instead.
         """
         started = self.monotonic()
         deadline = started + config.wall_seconds
@@ -1157,6 +1345,13 @@ class RefreshCoordinator:
                 published_id = str(payload.get("job_id") or "")
                 if joined_id is not None and published_id != joined_id:
                     break  # never cancel or consume a different owner's job
+                if str(payload.get("scope") or "") != scope:
+                    if payload.get("running"):
+                        return self._scope_mismatch(candidates, consumer)
+                    # A finished marker of another scope is stale history: the
+                    # live same-scope owner may not have published yet.
+                    payload = None
+            if payload is not None:
                 if payload.get("running") and published_id:
                     joined_id = published_id
                     if cancel():
@@ -1176,6 +1371,12 @@ class RefreshCoordinator:
                 # job did NOT finish -- unfinished routes stay NOT_TESTED.
                 payload = marker.read()
                 job_running_at_exit = bool(payload is None or payload.get("running", True))
+                if (
+                    joined_id is not None
+                    and payload is not None
+                    and str(payload.get("job_id") or "") != joined_id
+                ):
+                    job_running_at_exit = True  # a foreign marker never finishes our job
                 break
             if self.monotonic() >= deadline:
                 job_running_at_exit = True  # deadline hit a still-running job
@@ -1185,6 +1386,9 @@ class RefreshCoordinator:
         payload = marker.read() or {}
         if joined_id is not None and str(payload.get("job_id") or "") != joined_id:
             payload = {"job_id": joined_id, "running": True}
+        elif str(payload.get("scope") or "") != scope:
+            # A marker from a different scope is never consumed.
+            return self._scope_mismatch(candidates, consumer)
         if not payload.get("running", True) and not lock.live():
             job_running_at_exit = False
         job_id = str(payload.get("job_id") or "joined")
@@ -1329,7 +1533,11 @@ class RefreshCoordinator:
         candidates: list[RowInput],
         config: RefreshConfig,
         lock: _JobLock,
+        *,
+        scope: str = "",
     ) -> bool:
+        if str(prior.get("scope") or "") != scope:
+            return False  # a different gateway/profile/consent scope never reuses
         if prior.get("running", False):
             return False  # an in-flight job is JOINed, not debounced
         if lock.live():
@@ -1394,6 +1602,16 @@ class RefreshCoordinator:
             note=note,
         )
 
+    def _scope_mismatch(self, candidates: Sequence[RowInput], consumer: str) -> RefreshOutcome:
+        """Bounded fail-closed answer for a caller whose stable scope differs.
+
+        The caller made no calls and reuses none of the other scope's outcomes
+        or proofs; every candidate stays untested under this scope.
+        """
+        return self._empty(
+            OUTCOME_LOCK_TIMEOUT, consumer, "scope_mismatch", candidates, REASON_LOCK_TIMEOUT
+        )
+
     def _empty(
         self,
         outcome: str,
@@ -1435,10 +1653,12 @@ class RefreshCoordinator:
         running: bool,
         finished_at: float | None = None,
         result: str | None = None,
+        scope: str = "",
     ) -> None:
         payload: dict[str, Any] = {
             "job_id": job_id,
             "owner": consumer,
+            "scope": scope,
             "ids": [row.route_id for row in candidates],
             "start_monotonic": started,
             "deadline_monotonic": deadline,
@@ -1646,6 +1866,7 @@ __all__ = [
     "VerifiedRow",
     "capacity_group",
     "config_from_env",
+    "maintenance_from_env",
     "refresh_for_consumer",
     "select_candidates",
 ]
