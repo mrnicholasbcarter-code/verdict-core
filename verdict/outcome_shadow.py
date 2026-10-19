@@ -568,6 +568,89 @@ def load_checked_attempts(
     return tuple(joined.values()), tuple(rejected)
 
 
+@dataclass(frozen=True)
+class VerifiedOutcomeHistory:
+    """Bounded, verified task-family history ready for :func:`score_task_history` (BOD-438)."""
+
+    observations: tuple[OutcomeObservation, ...]
+    omissions: tuple[str, ...]
+    cutoff: datetime
+
+
+def load_verified_outcome_observations(
+    roots: Sequence[Path | str],
+    *,
+    task_family: str,
+    as_of: datetime,
+    max_roots: int = DEFAULT_MAX_ROOTS,
+    max_events_bytes: int = DEFAULT_MAX_EVENTS_BYTES,
+    max_events_lines: int = DEFAULT_MAX_EVENTS_LINES,
+    max_receipt_bytes: int = DEFAULT_MAX_RECEIPT_BYTES,
+) -> VerifiedOutcomeHistory:
+    """Verified, checker-scored observations for one task family (BOD-438).
+
+    Discovers ``implement``-role attempts per root with
+    :func:`load_shadow_rows_from_run` (same bounds as the shadow reader: caps
+    8 roots / 2MB events / 20000 lines / 512KB receipt), then joins only
+    independently verified ``checker_result`` rows via
+    :func:`load_checked_attempts`. Only a joined row supplies
+    ``observed_at``/``quality_credit``; nothing here fabricates or falls back
+    to a classification label. A skipped root, a rejected checker row or a
+    checker row without a matching implement attempt is disclosed in
+    ``omissions`` and never enters ``observations``. Rows from a different
+    task family are silently irrelevant to this query, not omissions.
+    """
+    cutoff = _utc(as_of)
+    canonical = _canonicalize_roots(roots)
+    limited = canonical[: max(0, max_roots)]
+    omissions: list[str] = [f"{path}:max_roots_exceeded" for path in canonical[len(limited) :]]
+
+    observations: list[OutcomeObservation] = []
+    for root in limited:
+        rows, reason = load_shadow_rows_from_run(
+            root,
+            as_of=cutoff,
+            max_events_bytes=max_events_bytes,
+            max_events_lines=max_events_lines,
+            max_receipt_bytes=max_receipt_bytes,
+        )
+        if reason is not None:
+            omissions.append(f"{root}:{reason}")
+            continue
+        implement_by_key = {
+            (row.run_id, row.node_id, str(row.attempt)): row
+            for row in rows
+            if row.role == "implement"
+        }
+        joined, rejected = load_checked_attempts(root, store_dir=verdict_home(), as_of=cutoff)
+        for item in rejected:
+            omissions.append(f"{root}:{item.get('source', '?')}:{item.get('reason', 'invalid')}")
+        for checked in joined:
+            key = (checked.run_id, checked.node_id, checked.attempt_id)
+            row = implement_by_key.get(key)
+            if row is None:
+                omissions.append(
+                    f"{root}:{checked.run_id}:{checked.node_id}:{checked.attempt_id}:not_implement_role"
+                )
+                continue
+            if row.task_family != task_family:
+                continue
+            observations.append(
+                OutcomeObservation(
+                    route_id=row.route_id,
+                    task_family=row.task_family,
+                    success=checked.quality_credit == 1.0,
+                    fingerprint_digest=row.fingerprint_digest,
+                    observed_at=checked.checked_at,
+                    quality_credit=checked.quality_credit,
+                    observation_id=f"{checked.run_id}:{checked.node_id}:{checked.attempt_id}",
+                )
+            )
+    return VerifiedOutcomeHistory(
+        observations=tuple(observations), omissions=tuple(omissions), cutoff=cutoff
+    )
+
+
 def _metric_observations(
     rows: Sequence[ShadowAttemptRow], *, task_family: str
 ) -> tuple[OutcomeObservation, ...]:
@@ -922,11 +1005,13 @@ __all__ = [
     "CheckedAttempt",
     "OutcomeShadowNotConfiguredError",
     "ShadowAttemptRow",
+    "VerifiedOutcomeHistory",
     "append_outcome_shadow_record",
     "attach_outcome_shadow",
     "build_outcome_shadow",
     "load_checked_attempts",
     "load_shadow_rows_from_run",
+    "load_verified_outcome_observations",
     "resolve_outcome_shadow_roots",
     "resolve_outcome_shadow_sink",
     "shortlist_would_rank",

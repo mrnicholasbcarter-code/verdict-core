@@ -30,6 +30,7 @@ from verdict.metadata.records import (
 )
 from verdict.metadata.store import MetadataSnapshot
 from verdict.outcome_shadow import (
+    DEFAULT_MAX_ROOTS,
     ENV_ROOTS,
     METRIC_NAME,
     SINK_FILENAME,
@@ -40,6 +41,7 @@ from verdict.outcome_shadow import (
     attach_outcome_shadow,
     build_outcome_shadow,
     load_shadow_rows_from_run,
+    load_verified_outcome_observations,
     resolve_outcome_shadow_roots,
     resolve_outcome_shadow_sink,
 )
@@ -731,3 +733,323 @@ def test_attach_sink_filesystem_failure_keeps_shadow_block_and_warns(
     assert isinstance(out["outcome_shadow"]["would_rank"], list)
     assert not sink.exists()
     assert _sink_warnings(caplog)
+
+
+def test_load_verified_outcome_observations_bounded_and_omissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-438 S10 slice 10.2: load_verified_outcome_observations joins only
+    independently verified checker rows, bounded by the same caps as the
+    shadow reader, and discloses every skipped root/rejected row."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    store = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store))
+    fixed = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+
+    def _run(run_id: str, *, node_pass: bool) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        graph = WorkGraph(
+            goal="implement the billing export",
+            nodes=(
+                WorkNode(
+                    "a", "route work", owned_files=("a.py",), verification_command=("pytest",)
+                ),
+            ),
+        )
+        (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
+        log = EventLog(run_dir / "events.jsonl", clock=lambda: fixed)
+        log.emit("run_started", run_id=run_id, goal=graph.goal)
+        log.emit("dispatch", node_id="a", attempt=1, route_id="route/under-test")
+        log.emit(
+            "terminal",
+            node_id="a",
+            attempt=1,
+            ok=True,
+            duration_seconds=3.0,
+            reported_model="route/under-test",
+        )
+        log.emit(
+            "verify", node_id="a", ok=node_pass, command="pytest", exit_code=0 if node_pass else 1
+        )
+        log.emit(
+            "node_state", node_id="a", attempt=1, state="VALIDATED" if node_pass else "REJECTED"
+        )
+        log.emit("run_finished", outcome="COMPLETE" if node_pass else "BLOCKED", reason="")
+        write_run_receipt(run_dir)
+        return run_dir
+
+    verified_root = _run("run-verified", node_pass=True)
+    receipt = json.loads((verified_root / "receipt.json").read_text())
+    task_family = fingerprint_task(receipt["goal"]).task_family
+
+    # An unreadable root (missing receipt/events) must be disclosed as an omission.
+    broken_root = tmp_path / "runs" / "broken"
+    broken_root.mkdir(parents=True)
+
+    history = load_verified_outcome_observations(
+        [verified_root, broken_root], task_family=task_family, as_of=fixed
+    )
+
+    assert len(history.observations) == 1
+    obs = history.observations[0]
+    assert obs.route_id == "route/under-test"
+    assert obs.task_family == task_family
+    assert obs.quality_credit == 1.0
+    assert obs.observed_at is not None
+    assert obs.observation_id == "run-verified:a:1"
+    assert history.cutoff == fixed
+    assert any("broken" in item for item in history.omissions)
+
+    # A row from a different task family never shows up and is not an omission
+    # (it is simply irrelevant to this query, not a rejected/skipped row).
+    other_family_history = load_verified_outcome_observations(
+        [verified_root], task_family="some_other_family", as_of=fixed
+    )
+    assert other_family_history.observations == ()
+
+    # Bounded roots: the cap is enforced before verification (same as the shadow reader).
+    many_roots = []
+    for i in range(DEFAULT_MAX_ROOTS + 2):
+        dup = tmp_path / "runs" / f"dup-{i}"
+        shutil.copytree(verified_root, dup)
+        many_roots.append(dup)
+    bounded = load_verified_outcome_observations(many_roots, task_family=task_family, as_of=fixed)
+    assert any("max_roots_exceeded" in item for item in bounded.omissions)
+    assert len(bounded.observations) == DEFAULT_MAX_ROOTS
+
+    # A row with no matching checker evidence contributes nothing and is not fabricated.
+    unverified_root = tmp_path / "runs" / "unverified"
+    unverified_root.mkdir(parents=True)
+    unverified_graph = WorkGraph(
+        goal="implement the billing export",
+        nodes=(
+            WorkNode("a", "route work", owned_files=("a.py",), verification_command=("pytest",)),
+        ),
+    )
+    (unverified_root / "graph.json").write_text(
+        json.dumps(unverified_graph.to_dict()), encoding="utf-8"
+    )
+    log = EventLog(unverified_root / "events.jsonl", clock=lambda: fixed)
+    log.emit("run_started", run_id="run-unverified", goal=unverified_graph.goal)
+    log.emit("dispatch", node_id="a", attempt=1, route_id="route/no-check")
+    log.emit("terminal", node_id="a", attempt=1, ok=True, reported_model="route/no-check")
+    log.emit("run_finished", outcome="COMPLETE", reason="")
+    write_run_receipt(unverified_root)
+    unverified_history = load_verified_outcome_observations(
+        [unverified_root], task_family=task_family, as_of=fixed
+    )
+    assert unverified_history.observations == ()
+
+    # Transient/future rows (checked_at after as_of) never enter observations.
+    before_cutoff = fixed - timedelta(hours=1)
+    early_history = load_verified_outcome_observations(
+        [verified_root], task_family=task_family, as_of=before_cutoff
+    )
+    assert early_history.observations == ()
+
+
+def test_apply_candidate_pool_wires_verified_outcomes_into_demotion_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-438 S10 slice 10.3: a verified checker history demotes a route inside
+    the admitted set via the intelligence service's own clock and roots, without
+    dropping it from admission."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    store_home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_home))
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+
+    # Route ids are chosen so that WITHOUT demotion, ties sort weak before mid
+    # (alphabetical route_id tie-break): "a-weak" < "z-mid". Only real
+    # demotion wiring can flip this to [mid, weak].
+    weak = "a-weak/history-wiring"
+    mid = "z-mid/no-history-wiring"
+
+    def _run(run_id: str, *, route_id: str, node_pass: bool) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        graph = WorkGraph(
+            goal="implement the billing export wiring check",
+            nodes=(
+                WorkNode(
+                    "a", "route work", owned_files=("a.py",), verification_command=("pytest",)
+                ),
+            ),
+        )
+        (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
+        log = EventLog(run_dir / "events.jsonl", clock=lambda: as_of - timedelta(hours=1))
+        log.emit("run_started", run_id=run_id, goal=graph.goal)
+        log.emit("dispatch", node_id="a", attempt=1, route_id=route_id)
+        log.emit(
+            "terminal",
+            node_id="a",
+            attempt=1,
+            ok=True,
+            duration_seconds=3.0,
+            reported_model=route_id,
+        )
+        log.emit(
+            "verify", node_id="a", ok=node_pass, command="pytest", exit_code=0 if node_pass else 1
+        )
+        log.emit(
+            "node_state", node_id="a", attempt=1, state="VALIDATED" if node_pass else "REJECTED"
+        )
+        log.emit("run_finished", outcome="COMPLETE" if node_pass else "BLOCKED", reason="")
+        write_run_receipt(run_dir)
+        return run_dir
+
+    roots = [_run(f"run-weak-{i}", route_id=weak, node_pass=False) for i in range(3)]
+    goal = json.loads((roots[0] / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+    store = _store((weak, mid))
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=roots,
+        admit_now=as_of,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt((weak, mid))
+    out, pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    # Both routes stay admitted (demotion never drops a member).
+    assert set(out.admitted) == {weak, mid}
+    ids = [e.route_id for e in pool.shortlist]
+    assert set(ids) == {weak, mid}
+    # weak has 3 verified failures (score<0.4, n>=3): demoted after mid.
+    assert ids == [mid, weak]
+
+
+def test_history_loader_failure_discloses_reason_and_leaves_admission_unchanged(
+    monkeypatch: pytest.MonkeyPatch, seed_copy: Path, tmp_path: Path
+) -> None:
+    """BOD-438 S10: a failing verified-history loader never silently swallows
+    the error. Admission stays unchanged (order-only demotion failed closed to
+    'no history'); the candidate-pool receipt discloses a fixed reason code
+    and the exception class only — never the exception message or a local
+    filesystem path, because this receipt reaches API callers."""
+    import verdict.intelligence as intelligence_module
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        # The message deliberately embeds a local path to prove it never
+        # reaches the serialized receipt.
+        raise RuntimeError(f"boom: cannot read {tmp_path / 'secret-run-dir'}")
+
+    monkeypatch.setattr(intelligence_module, "load_verified_outcome_observations", _raise)
+
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    goal = json.loads((seed_copy / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=[seed_copy],
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt(routes)
+    out, _pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    # Admission/choice stay governed by hard eligibility — unaffected by the
+    # loader failure (order-only demotion contract fails closed to no history).
+    assert set(out.admitted) == set(routes)
+    disclosure = (out.candidate_pool or {}).get("history_disclosure")
+    assert disclosure is not None
+    assert disclosure["status"] == "unavailable"
+    assert disclosure["reason"] == "history_unavailable"
+    assert disclosure["error_class"] == "RuntimeError"
+    assert "error" not in disclosure
+    serialized = json.dumps(disclosure, default=str)
+    assert str(tmp_path) not in serialized
+    assert "secret-run-dir" not in serialized
+
+
+def test_history_loader_success_discloses_observation_count_and_omissions(
+    seed_copy: Path, tmp_path: Path
+) -> None:
+    """A successful load discloses observation/omission counts by fixed
+    reason code only — never the raw root path (which would leak
+    tmp_path / a run id into a receipt that reaches API callers)."""
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    unreadable_root = tmp_path / "an-unreadable-run"
+    unreadable_root.mkdir()
+
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    goal = json.loads((seed_copy / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=[seed_copy, unreadable_root],
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt(routes)
+    out, _pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    disclosure = (out.candidate_pool or {}).get("history_disclosure")
+    assert disclosure is not None
+    assert disclosure["status"] == "ok"
+    assert disclosure["reason"] is None
+    assert disclosure["error_class"] is None
+    assert isinstance(disclosure["observations_count"], int)
+    assert disclosure["omitted"] >= 1
+    assert isinstance(disclosure["reasons"], dict)
+    assert sum(disclosure["reasons"].values()) == disclosure["omitted"]
+    assert "missing_receipt_or_events" in disclosure["reasons"]
+    serialized = json.dumps(disclosure, default=str)
+    assert str(tmp_path) not in serialized
+    assert "an-unreadable-run" not in serialized

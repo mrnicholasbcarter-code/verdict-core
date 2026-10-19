@@ -17,7 +17,7 @@ import json
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -212,9 +212,15 @@ class RouteHealth:
 
 @dataclass(frozen=True)
 class RouteEvidence:
-    """Caller-supplied soft evidence. Never invents capability."""
+    """Caller-supplied soft evidence. Never invents capability.
 
-    task_success_rate: float | None = None
+    BOD-438: no raw task-success-rate field — task-history evidence enters
+    scoring only through verified :class:`OutcomeObservation` rows
+    (``quality_credit``/``observed_at`` set), scored by
+    :func:`verdict.strength_profiles.score_task_history`. There is no
+    caller-supplied or classification-based substitute.
+    """
+
     eval_score: float | None = None
     latency_ms: float | None = None
     cost_per_million: float | None = None
@@ -222,7 +228,6 @@ class RouteEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "task_success_rate": self.task_success_rate,
             "eval_score": self.eval_score,
             "latency_ms": self.latency_ms,
             "cost_per_million": self.cost_per_million,
@@ -236,6 +241,15 @@ class OutcomeObservation:
     task_family: str
     success: bool
     fingerprint_digest: str | None = None
+    # BOD-438: only a verified checker result supplies these; None means
+    # unscored and must never enter score_task_history's denominator.
+    observed_at: datetime | None = None
+    quality_credit: float | None = None
+    # Stable per-attempt identity (e.g. "run_id:node_id:attempt_id") so a
+    # restarted loader or replayed root cannot double-count one verified
+    # attempt toward observed_n/weighted_n. None observations are never
+    # deduplicated against each other.
+    observation_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +257,9 @@ class OutcomeObservation:
             "task_family": self.task_family,
             "success": self.success,
             "fingerprint_digest": self.fingerprint_digest,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "quality_credit": self.quality_credit,
+            "observation_id": self.observation_id,
         }
 
 
@@ -387,6 +404,10 @@ class _Survivor:
     eval_prior_provenance: dict[str, str] | None = None
     eval_prior_metadata_id: str | None = None
     eval_prior_kind: str = "absent"
+    # BOD-438: task-specific demotion from verified history. Order-only — a
+    # demoted survivor stays qualified and a pool member, _portfolio_shortlist
+    # only sorts it after non-demoted survivors.
+    demoted: bool = False
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -553,6 +574,7 @@ def build_candidate_pool(
     evidence: Mapping[str, RouteEvidence] | None = None,
     policy_allowed: Collection[str] | None = None,
     outcomes: Sequence[OutcomeObservation] | None = None,
+    as_of: datetime | None = None,
     top_k: int = 8,
     probe_budget: ProbeBudget | None = None,
     probe_fn: ProbeFn | None = None,
@@ -664,7 +686,7 @@ def build_candidate_pool(
     # Fuse evidence + score only among hard-eligible survivors.
     for survivor in survivors:
         features = _score_features(
-            survivor, task_fingerprint=task_fingerprint, outcomes=outcome_list
+            survivor, task_fingerprint=task_fingerprint, outcomes=outcome_list, as_of=as_of
         )
         survivor.features = features
         survivor.score = _fuse_score(features)
@@ -808,6 +830,7 @@ def _score_features(
     *,
     task_fingerprint: TaskFingerprint,
     outcomes: Sequence[OutcomeObservation],
+    as_of: datetime | None = None,
 ) -> dict[str, float]:
     features: dict[str, float] = {}
     ev = survivor.evidence
@@ -824,12 +847,22 @@ def _score_features(
             )
         )
     ]
-    if matched:
-        successes = sum(1 for o in matched if o.success)
-        features["task_similarity"] = successes / len(matched)
-        features["outcome_n"] = float(len(matched))
-    elif ev.task_success_rate is not None:
-        features["task_similarity"] = max(0.0, min(1.0, float(ev.task_success_rate)))
+    verified = [o for o in matched if o.quality_credit is not None and o.observed_at is not None]
+    if verified:
+        # BOD-438: only an independently verified checker history enters
+        # scoring. Unverified/raw matched rows contribute nothing — there is
+        # no classification-based or raw-rate fallback.
+        from verdict.strength_profiles import score_task_history
+
+        history = score_task_history(
+            matched,
+            route_id=survivor.route_id,
+            task_family=task_fingerprint.task_family,
+            as_of=as_of or datetime.now(timezone.utc),
+        )
+        features["task_similarity"] = history.score
+        features["outcome_n"] = float(history.observed_n)
+        survivor.demoted = history.demoted
 
     # Soft eval prior: caller evidence wins; else ONE task-relevant AA field.
     # No cross-metric fallback. Index/100 is a provisional fuse prior, not P(success).
@@ -1046,7 +1079,9 @@ def _portfolio_shortlist(
 
     # ``by_meta`` removes only proven aliases that resolve to the same Core
     # identity. Do not collapse same-leaf IDs across providers: provider
-    # diversity must remain available to the portfolio pass.
+    # diversity must remain available to the portfolio pass. Membership
+    # selection below (top-k and provider-diversity fallback) is score-only —
+    # BOD-438 demotion must never change which routes are admitted.
     ranked = sorted(by_meta.values(), key=lambda s: (-s.score, s.route_id))
 
     selected: list[_Survivor] = []
@@ -1087,6 +1122,12 @@ def _portfolio_shortlist(
                     break
         # Re-sort after possible swap.
         selected = sorted(selected, key=lambda s: (-s.score, s.route_id))[:top_k]
+
+    # BOD-438: order-only task-specific demotion. Membership (``selected``) is
+    # already final above; this only reorders the admitted set so a demoted
+    # route (score<.4, observed unique n>=3) sorts after every non-demoted
+    # route, with a stable fuse/ID order inside each group.
+    selected = sorted(selected, key=lambda s: (s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []
     for survivor in selected:

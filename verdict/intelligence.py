@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import time
@@ -16,6 +17,7 @@ from verdict.candidate_pool import (
     HEALTH_OK,
     CandidatePoolError,
     CandidatePoolReceipt,
+    OutcomeObservation,
     RouteEvidence,
     RouteHealth,
     build_candidate_pool,
@@ -59,6 +61,7 @@ from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
+    load_verified_outcome_observations,
     resolve_outcome_shadow_roots,
     resolve_outcome_shadow_sink,
 )
@@ -67,6 +70,8 @@ from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
+
+_LOG = logging.getLogger(__name__)
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
@@ -259,6 +264,22 @@ def prepared_task_profile(
         planner_caps = ()
     requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
     return requirements, profile_task(task, context=context, requirements=requirements)
+
+
+def _omission_reason_counts(omissions: Sequence[str]) -> dict[str, int]:
+    """Counts only, by fixed reason code — never the raw root path or run id.
+
+    Every omission string from :func:`load_verified_outcome_observations` is
+    ``<path-or-id-segments>:<reason_code>``; the reason code is always the
+    last colon-separated segment. This is the only part a public receipt may
+    carry; the full omission string (which can contain a local filesystem
+    path) stays in the local log only.
+    """
+    counts: dict[str, int] = {}
+    for item in omissions:
+        reason = item.rsplit(":", 1)[-1] if item else "unknown"
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 class IntelligenceService:
@@ -913,6 +934,37 @@ class IntelligenceService:
             if passport is None:
                 continue
             evidence[model_id] = RouteEvidence(latency_ms=passport.latency_p95)
+        as_of = self.admit_now or datetime.now(timezone.utc)
+        # BOD-438: verified checker history feeds task-specific demotion inside
+        # build_candidate_pool (order-only, never membership). Loading never
+        # blocks admission: a failure here means no verified history, not a
+        # degraded admit — but the failure/omissions are disclosed in the
+        # receipt (history_disclosure), never silently swallowed. The receipt
+        # reaches API callers, so it carries counts and fixed reason codes
+        # only — never a raw root path or an exception message (those stay in
+        # the local log).
+        outcomes: tuple[OutcomeObservation, ...] = ()
+        history_disclosure: dict[str, Any] = {
+            "status": "ok",
+            "reason": None,
+            "error_class": None,
+            "observations_count": 0,
+            "omitted": 0,
+            "reasons": {},
+        }
+        try:
+            history = load_verified_outcome_observations(
+                self.outcome_shadow_roots, task_family=profile.task_family, as_of=as_of
+            )
+            outcomes = history.observations
+            history_disclosure["observations_count"] = len(history.observations)
+            history_disclosure["omitted"] = len(history.omissions)
+            history_disclosure["reasons"] = _omission_reason_counts(history.omissions)
+        except Exception as exc:
+            _LOG.warning("BOD-438 verified-history load failed: %s", exc)
+            history_disclosure["status"] = "unavailable"
+            history_disclosure["reason"] = "history_unavailable"
+            history_disclosure["error_class"] = type(exc).__name__
         pool = build_candidate_pool(
             advertised,
             task_profile=profile,
@@ -921,6 +973,8 @@ class IntelligenceService:
             health={model_id: RouteHealth(state=HEALTH_OK) for model_id in advertised},
             evidence=evidence,
             policy_allowed=policy_allowed,
+            outcomes=outcomes,
+            as_of=as_of,
             top_k=self.candidate_top_k,
         )
         hard_admitted = set(receipt.admitted)
@@ -946,6 +1000,7 @@ class IntelligenceService:
         )
         chosen = shortlisted[0] if shortlisted else None
         pool_dict = pool.to_dict()
+        pool_dict["history_disclosure"] = dict(history_disclosure)
         # Shadow-only: never pass outcomes into build_candidate_pool; attach diagnostic.
         with contextlib.suppress(Exception):
             # Fail-safe: shadow must not change live admit/choice.
