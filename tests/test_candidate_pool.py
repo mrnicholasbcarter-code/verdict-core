@@ -215,7 +215,7 @@ def test_healthy_task_incompatible_removed_before_ranking() -> None:
             FREE_NO_TOOLS: RouteHealth(state=HEALTH_OK),
             FREE_TOOLS: RouteHealth(state=HEALTH_OK),
         },
-        evidence={FREE_NO_TOOLS: RouteEvidence(task_success_rate=1.0, eval_score=99.0)},
+        evidence={FREE_NO_TOOLS: RouteEvidence(eval_score=99.0)},
         top_k=2,
     )
     assert FREE_NO_TOOLS not in [e.route_id for e in restored.shortlist]
@@ -233,7 +233,7 @@ def test_unknown_capability_never_silently_capable() -> None:
             UNKNOWN_CAPS: RouteHealth(state=HEALTH_OK),
             FREE_TOOLS: RouteHealth(state=HEALTH_OK),
         },
-        evidence={UNKNOWN_CAPS: RouteEvidence(task_success_rate=1.0, eval_score=100.0)},
+        evidence={UNKNOWN_CAPS: RouteEvidence(eval_score=100.0)},
         top_k=2,
     )
     reasons = {d.route_id: d.reason for d in receipt.hard_drops}
@@ -243,13 +243,17 @@ def test_unknown_capability_never_silently_capable() -> None:
     assert receipt.uncertainty  # non-empty uncertainty notes for unknown/conflict cases
 
 
-def test_matching_task_success_raises_rank_among_eligible() -> None:
+def test_unverified_outcome_rows_never_affect_rank() -> None:
+    """BOD-438: an OutcomeObservation without quality_credit/observed_at is
+    unverified and must contribute nothing — no raw-rate fallback. The
+    shortlist with unverified rows is identical to the shortlist with no
+    outcome history at all."""
     store = _base_store()
     fp = fingerprint_task(
         "refactor python module", context={"tools_required": True, "language": "python"}
     )
-    receipt = build_candidate_pool(
-        [FREE_TOOLS, PAID_TOOLS, DIVERSE_FALLBACK],
+    kwargs = dict(
+        advertised=[FREE_TOOLS, PAID_TOOLS, DIVERSE_FALLBACK],
         task_fingerprint=fp,
         metadata=store,
         health={
@@ -257,6 +261,11 @@ def test_matching_task_success_raises_rank_among_eligible() -> None:
             PAID_TOOLS: RouteHealth(state=HEALTH_OK),
             DIVERSE_FALLBACK: RouteHealth(state=HEALTH_OK),
         },
+        top_k=3,
+    )
+    without_outcomes = build_candidate_pool(**kwargs, outcomes=())
+    with_unverified_outcomes = build_candidate_pool(
+        **kwargs,
         outcomes=(
             OutcomeObservation(
                 route_id=FREE_TOOLS,
@@ -271,11 +280,16 @@ def test_matching_task_success_raises_rank_among_eligible() -> None:
                 fingerprint_digest=fp.digest,
             ),
         ),
-        top_k=3,
     )
-    ids = [e.route_id for e in receipt.shortlist]
-    assert ids[0] == FREE_TOOLS
-    assert FREE_TOOLS in ids and PAID_TOOLS in ids
+    collect_only = {
+        "without_outcomes": [(e.route_id, e.score) for e in without_outcomes.shortlist],
+        "with_unverified_outcomes": [
+            (e.route_id, e.score) for e in with_unverified_outcomes.shortlist
+        ],
+    }
+    assert collect_only["without_outcomes"] == collect_only["with_unverified_outcomes"]
+    for entry in with_unverified_outcomes.shortlist:
+        assert "task_similarity" not in entry.score_features
 
 
 def test_failure_cannot_override_hard_health_exclusion() -> None:
@@ -297,7 +311,7 @@ def test_failure_cannot_override_hard_health_exclusion() -> None:
                 fingerprint_digest=fp.digest,
             ),
         ),
-        evidence={HEALTH_DEAD: RouteEvidence(task_success_rate=1.0, eval_score=100.0)},
+        evidence={HEALTH_DEAD: RouteEvidence(eval_score=100.0)},
         top_k=2,
     )
     assert any(
@@ -345,7 +359,7 @@ def test_insufficient_evidence_gets_bounded_targeted_probe() -> None:
         metadata=store,
         health={FREE_TOOLS: RouteHealth(state=HEALTH_OK), PAID_TOOLS: RouteHealth(state=HEALTH_OK)},
         # FREE_TOOLS has metadata but no outcome/eval evidence → uncertain → probe.
-        evidence={PAID_TOOLS: RouteEvidence(task_success_rate=0.9, eval_score=80.0)},
+        evidence={PAID_TOOLS: RouteEvidence(eval_score=80.0)},
         top_k=2,
         probe_budget=ProbeBudget(max_probes=3, max_level=PROBE_SMALL_QUAL),
         probe_fn=probe,
@@ -733,3 +747,101 @@ def test_live_probe_receipt_never_records_unpassed_candidates_as_passed() -> Non
 def test_live_probe_receipt_without_a_passed_candidate_raises() -> None:
     with pytest.raises(CandidatePoolError, match="passed"):
         _live_receipt(_probed("free/bad", eligible=False))
+
+
+def test_demoted_routes_sort_after_non_demoted_admitted() -> None:
+    """BOD-438 S10 slice 10.3: demotion only reorders the admitted set."""
+    from datetime import datetime, timedelta, timezone
+
+    weak = "model/weak-history"
+    mid = "model/no-history"
+    store = _store((_record(weak, scores=SoftScores()), _record(mid, scores=SoftScores())))
+    fp = fingerprint_task("implement the billing export")
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+    recent = as_of - timedelta(hours=1)
+
+    # Three independently verified, all-failed observations: score < 0.4 with
+    # observed unique n=3 -> demoted. Each has a distinct observation_id so
+    # they are not deduplicated away.
+    weak_outcomes = [
+        OutcomeObservation(
+            route_id=weak,
+            task_family=fp.task_family,
+            success=False,
+            observed_at=recent,
+            quality_credit=0.0,
+            observation_id=f"run-weak-{i}:a:1",
+        )
+        for i in range(3)
+    ]
+
+    receipt = build_candidate_pool(
+        [weak, mid],
+        task_fingerprint=fp,
+        metadata=store,
+        health={
+            weak: RouteHealth(state=HEALTH_OK, fresh=True),
+            mid: RouteHealth(state=HEALTH_OK, fresh=True),
+        },
+        evidence={weak: RouteEvidence(eval_score=100.0), mid: RouteEvidence(eval_score=60.0)},
+        outcomes=weak_outcomes,
+        as_of=as_of,
+        top_k=2,
+    )
+
+    ids = [e.route_id for e in receipt.shortlist]
+    # Both routes stay admitted — demotion never drops a member.
+    assert set(ids) == {weak, mid}
+    # weak's fused score (0.40*0.2 task_similarity + 0.25*1.0 eval + 0.15 health
+    # = 0.48) is higher than mid's (0.25*0.6 eval + 0.15 health = 0.30), but
+    # demotion puts it after mid in the admitted order.
+    weak_entry = next(e for e in receipt.shortlist if e.route_id == weak)
+    mid_entry = next(e for e in receipt.shortlist if e.route_id == mid)
+    assert weak_entry.score > mid_entry.score
+    assert ids == [mid, weak]
+
+
+def test_price_only_change_does_not_affect_shortlist_order_after_demotion() -> None:
+    """A25: price/cost changes never affect rank, demoted or not."""
+    from datetime import datetime, timedelta, timezone
+
+    weak = "model/weak-history-2"
+    mid = "model/no-history-2"
+    store = _store((_record(weak, scores=SoftScores()), _record(mid, scores=SoftScores())))
+    fp = fingerprint_task("implement the billing export v2")
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+    recent = as_of - timedelta(hours=1)
+    weak_outcomes = [
+        OutcomeObservation(
+            route_id=weak,
+            task_family=fp.task_family,
+            success=False,
+            observed_at=recent,
+            quality_credit=0.0,
+            observation_id=f"run-weak2-{i}:a:1",
+        )
+        for i in range(3)
+    ]
+
+    def _build(cost: float | None) -> list[str]:
+        receipt = build_candidate_pool(
+            [weak, mid],
+            task_fingerprint=fp,
+            metadata=store,
+            health={
+                weak: RouteHealth(state=HEALTH_OK, fresh=True),
+                mid: RouteHealth(state=HEALTH_OK, fresh=True),
+            },
+            evidence={
+                weak: RouteEvidence(eval_score=100.0, cost_per_million=cost),
+                mid: RouteEvidence(eval_score=60.0, cost_per_million=cost),
+            },
+            outcomes=weak_outcomes,
+            as_of=as_of,
+            top_k=2,
+        )
+        return [e.route_id for e in receipt.shortlist]
+
+    cheap = _build(1.0)
+    expensive = _build(1000.0)
+    assert cheap == expensive == [mid, weak]

@@ -266,12 +266,15 @@ def _warm_cache(
         try:
             result = manage_service(dry_run=False)
             new_state = timer_state(PROVE_AT_REST_TIMER)["state"]
+            plan = ", ".join(f"{name} {step}" for name, step in result.get("plan", {}).items())
+            rollback = result.get("rollback") or "nothing replaced"
             tui.console.print(
                 Text(
                     f"Service installer: ran (changed={result['changed']}); timer is now {new_state}."
+                    f" Units: {plan or 'unchanged'}. Rollback copy: {rollback}."
                 )
             )
-            notes.append(f"Warm-cache: {PROVE_AT_REST_TIMER} is {new_state}.")
+            notes.append(f"Warm-cache: {PROVE_AT_REST_TIMER} is {new_state}; rollback: {rollback}.")
         except Exception as exc:
             tui.console.print(Text(f"Service installer failed: {exc}"))
             notes.append(f"Warm-cache: service installer failed ({exc}); timer is {current}.")

@@ -194,11 +194,17 @@ def test_b1_needles_limited_to_top5_free_candidates(
     models = {f"f/r{i}": dict(FREE_PRICING) for i in range(1, 8)}
     transport, prober = CountingTransport(), CountingProber()
     kw: dict[str, Any] = {"max_per_provider": None, "context_probe_max_per_tick": 7}
-    first = _tick(tmp_path, transport, prober, models, **kw)
-    assert first["probed"] == 7
-    _tick(tmp_path, transport, prober, models, **kw)
-    assert [route for route, _ in prober.calls] == [f"f/r{i}" for i in range(1, 6)]
-    assert all(size == 128_000 for _, size in prober.calls)
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator's maintenance contract now bounds the actual chat/tool
+    # probe count below census's own max_per_provider=None ask, so proving
+    # all 7 routes takes several ticks instead of one; the needle pass
+    # itself is a SEPARATE budget keyed on ``candidates`` (free evidence),
+    # never on how many routes the coordinator actually probed this tick,
+    # and it only ever targets the first five routes in census order
+    # (spec section 2).
+    for _ in range(8):
+        _tick(tmp_path, transport, prober, models, **kw)
+    assert {route for route, _ in prober.calls} == {f"f/r{i}" for i in range(1, 6)}
 
 
 # --- B2: context-pass budgets, catalog capacity, reservations ---------------

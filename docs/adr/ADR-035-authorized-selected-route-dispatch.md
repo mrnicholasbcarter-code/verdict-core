@@ -87,3 +87,33 @@ of that handoff remains deferred to phase 2b.
 route id, hashed into `config_generation`) and the task profile digest. It never
 contains key material. It does not represent the full effective configuration;
 a full effective-config generation is a follow-up.
+
+## Addendum: Executor gateway-origin attestation (S03-C)
+
+Dispatch now attests the executor's own reported gateway origin against the bound
+`DispatchScope.gateway_origin`, immediately before `_commit_permit`. Both sides are
+normalized to `scheme://lower-case-host:explicit-port` (`normalize_gateway_origin`),
+with path, query and fragment dropped, and a malformed URL (an unparseable scheme,
+host, port, or a broken IPv6 literal) normalizes to no match rather than raising.
+
+An executor that reports a non-`None` origin which does not match the bound scope
+is BLOCKED with `dispatch_denied: executor origin mismatch`: no permit is committed
+and the executor is never called. There is no reselect or retry for this failure;
+the route's own proof binding at selection time is unaffected, but nothing is sent.
+
+An executor that reports no origin at all (`None`) is denied (U1, reversed): it is
+BLOCKED with `dispatch_denied: executor origin unknown`, with no permit and no send.
+`PrimeHeadlessExecutor` pins a launch dir per checked send, keyed by the route and
+working directory its `run()` receives, and reports its provider's `baseUrl` from
+that dir's private `models.json` copy, the file the launch's Prime reads. Every
+launch re-reads the copy it is about to exec: a checked send uses only its pinned
+dir, and any other send on an executor that has reported an origin must still name
+a checked origin; otherwise it ends with `executor origin changed` and nothing is
+executed. Executors never checked (planner, no dispatch authority) keep a fresh
+dir. A missing, unparseable or non-gateway `baseUrl` reports `None`. A re-pin
+removes the previous dir, and a send denied after the check releases its pin
+(`release_executor_origin_pin`), so no launch dir is left behind. Executors that never touch the network (fake, offline demo)
+declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no
+executor that sends to a gateway may declare it. `ScriptedExecutor` runs arbitrary
+code, so it has no origin unless its constructor is given one. `MixedExecutor` and `FaultInjectingExecutor` resolve the
+origin check per wrapped node or delegate to their inner executor, respectively.

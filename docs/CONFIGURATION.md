@@ -528,6 +528,43 @@ or `deny`, but always reports `authorization: "unchanged"`.
 
 ---
 
+## Installed-runtime provenance and the maintenance refresh lane
+
+`verdict doctor` reports one row per loaded long-running service unit (prove-at-rest,
+census, acceptance, prime-sync, metadata-refresh): the package its `ExecStart`
+interpreter imports from the unit's working directory, that package's recorded
+build, the unit's gateway origin, and its effective state scope (`VERDICT_HOME`).
+A row FAILS whenever the interpreter's own install, or the imported package, is
+not the reviewed build (including an unrecorded build, which is never reported
+OK even when the install path looks right), the state scope differs, or
+`VERDICT_HEALTH_CACHE` points at a different cache. The gateway origin shown is
+always reduced to `scheme://host:port` (plus a literal `/...` marker for a path);
+userinfo, query strings and fragments never appear in the detail text, because
+they can carry tokens.
+
+Every service installer (prove-at-rest, acceptance, census) returns an install
+`plan` (per-unit create/replace/keep, or remove/absent on uninstall) and writes a
+`rollback` snapshot of every unit file it is about to replace or remove, under
+`$VERDICT_HOME/service-rollback/<UTC>/`, before any unit file is written. A dry
+run returns the plan and writes nothing.
+
+Census and prove-at-rest's chat phase are the two automatic maintenance
+producers on the shared `RefreshCoordinator` (`verdict/orchestration/verified_refresh.py`).
+Both probe FREE and SUBSCRIPTION capacity only; METERED/UNKNOWN routes stay
+reachable only through the consented manual refresh plan (`--include-unknown`,
+`--allow-metered`), never from an automatic cycle. Census keeps its existing
+4-route/16-request/2-per-provider maintenance size. Prove-at-rest's chat phase
+computes its own bounded config from the daemon's own flags: `max_routes =
+max(1, min(daemon --max-requests // 2, 50))`, `max_requests = min(daemon
+--max-requests, 100)`, `wall_seconds = min(daemon --max-wall-seconds, 600)`.
+Neither producer exceeds the coordinator's hard maxima
+(`HARD_MAX_ROUTES=50`, `HARD_MAX_REQUESTS=100`,
+`HARD_MAX_WALL_SECONDS_MAINTENANCE=600`). Both go through the same flock,
+marker, bucket and `auth_gate` machinery as every other coordinator caller; a
+budget too small for one full probe makes zero calls (no partial-probe spend).
+
+---
+
 ## Example: local gateway
 
 ```bash

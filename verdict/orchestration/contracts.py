@@ -634,6 +634,7 @@ import inspect  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Protocol  # noqa: E402
+from urllib.parse import urlsplit  # noqa: E402
 
 
 class WorkerExecutor(Protocol):
@@ -647,11 +648,92 @@ class WorkerExecutor(Protocol):
     ``tools=False`` asks for an answer-only call with no agent tools (planning
     needs only a JSON answer). Executors without the keyword are called
     exactly as before; see :func:`run_executor`.
+
+    An executor MAY also report the gateway it sends to, as a ``gateway_origin``
+    attribute (a URL), or a ``gateway_origin_for(node_id, *, route_id, cwd)``
+    method (wrappers that route per node, executors that bind the checked origin
+    to the launch); see :func:`executor_gateway_origin`.
+    The runtime denies a send when that origin differs from the origin the
+    dispatch permit binds, and also when the executor reports no origin at all.
+    ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the
+    ``models.json`` copy in the launch dir it pins for that route and ``cwd``. Executors that
+    send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
     """
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal: ...
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: The origin an executor that never touches the network declares (scripted,
+#: fake and offline demo executors). It matches any dispatch authority; no
+#: executor that sends to a gateway may use it.
+LOCAL_EXECUTOR_ORIGIN = "local:"
+
+
+def normalize_gateway_origin(url: str) -> str | None:
+    """``scheme://host:port`` of ``url`` (lower-case, default port explicit, path dropped).
+
+    None when ``url`` does not parse as an origin (no scheme, no host or an invalid
+    port): such an origin equals nothing, not even itself.
+    """
+    try:
+        parsed = urlsplit(url.strip())
+        explicit_port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
+    if not scheme or not host or port is None:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port}"
+
+
+def executor_gateway_origin(
+    executor: object, node_id: str, *, route_id: str, cwd: Path
+) -> str | None:
+    """The gateway URL ``executor`` reports for the send of ``node_id`` on ``route_id``
+    in ``cwd`` as given, or None when unknown.
+
+    ``route_id`` and ``cwd`` are exactly what the executor's ``run`` will receive,
+    so an executor can bind the checked origin to that launch.
+    """
+    resolve = getattr(executor, "gateway_origin_for", None)
+    origin = (
+        resolve(node_id, route_id=route_id, cwd=cwd)
+        if callable(resolve)
+        else getattr(executor, "gateway_origin", None)
+    )
+    return origin if isinstance(origin, str) and origin else None
+
+
+def release_executor_origin_pin(
+    executor: object, node_id: str, *, route_id: str, cwd: Path
+) -> None:
+    """Tell ``executor`` the checked send on ``route_id`` in ``cwd`` will not run.
+
+    Executors that pin launch state in ``gateway_origin_for`` free it in an
+    optional ``release_origin_pin(node_id, *, route_id, cwd)`` method.
+    """
+    release = getattr(executor, "release_origin_pin", None)
+    if callable(release):
+        release(node_id, route_id=route_id, cwd=cwd)
+
+
+def gateway_origin_matches(reported: str, bound: str) -> bool:
+    """True only when both origins parse and are the same; an unparseable one fails closed.
+
+    :data:`LOCAL_EXECUTOR_ORIGIN` matches any bound origin: that executor sends nothing.
+    """
+    if reported == LOCAL_EXECUTOR_ORIGIN:
+        return True
+    origin = normalize_gateway_origin(reported)
+    return origin is not None and origin == normalize_gateway_origin(bound)
 
 
 def _accepts_tools_flag(executor: object) -> bool:

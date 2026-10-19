@@ -397,11 +397,11 @@
   },
   {
     "qualified_name": "verdict.orchestration.contracts.ProbeClass",
-    "reason": "UNTRIAGED: ProbeClass has only non-production references; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
+    "reason": "Deferred: ProbeClass names the probe_class values that health_cache and eligibility persist as plain strings ('agentic' / 'single_call' / 'none'); only tests use the enum today. Wire it into HealthEntry.probe_class or delete it in a dedicated story; triaged when BOD-433 touched contracts.py."
   },
   {
     "qualified_name": "verdict.orchestration.contracts.dedupe",
-    "reason": "UNTRIAGED: dedupe has no resolved reference; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
+    "reason": "Deferred: dedupe has no caller (order-preserving tuple helper); delete it in a dedicated cleanup story rather than in an unrelated dispatch-safety change; triaged when BOD-433 touched contracts.py."
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.resolved_retry_policy",
@@ -513,7 +513,7 @@
   },
   {
     "qualified_name": "verdict.strength_profiles.aggregate_strength",
-    "reason": "UNTRIAGED: aggregate_strength has only non-production references; Deterministic, evidence-backed task-strength profiles (verdict/strength_profiles.py)."
+    "reason": "Deferred (BOD-438 S10): aggregate_strength (suite/rubric StrengthObservation aggregation) is a distinct mechanism from score_task_history's verified-outcome demotion; only test callers until a strength-profile consumer is wired. Retain pending that wiring or removal; no selection authority is inferred from it."
   },
   {
     "qualified_name": "verdict.structured_qualification.StructuredOutputRunner",

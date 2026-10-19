@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -751,13 +752,132 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
         max_per_provider=None,
         cooling_providers=cooldowns,
     )
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator's maintenance contract now bounds the actual probe count,
+    # even though census's own max_per_provider=None lifts its
+    # candidate-selection cap.
     assert requests == ["/api/resilience/model-cooldowns"]
-    assert report["probed"] == 6
-    assert report["updated"] == 6
-    assert report["reserved_tokens"] == 1536
-    assert {model for model, phase in calls} == {f"good/model-{i}" for i in range(6)}
-    assert len(calls) == 12
-    assert len(load_healthy_passports(tmp_path / "passports.json")) == 6
+    assert report["probed"] == 2
+    assert report["updated"] == 2
+    assert report["reserved_tokens"] == 512
+    assert {model for model, phase in calls} <= {f"good/model-{i}" for i in range(6)}
+    assert len(calls) == 4
+    assert len(load_healthy_passports(tmp_path / "passports.json")) == 2
+
+
+def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
+    """BOD-297/S05-A: census joins the shared RefreshCoordinator, not its own loop.
+
+    While another producer holds the coordinator's flock, a census tick must
+    make ZERO direct transport calls (it joins/lock-times-out like every other
+    producer). Once the lock is free, a 9,000-candidate tick is bounded by the
+    maintenance contract: at most 4 routes, 16 requests, 2 per provider, and
+    the coordinator's own marker records the "census" consumer.
+    """
+    import multiprocessing
+
+    from verdict.census_passports import run_census
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.orchestration.verified_refresh import _JobLock
+    from verdict.prove_at_rest import ProbeExchange
+
+    cache_path = tmp_path / "health.json"
+    lock_path = cache_path.parent / "verified-refresh.lock"
+    marker_path = cache_path.parent / "verified-refresh.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _hold_lock_in_child(path_str: str, started: Any, release: Any) -> None:
+        lock = _JobLock(Path(path_str))
+        lock.acquire()
+        started.set()
+        release.wait(timeout=5.0)
+        lock.release()
+
+    ids = [f"good/m{i}" for i in range(6)]
+    snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": model, "owned_by": "good"} for model in ids]},
+        free_tier={
+            "perModel": [
+                {"provider": "good", "modelId": f"m{i}", "freeType": "keyless"} for i in range(6)
+            ]
+        },
+        providers={"connections": [{"provider": "good", "isActive": True, "testStatus": "active"}]},
+    )
+    calls = []
+
+    def transport(model, phase, timeout):
+        calls.append((model, phase))
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    ctx = multiprocessing.get_context("fork")
+    started = ctx.Event()
+    release = ctx.Event()
+    holder = ctx.Process(target=_hold_lock_in_child, args=(str(lock_path), started, release))
+    holder.start()
+    try:
+        assert started.wait(timeout=5.0)
+        report = run_census(
+            snapshot,
+            transport,
+            cache=HealthCache(cache_path),
+            passport_store_path=tmp_path / "state.json",
+            now=NOW,
+            max_candidates=6,
+            max_tokens=4096,
+        )
+    finally:
+        release.set()
+        holder.join(timeout=5.0)
+
+    assert calls == []
+    assert report["probed"] == 0
+    assert report.get("coordinator_outcome") in {"lock_timeout", "joined"}
+
+    # -- lock free: 9,000 candidates bounded by the maintenance contract --
+    many_ids = [f"p{i % 4500}/m{i}" for i in range(9_000)]
+    many_providers = sorted({model.split("/", 1)[0] for model in many_ids})
+    big_snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": model, "owned_by": model.split("/", 1)[0]} for model in many_ids]},
+        free_tier={
+            "perModel": [
+                {
+                    "provider": model.split("/", 1)[0],
+                    "modelId": model.split("/", 1)[1],
+                    "freeType": "keyless",
+                }
+                for model in many_ids
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": provider, "isActive": True, "testStatus": "active"}
+                for provider in many_providers
+            ]
+        },
+    )
+    calls2 = []
+
+    def transport2(model, phase, timeout):
+        calls2.append((model, phase))
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    run_census(
+        big_snapshot,
+        transport2,
+        cache=HealthCache(cache_path),
+        passport_store_path=tmp_path / "state2.json",
+        now=NOW,
+    )
+    probed_routes = {model for model, _phase in calls2}
+    assert len(probed_routes) <= 4
+    assert len(calls2) <= 16
+    per_family: dict[str, int] = {}
+    for model in probed_routes:
+        family = model.split("/", 1)[0]
+        per_family[family] = per_family.get(family, 0) + 1
+    assert all(count <= 2 for count in per_family.values())
+    marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert marker_payload.get("owner") == "census"
 
 
 def test_census_install_updates_runtime_and_reports_last_result(tmp_path, monkeypatch):
@@ -1121,7 +1241,10 @@ def test_census_reserves_an_exploration_slot_for_a_never_proven_route(tmp_path):
         max_tokens=1536,
     )
 
-    assert len(set(calls)) == 6
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator's maintenance contract now bounds the actual probe count
+    # below census's own ask.
+    assert len(set(calls)) == 4
     assert "q/new" in calls
 
 

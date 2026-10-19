@@ -415,6 +415,120 @@ def test_provider_auth_failure_stops_that_provider(tmp_path: Path) -> None:
     assert cache.cooldown_for("provider:cc", NOW) is not None
 
 
+def test_auth_gate_confirmed_outage_writes_nothing_and_stops_the_job(tmp_path: Path) -> None:
+    """BOD-338 breaker preserved through the coordinator (prove-at-rest S05-B).
+
+    An ``auth_gate`` hook is called for a CATEGORY_AUTH outcome BEFORE any
+    write. When it confirms a gateway-key outage (True), the route's auth
+    failure is NOT recorded (no provider cooldown, no negative cache entry)
+    and the job stops with ``REASON_AUTH_OUTAGE``; a sibling never reached
+    is left unprobed, not poisoned.
+    """
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
+    gate_calls: list[tuple[str, int | None]] = []
+
+    def auth_gate(
+        route_id: str, http_status: int | None, remaining_requests: int
+    ) -> tuple[bool, int]:
+        gate_calls.append((route_id, http_status))
+        return True, 0  # confirmed outage, no live check spent
+
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = auth_gate
+    rows = [
+        _row("cc/a", provider="cc", rank_hint=1),
+        _row("cc/b", provider="cc", rank_hint=2),
+        _row("kr/c", provider="kr", rank_hint=1),
+    ]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert gate_calls == [("cc/a", 401)]
+    assert out.route_outcomes["cc/a"].refresh_reason == "auth_outage"
+    assert out.route_outcomes["cc/a"].probed is False
+    # Confirmed outage stops the job: siblings are never reached or poisoned.
+    assert ("cc/b", "chat") not in transport.calls
+    assert ("kr/c", "chat") not in transport.calls
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.entry("cc/a") is None
+    assert cache.cooldown_for("provider:cc", NOW) is None
+
+
+def test_auth_gate_denied_outage_records_the_real_auth_failure(tmp_path: Path) -> None:
+    """A rejected outage (False, or no hook) writes the auth failure as today."""
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = lambda route_id, http_status, remaining_requests: (False, 0)
+    rows = [_row("cc/a", provider="cc", rank_hint=1), _row("cc/b", provider="cc", rank_hint=2)]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert out.route_outcomes["cc/b"].refresh_reason == REASON_PROVIDER_STOP
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.cooldown_for("provider:cc", NOW) is not None
+
+
+def test_auth_gate_fires_on_403_permission_category_too(tmp_path: Path) -> None:
+    """A 403 classifies as CATEGORY_PERMISSION, not CATEGORY_AUTH -- the gate
+    must still fire, matching Prober._buffer_auth_failure's own (401, 403)
+    check rather than one specific category string.
+    """
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(403)})
+    gate_calls: list[tuple[str, int | None]] = []
+
+    def auth_gate(
+        route_id: str, http_status: int | None, remaining_requests: int
+    ) -> tuple[bool, int]:
+        gate_calls.append((route_id, http_status))
+        return True, 0
+
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = auth_gate
+    rows = [_row("cc/a", provider="cc", rank_hint=1), _row("cc/b", provider="cc", rank_hint=2)]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert gate_calls == [("cc/a", 403)]
+    assert out.route_outcomes["cc/a"].refresh_reason == "auth_outage"
+    assert ("cc/b", "chat") not in transport.calls
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.entry("cc/a") is None
+
+
+def test_provider_stop_never_demotes_an_otherwise_complete_job(tmp_path: Path) -> None:
+    """A real per-route/provider stop (401 on af/a) skips af/b (sibling,
+    REASON_PROVIDER_STOP) but the rest of the plan succeeds -- the job's
+    overall outcome is COMPLETED, not CAPPED, and af/b's own outcome still
+    carries provider_scope_stopped.
+    """
+    transport = ScriptedTransport({("af/a", "chat"): _fail(401)})
+    rows = [
+        _row("af/a", provider="af", rank_hint=1),
+        _row("af/b", provider="af", rank_hint=2),
+        _row("kr/c", provider="kr", rank_hint=1),
+    ]
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert out.outcome == OUTCOME_COMPLETED
+    assert out.complete is True
+    assert out.route_outcomes["af/b"].refresh_reason == REASON_PROVIDER_STOP
+    assert out.route_outcomes["kr/c"].verified is True
+
+
 def test_429_honors_retry_after_and_zeroes_bucket(tmp_path: Path) -> None:
     transport = ScriptedTransport({("cc/a", "chat"): _fail(429, "rate_limited", retry_after=120.0)})
     coord = _coordinator(tmp_path, transport)
@@ -937,15 +1051,26 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     """
     import multiprocessing
 
-    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT, REASON_LOCK_TIMEOUT
+    from verdict.orchestration.verified_refresh import (
+        OUTCOME_LOCK_TIMEOUT,
+        REASON_LOCK_TIMEOUT,
+        maintenance_from_env,
+    )
 
-    # -- configuration knobs (qualification bounds) --
+    # -- configuration knobs (A09 maintenance lane + qualification bounds) --
     base = config_from_env({})
     assert base.output_tokens == 4096
     assert base.request_timeout_seconds == 30.0
     assert base.max_per_provider is None  # interactive: no per-provider cap
     assert base.cooldown_seconds == 300.0
-    bounded = RefreshConfig(max_routes=4, max_requests=16, concurrency=4)
+    assert base.maintenance is False
+    bounded = maintenance_from_env({})
+    assert bounded.maintenance is True
+    assert bounded.max_routes == 4
+    assert bounded.max_requests == 16
+    assert bounded.wall_seconds == 600.0
+    assert bounded.concurrency == 4
+    assert bounded.debounce_seconds == 10.0
     # Env keeps precedence and the hard-max guard style.
     assert config_from_env({"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"}).max_per_provider == 3
     with pytest.raises(RefreshConfigError):
@@ -953,7 +1078,11 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     with pytest.raises(RefreshConfigError):
         config_from_env({"VERDICT_REFRESH_OUTPUT_TOKENS": "0"})
     with pytest.raises(RefreshConfigError):
+        maintenance_from_env({"VERDICT_REFRESH_MAX_ROUTES": "51"})
+    assert bounded.max_per_provider == 2
+    with pytest.raises(RefreshConfigError):
         RefreshConfig(wall_seconds=600.0)
+    assert RefreshConfig(wall_seconds=600.0, maintenance=True).wall_seconds == 600.0
 
     # -- 9,000 fake ids: caps apply before any screening call (A12) --
     caps_dir = tmp_path / "caps"
@@ -1356,6 +1485,39 @@ def test_scope_mismatch_does_not_leak_foreign_job_id(tmp_path: Path) -> None:
     assert out.job_id != "foreign-job"
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VERDICT_REFRESH_MAX_ROUTES": "5"},
+        {"VERDICT_REFRESH_MAX_REQUESTS": "17"},
+        {"VERDICT_REFRESH_WALL_SECONDS": "601"},
+        {"VERDICT_REFRESH_CONCURRENCY": "5"},
+        {"VERDICT_REFRESH_OUTPUT_TOKENS": "4097"},
+        {"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"},
+    ],
+)
+def test_maintenance_env_can_never_exceed_contract_caps(env: dict[str, str]) -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    with pytest.raises(RefreshConfigError):
+        maintenance_from_env(env)
+
+
+def test_maintenance_env_may_lower_caps() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    lowered = maintenance_from_env(
+        {
+            "VERDICT_REFRESH_MAX_ROUTES": "2",
+            "VERDICT_REFRESH_MAX_REQUESTS": "8",
+            "VERDICT_REFRESH_OUTPUT_TOKENS": "1024",
+            "VERDICT_REFRESH_MAX_PER_PROVIDER": "1",
+        }
+    )
+    assert (lowered.max_routes, lowered.max_requests) == (2, 8)
+    assert (lowered.output_tokens, lowered.max_per_provider) == (1024, 1)
+
+
 def test_per_provider_cap_normalizes_provider_names() -> None:
     providers = ["OpenAI", "openai", "OpenAI ", "OPENAI"]
     rows = [_row(f"x/m{i}", provider=p) for i, p in enumerate(providers)]
@@ -1368,9 +1530,12 @@ def test_per_provider_cap_normalizes_provider_names() -> None:
     assert len(picked) == 2
 
 
-def test_interactive_has_no_per_provider_cap() -> None:
+def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
     assert RefreshConfig().max_per_provider is None
     assert config_from_env({}).max_per_provider is None
+    assert maintenance_from_env({}).max_per_provider == 2
     rows = [_row(f"cc/r{i}") for i in range(5)]
     picked = select_candidates(
         _snapshot(rows),

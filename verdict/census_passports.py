@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -227,7 +228,6 @@ def run_census(
     """
     from verdict.admission import RuntimeEvidence
     from verdict.free_tier_admit import admit_free_tier_active
-    from verdict.prove_at_rest import AdmittedRoute, probe_full
 
     if any(b is not None and b < 1 for b in (max_candidates, max_tokens, max_per_provider)):
         raise ValueError("census budgets must be positive")
@@ -355,7 +355,14 @@ def run_census(
                 per_family[family] = per_family.get(family, 0) + 1
                 budgeted.append(model)
         pending = budgeted
-    caps = [len(pending)]
+    from verdict.orchestration.verified_refresh import MAINTENANCE_MAX_ROUTES
+
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator enforces this maintenance route cap regardless of what
+    # census asks for, so the exploration/renewal split below must be
+    # computed against the SAME enforced ceiling, not a larger number
+    # census could never actually spend.
+    caps = [len(pending), MAINTENANCE_MAX_ROUTES]
     if max_candidates is not None:
         caps.append(max_candidates - refreshed["updated"])
     if max_tokens is not None:
@@ -383,21 +390,60 @@ def run_census(
     else:
         blocklist = ProviderBlocklist()
     family_used: dict[str, int] = {}
-    for model in chosen:
-        if blocklist.is_blocked(model.split("/", 1)[0]):
-            continue
-        outcome = probe_full(
-            AdmittedRoute(model, model.split("/", 1)[0], "free", capacity_evidence="free"),
-            transport,
-            timeout_seconds=15,
+    coordinator_outcome: str | None = None
+    if chosen:
+        from verdict.orchestration.verified_refresh import (
+            CAPACITY_FREE,
+            CONSUMER_CENSUS,
+            STATUS_UNVERIFIED,
+            RefreshCoordinator,
+            RefreshSnapshot,
+            RowInput,
+            maintenance_from_env,
         )
-        probed += 1
-        family = canonical_route(model).split("/", 1)[0]
-        family_used[family] = family_used.get(family, 0) + 1
-        if outcome.result is not None:
-            cache.record(model, outcome.result, now)
-        if pipeline_state:
-            states[model] = _pipeline_state(model, outcome, blocklist, transition, ModelState)
+
+        runnable = [model for model in chosen if not blocklist.is_blocked(model.split("/", 1)[0])]
+        # Census already ordered `chosen` itself (keep proven routes alive,
+        # then the exploration/renewal mix); the coordinator's own priority
+        # bands are a different signal (last-success history), so every row
+        # keeps the SAME priority band here and ``rank_hint`` alone carries
+        # census's intended order within one provider's round-robin slot.
+        rows = tuple(
+            RowInput(
+                route_id=model,
+                provider=canonical_route(model).split("/", 1)[0],
+                status=STATUS_UNVERIFIED,
+                capacity_class=CAPACITY_FREE,
+                refreshable=True,
+                capacity_evidence="free",
+                pool=canonical_route(model).split("/", 1)[0],
+                rank_hint=index,
+            )
+            for index, model in enumerate(runnable)
+        )
+        gateway_origin = getattr(snapshot, "gateway_origin", "") or ""
+        scope_key = hashlib.sha256(
+            f"census:{gateway_origin}:{passport_store_path}".encode()
+        ).hexdigest()
+        coordinator = RefreshCoordinator(cache=cache, transport=transport, clock=lambda: now)
+        refresh_outcome = coordinator.refresh_for_consumer(
+            RefreshSnapshot(rows=rows, gateway_origin=gateway_origin, scope=scope_key),
+            consumer=CONSUMER_CENSUS,
+            needed_ids=[row.route_id for row in rows],
+            config=maintenance_from_env(),
+            explicit=True,
+        )
+        coordinator_outcome = refresh_outcome.outcome
+        probed = refresh_outcome.probed
+        for model, route_outcome in refresh_outcome.route_outcomes.items():
+            if not route_outcome.probed:
+                continue
+            family = canonical_route(model).split("/", 1)[0]
+            family_used[family] = family_used.get(family, 0) + 1
+            if pipeline_state:
+                states[model] = _pipeline_state(
+                    model, route_outcome, blocklist, transition, ModelState
+                )
     context_probed = 0
     context_reserved = 0
     if pipeline_probes and context_prober is not None and context_probe_max_per_tick > 0:
@@ -450,6 +496,7 @@ def run_census(
         "candidates": len(candidates),
         "probed": probed,
         "reserved_tokens": probed * 256 + context_reserved,
+        **({"coordinator_outcome": coordinator_outcome} if coordinator_outcome else {}),
         **({"context_probed": context_probed} if pipeline_probes else {}),
         **(
             {
@@ -470,15 +517,15 @@ def _pipeline_state(
 
     status = getattr(outcome, "http_status", None)
     category = getattr(outcome, "category", None) or getattr(outcome, "nowrite", None)
-    result = getattr(outcome, "result", None)
+    probed = bool(getattr(outcome, "probed", False))
     if status == 402 and "fake" in str(getattr(outcome, "detail", "") or category or ""):
         probe = ProbeOutcome.FAIL_FAKE
     elif status in (401, 402, 404, 410, 429):
         probe = None
-    elif result is not None and getattr(result, "tool_ok", False):
+    elif probed and getattr(outcome, "verified", False):
         return model_state.TOOL_OK
     else:
-        probe = ProbeOutcome.FAIL if result is not None else None
+        probe = ProbeOutcome.FAIL if probed else None
     return transition(
         model_state.CATALOGED, http_status=status, probe=probe, route=model, blocklist=blocklist
     )

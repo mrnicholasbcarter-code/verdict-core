@@ -1,0 +1,30 @@
+# Proposal
+
+## Why
+
+Wave 5-7 of the V1 hardening plan closes the loop opened in `openspec/changes/v1-permits-streams-public-models`: dispatch permits (S03) extend into the DagRuntime handoff, the shared refresh coordinator (S05) gains its maintenance lane for the two automatic probe producers, verified-history scoring finally consumes the attempt ledger instead of unverified rows, and doctor gains installed-build provenance for every long-running service. The complete 13-story umbrella plan is in `docs/contracts/v1-hardening-umbrella-plan.md`, tracked in Linear under BOD-431. This change covers S09 (BOD-437), S10 (BOD-438), S11 (BOD-414), S05 phase 2 (BOD-297) and the S03-C executor-origin addendum (BOD-433).
+
+## What Changes
+
+- **Attempt ledger (S09 / BOD-437)**: `verdict/outcome_records.py` gains `AttemptRecord`'s 11 optional scoring fields, `ATTEMPT_RECORD_KINDS` (`terminal` | `checker_result`), `CHECKED_QUALITY_CLASSES`, and a flock-serialized, crash-safe (not crash-atomic) append writer. `verdict/orchestration/receipt.py` writes one terminal row per model attempt plus an independently-verified `checker_result` row when the runtime's own `verify` event ran. `verdict/outcome_shadow.py` gains `load_checked_attempts`, joining a ledger row to a run only when the receipt verifies, the digest matches, the row is byte-identical to the recomputed row, the verified check time precedes `as_of`, and it is the first row for that key. `verdict/api.py` writes one terminal row per relay attempt (buffered, streamed and denied-before-send). `verdict/autodev_run.py` stamps `attempt_run_id`/`decision_id`/`node_id` lineage on every planner and executor row.
+- **Verified-history scoring (S10 / BOD-438)**: `verdict/strength_profiles.py` gains `score_task_history`, a 30-day window with a 7-day half-life, a `0.5` prior, and order-only demotion (`score < 0.4` and `>= 3` unique verified observations). `verdict/candidate_pool.py` removes the unverified classification/raw-rate fallback (`RouteEvidence.task_success_rate` deleted); only joined, independently-verified checker rows (`load_checked_attempts`, S09) feed the score. `verdict/outcome_shadow.py` gains `load_verified_outcome_observations`. `verdict/intelligence.py` threads verified history into `build_candidate_pool` and discloses only bounded counts and fixed reason codes (`history_disclosure`), never raw paths or exception text.
+- **Installed-runtime provenance (S11 / BOD-414)**: `verdict/doctor_diagnostics.py` gains `installed_runtime_rows`, one row per loaded systemd unit (prove-at-rest, census, acceptance, prime-sync, metadata-refresh) comparing the unit's interpreter install, imported package build, gateway origin (redacted to `scheme://host:port[/...]`) and state scope against the reviewed build; an unrecorded build is never OK. `verdict/census_passports_service.py` and `verdict/prove_at_rest_service.py` gain an install plan (create/replace/keep/remove) and a pre-write rollback snapshot under `$VERDICT_HOME/service-rollback/<UTC>/`, surfaced by `home_setup_render.py`.
+- **Shared-qualification phase 2 (BOD-297)**: `verdict/orchestration/verified_refresh.py` and `verdict/census_passports.py` move the two automatic probe producers (census, prove-at-rest chat phase) onto the shared `RefreshCoordinator`, each with its own bounded maintenance config, an `auth_gate` hook that confirms a 401/403 before any write and reports the real budget-cap reason when it cannot afford its own check, and a durable per-caller cursor. Automatic cycles probe FREE+SUBSCRIPTION capacity classes only.
+- **Dispatch-permits addendum (S03-C / BOD-433)**: `verdict/orchestration/contracts.py` gains `normalize_gateway_origin`, `executor_gateway_origin` and `gateway_origin_matches`; `verdict/orchestration/runtime.py` denies dispatch with `dispatch_denied` when the executor reports a gateway origin that does not match the bound `DispatchScope.gateway_origin`. An executor reporting no origin (`None`) is accepted (U1: PrimeHeadlessExecutor's provider is configured outside Verdict).
+- **ADR-035** addendum, "Executor gateway-origin attestation (S03-C)".
+
+## Capabilities
+
+### New Capabilities
+- `attempt-ledger`: terminal and independently-verified checker rows per attempt, with crash-safe append and autodev lineage.
+- `verified-history-scoring`: smoothed, time-decayed, verified-only task history feeding candidate ranking via order-only demotion.
+- `installed-runtime-provenance`: doctor rows proving which build every long-running service actually runs, plus an install plan and rollback.
+- `shared-qualification` (this change's increment): the maintenance lane (census and prove-at-rest chat-phase producers) on the coordinator that `openspec/changes/v1-permits-streams-public-models` bound for scope/debounce/fairness (phase 1); no archived baseline spec exists yet for this capability, so this delta is additive at the OpenSpec level.
+- `dispatch-permits` (this change's increment): executor gateway-origin attestation before permit commit, building on the permit/revocation binding `v1-permits-streams-public-models` added; additive at the OpenSpec level for the same reason.
+
+### Modified Capabilities
+(none — `shared-qualification` and `dispatch-permits` have no archived baseline spec yet, so OpenSpec treats both as ADDED requirements in this change.)
+
+## Impact
+
+Affects `verdict/outcome_records.py`, `verdict/orchestration/receipt.py`, `verdict/outcome_shadow.py`, `verdict/api.py`, `verdict/autodev_run.py`, `verdict/strength_profiles.py`, `verdict/candidate_pool.py`, `verdict/intelligence.py`, `verdict/doctor_diagnostics.py`, `verdict/census_passports_service.py`, `verdict/prove_at_rest_service.py`, `verdict/home_setup_render.py`, `verdict/orchestration/verified_refresh.py`, `verdict/census_passports.py`, `verdict/prove_at_rest.py`, `verdict/orchestration/contracts.py`, `verdict/orchestration/runtime.py`, `docs/adr/ADR-035-authorized-selected-route-dispatch.md`. No new dependency. Pre-merge implementation and automated tests only; live acceptance on the operator's gateway from merged main remains outstanding (see Not Delivered in `tasks.md`).

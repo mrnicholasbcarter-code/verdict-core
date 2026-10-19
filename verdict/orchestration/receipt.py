@@ -49,7 +49,12 @@ from verdict.orchestration.contracts import (
     WorkGraph,
     route_provider,
 )
-from verdict.outcome_records import write_outcome_records
+from verdict.outcome_records import (
+    AttemptRecord,
+    append_new_attempt_records,
+    build_attempt_record,
+    write_outcome_records,
+)
 from verdict.security import redact_text
 
 RECEIPT_SCHEMA = "verdict.run-receipt/v1"
@@ -702,6 +707,133 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
     return receipt
 
 
+# BOD-437: orchestration failure categories mapped onto the fixed BOD-353 classes.
+_CATEGORY_CLASS: Mapping[str, str] = {
+    "rate_limited": "quota_429",
+    "quota_exhausted": "quota_429",
+    "payment_required": "quota_429",
+    "authentication": "auth_error",
+    "permission": "auth_error",
+    "timeout": "timeout",
+    "upstream_temporary": "provider_5xx",
+    "gateway_busy": "provider_5xx",
+    "transport_temporary": "stream_drop",
+    "no_final_answer": "stream_drop",
+    "empty_output": "stream_drop",
+    "model_unavailable": "model_cooldown",
+    "verification_failed": "test_failed",
+    "ownership_violation": "spec_violation",
+}
+
+
+def _is_model_attempt(attempt: Mapping[str, Any]) -> bool:
+    route = str(attempt.get("route_id") or "")
+    return (
+        bool(route)
+        and not route.startswith("local/")
+        and (attempt.get("route_identity") != "mechanical")
+    )
+
+
+def run_attempt_records(run_dir: Path, receipt: Mapping[str, Any]) -> list[AttemptRecord]:
+    """Ledger rows for one run: a terminal row per model attempt, plus a checker row.
+
+    The terminal row is the worker's own execution result and never carries
+    quality credit. A ``checker_result`` row exists only where the runtime's
+    independent verification command ran after that attempt's successful
+    terminal; it carries 1 (exit 0) or 0 and names the receipt's
+    ``events_digest`` as evidence. Quota, auth, transport and other operational
+    failures get no checker row, so they never enter a quality denominator.
+    """
+    from verdict.candidate_pool import fingerprint_task
+
+    run_id = str(receipt.get("run_id") or "")
+    digest = str(receipt.get("events_digest") or "")
+    goal = str(receipt.get("goal") or "")
+    family = fingerprint_task(goal).task_family if goal.strip() else None
+    events = EventLog(Path(run_dir) / EVENTS_FILE).read()
+    records: list[AttemptRecord] = []
+    for node in receipt.get("nodes") or []:
+        node_id = str(node.get("node_id") or "")
+        kind = str(node.get("kind") or "other")
+        node_events = [e for e in events if e.node_id == node_id]
+        for attempt in node.get("attempts") or []:
+            if not _is_model_attempt(attempt):
+                continue
+            number = int(attempt["attempt"])
+            outcome = str(attempt.get("outcome") or "")
+            terminal = next(
+                (e for e in node_events if e.type == "terminal" and _attempt_of(e, 1) == number),
+                None,
+            )
+            if outcome == "success":
+                label, failure_class = "accepted", "success"
+            elif outcome == "failure":
+                category = str(attempt.get("failure_category") or "")
+                label, failure_class = "failed", _CATEGORY_CLASS.get(category, "other")
+            else:
+                label, failure_class = "abandoned", "other"
+            usage = attempt.get("usage") if isinstance(attempt.get("usage"), Mapping) else {}
+            common: dict[str, Any] = {
+                "task_kind": kind,
+                "harness": str(attempt.get("harness") or "verdict-orchestrate"),
+                "model": str(attempt.get("executed_model") or attempt["route_id"]),
+                "source": "verdict.orchestration.receipt",
+                "run_id": run_id,
+                "node_id": node_id,
+                "attempt_id": str(number),
+                "task_family": family,
+            }
+            records.append(
+                build_attempt_record(
+                    **common,
+                    outcome=label,
+                    failure_class=failure_class,
+                    record_kind="terminal",
+                    duration_s=attempt.get("duration_seconds"),
+                    tokens_in=usage.get("input_tokens"),
+                    tokens_out=usage.get("output_tokens"),
+                    cost_usd=usage.get("cost_usd"),
+                    ts=terminal.at if terminal is not None else None,
+                )
+            )
+            # The checker judges the worker's successful terminal, even when the
+            # receipt later marks the attempt failed because that check failed.
+            if terminal is None or terminal.data.get("ok") is not True:
+                continue
+            following = [e for e in node_events if e.seq > terminal.seq]
+            stop = next((e.seq for e in following if e.type == "dispatch"), None)
+            checks = [
+                e
+                for e in following
+                if e.type == "verify"
+                and (stop is None or e.seq < stop)
+                and not str(e.data.get("command") or "").startswith("(none")
+            ]
+            if not checks:
+                continue
+            passed = checks[-1].data.get("ok") is True
+            records.append(
+                build_attempt_record(
+                    **common,
+                    outcome="accepted" if passed else "failed",
+                    failure_class="success" if passed else "test_failed",
+                    record_kind="checker_result",
+                    checker_digest=digest,
+                    quality_credit=1.0 if passed else 0.0,
+                    ts=checks[-1].at,
+                )
+            )
+    return records
+
+
+def _record_run_attempts(run_dir: Path, receipt: Mapping[str, Any]) -> None:
+    """Append this run's attempt and checker rows to the shared ledger (idempotent)."""
+    from verdict.paths import verdict_home
+
+    append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=verdict_home())
+
+
 def write_run_receipt(run_dir: Path) -> Path:
     run_dir = Path(run_dir)
     receipt = build_run_receipt(run_dir)
@@ -726,6 +858,14 @@ def write_run_receipt(run_dir: Path) -> Path:
             f"warning: could not write outcome records to"
             f" {run_dir / 'outcome-records.jsonl'}: {exc}",
             file=sys.stderr,
+        )
+    try:
+        _record_run_attempts(run_dir, receipt)
+    except Exception as exc:  # the ledger must never block the authoritative receipt
+        import sys
+
+        print(
+            f"warning: could not record run attempts in the outcome ledger: {exc}", file=sys.stderr
         )
     _fsync_dir(run_dir)
     return target
