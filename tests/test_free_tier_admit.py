@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from verdict.catalog_cache import get_cached_catalog
 from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
 from verdict.context_pack import ContextPackSlot
 from verdict.free_tier_admit import (
@@ -19,6 +20,9 @@ from verdict.free_tier_admit import (
     REASON_NOT_FREE_TIER,
     REASON_OPAQUE_ROUTE_DISALLOWED,
     REASON_PROVIDER_INACTIVE,
+    REASON_PROVIDER_NOT_CONNECTED,
+    REASON_PROVIDER_UNHEALTHY,
+    LiveAdmitError,
     admit_free_tier_active,
     build_cheap_path_context_pack,
     execute_offload_chat,
@@ -917,3 +921,303 @@ def test_quota_fence_not_cancelled_by_mixed_window_account():
     receipt = admit_free_tier_active(snapshot)
     assert not receipt.admitted
     assert snapshot.quota_blocks
+
+
+# ---------------------------------------------------------------------------
+# BOD-345 / S04: bounded gateway inventory and scoped telemetry (A01/A03/A05)
+# ---------------------------------------------------------------------------
+
+_S04_BASE = "http://127.0.0.1:20128"
+
+_S04_SURFACES: dict[str, object] = {
+    "/v1/models": {
+        "object": "list",
+        "data": [
+            _catalog_row("oc/claude-small", "oc"),
+            _catalog_row("bare/model", "bare"),
+            _catalog_row("ghostcorp/model", "ghostcorp"),
+            _catalog_row("auto/rotator", "omniroute"),
+            _catalog_row("unmapped/ghost-row", "unmapped"),
+        ],
+    },
+    "/api/free-tier/summary": {
+        "perModel": [
+            {"modelId": "claude-small", "provider": "oc"},
+            {"modelId": "model", "provider": "bare"},
+            {"modelId": "model", "provider": "ghostcorp"},
+            {"modelId": "auto/rotator", "provider": "omniroute"},
+        ]
+    },
+    "/api/providers": {
+        "connections": [
+            {"provider": "oc", "isActive": True, "testStatus": "active"},
+            # Deployed nested analytics shape: successRate=1/CLOSED and an
+            # empty MCP array are unknown observations, never health evidence.
+            {
+                "provider": "bare",
+                "isActive": True,
+                "analytics": {"successRate": 1.0, "state": "CLOSED"},
+                "mcp": [],
+            },
+            {"provider": "omniroute", "isActive": True, "testStatus": "active"},
+        ],
+        "total": 3,
+    },
+    "/api/v1/me/status": {
+        "accountQuotas": [
+            {
+                "provider": "oc",
+                "connectionId": "acct-1",
+                "quotas": {"hourly": {"usedPercentage": 0.0}},
+            }
+        ]
+    },
+    "/api/usage/model-latency-stats": {"entries": []},
+    "/api/resilience/connections": {"connections": []},
+}
+
+
+def _s04_transport(surfaces: dict[str, object]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = surfaces.get(request.url.path)
+        if payload is None:
+            return httpx.Response(404)
+        return httpx.Response(200, json=payload)
+
+    return httpx.MockTransport(handler)
+
+
+def _load_s04(
+    transport: httpx.BaseTransport, api_key: str, last_good: Path, **kwargs: object
+) -> object:
+    return load_omniroute_admit_snapshot(
+        _S04_BASE,
+        api_key,
+        transport=transport,
+        last_good_path=last_good,
+        sleep=lambda _seconds: None,
+        **kwargs,
+    )
+
+
+def test_gateway_missing_telemetry_is_unknown_and_catalog_is_bounded(tmp_path: Path) -> None:
+    """S04 named aggregate regression (BOD-345 acceptance A01, A03, A05).
+
+    Missing gateway telemetry stays unknown and never healthy; an observed
+    zero stays zero; the bounded catalog walk never publishes a truncated
+    inventory as complete.
+    """
+    last_good = tmp_path / "admit-last-good.json"
+
+    # -- A05: missing telemetry is unknown, observed zero stays zero ----------
+    snapshot = _load_s04(_s04_transport(_S04_SURFACES), "telemetry-token", last_good)
+    assert snapshot.fetched_at is not None  # type: ignore[attr-defined]
+    assert snapshot.inventory_complete is True  # type: ignore[attr-defined]
+    assert snapshot.quota_blocks == ()  # type: ignore[attr-defined]
+    # usedPercentage 0 stays an observed zero: no quota fence is invented.
+    assert {"analytics", "mcp", "successRate"} <= set(snapshot.unsupported_fields)  # type: ignore[attr-defined]
+    statuses = {conn.provider: conn for conn in snapshot.connections}  # type: ignore[attr-defined]
+    assert statuses["bare"].test_status is None  # missing telemetry stays unknown
+
+    receipt = admit_free_tier_active(snapshot)
+    # Explicit alias mapping preserves the concrete identity (A01).
+    assert receipt.chosen == "oc/claude-small"
+    reasons = {drop.model_id: drop.reason for drop in receipt.exclusions}
+    # Absent health telemetry is unknown, never healthy (A05).
+    assert reasons["bare/model"] == REASON_PROVIDER_UNHEALTHY
+    # A nonexistent provider stays unknown (A05).
+    assert reasons["ghostcorp/model"] == REASON_PROVIDER_NOT_CONNECTED
+    # Opaque rows never become candidates through catalog membership (A01).
+    assert reasons["omniroute/auto/rotator"] == REASON_OPAQUE_ROUTE_DISALLOWED
+    inventory = {row.identity_id for row in snapshot.catalog}  # type: ignore[attr-defined]
+    # Opaque and unmapped rows remain internally accounted for in inventory.
+    assert {"auto/rotator", "unmapped/ghost-row"} <= inventory
+    assert "auto/rotator" not in receipt.admitted
+    assert "unmapped/ghost-row" not in receipt.admitted
+
+    # -- A03: a repeated cursor never publishes a truncated catalog ----------
+    cursors: list[str | None] = []
+
+    def paging_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path != "/v1/models":
+            payload = _S04_SURFACES.get(path)
+            return httpx.Response(404) if payload is None else httpx.Response(200, json=payload)
+        after = request.url.params.get("after")
+        cursors.append(after)
+        if after is None:
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [_catalog_row("oc/claude-small", "oc")],
+                    "next_cursor": "cursor-2",
+                },
+            )
+        # New rows but the same cursor again: an inconsistent page walk.
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [_catalog_row("zz/other", "zz")],
+                "next_cursor": "cursor-2",
+            },
+        )
+
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(httpx.MockTransport(paging_handler), "cursor-token", last_good)
+    assert caught.value.code == "incomplete_source"
+    assert "repeated pagination cursor" in str(caught.value)
+    assert cursors == [None, "cursor-2"]
+    # The truncated walk was never published as a complete catalog.
+    assert get_cached_catalog(_S04_BASE, "cursor-token") is None
+
+
+def test_catalog_row_overflow_is_incomplete_source(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"id": f"p/model-{i}", "owned_by": "p"} for i in range(50_001)],
+                },
+            )
+        return httpx.Response(200, json=_S04_SURFACES.get(request.url.path, {}))
+
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(httpx.MockTransport(handler), "rows-token", tmp_path / "lg.json")
+    assert caught.value.code == "incomplete_source"
+    assert "raw row limit" in str(caught.value)
+    assert get_cached_catalog(_S04_BASE, "rows-token") is None
+
+
+def test_catalog_page_overflow_is_incomplete_source(tmp_path: Path) -> None:
+    requests = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path != "/v1/models":
+            return httpx.Response(200, json=_S04_SURFACES.get(path, {}))
+        requests["count"] += 1
+        return httpx.Response(
+            200, json={"object": "list", "data": [], "next_cursor": f"cursor-{requests['count']}"}
+        )
+
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(httpx.MockTransport(handler), "pages-token", tmp_path / "lg.json")
+    assert caught.value.code == "incomplete_source"
+    assert "page limit" in str(caught.value)
+    # The walk is bounded at the contract page cap (100 pages).
+    assert requests["count"] == 100
+    assert get_cached_catalog(_S04_BASE, "pages-token") is None
+
+
+def test_catalog_decoded_byte_budget_is_incomplete_source(tmp_path: Path) -> None:
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(
+            _s04_transport(_S04_SURFACES),
+            "bytes-token",
+            tmp_path / "lg.json",
+            decoded_byte_budget=128,
+        )
+    assert caught.value.code == "incomplete_source"
+    assert "decoded byte budget" in str(caught.value)
+
+
+def test_unsupported_pagination_hint_is_incomplete_source(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [_catalog_row("oc/claude-small", "oc")],
+                    "hasMore": True,
+                },
+            )
+        return httpx.Response(200, json=_S04_SURFACES.get(path, {}))
+
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(httpx.MockTransport(handler), "hint-token", tmp_path / "lg.json")
+    assert caught.value.code == "incomplete_source"
+    assert "unsupported pagination" in str(caught.value)
+    assert get_cached_catalog(_S04_BASE, "hint-token") is None
+
+
+def test_catalog_inconsistent_page_is_incomplete_source(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path != "/v1/models":
+            return httpx.Response(200, json=_S04_SURFACES.get(path, {}))
+        if request.url.params.get("after") is None:
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [_catalog_row("oc/claude-small", "oc")],
+                    "next_cursor": "cursor-2",
+                },
+            )
+        # Every row on the followed page was already served: inconsistent.
+        return httpx.Response(
+            200, json={"object": "list", "data": [_catalog_row("oc/claude-small", "oc")]}
+        )
+
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(httpx.MockTransport(handler), "dup-token", tmp_path / "lg.json")
+    assert caught.value.code == "incomplete_source"
+    assert "repeated every row" in str(caught.value)
+    assert get_cached_catalog(_S04_BASE, "dup-token") is None
+
+
+def test_aggregate_deadline_zero_without_last_good_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(LiveAdmitError) as caught:
+        _load_s04(
+            _s04_transport(_S04_SURFACES),
+            "deadline-token",
+            tmp_path / "none.json",
+            aggregate_deadline_seconds=0.0,
+        )
+    assert caught.value.code == "timeout"
+    assert "aggregate discovery deadline" in str(caught.value)
+
+
+def test_aggregate_deadline_zero_serves_original_deadline_last_good(tmp_path: Path) -> None:
+    last_good = tmp_path / "lg.json"
+    first = _load_s04(_s04_transport(_S04_SURFACES), "deadline-token", last_good)
+    second = _load_s04(
+        _s04_transport(_S04_SURFACES), "deadline-token", last_good, aggregate_deadline_seconds=0.0
+    )
+    # The catalog is fresh in cache; only the live surfaces went stale, served
+    # from last-good within their original fetched_at deadlines.
+    assert set(second.stale_served) == {"account_status", "free_tier", "providers"}  # type: ignore[attr-defined]
+    assert [row.identity_id for row in second.catalog] == [  # type: ignore[attr-defined]
+        row.identity_id
+        for row in first.catalog  # type: ignore[attr-defined]
+    ]
+
+
+def test_unknown_catalog_shape_is_unknown_not_observed_zero() -> None:
+    unknown = snapshot_from_payloads(
+        catalog={"data": {"models": []}},  # nested wrong schema
+        free_tier={"perModel": []},
+        providers={"connections": []},
+        account_status={"accountQuotas": []},
+    )
+    assert unknown.catalog == ()
+    assert unknown.inventory_complete is False
+    assert any(
+        drop.model_id == "catalog" and drop.reason == "shape_unknown"
+        for drop in unknown.inventory_diagnostics
+    )
+    zero = snapshot_from_payloads(
+        catalog={"object": "list", "data": []},  # observed zero stays zero
+        free_tier={"perModel": []},
+        providers={"connections": []},
+        account_status={"accountQuotas": []},
+    )
+    assert zero.catalog == ()
+    assert zero.inventory_complete is True
+    assert zero.inventory_diagnostics == ()
