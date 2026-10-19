@@ -966,7 +966,35 @@ class IntelligenceService:
                 "candidate pool requires Core metadata for a live execution-path request"
             )
         classification = classify_worthiness(task, criticality=criticality, context=context)
-        requirements, profile = prepared_task_profile(task, context, planner=self.planner)
+        # Merge nested requirements from ExecutionPathRequest into context for derive_requirements
+        # Strongest floor: nested requirements cannot be weakened by context, and context cannot override nested
+        if isinstance(request, ExecutionPathRequest):
+            merged_context = dict(context)
+            # min_context_tokens: max of nested and context (strongest floor)
+            if request.min_context_tokens is not None:
+                ctx_min = merged_context.get("min_context_tokens")
+                if isinstance(ctx_min, int) and not isinstance(ctx_min, bool):
+                    merged_context["min_context_tokens"] = max(request.min_context_tokens, ctx_min)
+                else:
+                    merged_context["min_context_tokens"] = request.min_context_tokens
+            # Boolean capabilities: OR of nested and context (strongest floor - True wins)
+            for flag in (
+                "tools_required",
+                "reasoning_required",
+                "structured_output_required",
+                "streaming_required",
+                "vision_required",
+            ):
+                nested_val = getattr(request, flag, False)
+                ctx_val = merged_context.get(flag, False)
+                if nested_val or ctx_val:
+                    merged_context[flag] = True
+            # task_family from request if not in context
+            if request.task_family is not None and "task_family" not in merged_context:
+                merged_context["task_family"] = request.task_family
+        else:
+            merged_context = context
+        requirements, profile = prepared_task_profile(task, merged_context, planner=self.planner)
         receipt = expand_admit_for_worthiness(
             admit_free_tier_active(snapshot),
             snapshot,
