@@ -872,7 +872,7 @@ def cmd_route(
 
         ctx[CONTEXT_ALLOW_LEGACY] = True
 
-    gate = _action_helpers.build_route_gate(allow_offline=allow_offline, context=ctx)
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     params = {
         "task": task,
         "criticality": criticality,

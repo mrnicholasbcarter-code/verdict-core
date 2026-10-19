@@ -1290,6 +1290,8 @@ def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
 
     for key in RESERVED_WEAKENING_FLAGS:
         if payload.get(key) is not None:
+            if key == "execution_path_decision":
+                raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
             raise ExecutionPathError(f"reserved control field {key!r} is not accepted")
 
     context = dict(payload)

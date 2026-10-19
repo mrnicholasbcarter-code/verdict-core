@@ -384,7 +384,8 @@ def test_pool_constrains_bod104_but_does_not_choose_strategy() -> None:
     assert prepared.pool_receipt is not None
     assert prepared.pool_receipt.shortlist[0].route_id == STRONG
     decision = asyncio.run(service.route("fix code", criticality="low", context=_context(prepared)))
-    assert decision.model == FAST.split("/", 1)[1]
+    # S02/A25 makes the trusted shortlist authoritative; price/class no longer choose.
+    assert decision.model == STRONG.split("/", 1)[1]
     assert "bod104_execution_path_authority" in decision.safety_flags
     assert "legacy_non_authority_selector" not in decision.safety_flags
 
