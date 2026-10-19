@@ -19,8 +19,8 @@ Frozen consume APIs
 * ``context_budget`` — ``BudgetReceipt``
 * ``context_trust`` — eligibility deltas already applied upstream
 * ``runtime_certification`` — ``CertificationState`` / freshness on offers
-* ``expected_cost`` — ``ExpectedStrategyCost``, ``compare_strategies`` /
-  ``select_strategy``, ``build_strategy_from_assistance``
+* ``expected_cost`` — ``ExpectedStrategyCost``,
+  ``build_strategy_from_assistance``
 * ``session_economics`` — ``ConcreteRoute``, ``SessionRouteDecision``
 * ``bounded_recovery`` — ``RecoveryBounds`` (policy on receipt; controller
   remains authoritative for failure-time actions)

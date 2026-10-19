@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
+from verdict.availability import AvailabilityReport
 from verdict.availability_cache import AvailabilityCache, CacheKey
 from verdict.bounded_recovery import (
     BoundedRecoveryController,
@@ -20,8 +20,6 @@ from verdict.bounded_recovery import (
     RecoveryBounds,
 )
 from verdict.cost_ledger import CostLedger
-from verdict.eligibility import EligibilityGate
-from verdict.models import ModelInfo
 from verdict.orchestration.contracts import NodeKind, OrchestrationError, WorkGraph, WorkNode
 from verdict.orchestration.planner import choose_topology
 
@@ -241,94 +239,6 @@ def test_isolation_keys() -> None:
 # ============================================================================
 # G3.1: Least-cost eligible candidate wins
 # ============================================================================
-
-
-def test_least_cost_eligible() -> None:
-    """G3.1: The least-cost ELIGIBLE candidate is selected, not cheapest overall.
-
-    A cheaper candidate that is not eligible (filtered by the gate) must never
-    be chosen over a more expensive but eligible candidate.
-    Exercises the real production path: EligibilityGate.evaluate() followed by
-    compare_strategies() from verdict.expected_cost.
-    """
-    from decimal import Decimal
-
-    from verdict.cost_ledger import CostTerm
-    from verdict.expected_cost import ExpectedStrategyCost, compare_strategies
-
-    # Three candidates: cheap (ineligible), medium (eligible), expensive (eligible)
-    cheap_model = ModelInfo(id="cheap/model", provider="cheap")
-    medium_model = ModelInfo(id="medium/model", provider="medium")
-    expensive_model = ModelInfo(id="expensive/model", provider="expensive")
-
-    def mock_cache(model_id: str) -> AvailabilityReport:
-        if model_id == "cheap/model":
-            cheap_candidate = AvailabilityCandidate(
-                model=cheap_model, state=AvailabilityState.UNAVAILABLE, source="test"
-            )
-            return AvailabilityReport(
-                candidates=(cheap_candidate,),
-                eligible=(),  # NOT eligible
-                source="test",
-                freshness_seconds=60,
-                errors=(),
-            )
-        elif model_id == "medium/model":
-            medium_candidate = AvailabilityCandidate(
-                model=medium_model, state=AvailabilityState.ELIGIBLE, source="test"
-            )
-            return AvailabilityReport(
-                candidates=(medium_candidate,),
-                eligible=(medium_candidate,),
-                source="test",
-                freshness_seconds=60,
-                errors=(),
-            )
-        else:
-            expensive_candidate = AvailabilityCandidate(
-                model=expensive_model, state=AvailabilityState.ELIGIBLE, source="test"
-            )
-            return AvailabilityReport(
-                candidates=(expensive_candidate,),
-                eligible=(expensive_candidate,),
-                source="test",
-                freshness_seconds=60,
-                errors=(),
-            )
-
-    gate = EligibilityGate(availability_source=mock_cache)
-    eligibility_result = gate.evaluate([cheap_model, medium_model, expensive_model])
-
-    # Gate must admit only medium and expensive; cheap is excluded
-    admitted_ids = {m.id for m in eligibility_result.admitted}
-    assert "cheap/model" not in admitted_ids, "ineligible model must be excluded"
-    assert "medium/model" in admitted_ids
-    assert "expensive/model" in admitted_ids
-
-    # Build cost strategies for admitted candidates only
-    def make_strategy(model: ModelInfo, cash: Decimal) -> ExpectedStrategyCost:
-        term = CostTerm(kind="execution", amount=cash, unit="usd", status="estimated")
-        return ExpectedStrategyCost(
-            strategy_id=model.id,
-            trajectory_id="test-traj",
-            terms=(term,),
-            cash_usd=cash,
-            subscription_opportunity=None,
-            quota_pressure=None,
-            qualified=True,
-        )
-
-    strategies = [
-        make_strategy(m, Decimal("0.010") if m.id == "medium/model" else Decimal("0.020"))
-        for m in eligibility_result.admitted
-    ]
-
-    selection = compare_strategies(strategies, mode="cheapest_qualified")
-
-    # Must select medium (cheapest among eligible), NOT cheap (ineligible, excluded)
-    assert selection.selected_strategy_id == "medium/model", (
-        f"expected medium/model but got {selection.selected_strategy_id!r}"
-    )
 
 
 # ============================================================================

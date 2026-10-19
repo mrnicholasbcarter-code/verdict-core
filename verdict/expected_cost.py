@@ -10,7 +10,7 @@ Frozen consumer contract for session economics
 * ``CostPolicyMode`` — ``cheapest_qualified`` | ``expected_cost``.
 * ``free_first`` — preference flag only; never an optimality claim when
   expected retries/escalation make another qualified path cheaper.
-* ``compare_strategies`` / ``select_strategy`` — economics ranking helpers;
+* ``build_strategy_from_assistance`` — strategy receipt builder; no ranking here,
   eligibility/worthiness remain outside this module.
 """
 
@@ -183,30 +183,6 @@ class ExpectedStrategyCost:
         )
 
 
-@dataclass(frozen=True)
-class StrategySelection:
-    """Economics-only ranking result. Not a routing authority decision."""
-
-    selected_strategy_id: str | None
-    mode: CostPolicyMode
-    free_first_preferred: bool
-    reason: str
-    ranked: tuple[str, ...]
-    optimality_claimed: bool
-    receipt: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "selected_strategy_id": self.selected_strategy_id,
-            "mode": self.mode,
-            "free_first_preferred": self.free_first_preferred,
-            "reason": self.reason,
-            "ranked": list(self.ranked),
-            "optimality_claimed": self.optimality_claimed,
-            "receipt": self.receipt,
-        }
-
-
 def build_strategy_from_assistance(
     *,
     strategy_id: str,
@@ -265,143 +241,9 @@ def build_strategy_from_assistance(
     )
 
 
-def compare_strategies(
-    strategies: Sequence[ExpectedStrategyCost],
-    *,
-    mode: CostPolicyMode = "expected_cost",
-    free_first: bool = False,
-) -> StrategySelection:
-    """Rank qualified strategies under an explicit policy mode.
-
-    ``free_first`` is a preference, not an optimality claim. Under
-    ``expected_cost``, a free path loses when another qualified strategy has
-    lower known expected cash (including retries/escalation).
-    """
-
-    qualified = [item for item in strategies if item.qualified]
-    if not qualified:
-        return StrategySelection(
-            selected_strategy_id=None,
-            mode=mode,
-            free_first_preferred=free_first,
-            reason="no_qualified_strategies",
-            ranked=(),
-            optimality_claimed=False,
-            receipt={"strategies": [item.to_dict() for item in strategies]},
-        )
-
-    def sort_key(item: ExpectedStrategyCost) -> tuple[Any, ...]:
-        cash = item.cash_usd
-        # Unknown cash sorts last (conservative — never invent cheapness).
-        cash_key = (1, Decimal("0")) if cash is None else (0, cash)
-        sub = item.subscription_opportunity
-        sub_key = (1, Decimal("0")) if sub is None else (0, sub)
-        pressure = item.quota_pressure
-        pressure_key = (1, Decimal("0")) if pressure is None else (0, pressure)
-        resource_key = item.resource_token_burden
-        if mode == "cheapest_qualified":
-            # Tactical: minimize known cash, then the estimated token burden.
-            return (cash_key, sub_key, pressure_key, resource_key, item.strategy_id)
-        # Preserve the economic dimensions; resource burden breaks full economic ties.
-        return (cash_key, sub_key, pressure_key, resource_key, item.strategy_id)
-
-    ranked_items = sorted(qualified, key=sort_key)
-    ranked_ids = tuple(item.strategy_id for item in ranked_items)
-
-    if free_first:
-        free_candidates = [item for item in ranked_items if item.is_free]
-        if mode == "cheapest_qualified" and free_candidates:
-            selected = free_candidates[0]
-            return StrategySelection(
-                selected_strategy_id=selected.strategy_id,
-                mode=mode,
-                free_first_preferred=True,
-                reason="free_first_preference_cheapest_qualified",
-                ranked=ranked_ids,
-                optimality_claimed=False,
-                receipt={
-                    "selected": selected.to_dict(),
-                    "strategies": [item.to_dict() for item in strategies],
-                    "note": "free_first is preference, not expected-cost optimality",
-                },
-            )
-        if mode == "expected_cost":
-            # Preference only when free path is not dominated on known cash.
-            best = ranked_items[0]
-            if free_candidates:
-                free = free_candidates[0]
-                if (
-                    free.cash_usd is not None
-                    and best.cash_usd is not None
-                    and free.cash_usd <= best.cash_usd
-                ):
-                    return StrategySelection(
-                        selected_strategy_id=free.strategy_id,
-                        mode=mode,
-                        free_first_preferred=True,
-                        reason="free_first_not_dominated_on_expected_cash",
-                        ranked=ranked_ids,
-                        optimality_claimed=False,
-                        receipt={
-                            "selected": free.to_dict(),
-                            "strategies": [item.to_dict() for item in strategies],
-                        },
-                    )
-                # Free path has higher expected cash (retries/escalation) → do not claim free-first optimal.
-                return StrategySelection(
-                    selected_strategy_id=best.strategy_id,
-                    mode=mode,
-                    free_first_preferred=True,
-                    reason="expected_cost_beats_free_first_preference",
-                    ranked=ranked_ids,
-                    optimality_claimed=True,
-                    receipt={
-                        "selected": best.to_dict(),
-                        "rejected_free": free.to_dict() if free_candidates else None,
-                        "strategies": [item.to_dict() for item in strategies],
-                        "note": "free_first preference deferred; expected-cost optimality retained",
-                    },
-                )
-
-    selected = ranked_items[0]
-    unknown_blocks = selected.cash_usd is None
-    return StrategySelection(
-        selected_strategy_id=None
-        if unknown_blocks and mode == "expected_cost"
-        else selected.strategy_id,
-        mode=mode,
-        free_first_preferred=free_first,
-        reason=(
-            "selected_expected_cost_unknown_cash_conservative"
-            if unknown_blocks and mode == "expected_cost"
-            else f"selected_{mode}"
-        ),
-        ranked=ranked_ids,
-        optimality_claimed=not unknown_blocks and mode == "expected_cost",
-        receipt={
-            "selected": selected.to_dict(),
-            "strategies": [item.to_dict() for item in strategies],
-        },
-    )
-
-
-def select_strategy(
-    strategies: Sequence[ExpectedStrategyCost],
-    *,
-    mode: CostPolicyMode = "expected_cost",
-    free_first: bool = False,
-) -> StrategySelection:
-    """Alias for :func:`compare_strategies` (stable session STAY/SWITCH decisions name)."""
-
-    return compare_strategies(strategies, mode=mode, free_first=free_first)
-
-
 __all__ = [
     "EXPECTED_COST_SCHEMA_VERSION",
     "CostPolicyMode",
     "ExpectedStrategyCost",
-    "StrategySelection",
     "build_strategy_from_assistance",
-    "compare_strategies",
-    "select_strategy",
 ]

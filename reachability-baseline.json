@@ -221,7 +221,7 @@
   },
   {
     "qualified_name": "verdict.execution_path.apply_bounded_recovery",
-    "reason": "UNTRIAGED: apply_bounded_recovery has only non-production references; Execution-path optimizer \u2014 cheapest SAFE COMPLETE path (verdict/execution_path.py)."
+    "reason": "Deferred (BOD-433 phase 2c): failure-time recovery helper documented as the entry for BoundedRecoveryController by verdict/failover_engine.py; only test callers until DagRuntime/worker retry wiring adopts it. No routing authority is inferred from it; selection stays with optimize_execution_path."
   },
   {
     "qualified_name": "verdict.failover_engine.is_retryable_status_code",
@@ -517,7 +517,7 @@
   },
   {
     "qualified_name": "verdict.serve_path.free_tier_feed_identities",
-    "reason": "UNTRIAGED: free_tier_feed_identities has only non-production references; Serve-path cutover: ``optimize_execution_path`` is sole strategy authority on serve (verdict/serve_path.py)."
+    "reason": "Deferred (BOD-435): legacy free-tier feed identity extractor kept for compatibility callers and tests while public models move to the local verified projection; only test callers. Not a selection authority (optimize_execution_path is sole authority on serve)."
   },
   {
     "qualified_name": "verdict.strength_profiles.aggregate_strength",
