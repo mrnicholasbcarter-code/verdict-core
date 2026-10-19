@@ -183,6 +183,19 @@ def _isolate_home(
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Doctor timer probes never ask the operator's real systemd user manager."""
+    import subprocess
+
+    def not_installed(args: list[str]) -> "subprocess.CompletedProcess[str]":
+        return subprocess.CompletedProcess(args, 0, stdout="LoadState=not-found\n", stderr="")
+
+    monkeypatch.setattr("verdict.metadata_service._run_show", not_installed)
+    monkeypatch.setattr("verdict.prove_at_rest_service._run_systemctl_show", not_installed)
+    monkeypatch.setattr("verdict.doctor_diagnostics._run_systemctl_show_props", not_installed)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _real_prime_registry_untouched() -> Any:
     """Fail the run if any test modified the real Prime model registry."""

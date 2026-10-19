@@ -125,9 +125,10 @@ def _run_show(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def timer_state(
-    unit: str = TIMER, *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_show
+    unit: str = TIMER, *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
 ) -> dict[str, Any]:
     """Report timer installation, activation, last trigger and unit result."""
+    run = run or _run_show
     values = _show(unit, run)
     service_values = _show(SERVICE, run) if unit == TIMER else {}
     load = values.get("LoadState", "not-found")
