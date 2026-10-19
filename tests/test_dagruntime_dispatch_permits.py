@@ -15,7 +15,13 @@ from tests.test_orch_runtime import NOW, Classifier, Events, Executor, Reviewer,
 from tests.test_orch_runtime import repo as repo
 from verdict.admit_prove_confirm import passport_confirmation
 from verdict.model_passports import ModelPassport
-from verdict.orchestration.contracts import NodeState, RunOutcome, WorkerTerminal, WorkGraph
+from verdict.orchestration.contracts import (
+    LOCAL_EXECUTOR_ORIGIN,
+    NodeState,
+    RunOutcome,
+    WorkerTerminal,
+    WorkGraph,
+)
 from verdict.orchestration.health_cache import (
     PERMIT_STATE_MAYBE_SENT,
     DispatchScope,
@@ -107,6 +113,8 @@ def _make(
 
 class PermitSpy(Executor):
     """Records, at send time, the durable state of the attempt it is sent under."""
+
+    gateway_origin = LOCAL_EXECUTOR_ORIGIN  # sends nowhere
 
     def __init__(self, behaviour: dict[tuple[str, str], str] | None = None) -> None:
         super().__init__(behaviour or {}, delay=0)

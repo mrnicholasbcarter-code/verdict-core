@@ -101,7 +101,19 @@ is BLOCKED with `dispatch_denied: executor origin mismatch`: no permit is commit
 and the executor is never called. There is no reselect or retry for this failure;
 the route's own proof binding at selection time is unaffected, but nothing is sent.
 
-An executor that reports no origin at all (`None`) is accepted (U1): its provider
-is configured outside Verdict (for example `PrimeHeadlessExecutor`), so there is
-nothing for Core to attest. `MixedExecutor` and `FaultInjectingExecutor` resolve the
+An executor that reports no origin at all (`None`) is denied (U1, reversed): it is
+BLOCKED with `dispatch_denied: executor origin unknown`, with no permit and no send.
+`PrimeHeadlessExecutor` pins a launch dir per checked send, keyed by the route and
+working directory its `run()` receives, and reports its provider's `baseUrl` from
+that dir's private `models.json` copy, the file the launch's Prime reads. Every
+launch re-reads the copy it is about to exec: a checked send uses only its pinned
+dir, and any other send on an executor that has reported an origin must still name
+a checked origin; otherwise it ends with `executor origin changed` and nothing is
+executed. Executors never checked (planner, no dispatch authority) keep a fresh
+dir. A missing, unparseable or non-gateway `baseUrl` reports `None`. A re-pin
+removes the previous dir, and a send denied after the check releases its pin
+(`release_executor_origin_pin`), so no launch dir is left behind. Executors that never touch the network (fake, offline demo)
+declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no
+executor that sends to a gateway may declare it. `ScriptedExecutor` runs arbitrary
+code, so it has no origin unless its constructor is given one. `MixedExecutor` and `FaultInjectingExecutor` resolve the
 origin check per wrapped node or delegate to their inner executor, respectively.

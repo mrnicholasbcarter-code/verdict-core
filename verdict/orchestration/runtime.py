@@ -63,6 +63,7 @@ from verdict.orchestration.contracts import (
     dispatch_blocker,
     executor_gateway_origin,
     gateway_origin_matches,
+    release_executor_origin_pin,
     require_launchable,
     route_family,
     route_provider,
@@ -1318,6 +1319,7 @@ class DagRuntime:
                         }
                     )
             self.inflight[node.node_id] = run.route_id
+            origin_pinned = False
             try:
                 self._set(run, NodeState.DISPATCHED)
                 self.events.emit(
@@ -1420,14 +1422,19 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
-                origin = executor_gateway_origin(self.executor, node.node_id)
-                if (
-                    self.dispatch_authority is not None
-                    and origin is not None
-                    and not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
+                origin = executor_gateway_origin(
+                    self.executor, node.node_id, route_id=run.route_id, cwd=worktree
+                )
+                # Until the send starts, a denial must free what the check pinned.
+                origin_pinned = True
+                if self.dispatch_authority is not None and (
+                    origin is None
+                    or not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
                 ):
-                    # Another gateway than the permit binds: no route change fixes it.
-                    reason = "dispatch_denied: executor origin mismatch"
+                    # An unknown gateway, or another one than the permit binds:
+                    # no route change fixes it.
+                    detail = "unknown" if origin is None else "mismatch"
+                    reason = f"dispatch_denied: executor origin {detail}"
                     terminal = WorkerTerminal(ok=False, error=reason)
                     self._record_failure(
                         run,
@@ -1470,10 +1477,15 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # nothing was sent; do not reselect or retry
+                origin_pinned = False  # the executor's run() takes over the pin
                 terminal = await self._execute(
                     prompt, run.route_id, worktree, node_id=node.node_id, attempt=run.attempt
                 )
             finally:
+                if origin_pinned:
+                    release_executor_origin_pin(
+                        self.executor, node.node_id, route_id=run.route_id, cwd=worktree
+                    )
                 self.inflight.pop(node.node_id, None)
             try:
                 self.events.emit(

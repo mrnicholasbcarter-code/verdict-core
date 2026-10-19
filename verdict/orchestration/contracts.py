@@ -650,13 +650,14 @@ class WorkerExecutor(Protocol):
     exactly as before; see :func:`run_executor`.
 
     An executor MAY also report the gateway it sends to, as a ``gateway_origin``
-    attribute (a URL), or, for wrappers that route per node, a
-    ``gateway_origin_for(node_id)`` method; see :func:`executor_gateway_origin`.
+    attribute (a URL), or a ``gateway_origin_for(node_id, *, route_id, cwd)``
+    method (wrappers that route per node, executors that bind the checked origin
+    to the launch); see :func:`executor_gateway_origin`.
     The runtime denies a send when that origin differs from the origin the
-    dispatch permit binds. Executors that cannot know their gateway report
-    nothing and are accepted: ``PrimeHeadlessExecutor`` sends through Prime's
-    ``omniroute`` provider, whose base URL is configured in Prime, outside
-    Verdict, and scripted or fake executors send nowhere.
+    dispatch permit binds, and also when the executor reports no origin at all.
+    ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the
+    ``models.json`` copy in the launch dir it pins for that route and ``cwd``. Executors that
+    send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
     """
 
     async def run(
@@ -665,6 +666,11 @@ class WorkerExecutor(Protocol):
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: The origin an executor that never touches the network declares (scripted,
+#: fake and offline demo executors). It matches any dispatch authority; no
+#: executor that sends to a gateway may use it.
+LOCAL_EXECUTOR_ORIGIN = "local:"
 
 
 def normalize_gateway_origin(url: str) -> str | None:
@@ -688,15 +694,44 @@ def normalize_gateway_origin(url: str) -> str | None:
     return f"{scheme}://{host}:{port}"
 
 
-def executor_gateway_origin(executor: object, node_id: str) -> str | None:
-    """The gateway URL ``executor`` reports for ``node_id`` as given, or None when unknown."""
+def executor_gateway_origin(
+    executor: object, node_id: str, *, route_id: str, cwd: Path
+) -> str | None:
+    """The gateway URL ``executor`` reports for the send of ``node_id`` on ``route_id``
+    in ``cwd`` as given, or None when unknown.
+
+    ``route_id`` and ``cwd`` are exactly what the executor's ``run`` will receive,
+    so an executor can bind the checked origin to that launch.
+    """
     resolve = getattr(executor, "gateway_origin_for", None)
-    origin = resolve(node_id) if callable(resolve) else getattr(executor, "gateway_origin", None)
+    origin = (
+        resolve(node_id, route_id=route_id, cwd=cwd)
+        if callable(resolve)
+        else getattr(executor, "gateway_origin", None)
+    )
     return origin if isinstance(origin, str) and origin else None
 
 
+def release_executor_origin_pin(
+    executor: object, node_id: str, *, route_id: str, cwd: Path
+) -> None:
+    """Tell ``executor`` the checked send on ``route_id`` in ``cwd`` will not run.
+
+    Executors that pin launch state in ``gateway_origin_for`` free it in an
+    optional ``release_origin_pin(node_id, *, route_id, cwd)`` method.
+    """
+    release = getattr(executor, "release_origin_pin", None)
+    if callable(release):
+        release(node_id, route_id=route_id, cwd=cwd)
+
+
 def gateway_origin_matches(reported: str, bound: str) -> bool:
-    """True only when both origins parse and are the same; an unparseable one fails closed."""
+    """True only when both origins parse and are the same; an unparseable one fails closed.
+
+    :data:`LOCAL_EXECUTOR_ORIGIN` matches any bound origin: that executor sends nothing.
+    """
+    if reported == LOCAL_EXECUTOR_ORIGIN:
+        return True
     origin = normalize_gateway_origin(reported)
     return origin is not None and origin == normalize_gateway_origin(bound)
 

@@ -788,7 +788,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.admit_prove_confirm import passport_confirmation
 
     # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
-    # Prime workers carry no gateway origin of their own; they go through --gateway.
+    # Each worker executor must report this origin (Prime: its launch's models.json
+    # baseUrl; direct-gateway: --gateway), or its send is denied.
     dispatch_authority = DispatchAuthority(
         gateway_origin=args.gateway.rstrip("/"),
         confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),

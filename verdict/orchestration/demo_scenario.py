@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import (
+    LOCAL_EXECUTOR_ORIGIN,
     NodeKind,
     RunOutcome,
     WorkerTerminal,
@@ -276,7 +277,7 @@ def run_flagship_scenario(
     executor = FaultInjectingExecutor(
         # Keyed by node, not route: both ready nodes may select ROUTE_A
         # concurrently, and the story is that node-1's first attempt fails over.
-        ScriptedExecutor(_worker_script_for(worker_seconds)),
+        ScriptedExecutor(_worker_script_for(worker_seconds), gateway_origin=LOCAL_EXECUTOR_ORIGIN),
         {"@node-1": ["rate_limit"]},
     )
     reviewer = OpenCodeReviewer(
