@@ -72,6 +72,26 @@ def test_measure_counts_unserved_listed_routes_against_precision() -> None:
     assert quality["recall_estimate"] == pytest.approx(0.5)
 
 
+def test_measure_treats_v1_models_routes_as_served_even_when_synced_omits_the_provider() -> None:
+    # ollama-cloud is entirely absent from the synced payload (A39/BOD-439): the
+    # gateway's /v1/models catalog is the second evidence source that must be
+    # unioned in before a listed route is called "unserved".
+    listed = [_verdict("p/a", eligible=True), _verdict("ollama-cloud/gemma4:31b", eligible=True)]
+    synced = {"p": [{"id": "a"}]}
+    catalog = {"data": [{"id": "ollama-cloud/gemma4:31b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        listed,
+        synced=synced,
+        catalog=catalog,
+        cooling=set(),
+        post=_good_tool_gateway(),
+        seed="s",
+    )
+    assert quality["listed_unserved"] == []
+    assert {c["route"] for c in quality["checks"]} == {"p/a", "ollama-cloud/gemma4:31b"}
+
+
 def test_cooling_providers_need_every_connection_cooling() -> None:
     later = (NOW + timedelta(hours=1)).isoformat()
     rows = [

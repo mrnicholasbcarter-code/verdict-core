@@ -134,14 +134,25 @@ def check_route(route: str, post: Post) -> ToolCheck:
     return ToolCheck(route, "pass", "read_file then write_file")
 
 
-def _live_ids(synced: Mapping[str, Any]) -> set[str]:
-    return {
+def _live_ids(synced: Mapping[str, Any], catalog: Mapping[str, Any] | None = None) -> set[str]:
+    """Union of the synced catalog and ``/v1/models`` served ids.
+
+    ``/api/synced-available-models`` omits some active providers (observed:
+    ``ollama-cloud``, which ``/v1/models`` and ``/api/providers`` both confirm
+    is live and serving). A route is unserved only when it is in neither.
+    """
+    ids = {
         f"{provider}/{row.get('id')}"
         for provider, rows in synced.items()
         if isinstance(rows, list)
         for row in rows
         if isinstance(row, Mapping)
     }
+    if isinstance(catalog, Mapping):
+        rows = catalog.get("data", [])
+        if isinstance(rows, list):
+            ids |= {str(row["id"]) for row in rows if isinstance(row, Mapping) and row.get("id")}
+    return ids
 
 
 def cooling_providers(connections: Sequence[Mapping[str, Any]], now: datetime) -> set[str]:
@@ -164,6 +175,7 @@ def measure(
     verdicts: Sequence[Mapping[str, Any]],
     *,
     synced: Mapping[str, Any],
+    catalog: Mapping[str, Any] | None = None,
     cooling: set[str],
     post: Post,
     seed: str,
@@ -173,10 +185,13 @@ def measure(
 
     ``listed`` are Verdict's eligible FREE tool routes. Listed routes that are
     not served or sit in a cooling pool fail without a probe (A3 says they must
-    not be listed). Routes answering 401/402/403/429 are removed from both
-    ratios. Unmeasurable ratios are ``None``, which the caller treats as FAIL.
+    not be listed). "Served" is the union of the synced catalog and
+    ``/v1/models`` (``catalog``): the synced endpoint can omit an active
+    provider that ``/v1/models`` still lists as live (see ``_live_ids``).
+    Routes answering 401/402/403/429 are removed from both ratios.
+    Unmeasurable ratios are ``None``, which the caller treats as FAIL.
     """
-    live = _live_ids(synced)
+    live = _live_ids(synced, catalog)
     listed_ids = {str(row["route_id"]) for row in listed}
     cooling_hits = {
         str(row["route_id"]) for row in listed if str(row.get("provider", "")) in cooling

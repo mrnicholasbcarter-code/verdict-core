@@ -364,6 +364,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
         }
         try:
             synced = gateway_get(gateway, api_key, "/api/synced-available-models")
+            catalog = gateway_get(gateway, api_key, "/v1/models")
             providers = gateway_get(gateway, api_key, "/api/providers")
         except (OSError, ValueError, urllib.error.URLError) as exc:
             check.reason = f"gateway evidence unavailable: {type(exc).__name__}"
@@ -371,10 +372,15 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
             connections = providers.get("connections") if isinstance(providers, dict) else []
             cooling = cooling_providers(connections or [], datetime.now(timezone.utc))
             # Runs even with nothing listed: the sample shows what Verdict misses.
+            # Served is the union of the synced catalog and /v1/models: the synced
+            # endpoint can omit an active provider (observed: ollama-cloud) that
+            # /v1/models still lists as live, and each source also carries ids the
+            # other lacks.
             quality = measure(
                 listed,
                 verdicts,
                 synced=synced if isinstance(synced, dict) else {},
+                catalog=catalog if isinstance(catalog, dict) else None,
                 cooling=cooling,
                 post=gateway_post(gateway, api_key, timeout=60),
                 seed=seed,
