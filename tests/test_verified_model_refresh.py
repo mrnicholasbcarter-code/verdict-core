@@ -937,15 +937,26 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     """
     import multiprocessing
 
-    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT, REASON_LOCK_TIMEOUT
+    from verdict.orchestration.verified_refresh import (
+        OUTCOME_LOCK_TIMEOUT,
+        REASON_LOCK_TIMEOUT,
+        maintenance_from_env,
+    )
 
-    # -- configuration knobs (qualification bounds) --
+    # -- configuration knobs (A09 maintenance lane + qualification bounds) --
     base = config_from_env({})
     assert base.output_tokens == 4096
     assert base.request_timeout_seconds == 30.0
     assert base.max_per_provider is None  # interactive: no per-provider cap
     assert base.cooldown_seconds == 300.0
-    bounded = RefreshConfig(max_routes=4, max_requests=16, concurrency=4)
+    assert base.maintenance is False
+    bounded = maintenance_from_env({})
+    assert bounded.maintenance is True
+    assert bounded.max_routes == 4
+    assert bounded.max_requests == 16
+    assert bounded.wall_seconds == 600.0
+    assert bounded.concurrency == 4
+    assert bounded.debounce_seconds == 10.0
     # Env keeps precedence and the hard-max guard style.
     assert config_from_env({"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"}).max_per_provider == 3
     with pytest.raises(RefreshConfigError):
@@ -953,7 +964,11 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     with pytest.raises(RefreshConfigError):
         config_from_env({"VERDICT_REFRESH_OUTPUT_TOKENS": "0"})
     with pytest.raises(RefreshConfigError):
+        maintenance_from_env({"VERDICT_REFRESH_MAX_ROUTES": "51"})
+    assert bounded.max_per_provider == 2
+    with pytest.raises(RefreshConfigError):
         RefreshConfig(wall_seconds=600.0)
+    assert RefreshConfig(wall_seconds=600.0, maintenance=True).wall_seconds == 600.0
 
     # -- 9,000 fake ids: caps apply before any screening call (A12) --
     caps_dir = tmp_path / "caps"
@@ -1356,6 +1371,39 @@ def test_scope_mismatch_does_not_leak_foreign_job_id(tmp_path: Path) -> None:
     assert out.job_id != "foreign-job"
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VERDICT_REFRESH_MAX_ROUTES": "5"},
+        {"VERDICT_REFRESH_MAX_REQUESTS": "17"},
+        {"VERDICT_REFRESH_WALL_SECONDS": "601"},
+        {"VERDICT_REFRESH_CONCURRENCY": "5"},
+        {"VERDICT_REFRESH_OUTPUT_TOKENS": "4097"},
+        {"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"},
+    ],
+)
+def test_maintenance_env_can_never_exceed_contract_caps(env: dict[str, str]) -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    with pytest.raises(RefreshConfigError):
+        maintenance_from_env(env)
+
+
+def test_maintenance_env_may_lower_caps() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    lowered = maintenance_from_env(
+        {
+            "VERDICT_REFRESH_MAX_ROUTES": "2",
+            "VERDICT_REFRESH_MAX_REQUESTS": "8",
+            "VERDICT_REFRESH_OUTPUT_TOKENS": "1024",
+            "VERDICT_REFRESH_MAX_PER_PROVIDER": "1",
+        }
+    )
+    assert (lowered.max_routes, lowered.max_requests) == (2, 8)
+    assert (lowered.output_tokens, lowered.max_per_provider) == (1024, 1)
+
+
 def test_per_provider_cap_normalizes_provider_names() -> None:
     providers = ["OpenAI", "openai", "OpenAI ", "OPENAI"]
     rows = [_row(f"x/m{i}", provider=p) for i, p in enumerate(providers)]
@@ -1368,9 +1416,12 @@ def test_per_provider_cap_normalizes_provider_names() -> None:
     assert len(picked) == 2
 
 
-def test_interactive_has_no_per_provider_cap() -> None:
+def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
     assert RefreshConfig().max_per_provider is None
     assert config_from_env({}).max_per_provider is None
+    assert maintenance_from_env({}).max_per_provider == 2
     rows = [_row(f"cc/r{i}") for i in range(5)]
     picked = select_candidates(
         _snapshot(rows),

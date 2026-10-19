@@ -161,14 +161,26 @@ ENV_COOLDOWN_SECONDS = "VERDICT_REFRESH_COOLDOWN_SECONDS"
 
 # Qualification bounds (BOD-297/S05): one request reserves this many output
 # tokens, gets this long, and one provider may contribute at most this many
-# routes per cycle; a negative scoped cooldown defaults to this duration.
+# routes per cycle (maintenance lane only; interactive has no per-provider
+# cap); a negative scoped cooldown defaults to this duration.
 DEFAULT_OUTPUT_TOKENS = 4096
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+MAINTENANCE_MAX_PER_PROVIDER = 2
 DEFAULT_COOLDOWN_SECONDS = 300.0
+
+# Maintenance lane defaults: the bounded shared-owner cycle producers join.
+MAINTENANCE_MAX_ROUTES = 4
+MAINTENANCE_MAX_REQUESTS = 16
+MAINTENANCE_WALL_SECONDS = 600.0
+MAINTENANCE_CONCURRENCY = 4
+MAINTENANCE_DEBOUNCE_SECONDS = 10.0
+MAINTENANCE_OUTPUT_TOKENS = 4096
 
 HARD_MAX_OUTPUT_TOKENS = 32_768
 HARD_MAX_REQUEST_TIMEOUT_SECONDS = 120.0
 HARD_MAX_COOLDOWN_SECONDS = 3600.0
+# Only the maintenance lane may run longer than the interactive hard max.
+HARD_MAX_WALL_SECONDS_MAINTENANCE = 600.0
 
 
 class RefreshConfigError(ValueError):
@@ -195,6 +207,7 @@ class RefreshConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_per_provider: int | None = None
     cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
+    maintenance: bool = False
 
     def __post_init__(self) -> None:
         if not (1 <= self.max_routes <= HARD_MAX_ROUTES):
@@ -205,7 +218,9 @@ class RefreshConfig:
             raise RefreshConfigError(
                 f"max_requests must be in 1..{HARD_MAX_REQUESTS}, got {self.max_requests}"
             )
-        wall_hard_max = HARD_MAX_WALL_SECONDS
+        wall_hard_max = (
+            HARD_MAX_WALL_SECONDS_MAINTENANCE if self.maintenance else HARD_MAX_WALL_SECONDS
+        )
         if not (0 < self.wall_seconds <= wall_hard_max):
             raise RefreshConfigError(
                 f"wall_seconds must be in (0, {wall_hard_max}], got {self.wall_seconds}"
@@ -313,6 +328,57 @@ def config_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
     )
 
 
+def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
+    """Build the maintenance-lane :class:`RefreshConfig` from the environment.
+
+    Same env knobs and hard-max guard style as :func:`config_from_env`, with
+    the maintenance defaults (4 routes, 16 requests, 600 s wall, concurrency
+    4, 10 s debounce) and the maintenance wall hard max. Invalid values raise
+    :class:`RefreshConfigError` BEFORE any call is made.
+    """
+    source = env if env is not None else os.environ
+    auto_raw = source.get(ENV_AUTO_REFRESH, "1").strip().lower()
+    auto = auto_raw not in {"0", "false", "no", "off"}
+    return RefreshConfig(
+        max_routes=_parse_int(
+            source, ENV_MAX_ROUTES, MAINTENANCE_MAX_ROUTES, hard_max=MAINTENANCE_MAX_ROUTES
+        ),
+        max_requests=_parse_int(
+            source, ENV_MAX_REQUESTS, MAINTENANCE_MAX_REQUESTS, hard_max=MAINTENANCE_MAX_REQUESTS
+        ),
+        wall_seconds=_parse_float(
+            source,
+            ENV_WALL_SECONDS,
+            MAINTENANCE_WALL_SECONDS,
+            hard_max=HARD_MAX_WALL_SECONDS_MAINTENANCE,
+        ),
+        concurrency=_parse_int(
+            source, ENV_CONCURRENCY, MAINTENANCE_CONCURRENCY, hard_max=HARD_MAX_CONCURRENCY
+        ),
+        auto_refresh=auto,
+        debounce_seconds=MAINTENANCE_DEBOUNCE_SECONDS,
+        output_tokens=_parse_int(
+            source, ENV_OUTPUT_TOKENS, MAINTENANCE_OUTPUT_TOKENS, hard_max=MAINTENANCE_OUTPUT_TOKENS
+        ),
+        request_timeout_seconds=_parse_float(
+            source,
+            ENV_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
+        ),
+        max_per_provider=_parse_per_provider(
+            source, MAINTENANCE_MAX_PER_PROVIDER, hard_max=MAINTENANCE_MAX_PER_PROVIDER
+        ),
+        cooldown_seconds=_parse_float(
+            source,
+            ENV_COOLDOWN_SECONDS,
+            DEFAULT_COOLDOWN_SECONDS,
+            hard_max=HARD_MAX_COOLDOWN_SECONDS,
+        ),
+        maintenance=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Snapshot + outcome types
 # ---------------------------------------------------------------------------
@@ -364,6 +430,7 @@ TRIGGER_EXPLICIT = "explicit"  # picker / selection supplied exact ids
 CONSUMER_VERIFIED_VIEW = "verified_view"
 CONSUMER_PICKER = "picker"
 CONSUMER_SELECTION = "selection"
+CONSUMER_CENSUS = "census"
 
 # Outcome kinds.
 OUTCOME_REUSED_FRESH = "reused_fresh"  # needed entries already fresh: zero calls, no wait
@@ -1768,6 +1835,7 @@ __all__ = [
     "CAPACITY_ORDER",
     "CAPACITY_SUBSCRIPTION",
     "CAPACITY_UNKNOWN",
+    "CONSUMER_CENSUS",
     "CONSUMER_PICKER",
     "CONSUMER_SELECTION",
     "CONSUMER_VERIFIED_VIEW",
@@ -1817,6 +1885,7 @@ __all__ = [
     "VerifiedRow",
     "capacity_group",
     "config_from_env",
+    "maintenance_from_env",
     "refresh_for_consumer",
     "select_candidates",
 ]
