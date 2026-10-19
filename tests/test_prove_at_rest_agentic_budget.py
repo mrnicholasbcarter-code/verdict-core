@@ -84,21 +84,209 @@ def _dead_chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
     return ProbeExchange(http_status=500, ok=False, error_category="upstream")
 
 
+def test_prove_at_rest_cycle_holds_the_shared_lease_and_obeys_maintenance_caps(
+    tmp_path: Path,
+) -> None:
+    """BOD-297/S05-B: the chat phase is a bounded RefreshCoordinator client.
+
+    Two real processes: one prove-at-rest ``run_once`` holding the shared
+    flock (default coordinator paths beside the health cache), one
+    ``RefreshCoordinator.refresh_for_consumer`` trying to join -- the second
+    sees zero direct transport calls (lock_timeout/joined). The owning
+    cycle's own bounded config (parent decision 2026-10-19: NOT census's 4
+    routes/16 requests -- that would starve the daemon's fresh set; instead
+    ``min(daemon max_requests // 2, 50)`` routes, ``min(daemon max_requests,
+    100)`` requests) completes a 20-route cycle in one pass. Red today:
+    run_once neither takes the flock nor goes through the coordinator at
+    all.
+    """
+    import multiprocessing
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+    from verdict.orchestration.verified_refresh import (
+        RefreshConfig,
+        RefreshCoordinator,
+        RefreshSnapshot,
+        RowInput,
+    )
+
+    cache_path = tmp_path / "health.json"
+    lock_path = cache_path.parent / "verified-refresh.lock"
+    marker_path = cache_path.parent / "verified-refresh.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    routes = [_free(f"p{i}/m") for i in range(20)]
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+
+    def _run_owner(cache_path_str: str, started: Any, release: Any, result_q: Any) -> None:
+        def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+            started.set()
+            release.wait(timeout=5.0)
+            return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+        try:
+            prober = Prober(
+                HealthCache(Path(cache_path_str)),
+                lambda: routes,
+                transport,
+                clock=lambda: now_local,
+            )
+            stats = prober.run_once()
+            result_q.put(stats.stopped_reason)
+        except BaseException as exc:  # reported to the parent through the queue
+            result_q.put(f"error: {exc!r}")
+
+    ctx = multiprocessing.get_context("fork")
+    started = ctx.Event()
+    release = ctx.Event()
+    result_q: Any = ctx.Queue()
+    owner = ctx.Process(target=_run_owner, args=(str(cache_path), started, release, result_q))
+    owner.start()
+    try:
+        assert started.wait(timeout=5.0)
+        joiner_calls: list[tuple[str, str]] = []
+
+        def joiner_transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+            joiner_calls.append((route_id, phase))
+            return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+        joiner = RefreshCoordinator(
+            cache=HealthCache(cache_path),
+            transport=joiner_transport,
+            lock_path=lock_path,
+            marker_path=marker_path,
+        )
+        out = joiner.refresh_for_consumer(
+            RefreshSnapshot(rows=(RowInput("q/new", "q", "UNVERIFIED", "free", refreshable=True),)),
+            consumer="prove_at_rest",
+            needed_ids=["q/new"],
+            config=RefreshConfig(wall_seconds=2.0),
+            explicit=True,
+        )
+        assert joiner_calls == []
+        assert out.outcome in {"lock_timeout", "joined"}
+    finally:
+        release.set()
+        owner.join(timeout=5.0)
+    assert result_q.get(timeout=5.0) == "complete"
+
+    # -- second, lock-free cycle: the maintenance contract bounds requests --
+    cache2 = HealthCache(tmp_path / "health2.json")
+    chat_calls: list[tuple[str, str]] = []
+
+    def chat_transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        chat_calls.append((route_id, phase))
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    many_routes = [_free(f"r{i}/m") for i in range(20)]
+    prober2 = Prober(cache2, lambda: many_routes, chat_transport, clock=lambda: now_local)
+    stats2 = prober2.run_once()
+    # Daemon default max_requests=300 -> config max_routes=min(150, 50)=50,
+    # max_requests=min(300, 100)=100: a 20-route cycle completes in one pass.
+    assert stats2.stopped_reason == "complete"
+    assert len({rid for rid, _ in chat_calls}) == 20
+    assert len(chat_calls) == 40
+
+
+def test_outage_breaker_still_runs_under_a_tight_coordinator_cap(tmp_path: Path) -> None:
+    """Companion to test_auth_outage.py's request-cap test (parent decision
+    2026-10-19): with a cap wide enough for exactly one SUBSCRIPTION probe
+    (2 requests), the coordinator-backed chat phase still runs the BOD-338
+    breaker to completion -- the gateway check fires once, the outage is
+    confirmed, and the cache stays unpoisoned.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    cache = HealthCache(tmp_path / "cache.json")
+    checks: list[float] = []
+
+    def check(timeout: float) -> ProbeExchange:
+        checks.append(timeout)
+        return ProbeExchange(http_status=401, ok=False)
+
+    routes = [AdmittedRoute("af/a", "af", "subscription")]
+    prober = Prober(
+        cache,
+        lambda: routes,
+        lambda *args: ProbeExchange(http_status=401, ok=False),
+        clock=lambda: now_local,
+        max_requests=2,
+        gateway_auth_check=check,
+    )
+    stats = prober.run_once()
+    assert stats.requests == 2
+    assert len(checks) == 1
+    assert stats.auth_outage
+    assert stats.stopped_reason == "auth_outage"
+    assert cache.routes() == {}
+
+
+def test_auth_gate_denies_outage_excludes_route_from_same_cycle_agentic(tmp_path: Path) -> None:
+    """BOD-297/S05-B (parent decision 2026-10-19, item 13): accepted as
+    product behaviour -- the coordinator's auth_gate already confirms a
+    401/403 is a real per-route failure before writing it, so retrying that
+    SAME route with an agentic probe in the SAME cycle would only spend
+    another request on a known failure. The negative is written immediately
+    and the route never reaches run_agentic_probes' candidate list.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    cache = HealthCache(tmp_path / "cache.json")
+    routes = [_free("p/denied")]
+    agentic_calls: list[str] = []
+
+    def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        return ProbeExchange(http_status=401, ok=False, error_category="auth")
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        agentic_calls.append(route_id)
+        return ProbeExchange(http_status=200, ok=True)
+
+    prober = Prober(
+        cache=cache,
+        routes_loader=lambda: routes,
+        transport=chat,
+        agentic_transport=agentic,
+        clock=lambda: now_local,
+        monotonic=lambda: 0.0,
+        # No gateway_auth_check: the heuristic auth_gate denies outage
+        # immediately for a single route (never reaches the threshold), so
+        # the 401 is written as a real negative within this same cycle.
+    )
+    stats = prober.run_once()
+    assert agentic_calls == []
+    assert stats.negative == 1
+    entry = cache.entry("p/denied")
+    assert entry is not None and not entry.healthy
+
+
 def test_agentic_phase_runs_after_the_chat_phase_hits_its_caps(tmp_path: Path) -> None:
     """A spent chat budget (request and wall cap) no longer skips agentic probing."""
     tick = [0.0]
 
     def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
-        tick[0] += 100.0  # every chat probe uses the whole chat wall budget
+        tick[0] += 10.0  # every chat probe advances the clock, within the wall budget
         return ProbeExchange(http_status=500, ok=False, error_category="upstream")
 
     routes = [_free(f"p{i}/m") for i in range(3)]
     cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    # BOD-297/S05-B (parent decision 2026-10-19, item 11): the coordinator
+    # reserves a whole probe's request cost (2) upfront, never a partial
+    # spend, so max_requests=2 lets p0 get one full probe that fails WITHIN
+    # the wall budget (negative written, decision 5's deadline-drop does not
+    # fire); p1 then hits the request cap.
     stats = Prober(
         cache,
         lambda: routes,
         chat,
-        max_requests=1,
+        max_requests=2,
         max_wall_seconds=50.0,
         agentic_transport=lambda rid, payload, timeout: _turn(rid, payload),
         agentic_wall_seconds=1000.0,
@@ -106,7 +294,13 @@ def test_agentic_phase_runs_after_the_chat_phase_hits_its_caps(tmp_path: Path) -
         monotonic=lambda: tick[0],
         epsilon=0,
     ).run_once()
-    assert stats.stopped_reason == "request_cap"
+    # BOD-297/S05-B (decision 14, same pattern as items 1/4): with 2-request
+    # full probes, max_requests=2 admits exactly 1 route into the plan
+    # (max_routes = max_requests // 2), so the coordinator labels the cap
+    # "route_cap" where the old per-route loop labeled it "request_cap";
+    # the numeric effect (probe exactly p0, leave p1/p2 for agentic) is
+    # unchanged.
+    assert stats.stopped_reason == "route_cap"
     assert stats.agentic_stopped_reason == "complete"
     assert stats.agentic_passed == 2  # p0 failed chat (negative); p1, p2 qualify
     assert agentic_capability(HealthCache(cache.path).entry("p1/m"), NOW)["qualified"]
@@ -132,7 +326,11 @@ def test_save_after_the_wall_cap_is_not_a_lock_timeout(tmp_path: Path) -> None:
         epsilon=0,
     ).run_once()
     assert stats.stopped_reason != "lock_timeout"
-    assert HealthCache(cache.path).entry("p/m") is not None
+    # Parent decision 2026-10-19: the coordinator records a probe that
+    # crosses its own deadline as no_write (conservative: leave prior
+    # proof), so this 502 is never persisted as a negative.
+    assert stats.stopped_reason == "wall_cap"
+    assert HealthCache(cache.path).entry("p/m") is None
 
 
 def test_held_lock_still_times_out_and_skips_dispatch(tmp_path: Path) -> None:

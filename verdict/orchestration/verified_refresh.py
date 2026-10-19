@@ -1183,9 +1183,12 @@ class RefreshCoordinator:
         elif route_capped:
             result_kind = OUTCOME_CAPPED
             cap_reason = REASON_ROUTE_CAP
-        elif any(
-            o.refresh_reason in {REASON_BUCKET, REASON_PROVIDER_STOP} for o in outcomes.values()
-        ):
+        elif any(o.refresh_reason == REASON_BUCKET for o in outcomes.values()):
+            # A real bucket denial (no token to spend) caps the job. A
+            # provider/route stop (REASON_PROVIDER_STOP) is a per-route
+            # outcome only -- every candidate was still probed or correctly
+            # skipped because a sibling already stopped that scope, so it
+            # never demotes an otherwise-complete job to "capped".
             result_kind = OUTCOME_CAPPED
             cap_reason = cap_reason or REASON_BUCKET
         else:

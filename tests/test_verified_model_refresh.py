@@ -500,6 +500,31 @@ def test_auth_gate_fires_on_403_permission_category_too(tmp_path: Path) -> None:
     assert cache.entry("cc/a") is None
 
 
+def test_provider_stop_never_demotes_an_otherwise_complete_job(tmp_path: Path) -> None:
+    """A real per-route/provider stop (401 on af/a) skips af/b (sibling,
+    REASON_PROVIDER_STOP) but the rest of the plan succeeds -- the job's
+    overall outcome is COMPLETED, not CAPPED, and af/b's own outcome still
+    carries provider_scope_stopped.
+    """
+    transport = ScriptedTransport({("af/a", "chat"): _fail(401)})
+    rows = [
+        _row("af/a", provider="af", rank_hint=1),
+        _row("af/b", provider="af", rank_hint=2),
+        _row("kr/c", provider="kr", rank_hint=1),
+    ]
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert out.outcome == OUTCOME_COMPLETED
+    assert out.complete is True
+    assert out.route_outcomes["af/b"].refresh_reason == REASON_PROVIDER_STOP
+    assert out.route_outcomes["kr/c"].verified is True
+
+
 def test_429_honors_retry_after_and_zeroes_bucket(tmp_path: Path) -> None:
     transport = ScriptedTransport({("cc/a", "chat"): _fail(429, "rate_limited", retry_after=120.0)})
     coord = _coordinator(tmp_path, transport)

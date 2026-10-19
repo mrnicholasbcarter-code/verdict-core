@@ -1,6 +1,6 @@
 """Offline regressions for BOD-338 gateway versus credential-pool auth failures."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,7 +27,11 @@ def test_dead_pools_do_not_stop_healthy_pools(tmp_path: Path, gateway_status: in
     def transport(rid: str, phase: str, timeout: float) -> ProbeExchange:
         calls.append(rid)
         healthy = rid.startswith("healthy")
-        return ProbeExchange(http_status=200 if healthy else 401, ok=healthy, chat_exact=healthy)
+        # BOD-297/S05-B (decision 9): SUBSCRIPTION now gets the tool phase
+        # too, so a healthy route's success branch must also pass it.
+        return ProbeExchange(
+            http_status=200 if healthy else 401, ok=healthy, chat_exact=healthy, tool_called=healthy
+        )
 
     options = (
         {}
@@ -143,7 +147,12 @@ def test_gateway_confirmation_respects_request_cap(tmp_path: Path) -> None:
         gateway_auth_check=check,
     )
     stats = prober.run_once()
-    assert stats.requests == 1
+    # BOD-297/S05-B (parent decision 2026-10-19): the shared coordinator
+    # admits whole probes only -- it never dispatches a probe it cannot
+    # finish within the request cap, so a 2-request SUBSCRIPTION probe with
+    # max_requests=1 spends 0 requests, not 1 (the old per-route loop sent
+    # the chat half before checking the cap). Every other guarantee holds.
+    assert stats.requests == 0
     assert stats.stopped_reason == "request_cap"
     assert calls == []
     assert cache.routes() == {}
@@ -158,14 +167,25 @@ def test_gateway_check_resets_each_cycle(tmp_path: Path) -> None:
         calls.append(timeout)
         return ProbeExchange(http_status=401, ok=False)
 
+    # BOD-297/S05-B (decision 12, fixture-only, debounce unchanged): the
+    # coordinator's maintenance config debounces identical-scope triggers
+    # within 10 s; advance the clock past that window between cycles so
+    # each run_once() is its own independent job, same as real wall time
+    # between the daemon's successive ticks.
+    cycle = [0]
+
+    def tick() -> datetime:
+        return NOW + timedelta(seconds=11 * cycle[0])
+
     prober = Prober(
         cache,
         _routes,
         lambda *args: ProbeExchange(http_status=401, ok=False),
-        clock=lambda: NOW,
+        clock=tick,
         gateway_auth_check=check,
     )
     assert prober.run_once().auth_outage
+    cycle[0] = 1
     assert prober.run_once().auth_outage
     assert len(calls) == 2
     assert cache.routes() == {}
