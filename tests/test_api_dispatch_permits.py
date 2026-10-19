@@ -43,6 +43,10 @@ from verdict.proxy import UpstreamProxy
         "replayed_old_passport",
         "equal_revocation_passport",
         "newer_revocation_passport",
+        "foreign_provider",
+        "foreign_profile",
+        "model_not_found_404",
+        "free_text_404",
     ],
 )
 def test_dispatch_permit_gates_every_send_and_spawn(
@@ -75,6 +79,12 @@ def test_dispatch_permit_gates_every_send_and_spawn(
             return httpx.Response(503, json={"error": {"message": "server lost reply"}})
         if case == "auth":
             return httpx.Response(403, json={"error": {"message": "forbidden"}})
+        if case == "model_not_found_404":
+            return httpx.Response(
+                404, json={"error": {"code": "model_not_found", "message": "gone"}}
+            )
+        if case == "free_text_404":
+            return httpx.Response(404, json={"error": {"message": "no such model path /foo"}})
         if case == "post_commit_revocation":
             proof = next(
                 p for p in prepared_decisions[0].admission_proofs.values() if p.model == model
@@ -107,7 +117,10 @@ def test_dispatch_permit_gates_every_send_and_spawn(
             *,
             request_id: str | None = None,
         ) -> RoutingDecision:
-            ctx = live._context(live._request(live.STRONG, live.NEW))
+            # The relay recomputes the profile digest from the request it sends,
+            # so preparation must see that same request context.
+            assert context is not None
+            ctx = {**context, **live._context(live._request(live.STRONG, live.NEW))}
             ctx["_dispatch_gateway_origin"] = "http://upstream.test/v1"
             decision = await service.route(
                 "fix code", criticality="low", context=ctx, request_id=request_id
@@ -155,9 +168,27 @@ def test_dispatch_permit_gates_every_send_and_spawn(
                         source_revision="rev2",
                         observed_at=current,
                     )
-                if case in {"future", "wrong_origin"}:
+                if case in {"future", "wrong_origin", "foreign_provider", "foreign_profile"}:
                     proofs = dict(decision.admission_proofs)
-                    if case == "future":
+                    if case == "foreign_provider":
+                        # Self-consistent proof for another provider serving the same model.
+                        proofs[primary.route_id] = replace(
+                            primary,
+                            provider="otherco",
+                            scope=api.dispatch_scope(
+                                gateway_origin=primary.scope.gateway_origin,
+                                provider="otherco",
+                                model=primary.model,
+                                route_id=primary.route_id,
+                                profile_digest=primary.scope.profile_digest,
+                            ),
+                        )
+                    elif case == "foreign_profile":
+                        proofs[primary.route_id] = replace(
+                            primary,
+                            scope=replace(primary.scope, profile_digest="sha256:" + "f" * 64),
+                        )
+                    elif case == "future":
                         proofs[primary.route_id] = replace(
                             primary, qualified_at=current + timedelta(minutes=1)
                         )
@@ -203,17 +234,23 @@ def test_dispatch_permit_gates_every_send_and_spawn(
         lambda: UpstreamProxy("http://upstream.test/v1", transport=httpx.MockTransport(transport)),
     )
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    request_body = {
+        "messages": [{"role": "user", "content": "fix code"}],
+        "tools_required": True,
+        "task_family": "coding",
+        "spend_policy": "free_only",
+    }
     with TestClient(api.app) as client:
         response = client.post(
             "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "fix code"}]},
+            json=request_body,
             headers={} if case == "server_error" else {"idempotency-key": "permit-test"},
         )
         if case == "duplicate":
             assert response.status_code == 200
             response = client.post(
                 "/v1/chat/completions",
-                json={"messages": [{"role": "user", "content": "fix code"}]},
+                json=request_body,
                 headers={"idempotency-key": "permit-test"},
             )
     if case in {"positive", "alternative", "newer_revocation_passport"}:
@@ -230,6 +267,8 @@ def test_dispatch_permit_gates_every_send_and_spawn(
         "wrong_origin",
         "replayed_old_passport",
         "equal_revocation_passport",
+        "foreign_provider",
+        "foreign_profile",
     }:
         # Expired/revoked primary must not silently select another route here.
         assert response.status_code == 503
@@ -237,21 +276,38 @@ def test_dispatch_permit_gates_every_send_and_spawn(
     elif case == "duplicate":
         assert response.status_code == 503
         assert len(requests) == 1
-    elif case in {"auth", "server_error", "post_commit_revocation"}:
+    elif case in {
+        "auth",
+        "server_error",
+        "post_commit_revocation",
+        "model_not_found_404",
+        "free_text_404",
+    }:
         assert (
             response.status_code
-            == {"auth": 403, "server_error": 503, "post_commit_revocation": 502}[case]
+            == {
+                "auth": 403,
+                "server_error": 503,
+                "post_commit_revocation": 502,
+                "model_not_found_404": 404,
+                "free_text_404": 404,
+            }[case]
         )
         assert len(requests) == 1
     else:
         assert response.status_code == 502
         assert len(requests) == 1
     cache = HealthCache(default_cache_path())
-    if case in {"auth", "identity_mismatch", "post_commit_revocation"}:
+    if case in {"auth", "identity_mismatch", "post_commit_revocation", "model_not_found_404"}:
         proof = next(
             p for p in prepared_decisions[0].admission_proofs.values() if p.model == requests[0]
         )
         assert cache.revocation_epoch(proof.scope) == proof.epoch + 1
+    if case == "free_text_404":
+        proof = next(
+            p for p in prepared_decisions[0].admission_proofs.values() if p.model == requests[0]
+        )
+        assert cache.revocation_epoch(proof.scope) == proof.epoch
     if requests:
         if case == "duplicate":
             attempt_ids = ["duplicate-attempt"]

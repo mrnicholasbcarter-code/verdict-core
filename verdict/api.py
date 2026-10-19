@@ -64,7 +64,12 @@ from verdict.guidance import (
     GuidanceControlPlane,
     GuidanceUnavailableError,
 )
-from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
+from verdict.intelligence import (
+    DEFAULT_PROFILE,
+    DEFAULT_TIMEOUT_MS,
+    IntelligenceService,
+    prepared_task_profile,
+)
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
@@ -92,6 +97,7 @@ from verdict.runtime_certification import CertificationState
 from verdict.security import bearer_matches, redact_text, validate_server_security
 from verdict.serve_path import CONTEXT_EP_REQUEST
 from verdict.session_economics import ConcreteRoute
+from verdict.task_profile import TaskProfileError
 
 
 class _EvidenceStreamAdapter:
@@ -1826,6 +1832,19 @@ def _dispatch_attempt_id() -> str:
     return uuid.uuid4().hex
 
 
+_MODEL_NOT_FOUND_CODES = frozenset({"model_not_found", "model_not_available"})
+
+
+def _gateway_model_not_found(body: str) -> bool:
+    """True only for the gateway's structured model-not-found error code."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return False
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    return isinstance(error, dict) and error.get("code") in _MODEL_NOT_FOUND_CODES
+
+
 async def _relay_completion(request: Request, *, surface: str) -> Response:
     """Route and transparently forward one OpenAI protocol surface."""
     if intelligence_instance is None or proxy_instance is None:
@@ -1980,6 +1999,23 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             evidence_key,
         )
 
+    # Proofs are bound to the task profile of the request actually being sent,
+    # recomputed with the same helper preparation used to mint them.
+    relay_profile_digest: str | None
+    try:
+        relay_profile_digest = prepared_task_profile(
+            task, authority_context, planner=getattr(intelligence_instance, "planner", None)
+        )[1].digest
+    except TaskProfileError:
+        relay_profile_digest = None
+    selected_route_id = next(
+        (
+            flag.split(":", 1)[1]
+            for flag in decision.safety_flags
+            if flag.startswith("bod104_route_id:")
+        ),
+        None,
+    )
     dispatch_denial: str | None = None
     for index, attempt in enumerate(attempts):
         if index:
@@ -2027,19 +2063,32 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         # receives. Injection is recorded per attempt and never claimed when
         # the pack is empty/failed or the task did not survive compilation.
         forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
-        proof = next(
-            (proof for proof in decision.admission_proofs.values() if proof.model == attempt.model),
-            None,
-        )
-        if proof is None:
+        # Exactly one proof may name this attempt's model; the primary must also
+        # carry the provider route() selected. Ambiguity is a denial, not a choice.
+        matches = [
+            proof
+            for route_id, proof in decision.admission_proofs.items()
+            if proof.model == attempt.model and proof.route_id == route_id
+        ]
+        proof = matches[0] if len(matches) == 1 else None
+        if proof is None or (
+            attempt.model == decision.model
+            and (
+                proof.provider != decision.provider
+                or (selected_route_id is not None and proof.route_id != selected_route_id)
+            )
+        ):
             dispatch_denial = "dispatch denied: missing route-bound admission proof"
+            continue
+        if relay_profile_digest is None:
+            dispatch_denial = "dispatch denied: task profile unavailable at relay"
             continue
         expected_scope = dispatch_scope(
             gateway_origin=proxy_instance.base_url,
             provider=proof.provider,
             model=attempt.model,
             route_id=proof.route_id,
-            profile_digest=proof.scope.profile_digest,
+            profile_digest=relay_profile_digest,
         )
         now = datetime.now(timezone.utc)
         attempt_id = _dispatch_attempt_id()
@@ -2084,7 +2133,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 _error_body = result.body[:8192].decode("utf-8", errors="replace")
             _last_error_body = _error_body
             if result.status_code in {401, 403} or (
-                result.status_code == 404 and "model" in _error_body.lower()
+                result.status_code == 404 and _gateway_model_not_found(_error_body)
             ):
                 HealthCache(default_cache_path()).record_revocation(
                     proof.scope,

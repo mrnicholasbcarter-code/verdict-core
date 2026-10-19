@@ -20,7 +20,7 @@ from verdict.candidate_pool import (
     RouteHealth,
     build_candidate_pool,
 )
-from verdict.capability_gate import derive_requirements, gate_capability
+from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
 from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
@@ -212,6 +212,20 @@ class IntelligenceRanking:
     ranked: list[RankedCandidate]
     task_spec_id: str
     profile: str
+
+
+def prepared_task_profile(
+    task: str, context: dict[str, Any], *, planner: StructuredPlanner | None = None
+) -> tuple[TaskRequirements, TaskProfile]:
+    """Derive the requirements and task profile that preparation binds into admission."""
+    planner_caps: tuple[str, ...] = ()
+    try:
+        planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
+        planner_caps = tuple(planned.required_capabilities)
+    except Exception:
+        planner_caps = ()
+    requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+    return requirements, profile_task(task, context=context, requirements=requirements)
 
 
 class IntelligenceService:
@@ -952,14 +966,7 @@ class IntelligenceService:
                 "candidate pool requires Core metadata for a live execution-path request"
             )
         classification = classify_worthiness(task, criticality=criticality, context=context)
-        planner_caps: tuple[str, ...] = ()
-        try:
-            planned = self.planner.plan(task, context=context).task_spec
-            planner_caps = tuple(planned.required_capabilities)
-        except Exception:
-            planner_caps = ()
-        requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
-        profile = profile_task(task, context=context, requirements=requirements)
+        requirements, profile = prepared_task_profile(task, context, planner=self.planner)
         receipt = expand_admit_for_worthiness(
             admit_free_tier_active(snapshot),
             snapshot,

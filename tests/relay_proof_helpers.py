@@ -8,12 +8,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import verdict.api as api
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.free_tier_admit import FreeTierAdmitReceipt
+from verdict.intelligence import prepared_task_profile
 from verdict.model_passports import ModelPassport
 from verdict.models import RoutingDecision
 from verdict.relay import admission_proof, dispatch_scope
-from verdict.task_profile import profile_task
 
 
 def with_relay_proofs(
@@ -63,7 +64,8 @@ def with_relay_proofs(
         "admitted": list(confirmed.admitted),
         "passport": [row.to_dict() for row in confirmed.passport],
     }
-    digest = profile_task("relay fixture", context=context or {}).digest
+    # Same profile the relay recomputes for the request it sends.
+    digest = prepared_task_profile(api._task_text(context or {}), context or {})[1].digest
     proofs = {}
     for model in models:
         scope = dispatch_scope(
