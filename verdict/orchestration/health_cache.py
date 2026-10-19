@@ -100,6 +100,14 @@ TRANSIENT_CAP_SECONDS = 900.0
 LONG_BASE_SECONDS = 6 * 3600.0
 LONG_CAP_SECONDS = 24 * 3600.0
 
+# BOD-433/S03 dispatch permits. A commit only consumes a proof whose deadline
+# is still ahead of ``now`` (basic proof expires at its deadline, equality
+# included) and no further ahead than the basic-proof age: a deadline beyond
+# that window implies an observation timestamp in the future, which never
+# authorizes.
+PERMIT_STATE_MAYBE_SENT = "maybe_sent"
+PERMIT_PROOF_MAX_VALIDITY_SECONDS = FRESH_SECONDS
+
 DEFAULT_BUCKET_CAPACITY = 10
 DEFAULT_BUCKET_WINDOW_SECONDS = 60.0
 
@@ -759,6 +767,246 @@ class ScopedCooldown:
         )
 
 
+@dataclass(frozen=True)
+class DispatchScope:
+    """Immutable identity of the authorization a dispatch is bound to (BOD-433).
+
+    ``gateway_origin`` is the configured gateway base URL, ``config_generation``
+    the stable configuration generation, ``profile_digest`` the selected task
+    profile digest and ``binding_id`` the credential binding in force. Two
+    dispatches under different scopes never share revocation epochs or permits.
+    """
+
+    gateway_origin: str
+    config_generation: str
+    profile_digest: str
+    binding_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("gateway_origin", "config_generation", "profile_digest", "binding_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise HealthCacheError(f"dispatch scope {name} must be a non-empty string")
+
+    def to_key(self) -> str:
+        """Stable key for the persisted per-scope revocation record."""
+        return json.dumps(
+            [self.gateway_origin, self.config_generation, self.profile_digest, self.binding_id],
+            separators=(",", ":"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "gateway_origin": self.gateway_origin,
+            "config_generation": self.config_generation,
+            "profile_digest": self.profile_digest,
+            "binding_id": self.binding_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> DispatchScope:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("dispatch scope must be a mapping")
+        return cls(
+            gateway_origin=str(value.get("gateway_origin") or ""),
+            config_generation=str(value.get("config_generation") or ""),
+            profile_digest=str(value.get("profile_digest") or ""),
+            binding_id=str(value.get("binding_id") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class DispatchPermit:
+    """One authorized dispatch, minted only by ``HealthCache.commit_dispatch``."""
+
+    permit_id: str
+    attempt_id: str
+    route_id: str
+    scope: DispatchScope
+    epoch: int
+    not_after: datetime
+
+    def __post_init__(self) -> None:
+        for name in ("permit_id", "attempt_id", "route_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise HealthCacheError(f"dispatch permit {name} must be a non-empty string")
+        if not isinstance(self.scope, DispatchScope):
+            raise HealthCacheError("dispatch permit scope must be a DispatchScope")
+        if isinstance(self.epoch, bool) or not isinstance(self.epoch, int) or self.epoch < 0:
+            raise HealthCacheError("dispatch permit epoch must be a non-negative integer")
+        _aware(self.not_after, "not_after")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "permit_id": self.permit_id,
+            "attempt_id": self.attempt_id,
+            "route_id": self.route_id,
+            "scope": self.scope.to_dict(),
+            "epoch": self.epoch,
+            "not_after": format_datetime(self.not_after),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> DispatchPermit:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("dispatch permit must be a mapping")
+        return cls(
+            permit_id=str(value.get("permit_id") or ""),
+            attempt_id=str(value.get("attempt_id") or ""),
+            route_id=str(value.get("route_id") or ""),
+            scope=DispatchScope.from_dict(value.get("scope") or {}),
+            epoch=int(value.get("epoch") or 0),
+            not_after=parse_datetime(value.get("not_after"), "not_after"),
+        )
+
+
+@dataclass(frozen=True)
+class _RevocationEvent:
+    """One accepted scoped negative, deduplicated by ``event_id``."""
+
+    route_id: str
+    source_revision: str | None
+    observed_at: datetime
+    sequence: int
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "route_id": self.route_id,
+            "observed_at": format_datetime(self.observed_at),
+            "sequence": self.sequence,
+        }
+        if self.source_revision is not None:
+            payload["source_revision"] = self.source_revision
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> _RevocationEvent:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("revocation event must be a mapping")
+        source_revision = value.get("source_revision")
+        if source_revision is not None and not isinstance(source_revision, str):
+            raise HealthCacheError("revocation source_revision must be a string or None")
+        return cls(
+            route_id=str(value.get("route_id") or ""),
+            source_revision=source_revision,
+            observed_at=parse_datetime(value.get("observed_at"), "observed_at"),
+            sequence=int(value.get("sequence") or 0),
+        )
+
+
+@dataclass
+class _DispatchScopeState:
+    """Persisted per-scope revocation epoch and negative ledger."""
+
+    epoch: int = 0
+    sequence: int = 0
+    revocations: dict[str, _RevocationEvent] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "epoch": self.epoch,
+            "sequence": self.sequence,
+            "revocations": {
+                key: event.to_dict() for key, event in sorted(self.revocations.items())
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> _DispatchScopeState:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("dispatch scope record must be a mapping")
+        epoch = value.get("epoch", 0)
+        sequence = value.get("sequence", 0)
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise HealthCacheError("dispatch scope epoch must be a non-negative integer")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+            raise HealthCacheError("dispatch scope sequence must be a non-negative integer")
+        revocations_raw = value.get("revocations") or {}
+        if not isinstance(revocations_raw, Mapping):
+            raise HealthCacheError("dispatch scope revocations must be an object")
+        return cls(
+            epoch=epoch,
+            sequence=sequence,
+            revocations={
+                str(key): _RevocationEvent.from_dict(event)
+                for key, event in revocations_raw.items()
+            },
+        )
+
+
+@dataclass
+class _DispatchAttempt:
+    """A consumed attempt: exactly one permit, durably MAYBE_SENT."""
+
+    permit: DispatchPermit
+    state: str
+    committed_at: datetime
+    authorization_digest: str
+
+    def __post_init__(self) -> None:
+        if self.state != PERMIT_STATE_MAYBE_SENT:
+            raise HealthCacheError("dispatch attempt state must be maybe_sent")
+        _aware(self.committed_at, "committed_at")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "permit": self.permit.to_dict(),
+            "state": self.state,
+            "committed_at": format_datetime(self.committed_at),
+            "authorization_digest": self.authorization_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> _DispatchAttempt:
+        if not isinstance(value, Mapping):
+            raise HealthCacheError("dispatch attempt must be a mapping")
+        state = value.get("state")
+        if state != PERMIT_STATE_MAYBE_SENT:
+            raise HealthCacheError("dispatch attempt state must be maybe_sent")
+        digest = value.get("authorization_digest")
+        if not isinstance(digest, str):
+            raise HealthCacheError("dispatch attempt authorization_digest must be a string")
+        return cls(
+            permit=DispatchPermit.from_dict(value.get("permit") or {}),
+            state=state,
+            committed_at=parse_datetime(value.get("committed_at"), "committed_at"),
+            authorization_digest=digest,
+        )
+
+
+def _merge_dispatch_records(
+    mine_scopes: Mapping[str, _DispatchScopeState],
+    disk_scopes: Mapping[str, _DispatchScopeState],
+    mine_attempts: Mapping[str, _DispatchAttempt],
+    disk_attempts: Mapping[str, _DispatchAttempt],
+) -> tuple[dict[str, _DispatchScopeState], dict[str, _DispatchAttempt]]:
+    """Union two dispatch views: disk wins key conflicts, epochs take the max.
+
+    Permits and revocations are only ever written under the cache lock, so a
+    plain ``save()`` from a stale in-memory view must neither drop another
+    writer's permit (the A10 late-fenced-writer race) nor lower an epoch.
+    """
+    scopes: dict[str, _DispatchScopeState] = dict(disk_scopes)
+    for key, mine in mine_scopes.items():
+        current = scopes.get(key)
+        if current is None:
+            scopes[key] = mine
+            continue
+        merged = _DispatchScopeState(
+            epoch=max(current.epoch, mine.epoch),
+            sequence=max(current.sequence, mine.sequence),
+            revocations=dict(current.revocations),
+        )
+        for event_id, event in mine.revocations.items():
+            merged.revocations.setdefault(event_id, event)
+        scopes[key] = merged
+    attempts: dict[str, _DispatchAttempt] = dict(disk_attempts)
+    for attempt_key, mine_attempt in mine_attempts.items():
+        attempts.setdefault(attempt_key, mine_attempt)
+    return scopes, attempts
+
+
 def bucket_key(provider: str, pool: str | None = None) -> str:
     """Canonical pool key when named, otherwise the provider key.
 
@@ -882,6 +1130,9 @@ class HealthCache:
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
         self._cooldowns: dict[str, ScopedCooldown] = {}
+        # BOD-433: durable per-scope revocation epochs and consumed attempts.
+        self._dispatch_scopes: dict[str, _DispatchScopeState] = {}
+        self._dispatch_attempts: dict[str, _DispatchAttempt] = {}
         # What disk held at the last load/save; differs from _snapshot() when unsaved.
         self._disk_snapshot: dict[str, Any] = {}
         self._load()
@@ -919,6 +1170,8 @@ class HealthCache:
         }
         cursor_changed = self._cursor != loaded.get("cursor", {})
         cursor = dict(self._cursor)
+        mine_dispatch_scopes = dict(self._dispatch_scopes)
+        mine_dispatch_attempts = dict(self._dispatch_attempts)
         self._load()
         for key, entry in changed_routes.items():
             disk = self._routes.get(key)
@@ -933,6 +1186,12 @@ class HealthCache:
                 self._buckets[key] = bucket
         if cursor_changed:
             self._cursor = cursor
+        self._dispatch_scopes, self._dispatch_attempts = _merge_dispatch_records(
+            mine_dispatch_scopes,
+            self._dispatch_scopes,
+            mine_dispatch_attempts,
+            self._dispatch_attempts,
+        )
 
     def _load(self) -> None:
         # Reject links/FIFOs before any read can dereference or block.
@@ -942,6 +1201,8 @@ class HealthCache:
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
+            self._dispatch_scopes = {}
+            self._dispatch_attempts = {}
             self._disk_snapshot = self._snapshot()
             return
         try:
@@ -987,6 +1248,19 @@ class HealthCache:
             for key, value in cooldowns.items()
             if isinstance(value, Mapping)
         }
+        dispatch = payload.get("dispatch") or {}
+        if not isinstance(dispatch, Mapping):
+            raise HealthCacheError("dispatch must be an object")
+        scopes_raw = dispatch.get("scopes") or {}
+        attempts_raw = dispatch.get("attempts") or {}
+        if not isinstance(scopes_raw, Mapping) or not isinstance(attempts_raw, Mapping):
+            raise HealthCacheError("dispatch scopes and attempts must be objects")
+        self._dispatch_scopes = {
+            str(key): _DispatchScopeState.from_dict(value) for key, value in scopes_raw.items()
+        }
+        self._dispatch_attempts = {
+            str(key): _DispatchAttempt.from_dict(value) for key, value in attempts_raw.items()
+        }
         self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
@@ -1001,6 +1275,17 @@ class HealthCache:
         if self._cooldowns:
             snapshot["cooldowns"] = {
                 key: cooldown.to_dict() for key, cooldown in sorted(self._cooldowns.items())
+            }
+        # Additive: only emit ``dispatch`` when non-empty so permit-free caches
+        # keep their byte-for-byte goldens.
+        if self._dispatch_scopes or self._dispatch_attempts:
+            snapshot["dispatch"] = {
+                "scopes": {
+                    key: record.to_dict() for key, record in sorted(self._dispatch_scopes.items())
+                },
+                "attempts": {
+                    key: record.to_dict() for key, record in sorted(self._dispatch_attempts.items())
+                },
             }
         return snapshot
 
@@ -1052,6 +1337,8 @@ class HealthCache:
         mine_buckets = _canonicalize_buckets(self._buckets)
         mine_cooldowns = dict(self._cooldowns)
         mine_cursor = dict(self._cursor)
+        mine_dispatch_scopes = dict(self._dispatch_scopes)
+        mine_dispatch_attempts = dict(self._dispatch_attempts)
         # Overwrite self with the authoritative on-disk view, then merge mine in.
         self._load()
         for route_id, entry in mine_routes.items():
@@ -1071,6 +1358,12 @@ class HealthCache:
                 continue
             disk_bucket.merge_from(bucket)
         self._cursor = mine_cursor
+        self._dispatch_scopes, self._dispatch_attempts = _merge_dispatch_records(
+            mine_dispatch_scopes,
+            self._dispatch_scopes,
+            mine_dispatch_attempts,
+            self._dispatch_attempts,
+        )
 
     def merge_and_save(
         self,
@@ -1546,6 +1839,153 @@ class HealthCache:
         """Explicitly drop a scoped blocker after a deliberate scope recovery."""
         self._cooldowns.pop(key, None)
 
+    # -- dispatch permits (BOD-433, additive) ------------------------------
+
+    def revocation_epoch(self, scope: DispatchScope) -> int:
+        """Current per-scope revocation epoch; capture it when a proof starts.
+
+        Read-only. ``commit_dispatch`` re-validates the epoch under the state
+        lock, so a value captured here can never smuggle a stale proof through
+        a revocation that lands in between.
+        """
+        if not isinstance(scope, DispatchScope):
+            raise HealthCacheError("revocation epoch requires a DispatchScope")
+        found = self._dispatch_scopes.get(scope.to_key())
+        return found.epoch if found is not None else 0
+
+    def permit_for_attempt(self, attempt_id: str) -> DispatchPermit | None:
+        """The permit a consumed attempt minted, or None when absent."""
+        found = self._dispatch_attempts.get(attempt_id)
+        return found.permit if found is not None else None
+
+    def dispatch_attempt_state(self, attempt_id: str) -> str | None:
+        """Lifecycle state of a dispatch attempt; ``maybe_sent`` in phase 1."""
+        found = self._dispatch_attempts.get(attempt_id)
+        return found.state if found is not None else None
+
+    def record_revocation(
+        self,
+        scope: DispatchScope,
+        *,
+        route_id: str,
+        event_id: str,
+        source_revision: str | None,
+        observed_at: datetime,
+    ) -> int:
+        """Durably record one scoped negative; returns the scope epoch.
+
+        Idempotent per ``(scope, event_id)``: replaying an event, including
+        delayed replay after a restart, never raises the epoch again. Each
+        accepted new negative increments the persisted per-scope epoch, so
+        proofs captured earlier can no longer authorize dispatch. Skewed or
+        future ``observed_at`` values are still negatives: the blocker stays
+        in force rather than being dropped over a clock complaint.
+        """
+        if not isinstance(scope, DispatchScope):
+            raise HealthCacheError("revocation requires a DispatchScope")
+        if not isinstance(route_id, str) or not route_id.strip():
+            raise HealthCacheError("revocation route_id must be non-empty")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise HealthCacheError("revocation event_id must be non-empty")
+        if source_revision is not None and not isinstance(source_revision, str):
+            raise HealthCacheError("revocation source_revision must be a string or None")
+        observed = _aware(observed_at, "observed_at")
+        epoch: int = 0
+
+        def _mutate(cache: HealthCache) -> None:
+            nonlocal epoch
+            key = scope.to_key()
+            record = cache._dispatch_scopes.get(key) or _DispatchScopeState()
+            if event_id in record.revocations:
+                epoch = record.epoch  # replayed negative: already in force
+                return
+            record.revocations[event_id] = _RevocationEvent(
+                route_id=route_id,
+                source_revision=source_revision,
+                observed_at=observed,
+                sequence=record.sequence + 1,
+            )
+            record.sequence += 1
+            record.epoch += 1
+            cache._dispatch_scopes[key] = record
+            epoch = record.epoch
+
+        self.merge_and_save(_mutate)
+        return epoch
+
+    def commit_dispatch(
+        self,
+        scope: DispatchScope,
+        *,
+        route_id: str,
+        attempt_id: str,
+        authorization_digest: str,
+        expected_epoch: int,
+        proof_deadline: datetime,
+        now: datetime,
+        deadline: float | None = None,
+    ) -> DispatchPermit | None:
+        """Linearize authorization at one durable commit (A04/A10).
+
+        Under the state lock this re-reads the persisted revocation epochs and
+        consumed attempts, then either denies (returns ``None``; nothing was
+        sent, so phase-2 callers make zero transport/spawn calls) or atomically
+        consumes the unique ``attempt_id`` and records its permit as MAYBE_SENT.
+        Denies when the proof's captured epoch is no longer current (replayed
+        older or fabricated evidence), when the attempt was already used
+        (duplicates and late fenced writers), and when the proof is expired or
+        stamped beyond the maximum proof validity (future observation
+        timestamps never authorize). A minted permit is the only authorization
+        to dispatch; retries need a new attempt id and a new permit.
+        """
+        if not isinstance(scope, DispatchScope):
+            raise HealthCacheError("dispatch commit requires a DispatchScope")
+        if not isinstance(route_id, str) or not route_id.strip():
+            raise HealthCacheError("dispatch route_id must be non-empty")
+        if not isinstance(attempt_id, str) or not attempt_id.strip():
+            raise HealthCacheError("dispatch attempt_id must be non-empty")
+        if not isinstance(authorization_digest, str):
+            raise HealthCacheError("authorization_digest must be a string")
+        if (
+            isinstance(expected_epoch, bool)
+            or not isinstance(expected_epoch, int)
+            or expected_epoch < 0
+        ):
+            raise HealthCacheError("expected_epoch must be a non-negative integer")
+        current = _aware(now, "now")
+        due = _aware(proof_deadline, "proof_deadline")
+        if current >= due:
+            return None  # basic proof expires at its deadline, equality included
+        if due > current + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS):
+            return None  # implied observation timestamp lies in the future
+        permit: DispatchPermit | None = None
+
+        def _mutate(cache: HealthCache) -> None:
+            nonlocal permit
+            record = cache._dispatch_scopes.get(scope.to_key()) or _DispatchScopeState()
+            if expected_epoch != record.epoch:
+                return  # superseded or fabricated epoch: stale/future proof
+            if attempt_id in cache._dispatch_attempts:
+                return  # consumed attempt: no second permit, no retry
+            minted = DispatchPermit(
+                permit_id=uuid.uuid4().hex,
+                attempt_id=attempt_id,
+                route_id=route_id,
+                scope=scope,
+                epoch=expected_epoch,
+                not_after=due,
+            )
+            cache._dispatch_attempts[attempt_id] = _DispatchAttempt(
+                permit=minted,
+                state=PERMIT_STATE_MAYBE_SENT,
+                committed_at=current,
+                authorization_digest=authorization_digest,
+            )
+            permit = minted
+
+        self.merge_and_save(_mutate, deadline=deadline)
+        return permit
+
 
 __all__ = [
     "AGENTIC_PROBE_TTL_SECONDS",
@@ -1566,6 +2006,8 @@ __all__ = [
     "HEALTH_CACHE_SCHEMA_VERSION",
     "LONG_BASE_SECONDS",
     "LONG_CAP_SECONDS",
+    "PERMIT_PROOF_MAX_VALIDITY_SECONDS",
+    "PERMIT_STATE_MAYBE_SENT",
     "RATE_LIMIT_SECONDS",
     "STATE_FRESH",
     "STATE_NEGATIVE",
@@ -1574,6 +2016,8 @@ __all__ = [
     "TRANSIENT_BASE_SECONDS",
     "TRANSIENT_CAP_SECONDS",
     "USABLE_SECONDS",
+    "DispatchPermit",
+    "DispatchScope",
     "HealthCache",
     "HealthCacheError",
     "HealthEntry",
