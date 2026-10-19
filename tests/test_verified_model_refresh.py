@@ -444,7 +444,9 @@ def test_auth_gate_confirmed_outage_writes_nothing_and_stops_the_job(tmp_path: P
         _snapshot(rows),
         consumer="verified_view",
         needed_ids=[r.route_id for r in rows],
-        config=RefreshConfig(),
+        config=RefreshConfig(
+            concurrency=1
+        ),  # the sequential guarantee: nothing is dispatched after it
     )
     assert gate_calls == [("cc/a", 401)]
     assert out.route_outcomes["cc/a"].refresh_reason == "auth_outage"
@@ -1544,3 +1546,159 @@ def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
         config=RefreshConfig(max_routes=10),
     )
     assert len(picked) == 5
+
+
+# ---------------------------------------------------------------------------
+# BOD-297/S05-D: concurrency lanes
+# ---------------------------------------------------------------------------
+
+
+class InFlightTransport:
+    """Records how many probes overlap, overall and per credential pool."""
+
+    def __init__(self, hold: float = 0.0, script: dict[str, ProbeExchange] | None = None):
+        self.hold = hold
+        self.script = script or {}
+        self.lock = threading.Lock()
+        self.calls: list[tuple[str, str]] = []
+        self.in_flight: dict[str, int] = {}
+        self.max_total = 0
+        self.max_per_pool: dict[str, int] = {}
+        self.total_at_call: dict[str, int] = {}
+
+    def __call__(self, route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        from verdict.orchestration.credential_pools import pool_of
+
+        pool = pool_of(route_id)
+        with self.lock:
+            self.calls.append((route_id, phase))
+            self.in_flight[pool] = self.in_flight.get(pool, 0) + 1
+            total = sum(self.in_flight.values())
+            self.total_at_call[route_id] = max(self.total_at_call.get(route_id, 0), total)
+            self.max_total = max(self.max_total, total)
+            self.max_per_pool[pool] = max(self.max_per_pool.get(pool, 0), self.in_flight[pool])
+        try:
+            if self.hold:
+                import time
+
+                time.sleep(self.hold)
+            return self.script.get(route_id) or _ok(route_id, phase)
+        finally:
+            with self.lock:
+                self.in_flight[pool] -= 1
+
+
+def test_probes_run_four_at_once_one_per_pool(tmp_path: Path) -> None:
+    import time
+
+    transport = InFlightTransport(hold=0.25)
+    rows = [_row(f"p{i}/m") for i in range(8)]
+    coord = _coordinator(tmp_path, transport)
+    started = time.monotonic()
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4),
+    )
+    elapsed = time.monotonic() - started
+    assert out.outcome == OUTCOME_COMPLETED and out.verified == 8
+    assert transport.max_total == 4
+    # 8 routes x 2 calls x 0.25 s is 4 s one at a time; two waves of 4 take 1 s.
+    assert elapsed < 2.5
+
+
+def test_one_probe_per_pool_including_aliases(tmp_path: Path) -> None:
+    transport = InFlightTransport(hold=0.05)
+    rows = [_row(f"cc/m{i}") for i in range(3)] + [
+        _row("claude/m9"),
+        _row("agy/x"),
+        _row("antigravity/y"),
+    ]
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4),
+    )
+    assert out.verified == 6
+    assert set(transport.max_per_pool.values()) == {1}
+    assert transport.max_total == 2  # the claude and antigravity pools overlap each other
+
+
+def test_unknown_pool_probe_runs_alone(tmp_path: Path) -> None:
+    transport = InFlightTransport(hold=0.05)
+    rows = [_row(f"p{i}/m", capacity=CAPACITY_SUBSCRIPTION) for i in range(3)]
+    rows.insert(1, _row("u/x", capacity="unknown"))
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="models_refresh",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4),
+        authorized=True,
+    )
+    assert ("u/x", "chat") in transport.calls
+    assert transport.total_at_call["u/x"] == 1
+    assert transport.max_total >= 2  # the known pools still overlap each other
+    assert out.requests_made == 3 * 2 + 1
+
+
+def test_concurrent_requests_never_exceed_the_cap(tmp_path: Path) -> None:
+    transport = InFlightTransport(hold=0.05)
+    rows = [_row(f"p{i}/m") for i in range(8)]
+    events: list[Any] = []
+    coord = _coordinator(tmp_path, transport)
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4, max_requests=6),
+        on_progress=events.append,
+    )
+    assert out.requests_made == len(transport.calls) == 6
+    assert out.cap_reason == REASON_REQUEST_CAP
+    # Requests reserved by in-flight probes count against the cap: a 4th probe
+    # is never admitted next to 3 in flight.
+    assert transport.max_total == 3
+    assert all(e.requests_reserved <= 6 for e in events)
+
+
+def test_confirmed_outage_drops_every_in_flight_probe(tmp_path: Path) -> None:
+    release = threading.Event()
+    gate_calls: list[tuple[str, int | None, int]] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        if route_id == "p0/m":
+            return _fail(401)
+        release.wait(timeout=5.0)
+        return _fail(401) if route_id == "p3/m" else _ok(route_id, phase)
+
+    def auth_gate(route_id: str, http_status: int | None, remaining: int) -> tuple[bool, int]:
+        gate_calls.append((route_id, http_status, remaining))
+        release.set()
+        return True, 0
+
+    recorder = ScriptedTransport({})
+
+    def recording(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        recorder(route_id, phase, timeout)
+        return transport(route_id, phase, timeout)
+
+    coord = _coordinator(tmp_path, recording)
+    coord.auth_gate = auth_gate
+    rows = [_row(f"p{i}/m", rank_hint=i) for i in range(5)]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(concurrency=4, max_requests=8),
+    )
+    # p0 spent 1 request; p1..p3 hold 2 reserved each, so 8 - 1 - 6 = 1 remains.
+    assert gate_calls == [("p0/m", 401, 1)]
+    assert out.cap_reason == "auth_outage"
+    assert "p4/m" not in recorder.routes_called()  # nothing admitted after it
+    assert all(not o.probed for o in out.route_outcomes.values())
+    assert out.requests_made <= 8
+    assert HealthCache(tmp_path / "health-cache.json").routes() == {}

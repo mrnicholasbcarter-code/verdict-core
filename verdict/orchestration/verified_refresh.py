@@ -38,20 +38,24 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from verdict.orchestration.credential_pools import pool_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_OK,
     CATEGORY_PAYMENT,
     CATEGORY_PERMISSION,
     CATEGORY_RATE_LIMITED,
+    BucketReservation,
     HealthCache,
     HealthCacheLockTimeoutError,
     ScopedCooldown,
@@ -760,6 +764,33 @@ def _probe_requests_for(row: RowInput) -> int:
     return 1 if row.capacity_class not in PREPAID_CAPACITY_CLASSES else REQUESTS_PER_FULL_PROBE
 
 
+def _lanes(row: RowInput) -> frozenset[str]:
+    """Concurrency lanes a probe of ``row`` occupies (BOD-297/S05-D).
+
+    One probe per credential pool and per provider at a time: the pool lane
+    keeps two aliases of one quota from overlapping, and the provider lane
+    makes a provider stop visible before the next same-provider probe is
+    admitted. An empty set means the pool is unknown (UNKNOWN capacity, or a
+    bare route id with no pool): that probe runs alone.
+    """
+    if capacity_group(row.capacity_class) == CAPACITY_UNKNOWN or (
+        not row.pool and "/" not in row.route_id
+    ):
+        return frozenset()
+    pool = row.pool or pool_of(row.route_id)
+    return frozenset({f"pool:{pool.lower()}", f"provider:{row.provider.strip().lower()}"})
+
+
+@dataclass(frozen=True)
+class _InFlight:
+    """One dispatched probe: its row, bucket reservation, reserved requests, lanes."""
+
+    row: RowInput
+    reservation: BucketReservation
+    requests: int
+    lanes: frozenset[str]
+
+
 class _Scopes:
     """Tracks per-provider scope stops for the cycle."""
 
@@ -1034,167 +1065,259 @@ class RefreshCoordinator:
             scope=scope,
         )
 
-        for row in candidates:
-            if cancel():
-                cancelled = True
-                break
-            remaining = deadline - self.monotonic()
-            if remaining <= 0:
-                cap_reason = REASON_WALL_CAP
-                break
-            probe_requests = _probe_requests_for(row)
-            if requests_made + probe_requests > config.max_requests:
-                cap_reason = REASON_REQUEST_CAP
-                break
-            stop = scopes.provider_stopped(row.provider)
-            if stop is not None:
-                outcomes[row.route_id] = RouteOutcome(
-                    row.route_id,
-                    row.provider,
-                    False,
-                    False,
-                    category=stop,
-                    refresh_reason=REASON_PROVIDER_STOP,
-                )
-                continue
-            if scopes.route_stopped(row.route_id) is not None:
-                outcomes[row.route_id] = RouteOutcome(
-                    row.route_id, row.provider, False, False, refresh_reason=REASON_PROVIDER_STOP
-                )
-                continue
-            # Per-provider token bucket: reserve the whole probe up front and
-            # PERSIST the reservation under the shared lock before dispatch, so
-            # a following same-provider route (and the next merge_and_save disk
-            # reload) sees the spend. An in-memory consume was dropped by the
-            # reload, letting 8 routes each see a full bucket (review finding).
-            now = self.clock()
-            try:
-                reservation = self.cache.reserve_bucket(
-                    row.provider,
-                    now,
-                    pool=row.pool,
-                    amount=probe_requests,
-                    deadline=deadline,
-                    monotonic=self.monotonic,
-                    sleep=self.sleep,
-                )
-            except HealthCacheLockTimeoutError:
-                cap_reason = REASON_LOCK_TIMEOUT
-                break
-            if not reservation:
-                outcomes[row.route_id] = RouteOutcome(
-                    row.route_id, row.provider, False, False, refresh_reason=REASON_BUCKET
-                )
-                continue
+        # BOD-297/S05-D: up to ``config.concurrency`` probes run at once, at
+        # most one per credential pool or provider (a provider stop seen on one
+        # probe is applied before the next same-provider probe is admitted), and
+        # a route with no known pool runs alone. Only the probes themselves run
+        # on worker threads: admission (cancel, deadline, request cap, scope
+        # stops, bucket reservation), the auth gate and every cache write stay
+        # on this thread, so they are serialized without extra locks.
+        pending = list(candidates)
+        order = {row.route_id: index for index, row in enumerate(candidates)}
+        inflight: dict[Future[FullProbeOutcome], _InFlight] = {}
+        admitting = True
+        # Set once a sibling confirms a gateway-key outage, so a probe already
+        # in flight stops before its next dispatch (its tool call).
+        outage = threading.Event()
 
-            per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
-            outcome = self._probe_one(row, per_call_timeout, deadline=deadline, cancel=cancel)
-            requests_made += outcome.requests_made
-            try:
-                # Release only unused spend before persisting the proof.
-                if outcome.requests_made < probe_requests and self.monotonic() < deadline:
-                    self.cache.release_bucket(
-                        reservation,
-                        probe_requests - outcome.requests_made,
-                        deadline=deadline,
-                        monotonic=self.monotonic,
-                        sleep=self.sleep,
-                    )
-                # BOD-338 breaker: confirm a 401/403 failure is a real
-                # per-route/provider rejection, not a broken gateway key,
-                # BEFORE any write (matches Prober._buffer_auth_failure's own
-                # (401, 403) check, not just CATEGORY_AUTH -- a 403 classifies
-                # as CATEGORY_PERMISSION, not CATEGORY_AUTH). True stops the
-                # job as a CONFIRMED outage; None means the gate itself could
-                # not run its own confirmation within budget -- the failure
-                # is still never written, but the job must report the REAL
-                # cap that stopped it (request/wall), never an outage nobody
-                # actually checked. False means a genuine per-route failure:
-                # written as today.
-                gate_result: bool | None = False
-                if (
-                    not outcome.no_write
-                    and outcome.http_status in (401, 403)
-                    and self.auth_gate is not None
-                ):
-                    remaining_requests = config.max_requests - requests_made
-                    gate_result, gate_requests = self.auth_gate(
-                        row.route_id, outcome.http_status, remaining_requests
-                    )
-                    requests_made += gate_requests
-                if gate_result is not False:
+        def probe_cancel() -> bool:
+            return outage.is_set() or cancel()
+
+        def busy_lanes() -> set[str]:
+            return {lane for job in inflight.values() for lane in job.lanes}
+
+        def admit() -> None:
+            nonlocal admitting, cancelled, cap_reason
+            for row in list(pending):
+                if len(inflight) >= config.concurrency:
+                    return
+                if any(not job.lanes for job in inflight.values()):
+                    return  # an exclusive (unknown-pool) probe is running
+                if cancel():
+                    cancelled = True
+                    admitting = False
+                    return
+                if deadline - self.monotonic() <= 0:
+                    cap_reason = REASON_WALL_CAP
+                    admitting = False
+                    return
+                probe_requests = _probe_requests_for(row)
+                reserved = sum(job.requests for job in inflight.values())
+                if requests_made + reserved + probe_requests > config.max_requests:
+                    if not inflight:
+                        cap_reason = REASON_REQUEST_CAP
+                        admitting = False
+                    # Otherwise wait: an in-flight probe may hand back unused spend.
+                    return
+                stop = scopes.provider_stopped(row.provider)
+                if stop is not None:
+                    pending.remove(row)
                     outcomes[row.route_id] = RouteOutcome(
                         row.route_id,
                         row.provider,
                         False,
                         False,
-                        category=outcome.category,
-                        http_status=outcome.http_status,
-                        refresh_reason=(REASON_AUTH_OUTAGE if gate_result else REASON_NOT_TESTED),
-                        requests_made=outcome.requests_made,
+                        category=stop,
+                        refresh_reason=REASON_PROVIDER_STOP,
                     )
-                    cap_reason = (
-                        REASON_AUTH_OUTAGE
-                        if gate_result
-                        else (
-                            REASON_WALL_CAP if self.monotonic() >= deadline else REASON_REQUEST_CAP
-                        )
+                    continue
+                if scopes.route_stopped(row.route_id) is not None:
+                    pending.remove(row)
+                    outcomes[row.route_id] = RouteOutcome(
+                        row.route_id,
+                        row.provider,
+                        False,
+                        False,
+                        refresh_reason=REASON_PROVIDER_STOP,
                     )
-                    break
-                route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
-            except HealthCacheLockTimeoutError:
-                cap_reason = (
-                    REASON_WALL_CAP if self.monotonic() >= deadline else REASON_LOCK_TIMEOUT
+                    continue
+                lanes = _lanes(row)
+                if not lanes and inflight:
+                    return  # an unknown-pool route waits until it can run alone
+                if lanes & busy_lanes():
+                    continue  # its pool/provider lane is busy; try the next row
+                # Per-provider token bucket: reserve the whole probe up front
+                # and PERSIST the reservation under the shared lock before
+                # dispatch, so a following same-provider route (and the next
+                # merge_and_save disk reload) sees the spend. An in-memory
+                # consume was dropped by the reload, letting 8 routes each see
+                # a full bucket (review finding).
+                try:
+                    reservation = self.cache.reserve_bucket(
+                        row.provider,
+                        self.clock(),
+                        pool=row.pool,
+                        amount=probe_requests,
+                        deadline=deadline,
+                        monotonic=self.monotonic,
+                        sleep=self.sleep,
+                    )
+                except HealthCacheLockTimeoutError:
+                    cap_reason = REASON_LOCK_TIMEOUT
+                    admitting = False
+                    return
+                pending.remove(row)
+                if not reservation:
+                    outcomes[row.route_id] = RouteOutcome(
+                        row.route_id, row.provider, False, False, refresh_reason=REASON_BUCKET
+                    )
+                    continue
+                per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
+                future = executor.submit(
+                    self._probe_one, row, per_call_timeout, deadline=deadline, cancel=probe_cancel
                 )
-                break
+                inflight[future] = _InFlight(row, reservation, probe_requests, lanes)
 
-            if outcome.no_write_reason == "deadline":
-                cap_reason = REASON_WALL_CAP
-            outcomes[row.route_id] = route_out
-            if route_out.probed:
-                probed += 1
-                per_provider[row.provider] = per_provider.get(row.provider, 0) + 1
-                if route_out.verified:
-                    verified += 1
-                elif route_out.alive:
-                    alive += 1
-                elif route_out.category in _PROVIDER_STOP_CATEGORIES or (
-                    route_out.http_status in {401, 402, 403, 429}
-                ):
-                    unavailable += 1
-                else:
-                    failed += 1
-            elif outcome.no_write_reason in {"cancelled"}:
-                cancelled = True
+        with ThreadPoolExecutor(max_workers=config.concurrency) as executor:
+            while True:
+                if admitting:
+                    admit()
+                if not inflight:
+                    break
+                done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=lambda f: order[inflight[f].row.route_id]):
+                    job = inflight.pop(future)
+                    row, reservation, probe_requests = job.row, job.reservation, job.requests
+                    outcome = future.result()
+                    requests_made += outcome.requests_made
+                    if cap_reason == REASON_AUTH_OUTAGE:
+                        # A sibling confirmed a gateway-key outage while this
+                        # probe was in flight: its result is not trusted, so
+                        # nothing is written for it, whatever its category.
+                        outcomes[row.route_id] = RouteOutcome(
+                            row.route_id,
+                            row.provider,
+                            False,
+                            False,
+                            category=outcome.category,
+                            http_status=outcome.http_status,
+                            refresh_reason=REASON_AUTH_OUTAGE,
+                            requests_made=outcome.requests_made,
+                        )
+                        continue
+                    try:
+                        # Release only unused spend before persisting the proof.
+                        if outcome.requests_made < probe_requests and self.monotonic() < deadline:
+                            self.cache.release_bucket(
+                                reservation,
+                                probe_requests - outcome.requests_made,
+                                deadline=deadline,
+                                monotonic=self.monotonic,
+                                sleep=self.sleep,
+                            )
+                        # BOD-338 breaker: confirm a 401/403 failure is a real
+                        # per-route/provider rejection, not a broken gateway
+                        # key, BEFORE any write (matches
+                        # Prober._buffer_auth_failure's own (401, 403) check,
+                        # not just CATEGORY_AUTH -- a 403 classifies as
+                        # CATEGORY_PERMISSION, not CATEGORY_AUTH). True stops
+                        # admission as a CONFIRMED outage; None means the gate
+                        # itself could not run its own confirmation within
+                        # budget -- the failure is still never written, but the
+                        # job must report the REAL cap that stopped it
+                        # (request/wall), never an outage nobody actually
+                        # checked. False means a genuine per-route failure:
+                        # written as today. Probes already in flight still
+                        # finish and pass through this same gate.
+                        gate_result: bool | None = False
+                        if (
+                            not outcome.no_write
+                            and outcome.http_status in (401, 403)
+                            and self.auth_gate is not None
+                        ):
+                            remaining_requests = (
+                                config.max_requests
+                                - requests_made
+                                - sum(other.requests for other in inflight.values())
+                            )
+                            gate_result, gate_requests = self.auth_gate(
+                                row.route_id, outcome.http_status, remaining_requests
+                            )
+                            requests_made += gate_requests
+                        if gate_result is not False:
+                            outcomes[row.route_id] = RouteOutcome(
+                                row.route_id,
+                                row.provider,
+                                False,
+                                False,
+                                category=outcome.category,
+                                http_status=outcome.http_status,
+                                refresh_reason=(
+                                    REASON_AUTH_OUTAGE if gate_result else REASON_NOT_TESTED
+                                ),
+                                requests_made=outcome.requests_made,
+                            )
+                            if gate_result:
+                                outage.set()
+                            if cap_reason is None:
+                                cap_reason = (
+                                    REASON_AUTH_OUTAGE
+                                    if gate_result
+                                    else (
+                                        REASON_WALL_CAP
+                                        if self.monotonic() >= deadline
+                                        else REASON_REQUEST_CAP
+                                    )
+                                )
+                            admitting = False
+                            continue
+                        route_out = self._persist_and_classify(
+                            row, outcome, scopes, deadline=deadline
+                        )
+                    except HealthCacheLockTimeoutError:
+                        cap_reason = cap_reason or (
+                            REASON_WALL_CAP if self.monotonic() >= deadline else REASON_LOCK_TIMEOUT
+                        )
+                        admitting = False
+                        continue
 
-            self._emit(
-                on_progress,
-                job_id,
-                probed,
-                total,
-                verified,
-                failed,
-                unavailable,
-                requests_made,
-                requests_made,  # all unused reservations have been released
-                started,
-                per_provider,
-                route_out.category,
-                alive=alive,
-            )
-            self._write_marker(
-                marker,
-                job_id,
-                consumer,
-                candidates,
-                started,
-                deadline,
-                outcomes,
-                running=True,
-                scope=scope,
-            )
-            if cancelled:
-                break
+                    if outcome.no_write_reason == "deadline":
+                        cap_reason = REASON_WALL_CAP
+                        admitting = False
+                    outcomes[row.route_id] = route_out
+                    if route_out.probed:
+                        probed += 1
+                        per_provider[row.provider] = per_provider.get(row.provider, 0) + 1
+                        if route_out.verified:
+                            verified += 1
+                        elif route_out.alive:
+                            alive += 1
+                        elif route_out.category in _PROVIDER_STOP_CATEGORIES or (
+                            route_out.http_status in {401, 402, 403, 429}
+                        ):
+                            unavailable += 1
+                        else:
+                            failed += 1
+                    elif outcome.no_write_reason in {"cancelled"}:
+                        cancelled = True
+                        admitting = False
+
+                    self._emit(
+                        on_progress,
+                        job_id,
+                        probed,
+                        total,
+                        verified,
+                        failed,
+                        unavailable,
+                        requests_made,
+                        requests_made + sum(other.requests for other in inflight.values()),
+                        started,
+                        per_provider,
+                        route_out.category,
+                        alive=alive,
+                    )
+                    self._write_marker(
+                        marker,
+                        job_id,
+                        consumer,
+                        candidates,
+                        started,
+                        deadline,
+                        outcomes,
+                        running=True,
+                        scope=scope,
+                    )
 
         # Mark in-plan rows never reached by a cap/cancel.
         for row in candidates:

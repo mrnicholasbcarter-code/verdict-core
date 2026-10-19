@@ -1028,6 +1028,7 @@ class Prober:
             CAPACITY_FREE,
             CAPACITY_SUBSCRIPTION,
             CONSUMER_PROVE_AT_REST,
+            HARD_MAX_CONCURRENCY,
             HARD_MAX_REQUEST_TIMEOUT_SECONDS,
             HARD_MAX_REQUESTS,
             HARD_MAX_ROUTES,
@@ -1155,6 +1156,7 @@ class Prober:
             request_timeout_seconds=min(
                 self.probe_timeout_seconds, HARD_MAX_REQUEST_TIMEOUT_SECONDS
             ),
+            concurrency=min(self.concurrency, HARD_MAX_CONCURRENCY),
         )
 
         if not rows:
