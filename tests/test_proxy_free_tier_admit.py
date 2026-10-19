@@ -10,12 +10,12 @@ import httpx
 from fastapi.testclient import TestClient
 
 import verdict.api as api
+from tests.relay_proof_helpers import with_relay_proofs
 from verdict.free_tier_admit import FAIL_CLOSED_REASON, NO_ELIGIBLE_TARGET, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
 from verdict.model_passports import ModelPassport
 from verdict.models import ProviderConfig, RoutingDecision
 from verdict.proxy import UpstreamProxy
-from tests.relay_proof_helpers import with_relay_proofs
 
 
 class _ProofIntelligence(IntelligenceService):
