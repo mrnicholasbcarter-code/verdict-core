@@ -26,6 +26,7 @@ from verdict.orchestration.contracts import (
     RunOutcome,
     WorkerTerminal,
     executor_gateway_origin,
+    gateway_origin_matches,
     normalize_gateway_origin,
 )
 from verdict.orchestration.executors import (
@@ -51,8 +52,19 @@ class GatewaySpy(DirectGatewayExecutor):
         return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
 
 
-async def test_other_gateway_origin_is_denied_before_any_permit_or_send(repo: Path) -> None:
-    ex = GatewaySpy("http://other")
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://other",
+        "http://gateway.test:0",  # port 0 is not the default port 80
+        "http://gateway.test:99999",  # invalid port: fails closed
+        "gateway.test",  # no scheme: fails closed
+    ],
+)
+async def test_other_gateway_origin_is_denied_before_any_permit_or_send(
+    repo: Path, base_url: str
+) -> None:
+    ex = GatewaySpy(base_url)
     rt, ev = _make(repo, ex, ["cc/s", "cx/g"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
@@ -90,10 +102,10 @@ def test_wrappers_report_the_origin_of_the_executor_that_runs_the_node() -> None
     plain: Any = PermitSpy()
     mixed = MixedExecutor({"b": other}, default=plain)
     assert executor_gateway_origin(mixed, "a") is None
-    assert executor_gateway_origin(mixed, "b") == "http://other:9"
+    assert executor_gateway_origin(mixed, "b") == "http://other:9/v1"
     wrapped = FaultInjectingExecutor(mixed, {})
-    assert executor_gateway_origin(wrapped, "b") == "http://other:9"
-    assert executor_gateway_origin(FaultInjectingExecutor(other, {}), "a") == "http://other:9"
+    assert executor_gateway_origin(wrapped, "b") == "http://other:9/v1"
+    assert executor_gateway_origin(FaultInjectingExecutor(other, {}), "a") == "http://other:9/v1"
 
 
 def test_normalize_gateway_origin() -> None:
@@ -102,3 +114,10 @@ def test_normalize_gateway_origin() -> None:
     assert normalize_gateway_origin("https://g.test/") == "https://g.test:443"
     assert normalize_gateway_origin("http://127.0.0.1:20128") == "http://127.0.0.1:20128"
     assert normalize_gateway_origin("http://g.test:81") != normalize_gateway_origin("http://g.test")
+    assert normalize_gateway_origin("http://g.test:0") == "http://g.test:0"
+
+
+@pytest.mark.parametrize("url", ["http://g.test:99999", "http://g.test:x", "g.test", "http://", ""])
+def test_unparseable_origin_matches_nothing(url: str) -> None:
+    assert normalize_gateway_origin(url) is None
+    assert not gateway_origin_matches(url, url)

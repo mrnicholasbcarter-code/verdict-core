@@ -667,22 +667,38 @@ class WorkerExecutor(Protocol):
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def normalize_gateway_origin(url: str) -> str:
-    """``scheme://host:port`` of ``url``: lower-case, default port explicit, path dropped."""
+def normalize_gateway_origin(url: str) -> str | None:
+    """``scheme://host:port`` of ``url`` (lower-case, default port explicit, path dropped).
+
+    None when ``url`` does not parse as an origin (no scheme, no host or an invalid
+    port): such an origin equals nothing, not even itself.
+    """
     parsed = urlsplit(url.strip())
     scheme = parsed.scheme.lower()
     host = (parsed.hostname or "").lower()
+    try:
+        explicit_port = parsed.port
+    except ValueError:
+        return None
+    port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
+    if not scheme or not host or port is None:
+        return None
     if ":" in host:
         host = f"[{host}]"
-    port = parsed.port or _DEFAULT_PORTS.get(scheme)
-    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
 
 
 def executor_gateway_origin(executor: object, node_id: str) -> str | None:
-    """Normalized gateway origin ``executor`` sends ``node_id`` to, or None when unknown."""
+    """The gateway URL ``executor`` reports for ``node_id`` as given, or None when unknown."""
     resolve = getattr(executor, "gateway_origin_for", None)
     origin = resolve(node_id) if callable(resolve) else getattr(executor, "gateway_origin", None)
-    return normalize_gateway_origin(origin) if isinstance(origin, str) and origin else None
+    return origin if isinstance(origin, str) and origin else None
+
+
+def gateway_origin_matches(reported: str, bound: str) -> bool:
+    """True only when both origins parse and are the same; an unparseable one fails closed."""
+    origin = normalize_gateway_origin(reported)
+    return origin is not None and origin == normalize_gateway_origin(bound)
 
 
 def _accepts_tools_flag(executor: object) -> bool:
