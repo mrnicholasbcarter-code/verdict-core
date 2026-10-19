@@ -183,6 +183,81 @@ def _isolate_home(
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Doctor timer probes never ask the operator's real systemd user manager."""
+    import subprocess
+
+    def not_installed(args: list[str]) -> "subprocess.CompletedProcess[str]":
+        return subprocess.CompletedProcess(args, 0, stdout="LoadState=not-found\n", stderr="")
+
+    monkeypatch.setattr("verdict.metadata_service._run_show", not_installed)
+    monkeypatch.setattr("verdict.prove_at_rest_service._run_systemctl_show", not_installed)
+    monkeypatch.setattr("verdict.doctor_diagnostics._run_systemctl_show_props", not_installed)
+
+
+_HOST_STATE_ENV = (
+    # State locations: an operator export would point tests at the real
+    # ~/.verdict, ~/.config/verdict or ~/.local/share stores (HOME is already
+    # isolated by _isolate_home; these override HOME-relative defaults).
+    "VERDICT_HOME",
+    "VERDICT_HEALTH_CACHE",
+    "VERDICT_OUTCOME_SHADOW_ROOTS",
+    "VERDICT_PROVE_AT_REST_STATE",
+    "VERDICT_RUNTIME_STATE_DIR",
+    "VERDICT_CATALOG_CACHE",
+    "VERDICT_RELAY_ADMISSION_CACHE",
+    "VERDICT_EVIDENCE_DB",
+    "VERDICT_MEMORY_DB",
+    "VERDICT_CONNECTIONS_SNAPSHOT",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    # Behaviour switches the operator exports in ~/.zshrc.
+    "VERDICT_DECISION_SIGNALS_MODE",
+    "VERDICT_GATEWAY",
+    "VERDICT_SHARED_MEMORY_URL",
+    "VERDICT_SHARED_MEMORY_TOKEN",
+    "VERDICT_ACTIVE_CONTROLLER_ROUTE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_state_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop exported state paths so every default resolves under the isolated HOME."""
+    for key in _HOST_STATE_ENV:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit installers never run the operator's real ``systemctl --user``.
+
+    Tests that check the issued commands pass ``run=`` explicitly (existing pattern).
+    """
+
+    def refuse(args: list[str]) -> None:
+        raise AssertionError(f"test tried to run real systemctl: {args}")
+
+    # ``run=_systemctl`` is a keyword-only default bound at import time, so
+    # patching the module attribute would not reach it; patch the default.
+    from verdict import (
+        acceptance_service,
+        census_passports_service,
+        metadata_service,
+        prove_at_rest_service,
+    )
+
+    for installer in (
+        acceptance_service.manage_service,
+        census_passports_service.manage_census_service,
+        metadata_service.manage_service,
+        prove_at_rest_service.manage_service,
+    ):
+        monkeypatch.setitem(installer.__kwdefaults__, "run", refuse)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _real_prime_registry_untouched() -> Any:
     """Fail the run if any test modified the real Prime model registry."""

@@ -23,6 +23,7 @@ serve-path strategy authority. Serve path must consume
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -83,6 +84,7 @@ REASON_PROVIDER_UNHEALTHY = "provider_unhealthy"
 REASON_CREDENTIAL_MISSING = "credential_missing"
 REASON_PRICE_UNKNOWN = "price_unknown"
 REASON_PAID_MODEL_NOT_ALLOWED = "paid_model_not_allowed"
+REASON_SHAPE_UNKNOWN = "shape_unknown"
 TASK_SOURCE_URI = "urn:verdict:task"
 _COMBO_PREFIXES = frozenset({"claude", "combo"})
 _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
@@ -197,6 +199,16 @@ class OmniRouteAdmitSnapshot:
     quota_blocks: tuple[NamedDrop, ...] = ()
     # Admit surfaces served from the last-good snapshot after a live read failed.
     stale_served: tuple[str, ...] = ()
+    # BOD-345/S04 raw inventory accounting. ``fetched_at`` is the source
+    # timestamp of the live read; it never renews the observation time of
+    # stale-served surfaces. ``inventory_complete`` is False only when the
+    # catalog shape could not be accounted for: unknown, never observed zero.
+    fetched_at: datetime | None = None
+    inventory_complete: bool = True
+    inventory_diagnostics: tuple[NamedDrop, ...] = ()
+    # Gateway telemetry/scope fields observed but not interpreted by this
+    # adapter: explicitly recorded as unknown, never treated as health.
+    unsupported_fields: tuple[str, ...] = ()
 
     @property
     def active_providers(self) -> frozenset[str]:
@@ -1274,6 +1286,104 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
     return tuple(block for block in blocks if block.model_id not in available_providers)
 
 
+def _rows_of(payload: object, keys: tuple[str, ...]) -> list[object] | None:
+    """The row list of a surface payload, or None when the shape is unknown."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, Mapping):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return None
+
+
+def _surface_shape_diagnostics(
+    catalog: object, free_tier: object, providers: object, account_status: object
+) -> tuple[NamedDrop, ...]:
+    """Surfaces whose deployed shape we cannot account for stay unknown.
+
+    An unaccountable surface is never reported as an observed zero: it is
+    recorded as an explicit shape diagnostic so downstream consumers fail
+    closed instead of trusting an empty intersection.
+    """
+    drops: list[NamedDrop] = []
+    if _surface_rows(catalog) is None:
+        drops.append(
+            NamedDrop(
+                "catalog", REASON_SHAPE_UNKNOWN, "catalog payload is not a supported row list"
+            )
+        )
+    if _rows_of(free_tier, ("perModel", "models", "data", "items")) is None:
+        drops.append(
+            NamedDrop(
+                "free_tier", REASON_SHAPE_UNKNOWN, "free-tier payload is not a supported row list"
+            )
+        )
+    providers_rows = _rows_of(providers, ("connections", "providers", "data"))
+    single_row = isinstance(providers, Mapping) and (
+        isinstance(providers.get("provider"), str) or "isActive" in providers
+    )
+    if providers_rows is None and not single_row:
+        drops.append(
+            NamedDrop(
+                "providers", REASON_SHAPE_UNKNOWN, "provider payload is not a supported row list"
+            )
+        )
+    if _rows_of(account_status, ("accountQuotas",)) is None:
+        drops.append(
+            NamedDrop(
+                "account_status",
+                REASON_SHAPE_UNKNOWN,
+                "account status payload is not a supported row list",
+            )
+        )
+    return tuple(drops)
+
+
+_UNSUPPORTED_TELEMETRY_KEYS = frozenset(
+    {
+        "analytics",
+        "telemetry",
+        "mcp",
+        "successrate",
+        "success_rate",
+        "ratelimit",
+        "rate_limit",
+        "ratelimits",
+        "rate_limits",
+    }
+)
+
+
+def _unsupported_fields(payloads: Mapping[str, object]) -> tuple[str, ...]:
+    """Gateway telemetry fields observed but not interpreted: explicit unknowns.
+
+    A nested analytics successRate=1/CLOSED block or an empty MCP array is
+    recorded here instead of silently leaking into health decisions.
+    """
+    found: set[str] = set()
+
+    def scan(node: object, depth: int) -> None:
+        if depth > 2:
+            return
+        if isinstance(node, list | tuple):
+            for item in node:
+                scan(item, depth)
+            return
+        if not isinstance(node, Mapping):
+            return
+        for key, value in node.items():
+            name = str(key)
+            if name.lower() in _UNSUPPORTED_TELEMETRY_KEYS:
+                found.add(name)
+            scan(value, depth + 1)
+
+    for payload in payloads.values():
+        scan(payload, 0)
+    return tuple(sorted(found))
+
+
 def snapshot_from_payloads(
     *, catalog: object, free_tier: object, providers: object, account_status: object = None
 ) -> OmniRouteAdmitSnapshot:
@@ -1282,6 +1392,18 @@ def snapshot_from_payloads(
         free_tier=parse_free_tier_models(free_tier),
         connections=parse_provider_connections(providers),
         quota_blocks=_quota_blocks(account_status),
+        inventory_complete=_surface_rows(catalog) is not None,
+        inventory_diagnostics=_surface_shape_diagnostics(
+            catalog, free_tier, providers, account_status
+        ),
+        unsupported_fields=_unsupported_fields(
+            {
+                "catalog": catalog,
+                "free_tier": free_tier,
+                "providers": providers,
+                "account_status": account_status,
+            }
+        ),
     )
 
 
@@ -1463,13 +1585,26 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
 
 
 ADMIT_SURFACE_TIMEOUT_SECONDS = 20.0
-ADMIT_CATALOG_TIMEOUT_SECONDS = 60.0
+ADMIT_CATALOG_TIMEOUT_SECONDS = 20.0
 ADMIT_READ_ATTEMPTS = 2
 ADMIT_LAST_GOOD_MAX_AGE_SECONDS = 15 * 60
 ADMIT_LAST_GOOD_FILE = "admit-last-good.json"
 CENSUS_CATALOG_CACHE_FILE = "census-catalog-cache.json"
 PROVIDER_MODELS_PATH = "/api/v1/providers/{provider}/models"
+# BOD-345/S04 discovery bounds (V1 contract section 22.3): 20s per HTTP read,
+# a 30s aggregate discovery deadline, a 16 MiB decoded budget, 50,000 raw
+# rows and at most 100 pages. Exceeding any bound yields an
+# ``incomplete_source`` error and never publishes a truncated inventory as
+# complete; original-deadline last-good retention rules still apply.
+ADMIT_AGGREGATE_DEADLINE_SECONDS = 30.0
+ADMIT_DECODED_BYTE_BUDGET = 16 * 1024 * 1024
+ADMIT_RAW_ROW_LIMIT = 50_000
+ADMIT_PAGE_LIMIT = 100
 _RETRYABLE_ADMIT_ERRORS = frozenset({"timeout", "transport", "http_error"})
+# Bound violations are deterministic and never retried, but like other read
+# failures they may still be served from a valid original-deadline last-good
+# snapshot instead of publishing truncated data as complete.
+_MASKABLE_ADMIT_ERRORS = _RETRYABLE_ADMIT_ERRORS | frozenset({"incomplete_source"})
 
 
 def default_admit_last_good_path() -> Path:
@@ -1573,8 +1708,29 @@ def _merge_provider_catalogs(by_provider: Mapping[str, object]) -> dict[str, obj
     return {"object": "list", "data": rows}
 
 
+class _DecodedBudget:
+    """Thread-safe cumulative decoded-byte budget for one discovery run."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def charge(self, nbytes: int) -> bool:
+        with self._lock:
+            if self._used + nbytes > self.limit:
+                return False
+            self._used += nbytes
+            return True
+
+
 def _read_admit_surface(
-    client: httpx.Client, url: str, path: str, headers: Mapping[str, str], timeout: float
+    client: httpx.Client,
+    url: str,
+    path: str,
+    headers: Mapping[str, str],
+    timeout: float,
+    budget: _DecodedBudget | None = None,
 ) -> object:
     try:
         response = client.get(url, headers=dict(headers), timeout=timeout)
@@ -1588,10 +1744,147 @@ def _read_admit_surface(
         raise LiveAdmitError("unsupported", f"{path} is unavailable")
     if not 200 <= response.status_code < 300:
         raise LiveAdmitError("http_error", f"{path} returned {response.status_code}")
+    nbytes = len(response.content)
+    if budget is not None and not budget.charge(nbytes):
+        raise LiveAdmitError(
+            "incomplete_source",
+            f"{path} exceeded the decoded byte budget ({nbytes} bytes, limit {budget.limit})",
+        )
     try:
         return response.json()
     except ValueError as exc:
         raise LiveAdmitError("malformed", f"{path} is not JSON") from exc
+
+
+def _surface_rows(payload: object) -> list[object] | None:
+    """The row list of a catalog surface payload, or None when unaccountable."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, Mapping):
+        return None
+    for key in ("data", "models", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    catalog = payload.get("catalog")
+    if isinstance(catalog, Mapping):
+        rows: list[object] = []
+        for group in catalog.values():
+            if isinstance(group, Mapping) and isinstance(group.get("models"), list):
+                rows.extend(group["models"])
+        return rows
+    return None
+
+
+def _next_page_cursor(payload: object) -> str | None:
+    """The adapter-supported ``after`` id cursor of a catalog page, if any."""
+    if not isinstance(payload, Mapping):
+        return None
+    for key in ("next_cursor", "nextCursor", "cursor"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+_PAGINATION_TOKEN_FIELDS = frozenset({"nextPageToken", "next_page_token", "nextPage", "next_page"})
+_PAGINATION_MORE_FIELDS = frozenset({"hasMore", "has_more"})
+
+
+def _unsupported_pagination_fields(payload: object) -> tuple[str, ...]:
+    """Pagination hints this adapter cannot follow: incomplete by definition."""
+    if not isinstance(payload, Mapping):
+        return ()
+    found = [key for key in sorted(_PAGINATION_TOKEN_FIELDS) if key in payload]
+    found += [key for key in sorted(_PAGINATION_MORE_FIELDS) if payload.get(key)]
+    return tuple(found)
+
+
+def _read_catalog_pages(
+    client: httpx.Client,
+    origin: str,
+    path: str,
+    headers: Mapping[str, str],
+    *,
+    per_request_timeout: float,
+    tries: int,
+    pause: Callable[[float], None],
+    deadline: float,
+    budget: _DecodedBudget,
+    row_limit: int,
+    page_limit: int,
+) -> object | LiveAdmitError:
+    """Read a catalog surface page by page under explicit discovery bounds.
+
+    Only the adapter-supported ``after`` id cursor is followed. Repeated
+    cursors, inconsistent pages, unsupported pagination hints and any exceeded
+    bound (aggregate deadline, decoded bytes, raw rows, pages) fail closed
+    with ``incomplete_source``: a truncated inventory is never returned as a
+    complete one.
+    """
+    import random
+    import time
+
+    rows: list[object] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    for _page in range(max(1, page_limit)):
+        url = f"{origin}{path}"
+        if cursor is not None:
+            url = f"{url}?after={quote(cursor, safe='')}"
+        payload: object | None = None
+        for attempt in range(tries):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return LiveAdmitError("timeout", f"aggregate discovery deadline exceeded at {path}")
+            try:
+                payload = _read_admit_surface(
+                    client, url, path, headers, min(per_request_timeout, remaining), budget=budget
+                )
+                break
+            except LiveAdmitError as exc:
+                if exc.code not in _RETRYABLE_ADMIT_ERRORS or attempt + 1 >= tries:
+                    return exc
+                pause(random.uniform(0.25, 1.0) * (attempt + 1))
+        assert payload is not None
+        unsupported = _unsupported_pagination_fields(payload)
+        if unsupported:
+            return LiveAdmitError(
+                "incomplete_source",
+                f"{path} uses unsupported pagination field(s): {', '.join(unsupported)}",
+            )
+        page_rows = _surface_rows(payload)
+        if page_rows is None:
+            # Unrecognized shape: not countable, not pageable. Returned as-is;
+            # the snapshot records the surface as unknown, never as zero.
+            return payload
+        followed = cursor is not None
+        new_rows = 0
+        for row in page_rows:
+            row_id = row.get("id") if isinstance(row, Mapping) else None
+            if isinstance(row_id, str):
+                if row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+            new_rows += 1
+        rows.extend(page_rows)
+        if followed and page_rows and new_rows == 0:
+            return LiveAdmitError(
+                "incomplete_source", f"{path} page after cursor {cursor!r} repeated every row"
+            )
+        if len(rows) > row_limit:
+            return LiveAdmitError(
+                "incomplete_source", f"{path} exceeded the raw row limit {row_limit}"
+            )
+        nxt = _next_page_cursor(payload)
+        if nxt is None:
+            return payload if not followed else {"object": "list", "data": rows}
+        if nxt in seen_cursors:
+            return LiveAdmitError("incomplete_source", f"{path} repeated pagination cursor {nxt!r}")
+        seen_cursors.add(nxt)
+        cursor = nxt
+    return LiveAdmitError("incomplete_source", f"{path} exceeded the page limit {page_limit}")
 
 
 def load_omniroute_admit_snapshot(
@@ -1607,16 +1900,27 @@ def load_omniroute_admit_snapshot(
     transport: httpx.BaseTransport | None = None,
     catalog_scope: str = "full",
     catalog_cache_path: Path | None = None,
+    aggregate_deadline_seconds: float = ADMIT_AGGREGATE_DEADLINE_SECONDS,
+    decoded_byte_budget: int = ADMIT_DECODED_BYTE_BUDGET,
+    raw_row_limit: int = ADMIT_RAW_ROW_LIMIT,
+    page_limit: int = ADMIT_PAGE_LIMIT,
 ) -> OmniRouteAdmitSnapshot:
     """Fetch catalog, free-tier summary, and provider connections from OmniRoute.
 
-    Surfaces are read in parallel; the catalog gets its own longer timeout.
-    Timeouts, transport errors and 5xx are retried once with jitter. A surface
-    that still fails is served from the last-good snapshot when it is younger
-    than ``last_good_max_age_seconds`` and is listed in ``stale_served``.
-    Without a usable last-good copy the read fails closed. Auth and
-    unsupported-surface errors are never masked. This path never reads
-    auto/* or combo routes.
+    Surfaces are read in parallel under the S04 discovery bounds: a 20-second
+    per-HTTP timeout, a ``aggregate_deadline_seconds`` wall-clock discovery
+    deadline, a ``decoded_byte_budget`` cumulative decoded-size budget, a
+    ``raw_row_limit`` raw-row cap and a ``page_limit`` pagination cap. The
+    catalog walk follows only the adapter-supported ``after`` id cursor and
+    rejects repeated cursors, inconsistent pages and unsupported pagination
+    hints. Exceeding any bound raises ``incomplete_source`` and never
+    publishes a truncated inventory as complete. Timeouts, transport errors
+    and 5xx are retried once with jitter. A surface that still fails is served
+    from the last-good snapshot when it is younger than
+    ``last_good_max_age_seconds`` and is listed in ``stale_served``; the
+    original fetched-at deadline is never renewed. Without a usable last-good
+    copy the read fails closed. Auth and unsupported-surface errors are never
+    masked. This path never reads auto/* or combo routes.
 
     ``catalog_scope="gated"`` (the census) skips the ~27 MB ``/v1/models`` pull
     and reads ``/api/v1/providers/{p}/models`` only for providers admit can
@@ -1658,13 +1962,36 @@ def load_omniroute_admit_snapshot(
     if cached_catalog is not None:
         payloads["catalog"] = cached_catalog
     failures: dict[str, LiveAdmitError] = {}
+    deadline = time.monotonic() + aggregate_deadline_seconds
+    budget = _DecodedBudget(max(1, decoded_byte_budget))
 
     def fetch(item: tuple[str, str]) -> tuple[str, object | LiveAdmitError]:
         name, path = item
         limit = catalog_timeout if name == "catalog" or name.startswith("model:") else timeout
+        if name == "catalog" or name.startswith("model:"):
+            return name, _read_catalog_pages(
+                client,
+                origin,
+                path,
+                headers,
+                per_request_timeout=limit,
+                tries=tries,
+                pause=pause,
+                deadline=deadline,
+                budget=budget,
+                row_limit=raw_row_limit,
+                page_limit=page_limit,
+            )
         for attempt in range(tries):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return name, LiveAdmitError(
+                    "timeout", f"aggregate discovery deadline exceeded at {path}"
+                )
             try:
-                return name, _read_admit_surface(client, f"{origin}{path}", path, headers, limit)
+                return name, _read_admit_surface(
+                    client, f"{origin}{path}", path, headers, min(limit, remaining), budget=budget
+                )
             except LiveAdmitError as exc:
                 if exc.code not in _RETRYABLE_ADMIT_ERRORS or attempt + 1 >= tries:
                     return name, exc
@@ -1702,8 +2029,16 @@ def load_omniroute_admit_snapshot(
                             else:
                                 by_provider[name.removeprefix("model:")] = result
                 if catalog_error is None:
-                    payloads["catalog"] = _merge_provider_catalogs(by_provider)
-                    paths["catalog"] = PROVIDER_MODELS_PATH
+                    merged = _merge_provider_catalogs(by_provider)
+                    merged_rows = merged.get("data")
+                    if isinstance(merged_rows, list) and len(merged_rows) > raw_row_limit:
+                        failures["catalog"] = LiveAdmitError(
+                            "incomplete_source",
+                            f"gated catalog exceeded the raw row limit {raw_row_limit}",
+                        )
+                    else:
+                        payloads["catalog"] = merged
+                        paths["catalog"] = PROVIDER_MODELS_PATH
                 else:
                     failures["catalog"] = catalog_error
             else:
@@ -1712,7 +2047,7 @@ def load_omniroute_admit_snapshot(
                 )
 
     for error in failures.values():
-        if error.code not in _RETRYABLE_ADMIT_ERRORS:
+        if error.code not in _MASKABLE_ADMIT_ERRORS:
             raise error
     fetched = {name: payloads[name] for name in paths if name in payloads}
     if "catalog" in fetched:
@@ -1770,6 +2105,7 @@ def load_omniroute_admit_snapshot(
             transport=transport,
         ),
         stale_served=tuple(stale),
+        fetched_at=now_utc,
     )
 
 

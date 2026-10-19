@@ -117,12 +117,13 @@ def build_route_gate(allow_offline: bool = False) -> Any:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     _report_bootstrap_notes(bootstrap)
-    return Gate(
+    gate = Gate(
         primary_model=bootstrap.primary_model,
         providers=bootstrap.provider_configs(),
         log_path=bootstrap.log_path,
         allow_offline=allow_offline,
     )
+    return gate
 
 
 def probe_result_payload(observation: Any) -> dict[str, Any]:

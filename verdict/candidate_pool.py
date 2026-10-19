@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from hashlib import sha256
 from typing import Any
 
@@ -65,6 +66,11 @@ _PROBE_LADDER: tuple[str, ...] = (
 
 _BOOL_CAPS = frozenset({"tools", "vision", "structured", "reasoning", "attachment"})
 _CONTEXT_CAP = "context"
+
+#: Maximum age of a live probe that may back a trusted shortlist receipt.
+LIVE_PROBE_MAX_AGE_SECONDS = 3600.0
+#: Gateway header naming the model that actually served a probe.
+SERVED_MODEL_HEADER = "x-omniroute-model"
 
 ProbeFn = Callable[[str, str], Mapping[str, Any]]
 
@@ -396,6 +402,141 @@ def fingerprint_task_profile(profile: TaskProfile) -> TaskFingerprint:
         context_size=profile.min_context,
         risk=profile.task_class_hint or "unknown",
         objective_preview=profile.objective_preview,
+    )
+
+
+def _epoch_seconds(now: float | datetime) -> float:
+    if isinstance(now, datetime):
+        if now.tzinfo is None:
+            raise CandidatePoolError("live probe receipt requires an aware datetime for now")
+        return now.timestamp()
+    if isinstance(now, bool) or not isinstance(now, (int, float)):
+        raise CandidatePoolError("live probe receipt requires now as epoch seconds or datetime")
+    return float(now)
+
+
+def build_live_probe_receipt(
+    *,
+    objective: str,
+    candidates: Sequence[Mapping[str, Any]],
+    now: float | datetime,
+    requirements: Sequence[str] = (),
+    task_family: str = "autodev",
+) -> CandidatePoolReceipt:
+    """Trusted shortlist receipt for a server-owned live probe ladder.
+
+    Only server code that observed its own probes may call this. ``candidates``
+    must already be in the server's rank order; the shortlist copies that order.
+    A candidate is shortlisted only when the caller marks it ``eligible is True``;
+    every other candidate is recorded as a failed probe and left off the
+    shortlist. Each shortlisted candidate must carry a ``probe_observed_at`` no
+    older than ``LIVE_PROBE_MAX_AGE_SECONDS`` (and not in the future of ``now``)
+    and ``probe_headers`` that include the gateway's served-model header. A
+    client can never supply this receipt through public JSON.
+    """
+
+    if not candidates:
+        raise CandidatePoolError("live probe receipt requires at least one probed candidate")
+    now_seconds = _epoch_seconds(now)
+    entries: list[ShortlistEntry] = []
+    probes: list[ProbeRecord] = []
+    evidence_rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        route_id = str(candidate["route_id"])
+        if candidate.get("eligible") is not True:
+            state = candidate.get("certification_state")
+            probes.append(
+                ProbeRecord(
+                    route_id=route_id,
+                    level="live_probe",
+                    passed=False,
+                    detail=f"not_eligible certification_state={state}",
+                )
+            )
+            continue
+        observed_at = candidate.get("probe_observed_at")
+        probe_headers = candidate.get("probe_headers")
+        if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
+            raise CandidatePoolError(
+                f"live probe receipt requires probe_observed_at for {route_id!r}"
+            )
+        age = now_seconds - observed_at
+        if age < 0 or age > LIVE_PROBE_MAX_AGE_SECONDS:
+            raise CandidatePoolError(
+                f"live probe receipt probe_observed_at for {route_id!r} is "
+                f"{'in the future' if age < 0 else f'{age:.0f}s old'} "
+                f"(maximum age {LIVE_PROBE_MAX_AGE_SECONDS:.0f}s)"
+            )
+        if not isinstance(probe_headers, Mapping) or not probe_headers.get(SERVED_MODEL_HEADER):
+            raise CandidatePoolError(
+                f"live probe receipt requires {SERVED_MODEL_HEADER} in probe_headers "
+                f"for {route_id!r}"
+            )
+        provider = str(candidate.get("provider") or route_id.split("/", 1)[0])
+        reason = str(candidate.get("selection_reason") or "live_probe_ok")
+        entries.append(
+            ShortlistEntry(
+                route_id=route_id,
+                metadata_id=None,
+                provider=provider,
+                family_key=provider,
+                score=0.0,
+                confidence=1.0,
+                score_features={},
+                inclusion_reason=reason,
+            )
+        )
+        probes.append(ProbeRecord(route_id=route_id, level="live_probe", passed=True, detail=None))
+        evidence_rows.append(
+            {
+                "route_id": route_id,
+                "probe_observed_at": observed_at,
+                "probe_headers": dict(probe_headers),
+            }
+        )
+    if not entries:
+        raise CandidatePoolError("live probe receipt requires at least one passed candidate")
+    entries = [
+        replace(entry, score=float(len(entries) - rank)) for rank, entry in enumerate(entries)
+    ]
+    evidence_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps(evidence_rows, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    shortlist_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps([entry.route_id for entry in entries], separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    task_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps(
+                {"objective": objective, "shortlist_digest": shortlist_digest},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(
+            digest=task_digest,
+            task_family=task_family,
+            required_capabilities=tuple(requirements),
+            objective_preview=objective[:120],
+        ),
+        discovered_count=len(candidates),
+        eligible_count=len(entries),
+        requirements=tuple(requirements),
+        hard_drops=(),
+        probes=tuple(probes),
+        shortlist=tuple(entries),
+        uncertainty=(),
+        evidence_digest=evidence_digest,
+        shortlist_digest=shortlist_digest,
     )
 
 
@@ -734,15 +875,6 @@ def _score_features(
     if latency is not None and latency >= 0:
         features["latency_fit"] = 1.0 / (1.0 + float(latency) / 1000.0)
 
-    # Cost pressure — lower is better when known.
-    cost = ev.cost_per_million
-    if cost is None:
-        cost_field = survivor.record.caps.input_cost_per_million
-        if cost_field is not None and isinstance(cost_field.value, (int, float)):
-            cost = float(cost_field.value)
-    if cost is not None and cost >= 0:
-        features["cost_fit"] = 1.0 / (1.0 + float(cost))
-
     # Uncertainty penalty — missing soft evidence or conflicts.
     uncertainty = 0.0
     if "task_similarity" not in features and "eval_score" not in features:
@@ -769,7 +901,6 @@ def _fuse_score(features: Mapping[str, float]) -> float:
     score += 0.40 * features.get("task_similarity", 0.0)
     score += 0.25 * features.get("eval_score", 0.0)
     score += 0.15 * features.get("health", 0.0)
-    score += 0.05 * features.get("cost_fit", 0.0)
     score += 0.05 * features.get("latency_fit", 0.0)
     score += 0.10 * features.get("context_fit", 0.0)
     score -= 0.30 * features.get("uncertainty_penalty", 0.0)
@@ -1076,6 +1207,7 @@ __all__ = [
     "ShortlistEntry",
     "TaskFingerprint",
     "build_candidate_pool",
+    "build_live_probe_receipt",
     "fingerprint_task",
     "fingerprint_task_profile",
 ]

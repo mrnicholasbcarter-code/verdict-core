@@ -209,7 +209,9 @@ GATES: tuple[Gate, ...] = (
     Gate("G2.3", "Concurrent refreshes are deduplicated", tests=("test_refresh_deduplication",)),
     Gate("G2.4", "Cache isolation keys separate tenants", tests=("test_isolation_keys",)),
     Gate(
-        "G3.1", "The least-cost eligible candidate is chosen", tests=("test_least_cost_eligible",)
+        "G3.1",
+        "Only eligible candidates are selected, in trusted shortlist order; price never ranks",
+        tests=("test_eligible_selection_is_price_invariant",),
     ),
     Gate("G3.2", "Escalation policy is respected", tests=("test_escalation_policy",)),
     Gate("G3.3", "Budget ceilings are enforced at execution", tests=("test_budget_enforcement",)),

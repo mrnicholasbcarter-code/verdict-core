@@ -25,7 +25,7 @@ Each gate MUST have evidence linked in the evidence bundle.
 ### G3: Cost & Latency Optimization
 | ID | Criterion | Evidence Required |
 |----|-----------|-------------------|
-| G3.1 | Least-cost eligible model selected (not cheapest overall) | Test: `test_least_cost_eligible` |
+| G3.1 | Only eligible candidates are selected, in trusted shortlist order; price never ranks | Test: `test_eligible_selection_is_price_invariant` |
 | G3.2 | Escalation only on capability/verification failure | Test: `test_escalation_policy` |
 | G3.3 | Per-task token/USD budgets enforced | Test: `test_budget_enforcement` |
 | G3.4 | Concurrency caps and timeout enforced | Test: `test_concurrency_timeout` |

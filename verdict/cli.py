@@ -830,6 +830,14 @@ def cmd_route(
     terse: bool = False,
     allow_offline: bool = False,
     allow_legacy_selector: bool | None = None,
+    task_family: str | None = None,
+    min_context_tokens: int | None = None,
+    reasoning_required: bool = False,
+    tools_required: bool = False,
+    structured_output_required: bool = False,
+    streaming_required: bool = False,
+    vision_required: bool = False,
+    context: dict[str, Any] | None = None,
 ) -> None:
     """Route a single task.
 
@@ -844,6 +852,26 @@ def cmd_route(
     if allow_legacy_selector is None:
         allow_legacy_selector = False
 
+    ctx = dict(context or {})
+    if task_family:
+        ctx["task_family"] = task_family
+    if min_context_tokens:
+        ctx["min_context_tokens"] = min_context_tokens
+    if reasoning_required:
+        ctx["reasoning_required"] = True
+    if tools_required:
+        ctx["tools_required"] = True
+    if structured_output_required:
+        ctx["structured_output_required"] = True
+    if streaming_required:
+        ctx["streaming_required"] = True
+    if vision_required:
+        ctx["vision_required"] = True
+    if allow_legacy_selector:
+        from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+
+        ctx[CONTEXT_ALLOW_LEGACY] = True
+
     gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
     params = {
         "task": task,
@@ -852,6 +880,7 @@ def cmd_route(
         "allow_legacy_selector": allow_legacy_selector,
         "gate": gate,
         "terse": terse,
+        "context": ctx,
     }
     if terse:
         result = run_action("route", params)
@@ -1250,13 +1279,18 @@ def cmd_probe(
 
 
 def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
-    """Build the mandatory execution-path decision in-process from the public contract."""
+    """Build the mandatory execution-path decision in-process from the public contract.
 
-    from verdict.execution_path import optimize_execution_path
-    from verdict.subagent_resolver import public_execution_path_request
+    The request file is client input with no trusted ranking, so the request is
+    prepared through the IntelligenceService live path (BOD-432): it fails
+    closed with a named error when no live admit snapshot is available, and it
+    never falls back to price-based ranking.
+    """
+
+    from verdict.subagent_resolver import prepared_public_execution_path_decision
 
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return optimize_execution_path(public_execution_path_request(raw, task=task))
+    return prepared_public_execution_path_decision(raw, task=task)
 
 
 def _cli_execution_path_decision(

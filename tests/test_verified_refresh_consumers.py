@@ -868,3 +868,27 @@ def test_execute_refuses_unrecognised_approved_classes(tmp_path: Path, approved:
     assert not result.ok
     assert result.data["reason"] == "invalid_approved_classes"
     assert transport.calls == []
+
+
+def test_adapter_snapshot_scope_is_stable_nonsecret_and_gateway_bound(tmp_path: Path) -> None:
+    import hashlib
+
+    def scope_for(gateway: str) -> str:
+        adapter = VerifiedSnapshotAdapter(
+            gateway,
+            StorePaths.defaults(tmp_path),
+            [inventory_row("fr/free")],
+            [conn("fr", auth="apikey", plan="free")],
+            clock=lambda: NOW,
+            monotonic=lambda: 0.0,
+        )
+        return adapter.refresh_snapshot(adapter.load(surfaces.VerifiedModelQuery())).scope
+
+    a1, a2, b = (
+        scope_for("http://gw-a:20128"),
+        scope_for("http://gw-a:20128"),
+        scope_for("http://gw-b:20128"),
+    )
+    assert a1 and a1 == a2 and a1 != b
+    assert len(a1) == len(hashlib.sha256().hexdigest())
+    assert "gw-a" not in a1

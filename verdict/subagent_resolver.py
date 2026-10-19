@@ -222,6 +222,40 @@ def public_execution_path_request(raw: Any, *, task: str) -> ExecutionPathReques
     )
 
 
+def prepared_public_execution_path_decision(
+    raw: Any, *, task: str, criticality: str = "medium"
+) -> ExecutionPathDecision:
+    """Live-prepared optimizer decision from validated public request JSON.
+
+    The public file is client input and carries no trusted ranking (BOD-432:
+    missing trusted live ranking fails closed). The request is therefore
+    prepared through the same IntelligenceService live path the API uses, so
+    the optimizer receives a pool receipt built from live evidence. Without a
+    live admit snapshot this fails closed with a named error instead of
+    ranking by price.
+    """
+
+    request = public_execution_path_request(raw, task=task)
+    service = _preparation_intelligence()
+    prepared = service.prepare_controller_execution_request(task, criticality, {}, request)
+    return optimize_execution_path(prepared)
+
+
+def _preparation_intelligence() -> Any:
+    """Build the live preparation boundary for public request files."""
+
+    from verdict.intelligence import IntelligenceService
+
+    return IntelligenceService(
+        primary_model="verdict/prepare",
+        providers={},
+        profile="production",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+
+
 def resolve_subagent_model(
     role: str,
     *,
@@ -305,8 +339,7 @@ Examples:
             parser.error("--execution-path-request requires --task")
         try:
             raw = json.loads(Path(args.execution_path_request).read_text(encoding="utf-8"))
-            request = public_execution_path_request(raw, task=args.task)
-            decision = optimize_execution_path(request)
+            decision = prepared_public_execution_path_decision(raw, task=args.task)
         except (OSError, ValueError, ExecutionPathError) as exc:
             if args.json:
                 print(json.dumps({"error": str(exc), "role": args.role}, indent=2))

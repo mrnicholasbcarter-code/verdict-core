@@ -9,7 +9,26 @@ backwards compatibility during the rebrand.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.orchestration.health_cache import DispatchScope
+
+
+@dataclass(frozen=True)
+class AdmissionProof:
+    """Fresh route admission evidence retained until the final dispatch commit."""
+
+    route_id: str
+    provider: str
+    model: str
+    qualified_at: datetime
+    expires_at: datetime
+    receipt_id: str
+    authorization_digest: str
+    epoch: int
+    scope: DispatchScope
 
 
 @dataclass(frozen=True)
@@ -55,6 +74,7 @@ class RoutingDecision:
     verification_result: str | None = None
     # BOD-203 AC2: ranking receipt from adaptive advisory.
     adaptive_influence: dict[str, Any] | None = None
+    admission_proofs: dict[str, AdmissionProof] = field(default_factory=dict)
 
     @property
     def selected_model(self) -> str:
@@ -146,8 +166,3 @@ class TaskSpec:
 
 # Capacity identity is re-exported here for legacy admission callers.
 from verdict.capacity_models import ConnectionIdentity  # noqa: E402,F401
-
-
-# Compatibility placeholder for older admission tests.
-class Route:  # pragma: no cover
-    pass

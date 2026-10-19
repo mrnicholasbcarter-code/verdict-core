@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from verdict.capability_passports import RouteIdentity
-from verdict.models import RoutingDecision
+from verdict.models import AdmissionProof, RoutingDecision
+from verdict.orchestration.health_cache import DispatchScope, HealthCache, default_cache_path
 from verdict.policy import Policy, PolicyCandidate
 from verdict.subagent_selection import is_context_length_error
 
@@ -30,6 +32,98 @@ class RelayAttempt:
     model: str
     route: RouteIdentity
     candidate: PolicyCandidate
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def dispatch_scope(
+    *, gateway_origin: str, provider: str, model: str, route_id: str, profile_digest: str
+) -> DispatchScope:
+    """Build a scope from non-secret gateway and concrete-route identity.
+
+    This intentionally does not claim a hash of the full provider configuration.
+    """
+    import hashlib
+    import json
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(gateway_origin)
+    if parsed.username or parsed.password or not parsed.hostname:
+        raise ValueError("dispatch origin must be a resolved gateway URL without credentials")
+    origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    identity = json.dumps(
+        {"gateway_origin": origin, "provider": provider, "model": model, "route_id": route_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    generation = "sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return DispatchScope(
+        gateway_origin=origin,
+        config_generation=generation,
+        profile_digest=profile_digest,
+        binding_id=f"api_relay:{route_id}",
+    )
+
+
+def admission_proof(
+    confirmation: dict[str, Any] | None,
+    *,
+    route_id: str,
+    scope: DispatchScope,
+    authorization_digest: str,
+    provider: str,
+    model: str,
+    now: datetime,
+) -> AdmissionProof | None:
+    """Extract only the selected route's fresh passport from trusted confirmation."""
+    if not isinstance(confirmation, dict):
+        return None
+    if route_id not in confirmation.get("admitted", []):
+        return None
+    receipt_id = confirmation.get("receipt_id")
+    passports = confirmation.get("passport")
+    if not isinstance(receipt_id, str) or not receipt_id or not isinstance(passports, list):
+        return None
+    for row in passports:
+        if (
+            not isinstance(row, dict)
+            or row.get("identity_id") != route_id
+            or row.get("fresh") is not True
+            or row.get("auth_state") != "authorized"
+            or row.get("availability_state") != "eligible"
+        ):
+            continue
+        qualified_at = _parse_utc(row.get("qualified_at"))
+        expires_at = _parse_utc(row.get("expires_at"))
+        if qualified_at is None or expires_at is None or qualified_at > now or expires_at <= now:
+            return None
+        cache = HealthCache(default_cache_path())
+        latest_revocation = cache.latest_revocation_at(scope)
+        if latest_revocation is not None and qualified_at <= latest_revocation:
+            return None  # passport predates the latest scoped revocation
+        epoch = cache.revocation_epoch(scope)
+        return AdmissionProof(
+            route_id=route_id,
+            provider=provider,
+            model=model,
+            qualified_at=qualified_at,
+            expires_at=expires_at,
+            receipt_id=receipt_id,
+            authorization_digest=authorization_digest,
+            epoch=epoch,
+            scope=scope,
+        )
+    return None
 
 
 def protocol_for_surface(surface: str) -> str:
@@ -110,10 +204,6 @@ def retryable_response_status(
     if compatibility_applied and status_code in {400, 404, 422}:
         return False
     return retryable_transport_status(status_code)
-
-
-def retryable_exception(error: BaseException) -> bool:
-    return isinstance(error, (httpx.TimeoutException, httpx.NetworkError, ConnectionError, OSError))
 
 
 def failure_class(
@@ -260,7 +350,6 @@ __all__ = [
     "protocol_for_surface",
     "response_actual_route_status",
     "retry_safety",
-    "retryable_exception",
     "retryable_response_status",
     "retryable_transport_status",
     "transition_edge",

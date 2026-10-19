@@ -134,7 +134,7 @@ def _run_systemctl_show(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def timer_state(
-    unit: str, *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show
+    unit: str, *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
 ) -> dict[str, Any]:
     """Installed/failed/active state of a systemd user timer, for doctor and setup.
 
@@ -144,6 +144,7 @@ def timer_state(
     not currently running (e.g. waiting for its next trigger) is still
     ``"active"`` when systemd reports ``ActiveState=active``.
     """
+    run = run or _run_systemctl_show
     values = _systemctl_show(unit, run)
     load_state = values.get("LoadState", "not-found")
     active_state = values.get("ActiveState", "inactive")

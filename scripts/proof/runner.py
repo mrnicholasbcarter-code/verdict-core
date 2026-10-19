@@ -208,7 +208,25 @@ class ProofRunner:
             base_env["MYPY_CACHE_DIR"] = str(self.root / ".proof-mypy-nocache")
             base_env["RUFF_CACHE_DIR"] = str(self.root / ".proof-ruff-nocache")
 
+        # Without --targets the targeted gate would rerun the exact full-suite
+        # command; in a mode that also runs unit_full, record it as skipped.
+        runs_full_suite = any(g.phase == "unit_full" for g in selected)
         for gate in selected:
+            if gate.targets_placeholder and not target_list and runs_full_suite:
+                report.gates.append(
+                    GateResult(
+                        id=gate.id,
+                        phase=gate.phase,
+                        classify=gate.classify,
+                        command=_resolve_command(gate, target_list),
+                        exit_code=0,
+                        status="skip",
+                        duration_ms=0,
+                        log_slice="skipped: no --targets; unit_full runs the same suite",
+                        required=gate.required,
+                    )
+                )
+                continue
             result = self._run_gate(gate, targets=target_list, env=base_env)
             report.gates.append(result)
             if otel:

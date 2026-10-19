@@ -151,6 +151,34 @@ def _offer(*, strategy: str, route: ConcreteRoute, plan: AssistancePlan) -> Exec
     )
 
 
+def _receipt(*route_ids: str):
+    """Trusted pool receipt fixture: shortlist in the given rank order."""
+    from verdict.candidate_pool import CandidatePoolReceipt, ShortlistEntry, TaskFingerprint
+
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="chat"),
+        discovered_count=len(route_ids),
+        hard_drops=(),
+        probes=(),
+        shortlist=tuple(
+            ShortlistEntry(
+                route_id=route_id,
+                metadata_id=None,
+                provider="provider-a",
+                family_key=route_id,
+                score=1.0,
+                confidence=1.0,
+                score_features={},
+                inclusion_reason="fixture_shortlist",
+            )
+            for route_id in route_ids
+        ),
+        uncertainty=(),
+        evidence_digest="sha256:pool-evidence",
+        shortlist_digest="sha256:pool-shortlist",
+    )
+
+
 def _decision():
     cheap = _route("auth-1")
     plan = _plan(candidate_id="auth-1")
@@ -159,6 +187,7 @@ def _decision():
             task_slice=_slice(),
             trajectory_id="traj-127",
             offers=(_offer(strategy="direct_cheap", route=cheap, plan=plan),),
+            pool_receipt=_receipt("auth-1"),
             now=NOW,
         )
     )
@@ -252,6 +281,7 @@ def test_resolve_and_dispatch_from_ep_request() -> None:
         task_slice=_slice(),
         trajectory_id="traj-127",
         offers=(_offer(strategy="direct_cheap", route=cheap, plan=plan),),
+        pool_receipt=_receipt("auth-1"),
         now=NOW,
     )
     decision = resolve_execution_path_decision({CONTEXT_EP_REQUEST: request})
@@ -533,3 +563,368 @@ def test_legacy_selectors_are_feeds_not_authority() -> None:
     assert "select_best_eligible_model" not in inspect.getsource(AuthorizedRouteDispatcher.dispatch)
     src = inspect.getsource(select_best_eligible_model)
     assert "eligible" in src.lower()
+
+
+def test_public_policy_cannot_be_weakened_and_optimizer_is_price_invariant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import verdict.api as api
+    from verdict.api import RouteRequest, _authority_context
+    from verdict.candidate_pool import HEALTH_OK, RouteEvidence, RouteHealth, build_candidate_pool
+    from verdict.execution_path import (
+        ExecutionPathError,
+        ExecutionPathOffer,
+        ExecutionPathRequest,
+        optimize_execution_path,
+    )
+    from verdict.metadata.records import (
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.runtime_certification import CertificationState
+    from verdict.serve_path import consume_selected_route
+    from verdict.task_profile import profile_task
+
+    # -------------------------------------------------------------------------
+    # 1. Both raw chat/Responses reserved flags fail before selector/send;
+    #    false protected/client certificate fields cannot lower server policy.
+    # -------------------------------------------------------------------------
+    for reserved in (
+        "allow_legacy_selector",
+        "require_execution_path_authority",
+        "execution_path_decision",
+        "legacy_non_authority_selector",
+        "bod104_execution_path_authority",
+        "strategy_authority",
+        "client_certificate",
+    ):
+        with pytest.raises(ExecutionPathError, match=r"(reserved|client-supplied|not accepted)"):
+            _authority_context({"task": "deploy prod", reserved: True}, task="deploy prod")
+
+    # Critical criticality represents server-protected policy: client protected=False cannot lower it
+    ctx_crit = _authority_context(
+        {"task": "audit security", "criticality": "critical", "protected": False},
+        task="audit security",
+    )
+    assert ctx_crit.get("protected") is True
+
+    # Test HTTP chat/responses endpoints: reserved flags fail before selector/send
+    from fastapi.testclient import TestClient
+
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from tests.test_proxy import _configure_test_app
+
+    dummy_transport = ContextLengthTransport([])
+    _configure_test_app(monkeypatch, dummy_transport)
+
+    with TestClient(api.app) as client:
+        resp_chat = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "selected-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "allow_legacy_selector": True,
+            },
+        )
+        assert resp_chat.status_code == 400
+        assert "reserved control field 'allow_legacy_selector'" in resp_chat.text
+        assert len(dummy_transport.requests) == 0
+
+        resp_responses = client.post(
+            "/v1/responses",
+            json={
+                "model": "selected-model",
+                "input": "hi",
+                "require_execution_path_authority": False,
+            },
+        )
+        assert resp_responses.status_code == 400
+        assert "reserved control field 'require_execution_path_authority'" in resp_responses.text
+        assert len(dummy_transport.requests) == 0
+
+    # -------------------------------------------------------------------------
+    # 2. Context/reasoning/tool/schema/stream requirements survive typed HTTP,
+    #    CLI live selection and orchestration; insufficient routes fail.
+    # -------------------------------------------------------------------------
+    with pytest.raises(ValueError):
+        RouteRequest(task="test", min_context_tokens=0)
+    with pytest.raises(ValueError):
+        RouteRequest(task="test", min_context_tokens=-10)
+
+    req = RouteRequest(
+        task="refactor parser",
+        task_family="coding",
+        min_context_tokens=32000,
+        reasoning_required=True,
+        tools_required=True,
+        structured_output_required=True,
+        streaming_required=True,
+    )
+    assert req.task_family == "coding"
+    assert req.min_context_tokens == 32000
+    assert req.reasoning_required is True
+
+    raw_context = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    raw_context[CONTEXT_EP_REQUEST] = {
+        "schema_version": "1",
+        "trajectory_id": "traj-typed-1",
+        "slice_id": "slice-typed-1",
+        "acceptance_criteria": ["tests pass"],
+        "proof_criteria": ["pytest green"],
+        "candidates": [
+            {
+                "route_id": "r1",
+                "gateway": "gw1",
+                "provider": "p1",
+                "model": "m1",
+                "certification_state": "ready",
+                "certification_freshness": "fresh",
+                "eligible": True,
+            }
+        ],
+    }
+    ctx = _authority_context(raw_context, task=req.task)
+    ep_req = ctx[CONTEXT_EP_REQUEST]
+    assert ep_req.task_family == "coding"
+    assert ep_req.min_context_tokens == 32000
+    assert ep_req.reasoning_required is True
+
+    # Offline catalog mode cannot authorize send
+    with pytest.raises(ExecutionPathError, match="offline catalog mode cannot authorize execution"):
+        consume_selected_route(
+            {
+                "managed_backend_status": "offline",
+                "strategy_authority": STRATEGY_AUTHORITY,
+                "route_id": "offline-1",
+                "model": "offline-m",
+                "provider": "offline-p",
+                "capability_tier": 2,
+            }
+        )
+
+    # Set up metadata records for routes A and B
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    now_iso = now.isoformat()
+    prov = FieldProvenance(source="test", fetched_at=now_iso)
+    rec_a = ModelMetadataRecord(
+        id="route-a",
+        provider="prov-a",
+        caps=CapabilityCaps(context=ProvenancedField(value=32000, provenance=prov)),
+        scores=SoftScores(
+            aa_coding=ProvenancedField(value=0.9, provenance=prov),
+            aa_intelligence=ProvenancedField(value=0.8, provenance=prov),
+        ),
+    )
+    rec_b = ModelMetadataRecord(
+        id="route-b",
+        provider="prov-b",
+        caps=CapabilityCaps(context=ProvenancedField(value=32000, provenance=prov)),
+        scores=SoftScores(
+            aa_coding=ProvenancedField(value=0.7, provenance=prov),
+            aa_intelligence=ProvenancedField(value=0.7, provenance=prov),
+        ),
+    )
+    meta = MetadataSnapshot(
+        schema_version="1", refreshed_at=now_iso, sources={}, records=(rec_a, rec_b)
+    )
+
+    # Insufficient routes fail capability check
+    from verdict.capability_gate import derive_requirements, gate_capability
+    from verdict.free_tier_admit import FreeTierAdmitReceipt
+
+    reqs_insufficient = derive_requirements(
+        "complex reasoning", {"reasoning_required": True, "min_context_tokens": 100000}
+    )
+    receipt_base = FreeTierAdmitReceipt(
+        admitted=("route-a", "route-b"),
+        exclusions=(),
+        chosen=None,
+        empty_intersection=False,
+        active_providers=(),
+        free_tier_providers=(),
+        free_admitted=(),
+        paid_admitted=("route-a", "route-b"),
+    )
+    gated_receipt = gate_capability(receipt_base, reqs_insufficient, snapshot=meta, now=now)
+    assert "route-a" not in gated_receipt.admitted
+    assert "route-b" not in gated_receipt.admitted
+    assert len(gated_receipt.admitted) == 0
+    assert len(gated_receipt.exclusions) == 2
+
+    # -------------------------------------------------------------------------
+    # 3. Price-only/class-label changes within the same explicit authorization/
+    #    budget constraints leave pool, optimizer and public selection unchanged;
+    #    missing price alone is not a gate.
+    # -------------------------------------------------------------------------
+    # A) Candidate pool: removing cost_fit ensures price change leaves shortlist unchanged
+    profile = profile_task("fix bug", context={"task_family": "coding"})
+
+    pool_low_price = build_candidate_pool(
+        ("route-a", "route-b"),
+        task_profile=profile,
+        metadata=meta,
+        health={"route-a": RouteHealth(state=HEALTH_OK), "route-b": RouteHealth(state=HEALTH_OK)},
+        evidence={
+            "route-a": RouteEvidence(latency_ms=100.0, cost_per_million=10.0),
+            "route-b": RouteEvidence(latency_ms=100.0, cost_per_million=1.0),
+        },
+    )
+    pool_high_price = build_candidate_pool(
+        ("route-a", "route-b"),
+        task_profile=profile,
+        metadata=meta,
+        health={"route-a": RouteHealth(state=HEALTH_OK), "route-b": RouteHealth(state=HEALTH_OK)},
+        evidence={
+            "route-a": RouteEvidence(latency_ms=100.0, cost_per_million=1000.0),
+            "route-b": RouteEvidence(latency_ms=100.0, cost_per_million=1.0),
+        },
+    )
+    # Shortlist order and scores must be identical regardless of cost_per_million
+    assert [e.route_id for e in pool_low_price.shortlist] == [
+        e.route_id for e in pool_high_price.shortlist
+    ]
+    assert [e.score for e in pool_low_price.shortlist] == [
+        e.score for e in pool_high_price.shortlist
+    ]
+
+    # B) Execution path optimizer: orders by pool_receipt shortlist position then candidate_id
+    trusted_pool = pool_low_price
+
+    route_a = _route("route-a", model="m-a", provider="prov-a", tier=2)
+    route_b = _route("route-b", model="m-b", provider="prov-b", tier=2)
+
+    plan_a = _plan(candidate_id="route-a")
+    plan_b = _plan(candidate_id="route-b")
+
+    def _cost_with_price(
+        strategy_id: str,
+        plan: AssistancePlan,
+        price: PriceEvidenceInput | None,
+        is_free: bool = False,
+    ) -> ExpectedStrategyCost:
+        return build_strategy_from_assistance(
+            strategy_id=strategy_id,
+            trajectory_id="traj-127",
+            assistance=plan.assistance_cost,
+            execution_tokens=8000,
+            price=price,
+            is_free=is_free,
+            now=NOW,
+        )
+
+    # Case 1: route-a is $50, route-b is $1. route-a is #1 on shortlist.
+    offers_case1 = (
+        ExecutionPathOffer(
+            strategy="direct_paid",
+            route=route_a,
+            assistance_plan=plan_a,
+            expected_cost=_cost_with_price(
+                "direct_paid:route-a", plan_a, {"input_usd_per_mtok": "50.0", "evidence_id": "p-a"}
+            ),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+            is_paid=True,
+        ),
+        ExecutionPathOffer(
+            strategy="direct_paid",
+            route=route_b,
+            assistance_plan=plan_b,
+            expected_cost=_cost_with_price(
+                "direct_paid:route-b", plan_b, {"input_usd_per_mtok": "1.0", "evidence_id": "p-b"}
+            ),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+            is_paid=True,
+        ),
+    )
+    dec1 = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-127",
+            offers=offers_case1,
+            pool_receipt=trusted_pool,
+            now=NOW,
+        )
+    )
+    assert dec1.selected_candidate_id == "route-a"
+
+    # Case 2: route-a has UNKNOWN price (missing price alone is not a gate without hard spend budget).
+    offers_case2 = (
+        ExecutionPathOffer(
+            strategy="direct_paid",
+            route=route_a,
+            assistance_plan=plan_a,
+            expected_cost=_cost_with_price("direct_paid:route-a", plan_a, None),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+            is_paid=True,
+        ),
+        offers_case1[1],
+    )
+    dec2 = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-127",
+            offers=offers_case2,
+            pool_receipt=trusted_pool,
+            now=NOW,
+        )
+    )
+    # route-a is still selected because missing price alone does not reject without hard spend budget
+    assert dec2.selected_candidate_id == "route-a"
+
+    # Case 3: An explicit hard spend budget DOES require proven cost bound.
+    dec3 = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-127",
+            offers=offers_case2,
+            pool_receipt=trusted_pool,
+            hard_spend_budget=10.0,
+            now=NOW,
+        )
+    )
+    # With hard spend budget, route-a is rejected for unknown price bound, route-b wins
+    assert dec3.selected_candidate_id == "route-b"
+
+    # Case 4: Class label flip (free vs paid) leaves selection unchanged
+    offers_case4 = (
+        ExecutionPathOffer(
+            strategy="direct_paid",
+            route=route_a,
+            assistance_plan=plan_a,
+            expected_cost=_cost_with_price(
+                "direct_paid:route-a",
+                plan_a,
+                {"input_usd_per_mtok": "10.0", "evidence_id": "p-a"},
+                is_free=False,
+            ),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+            is_paid=True,
+        ),
+        ExecutionPathOffer(
+            strategy="direct_cheap",
+            route=route_b,
+            assistance_plan=plan_b,
+            expected_cost=_cost_with_price("direct_cheap:route-b", plan_b, None, is_free=True),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+            is_cheap=True,
+        ),
+    )
+    dec4 = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-127",
+            offers=offers_case4,
+            pool_receipt=trusted_pool,
+            now=NOW,
+        )
+    )
+    # route-a is still selected because shortlist order dominates class labels
+    assert dec4.selected_candidate_id == "route-a"

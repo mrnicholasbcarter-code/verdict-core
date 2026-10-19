@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import stat
@@ -16,11 +17,12 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from verdict.admission import AdmittedSet, active_controller_route, load_live_admission
+from verdict.admit_prove_confirm import passport_confirmation
 from verdict.availability import (
     AvailabilityCandidate,
     AvailabilityReport,
@@ -31,6 +33,14 @@ from verdict.availability import (
 )
 from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.orchestration.effort import PRIME_THINKING_LEVELS, choose_effort, effort_reason
+from verdict.orchestration.health_cache import (
+    PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    DispatchPermit,
+    DispatchScope,
+    default_cache_path,
+)
+from verdict.orchestration.health_cache import HealthCache as DispatchCache
+from verdict.relay import admission_proof, dispatch_scope
 from verdict.repository_files import hold_repository_dirs
 from verdict.subagent_selection import (
     CONTEXT_LENGTH_CATEGORY,
@@ -46,6 +56,9 @@ from verdict.subagent_selection import (
     eligible_worker_candidates,
     openai_health_probe,
 )
+
+# Failures that revoke the scoped proof (mirrors the API relay's 401/403 and identity-mismatch rule).
+_REVOKING_CATEGORIES = frozenset({"authentication", "permission", "model_provenance_mismatch"})
 
 # Source label for the bounded live confirmation the worker path runs before launch.
 CONFIRMATION_SOURCE = "worker_probe:openai_health_probe"
@@ -149,6 +162,22 @@ def worker_task_from_config(raw: Mapping[str, Any] | None) -> WorkerTask:
         excluded.add(_route_id(controller))
     config["excluded_route_ids"] = frozenset(excluded)
     return WorkerTask(**config)
+
+
+def worker_profile_digest(task: WorkerTask, prompt: str) -> str:
+    """SHA-256 of the fields that define the work; the scope's profile digest."""
+    body = {
+        "prompt": prompt,
+        "required_capabilities": sorted(task.required_capabilities),
+        "min_context_tokens": task.min_context_tokens,
+        "coding": task.coding,
+        "reasoning": task.reasoning,
+        "protected": task.protected,
+        "max_capability_tier": task.max_capability_tier,
+        "task_kind": task.task_kind,
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _has_measured_usage(candidate: AvailabilityCandidate) -> bool:
@@ -319,7 +348,16 @@ class WorkerController:
         admitted: AdmittedSet | None = None,
         require_admission: bool = False,
         run_dir: Path | None = None,
+        gateway_origin: str | None = None,
+        confirmation: Mapping[str, Any] | None = None,
     ) -> None:
+        # Permit authority: with a gateway origin every spawn needs a minted
+        # dispatch permit built from ``confirmation`` (BOD-433). Without one the
+        # controller is a non-authority library/test instance.
+        self.task = task
+        self.gateway_origin = gateway_origin
+        self.confirmation = dict(confirmation) if confirmation is not None else None
+        self._permit_serial = 0
         # The canonical admitted set is applied before Prime visibility, ranking
         # and probing; replacements iterate this same narrowed list only.
         self.admitted = admitted
@@ -398,6 +436,35 @@ class WorkerController:
                 final_successful_model=candidate.selector if candidate else None,
             )
         return self.outcome
+
+    def _bind_proof(
+        self, candidate: LaunchCandidate, prompt: str
+    ) -> tuple[Any, DispatchScope] | None:
+        """Passport proof for the exact route, or None when there is no fresh one."""
+        assert self.gateway_origin is not None
+        provider = candidate.route_id.split("/", 1)[0].strip().lower()
+        scope = dispatch_scope(
+            gateway_origin=self.gateway_origin,
+            provider=provider,
+            model=candidate.route_id,
+            route_id=candidate.route_id,
+            profile_digest=worker_profile_digest(self.task, prompt),
+        )
+        digest = (
+            str(self.admitted.receipt()["digest"])
+            if self.admitted is not None
+            else str((self.confirmation or {}).get("receipt_id", ""))
+        )
+        proof = admission_proof(
+            self.confirmation,
+            route_id=candidate.route_id,
+            scope=scope,
+            authorization_digest=digest,
+            provider=provider,
+            model=candidate.route_id,
+            now=self.now(),
+        )
+        return None if proof is None else (proof, scope)
 
     async def run(self, prompt: str) -> WorkerOutcome:
         if self.outcome is not None:
@@ -546,6 +613,46 @@ class WorkerController:
                 chosen_effort=thinking,
                 reason=reason,
             )
+            permit: DispatchPermit | None = None
+            permit_scope: DispatchScope | None = None
+            if self.gateway_origin is not None:
+                bound = self._bind_proof(candidate, prompt)
+                if bound is None:
+                    self.event(
+                        "exclusion",
+                        model=candidate.selector,
+                        provider=provider,
+                        classification="no_fresh_passport",
+                        provider_wide=False,
+                        replacement=True,
+                    )
+                    previous = candidate.selector
+                    continue
+                proof, permit_scope = bound
+                self._permit_serial += 1
+                permit = DispatchCache(default_cache_path()).commit_dispatch(
+                    permit_scope,
+                    route_id=proof.route_id,
+                    attempt_id=f"{self.operation_id}-a{self._permit_serial}",
+                    authorization_digest=proof.authorization_digest,
+                    expected_epoch=proof.epoch,
+                    proof_deadline=min(
+                        proof.expires_at,
+                        proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
+                    ),
+                    now=self.now(),
+                )
+                if permit is None:
+                    self.event(
+                        "exclusion",
+                        model=candidate.selector,
+                        provider=provider,
+                        classification="permit_denied",
+                        provider_wide=False,
+                        replacement=True,
+                    )
+                    previous = candidate.selector
+                    continue
             handle: Mapping[str, Any] | None = None
             spawn_id: str | None = None
             name = f"verdict-{self.operation_id[:10]}-{number}"
@@ -561,6 +668,13 @@ class WorkerController:
                         max(0.001, attempt_deadline - time.monotonic()),
                     )
                     admission_pending = False
+                    if (
+                        permit is not None
+                        and permit_scope is not None
+                        and DispatchCache(default_cache_path()).revocation_epoch(permit_scope)
+                        != permit.epoch
+                    ):
+                        raise AttemptFailureError("permit_revoked_after_commit")
                 except TimeoutError:
                     spawn_timed_out = True
                     raise
@@ -620,6 +734,18 @@ class WorkerController:
                 if handle is not None:
                     reported_id = handle.get("rlm_child_id")
                     spawn_id = reported_id if isinstance(reported_id, str) else None
+                if (
+                    permit is not None
+                    and permit_scope is not None
+                    and health.category in _REVOKING_CATEGORIES
+                ):
+                    DispatchCache(default_cache_path()).record_revocation(
+                        permit_scope,
+                        route_id=permit.route_id,
+                        event_id=f"{self.operation_id}:{permit.permit_id}:{health.category}",
+                        source_revision=None,
+                        observed_at=self.now(),
+                    )
                 provider_wide = health.category in PROVIDER_SCOPE_FAILURE_CATEGORIES
                 if provider_wide:
                     blocked_providers[provider] = health.category
@@ -973,6 +1099,10 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             admitted=admitted,
             require_admission=True,
             run_dir=directory,
+            gateway_origin=probe_base,
+            confirmation=passport_confirmation(
+                [candidate.route_id for candidate in candidates], now=datetime.now(timezone.utc)
+            ),
         )
         try:
             outcome = await controller.run(config["prompt"])

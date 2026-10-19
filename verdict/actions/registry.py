@@ -364,7 +364,7 @@ def _action_route(**kwargs: Any) -> ActionResult:
     allow_legacy_selector: bool = bool(kwargs.get("allow_legacy_selector") or False)
     terse: bool = bool(kwargs.get("terse", False))
 
-    context: dict[str, object] = {}
+    context: dict[str, object] = dict(kwargs.get("context") or {})
     if allow_legacy_selector:
         context[CONTEXT_ALLOW_LEGACY] = True
 

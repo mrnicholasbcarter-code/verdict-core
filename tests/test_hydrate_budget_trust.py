@@ -337,9 +337,15 @@ def test_cheap_path_trust_and_budget_feed_optimizer_offers(tmp_path: Path) -> No
         context_trust_admitted=False,
     )
 
+    from tests.test_execution_path import _receipt
+
     decision = optimize_execution_path(
         ExecutionPathRequest(
-            task_slice=_slice(), trajectory_id="traj-128", offers=(untrusted, trusted), now=NOW
+            task_slice=_slice(),
+            trajectory_id="traj-128",
+            offers=(untrusted, trusted),
+            pool_receipt=_receipt("alt-128", "cheap-128"),
+            now=NOW,
         )
     )
     assert decision.selected_candidate_id == "cheap-128"

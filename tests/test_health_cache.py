@@ -1298,7 +1298,9 @@ def test_merge_and_save_serializes_a_read_modify_write(tmp_path: Path) -> None:
     assert final.entry("free/b") is not None  # B's merge landed
 
 
-def test_default_cache_path_follows_verdict_home(tmp_path, monkeypatch) -> None:
+def test_default_cache_path_follows_verdict_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The ladder must read the same file the refresh job writes in an isolated home."""
     from verdict.orchestration.health_cache import default_cache_path
 
@@ -1311,3 +1313,183 @@ def test_default_cache_path_follows_verdict_home(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("VERDICT_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
     assert default_cache_path() == (tmp_path / "user" / ".verdict" / "health-cache.json").resolve()
+
+
+def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path: Path) -> None:
+    """BOD-433/S03 phase 1: permits linearize at the dispatch commit.
+
+    The cache-level contract behind A04/A10: authorization either happens at
+    ``commit_dispatch`` or not at all, so a denied commit is the point where
+    phase-2 callers produce zero transport/spawn calls; a committed permit is
+    durably MAYBE_SENT so a post-commit revocation can only cancel, never retry.
+    """
+    from verdict.orchestration.health_cache import (
+        PERMIT_STATE_MAYBE_SENT,
+        DispatchPermit,
+        DispatchScope,
+    )
+
+    path = tmp_path / "dispatch.json"
+    cache = HealthCache(path)
+    scope = DispatchScope(
+        gateway_origin="https://gateway.example",
+        config_generation="config-1",
+        profile_digest="profile-1",
+        binding_id="binding-1",
+    )
+    route = "omni/route-a"
+
+    # Deny before commit: a revocation ordered first prevents the send.
+    epoch = cache.record_revocation(
+        scope, route_id=route, event_id="neg-1", source_revision="snap-1", observed_at=NOW
+    )
+    assert epoch == 1
+    assert cache.revocation_epoch(scope) == 1
+    assert (
+        cache.commit_dispatch(
+            scope,
+            route_id=route,
+            attempt_id="attempt-1",
+            authorization_digest="auth-digest",
+            expected_epoch=0,
+            proof_deadline=_at(60),
+            now=NOW,
+        )
+        is None
+    )
+
+    # A genuine proof bound to the current epoch authorizes exactly one commit.
+    permit = cache.commit_dispatch(
+        scope,
+        route_id=route,
+        attempt_id="attempt-1",
+        authorization_digest="auth-digest",
+        expected_epoch=1,
+        proof_deadline=_at(60),
+        now=NOW,
+    )
+    assert isinstance(permit, DispatchPermit)
+    assert permit.attempt_id == "attempt-1"
+    assert permit.route_id == route
+    assert permit.scope == scope
+    assert permit.epoch == 1
+    assert permit.not_after == _at(60)
+    assert cache.permit_for_attempt("attempt-1") == permit
+    assert cache.dispatch_attempt_state("attempt-1") == PERMIT_STATE_MAYBE_SENT
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["dispatch"]["attempts"]["attempt-1"]["state"] == PERMIT_STATE_MAYBE_SENT
+
+    # Deny after commit: a later revocation keeps the permit MAYBE_SENT and the
+    # same attempt can never retry into a second permit.
+    later = _at(1)
+    assert (
+        cache.record_revocation(
+            scope, route_id=route, event_id="neg-2", source_revision="snap-2", observed_at=later
+        )
+        == 2
+    )
+    assert (
+        cache.commit_dispatch(
+            scope,
+            route_id=route,
+            attempt_id="attempt-1",
+            authorization_digest="auth-digest",
+            expected_epoch=2,
+            proof_deadline=_at(61),
+            now=later,
+        )
+        is None
+    )
+    assert cache.permit_for_attempt("attempt-1") == permit
+
+    # Restart: the revocation epoch and the MAYBE_SENT permit survive reload.
+    reopened = HealthCache(path)
+    assert reopened.revocation_epoch(scope) == 2
+    assert reopened.permit_for_attempt("attempt-1") == permit
+    assert reopened.dispatch_attempt_state("attempt-1") == PERMIT_STATE_MAYBE_SENT
+
+    # Replayed older/conflicting positives (bound to a superseded epoch) cannot
+    # lift the negative, even with fresh attempt ids after a restart.
+    assert (
+        reopened.commit_dispatch(
+            scope,
+            route_id=route,
+            attempt_id="attempt-2",
+            authorization_digest="auth-digest",
+            expected_epoch=0,
+            proof_deadline=_at(61),
+            now=later,
+        )
+        is None
+    )
+    assert (
+        reopened.commit_dispatch(
+            scope,
+            route_id=route,
+            attempt_id="attempt-3",
+            authorization_digest="auth-digest",
+            expected_epoch=1,
+            proof_deadline=_at(61),
+            now=later,
+        )
+        is None
+    )
+
+    # Only a new genuine epoch-bound proof qualifies a new decision.
+    fresh = reopened.commit_dispatch(
+        scope,
+        route_id=route,
+        attempt_id="attempt-4",
+        authorization_digest="auth-digest",
+        expected_epoch=2,
+        proof_deadline=_at(61),
+        now=later,
+    )
+    assert fresh is not None and fresh.epoch == 2
+    # ... and its attempt id is consumed immediately (duplicate replay denies).
+    assert (
+        reopened.commit_dispatch(
+            scope,
+            route_id=route,
+            attempt_id="attempt-4",
+            authorization_digest="auth-digest",
+            expected_epoch=2,
+            proof_deadline=_at(61),
+            now=later,
+        )
+        is None
+    )
+
+    # Same route under another binding stays separate: the sibling scope keeps
+    # its own epoch and authorizes its own attempt.
+    sibling = DispatchScope(
+        gateway_origin="https://gateway.example",
+        config_generation="config-1",
+        profile_digest="profile-1",
+        binding_id="binding-2",
+    )
+    separate = reopened.commit_dispatch(
+        sibling,
+        route_id=route,
+        attempt_id="attempt-5",
+        authorization_digest="auth-digest",
+        expected_epoch=0,
+        proof_deadline=_at(61),
+        now=later,
+    )
+    assert separate is not None and separate.epoch == 0
+
+    # Future proof times never authorize: a deadline beyond the maximum proof
+    # validity implies a future observation timestamp and is fabricated.
+    assert (
+        reopened.commit_dispatch(
+            sibling,
+            route_id=route,
+            attempt_id="attempt-6",
+            authorization_digest="auth-digest",
+            expected_epoch=0,
+            proof_deadline=later + timedelta(seconds=FRESH_SECONDS + 1),
+            now=later,
+        )
+        is None
+    )

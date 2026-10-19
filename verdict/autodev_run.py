@@ -36,6 +36,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from verdict.candidate_pool import LIVE_PROBE_MAX_AGE_SECONDS, CandidatePoolError
 from verdict.context_inject import ContextOutputPolicy
 from verdict.context_pack import (
     ContextDecision,
@@ -2159,36 +2160,49 @@ def prepare_live_autodev(
     plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
         objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
     )
-    if time.time() - observed > 3600:
+    if time.time() - observed > LIVE_PROBE_MAX_AGE_SECONDS:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
+    proof_criteria = [" ".join(unit.verification_command) for unit in plan.units]
+    probed_candidates = [
+        {
+            "strategy": "direct_cheap",
+            "route_id": model,
+            "gateway": base_url,
+            "provider": model.split("/", 1)[0],
+            "model": model,
+            "eligible": True,
+            "is_free": True,
+            "certification_state": "ready",
+            "certification_freshness": "fresh",
+            "probe_observed_at": observed,
+            "probe_headers": headers,
+        }
+    ]
     request = {
         "schema_version": "1",
         "trajectory_id": f"autodev:{binding}",
         "slice_id": ",".join(unit.unit_id for unit in plan.units),
         "acceptance_criteria": [unit.objective for unit in plan.units],
-        "proof_criteria": [" ".join(unit.verification_command) for unit in plan.units],
-        "candidates": [
-            {
-                "strategy": "direct_cheap",
-                "route_id": model,
-                "gateway": base_url,
-                "provider": model.split("/", 1)[0],
-                "model": model,
-                "eligible": True,
-                "is_free": True,
-                "certification_state": "ready",
-                "certification_freshness": "fresh",
-                "probe_observed_at": observed,
-                "probe_headers": headers,
-            }
-        ],
+        "proof_criteria": proof_criteria,
+        "candidates": probed_candidates,
     }
-    return (
-        optimize_execution_path(public_execution_path_request(request, task=objective)),
-        plan,
-        headers,
-    )
+    from dataclasses import replace as _replace
+
+    from verdict.candidate_pool import build_live_probe_receipt
+
+    prepared = public_execution_path_request(request, task=objective)
+    try:
+        receipt = build_live_probe_receipt(
+            objective=objective,
+            candidates=probed_candidates,
+            requirements=proof_criteria,
+            now=time.time(),
+        )
+    except CandidatePoolError as exc:
+        raise AutodevError(f"autodev live probe receipt refused: {exc}") from exc
+    prepared = _replace(prepared, pool_receipt=receipt)
+    return (optimize_execution_path(prepared), plan, headers)
 
 
 #: Ladder stages that mean "task-eligible": the same predicate
@@ -2464,18 +2478,31 @@ def prepare_live_autodev_selected(
             model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
         )
     ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
-    if time.time() - started > 3600:
+    if time.time() - started > LIVE_PROBE_MAX_AGE_SECONDS:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
+    proof_criteria = [" ".join(unit.verification_command) for unit in plan.units]
     request = {
         "schema_version": "1",
         "trajectory_id": f"autodev:{binding}",
         "slice_id": ",".join(unit.unit_id for unit in plan.units),
         "acceptance_criteria": [unit.objective for unit in plan.units],
-        "proof_criteria": [" ".join(unit.verification_command) for unit in plan.units],
+        "proof_criteria": proof_criteria,
         "candidates": candidates,
     }
-    decision = optimize_execution_path(public_execution_path_request(request, task=objective))
+    from dataclasses import replace as _replace
+
+    from verdict.candidate_pool import build_live_probe_receipt
+
+    prepared = public_execution_path_request(request, task=objective)
+    try:
+        receipt = build_live_probe_receipt(
+            objective=objective, candidates=candidates, requirements=proof_criteria, now=time.time()
+        )
+    except CandidatePoolError as exc:
+        raise AutodevError(f"autodev live probe receipt refused: {exc}") from exc
+    prepared = _replace(prepared, pool_receipt=receipt)
+    decision = optimize_execution_path(prepared)
     ladder_order = tuple(candidates)
     selected_headers = next(
         (
@@ -2772,17 +2799,35 @@ def _select_retry_route(unit: WorkUnit, ladder: Sequence[Mapping[str, Any]], obj
     from verdict.execution_path import ExecutionPathError, optimize_execution_path
     from verdict.subagent_resolver import public_execution_path_request
 
+    proof_criteria = [" ".join(unit.verification_command)]
+    probed_candidates = [dict(route) for route in ladder]
     request = {
         "schema_version": "1",
         "trajectory_id": f"autodev-retry:{unit.unit_id}",
         "slice_id": unit.unit_id,
         "acceptance_criteria": [unit.objective],
-        "proof_criteria": [" ".join(unit.verification_command)],
-        "candidates": [dict(route) for route in ladder],
+        "proof_criteria": proof_criteria,
+        "candidates": probed_candidates,
     }
+    from dataclasses import replace as _replace
+
+    from verdict.candidate_pool import build_live_probe_receipt
+
     try:
-        decision = optimize_execution_path(public_execution_path_request(request, task=objective))
-    except ExecutionPathError as exc:
+        prepared = public_execution_path_request(request, task=objective)
+        prepared = _replace(
+            prepared,
+            pool_receipt=build_live_probe_receipt(
+                objective=objective,
+                candidates=probed_candidates,
+                requirements=proof_criteria,
+                now=time.time(),
+            ),
+        )
+        decision = optimize_execution_path(prepared)
+    except (ExecutionPathError, ValueError) as exc:
+        # CandidatePoolError (a ValueError) means the ladder lacks live probe
+        # evidence; both refuse the retry fail-closed with a named reason.
         raise AutodevError(f"autodev retry selection refused: {exc}") from exc
     return _require_launch_decision(decision, surface="autodev retry")
 

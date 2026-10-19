@@ -360,3 +360,39 @@ def test_no_secret_upload_env_in_security_gates(tmp_path: Path) -> None:
     for env in envs:
         assert "PROOF_UPLOAD_SECRETS" not in env
         assert env.get("PROOF_SECRETS_LOCAL_ONLY") == "1"
+
+
+def test_full_mode_without_targets_runs_the_suite_once(tmp_path: Path) -> None:
+    contract_path = tmp_path / "contract.yaml"
+    _write_minimal_contract(contract_path)
+    ran: list[str] = []
+
+    def executor(argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+        del env, cwd
+        ran.append(argv[-1])
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    runner = ProofRunner(load_contract(contract_path), root=tmp_path, executor=executor)
+    report = runner.run(mode="full")
+
+    assert report.ok is True
+    assert "targeted" not in ran
+    assert ran.count("full-suite") == 1
+    targeted = next(g for g in report.gates if g.id == "unit_targeted")
+    assert targeted.status == "skip"
+
+
+def test_targeted_mode_without_targets_still_runs_tests(tmp_path: Path) -> None:
+    contract_path = tmp_path / "contract.yaml"
+    _write_minimal_contract(contract_path)
+    ran: list[str] = []
+
+    def executor(argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+        del env, cwd
+        ran.append(argv[-1])
+        return CommandResult(exit_code=0, stdout="", stderr="")
+
+    runner = ProofRunner(load_contract(contract_path), root=tmp_path, executor=executor)
+    runner.run(mode="targeted")
+
+    assert "targeted" in ran

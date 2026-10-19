@@ -143,6 +143,10 @@ class RuntimePolicy:
     min_context_budget_bytes: int = 4_000
     # Repo quality gates belong to the integration runtime, not the planner.
     run_repo_gates: bool = True
+    # BOD-433 authority mode: every worker send needs a minted dispatch permit.
+    # No route proof or gateway origin reaches DagRuntime yet (phase 2c), so
+    # when set, every send is denied. Off for compat and test runtimes.
+    require_dispatch_permit: bool = False
 
 
 @dataclass
@@ -1316,6 +1320,21 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
+                if self.policy.require_dispatch_permit:
+                    reason = "dispatch_denied: no admission proof for the bound route"
+                    terminal = WorkerTerminal(ok=False, error=reason)
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "dispatch_denied", "BLOCK", 0, "none", reason
+                        ),
+                    )
+                    run.reason = reason
+                    self._set(run, NodeState.BLOCKED, reason=reason)
+                    await self.git.remove_worktree(worktree)
+                    return True  # nothing was sent; do not reselect or retry
                 terminal = await self._execute(
                     prompt, run.route_id, worktree, node_id=node.node_id, attempt=run.attempt
                 )

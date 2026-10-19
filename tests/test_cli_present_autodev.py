@@ -108,7 +108,12 @@ def _decision(task: str):
             }
         ],
     }
-    return optimize_execution_path(public_execution_path_request(request, task=task))
+    from dataclasses import replace
+
+    from tests.test_execution_path import _receipt
+
+    prepared = public_execution_path_request(request, task=task)
+    return optimize_execution_path(replace(prepared, pool_receipt=_receipt("route-selected-model")))
 
 
 def test_autodev_consent_refusal_human(plain: io.StringIO, tmp_path: Path) -> None:

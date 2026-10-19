@@ -137,7 +137,7 @@ def test_unauthorized_is_never_masked_by_last_good(isolated: Path) -> None:
     assert caught.value.code == "unauthorized"
 
 
-def test_catalog_read_gets_its_own_longer_timeout(isolated: Path) -> None:
+def test_catalog_read_uses_the_bounded_per_request_timeout(isolated: Path) -> None:
     timeouts: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -145,8 +145,33 @@ def test_catalog_read_gets_its_own_longer_timeout(isolated: Path) -> None:
         return httpx.Response(200, json=PAYLOADS.get(request.url.path, {}))
 
     _load(isolated, httpx.MockTransport(handler))
-    assert timeouts["/v1/models"] == 60.0
+    # BOD-345/S04: every admit read uses the 20s per-HTTP timeout; the
+    # catalog no longer gets a 60s exception beyond the aggregate deadline.
+    assert timeouts["/v1/models"] == 20.0
     assert timeouts["/api/providers"] == 20.0
+
+
+def test_requested_timeouts_never_exceed_the_aggregate_deadline(isolated: Path) -> None:
+    timeouts: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts[request.url.path] = request.extensions["timeout"]["read"]
+        return httpx.Response(200, json=PAYLOADS.get(request.url.path, {}))
+
+    load_omniroute_admit_snapshot(
+        BASE,
+        "test-token",
+        transport=httpx.MockTransport(handler),
+        last_good_path=isolated,
+        sleep=lambda _seconds: None,
+        aggregate_deadline_seconds=5.0,
+    )
+    # The four discovery surfaces are capped by the aggregate deadline. The
+    # passive-health adapter is a separate advisory read with its own 20s
+    # per-HTTP timeout, outside the discovery inventory deadline.
+    discovery = ["/v1/models", "/api/providers", "/api/free-tier/summary", "/api/v1/me/status"]
+    assert all(path in timeouts for path in discovery)
+    assert all(0 < float(timeouts[path]) <= 5.0 for path in discovery)
 
 
 def _gated_transport(
