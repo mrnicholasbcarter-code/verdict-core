@@ -6,6 +6,7 @@ replaced by a spy, so a mismatch is proven by zero sends and zero permits.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +21,10 @@ from tests.test_dagruntime_dispatch_permits import (
     _make,
     _passport,
 )
+from tests.test_orch_runtime import Executor
 from tests.test_orch_runtime import repo as repo
 from verdict.orchestration.contracts import (
+    LOCAL_EXECUTOR_ORIGIN,
     NodeState,
     RunOutcome,
     WorkerTerminal,
@@ -33,7 +36,10 @@ from verdict.orchestration.executors import (
     DirectGatewayExecutor,
     FaultInjectingExecutor,
     MixedExecutor,
+    PrimeHeadlessExecutor,
+    ScriptedExecutor,
 )
+from verdict.orchestration.prime_settings import PRIME_AGENT_DIR_ENV
 
 
 class GatewaySpy(DirectGatewayExecutor):
@@ -89,18 +95,98 @@ async def test_same_gateway_origin_mints_a_permit_and_sends(repo: Path, base_url
     assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
 
 
-async def test_executor_without_an_origin_is_accepted(repo: Path) -> None:
-    ex = PermitSpy()
+async def test_executor_without_an_origin_is_denied_before_any_permit_or_send(repo: Path) -> None:
+    ex = Executor({}, delay=0)
     assert executor_gateway_origin(ex, "a") is None
+    rt, ev = _make(repo, ex, ["cc/s", "cx/g"], _authority({"cc/s": _passport("cc/s")}))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.calls == []
+    assert result.nodes["a"].state is NodeState.BLOCKED
+    assert "executor origin unknown" in result.nodes["a"].reason
+    assert [f["category"] for f in ev.of("failure", "a")] == ["dispatch_denied"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
+
+
+async def test_local_executor_sentinel_is_allowed(repo: Path) -> None:
+    ex = PermitSpy()
+    assert executor_gateway_origin(ex, "a") == LOCAL_EXECUTOR_ORIGIN
     rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert ex.calls == [("a", "cc/s")]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
+
+
+def test_scripted_executor_declares_the_local_sentinel() -> None:
+    ex = ScriptedExecutor(lambda prompt, route, cwd: WorkerTerminal(ok=True))
+    assert executor_gateway_origin(ex, "a") == LOCAL_EXECUTOR_ORIGIN
+
+
+class PrimeSpy(PrimeHeadlessExecutor):
+    """A PrimeHeadlessExecutor whose launch is a spy; its origin comes from models.json."""
+
+    def __init__(self, agent_dir: Path) -> None:
+        super().__init__(env={PRIME_AGENT_DIR_ENV: str(agent_dir)})
+        self.sends: list[str] = []
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        self.sends.append(route_id)
+        node = prompt.split(":", 1)[0]
+        (cwd / f"{node}.txt").write_text(f"{node} by {route_id}\n")
+        return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
+
+
+def _agent_dir(tmp: Path, models: str | None) -> Path:
+    agent_dir = tmp / "prime-agent"
+    agent_dir.mkdir()
+    if models is not None:
+        (agent_dir / "models.json").write_text(models)
+    return agent_dir
+
+
+def _models(base_url: str, provider: str = "omniroute") -> str:
+    return json.dumps({"providers": {provider: {"baseUrl": base_url, "api": "openai"}}})
+
+
+async def test_prime_executor_on_the_bound_gateway_mints_a_permit_and_sends(repo: Path) -> None:
+    ex = PrimeSpy(_agent_dir(repo.parent, _models(ORIGIN + "/v1")))
+    assert executor_gateway_origin(ex, "a") == ORIGIN + "/v1"
+    rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.sends == ["cc/s"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
+
+
+@pytest.mark.parametrize(
+    ("models", "reason"),
+    [
+        (_models("http://127.0.0.1:20128/v1"), "executor origin mismatch"),
+        (None, "executor origin unknown"),
+        ("{not json", "executor origin unknown"),
+        (_models(ORIGIN + "/v1", provider="openai-compatible"), "executor origin unknown"),
+        (json.dumps({"providers": {"omniroute": {"baseUrl": 7}}}), "executor origin unknown"),
+    ],
+)
+async def test_prime_executor_off_the_bound_gateway_is_denied(
+    repo: Path, models: str | None, reason: str
+) -> None:
+    ex = PrimeSpy(_agent_dir(repo.parent, models))
+    rt, ev = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.sends == []
+    assert reason in result.nodes["a"].reason
+    assert [f["category"] for f in ev.of("failure", "a")] == ["dispatch_denied"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
 
 
 def test_wrappers_report_the_origin_of_the_executor_that_runs_the_node() -> None:
     other = DirectGatewayExecutor(base_url="http://other:9/v1", api_key="fixture-only")
-    plain: Any = PermitSpy()
+    plain: Any = Executor({})
     mixed = MixedExecutor({"b": other}, default=plain)
     assert executor_gateway_origin(mixed, "a") is None
     assert executor_gateway_origin(mixed, "b") == "http://other:9/v1"

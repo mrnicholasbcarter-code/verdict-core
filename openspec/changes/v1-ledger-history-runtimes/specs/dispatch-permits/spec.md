@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Adds executor gateway-origin attestation to permit commit: the dispatch path denies when the executor reports a gateway origin that does not match the bound dispatch scope.
+Adds executor gateway-origin attestation to permit commit: the dispatch path denies when the executor reports a gateway origin that does not match the bound dispatch scope, or reports none.
 
 ## ADDED Requirements
 
@@ -16,12 +16,18 @@ Immediately before `_commit_permit`, the dispatch path SHALL compare the executo
 #### Scenario: Equivalent origin forms match
 - Proof: same origin with a plain URL, a trailing slash, `/v1`, or an upper-case host plus explicit `:80` all mint a permit and send once.
 
-### Requirement: An executor reporting no gateway origin is accepted (U1)
+### Requirement: An executor reporting no gateway origin is denied (U1)
 
-`executor_gateway_origin` SHALL return `None` when the executor reports nothing, and the dispatch check SHALL accept a `None` report without comparison. This covers executors whose provider is configured outside Verdict (for example `PrimeHeadlessExecutor`, whose Prime omniroute provider is configured outside Verdict) and scripted/fake executors used in tests.
+`executor_gateway_origin` SHALL return `None` when the executor reports nothing. When a dispatch authority is set, a `None` report SHALL be BLOCKED with failure `dispatch_denied` / BLOCK / `"dispatch_denied: executor origin unknown"`: no permit is committed and the executor is not called. `PrimeHeadlessExecutor` SHALL report its provider's `baseUrl` from the `models.json` of the Prime agent dir its launch mirrors (`default_prime_agent_dir(child_env)/models.json`, `providers[provider].baseUrl`), and `None` when that file, provider or URL is missing or unparseable. Executors that never touch the network (scripted, fake, offline demo) SHALL declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no executor that sends to a gateway may declare it.
 
-#### Scenario: None is accepted
-- Proof: `tests/test_orch_gateway_origin.py` PermitSpy case reporting `None`.
+#### Scenario: Unknown origin denies
+- Proof: `tests/test_orch_gateway_origin.py` — a fake executor reporting no origin: zero calls, BLOCKED `executor origin unknown`, no permit.
+
+#### Scenario: Prime origin comes from models.json
+- Proof: `tests/test_orch_gateway_origin.py` — a matching `baseUrl` mints a permit and sends once; another host denies as a mismatch; a missing or unparseable `models.json`, a missing provider or a non-string `baseUrl` denies as unknown.
+
+#### Scenario: Local sentinel is allowed
+- Proof: `tests/test_orch_gateway_origin.py` — a `LOCAL_EXECUTOR_ORIGIN` executor mints a permit and sends; `ScriptedExecutor` declares it.
 
 ### Requirement: Gateway-origin normalization fails closed on a malformed URL
 

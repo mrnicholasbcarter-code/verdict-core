@@ -101,7 +101,11 @@ is BLOCKED with `dispatch_denied: executor origin mismatch`: no permit is commit
 and the executor is never called. There is no reselect or retry for this failure;
 the route's own proof binding at selection time is unaffected, but nothing is sent.
 
-An executor that reports no origin at all (`None`) is accepted (U1): its provider
-is configured outside Verdict (for example `PrimeHeadlessExecutor`), so there is
-nothing for Core to attest. `MixedExecutor` and `FaultInjectingExecutor` resolve the
+An executor that reports no origin at all (`None`) is denied (U1, reversed): it is
+BLOCKED with `dispatch_denied: executor origin unknown`, with no permit and no send.
+`PrimeHeadlessExecutor` reports its provider's `baseUrl` from the `models.json` of
+the Prime agent dir its launch mirrors, and `None` when that is missing or
+unparseable. Executors that never touch the network (scripted, fake, offline demo)
+declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no
+executor that sends to a gateway may declare it. `MixedExecutor` and `FaultInjectingExecutor` resolve the
 origin check per wrapped node or delegate to their inner executor, respectively.

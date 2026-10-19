@@ -32,6 +32,7 @@ from typing import Any, ClassVar
 import httpx
 
 from verdict.orchestration.contracts import (
+    LOCAL_EXECUTOR_ORIGIN,
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
@@ -245,6 +246,20 @@ class PrimeHeadlessExecutor:
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
 
+    def _child_env(self) -> dict[str, str]:
+        return {**os.environ, **self.env} if self.env is not None else dict(os.environ)
+
+    @property
+    def gateway_origin(self) -> str | None:
+        """``baseUrl`` of this provider in the ``models.json`` the launch mirrors, or None."""
+        models = default_prime_agent_dir(self._child_env()) / "models.json"
+        try:
+            data = json.loads(models.read_text())
+            url = data["providers"][self.provider]["baseUrl"]
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        return url if isinstance(url, str) and url else None
+
     def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
         cmd = [
             self.prime_bin,
@@ -282,7 +297,7 @@ class PrimeHeadlessExecutor:
     ) -> WorkerTerminal:
         started = time.monotonic()
         argv = self._command(prompt, route_id, cwd)
-        child_env = {**os.environ, **self.env} if self.env is not None else dict(os.environ)
+        child_env = self._child_env()
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
         # Verdict-owned launches are one-shot, so the policy travels in a
@@ -720,6 +735,7 @@ class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
 
     answer_only_supported = True
+    gateway_origin = LOCAL_EXECUTOR_ORIGIN  # sends nowhere
 
     def __init__(self, script: ScriptFn) -> None:
         self.script = script

@@ -1421,13 +1421,14 @@ class DagRuntime:
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
                 origin = executor_gateway_origin(self.executor, node.node_id)
-                if (
-                    self.dispatch_authority is not None
-                    and origin is not None
-                    and not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
+                if self.dispatch_authority is not None and (
+                    origin is None
+                    or not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
                 ):
-                    # Another gateway than the permit binds: no route change fixes it.
-                    reason = "dispatch_denied: executor origin mismatch"
+                    # An unknown gateway, or another one than the permit binds:
+                    # no route change fixes it.
+                    detail = "unknown" if origin is None else "mismatch"
+                    reason = f"dispatch_denied: executor origin {detail}"
                     terminal = WorkerTerminal(ok=False, error=reason)
                     self._record_failure(
                         run,

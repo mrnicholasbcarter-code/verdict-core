@@ -653,10 +653,10 @@ class WorkerExecutor(Protocol):
     attribute (a URL), or, for wrappers that route per node, a
     ``gateway_origin_for(node_id)`` method; see :func:`executor_gateway_origin`.
     The runtime denies a send when that origin differs from the origin the
-    dispatch permit binds. Executors that cannot know their gateway report
-    nothing and are accepted: ``PrimeHeadlessExecutor`` sends through Prime's
-    ``omniroute`` provider, whose base URL is configured in Prime, outside
-    Verdict, and scripted or fake executors send nowhere.
+    dispatch permit binds, and also when the executor reports no origin at all.
+    ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the Prime
+    ``models.json`` its launch uses. Executors that send nowhere (scripted, fake,
+    offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
     """
 
     async def run(
@@ -665,6 +665,11 @@ class WorkerExecutor(Protocol):
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: The origin an executor that never touches the network declares (scripted,
+#: fake and offline demo executors). It matches any dispatch authority; no
+#: executor that sends to a gateway may use it.
+LOCAL_EXECUTOR_ORIGIN = "local:"
 
 
 def normalize_gateway_origin(url: str) -> str | None:
@@ -696,7 +701,12 @@ def executor_gateway_origin(executor: object, node_id: str) -> str | None:
 
 
 def gateway_origin_matches(reported: str, bound: str) -> bool:
-    """True only when both origins parse and are the same; an unparseable one fails closed."""
+    """True only when both origins parse and are the same; an unparseable one fails closed.
+
+    :data:`LOCAL_EXECUTOR_ORIGIN` matches any bound origin: that executor sends nothing.
+    """
+    if reported == LOCAL_EXECUTOR_ORIGIN:
+        return True
     origin = normalize_gateway_origin(reported)
     return origin is not None and origin == normalize_gateway_origin(bound)
 
