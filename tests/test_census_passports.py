@@ -752,9 +752,10 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
         max_per_provider=None,
         cooling_providers=cooldowns,
     )
-    # BOD-297/S05-A: the shared coordinator's maintenance contract (<=2 routes
-    # per provider) now bounds the actual probe count, even though census's
-    # own max_per_provider=None lifts its candidate-selection cap.
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator's maintenance contract now bounds the actual probe count,
+    # even though census's own max_per_provider=None lifts its
+    # candidate-selection cap.
     assert requests == ["/api/resilience/model-cooldowns"]
     assert report["probed"] == 2
     assert report["updated"] == 2
@@ -1240,8 +1241,9 @@ def test_census_reserves_an_exploration_slot_for_a_never_proven_route(tmp_path):
         max_tokens=1536,
     )
 
-    # BOD-297/S05-A: the shared coordinator's maintenance contract (4 routes
-    # per cycle) now bounds the actual probe count below census's own ask.
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator's maintenance contract now bounds the actual probe count
+    # below census's own ask.
     assert len(set(calls)) == 4
     assert "q/new" in calls
 

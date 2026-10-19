@@ -61,9 +61,10 @@ def _run(
     )
 
 
-def test_token_budget_no_longer_clamps_candidates_to_six(tmp_path: Path) -> None:
-    """Census's own max_candidates is no longer the binding cap (BOD-297/S05-A:
-    the shared coordinator's maintenance contract of 4 routes/cycle is).
+def test_token_budget_bounded_by_shared_coordinator_maintenance_cap(tmp_path: Path) -> None:
+    """Census's own max_candidates is no longer the binding cap: the shared
+    coordinator's maintenance contract (S05 contract caps: 4 routes,
+    2/provider, BOD-297/S05-A) is, and it binds below census's own ask.
     """
     models = [f"p{i}/m" for i in range(10)]
     calls: list[str] = []
@@ -73,8 +74,8 @@ def test_token_budget_no_longer_clamps_candidates_to_six(tmp_path: Path) -> None
 
 
 def test_default_budget_is_per_provider_not_a_global_cap(tmp_path: Path) -> None:
-    """BOD-297/S05-A: the coordinator's maintenance contract (4 routes, 2 per
-    provider) now bounds the actual probe count below census's own ask.
+    """S05 contract caps (4 routes, 2/provider; BOD-297/S05-A) now bound the
+    actual probe count below census's own ask.
     """
     models = [f"a/m{i}" for i in range(5)] + [f"p{i}/m" for i in range(8)]
     calls: list[str] = []

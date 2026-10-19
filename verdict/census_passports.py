@@ -357,10 +357,11 @@ def run_census(
         pending = budgeted
     from verdict.orchestration.verified_refresh import MAINTENANCE_MAX_ROUTES
 
-    # BOD-297/S05-A: the shared coordinator enforces its own maintenance route
-    # cap regardless of what census asks for, so the exploration/renewal split
-    # below must be computed against the SAME enforced ceiling, not a larger
-    # number census could never actually spend.
+    # S05 contract caps: 4 routes, 2/provider (BOD-297/S05-A). The shared
+    # coordinator enforces this maintenance route cap regardless of what
+    # census asks for, so the exploration/renewal split below must be
+    # computed against the SAME enforced ceiling, not a larger number
+    # census could never actually spend.
     caps = [len(pending), MAINTENANCE_MAX_ROUTES]
     if max_candidates is not None:
         caps.append(max_candidates - refreshed["updated"])
