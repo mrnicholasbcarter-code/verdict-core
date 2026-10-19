@@ -61,6 +61,8 @@ from verdict.orchestration.contracts import (
     WorkNode,
     check_transition,
     dispatch_blocker,
+    executor_gateway_origin,
+    gateway_origin_matches,
     require_launchable,
     route_family,
     route_provider,
@@ -1418,6 +1420,27 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
+                origin = executor_gateway_origin(self.executor, node.node_id)
+                if (
+                    self.dispatch_authority is not None
+                    and origin is not None
+                    and not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
+                ):
+                    # Another gateway than the permit binds: no route change fixes it.
+                    reason = "dispatch_denied: executor origin mismatch"
+                    terminal = WorkerTerminal(ok=False, error=reason)
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "dispatch_denied", "BLOCK", 0, "none", reason
+                        ),
+                    )
+                    run.reason = reason
+                    self._set(run, NodeState.BLOCKED, reason=reason)
+                    await self.git.remove_worktree(worktree)
+                    return True  # nothing was sent; do not reselect or retry
                 if self.dispatch_authority is not None:
                     run.permit = await self._commit_permit(run)
                     if run.permit is None:

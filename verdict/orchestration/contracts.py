@@ -634,6 +634,7 @@ import inspect  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Protocol  # noqa: E402
+from urllib.parse import urlsplit  # noqa: E402
 
 
 class WorkerExecutor(Protocol):
@@ -647,11 +648,57 @@ class WorkerExecutor(Protocol):
     ``tools=False`` asks for an answer-only call with no agent tools (planning
     needs only a JSON answer). Executors without the keyword are called
     exactly as before; see :func:`run_executor`.
+
+    An executor MAY also report the gateway it sends to, as a ``gateway_origin``
+    attribute (a URL), or, for wrappers that route per node, a
+    ``gateway_origin_for(node_id)`` method; see :func:`executor_gateway_origin`.
+    The runtime denies a send when that origin differs from the origin the
+    dispatch permit binds. Executors that cannot know their gateway report
+    nothing and are accepted: ``PrimeHeadlessExecutor`` sends through Prime's
+    ``omniroute`` provider, whose base URL is configured in Prime, outside
+    Verdict, and scripted or fake executors send nowhere.
     """
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal: ...
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def normalize_gateway_origin(url: str) -> str | None:
+    """``scheme://host:port`` of ``url`` (lower-case, default port explicit, path dropped).
+
+    None when ``url`` does not parse as an origin (no scheme, no host or an invalid
+    port): such an origin equals nothing, not even itself.
+    """
+    try:
+        parsed = urlsplit(url.strip())
+        explicit_port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
+    if not scheme or not host or port is None:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port}"
+
+
+def executor_gateway_origin(executor: object, node_id: str) -> str | None:
+    """The gateway URL ``executor`` reports for ``node_id`` as given, or None when unknown."""
+    resolve = getattr(executor, "gateway_origin_for", None)
+    origin = resolve(node_id) if callable(resolve) else getattr(executor, "gateway_origin", None)
+    return origin if isinstance(origin, str) and origin else None
+
+
+def gateway_origin_matches(reported: str, bound: str) -> bool:
+    """True only when both origins parse and are the same; an unparseable one fails closed."""
+    origin = normalize_gateway_origin(reported)
+    return origin is not None and origin == normalize_gateway_origin(bound)
 
 
 def _accepts_tools_flag(executor: object) -> bool:

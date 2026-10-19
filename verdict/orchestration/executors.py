@@ -35,6 +35,7 @@ from verdict.orchestration.contracts import (
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
+    executor_gateway_origin,
     run_executor,
 )
 from verdict.orchestration.controller_operations import OwnershipError, owned_worker_command
@@ -658,6 +659,9 @@ class FaultInjectingExecutor:
         self.inner = inner
         self._state = state or FaultInjectionState(faults)
 
+    def gateway_origin_for(self, node_id: str) -> str | None:
+        return executor_gateway_origin(self.inner, node_id)
+
     @staticmethod
     def _is_worker_attempt(cwd: Path) -> bool:
         """True when ``cwd`` is a node attempt worktree named ``<node>-a<N>``."""
@@ -805,6 +809,8 @@ class DirectGatewayExecutor:
         timeout_connect: float = 10.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        # The gateway this executor sends to; the runtime checks it against the permit.
+        self.gateway_origin = self.base_url
         # Same precedence as the rest of Verdict (orchestration.run.resolve_api_key):
         # the certify workflow and operators set VERDICT_OMNIROUTE_API_KEY.
         self.api_key = api_key or next(
@@ -1686,6 +1692,9 @@ class MixedExecutor:
             if len(parts) == 2 and parts[1].isdigit():
                 return parts[0]
         return None
+
+    def gateway_origin_for(self, node_id: str) -> str | None:
+        return executor_gateway_origin(self._map.get(node_id, self._default), node_id)
 
     def _pick(self, cwd: Path) -> WorkerExecutor:
         """Return the executor for this call."""
