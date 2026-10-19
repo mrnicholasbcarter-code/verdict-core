@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from verdict.availability import AvailabilityReport
+from verdict.availability import AvailabilityCandidate, AvailabilityReport, AvailabilityState
 from verdict.availability_cache import AvailabilityCache, CacheKey
 from verdict.bounded_recovery import (
     BoundedRecoveryController,
@@ -20,6 +20,13 @@ from verdict.bounded_recovery import (
     RecoveryBounds,
 )
 from verdict.cost_ledger import CostLedger
+from verdict.eligibility import EligibilityGate
+from verdict.execution_path import (
+    ExecutionPathDecision,
+    ExecutionPathRequest,
+    optimize_execution_path,
+)
+from verdict.models import ModelInfo
 from verdict.orchestration.contracts import NodeKind, OrchestrationError, WorkGraph, WorkNode
 from verdict.orchestration.planner import choose_topology
 
@@ -237,8 +244,107 @@ def test_isolation_keys() -> None:
 
 
 # ============================================================================
-# G3.1: Least-cost eligible candidate wins
+# G3.1: Only eligible candidates are selected, in trusted shortlist order
 # ============================================================================
+
+
+def test_eligible_selection_is_price_invariant() -> None:
+    """G3.1: only eligible candidates win, in trusted shortlist order; price never ranks."""
+    from tests.test_execution_path import NOW, _cost, _offer, _plan, _receipt, _route, _slice
+    from verdict.effective_capability import AssistanceCost
+
+    cheap_model = ModelInfo(id="cheap/model", provider="cheap")
+    medium_model = ModelInfo(id="medium/model", provider="medium")
+    expensive_model = ModelInfo(id="expensive/model", provider="expensive")
+
+    def mock_cache(model_id: str) -> AvailabilityReport:
+        state = (
+            AvailabilityState.UNAVAILABLE
+            if model_id == "cheap/model"
+            else AvailabilityState.ELIGIBLE
+        )
+        model = {"cheap/model": cheap_model, "medium/model": medium_model}.get(
+            model_id, expensive_model
+        )
+        candidate = AvailabilityCandidate(model=model, state=state, source="test")
+        return AvailabilityReport(
+            candidates=(candidate,),
+            eligible=() if state is AvailabilityState.UNAVAILABLE else (candidate,),
+            source="test",
+            freshness_seconds=60,
+            errors=(),
+        )
+
+    gate = EligibilityGate(availability_source=mock_cache)
+    admitted = {m.id for m in gate.evaluate([cheap_model, medium_model, expensive_model]).admitted}
+    assert "cheap/model" not in admitted, "ineligible model must be excluded"
+    assert {"medium/model", "expensive/model"} <= admitted
+
+    cheap_plan = _plan(
+        candidate_id="cheap/model", result="insufficient", assisted=False, digest="sha256:c"
+    )
+    medium_plan = _plan(candidate_id="medium/model", digest="sha256:m")
+    expensive_plan = _plan(candidate_id="expensive/model", digest="sha256:e")
+    offers = (
+        _offer(
+            strategy="direct_cheap",
+            route=_route("cheap/model", excluded=True, eligible=False),
+            plan=cheap_plan,
+            expected=_cost(
+                "direct_cheap:cheap/model",
+                assistance=AssistanceCost(),
+                execution_tokens=1,
+                is_free=True,
+                qualified=False,
+            ),
+            hard_excluded=True,
+            is_cheap=True,
+        ),
+        _offer(
+            strategy="direct_cheap",
+            route=_route("medium/model", model="medium", provider="medium"),
+            plan=medium_plan,
+            expected=_cost(
+                "direct_cheap:medium/model",
+                assistance=medium_plan.assistance_cost,
+                execution_tokens=10_000,
+            ),
+            is_cheap=True,
+        ),
+        _offer(
+            strategy="direct_paid",
+            route=_route("expensive/model", model="expensive", provider="expensive", tier=3),
+            plan=expensive_plan,
+            expected=_cost(
+                "direct_paid:expensive/model",
+                assistance=expensive_plan.assistance_cost,
+                execution_tokens=90_000,
+            ),
+            is_paid=True,
+        ),
+    )
+
+    def select(*shortlist: str) -> ExecutionPathDecision:
+        return optimize_execution_path(
+            ExecutionPathRequest(
+                task_slice=_slice(),
+                trajectory_id="traj-104",
+                offers=offers,
+                hard_excluded_ids=frozenset({"cheap/model"}),
+                pool_receipt=_receipt(*shortlist),
+                now=NOW,
+            )
+        )
+
+    # The ineligible cheap route is ranked first, the expensive one before the cheaper one:
+    # selection is the first ELIGIBLE shortlist entry, whatever its price.
+    first = select("cheap/model", "expensive/model", "medium/model")
+    assert first.selected_candidate_id == "expensive/model"
+    assert any(r.candidate_id == "cheap/model" for r in first.rejected)
+
+    # Swapping the shortlist order flips the winner: price is not consulted.
+    second = select("cheap/model", "medium/model", "expensive/model")
+    assert second.selected_candidate_id == "medium/model"
 
 
 # ============================================================================
