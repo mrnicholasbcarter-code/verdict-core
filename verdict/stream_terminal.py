@@ -57,6 +57,7 @@ class StreamState(str, enum.Enum):
     ABORTED = "aborted"
     PROTOCOL_ERROR = "protocol_error"
     ABRUPT_EOF = "abrupt_eof"
+    TRANSPORT_ERROR = "transport_error"
 
 
 @dataclass(frozen=True)
@@ -210,7 +211,11 @@ class SSETerminalParser:
         if line.startswith(":"):
             return
         if line.startswith("data:"):
-            value = line[5:].lstrip()
+            # SSE framing: exactly one leading U+0020 after "data:" is
+            # removed; any further whitespace is payload bytes.
+            value = line[5:]
+            if value.startswith(" "):
+                value = value[1:]
             if self._pending + len(value) > self._max_buffer:
                 self._fail("stream aggregate event exceeded its limit")
             self._event_data.append(value)
@@ -357,10 +362,11 @@ class ValidatedSSEStream:
     """Validate SSE framing while yielding the original bytes unchanged.
 
     The stream owns one :class:`SSETerminalParser` and one :class:`CloseOnce`.
-    However it ends — completion, protocol violation, cancellation or explicit
-    close — it records exactly one :class:`StreamOutcome` and closes the real
-    upstream exactly once. The semantic terminal (:attr:`terminal`) is
-    independent of transport EOF; only a successful semantic terminal makes
+    However it ends — completion, protocol violation, cancellation, an
+    upstream transport error or explicit close — it records exactly one
+    :class:`StreamOutcome` and closes the real upstream exactly once. The semantic terminal
+    (:attr:`terminal`) is independent of transport EOF; only a successful
+    semantic terminal makes
     :attr:`outcome`.``checked_success`` true.
     """
 
@@ -379,7 +385,7 @@ class ValidatedSSEStream:
         )
         self._closer = CloseOnce(upstream)
         self._closed = False
-        self._abort_outcome: StreamOutcome | None = None
+        self._override_outcome: StreamOutcome | None = None
 
     def __aiter__(self) -> ValidatedSSEStream:
         return self
@@ -398,6 +404,12 @@ class ValidatedSSEStream:
         except asyncio.CancelledError:
             await self._abort()
             raise
+        except Exception as exc:
+            # Any other upstream failure (e.g. httpx.ReadTimeout) still
+            # closes the upstream once and records exactly one non-success
+            # outcome before the original exception propagates.
+            await self._record_transport_error(exc)
+            raise
         try:
             self._parser.feed_chunk(chunk)
         except StreamProtocolError:
@@ -413,8 +425,8 @@ class ValidatedSSEStream:
 
     @property
     def outcome(self) -> StreamOutcome | None:
-        if self._abort_outcome is not None:
-            return self._abort_outcome
+        if self._override_outcome is not None:
+            return self._override_outcome
         return self._parser.outcome
 
     async def aclose(self) -> None:
@@ -431,10 +443,19 @@ class ValidatedSSEStream:
         await self._abort()
 
     async def _abort(self) -> None:
+        await self._close_and_record(StreamState.ABORTED, detail=None)
+
+    async def _record_transport_error(self, exc: BaseException) -> None:
+        await self._close_and_record(StreamState.TRANSPORT_ERROR, detail=type(exc).__name__)
+
+    async def _close_and_record(self, state: StreamState, *, detail: str | None) -> None:
         cleanup_error = await self._closer.aclose()
-        if self._abort_outcome is None and self._parser.outcome is None:
-            self._abort_outcome = StreamOutcome(
-                state=StreamState.ABORTED, surface=self._parser.surface, cleanup_error=cleanup_error
+        if self._override_outcome is None and self._parser.outcome is None:
+            self._override_outcome = StreamOutcome(
+                state=state,
+                surface=self._parser.surface,
+                detail=detail,
+                cleanup_error=cleanup_error,
             )
 
 

@@ -163,6 +163,37 @@ async def test_chat_tool_call_finish_reason_is_checked_success() -> None:
     assert validated.outcome.finish_reasons == ("tool_calls",)
 
 
+async def test_sse_data_field_removes_exactly_one_leading_space_per_spec() -> None:
+    # SSE spec: only a single leading U+0020 after "data:" is framing; the
+    # rest is payload. "data:[DONE]" and "data: [DONE]" are the same event,
+    # and the parser must not lstrip payload whitespace away.
+    finish = b'{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+    done_variants = {"no-space": b"data:[DONE]\n\n", "one-space": b"data: [DONE]\n\n"}
+    for name, done_line in done_variants.items():
+        payload = b"data:" + finish + b"\n\n" + done_line
+        for chunks in ([payload], [payload[i : i + 1] for i in range(len(payload))]):
+            raw = CloseCountingStream(chunks)
+            validated = ValidatedSSEStream(raw, surface="chat")
+            await drain(validated)
+            assert validated.outcome is not None
+            assert validated.outcome.checked_success, name
+            assert raw.close_count == 1
+
+
+async def test_sse_extra_spaces_after_colon_are_payload_not_framing() -> None:
+    # "data:  [DONE]" carries " [DONE]" as data: not the chat sentinel, and
+    # not valid JSON, so the stream fails closed instead of ending cleanly.
+    payload = (
+        b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata:  [DONE]\n\n'
+    )
+    for chunks in ([payload], [payload[i : i + 1] for i in range(len(payload))]):
+        validated = ValidatedSSEStream(CloseCountingStream(chunks), surface="chat")
+        with pytest.raises(StreamProtocolError):
+            await drain(validated)
+        assert validated.outcome is not None
+        assert validated.outcome.state == StreamState.PROTOCOL_ERROR
+
+
 async def test_chat_done_without_finish_reason_fails_closed() -> None:
     validated = ValidatedSSEStream(CloseCountingStream([b"data: [DONE]\n\n"]), surface="chat")
     with pytest.raises(StreamProtocolError):
@@ -298,6 +329,29 @@ async def test_cancelled_iteration_aborts_and_closes_once() -> None:
     assert not validated.outcome.checked_success
 
 
+class ExplodingStream(CloseCountingStream):
+    """Upstream that raises a transport error instead of ending cleanly."""
+
+    async def __anext__(self) -> bytes:
+        raise httpx.ReadTimeout("read timed out")
+
+
+async def test_upstream_transport_error_closes_once_and_records_one_outcome() -> None:
+    raw = ExplodingStream([])
+    validated = ValidatedSSEStream(raw, surface="chat")
+    with pytest.raises(httpx.ReadTimeout):
+        await validated.__anext__()
+    assert raw.close_count == 1
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.TRANSPORT_ERROR
+    assert not validated.outcome.checked_success
+    # a later explicit close neither re-closes the upstream nor re-records
+    await validated.aclose()
+    await validated.aclose()
+    assert raw.close_count == 1
+    assert validated.outcome.state == StreamState.TRANSPORT_ERROR
+
+
 async def test_close_once_records_close_error_and_never_recloses() -> None:
     class LeakyStream(CloseCountingStream):
         async def aclose(self) -> None:
@@ -369,4 +423,5 @@ def test_stream_state_is_a_closed_vocabulary() -> None:
         "aborted",
         "protocol_error",
         "abrupt_eof",
+        "transport_error",
     }
