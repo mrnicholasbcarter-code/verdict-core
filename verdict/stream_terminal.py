@@ -480,12 +480,6 @@ def identity_proof_status(selected: str, served: str | None, *, attested: bool) 
     return "verified"
 
 
-def identity_allows_proof(selected: str, served: str | None, *, attested: bool) -> bool:
-    """True only when the served identity can mint proof for the selection."""
-
-    return identity_proof_status(selected, served, attested=attested) == "verified"
-
-
 __all__ = [
     "DEFAULT_MAX_EVENTS",
     "DEFAULT_MAX_PENDING_EVENT_BYTES",
@@ -497,7 +491,6 @@ __all__ = [
     "StreamProtocolError",
     "StreamState",
     "ValidatedSSEStream",
-    "identity_allows_proof",
     "identity_proof_status",
     "prime_stream",
 ]

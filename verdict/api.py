@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import hashlib
 import ipaddress
 import json
@@ -84,7 +83,6 @@ from verdict.relay import (
     build_attempts,
     dispatch_scope,
     failure_class,
-    fatal_identity_mismatch,
     idempotency_key,
     is_opaque_alias,
     protocol_for_surface,
@@ -97,6 +95,14 @@ from verdict.runtime_certification import CertificationState
 from verdict.security import bearer_matches, redact_text, validate_server_security
 from verdict.serve_path import CONTEXT_EP_REQUEST
 from verdict.session_economics import ConcreteRoute
+from verdict.stream_terminal import (
+    StreamOutcome,
+    StreamProtocolError,
+    StreamState,
+    ValidatedSSEStream,
+    identity_proof_status,
+    prime_stream,
+)
 from verdict.task_profile import TaskProfileError
 
 
@@ -109,9 +115,11 @@ class _EvidenceStreamAdapter:
         *,
         on_terminal: Any,
         event_factory: Any,
+        outcome_of: Callable[[], StreamOutcome | None],
         event_prefix: str = "chat_completion",
     ) -> None:
         self._upstream = upstream
+        self._outcome_of = outcome_of
         self._on_terminal = on_terminal
         self._event_factory = event_factory
         self._event_prefix = event_prefix
@@ -128,7 +136,7 @@ class _EvidenceStreamAdapter:
             return await self._upstream.__anext__()
         except StopAsyncIteration:
             cleanup_error = await self._cleanup()
-            self._finish(f"{self._event_prefix}_streamed", "success", "completed", cleanup_error)
+            self._finish_at_eof(cleanup_error)
             raise
         except asyncio.CancelledError:
             cleanup_error = await self._cleanup()
@@ -136,7 +144,7 @@ class _EvidenceStreamAdapter:
                 f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
             )
             raise
-        except _StreamProtocolError as exc:
+        except StreamProtocolError as exc:
             cleanup_error = await self._cleanup()
             self._finish(
                 f"{self._event_prefix}_stream_error",
@@ -160,6 +168,27 @@ class _EvidenceStreamAdapter:
     async def aclose(self) -> None:
         cleanup_error = await self._cleanup()
         self._finish(f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error)
+
+    def _finish_at_eof(self, cleanup_error: str | None) -> None:
+        """Map the validated stream's one outcome; only a semantic success is success."""
+
+        outcome = self._outcome_of()
+        cleanup_error = cleanup_error or (outcome.cleanup_error if outcome else None)
+        prefix = self._event_prefix
+        if outcome is not None and outcome.state is StreamState.SUCCESS:
+            self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
+        elif outcome is not None and outcome.state is StreamState.FAILED:
+            self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
+        elif outcome is not None and outcome.state is StreamState.INCOMPLETE:
+            self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
+        else:
+            self._finish(
+                f"{prefix}_stream_error",
+                "error",
+                "error",
+                cleanup_error,
+                error_class=outcome.state.value if outcome is not None else "missing_outcome",
+            )
 
     async def _cleanup(self) -> str | None:
         if self._closed:
@@ -197,146 +226,6 @@ class _EvidenceStreamAdapter:
         self._on_terminal(
             self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
-
-
-class _StreamProtocolError(RuntimeError):
-    """Raised when an upstream stream is malformed or ends without a terminal event."""
-
-    code = "malformed_stream"
-
-
-class _ValidatedSSEStream:
-    """Validate SSE framing incrementally while yielding the original bytes unchanged."""
-
-    def __init__(
-        self,
-        upstream: AsyncIterator[bytes],
-        *,
-        surface: str,
-        max_bytes: int = 16 * 1024 * 1024,
-        max_buffer: int = 256 * 1024,
-        max_events: int = 100_000,
-    ) -> None:
-        self._upstream = upstream
-        self._surface = surface
-        self._max_bytes = max_bytes
-        self._max_buffer = max_buffer
-        self._max_events = max_events
-        self._decoder = codecs.getincrementaldecoder("utf-8")()
-        self._buffer = ""
-        self._event_data: list[str] = []
-        self._bytes = 0
-        self._events = 0
-        self._terminal = False
-        self._closed = False
-
-    def __aiter__(self) -> _ValidatedSSEStream:
-        return self
-
-    async def __anext__(self) -> bytes:
-        try:
-            chunk = await self._upstream.__anext__()
-        except StopAsyncIteration:
-            self._finish_text(self._decoder.decode(b"", final=True))
-            if self._event_data:
-                self._finish_event()
-            if not self._terminal:
-                raise _StreamProtocolError("stream ended without a terminal event") from None
-            raise
-        except UnicodeDecodeError as exc:
-            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
-        if not isinstance(chunk, bytes):
-            raise _StreamProtocolError("upstream stream yielded a non-byte chunk")
-        self._bytes += len(chunk)
-        if self._bytes > self._max_bytes:
-            raise _StreamProtocolError("stream exceeded the aggregate byte limit")
-        try:
-            decoded = self._decoder.decode(chunk, final=False)
-        except UnicodeDecodeError as exc:
-            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
-        self._finish_text(decoded)
-        return chunk
-
-    def _finish_text(self, text: str) -> None:
-        self._buffer += text
-        if len(self._buffer) > self._max_buffer:
-            raise _StreamProtocolError("stream event buffer exceeded its limit")
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            if len(line) > self._max_buffer:
-                raise _StreamProtocolError("stream line exceeded its limit")
-            self._consume_line(line.rstrip("\r"))
-
-    def _consume_line(self, line: str) -> None:
-        if line == "":
-            if self._event_data:
-                self._finish_event()
-            return
-        if line.startswith(":"):
-            return
-        if line.startswith("data:"):
-            self._event_data.append(line[5:].lstrip())
-            return
-        # ``event:``, ``id:``, and ``retry:`` are valid SSE metadata. Unknown
-        # fields are ignored by the SSE standard and remain wire-transparent.
-
-    def _finish_event(self) -> None:
-        data = "\n".join(self._event_data)
-        self._event_data.clear()
-        self._events += 1
-        if self._events > self._max_events:
-            raise _StreamProtocolError("stream exceeded its event limit")
-        if self._terminal:
-            raise _StreamProtocolError("stream emitted data after its terminal event")
-        if self._surface == "chat" and data == "[DONE]":
-            self._terminal = True
-            return
-        try:
-            parsed = json.loads(data)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise _StreamProtocolError("stream event was not valid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise _StreamProtocolError("stream event must be a JSON object")
-        if self._surface == "responses":
-            event_type = parsed.get("type")
-            if event_type in {"response.completed", "response.failed", "response.incomplete"}:
-                self._terminal = True
-        else:
-            choices = parsed.get("choices")
-            if isinstance(choices, list) and any(
-                isinstance(choice, dict) and choice.get("finish_reason") is not None
-                for choice in choices
-            ):
-                self._terminal = True
-
-    @property
-    def terminal(self) -> bool:
-        return self._terminal
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        close = getattr(self._upstream, "aclose", None)
-        if callable(close):
-            await close()
-
-
-async def _prime_stream(result: StreamedUpstreamResponse) -> StreamedUpstreamResponse:
-    """Read the first upstream chunk before committing to a client stream."""
-
-    body = result.body
-    try:
-        first = await body.__anext__()
-    except StopAsyncIteration as exc:
-        raise _StreamProtocolError("stream ended before its first byte") from exc
-
-    async def primed_body() -> AsyncIterator[bytes]:
-        yield first
-        async for chunk in body:
-            yield chunk
-
-    return replace(result, body=primed_body())
 
 
 class _EvidenceStreamingResponse(StreamingResponse):
@@ -1975,6 +1864,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     started_at = monotonic()
     result: BufferedUpstreamResponse | StreamedUpstreamResponse | None = None
     attempts_used: list[dict[str, Any]] = []
+    validated_stream: ValidatedSSEStream | None = None
     last_error: BaseException | None = None
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
@@ -2115,14 +2005,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
             else:
                 result = await proxy_instance.chat(forwarded, idempotency_key=request_key)
+            validated_stream = None
             if isinstance(result, StreamedUpstreamResponse):
-                result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
-                result = await _prime_stream(result)
+                validated_stream = ValidatedSSEStream(result.body, surface=surface)
+                result = replace(result, body=await prime_stream(validated_stream))
             if HealthCache(default_cache_path()).revocation_epoch(proof.scope) != permit.epoch:
                 if isinstance(result, StreamedUpstreamResponse):
-                    close = getattr(result.body, "aclose", None)
-                    if callable(close):
-                        await close()
+                    assert validated_stream is not None
+                    await validated_stream.aclose()
                 raise RuntimeError("dispatch permit revoked after commit; possibly sent")
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
@@ -2152,7 +2042,10 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result=result,
             )
             served_model = result.actual_route.model_id if result.actual_route is not None else None
-            if fatal_identity_mismatch(attempt.model, served_model):
+            identity_status = identity_proof_status(
+                attempt.model, served_model, attested=result.actual_route is not None
+            )
+            if identity_status == "identity_mismatch":
                 HealthCache(default_cache_path()).record_revocation(
                     proof.scope,
                     route_id=proof.route_id,
@@ -2182,6 +2075,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         "served_model": served_model,
                     },
                 )
+                if validated_stream is not None:
+                    await validated_stream.aclose()
                 result = None
                 last_error = RuntimeError(
                     f"identity mismatch: selected {attempt.model!r}, served {served_model!r}"
@@ -2341,6 +2236,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             content=result.body, status_code=result.status_code, headers=response_headers
         )
     if isinstance(result, StreamedUpstreamResponse):
+        assert validated_stream is not None
 
         def finalize_stream(event: Any) -> None:
             _finish_evidence(route_evidence, event, evidence_key)
@@ -2352,6 +2248,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             cleanup_error: str | None,
             error_class: str | None,
         ) -> Any:
+            stream_outcome = validated_stream.outcome
             details: dict[str, Any] = {
                 "cleanup_status": "error" if cleanup_error else "closed",
                 "cleanup_attempted": True,
@@ -2377,7 +2274,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "actual_route": result.actual_route.to_dict()
                     if result.actual_route is not None
                     else None,
-                    "actual_route_status": (response_actual_route_status(result)),
+                    "actual_route_status": response_actual_route_status(result),
+                    "identity_proof_status": identity_proof_status(
+                        attempts_used[-1]["model"],
+                        result.actual_route.model_id if result.actual_route else None,
+                        attested=result.actual_route is not None,
+                    ),
+                    "stream_state": stream_outcome.state.value
+                    if stream_outcome is not None
+                    else None,
                 },
             )
 
@@ -2385,6 +2290,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             result.body,
             on_terminal=finalize_stream,
             event_factory=stream_event,
+            outcome_of=lambda: validated_stream.outcome,
             event_prefix=event_prefix,
         )
 

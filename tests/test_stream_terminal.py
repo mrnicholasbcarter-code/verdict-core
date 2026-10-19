@@ -28,7 +28,6 @@ from verdict.stream_terminal import (
     StreamProtocolError,
     StreamState,
     ValidatedSSEStream,
-    identity_allows_proof,
     identity_proof_status,
     prime_stream,
 )
@@ -131,10 +130,18 @@ async def test_sse_terminal_identity_and_close_once_are_chunking_independent() -
         assert outcome.served_model == "agy/test-model"
         assert outcome.terminal_event == "chat_done"
     # identity: only the matching, attested selection mints proof
-    assert identity_allows_proof("agy/test-model", reference.served_model, attested=True)
-    assert not identity_allows_proof("agy/other-model", reference.served_model, attested=True)
-    assert not identity_allows_proof("agy/test-model", reference.served_model, attested=False)
-    assert not identity_allows_proof("agy/test-model", None, attested=True)
+    assert (
+        identity_proof_status("agy/test-model", reference.served_model, attested=True) == "verified"
+    )
+    assert (
+        identity_proof_status("agy/other-model", reference.served_model, attested=True)
+        != "verified"
+    )
+    assert (
+        identity_proof_status("agy/test-model", reference.served_model, attested=False)
+        != "verified"
+    )
+    assert identity_proof_status("agy/test-model", None, attested=True) != "verified"
 
 
 async def test_chat_finish_usage_done_ordering_is_success() -> None:
@@ -370,7 +377,7 @@ def test_identity_e1_substitution_never_mints_proof() -> None:
         identity_proof_status("agy/gemini-flash", "agy/gemini-pro", attested=True)
         == "identity_mismatch"
     )
-    assert not identity_allows_proof("agy/gemini-flash", "agy/gemini-pro", attested=True)
+    assert identity_proof_status("agy/gemini-flash", "agy/gemini-pro", attested=True) != "verified"
     # a provider-local model id preserves the namespaced selection
     assert identity_proof_status("agy/gemini-flash", "gemini-flash", attested=True) == "verified"
     assert fatal_identity_mismatch("agy/gemini-flash", "gemini-pro")
@@ -379,8 +386,8 @@ def test_identity_e1_substitution_never_mints_proof() -> None:
 def test_identity_e2_opaque_alias_stays_unverifiable() -> None:
     for alias in ("auto", "combo/x", "virtual/y", "router/z", "model:free"):
         assert identity_proof_status(alias, alias, attested=True) == "opaque_alias"
-        assert not identity_allows_proof(alias, alias, attested=True)
-        assert not identity_allows_proof(alias, "concrete/member", attested=True)
+        assert identity_proof_status(alias, alias, attested=True) != "verified"
+        assert identity_proof_status(alias, "concrete/member", attested=True) != "verified"
 
 
 def test_identity_e3_missing_attestation_is_unavailable() -> None:
@@ -388,7 +395,9 @@ def test_identity_e3_missing_attestation_is_unavailable() -> None:
     assert identity_proof_status("agy/gemini-flash", "agy/gemini-flash", attested=False) == (
         "unavailable"
     )
-    assert identity_allows_proof("agy/gemini-flash", "agy/gemini-flash", attested=True)
+    assert (
+        identity_proof_status("agy/gemini-flash", "agy/gemini-flash", attested=True) == "verified"
+    )
 
 
 class _Request:
