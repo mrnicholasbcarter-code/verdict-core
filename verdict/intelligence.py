@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import time
@@ -69,6 +70,8 @@ from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
+
+_LOG = logging.getLogger(__name__)
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
@@ -261,6 +264,22 @@ def prepared_task_profile(
         planner_caps = ()
     requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
     return requirements, profile_task(task, context=context, requirements=requirements)
+
+
+def _omission_reason_counts(omissions: Sequence[str]) -> dict[str, int]:
+    """Counts only, by fixed reason code — never the raw root path or run id.
+
+    Every omission string from :func:`load_verified_outcome_observations` is
+    ``<path-or-id-segments>:<reason_code>``; the reason code is always the
+    last colon-separated segment. This is the only part a public receipt may
+    carry; the full omission string (which can contain a local filesystem
+    path) stays in the local log only.
+    """
+    counts: dict[str, int] = {}
+    for item in omissions:
+        reason = item.rsplit(":", 1)[-1] if item else "unknown"
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 class IntelligenceService:
@@ -920,14 +939,18 @@ class IntelligenceService:
         # build_candidate_pool (order-only, never membership). Loading never
         # blocks admission: a failure here means no verified history, not a
         # degraded admit — but the failure/omissions are disclosed in the
-        # receipt (history_disclosure), never silently swallowed.
+        # receipt (history_disclosure), never silently swallowed. The receipt
+        # reaches API callers, so it carries counts and fixed reason codes
+        # only — never a raw root path or an exception message (those stay in
+        # the local log).
         outcomes: tuple[OutcomeObservation, ...] = ()
         history_disclosure: dict[str, Any] = {
             "status": "ok",
             "reason": None,
-            "error": None,
+            "error_class": None,
             "observations_count": 0,
-            "omissions": [],
+            "omitted": 0,
+            "reasons": {},
         }
         try:
             history = load_verified_outcome_observations(
@@ -935,11 +958,13 @@ class IntelligenceService:
             )
             outcomes = history.observations
             history_disclosure["observations_count"] = len(history.observations)
-            history_disclosure["omissions"] = list(history.omissions)
+            history_disclosure["omitted"] = len(history.omissions)
+            history_disclosure["reasons"] = _omission_reason_counts(history.omissions)
         except Exception as exc:
+            _LOG.warning("BOD-438 verified-history load failed: %s", exc)
             history_disclosure["status"] = "unavailable"
             history_disclosure["reason"] = "history_unavailable"
-            history_disclosure["error"] = type(exc).__name__
+            history_disclosure["error_class"] = type(exc).__name__
         pool = build_candidate_pool(
             advertised,
             task_profile=profile,

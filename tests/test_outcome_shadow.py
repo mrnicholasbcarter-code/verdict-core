@@ -944,11 +944,13 @@ def test_apply_candidate_pool_wires_verified_outcomes_into_demotion_order(
 
 
 def test_history_loader_failure_discloses_reason_and_leaves_admission_unchanged(
-    monkeypatch: pytest.MonkeyPatch, seed_copy: Path
+    monkeypatch: pytest.MonkeyPatch, seed_copy: Path, tmp_path: Path
 ) -> None:
     """BOD-438 S10: a failing verified-history loader never silently swallows
     the error. Admission stays unchanged (order-only demotion failed closed to
-    'no history'), but the candidate-pool receipt discloses the failure."""
+    'no history'); the candidate-pool receipt discloses a fixed reason code
+    and the exception class only — never the exception message or a local
+    filesystem path, because this receipt reaches API callers."""
     import verdict.intelligence as intelligence_module
 
     class _NoSignals:
@@ -956,7 +958,9 @@ def test_history_loader_failure_discloses_reason_and_leaves_admission_unchanged(
             return []
 
     def _raise(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("boom: simulated loader failure")
+        # The message deliberately embeds a local path to prove it never
+        # reaches the serialized receipt.
+        raise RuntimeError(f"boom: cannot read {tmp_path / 'secret-run-dir'}")
 
     monkeypatch.setattr(intelligence_module, "load_verified_outcome_observations", _raise)
 
@@ -991,16 +995,26 @@ def test_history_loader_failure_discloses_reason_and_leaves_admission_unchanged(
     assert disclosure is not None
     assert disclosure["status"] == "unavailable"
     assert disclosure["reason"] == "history_unavailable"
-    assert disclosure["error"] == "RuntimeError"
+    assert disclosure["error_class"] == "RuntimeError"
+    assert "error" not in disclosure
+    serialized = json.dumps(disclosure, default=str)
+    assert str(tmp_path) not in serialized
+    assert "secret-run-dir" not in serialized
 
 
-def test_history_loader_success_discloses_observation_count_and_omissions(seed_copy: Path) -> None:
-    """A successful load discloses its observation count and omissions, never
-    silent success."""
+def test_history_loader_success_discloses_observation_count_and_omissions(
+    seed_copy: Path, tmp_path: Path
+) -> None:
+    """A successful load discloses observation/omission counts by fixed
+    reason code only — never the raw root path (which would leak
+    tmp_path / a run id into a receipt that reaches API callers)."""
 
     class _NoSignals:
         def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
             return []
+
+    unreadable_root = tmp_path / "an-unreadable-run"
+    unreadable_root.mkdir()
 
     routes = (FREE_TOOLS, PAID_TOOLS)
     store = _store(routes)
@@ -1015,7 +1029,7 @@ def test_history_loader_success_discloses_observation_count_and_omissions(seed_c
         log_full_task=False,
         discovery_ttl=60,
         allow_offline=True,
-        outcome_shadow_roots=[seed_copy],
+        outcome_shadow_roots=[seed_copy, unreadable_root],
         admit_now=NOW,
         decision_signal_provider=_NoSignals(),
         metadata_snapshot=store,
@@ -1030,6 +1044,12 @@ def test_history_loader_success_discloses_observation_count_and_omissions(seed_c
     assert disclosure is not None
     assert disclosure["status"] == "ok"
     assert disclosure["reason"] is None
-    assert disclosure["error"] is None
+    assert disclosure["error_class"] is None
     assert isinstance(disclosure["observations_count"], int)
-    assert isinstance(disclosure["omissions"], list)
+    assert disclosure["omitted"] >= 1
+    assert isinstance(disclosure["reasons"], dict)
+    assert sum(disclosure["reasons"].values()) == disclosure["omitted"]
+    assert "missing_receipt_or_events" in disclosure["reasons"]
+    serialized = json.dumps(disclosure, default=str)
+    assert str(tmp_path) not in serialized
+    assert "an-unreadable-run" not in serialized
