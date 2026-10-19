@@ -1573,18 +1573,22 @@ class DagRuntime:
             proof.expires_at,
             proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
         )
-        now = self.now()
-        permit = await asyncio.to_thread(
-            lambda: HealthCache(default_cache_path()).commit_dispatch(
+
+        def commit() -> DispatchPermit | None:
+            cache = HealthCache(default_cache_path())
+            # Read the clock in the thread, at commit time: a late thread must not
+            # commit an already expired proof under an earlier timestamp.
+            return cache.commit_dispatch(
                 proof.scope,
                 route_id=proof.route_id,
                 attempt_id=attempt_id,
                 authorization_digest=proof.authorization_digest,
                 expected_epoch=proof.epoch,
                 proof_deadline=deadline,
-                now=now,
+                now=self.now(),
             )
-        )
+
+        permit = await asyncio.to_thread(commit)
         if permit is not None:
             self.events.emit(
                 "controller",

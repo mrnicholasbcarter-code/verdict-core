@@ -461,3 +461,26 @@ async def test_permit_cache_calls_do_not_block_the_event_loop(repo: Path, monkey
     assert ex.states_at_send == [PERMIT_STATE_MAYBE_SENT] * 2
     assert _cache().revocation_epoch(_scope("cc/s")) == 1
     assert max(gaps) < 0.25, f"event loop stalled {max(gaps):.2f}s on a permit cache call"
+
+
+async def test_permit_commit_reads_the_clock_at_commit_time(repo: Path, monkeypatch: Any) -> None:
+    """A commit delayed past the proof's expiry must not mint with a stale timestamp."""
+    from verdict.orchestration import runtime as runtime_module
+
+    clock = {"now": NOW}
+
+    class DelayedCache(HealthCache):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # The worker thread got scheduled late: the passport (ttl 300 s) expired.
+            clock["now"] = NOW + timedelta(seconds=400)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "HealthCache", DelayedCache)
+    ex = PermitSpy()
+    rt, ev = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    rt.now = lambda: clock["now"]
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.calls == []
+    assert ev.of("failure", "a")[0]["category"] == "permit_denied"
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
