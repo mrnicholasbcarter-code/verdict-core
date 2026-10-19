@@ -79,3 +79,10 @@ remain responsible for stopping and closing upstream work where possible.
 
 CLI selection does not mint permits. Worker/orchestration handoffs are phase 2b:
 they need an admitted node-proof handoff before adopting the same commit seam.
+
+## Addendum: Dispatch scope binding (reduced)
+
+`DispatchScope` binds the gateway origin, the selected route (provider, model and
+route id, hashed into `config_generation`) and the task profile digest. It never
+contains key material. It does not represent the full effective configuration;
+a full effective-config generation is a follow-up.
