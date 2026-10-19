@@ -74,6 +74,7 @@ def test_gateway_key_rejection_stops_without_cache_poison(tmp_path: Path, status
         clock=lambda: NOW,
         epsilon=0,
         gateway_auth_check=check,
+        concurrency=1,  # the sequential guarantee: no sibling is dispatched after the 401
     ).run_once()
     assert stats.auth_outage
     assert stats.stopped_reason == "auth_outage"
@@ -281,3 +282,46 @@ def test_gateway_confirmation_timeout_is_bounded_by_wall_budget(tmp_path: Path) 
     assert stats.auth_outage
     assert len(calls) == 1
     assert calls == [1.0]
+
+
+def test_concurrent_gateway_key_rejection_drops_every_in_flight_probe(tmp_path: Path) -> None:
+    """BOD-297/S05-D: 4 probes in flight when the outage is confirmed.
+
+    A barrier holds all 4 chat calls until every one is dispatched, so all 4
+    are in flight before any 401 returns. The confirmed outage writes nothing
+    for any of them and no 5th probe is admitted. Cost accepted by the parent:
+    up to concurrency - 1 extra $0 401s per cycle during a gateway-key outage.
+    """
+    import threading
+
+    cache = HealthCache(tmp_path / "cache.json")
+    barrier = threading.Barrier(4, timeout=5.0)
+    calls: list[str] = []
+    checks: list[float] = []
+
+    def transport(rid: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append(rid)
+        barrier.wait()
+        return ProbeExchange(http_status=401, ok=False)
+
+    def check(timeout: float) -> ProbeExchange:
+        checks.append(timeout)
+        return ProbeExchange(http_status=401, ok=False)
+
+    routes = [AdmittedRoute(f"p{i}/a", f"p{i}", "subscription") for i in range(4)]
+    routes.append(AdmittedRoute("p4/a", "p4", "subscription"))
+    stats = Prober(
+        cache,
+        lambda: routes,
+        transport,
+        clock=lambda: NOW,
+        epsilon=0,
+        gateway_auth_check=check,
+        concurrency=4,
+    ).run_once()
+    assert len(calls) == 4  # no 5th probe admitted after the confirmation
+    assert len(checks) == 1
+    assert stats.requests == 4 + 1
+    assert stats.auth_outage
+    assert stats.stopped_reason == "auth_outage"
+    assert HealthCache(cache.path).routes() == {}

@@ -398,28 +398,35 @@ def test_crash_mid_cycle_keeps_partial_results(tmp_path: Path) -> None:
     class Boom:
         def __init__(self) -> None:
             self.calls = 0
+            self.raised: set[str] = set()
 
         def __call__(self, route_id: str, phase: str, timeout: float) -> ProbeExchange:
             self.calls += 1
             if self.calls > 3:
+                self.raised.add(route_id)
                 raise RuntimeError("crash")
             return _ok(tool=(phase == "tool"))
 
+    boom = Boom()
     prober = Prober(
         cache=HealthCache(path, bucket_capacity=100),
         routes_loader=lambda: routes,
-        transport=Boom(),
+        transport=boom,
         max_requests=100,
         concurrency=1,
         clock=lambda: NOW,
         monotonic=lambda: 0.0,
     )
-    with pytest.raises(RuntimeError, match="crash"):
-        prober.run_once()
+    # BOD-297/S05-D: a probe error is per route; the cycle continues and finishes.
+    prober.run_once()
     kept = HealthCache(path)
     assert len(kept.routes()) >= 1
     for entry in kept.routes().values():
         assert entry.chat_ok is True
+    marker = json.loads((tmp_path / "verified-refresh.json").read_text())
+    errored = {rid for rid, o in marker["outcomes"].items() if o["refresh_reason"] == "probe_error"}
+    assert boom.raised and errored == boom.raised
+    assert not boom.raised & set(kept.routes())
 
 
 def test_two_step_probe_replays_recorded_outcomes(tmp_path: Path) -> None:
