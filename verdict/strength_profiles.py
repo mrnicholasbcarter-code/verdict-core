@@ -12,11 +12,14 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from verdict.candidate_pool import OutcomeObservation
 
 STRENGTH_PROFILE_SCHEMA_VERSION = "1"
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
@@ -305,11 +308,82 @@ def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class TaskHistoryScore:
+    """Smoothed, task-specific verified-history score for one route (BOD-438).
+
+    ``score`` is the Bayesian-smoothed success rate over the 30-day decayed
+    window; with no qualifying observations it is the 0.5 prior. ``observed_n``
+    is the count of distinct verified, quality-scored observations inside the
+    window; ``weighted_n`` is their decay-weighted sum. ``demoted`` is True
+    only when ``score < 0.4`` and ``observed_n >= 3``; demotion never removes
+    a route from the candidate pool, it only reorders the admitted set.
+    """
+
+    score: float
+    observed_n: int
+    weighted_n: float
+    demoted: bool
+
+
+_HISTORY_WINDOW_DAYS = 30
+_HISTORY_HALF_LIFE_DAYS = 7
+_DEMOTION_SCORE_THRESHOLD = 0.4
+_DEMOTION_MIN_OBSERVED_N = 3
+_HISTORY_PRIOR = 0.5
+
+
+def score_task_history(
+    observations: Sequence[OutcomeObservation], *, route_id: str, task_family: str, as_of: datetime
+) -> TaskHistoryScore:
+    """Smoothed verified-history score for ``route_id``/``task_family`` as of ``as_of``.
+
+    Only observations with a non-``None`` ``quality_credit`` and a non-``None``
+    ``observed_at`` enter the score — unverified/transient rows never count.
+    Each qualifying observation's age must fall in the half-open window
+    ``[0, 30d)`` before ``as_of``; it is weighted ``2 ** (-age_days / 7)``
+    (a 7-day half-life). With no qualifying observations the score is the 0.5
+    prior with ``observed_n = 0`` and ``demoted = False``.
+    """
+    as_of = _utc(as_of, "as_of")
+    weighted_accepted = 0.0
+    weighted_partial = 0.0
+    weighted_eligible = 0.0
+    observed_n = 0
+    for obs in observations:
+        if obs.route_id != route_id or obs.task_family != task_family:
+            continue
+        if obs.quality_credit is None or obs.observed_at is None:
+            continue
+        observed_at = _utc(obs.observed_at, "observed_at")
+        age_days = (as_of - observed_at).total_seconds() / 86400.0
+        if not (0 <= age_days < _HISTORY_WINDOW_DAYS):
+            continue
+        weight = 2.0 ** (-age_days / _HISTORY_HALF_LIFE_DAYS)
+        observed_n += 1
+        weighted_eligible += weight
+        if obs.quality_credit == 1.0:
+            weighted_accepted += weight
+        elif obs.quality_credit == 0.5:
+            weighted_partial += weight
+
+    if observed_n == 0:
+        return TaskHistoryScore(score=_HISTORY_PRIOR, observed_n=0, weighted_n=0.0, demoted=False)
+
+    score = (weighted_accepted + 0.5 * weighted_partial + 1.0) / (weighted_eligible + 2.0)
+    demoted = score < _DEMOTION_SCORE_THRESHOLD and observed_n >= _DEMOTION_MIN_OBSERVED_N
+    return TaskHistoryScore(
+        score=score, observed_n=observed_n, weighted_n=weighted_eligible, demoted=demoted
+    )
+
+
 __all__ = [
     "STRENGTH_PROFILE_SCHEMA_VERSION",
     "StrengthAggregate",
     "StrengthFailureClass",
     "StrengthObservation",
     "StrengthProfileError",
+    "TaskHistoryScore",
     "aggregate_strength",
+    "score_task_history",
 ]

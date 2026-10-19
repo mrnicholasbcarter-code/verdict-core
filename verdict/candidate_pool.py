@@ -236,6 +236,10 @@ class OutcomeObservation:
     task_family: str
     success: bool
     fingerprint_digest: str | None = None
+    # BOD-438: only a verified checker result supplies these; None means
+    # unscored and must never enter score_task_history's denominator.
+    observed_at: datetime | None = None
+    quality_credit: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +247,8 @@ class OutcomeObservation:
             "task_family": self.task_family,
             "success": self.success,
             "fingerprint_digest": self.fingerprint_digest,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "quality_credit": self.quality_credit,
         }
 
 
