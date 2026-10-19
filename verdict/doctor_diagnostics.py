@@ -1151,56 +1151,15 @@ _RUNTIME_UNITS = (
 _QUALIFIER_UNITS = ("verdict-prove-at-rest.service", "verdict-census.service")
 
 
-def _git_head(checkout: Path) -> str | None:
-    """Commit of a checkout or worktree, read from its git files (no git binary)."""
-    git = checkout / ".git"
-    if git.is_file():
-        pointer = git.read_text().strip()
-        if not pointer.startswith("gitdir:"):
-            return None
-        git = (checkout / pointer.removeprefix("gitdir:").strip()).resolve()
-    head_file = git / "HEAD"
-    if not head_file.is_file():
-        return None
-    head = head_file.read_text().strip()
-    if not head.startswith("ref:"):
-        return head or None
-    ref = head.removeprefix("ref:").strip()
-    common = git
-    if (git / "commondir").is_file():
-        common = (git / (git / "commondir").read_text().strip()).resolve()
-    for base in (git, common):
-        if (base / ref).is_file():
-            return (base / ref).read_text().strip() or None
-    packed = common / "packed-refs"
-    if packed.is_file():
-        for line in packed.read_text().splitlines():
-            sha, _, name = line.partition(" ")
-            if name == ref:
-                return sha
-    return None
+def _same_build(package: Path, reviewed: Path) -> bool:
+    """A copy is the reviewed build only when its recorded build and content match."""
+    from verdict.census_passports_service import census_runtime_version, package_build
 
-
-def package_build(package: Path) -> str:
-    """Recorded build of a ``verdict`` package: the git commit it was built from.
-
-    An installed distribution records it in ``direct_url.json``; a checkout in
-    its git HEAD. A copy with neither (the census runtime copy) is unrecorded.
-    """
-    root = package.parent
-    for dist in sorted(root.glob("verdict_core-*.dist-info")):
-        try:
-            payload = json.loads((dist / "direct_url.json").read_text())
-        except (OSError, ValueError):
-            continue
-        commit = payload.get("vcs_info", {}).get("commit_id") if isinstance(payload, dict) else None
-        if isinstance(commit, str) and commit:
-            return f"git {commit[:12]}"
-    try:
-        commit = _git_head(root)
-    except OSError:
-        commit = None
-    return f"git {commit[:12]}" if commit else "unrecorded"
+    if package == reviewed:
+        return True
+    if package_build(package) != package_build(reviewed) or package_build(package) == "unrecorded":
+        return False
+    return census_runtime_version(package.parent) == census_runtime_version(reviewed.parent)
 
 
 def _unit_environment(value: str) -> dict[str, str]:
@@ -1221,12 +1180,15 @@ def installed_runtime_rows(
 ) -> list[dict[str, str]]:
     """Doctor rows: build, imported package, gateway and state scope per installed unit.
 
-    A unit fails when the package its ExecStart interpreter imports from its
-    WorkingDirectory is not ``reviewed_package`` (default: the package this
-    doctor runs from) or when its effective ``VERDICT_HOME`` differs from
-    ``state_home``. More than one loaded qualification loop is a warning.
-    Units that are not loaded are skipped, so a CI runner gets no rows.
+    A unit fails when its ExecStart interpreter's own install or the package
+    it imports from its WorkingDirectory is not the reviewed build (default:
+    the package this doctor runs from), or when its state scope differs from
+    ``state_home``. Qualification units share one coordinator lock and cycle
+    ledger only on the reviewed build with the same state scope; otherwise
+    they are independent loops and the owner row is a warning. Units that are
+    not loaded are skipped, so a CI runner gets no rows.
     """
+    from verdict.census_passports_service import package_build
     from verdict.paths import verdict_home
 
     unit_props = unit_props or _systemctl_show_props
@@ -1236,17 +1198,20 @@ def installed_runtime_rows(
     reviewed_build = package_build(reviewed)
     rows: list[dict[str, str]] = []
     qualifiers: list[str] = []
+    independent: list[str] = []
     for unit in _RUNTIME_UNITS:
         props = unit_props(unit)
         if props.get("LoadState", "not-found") != "loaded":
             continue
-        if unit in _QUALIFIER_UNITS:
-            qualifiers.append(unit)
         label = f"Runtime {unit.removeprefix('verdict-').removesuffix('.service')}"
         cwd = props.get("WorkingDirectory", "")
         interpreter = _parse_execstart_interpreter(props.get("ExecStart", ""))
-        imported = resolve(interpreter, cwd) if cwd and interpreter else None
-        if imported is None:
+        imported = configured = None
+        if cwd and interpreter:
+            imported = resolve(interpreter, cwd)
+            with tempfile.TemporaryDirectory() as neutral_cwd:
+                configured = resolve(interpreter, neutral_cwd)
+        if imported is None or configured is None:
             rows.append(
                 {
                     "label": label,
@@ -1256,6 +1221,9 @@ def installed_runtime_rows(
                     f" (interpreter {interpreter}, cwd {cwd or 'unset'})",
                 }
             )
+            if unit in _QUALIFIER_UNITS:
+                qualifiers.append(unit)
+                independent.append(unit)
             continue
         environment = _unit_environment(props.get("Environment", ""))
         unit_scope = verdict_home({"HOME": str(user_home), **environment})
@@ -1263,10 +1231,29 @@ def installed_runtime_rows(
         package = Path(imported).resolve()
         build = package_build(package)
         problems = []
-        if package != reviewed:
-            problems.append(f"imports {package} ({build}), not the reviewed build {reviewed}")
+        if Path(configured).resolve() != reviewed:
+            problems.append(f"interpreter {interpreter} installs {configured}")
+        if not _same_build(package, reviewed):
+            difference = (
+                "content differs from"
+                if build == reviewed_build and build != "unrecorded"
+                else "not"
+            )
+            problems.append(
+                f"imports {package} ({build}), {difference} the reviewed build {reviewed}"
+            )
         if unit_scope != scope:
             problems.append(f"state scope {unit_scope}, not {scope}")
+        unit_cache = environment.get("VERDICT_HEALTH_CACHE")
+        if (
+            unit_cache
+            and Path(unit_cache).expanduser().resolve() != (scope / "health-cache.json").resolve()
+        ):
+            problems.append(f"health cache {unit_cache}, not {scope / 'health-cache.json'}")
+        if unit in _QUALIFIER_UNITS:
+            qualifiers.append(unit)
+            if problems:
+                independent.append(unit)
         facts = f"package {package}, build {build}, gateway {gateway}, state {unit_scope}"
         rows.append(
             {
@@ -1281,18 +1268,22 @@ def installed_runtime_rows(
                 ),
             }
         )
-    if len(qualifiers) > 1:
+    if independent and len(qualifiers) > 1:
         rows.append(
             {
                 "label": "Qualification owner",
                 "status": "warning",
                 "detail": "independent qualification loops "
                 + ", ".join(qualifiers)
-                + "; only one unit may own qualification",
+                + f"; off the shared coordinator: {', '.join(independent)}",
             }
         )
     elif qualifiers:
         rows.append(
-            {"label": "Qualification owner", "status": "ok", "detail": f"{qualifiers[0]} only"}
+            {
+                "label": "Qualification owner",
+                "status": "ok",
+                "detail": f"reviewed build and state scope {scope}: " + ", ".join(qualifiers),
+            }
         )
     return rows

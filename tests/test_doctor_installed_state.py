@@ -554,14 +554,21 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
     assert "verdict-census.service" in owner["detail"]
     assert "verdict-prove-at-rest.service" in owner["detail"]
 
-    # Converged host: every unit on the reviewed build and scope, one qualifier.
+    # Converged host: every unit on the reviewed build and scope. The census
+    # runtime copy counts only when it records the reviewed build and content.
     converged = {
         name: _unit(
             reviewed.parent, tool_python, unit["ExecStart"].split(" ; ")[1].split(" ", 1)[1]
         )
         for name, unit in units.items()
-        if name != "verdict-census.service"
     }
+    converged["verdict-census.service"] = _unit(
+        runtime, tool_python, "-m verdict census --max-per-provider 2"
+    )
+    (runtime / "verdict" / "__init__.py").write_text('__version__ = "0.5.0"\n')
+    (runtime / "verdict-build.json").write_text(
+        f'{{"build": "git {reviewed_commit[:12]}", "source": "{reviewed}"}}'
+    )
     rows = dd.installed_runtime_rows(
         unit_props=lambda unit: converged.get(unit, {"LoadState": "not-found"}),
         resolve=resolve,
@@ -572,3 +579,49 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
     assert [row["status"] for row in rows] == ["ok"] * len(rows), rows
     owner = next(row for row in rows if row["label"] == "Qualification owner")
     assert "verdict-prove-at-rest.service" in owner["detail"]
+    assert "verdict-census.service" in owner["detail"]
+
+    # A separate health cache is a separate coordinator lock and ledger.
+    converged["verdict-census.service"]["Environment"] = (
+        f"VERDICT_HEALTH_CACHE={tmp_path / 'elsewhere' / 'health-cache.json'}"
+    )
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda unit: converged.get(unit, {"LoadState": "not-found"}),
+        resolve=resolve,
+        reviewed_package=reviewed,
+        home=tmp_path / "home",
+        state_home=tmp_path / "home" / ".verdict",
+    )
+    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    assert census["status"] == "failed" and "health cache" in census["detail"]
+    owner = next(row for row in rows if row["label"] == "Qualification owner")
+    assert owner["status"] == "warning"
+    converged["verdict-census.service"]["Environment"] = ""
+
+    # A copy whose content drifted from the reviewed build fails even with a stamp.
+    (runtime / "verdict" / "extra.py").write_text("STALE = True\n")
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda unit: converged.get(unit, {"LoadState": "not-found"}),
+        resolve=resolve,
+        reviewed_package=reviewed,
+        home=tmp_path / "home",
+        state_home=tmp_path / "home" / ".verdict",
+    )
+    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    assert census["status"] == "failed"
+    assert "content differs" in census["detail"]
+
+    # An interpreter whose own install is another copy fails even from a clean cwd.
+    converged["verdict-census.service"] = _unit(
+        reviewed.parent, source_python, "-m verdict census --max-per-provider 2"
+    )
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda unit: converged.get(unit, {"LoadState": "not-found"}),
+        resolve=resolve,
+        reviewed_package=reviewed,
+        home=tmp_path / "home",
+        state_home=tmp_path / "home" / ".verdict",
+    )
+    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    assert census["status"] == "failed"
+    assert f"interpreter {source_python} installs {source}" in census["detail"]

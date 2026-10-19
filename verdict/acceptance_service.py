@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from verdict.acceptance import RED_EXIT
-from verdict.prove_at_rest_service import _escape_path, _quote, _systemctl
+from verdict.prove_at_rest_service import (
+    _escape_path,
+    _quote,
+    _systemctl,
+    plan_units,
+    save_rollback,
+)
 
 SERVICE = "verdict-acceptance.service"
 TIMER = "verdict-acceptance.timer"
@@ -54,14 +60,10 @@ def manage_service(
             ),
         }
     )
-    changed = (
-        any((directory / name).exists() for name in (SERVICE, TIMER))
-        if uninstall
-        else any(
-            not (directory / name).exists() or (directory / name).read_text() != body
-            for name, body in files.items()
-        )
+    plan = plan_units(
+        directory, dict.fromkeys((SERVICE, TIMER), "") if uninstall else files, uninstall=uninstall
     )
+    changed = any(step in {"create", "replace", "remove"} for step in plan.values())
     if uninstall:
         commands = [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]] if changed else []
     else:
@@ -69,7 +71,9 @@ def manage_service(
         if changed:
             # One run takes minutes; start it without waiting for it.
             commands.append(["systemctl", "--user", "start", "--no-block", SERVICE])
+    rollback = None
     if not dry_run:
+        rollback = save_rollback(directory, plan)
         if uninstall:
             for args in commands:
                 run(args)
@@ -93,4 +97,6 @@ def manage_service(
         "dry_run": dry_run,
         "uninstall": uninstall,
         "commands": commands,
+        "plan": plan,
+        "rollback": rollback,
     }
