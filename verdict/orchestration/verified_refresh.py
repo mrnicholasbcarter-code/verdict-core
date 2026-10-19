@@ -431,6 +431,7 @@ CONSUMER_VERIFIED_VIEW = "verified_view"
 CONSUMER_PICKER = "picker"
 CONSUMER_SELECTION = "selection"
 CONSUMER_CENSUS = "census"
+CONSUMER_PROVE_AT_REST = "prove_at_rest"
 
 # Outcome kinds.
 OUTCOME_REUSED_FRESH = "reused_fresh"  # needed entries already fresh: zero calls, no wait
@@ -1878,6 +1879,7 @@ __all__ = [
     "CAPACITY_UNKNOWN",
     "CONSUMER_CENSUS",
     "CONSUMER_PICKER",
+    "CONSUMER_PROVE_AT_REST",
     "CONSUMER_SELECTION",
     "CONSUMER_VERIFIED_VIEW",
     "DEBOUNCE_SECONDS",
