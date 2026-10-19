@@ -555,3 +555,68 @@ def test_screen_skips_dispatch_when_agentic_max_routes_is_zero(tmp_path: Path) -
     ).run_agentic_probes(stats, routes=routes)
     assert screen.calls == []
     assert stats.agentic_stopped_reason == "complete"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def _two_cycles(
+    tmp_path: Path, results: Mapping[str, Mapping[str, Any]], later: timedelta
+) -> tuple[_Screen, list[tuple[str, list[str]]]]:
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a"), _free("q/a")]
+    screen = _Screen(results)
+    clock = _Clock()
+    prober = Prober(
+        cache,
+        lambda: routes,
+        lambda rid, phase, timeout: ProbeExchange(http_status=500, ok=False),
+        agentic_transport=lambda rid, p, t: _turn(rid, p),
+        screen_transport=screen,
+        clock=clock,
+        interval_seconds=300,
+    )
+    prober.run_agentic_probes(CycleStats(), routes=routes)
+    first = list(screen.calls)
+    screen.calls.clear()
+    clock.now = NOW + later
+    prober.run_agentic_probes(CycleStats(), routes=routes)
+    assert cache.entry("p/a") is None, "a 429 is a pool state, not a route failure"
+    return screen, first
+
+
+def test_rate_limited_pool_is_not_rescreened_next_cycle(tmp_path: Path) -> None:
+    screen, first = _two_cycles(
+        tmp_path,
+        {"p/a": {"status": "error", "statusCode": 429}, "q/a": {"status": "ok"}},
+        timedelta(seconds=300),
+    )
+    assert ("p", ["p/a"]) in first
+    assert [call for call in screen.calls if call[0] == "p"] == []
+
+
+def test_quota_429_holds_the_pool_for_hours(tmp_path: Path) -> None:
+    screen, first = _two_cycles(
+        tmp_path,
+        {
+            "p/a": {"status": "error", "statusCode": 429, "error": "[429]: monthly quota exceeded"},
+            "q/a": {"status": "ok"},
+        },
+        timedelta(hours=1),
+    )
+    assert ("p", ["p/a"]) in first
+    assert [call for call in screen.calls if call[0] == "p"] == []
+
+
+def test_ok_pool_is_screened_every_cycle_beside_a_rate_limited_one(tmp_path: Path) -> None:
+    _, first = _two_cycles(
+        tmp_path,
+        {"p/a": {"status": "error", "statusCode": 429}, "q/a": {"status": "ok"}},
+        timedelta(seconds=300),
+    )
+    assert ("q", ["q/a"]) in first, "the ok pool is screened in the same cycle as the 429"
