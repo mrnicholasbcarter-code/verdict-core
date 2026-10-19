@@ -1470,16 +1470,17 @@ class Prober:
         now = self.clock()
         cooled_before = _cooled_pools(self.cache, now)
         groups: dict[tuple[str, str], list[AdmittedRoute]] = {}
-        for route in candidates:
-            key = (route.provider, _pool_of(route))
-            limit = (
-                1
-                if key[1] in cooled_before
-                else min(self.agentic_max_routes, SCREEN_TEST_ALL_MAX_MODELS)
-            )
-            group = groups.setdefault(key, [])
-            if len(group) < limit:
-                group.append(route)
+        if self.agentic_max_routes > 0:
+            for route in candidates:
+                key = (route.provider, _pool_of(route))
+                limit = (
+                    1
+                    if key[1] in cooled_before
+                    else min(self.agentic_max_routes, SCREEN_TEST_ALL_MAX_MODELS)
+                )
+                group = groups.setdefault(key, [])
+                if len(group) < limit:
+                    group.append(route)
         if not groups:
             return []
         remaining = deadline - self.monotonic()

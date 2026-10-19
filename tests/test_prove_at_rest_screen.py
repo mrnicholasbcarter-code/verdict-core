@@ -535,3 +535,23 @@ def test_live_screen_transport_hard_caps_test_all_at_20_ids(
     screen("p", [f"p/m{i}" for i in range(50)], 5.0)
     assert sent[0]["modelIds"] == [f"p/m{i}" for i in range(20)]
     assert sent[0]["autoHideFailed"] is False
+
+
+def test_screen_skips_dispatch_when_agentic_max_routes_is_zero(tmp_path: Path) -> None:
+    """BOD-297/S12: agentic_max_routes=0 must build no screen groups and never call
+    cache.consume with amount=0 (HealthCacheError: consume amount must be >= 1)."""
+    cache = HealthCache(tmp_path / "cache.json", bucket_capacity=100)
+    routes = [_free("p/a"), _free("p/b")]
+    screen = _Screen({rid: {"status": "ok"} for rid in ("p/a", "p/b")})
+    stats = CycleStats()
+    Prober(
+        cache,
+        lambda: routes,
+        lambda rid, phase, timeout: ProbeExchange(http_status=500, ok=False),
+        screen_transport=screen,
+        agentic_transport=lambda *args: ProbeExchange(http_status=500, ok=False),
+        clock=lambda: NOW,
+        agentic_max_routes=0,
+    ).run_agentic_probes(stats, routes=routes)
+    assert screen.calls == []
+    assert stats.agentic_stopped_reason == "complete"
