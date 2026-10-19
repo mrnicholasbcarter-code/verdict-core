@@ -13,8 +13,30 @@ import verdict.api as api
 from verdict.free_tier_admit import FAIL_CLOSED_REASON, NO_ELIGIBLE_TARGET, snapshot_from_payloads
 from verdict.intelligence import IntelligenceService
 from verdict.model_passports import ModelPassport
-from verdict.models import ProviderConfig
+from verdict.models import ProviderConfig, RoutingDecision
 from verdict.proxy import UpstreamProxy
+from tests.relay_proof_helpers import with_relay_proofs
+
+
+class _ProofIntelligence(IntelligenceService):
+    """Free-tier admit service whose selected decisions carry relay admission proofs.
+
+    The offload path used here predates route-bound proofs; the shared helper derives
+    them through the real passport gate so the relay permit gate stays enforced.
+    """
+
+    async def route(
+        self,
+        task: Any,
+        criticality: str = "medium",
+        context: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> RoutingDecision:
+        decision = await super().route(task, criticality, context, request_id=request_id)
+        if decision.decision != "selected":
+            return decision
+        return with_relay_proofs(decision, context)
 
 
 def _snapshot(
@@ -104,7 +126,7 @@ def _ok_confirm_transport():
 def _admit_service(
     snapshot, *, passports=None, confirm_transport=None, log_path: str = ""
 ) -> IntelligenceService:
-    return IntelligenceService(
+    return _ProofIntelligence(
         primary_model="anthropic/claude-3-opus-20240229",
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
         profile="development",
@@ -308,7 +330,7 @@ def test_build_intelligence_disables_inline_execute_offload(monkeypatch) -> None
 def _admit_service_with_workspace(snapshot, *, passports, confirm_transport, workspace_root):
     from verdict.context_hydrate import DEFAULT_CONTEXT_ROOTS
 
-    return IntelligenceService(
+    return _ProofIntelligence(
         primary_model="anthropic/claude-3-opus-20240229",
         providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
         profile="development",
