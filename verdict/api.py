@@ -28,10 +28,15 @@ except ImportError as exc:
     ) from exc
 
 from verdict import __version__
+from verdict.actions.verified_models import (
+    PublicModelsReadiness,
+    PublicModelsUnavailableError,
+    load_public_models,
+)
 from verdict.admission import AdmittedSet
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
-from verdict.catalog import configured_catalog_filters, normalize_catalog
+from verdict.catalog import configured_catalog_filters
 from verdict.context_inject import InjectionRecord, inject_context_pack
 from verdict.contracts import DEFAULT_PRIMARY_MODEL, redact_contract_secrets
 from verdict.cost_ledger import PriceEvidenceInput
@@ -77,6 +82,7 @@ from verdict.orchestration.health_cache import (
     HealthCache,
     default_cache_path,
 )
+from verdict.orchestration.verified_models import public_model_entry
 from verdict.outcome_log import build_outcome_record, log_outcome
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
@@ -302,37 +308,67 @@ class CachedRelayAdmission:
 
     Refresh is an explicit lifecycle action. A stale or failed cache therefore
     fails closed rather than causing a request-time gateway GET or accepting an
-    old admitted set as indefinite authority.
+    old admitted set as indefinite authority. The TTL never outlives the source
+    evidence deadline handed to ``refresh``: copying a value renews nothing.
     """
 
-    def __init__(self, refresh: Callable[[], AdmittedSet], *, ttl_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        refresh: Callable[[], AdmittedSet],
+        *,
+        ttl_seconds: float = 60.0,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("relay admission TTL must be positive")
         self._refresh = refresh
         self._ttl = timedelta(seconds=ttl_seconds)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._value: AdmittedSet | None = None
         self._expires_at: datetime | None = None
         self.last_refresh_failure: str | None = None
 
-    def refresh(self, *, now: datetime | None = None) -> AdmittedSet:
-        current = now or datetime.now(timezone.utc)
+    def refresh(
+        self, *, now: datetime | None = None, source_expires_at: datetime | None = None
+    ) -> AdmittedSet:
+        current = now or self._clock()
         try:
             value = self._refresh()
         except Exception as exc:
             self.last_refresh_failure = type(exc).__name__
             raise
+        expires_at = current + self._ttl
+        if source_expires_at is not None:
+            expires_at = min(expires_at, source_expires_at)
         self._value = value
-        self._expires_at = current + self._ttl
+        self._expires_at = expires_at
         self.last_refresh_failure = None
         return value
 
+    def invalidate(self) -> None:
+        """Drop the cached value so a classified authority loss fails closed at once."""
+        self._value = None
+        self._expires_at = None
+
     def get(self, *, now: datetime | None = None) -> AdmittedSet:
-        current = now or datetime.now(timezone.utc)
+        current = now or self._clock()
         if self._value is None:
             raise RuntimeError("relay_admission_cache_empty")
-        if self._expires_at is None or current > self._expires_at:
+        if self._expires_at is None or current >= self._expires_at:
             raise RuntimeError("relay_admission_cache_stale")
         return self._value
+
+
+#: Public-catalog readiness (BOD-435). The lifespan owns one refresh task that
+#: reloads the local verified projection; request handlers only read it.
+PUBLIC_MODELS_REFRESH_SECONDS = 20.0
+PUBLIC_MODELS_LOAD_DEADLINE_SECONDS = 5.0
+public_models_readiness: PublicModelsReadiness | None = None
+public_models_task: asyncio.Task[None] | None = None
+
+
+def _public_models_clock() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 availability_cache_instance: AvailabilityCache | None = None
@@ -869,30 +905,73 @@ async def lifespan(app: FastAPI) -> Any:
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
         intelligence_instance.eligibility_gate = eligibility_gate_instance
-    # Relay admission is deliberately opt-in. The cache is refreshed once at
-    # startup and every request reads only its bounded in-memory value; no
-    # request path performs a live gateway GET. Persisted ladder state is
+    # The public catalog and the optional relay admission cache share one local
+    # snapshot. The cache is refreshed by the single lifespan task below and
+    # every request reads only bounded in-memory values; no request path
+    # performs a gateway GET or a model call. Persisted ladder state is
     # evidence, never cache authority.
-    global relay_admission_provider
-    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
-        from verdict.admission import load_live_admission
-        from verdict.orchestration.run import resolve_api_key
+    global relay_admission_provider, public_models_readiness, public_models_task
+    from verdict.free_tier_admit import omniroute_endpoint_from_env
 
-        gateway = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
-        cache = CachedRelayAdmission(
-            lambda: load_live_admission(
-                gateway, now=datetime.now(timezone.utc), api_key=resolve_api_key()
-            ),
+    endpoint = omniroute_endpoint_from_env(getattr(intelligence_instance, "providers", None))
+    relay_cache: CachedRelayAdmission | None = None
+    pending: dict[str, AdmittedSet] = {}
+    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
+        relay_cache = CachedRelayAdmission(
+            lambda: pending["admitted"],
             ttl_seconds=float(os.getenv("VERDICT_RELAY_ADMISSION_TTL_SECONDS", "60")),
+            clock=lambda: _public_models_clock(),
         )
+        relay_admission_provider = relay_cache.get
+    public_models_readiness = PublicModelsReadiness()
+    readiness = public_models_readiness
+
+    async def refresh_public_models() -> None:
+        if endpoint is None:
+            readiness.fail("inventory_absent")
+            return
+        now = _public_models_clock()
         try:
-            cache.refresh()
+            state = await asyncio.wait_for(
+                asyncio.to_thread(
+                    load_public_models,
+                    gateway=endpoint[0],
+                    api_key=endpoint[1],
+                    now=now,
+                    with_admission=relay_cache is not None,
+                ),
+                PUBLIC_MODELS_LOAD_DEADLINE_SECONDS,
+            )
+        except PublicModelsUnavailableError as exc:
+            readiness.fail(exc.code)
+            if relay_cache is not None:
+                relay_cache.invalidate()
+            return
         except Exception as exc:
-            # Keep a callable fail-closed provider so a configured authority
-            # boundary cannot silently revert to catalog-based relay behavior.
-            logger.warning("relay admission startup refresh failed: %s", type(exc).__name__)
-        relay_admission_provider = cache.get
+            # A load that failed or timed out keeps the last-good snapshot only
+            # until its own original deadline; nothing here extends it.
+            readiness.fail(type(exc).__name__, keep_last_good=True)
+            logger.warning("public models refresh failed: %s", type(exc).__name__)
+            return
+        readiness.publish(state)
+        if relay_cache is not None and state.admitted is not None:
+            pending["admitted"] = state.admitted
+            relay_cache.refresh(now=now, source_expires_at=state.source_expires_at)
+
+    async def public_models_loop() -> None:
+        while True:
+            await asyncio.sleep(PUBLIC_MODELS_REFRESH_SECONDS)
+            await refresh_public_models()
+
+    await refresh_public_models()
+    public_models_task = asyncio.create_task(public_models_loop(), name="public-models-refresh")
     yield
+    task, public_models_task = public_models_task, None
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    public_models_readiness = None
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
@@ -1643,20 +1722,28 @@ async def route_explain(
 
 @app.get("/v1/models")
 async def list_models() -> Response:
-    """Return a locally filtered catalog with conservative availability metadata."""
-    if proxy_instance is None:
+    """Publish the locally verified model set.
+
+    Membership needs fresh positive basic-chat proof and a valid, complete and
+    current inventory authority. The handler reads the lifespan snapshot only:
+    no gateway read, provider call or qualification happens here.
+    """
+    if public_models_readiness is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
+    now = _public_models_clock()
     try:
-        result = await proxy_instance.models()
-    except Exception:
-        return _proxy_error(502, "upstream model catalog unavailable")
+        state = public_models_readiness.current(now)
+    except PublicModelsUnavailableError as exc:
+        return _proxy_error(503, f"verified model catalog unavailable: {exc.code}")
     allowlist, denylist = configured_catalog_filters(
         os.getenv("LLMGATE_MODEL_ALLOWLIST"), os.getenv("LLMGATE_MODEL_DENYLIST")
     )
-    filtered_body = normalize_catalog(result.body, allowlist=allowlist, denylist=denylist)
-    return Response(
-        content=filtered_body, status_code=result.status_code, headers=_headers_for_body(result)
-    )
+    data = [
+        public_model_entry(row)
+        for row in state.rows_at(now)
+        if (not allowlist or row.route_id in allowlist) and row.route_id not in denylist
+    ]
+    return JSONResponse(content={"object": "list", "data": data})
 
 
 class QualifyRequest(BaseModel):

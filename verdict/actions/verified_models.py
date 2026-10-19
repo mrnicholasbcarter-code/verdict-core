@@ -24,10 +24,11 @@ from typing import Any
 from verdict.actions.base import ActionResult
 from verdict.admission import RuntimeEvidence, RuntimeObservation, active_controller_route, admit
 from verdict.free_tier_admit import normalize_omniroute_origin
-from verdict.orchestration.health_cache import HealthCache
+from verdict.orchestration.health_cache import FRESH_SECONDS, HealthCache
 from verdict.orchestration.verified_models import (
     EvidenceSnapshots,
     VerifiedModelQuery,
+    VerifiedModelRow,
     VerifiedModelsView,
     project_verified_models,
     snapshots_from_documents,
@@ -313,6 +314,156 @@ class VerifiedSnapshotAdapter:
             gateway_origin=self.gateway,
             scope=self.refresh_scope(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Public catalog: local verified projection (BOD-435 / S07)
+# ---------------------------------------------------------------------------
+
+#: Strict upper bound (age < bound) for inventory authority and basic proof.
+PUBLIC_AUTHORITY_MAX_AGE_SECONDS = FRESH_SECONDS
+
+
+class PublicModelsUnavailableError(Exception):
+    """Classified reason the public catalog has no valid inventory authority."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PublicModelsState:
+    """One validated local snapshot; ``source_expires_at`` is never renewed."""
+
+    rows: tuple[VerifiedModelRow, ...]
+    source_expires_at: datetime
+    admitted: Any = None
+
+    def rows_at(self, now: datetime) -> tuple[VerifiedModelRow, ...]:
+        """Rows whose basic proof is still strictly inside its freshness window."""
+        return tuple(r for r in self.rows if r.fresh_until is not None and now < r.fresh_until)
+
+
+class PublicModelsReadiness:
+    """Holds the last validated snapshot; it can only be replaced, never extended."""
+
+    def __init__(self) -> None:
+        self.state: PublicModelsState | None = None
+        self.failure: str = "inventory_absent"
+
+    def publish(self, state: PublicModelsState) -> None:
+        self.state = state
+        self.failure = ""
+
+    def fail(self, code: str, *, keep_last_good: bool = False) -> None:
+        self.failure = code
+        if not keep_last_good:
+            self.state = None
+
+    def current(self, now: datetime) -> PublicModelsState:
+        state = self.state
+        if state is None:
+            raise PublicModelsUnavailableError(self.failure or "inventory_absent")
+        if now >= state.source_expires_at:
+            raise PublicModelsUnavailableError("inventory_expired")
+        return state
+
+
+def _source_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+
+
+def _read_source_snapshots(
+    origin: str, api_key: str | None, now: datetime
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], datetime]:
+    """Raw S04 source snapshots from the local stores; no gateway or model call."""
+    from verdict.catalog_cache import _read_cache_file, _scope_key, default_catalog_cache_path
+    from verdict.free_tier_admit import default_admit_last_good_path, snapshot_from_payloads
+    from verdict.orchestration.run import sanitize_connections
+
+    catalog_path = default_catalog_cache_path()
+    entries = _read_cache_file(catalog_path).get("entries")
+    if not isinstance(entries, dict):
+        raise PublicModelsUnavailableError(
+            "inventory_corrupt" if catalog_path.is_file() else "inventory_absent"
+        )
+    entry = entries.get(_scope_key(origin, api_key, catalog_path))
+    inventory_at = _source_time(entry.get("cached_at")) if isinstance(entry, dict) else None
+    if inventory_at is None or not isinstance(entry, dict):
+        raise PublicModelsUnavailableError("inventory_absent")
+    errors: list[str] = []
+    last_good = _read_document(default_admit_last_good_path(), "admit_last_good", errors)
+    provider_entry = (last_good or {}).get(origin)
+    provider_entry = provider_entry.get("providers") if isinstance(provider_entry, dict) else None
+    connections_at = (
+        _source_time(provider_entry.get("fetched_at")) if isinstance(provider_entry, dict) else None
+    )
+    if connections_at is None or not isinstance(provider_entry, dict):
+        raise PublicModelsUnavailableError("inventory_corrupt" if errors else "inventory_absent")
+    for stamp in (inventory_at, connections_at):
+        if not 0 <= (now - stamp).total_seconds() < PUBLIC_AUTHORITY_MAX_AGE_SECONDS:
+            raise PublicModelsUnavailableError("inventory_expired")
+    catalog = entry.get("catalog")
+    snapshot = snapshot_from_payloads(
+        catalog=catalog, free_tier=None, providers=provider_entry.get("payload")
+    )
+    rows = catalog.get("data") if isinstance(catalog, Mapping) else None
+    if (
+        not isinstance(rows, list)
+        or not snapshot.inventory_complete
+        or any(drop.model_id in {"catalog", "providers"} for drop in snapshot.inventory_diagnostics)
+    ):
+        raise PublicModelsUnavailableError("inventory_incomplete")
+    expires_at = min(inventory_at, connections_at) + timedelta(
+        seconds=PUBLIC_AUTHORITY_MAX_AGE_SECONDS
+    )
+    return (
+        [r for r in rows if isinstance(r, dict)],
+        sanitize_connections(provider_entry.get("payload")),
+        expires_at,
+    )
+
+
+def load_public_models(
+    *,
+    gateway: str,
+    api_key: str | None,
+    now: datetime,
+    paths: StorePaths | None = None,
+    with_admission: bool = False,
+) -> PublicModelsState:
+    """Project the VERIFIED routes from local evidence only (zero provider calls)."""
+    origin = normalize_omniroute_origin(gateway)
+    inventory, connections, expires_at = _read_source_snapshots(origin, api_key, now)
+    adapter = VerifiedSnapshotAdapter(
+        origin,
+        paths or StorePaths.defaults(),
+        inventory_rows=inventory,
+        connections=connections,
+        local_only=True,
+        clock=lambda: now,
+    )
+    rows: list[VerifiedModelRow] = []
+    page = 1
+    while True:
+        view = adapter.load(VerifiedModelQuery(status="VERIFIED", page=page, page_size=200))
+        rows.extend(view.rows)
+        if page >= view.page_count:
+            break
+        page += 1
+    admitted = None
+    if with_admission:
+        from verdict.admission import default_runtime_evidence
+
+        admitted = admit(inventory, connections, default_runtime_evidence(now=now), now=now)
+    return PublicModelsState(tuple(rows), expires_at, admitted)
 
 
 def action_models_verified(**kwargs: Any) -> ActionResult:

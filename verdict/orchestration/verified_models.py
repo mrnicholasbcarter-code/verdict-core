@@ -2002,6 +2002,34 @@ def _matches(
     return True
 
 
+def public_model_entry(row: VerifiedModelRow) -> dict[str, Any]:
+    """OpenAI-shaped catalog entry built only from a validated VERIFIED projection row."""
+    shown = row.to_dict()
+    capabilities = shown["capabilities"]
+    return {
+        "id": shown["route_id"],
+        "object": "model",
+        "owned_by": shown["provider"],
+        "verdict": {
+            "eligible": True,
+            "availability_state": "verified",
+            "checked_at": shown["checked_at"],
+            "fresh_until": shown["fresh_until"],
+            "capability_profile": {
+                "tier": None,
+                "context": capabilities["context_window"],
+                "tools": capabilities["tools"],
+                "structured_output": capabilities["structured"],
+                "vision": None,
+                "streaming": None,
+                "reasoning": None,
+                "provider": shown["provider"],
+                "model_family": None,
+            },
+        },
+    }
+
+
 def project_verified_models(
     inventory_rows: Sequence[Mapping[str, Any]],
     connections: Sequence[Mapping[str, Any]] | None,
@@ -2105,5 +2133,6 @@ __all__ = [
     "VerifiedStatus",
     "WorkerHealth",
     "project_verified_models",
+    "public_model_entry",
     "snapshots_from_documents",
 ]

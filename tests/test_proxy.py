@@ -1254,37 +1254,22 @@ def test_model_passport_ttl_starts_at_exact_insertion_time() -> None:
     assert store.get("p", "m", now=now.replace(minute=1, second=58)) is passport
 
 
-def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:
+def test_models_endpoint_does_not_forward_the_upstream_catalog(monkeypatch) -> None:
+    """BOD-435/A02: the public catalog is the local verified projection, never a pass-through."""
     transport = RecordingTransport()
     _configure_test_app(monkeypatch, transport)
     monkeypatch.setenv("LLMGATE_MODEL_DENYLIST", "denied-model")
 
     with TestClient(api.app) as client:
         readiness = client.get("/ready")
+        before = len(transport.requests)
         response = client.get("/v1/models")
 
     assert readiness.status_code == 200
-    assert readiness.json()["status"] == "ready"
-    assert response.status_code == 200
-    assert response.headers["x-upstream"] == "catalog"
-    assert int(response.headers["content-length"]) == len(response.content)
-    assert response.json()["data"][0]["id"] == "selected-model"
-    assert len(response.json()["data"]) == 1
-    assert response.json()["data"][0]["verdict"] == {
-        "eligible": True,
-        "availability_state": "unknown",
-        "capability_profile": {
-            "tier": None,
-            "context": None,
-            "tools": None,
-            "structured_output": None,
-            "vision": None,
-            "streaming": None,
-            "reasoning": None,
-            "provider": None,
-            "model_family": None,
-        },
-    }
+    assert response.status_code == 503
+    assert "selected-model" not in response.text
+    assert "x-upstream" not in response.headers
+    assert len(transport.requests) == before
 
 
 def test_relay_rejects_raw_decision_flag_before_any_upstream_send(monkeypatch) -> None:
