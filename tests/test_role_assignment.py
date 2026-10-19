@@ -21,7 +21,11 @@ from pathlib import Path
 from tests.test_controller_launch import NOW as CTRL_NOW
 from tests.test_controller_launch import _ctrl_offer, _ctrl_route, _hooks, _mission
 from tests.test_orch_eligibility import NOW, conn, make_ladder, row
-from verdict.controller_selection import select_controller_launch
+from verdict.controller_selection import (
+    _controller_capability_gap,
+    mission_capability_floor,
+    select_controller_launch,
+)
 from verdict.orchestration.contracts import NodeKind, TaskRequirements, WorkNode, route_family
 
 INVENTORY = (
@@ -90,5 +94,13 @@ def test_controller_floor_follows_the_mission_not_the_worker(tmp_path: Path) -> 
     # while the reviewer still has to be strong and independent.
     controller = _controller(None)
     _, reviewer = _worker_and_reviewer(tmp_path)
-    assert controller == "kr/claude-haiku-4.5"
+    # A25: price no longer ranks. Haiku is eligible (not excluded by the
+    # capability floor), but selection follows the trusted shortlist order,
+    # so the first qualified entry (opus) wins.
+    floor = mission_capability_floor(replace(_mission(), orchestration_burden=None))
+    haiku = _ctrl_route(
+        "omniroute/kr/claude-haiku-4.5", provider="omniroute", model="kr/claude-haiku-4.5"
+    )
+    assert _controller_capability_gap(haiku, floor) is None
+    assert controller == INVENTORY[0]
     assert reviewer == "cx/gpt-6-sol"
