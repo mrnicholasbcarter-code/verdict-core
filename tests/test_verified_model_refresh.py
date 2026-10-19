@@ -1588,6 +1588,56 @@ class InFlightTransport:
                 self.in_flight[pool] -= 1
 
 
+class _BarrierOnceTransport:
+    """Forces exactly ``parties`` probes to be in flight together, then lets
+    them (and any later probe) proceed. Unlike a sleep-based hold, this makes
+    "3 probes overlap" a deterministic event instead of a timing race: the
+    first ``parties`` chat calls each block on a shared ``threading.Barrier``
+    until all ``parties`` have arrived, so admission of a 4th probe next to 3
+    in flight can be tested without depending on how fast a slow runner is.
+
+    The barrier sits on the chat phase only: each full probe makes a chat
+    call and then a tool call (REQUESTS_PER_FULL_PROBE == 2), and blocking
+    the tool call too would not add any extra overlap guarantee while making
+    the barrier arithmetic (which phase, which call) harder to reason about.
+    """
+
+    def __init__(self, parties: int = 3, timeout: float = 5.0):
+        self.lock = threading.Lock()
+        self.calls: list[tuple[str, str]] = []
+        self.in_flight: dict[str, int] = {}
+        self.max_total = 0
+        self.max_per_pool: dict[str, int] = {}
+        self.total_at_call: dict[str, int] = {}
+        self._barrier = threading.Barrier(parties, timeout=timeout)
+        self._barrier_slots_left = parties
+        self._barrier_lock = threading.Lock()
+
+    def __call__(self, route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        from verdict.orchestration.credential_pools import pool_of
+
+        pool = pool_of(route_id)
+        with self.lock:
+            self.calls.append((route_id, phase))
+            self.in_flight[pool] = self.in_flight.get(pool, 0) + 1
+            total = sum(self.in_flight.values())
+            self.total_at_call[route_id] = max(self.total_at_call.get(route_id, 0), total)
+            self.max_total = max(self.max_total, total)
+            self.max_per_pool[pool] = max(self.max_per_pool.get(pool, 0), self.in_flight[pool])
+        try:
+            if phase == "chat":
+                with self._barrier_lock:
+                    take_slot = self._barrier_slots_left > 0
+                    if take_slot:
+                        self._barrier_slots_left -= 1
+                if take_slot:
+                    self._barrier.wait()
+            return _ok(route_id, phase)
+        finally:
+            with self.lock:
+                self.in_flight[pool] -= 1
+
+
 def test_probes_run_four_at_once_one_per_pool(tmp_path: Path) -> None:
     import time
 
@@ -1646,7 +1696,11 @@ def test_unknown_pool_probe_runs_alone(tmp_path: Path) -> None:
 
 
 def test_concurrent_requests_never_exceed_the_cap(tmp_path: Path) -> None:
-    transport = InFlightTransport(hold=0.05)
+    # Barrier-forced overlap (see _BarrierOnceTransport): exactly 3 probes
+    # MUST be in flight together before any of them returns, so a 4th probe
+    # is never admitted next to 3 in flight is a deterministic assertion,
+    # not a timing race against a slow runner.
+    transport = _BarrierOnceTransport(parties=3)
     rows = [_row(f"p{i}/m") for i in range(8)]
     events: list[Any] = []
     coord = _coordinator(tmp_path, transport)
