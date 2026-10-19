@@ -919,12 +919,27 @@ class IntelligenceService:
         # BOD-438: verified checker history feeds task-specific demotion inside
         # build_candidate_pool (order-only, never membership). Loading never
         # blocks admission: a failure here means no verified history, not a
-        # degraded admit.
+        # degraded admit — but the failure/omissions are disclosed in the
+        # receipt (history_disclosure), never silently swallowed.
         outcomes: tuple[OutcomeObservation, ...] = ()
-        with contextlib.suppress(Exception):
-            outcomes = load_verified_outcome_observations(
+        history_disclosure: dict[str, Any] = {
+            "status": "ok",
+            "reason": None,
+            "error": None,
+            "observations_count": 0,
+            "omissions": [],
+        }
+        try:
+            history = load_verified_outcome_observations(
                 self.outcome_shadow_roots, task_family=profile.task_family, as_of=as_of
-            ).observations
+            )
+            outcomes = history.observations
+            history_disclosure["observations_count"] = len(history.observations)
+            history_disclosure["omissions"] = list(history.omissions)
+        except Exception as exc:
+            history_disclosure["status"] = "unavailable"
+            history_disclosure["reason"] = "history_unavailable"
+            history_disclosure["error"] = type(exc).__name__
         pool = build_candidate_pool(
             advertised,
             task_profile=profile,
@@ -960,6 +975,7 @@ class IntelligenceService:
         )
         chosen = shortlisted[0] if shortlisted else None
         pool_dict = pool.to_dict()
+        pool_dict["history_disclosure"] = dict(history_disclosure)
         # Shadow-only: never pass outcomes into build_candidate_pool; attach diagnostic.
         with contextlib.suppress(Exception):
             # Fail-safe: shadow must not change live admit/choice.

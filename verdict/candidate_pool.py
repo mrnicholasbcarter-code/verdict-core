@@ -212,9 +212,15 @@ class RouteHealth:
 
 @dataclass(frozen=True)
 class RouteEvidence:
-    """Caller-supplied soft evidence. Never invents capability."""
+    """Caller-supplied soft evidence. Never invents capability.
 
-    task_success_rate: float | None = None
+    BOD-438: no raw task-success-rate field — task-history evidence enters
+    scoring only through verified :class:`OutcomeObservation` rows
+    (``quality_credit``/``observed_at`` set), scored by
+    :func:`verdict.strength_profiles.score_task_history`. There is no
+    caller-supplied or classification-based substitute.
+    """
+
     eval_score: float | None = None
     latency_ms: float | None = None
     cost_per_million: float | None = None
@@ -222,7 +228,6 @@ class RouteEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "task_success_rate": self.task_success_rate,
             "eval_score": self.eval_score,
             "latency_ms": self.latency_ms,
             "cost_per_million": self.cost_per_million,
@@ -844,8 +849,9 @@ def _score_features(
     ]
     verified = [o for o in matched if o.quality_credit is not None and o.observed_at is not None]
     if verified:
-        # BOD-438: a verified checker history smooths and may demote — never a
-        # raw accept rate once independently-checked observations exist.
+        # BOD-438: only an independently verified checker history enters
+        # scoring. Unverified/raw matched rows contribute nothing — there is
+        # no classification-based or raw-rate fallback.
         from verdict.strength_profiles import score_task_history
 
         history = score_task_history(
@@ -857,12 +863,6 @@ def _score_features(
         features["task_similarity"] = history.score
         features["outcome_n"] = float(history.observed_n)
         survivor.demoted = history.demoted
-    elif matched:
-        successes = sum(1 for o in matched if o.success)
-        features["task_similarity"] = successes / len(matched)
-        features["outcome_n"] = float(len(matched))
-    elif ev.task_success_rate is not None:
-        features["task_similarity"] = max(0.0, min(1.0, float(ev.task_success_rate)))
 
     # Soft eval prior: caller evidence wins; else ONE task-relevant AA field.
     # No cross-metric fallback. Index/100 is a provisional fuse prior, not P(success).

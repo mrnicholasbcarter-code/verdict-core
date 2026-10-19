@@ -215,7 +215,7 @@ def test_healthy_task_incompatible_removed_before_ranking() -> None:
             FREE_NO_TOOLS: RouteHealth(state=HEALTH_OK),
             FREE_TOOLS: RouteHealth(state=HEALTH_OK),
         },
-        evidence={FREE_NO_TOOLS: RouteEvidence(task_success_rate=1.0, eval_score=99.0)},
+        evidence={FREE_NO_TOOLS: RouteEvidence(eval_score=99.0)},
         top_k=2,
     )
     assert FREE_NO_TOOLS not in [e.route_id for e in restored.shortlist]
@@ -233,7 +233,7 @@ def test_unknown_capability_never_silently_capable() -> None:
             UNKNOWN_CAPS: RouteHealth(state=HEALTH_OK),
             FREE_TOOLS: RouteHealth(state=HEALTH_OK),
         },
-        evidence={UNKNOWN_CAPS: RouteEvidence(task_success_rate=1.0, eval_score=100.0)},
+        evidence={UNKNOWN_CAPS: RouteEvidence(eval_score=100.0)},
         top_k=2,
     )
     reasons = {d.route_id: d.reason for d in receipt.hard_drops}
@@ -243,13 +243,17 @@ def test_unknown_capability_never_silently_capable() -> None:
     assert receipt.uncertainty  # non-empty uncertainty notes for unknown/conflict cases
 
 
-def test_matching_task_success_raises_rank_among_eligible() -> None:
+def test_unverified_outcome_rows_never_affect_rank() -> None:
+    """BOD-438: an OutcomeObservation without quality_credit/observed_at is
+    unverified and must contribute nothing — no raw-rate fallback. The
+    shortlist with unverified rows is identical to the shortlist with no
+    outcome history at all."""
     store = _base_store()
     fp = fingerprint_task(
         "refactor python module", context={"tools_required": True, "language": "python"}
     )
-    receipt = build_candidate_pool(
-        [FREE_TOOLS, PAID_TOOLS, DIVERSE_FALLBACK],
+    kwargs = dict(
+        advertised=[FREE_TOOLS, PAID_TOOLS, DIVERSE_FALLBACK],
         task_fingerprint=fp,
         metadata=store,
         health={
@@ -257,6 +261,11 @@ def test_matching_task_success_raises_rank_among_eligible() -> None:
             PAID_TOOLS: RouteHealth(state=HEALTH_OK),
             DIVERSE_FALLBACK: RouteHealth(state=HEALTH_OK),
         },
+        top_k=3,
+    )
+    without_outcomes = build_candidate_pool(**kwargs, outcomes=())
+    with_unverified_outcomes = build_candidate_pool(
+        **kwargs,
         outcomes=(
             OutcomeObservation(
                 route_id=FREE_TOOLS,
@@ -271,11 +280,16 @@ def test_matching_task_success_raises_rank_among_eligible() -> None:
                 fingerprint_digest=fp.digest,
             ),
         ),
-        top_k=3,
     )
-    ids = [e.route_id for e in receipt.shortlist]
-    assert ids[0] == FREE_TOOLS
-    assert FREE_TOOLS in ids and PAID_TOOLS in ids
+    collect_only = {
+        "without_outcomes": [(e.route_id, e.score) for e in without_outcomes.shortlist],
+        "with_unverified_outcomes": [
+            (e.route_id, e.score) for e in with_unverified_outcomes.shortlist
+        ],
+    }
+    assert collect_only["without_outcomes"] == collect_only["with_unverified_outcomes"]
+    for entry in with_unverified_outcomes.shortlist:
+        assert "task_similarity" not in entry.score_features
 
 
 def test_failure_cannot_override_hard_health_exclusion() -> None:
@@ -297,7 +311,7 @@ def test_failure_cannot_override_hard_health_exclusion() -> None:
                 fingerprint_digest=fp.digest,
             ),
         ),
-        evidence={HEALTH_DEAD: RouteEvidence(task_success_rate=1.0, eval_score=100.0)},
+        evidence={HEALTH_DEAD: RouteEvidence(eval_score=100.0)},
         top_k=2,
     )
     assert any(
@@ -345,7 +359,7 @@ def test_insufficient_evidence_gets_bounded_targeted_probe() -> None:
         metadata=store,
         health={FREE_TOOLS: RouteHealth(state=HEALTH_OK), PAID_TOOLS: RouteHealth(state=HEALTH_OK)},
         # FREE_TOOLS has metadata but no outcome/eval evidence → uncertain → probe.
-        evidence={PAID_TOOLS: RouteEvidence(task_success_rate=0.9, eval_score=80.0)},
+        evidence={PAID_TOOLS: RouteEvidence(eval_score=80.0)},
         top_k=2,
         probe_budget=ProbeBudget(max_probes=3, max_level=PROBE_SMALL_QUAL),
         probe_fn=probe,

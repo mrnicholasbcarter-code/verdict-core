@@ -941,3 +941,95 @@ def test_apply_candidate_pool_wires_verified_outcomes_into_demotion_order(
     assert set(ids) == {weak, mid}
     # weak has 3 verified failures (score<0.4, n>=3): demoted after mid.
     assert ids == [mid, weak]
+
+
+def test_history_loader_failure_discloses_reason_and_leaves_admission_unchanged(
+    monkeypatch: pytest.MonkeyPatch, seed_copy: Path
+) -> None:
+    """BOD-438 S10: a failing verified-history loader never silently swallows
+    the error. Admission stays unchanged (order-only demotion failed closed to
+    'no history'), but the candidate-pool receipt discloses the failure."""
+    import verdict.intelligence as intelligence_module
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("boom: simulated loader failure")
+
+    monkeypatch.setattr(intelligence_module, "load_verified_outcome_observations", _raise)
+
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    goal = json.loads((seed_copy / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=[seed_copy],
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt(routes)
+    out, _pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    # Admission/choice stay governed by hard eligibility — unaffected by the
+    # loader failure (order-only demotion contract fails closed to no history).
+    assert set(out.admitted) == set(routes)
+    disclosure = (out.candidate_pool or {}).get("history_disclosure")
+    assert disclosure is not None
+    assert disclosure["status"] == "unavailable"
+    assert disclosure["reason"] == "history_unavailable"
+    assert disclosure["error"] == "RuntimeError"
+
+
+def test_history_loader_success_discloses_observation_count_and_omissions(seed_copy: Path) -> None:
+    """A successful load discloses its observation count and omissions, never
+    silent success."""
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    routes = (FREE_TOOLS, PAID_TOOLS)
+    store = _store(routes)
+    goal = json.loads((seed_copy / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=[seed_copy],
+        admit_now=NOW,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt(routes)
+    out, _pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    disclosure = (out.candidate_pool or {}).get("history_disclosure")
+    assert disclosure is not None
+    assert disclosure["status"] == "ok"
+    assert disclosure["reason"] is None
+    assert disclosure["error"] is None
+    assert isinstance(disclosure["observations_count"], int)
+    assert isinstance(disclosure["omissions"], list)
