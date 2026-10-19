@@ -77,8 +77,9 @@ model-not-found, and identity-mismatch denials revoke the affected scope. The du
 attempt remains MAYBE_SENT. Existing transport cancellation and stream cleanup
 remain responsible for stopping and closing upstream work where possible.
 
-CLI selection does not mint permits. Worker/orchestration handoffs are phase 2b:
-they need an admitted node-proof handoff before adopting the same commit seam.
+CLI selection does not mint permits. Worker handoffs now carry admitted node
+proofs and mint permits at the worker dispatch seam. Only DagRuntime adoption
+of that handoff remains deferred to phase 2b.
 
 ## Addendum: Dispatch scope binding (reduced)
 

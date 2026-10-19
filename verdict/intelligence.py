@@ -217,7 +217,40 @@ class IntelligenceRanking:
 def prepared_task_profile(
     task: str, context: dict[str, Any], *, planner: StructuredPlanner | None = None
 ) -> tuple[TaskRequirements, TaskProfile]:
-    """Derive the requirements and task profile that preparation binds into admission."""
+    """Normalize request floors once for both admission and relay proof scope."""
+    from verdict.execution_path import ExecutionPathRequest
+
+    context = dict(context)
+    nested = context.get("execution_path_request")
+    flags = (
+        "tools_required",
+        "reasoning_required",
+        "structured_output_required",
+        "streaming_required",
+        "vision_required",
+    )
+    if isinstance(nested, ExecutionPathRequest):
+        nested = {
+            name: getattr(nested, name) for name in (*flags, "min_context_tokens", "task_family")
+        }
+    if isinstance(nested, dict):
+        floors = [
+            value
+            for value in (
+                context.get("min_context"),
+                context.get("min_context_tokens"),
+                nested.get("min_context_tokens"),
+            )
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        ]
+        if floors:
+            context["min_context"] = context["min_context_tokens"] = max(floors)
+        for flag in flags:
+            if context.get(flag) is True or nested.get(flag) is True:
+                context[flag] = True
+        if "task_family" not in context and nested.get("task_family") is not None:
+            context["task_family"] = nested["task_family"]
+
     planner_caps: tuple[str, ...] = ()
     try:
         planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
@@ -966,35 +999,9 @@ class IntelligenceService:
                 "candidate pool requires Core metadata for a live execution-path request"
             )
         classification = classify_worthiness(task, criticality=criticality, context=context)
-        # Merge nested requirements from ExecutionPathRequest into context for derive_requirements
-        # Strongest floor: nested requirements cannot be weakened by context, and context cannot override nested
-        if isinstance(request, ExecutionPathRequest):
-            merged_context = dict(context)
-            # min_context_tokens: max of nested and context (strongest floor)
-            if request.min_context_tokens is not None:
-                ctx_min = merged_context.get("min_context_tokens")
-                if isinstance(ctx_min, int) and not isinstance(ctx_min, bool):
-                    merged_context["min_context_tokens"] = max(request.min_context_tokens, ctx_min)
-                else:
-                    merged_context["min_context_tokens"] = request.min_context_tokens
-            # Boolean capabilities: OR of nested and context (strongest floor - True wins)
-            for flag in (
-                "tools_required",
-                "reasoning_required",
-                "structured_output_required",
-                "streaming_required",
-                "vision_required",
-            ):
-                nested_val = getattr(request, flag, False)
-                ctx_val = merged_context.get(flag, False)
-                if nested_val or ctx_val:
-                    merged_context[flag] = True
-            # task_family from request if not in context
-            if request.task_family is not None and "task_family" not in merged_context:
-                merged_context["task_family"] = request.task_family
-        else:
-            merged_context = context
-        requirements, profile = prepared_task_profile(task, merged_context, planner=self.planner)
+        requirements, profile = prepared_task_profile(
+            task, {**context, "execution_path_request": request}, planner=self.planner
+        )
         receipt = expand_admit_for_worthiness(
             admit_free_tier_active(snapshot),
             snapshot,

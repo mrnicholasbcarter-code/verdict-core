@@ -354,12 +354,6 @@ def _qualify_offer(
     allow_degraded_certification: bool,
     require_complete_cost_kinds: frozenset[str],
     hard_spend_budget: float | None = None,
-    min_context_tokens: int | None = None,
-    reasoning_required: bool = False,
-    tools_required: bool = False,
-    structured_output_required: bool = False,
-    streaming_required: bool = False,
-    vision_required: bool = False,
 ) -> str | None:
     """Return a rejection reason, or None if the offer is qualified."""
 
@@ -661,12 +655,6 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             allow_degraded_certification=request.allow_degraded_certification,
             require_complete_cost_kinds=request.require_complete_cost_kinds,
             hard_spend_budget=request.hard_spend_budget,
-            min_context_tokens=request.min_context_tokens,
-            reasoning_required=request.reasoning_required,
-            tools_required=request.tools_required,
-            structured_output_required=request.structured_output_required,
-            streaming_required=request.streaming_required,
-            vision_required=request.vision_required,
         )
         if reason is not None:
             if "unknown" in reason:
