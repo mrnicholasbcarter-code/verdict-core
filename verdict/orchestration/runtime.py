@@ -94,6 +94,8 @@ from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
 _sleep = asyncio.sleep
+# BOD-433: failures that revoke the permit scope (credential denial, wrong model served).
+_REVOKING_CATEGORIES = frozenset({"authentication", "permission", "model_mismatch"})
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
 
@@ -216,6 +218,8 @@ class NodeRun:
     selected_context_window: int | None = None
     # BOD-433: proof for the bound route; committed to a permit just before the send.
     dispatch_proof: AdmissionProof | None = None
+    # BOD-433: the permit the current attempt was sent under (None = no send yet).
+    permit: DispatchPermit | None = None
 
 
 @dataclass(frozen=True)
@@ -1237,6 +1241,7 @@ class DagRuntime:
     async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool | None:
         """Run one attempt. ``None`` means revoked before dispatch (nothing ran)."""
         node = run.node
+        run.permit = None
         worktree = self.run_dir / "worktrees" / f"{node.node_id}-a{run.attempt}"
         branch = f"verdict/run-{self.run_dir.name}/{node.node_id}-a{run.attempt}"
         async with self._slots:
@@ -1395,7 +1400,8 @@ class DagRuntime:
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
                 if self.dispatch_authority is not None:
-                    if self._commit_permit(run) is None:
+                    run.permit = self._commit_permit(run)
+                    if run.permit is None:
                         reason = "permit_denied: proof revoked or expired before the send"
                         self._record_failure(
                             run,
@@ -1471,6 +1477,22 @@ class DagRuntime:
                     )
                 if not terminal.ok or not terminal.output.strip():
                     return await self._fail(run, terminal, failures, worktree)
+                if run.permit is not None and (
+                    HealthCache(default_cache_path()).revocation_epoch(run.permit.scope)
+                    != run.permit.epoch
+                ):
+                    # The scope was revoked while this send was in flight: the
+                    # output is discarded, never salvaged; the retry needs a new permit.
+                    reason = "permit_revoked_after_commit: scope revoked during the send"
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "permit_revoked_after_commit", "REROUTE", 0, "none", reason
+                        ),
+                    )
+                    return False
                 self._set(run, NodeState.TERMINAL_SUCCESS)
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
@@ -1631,6 +1653,15 @@ class DagRuntime:
             self._set(run, NodeState.REJECTED, reason=failure.category)
         else:
             self._set(run, NodeState.TERMINAL_FAILURE, reason=failure.category)
+        permit = run.permit
+        if permit is not None and failure.category in _REVOKING_CATEGORIES:
+            HealthCache(default_cache_path()).record_revocation(
+                permit.scope,
+                route_id=permit.route_id,
+                event_id=f"{self.run_dir.name}:{permit.permit_id}:{failure.category}",
+                source_revision=None,
+                observed_at=self.now(),
+            )
         self.events.emit(
             "failure",
             run.node.node_id,
@@ -1640,6 +1671,11 @@ class DagRuntime:
             evidence=failure.evidence[:300],
             fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
+            **(
+                {"permit_id": permit.permit_id, "permit_epoch": permit.epoch}
+                if permit is not None
+                else {}
+            ),
         )
         feedback = getattr(self.selector, "record_session_failure", None)
         if callable(feedback):

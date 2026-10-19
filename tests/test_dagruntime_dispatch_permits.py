@@ -268,3 +268,106 @@ async def test_run_golden_path_forwards_dispatch_authority_to_the_runtime(repo: 
     # fails and the same route is retried: each send needs its own fresh permit.
     assert ex.attempt_ids == ["golden1:a-a1", "golden1:a-a2"], result.reason
     assert ex.states_at_send == [PERMIT_STATE_MAYBE_SENT] * 2
+
+
+# ---------------------------------------------------------------- after the commit
+
+
+class FailingSpy(PermitSpy):
+    """``auth`` answers 401, ``mismatch`` reports a model mismatch, ``revoke`` is
+    revoked by another writer while the send is in flight."""
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        kind = self.behaviour.get(("a", route_id), "ok")
+        if kind in {"auth", "mismatch", "revoke"}:
+            self.calls.append(("a", route_id))
+            self.attempt_ids.append(f"{cwd.parent.parent.name}:{cwd.name}")
+            self.states_at_send.append(_cache().dispatch_attempt_state(self.attempt_ids[-1]))
+            if kind == "auth":
+                return WorkerTerminal(ok=False, model=route_id, status_code=401, error="bad key")
+            if kind == "mismatch":
+                return WorkerTerminal(ok=False, model=route_id, error="model_mismatch")
+            _cache().record_revocation(
+                _scope(route_id),
+                route_id=route_id,
+                event_id="revoked-while-in-flight",
+                source_revision=None,
+                observed_at=NOW,
+            )
+            (cwd / "a.txt").write_text("a by revoked route\n")
+            return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+def _two_route_run(repo: Path, first: str) -> tuple[FailingSpy, Any, Events]:
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    authority = _authority({"cc/s": _passport("cc/s"), "cx/g": _passport("cx/g")})
+    ex = FailingSpy({("a", "cc/s"): first})
+    rt, ev = _make(repo, ex, ["cc/s", "cx/g"], authority, classifier=FailureIntelligence())
+    return ex, rt, ev
+
+
+async def test_dag_failure_after_permit_revokes_on_auth_and_retries_with_new_permit(
+    repo: Path,
+) -> None:
+    ex, rt, ev = _two_route_run(repo, "auth")
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s"), ("a", "cx/g")]
+    assert ex.states_at_send == [PERMIT_STATE_MAYBE_SENT] * 2
+    cache = _cache()
+    # The failed send stays MAYBE_SENT (it may have reached the provider).
+    assert cache.dispatch_attempt_state("run1:a-a1") == PERMIT_STATE_MAYBE_SENT
+    first, second = cache.permit_for_attempt("run1:a-a1"), cache.permit_for_attempt("run1:a-a2")
+    assert first is not None and second is not None
+    assert (first.route_id, second.route_id) == ("cc/s", "cx/g")
+    assert cache.revocation_epoch(_scope("cc/s")) == 1
+    assert cache.revocation_epoch(_scope("cx/g")) == 0
+    # The consumed attempt id can never mint a second permit.
+    assert (
+        cache.commit_dispatch(
+            _scope("cc/s"),
+            route_id="cc/s",
+            attempt_id="run1:a-a1",
+            authorization_digest="x",
+            expected_epoch=1,
+            proof_deadline=NOW + timedelta(seconds=60),
+            now=NOW,
+        )
+        is None
+    )
+    failure = ev.of("failure", "a")[0]
+    assert (failure["category"], failure["permit_id"]) == ("authentication", first.permit_id)
+
+
+async def test_dag_model_mismatch_after_permit_revokes_the_scope(repo: Path) -> None:
+    ex, rt, _ = _two_route_run(repo, "mismatch")
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s"), ("a", "cx/g")]
+    assert _cache().revocation_epoch(_scope("cc/s")) == 1
+
+
+async def test_dag_verification_failure_does_not_revoke(repo: Path) -> None:
+    ex, rt, ev = _two_route_run(repo, "badcode")
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert "verification_failed" in [e["category"] for e in ev.of("failure", "a")]
+    # Same-route rehydrate retry and the reroute each needed their own permit.
+    assert ex.attempt_ids == ["run1:a-a1", "run1:a-a2", "run1:a-a3"]
+    assert ex.states_at_send == [PERMIT_STATE_MAYBE_SENT] * 3
+    assert _cache().revocation_epoch(_scope("cc/s")) == 0
+
+
+async def test_dag_revocation_after_commit_discards_the_result(repo: Path) -> None:
+    ex, rt, ev = _two_route_run(repo, "revoke")
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s"), ("a", "cx/g")]
+    assert ev.of("failure", "a")[0]["category"] == "permit_revoked_after_commit"
+    assert result.nodes["a"].route_id == "cx/g"
