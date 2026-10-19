@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -755,7 +756,7 @@ def _collect_doctor_diagnostics(
     # cache is too stale or empty to mean anything, instead of only checking
     # docs/config/gateway and leaving the actual background service unverified.
     sections.append(("Installed services", "header", ""))
-    for row in (*installed_service_rows(), *service_code_path_rows()):
+    for row in (*installed_service_rows(), *service_code_path_rows(), *installed_runtime_rows()):
         sections.append((row["label"], row["status"], row["detail"]))
         if row["status"] == "failed":
             issues_found.append(row["detail"])
@@ -994,13 +995,20 @@ def _run_systemctl_show_props(args: list[str]) -> subprocess.CompletedProcess[st
 
 
 def _systemctl_show_props(
-    unit: str,
-    run: Callable[[list[str]], subprocess.CompletedProcess[str]] = _run_systemctl_show_props,
+    unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
 ) -> dict[str, str]:
-    """``LoadState``/``WorkingDirectory``/``ExecStart`` for one unit. Never raises."""
+    """``LoadState``/``WorkingDirectory``/``ExecStart``/``Environment`` for one unit. Never raises."""
+    run = run or _run_systemctl_show_props
     try:
         result = run(
-            ["systemctl", "--user", "show", "-p", "LoadState,WorkingDirectory,ExecStart", unit]
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "-p",
+                "LoadState,WorkingDirectory,ExecStart,Environment",
+                unit,
+            ]
         )
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -1121,4 +1129,186 @@ def service_code_path_rows(
                     "detail": f"{unit}: cwd {working_directory}, package {imported}",
                 }
             )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Installed runtime provenance (BOD-414 / S11, acceptance A29): every
+# installed Verdict unit must import the reviewed build doctor itself runs
+# from, with the same state scope. A unit on a source checkout, a stranded
+# worktree or the census runtime copy is a different source copy and its
+# results cannot count as proof of the reviewed build.
+# ---------------------------------------------------------------------------
+
+_RUNTIME_UNITS = (
+    "verdict-prove-at-rest.service",
+    "verdict-census.service",
+    "verdict-acceptance.service",
+    "verdict-prime-sync.service",
+    "verdict-metadata-refresh.service",
+)
+# Units that run their own route-qualification probe loop.
+_QUALIFIER_UNITS = ("verdict-prove-at-rest.service", "verdict-census.service")
+
+
+def _same_build(package: Path, reviewed: Path) -> bool:
+    """A package is the reviewed build only with the same recorded build and content.
+
+    An unrecorded build is unknown and never matches, even at the reviewed path.
+    """
+    from verdict.census_passports_service import census_runtime_version, package_build
+
+    build = package_build(package)
+    if build == "unrecorded" or build != package_build(reviewed):
+        return False
+    if package == reviewed:
+        return True
+    return census_runtime_version(package.parent) == census_runtime_version(reviewed.parent)
+
+
+def _gateway_origin(value: str) -> str:
+    """``scheme://host:port`` of a gateway URL, plus ``/...`` when it has a path.
+
+    Userinfo, path, query and fragment can all carry tokens, so none is shown.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(value)
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        return "unparseable URL"
+    if not parts.scheme or not parts.hostname:
+        return "unparseable URL"
+    path = "/..." if parts.path.strip("/") else ""
+    return f"{parts.scheme}://{parts.hostname}{port}{path}"
+
+
+def _unit_environment(value: str) -> dict[str, str]:
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return {}
+    return dict(word.split("=", 1) for word in words if "=" in word)
+
+
+def installed_runtime_rows(
+    *,
+    unit_props: Callable[[str], dict[str, str]] | None = None,
+    resolve: Callable[[str, str], str | None] = _resolve_verdict_package,
+    reviewed_package: Path | None = None,
+    home: Path | None = None,
+    state_home: Path | None = None,
+) -> list[dict[str, str]]:
+    """Doctor rows: build, imported package, gateway and state scope per installed unit.
+
+    A unit fails when its ExecStart interpreter's own install or the package
+    it imports from its WorkingDirectory is not the reviewed build (default:
+    the package this doctor runs from), or when its state scope differs from
+    ``state_home``. Qualification units share one coordinator lock and cycle
+    ledger only on the reviewed build with the same state scope; otherwise
+    they are independent loops and the owner row is a warning. Units that are
+    not loaded are skipped, so a CI runner gets no rows.
+    """
+    from verdict.census_passports_service import package_build
+    from verdict.paths import verdict_home
+
+    unit_props = unit_props or _systemctl_show_props
+    reviewed = (reviewed_package or Path(__file__).resolve().parent).resolve()
+    user_home = home or Path.home()
+    scope = state_home or verdict_home()
+    reviewed_build = package_build(reviewed)
+    rows: list[dict[str, str]] = []
+    qualifiers: list[str] = []
+    independent: list[str] = []
+    for unit in _RUNTIME_UNITS:
+        props = unit_props(unit)
+        if props.get("LoadState", "not-found") != "loaded":
+            continue
+        label = f"Runtime {unit.removeprefix('verdict-').removesuffix('.service')}"
+        cwd = props.get("WorkingDirectory", "")
+        interpreter = _parse_execstart_interpreter(props.get("ExecStart", ""))
+        imported = configured = None
+        if cwd and interpreter:
+            imported = resolve(interpreter, cwd)
+            with tempfile.TemporaryDirectory() as neutral_cwd:
+                configured = resolve(interpreter, neutral_cwd)
+        if imported is None or configured is None:
+            rows.append(
+                {
+                    "label": label,
+                    "unit": unit,
+                    "status": "failed",
+                    "detail": f"{unit}: cannot resolve the verdict package"
+                    f" (interpreter {interpreter}, cwd {cwd or 'unset'})",
+                }
+            )
+            if unit in _QUALIFIER_UNITS:
+                qualifiers.append(unit)
+                independent.append(unit)
+            continue
+        environment = _unit_environment(props.get("Environment", ""))
+        unit_scope = verdict_home({"HOME": str(user_home), **environment})
+        gateway_url = environment.get("OMNIROUTE_BASE_URL")
+        gateway = _gateway_origin(gateway_url) if gateway_url else "default"
+        package = Path(imported).resolve()
+        build = package_build(package)
+        problems = []
+        if Path(configured).resolve() != reviewed:
+            problems.append(f"interpreter {interpreter} installs {configured}")
+        if not _same_build(package, reviewed):
+            difference = (
+                "content differs from"
+                if build == reviewed_build and build != "unrecorded"
+                else "unknown build, not proven to be"
+                if "unrecorded" in (build, reviewed_build)
+                else "not"
+            )
+            problems.append(
+                f"imports {package} ({build}), {difference} the reviewed build {reviewed}"
+            )
+        if unit_scope != scope:
+            problems.append(f"state scope {unit_scope}, not {scope}")
+        unit_cache = environment.get("VERDICT_HEALTH_CACHE")
+        if (
+            unit_cache
+            and Path(unit_cache).expanduser().resolve() != (scope / "health-cache.json").resolve()
+        ):
+            problems.append(f"health cache {unit_cache}, not {scope / 'health-cache.json'}")
+        if unit in _QUALIFIER_UNITS:
+            qualifiers.append(unit)
+            if problems:
+                independent.append(unit)
+        facts = f"package {package}, build {build}, gateway {gateway}, state {unit_scope}"
+        rows.append(
+            {
+                "label": label,
+                "unit": unit,
+                "status": "failed" if problems else "ok",
+                "detail": f"{unit}: "
+                + (
+                    "; ".join(problems) + f" (reviewed build {reviewed_build}; {facts})"
+                    if problems
+                    else facts
+                ),
+            }
+        )
+    if independent and len(qualifiers) > 1:
+        rows.append(
+            {
+                "label": "Qualification owner",
+                "status": "warning",
+                "detail": "independent qualification loops "
+                + ", ".join(qualifiers)
+                + f"; off the shared coordinator: {', '.join(independent)}",
+            }
+        )
+    elif qualifiers:
+        rows.append(
+            {
+                "label": "Qualification owner",
+                "status": "ok",
+                "detail": f"reviewed build and state scope {scope}: " + ", ".join(qualifiers),
+            }
+        )
     return rows

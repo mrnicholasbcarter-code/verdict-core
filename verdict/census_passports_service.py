@@ -111,7 +111,11 @@ def _update_runtime_repo(source_root: Path, runtime_root: Path) -> dict[str, Any
         raise ValueError(f"source root has no verdict package: {source_root}")
     version = census_runtime_version(source_root)
     stamp = _read_json(runtime_root / VERSION_FILE)
-    if stamp is not None and stamp.get("runtime_version") == version and repo.is_dir():
+    if (
+        stamp is not None
+        and stamp.get("runtime_version") == version
+        and (repo / BUILD_STAMP).is_file()
+    ):
         return {"runtime_version": version, "runtime_updated": False}
     runtime_root.mkdir(parents=True, exist_ok=True)
     staging = runtime_root / f".{RUNTIME_REPO_DIR}.staging"
@@ -119,6 +123,10 @@ def _update_runtime_repo(source_root: Path, runtime_root: Path) -> dict[str, Any
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir()
     shutil.copytree(source_root / "verdict", staging / "verdict", ignore=COPY_IGNORE)
+    (staging / BUILD_STAMP).write_text(
+        json.dumps({"build": package_build(source_root / "verdict"), "source": str(source_root)})
+        + "\n"
+    )
     shutil.rmtree(previous, ignore_errors=True)
     if repo.exists():
         repo.rename(previous)
@@ -137,6 +145,68 @@ def _update_runtime_repo(source_root: Path, runtime_root: Path) -> dict[str, Any
         + "\n"
     )
     return {"runtime_version": version, "runtime_updated": True}
+
+
+def _git_head(checkout: Path) -> str | None:
+    """Commit of a checkout or worktree, read from its git files (no git binary)."""
+    git = checkout / ".git"
+    if git.is_file():
+        pointer = git.read_text().strip()
+        if not pointer.startswith("gitdir:"):
+            return None
+        git = (checkout / pointer.removeprefix("gitdir:").strip()).resolve()
+    head_file = git / "HEAD"
+    if not head_file.is_file():
+        return None
+    head = head_file.read_text().strip()
+    if not head.startswith("ref:"):
+        return head or None
+    ref = head.removeprefix("ref:").strip()
+    common = git
+    if (git / "commondir").is_file():
+        common = (git / (git / "commondir").read_text().strip()).resolve()
+    for base in (git, common):
+        if (base / ref).is_file():
+            return (base / ref).read_text().strip() or None
+    packed = common / "packed-refs"
+    if packed.is_file():
+        for line in packed.read_text().splitlines():
+            sha, _, name = line.partition(" ")
+            if name == ref:
+                return sha
+    return None
+
+
+BUILD_STAMP = "verdict-build.json"
+
+
+def package_build(package: Path) -> str:
+    """Recorded build of a ``verdict`` package: the git commit it was built from.
+
+    An installed distribution records it in ``direct_url.json``, a checkout in
+    its git HEAD and a census runtime copy in its ``verdict-build.json`` stamp.
+    A package with none of these is ``unrecorded``.
+    """
+    root = package.parent
+    for dist in sorted(root.glob("verdict_core-*.dist-info")):
+        try:
+            payload = json.loads((dist / "direct_url.json").read_text())
+        except (OSError, ValueError):
+            continue
+        commit = payload.get("vcs_info", {}).get("commit_id") if isinstance(payload, dict) else None
+        if isinstance(commit, str) and commit:
+            return f"git {commit[:12]}"
+    try:
+        stamp = json.loads((root / BUILD_STAMP).read_text())
+    except (OSError, ValueError):
+        stamp = None
+    if isinstance(stamp, dict) and isinstance(stamp.get("build"), str):
+        return str(stamp["build"])
+    try:
+        commit = _git_head(root)
+    except OSError:
+        commit = None
+    return f"git {commit[:12]}" if commit else "unrecorded"
 
 
 def census_status(runtime_root: Path | None = None) -> dict[str, Any]:
@@ -180,6 +250,8 @@ def manage_census_service(
     exits. Install refreshes the runtime copy to the installed source, so a
     merged main never leaves the timer probing stale code.
     """
+    from verdict.prove_at_rest_service import plan_units, save_rollback
+
     if not math.isfinite(interval) or interval <= 0:
         raise ValueError("interval must be positive and finite")
     directory = unit_dir or (
@@ -208,14 +280,10 @@ def manage_census_service(
             ),
         }
     )
-    changed = (
-        any((directory / name).exists() for name in (SERVICE, TIMER))
-        if uninstall
-        else any(
-            not (directory / name).exists() or (directory / name).read_text() != body
-            for name, body in files.items()
-        )
+    plan = plan_units(
+        directory, dict.fromkeys((SERVICE, TIMER), "") if uninstall else files, uninstall=uninstall
     )
+    changed = any(step in {"create", "replace", "remove"} for step in plan.values())
     commands = (
         [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]]
         if uninstall and changed
@@ -224,7 +292,9 @@ def manage_census_service(
     if not uninstall:
         commands.append(["systemctl", "--user", "enable", "--now", TIMER])
     runtime_report: dict[str, Any] = {"runtime_version": None, "runtime_updated": False}
+    rollback = None
     if not dry_run:
+        rollback = save_rollback(directory, plan)
         if uninstall:
             for command_args in commands:
                 run(command_args)
@@ -251,6 +321,8 @@ def manage_census_service(
         "dry_run": dry_run,
         "uninstall": uninstall,
         "commands": commands,
+        "plan": plan,
+        "rollback": rollback,
         "runtime_root": str(runtime),
         **runtime_report,
     }

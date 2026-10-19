@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -26,6 +27,47 @@ def _escape_path(value: str) -> str:
 
 def _systemctl(args: list[str]) -> None:
     subprocess.run(args, check=True, capture_output=True, text=True, timeout=30)
+
+
+def plan_units(
+    directory: Path, files: dict[str, str], *, uninstall: bool = False
+) -> dict[str, str]:
+    """What an install or uninstall does to each unit file, before it runs.
+
+    ``create``/``replace``/``keep`` for an install, ``remove``/``absent`` for
+    an uninstall. Setup and dry-run show this plan instead of mutating.
+    """
+    if uninstall:
+        return {name: "remove" if (directory / name).exists() else "absent" for name in files}
+    return {
+        name: "create"
+        if not (directory / name).exists()
+        else "keep"
+        if (directory / name).read_text() == body
+        else "replace"
+        for name, body in files.items()
+    }
+
+
+def save_rollback(directory: Path, plan: dict[str, str]) -> str | None:
+    """Copy every unit file the plan replaces or removes before it changes.
+
+    Copies go to ``$VERDICT_HOME/service-rollback/<UTC time>/``; restoring is
+    copying them back and ``systemctl --user daemon-reload``.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.paths import verdict_home
+
+    changing = [name for name, step in plan.items() if step in {"replace", "remove"}]
+    if not changing:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = verdict_home() / "service-rollback" / stamp
+    target.mkdir(parents=True, exist_ok=True)
+    for name in changing:
+        shutil.copy2(directory / name, target / name)
+    return str(target)
 
 
 def manage_service(
@@ -69,14 +111,10 @@ def manage_service(
             ),
         }
     )
-    changed = (
-        any((directory / name).exists() for name in (SERVICE, TIMER))
-        if uninstall
-        else any(
-            not (directory / name).exists() or (directory / name).read_text() != body
-            for name, body in files.items()
-        )
+    plan = plan_units(
+        directory, dict.fromkeys((SERVICE, TIMER), "") if uninstall else files, uninstall=uninstall
     )
+    changed = any(step in {"create", "replace", "remove"} for step in plan.values())
     commands = (
         [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]]
         if uninstall and changed
@@ -84,7 +122,9 @@ def manage_service(
     )
     if not uninstall:
         commands.append(["systemctl", "--user", "enable", "--now", TIMER])
+    rollback = None
     if not dry_run:
+        rollback = save_rollback(directory, plan)
         if uninstall:
             for command_args in commands:
                 run(command_args)
@@ -110,6 +150,8 @@ def manage_service(
         "dry_run": dry_run,
         "uninstall": uninstall,
         "commands": commands,
+        "plan": plan,
+        "rollback": rollback,
     }
 
 
