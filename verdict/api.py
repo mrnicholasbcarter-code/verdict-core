@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import hashlib
 import ipaddress
 import json
 import logging
 import os
 import sys
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -28,10 +28,15 @@ except ImportError as exc:
     ) from exc
 
 from verdict import __version__
+from verdict.actions.verified_models import (
+    PublicModelsReadiness,
+    PublicModelsUnavailableError,
+    load_public_models,
+)
 from verdict.admission import AdmittedSet
 from verdict.availability import OmniRouteAvailabilityAdapter
 from verdict.availability_cache import AvailabilityCache
-from verdict.catalog import configured_catalog_filters, normalize_catalog
+from verdict.catalog import configured_catalog_filters
 from verdict.context_inject import InjectionRecord, inject_context_pack
 from verdict.contracts import DEFAULT_PRIMARY_MODEL, redact_contract_secrets
 from verdict.cost_ledger import PriceEvidenceInput
@@ -63,22 +68,32 @@ from verdict.guidance import (
     GuidanceControlPlane,
     GuidanceUnavailableError,
 )
-from verdict.intelligence import DEFAULT_PROFILE, DEFAULT_TIMEOUT_MS, IntelligenceService
+from verdict.intelligence import (
+    DEFAULT_PROFILE,
+    DEFAULT_TIMEOUT_MS,
+    IntelligenceService,
+    prepared_task_profile,
+)
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.orchestration.health_cache import (
+    PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    HealthCache,
+    default_cache_path,
+)
+from verdict.orchestration.verified_models import public_model_entry
 from verdict.outcome_log import build_outcome_record, log_outcome
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
     build_attempts,
+    dispatch_scope,
     failure_class,
-    fatal_identity_mismatch,
     idempotency_key,
     is_opaque_alias,
     protocol_for_surface,
     response_actual_route_status,
     retry_safety,
-    retryable_exception,
     retryable_response_status,
     transition_edge,
 )
@@ -86,6 +101,15 @@ from verdict.runtime_certification import CertificationState
 from verdict.security import bearer_matches, redact_text, validate_server_security
 from verdict.serve_path import CONTEXT_EP_REQUEST
 from verdict.session_economics import ConcreteRoute
+from verdict.stream_terminal import (
+    StreamOutcome,
+    StreamProtocolError,
+    StreamState,
+    ValidatedSSEStream,
+    identity_proof_status,
+    prime_stream,
+)
+from verdict.task_profile import TaskProfileError
 
 
 class _EvidenceStreamAdapter:
@@ -97,9 +121,11 @@ class _EvidenceStreamAdapter:
         *,
         on_terminal: Any,
         event_factory: Any,
+        outcome_of: Callable[[], StreamOutcome | None],
         event_prefix: str = "chat_completion",
     ) -> None:
         self._upstream = upstream
+        self._outcome_of = outcome_of
         self._on_terminal = on_terminal
         self._event_factory = event_factory
         self._event_prefix = event_prefix
@@ -116,7 +142,7 @@ class _EvidenceStreamAdapter:
             return await self._upstream.__anext__()
         except StopAsyncIteration:
             cleanup_error = await self._cleanup()
-            self._finish(f"{self._event_prefix}_streamed", "success", "completed", cleanup_error)
+            self._finish_at_eof(cleanup_error)
             raise
         except asyncio.CancelledError:
             cleanup_error = await self._cleanup()
@@ -124,7 +150,7 @@ class _EvidenceStreamAdapter:
                 f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
             )
             raise
-        except _StreamProtocolError as exc:
+        except StreamProtocolError as exc:
             cleanup_error = await self._cleanup()
             self._finish(
                 f"{self._event_prefix}_stream_error",
@@ -148,6 +174,27 @@ class _EvidenceStreamAdapter:
     async def aclose(self) -> None:
         cleanup_error = await self._cleanup()
         self._finish(f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error)
+
+    def _finish_at_eof(self, cleanup_error: str | None) -> None:
+        """Map the validated stream's one outcome; only a semantic success is success."""
+
+        outcome = self._outcome_of()
+        cleanup_error = cleanup_error or (outcome.cleanup_error if outcome else None)
+        prefix = self._event_prefix
+        if outcome is not None and outcome.state is StreamState.SUCCESS:
+            self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
+        elif outcome is not None and outcome.state is StreamState.FAILED:
+            self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
+        elif outcome is not None and outcome.state is StreamState.INCOMPLETE:
+            self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
+        else:
+            self._finish(
+                f"{prefix}_stream_error",
+                "error",
+                "error",
+                cleanup_error,
+                error_class=outcome.state.value if outcome is not None else "missing_outcome",
+            )
 
     async def _cleanup(self) -> str | None:
         if self._closed:
@@ -185,146 +232,6 @@ class _EvidenceStreamAdapter:
         self._on_terminal(
             self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
-
-
-class _StreamProtocolError(RuntimeError):
-    """Raised when an upstream stream is malformed or ends without a terminal event."""
-
-    code = "malformed_stream"
-
-
-class _ValidatedSSEStream:
-    """Validate SSE framing incrementally while yielding the original bytes unchanged."""
-
-    def __init__(
-        self,
-        upstream: AsyncIterator[bytes],
-        *,
-        surface: str,
-        max_bytes: int = 16 * 1024 * 1024,
-        max_buffer: int = 256 * 1024,
-        max_events: int = 100_000,
-    ) -> None:
-        self._upstream = upstream
-        self._surface = surface
-        self._max_bytes = max_bytes
-        self._max_buffer = max_buffer
-        self._max_events = max_events
-        self._decoder = codecs.getincrementaldecoder("utf-8")()
-        self._buffer = ""
-        self._event_data: list[str] = []
-        self._bytes = 0
-        self._events = 0
-        self._terminal = False
-        self._closed = False
-
-    def __aiter__(self) -> _ValidatedSSEStream:
-        return self
-
-    async def __anext__(self) -> bytes:
-        try:
-            chunk = await self._upstream.__anext__()
-        except StopAsyncIteration:
-            self._finish_text(self._decoder.decode(b"", final=True))
-            if self._event_data:
-                self._finish_event()
-            if not self._terminal:
-                raise _StreamProtocolError("stream ended without a terminal event") from None
-            raise
-        except UnicodeDecodeError as exc:
-            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
-        if not isinstance(chunk, bytes):
-            raise _StreamProtocolError("upstream stream yielded a non-byte chunk")
-        self._bytes += len(chunk)
-        if self._bytes > self._max_bytes:
-            raise _StreamProtocolError("stream exceeded the aggregate byte limit")
-        try:
-            decoded = self._decoder.decode(chunk, final=False)
-        except UnicodeDecodeError as exc:
-            raise _StreamProtocolError("stream contained invalid UTF-8") from exc
-        self._finish_text(decoded)
-        return chunk
-
-    def _finish_text(self, text: str) -> None:
-        self._buffer += text
-        if len(self._buffer) > self._max_buffer:
-            raise _StreamProtocolError("stream event buffer exceeded its limit")
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            if len(line) > self._max_buffer:
-                raise _StreamProtocolError("stream line exceeded its limit")
-            self._consume_line(line.rstrip("\r"))
-
-    def _consume_line(self, line: str) -> None:
-        if line == "":
-            if self._event_data:
-                self._finish_event()
-            return
-        if line.startswith(":"):
-            return
-        if line.startswith("data:"):
-            self._event_data.append(line[5:].lstrip())
-            return
-        # ``event:``, ``id:``, and ``retry:`` are valid SSE metadata. Unknown
-        # fields are ignored by the SSE standard and remain wire-transparent.
-
-    def _finish_event(self) -> None:
-        data = "\n".join(self._event_data)
-        self._event_data.clear()
-        self._events += 1
-        if self._events > self._max_events:
-            raise _StreamProtocolError("stream exceeded its event limit")
-        if self._terminal:
-            raise _StreamProtocolError("stream emitted data after its terminal event")
-        if self._surface == "chat" and data == "[DONE]":
-            self._terminal = True
-            return
-        try:
-            parsed = json.loads(data)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise _StreamProtocolError("stream event was not valid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise _StreamProtocolError("stream event must be a JSON object")
-        if self._surface == "responses":
-            event_type = parsed.get("type")
-            if event_type in {"response.completed", "response.failed", "response.incomplete"}:
-                self._terminal = True
-        else:
-            choices = parsed.get("choices")
-            if isinstance(choices, list) and any(
-                isinstance(choice, dict) and choice.get("finish_reason") is not None
-                for choice in choices
-            ):
-                self._terminal = True
-
-    @property
-    def terminal(self) -> bool:
-        return self._terminal
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        close = getattr(self._upstream, "aclose", None)
-        if callable(close):
-            await close()
-
-
-async def _prime_stream(result: StreamedUpstreamResponse) -> StreamedUpstreamResponse:
-    """Read the first upstream chunk before committing to a client stream."""
-
-    body = result.body
-    try:
-        first = await body.__anext__()
-    except StopAsyncIteration as exc:
-        raise _StreamProtocolError("stream ended before its first byte") from exc
-
-    async def primed_body() -> AsyncIterator[bytes]:
-        yield first
-        async for chunk in body:
-            yield chunk
-
-    return replace(result, body=primed_body())
 
 
 class _EvidenceStreamingResponse(StreamingResponse):
@@ -401,37 +308,67 @@ class CachedRelayAdmission:
 
     Refresh is an explicit lifecycle action. A stale or failed cache therefore
     fails closed rather than causing a request-time gateway GET or accepting an
-    old admitted set as indefinite authority.
+    old admitted set as indefinite authority. The TTL never outlives the source
+    evidence deadline handed to ``refresh``: copying a value renews nothing.
     """
 
-    def __init__(self, refresh: Callable[[], AdmittedSet], *, ttl_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        refresh: Callable[[], AdmittedSet],
+        *,
+        ttl_seconds: float = 60.0,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("relay admission TTL must be positive")
         self._refresh = refresh
         self._ttl = timedelta(seconds=ttl_seconds)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._value: AdmittedSet | None = None
         self._expires_at: datetime | None = None
         self.last_refresh_failure: str | None = None
 
-    def refresh(self, *, now: datetime | None = None) -> AdmittedSet:
-        current = now or datetime.now(timezone.utc)
+    def refresh(
+        self, *, now: datetime | None = None, source_expires_at: datetime | None = None
+    ) -> AdmittedSet:
+        current = now or self._clock()
         try:
             value = self._refresh()
         except Exception as exc:
             self.last_refresh_failure = type(exc).__name__
             raise
+        expires_at = current + self._ttl
+        if source_expires_at is not None:
+            expires_at = min(expires_at, source_expires_at)
         self._value = value
-        self._expires_at = current + self._ttl
+        self._expires_at = expires_at
         self.last_refresh_failure = None
         return value
 
+    def invalidate(self) -> None:
+        """Drop the cached value so a classified authority loss fails closed at once."""
+        self._value = None
+        self._expires_at = None
+
     def get(self, *, now: datetime | None = None) -> AdmittedSet:
-        current = now or datetime.now(timezone.utc)
+        current = now or self._clock()
         if self._value is None:
             raise RuntimeError("relay_admission_cache_empty")
-        if self._expires_at is None or current > self._expires_at:
+        if self._expires_at is None or current >= self._expires_at:
             raise RuntimeError("relay_admission_cache_stale")
         return self._value
+
+
+#: Public-catalog readiness (BOD-435). The lifespan owns one refresh task that
+#: reloads the local verified projection; request handlers only read it.
+PUBLIC_MODELS_REFRESH_SECONDS = 20.0
+PUBLIC_MODELS_LOAD_DEADLINE_SECONDS = 5.0
+public_models_readiness: PublicModelsReadiness | None = None
+public_models_task: asyncio.Task[None] | None = None
+
+
+def _public_models_clock() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 availability_cache_instance: AvailabilityCache | None = None
@@ -968,30 +905,73 @@ async def lifespan(app: FastAPI) -> Any:
     # live routing path filters before ranking (single source of truth).
     if eligibility_gate_instance is not None:
         intelligence_instance.eligibility_gate = eligibility_gate_instance
-    # Relay admission is deliberately opt-in. The cache is refreshed once at
-    # startup and every request reads only its bounded in-memory value; no
-    # request path performs a live gateway GET. Persisted ladder state is
+    # The public catalog and the optional relay admission cache share one local
+    # snapshot. The cache is refreshed by the single lifespan task below and
+    # every request reads only bounded in-memory values; no request path
+    # performs a gateway GET or a model call. Persisted ladder state is
     # evidence, never cache authority.
-    global relay_admission_provider
-    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
-        from verdict.admission import load_live_admission
-        from verdict.orchestration.run import resolve_api_key
+    global relay_admission_provider, public_models_readiness, public_models_task
+    from verdict.free_tier_admit import omniroute_endpoint_from_env
 
-        gateway = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
-        cache = CachedRelayAdmission(
-            lambda: load_live_admission(
-                gateway, now=datetime.now(timezone.utc), api_key=resolve_api_key()
-            ),
+    endpoint = omniroute_endpoint_from_env(getattr(intelligence_instance, "providers", None))
+    relay_cache: CachedRelayAdmission | None = None
+    pending: dict[str, AdmittedSet] = {}
+    if os.getenv("VERDICT_RELAY_ADMISSION_CACHE", "false").lower() in {"1", "true", "yes", "on"}:
+        relay_cache = CachedRelayAdmission(
+            lambda: pending["admitted"],
             ttl_seconds=float(os.getenv("VERDICT_RELAY_ADMISSION_TTL_SECONDS", "60")),
+            clock=lambda: _public_models_clock(),
         )
+        relay_admission_provider = relay_cache.get
+    public_models_readiness = PublicModelsReadiness()
+    readiness = public_models_readiness
+
+    async def refresh_public_models() -> None:
+        if endpoint is None:
+            readiness.fail("inventory_absent")
+            return
+        now = _public_models_clock()
         try:
-            cache.refresh()
+            state = await asyncio.wait_for(
+                asyncio.to_thread(
+                    load_public_models,
+                    gateway=endpoint[0],
+                    api_key=endpoint[1],
+                    now=now,
+                    with_admission=relay_cache is not None,
+                ),
+                PUBLIC_MODELS_LOAD_DEADLINE_SECONDS,
+            )
+        except PublicModelsUnavailableError as exc:
+            readiness.fail(exc.code)
+            if relay_cache is not None:
+                relay_cache.invalidate()
+            return
         except Exception as exc:
-            # Keep a callable fail-closed provider so a configured authority
-            # boundary cannot silently revert to catalog-based relay behavior.
-            logger.warning("relay admission startup refresh failed: %s", type(exc).__name__)
-        relay_admission_provider = cache.get
+            # A load that failed or timed out keeps the last-good snapshot only
+            # until its own original deadline; nothing here extends it.
+            readiness.fail(type(exc).__name__, keep_last_good=True)
+            logger.warning("public models refresh failed: %s", type(exc).__name__)
+            return
+        readiness.publish(state)
+        if relay_cache is not None and state.admitted is not None:
+            pending["admitted"] = state.admitted
+            relay_cache.refresh(now=now, source_expires_at=state.source_expires_at)
+
+    async def public_models_loop() -> None:
+        while True:
+            await asyncio.sleep(PUBLIC_MODELS_REFRESH_SECONDS)
+            await refresh_public_models()
+
+    await refresh_public_models()
+    public_models_task = asyncio.create_task(public_models_loop(), name="public-models-refresh")
     yield
+    task, public_models_task = public_models_task, None
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    public_models_readiness = None
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
@@ -1502,6 +1482,7 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
     # The compiled pack is workspace content bound for the upstream model, not
     # a client-facing decision field (cheap-path pack). Its digest lives in the receipt.
     data.pop("context_pack_prompt", None)
+    data.pop("admission_proofs", None)
     return cast(dict[str, Any], redact_contract_secrets(data))
 
 
@@ -1741,20 +1722,28 @@ async def route_explain(
 
 @app.get("/v1/models")
 async def list_models() -> Response:
-    """Return a locally filtered catalog with conservative availability metadata."""
-    if proxy_instance is None:
+    """Publish the locally verified model set.
+
+    Membership needs fresh positive basic-chat proof and a valid, complete and
+    current inventory authority. The handler reads the lifespan snapshot only:
+    no gateway read, provider call or qualification happens here.
+    """
+    if public_models_readiness is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
+    now = _public_models_clock()
     try:
-        result = await proxy_instance.models()
-    except Exception:
-        return _proxy_error(502, "upstream model catalog unavailable")
+        state = public_models_readiness.current(now)
+    except PublicModelsUnavailableError as exc:
+        return _proxy_error(503, f"verified model catalog unavailable: {exc.code}")
     allowlist, denylist = configured_catalog_filters(
         os.getenv("LLMGATE_MODEL_ALLOWLIST"), os.getenv("LLMGATE_MODEL_DENYLIST")
     )
-    filtered_body = normalize_catalog(result.body, allowlist=allowlist, denylist=denylist)
-    return Response(
-        content=filtered_body, status_code=result.status_code, headers=_headers_for_body(result)
-    )
+    data = [
+        public_model_entry(row)
+        for row in state.rows_at(now)
+        if (not allowlist or row.route_id in allowlist) and row.route_id not in denylist
+    ]
+    return JSONResponse(content={"object": "list", "data": data})
 
 
 class QualifyRequest(BaseModel):
@@ -1835,6 +1824,23 @@ async def list_passports(request: Request, model_ids: str | None = None) -> Resp
     return JSONResponse(content={"passports": passports})
 
 
+def _dispatch_attempt_id() -> str:
+    return uuid.uuid4().hex
+
+
+_MODEL_NOT_FOUND_CODES = frozenset({"model_not_found", "model_not_available"})
+
+
+def _gateway_model_not_found(body: str) -> bool:
+    """True only for the gateway's structured model-not-found error code."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return False
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    return isinstance(error, dict) and error.get("code") in _MODEL_NOT_FOUND_CODES
+
+
 async def _relay_completion(request: Request, *, surface: str) -> Response:
     """Route and transparently forward one OpenAI protocol surface."""
     if intelligence_instance is None or proxy_instance is None:
@@ -1880,6 +1886,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     request_id = safe_identifier(client_request_id, prefix="req")
     try:
         authority_context = _authority_context(payload, task=task)
+        authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -1964,6 +1971,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     started_at = monotonic()
     result: BufferedUpstreamResponse | StreamedUpstreamResponse | None = None
     attempts_used: list[dict[str, Any]] = []
+    validated_stream: ValidatedSSEStream | None = None
     last_error: BaseException | None = None
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
@@ -1988,6 +1996,24 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             evidence_key,
         )
 
+    # Proofs are bound to the task profile of the request actually being sent,
+    # recomputed with the same helper preparation used to mint them.
+    relay_profile_digest: str | None
+    try:
+        relay_profile_digest = prepared_task_profile(
+            task, authority_context, planner=getattr(intelligence_instance, "planner", None)
+        )[1].digest
+    except TaskProfileError:
+        relay_profile_digest = None
+    selected_route_id = next(
+        (
+            flag.split(":", 1)[1]
+            for flag in decision.safety_flags
+            if flag.startswith("bod104_route_id:")
+        ),
+        None,
+    )
+    dispatch_denial: str | None = None
     for index, attempt in enumerate(attempts):
         if index:
             edge = transition_edge(
@@ -2012,14 +2038,67 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         # receives. Injection is recorded per attempt and never claimed when
         # the pack is empty/failed or the task did not survive compilation.
         forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
+        # Exactly one proof may name this attempt's model; the primary must also
+        # carry the provider route() selected. Ambiguity is a denial, not a choice.
+        matches = [
+            proof
+            for route_id, proof in decision.admission_proofs.items()
+            if proof.model == attempt.model and proof.route_id == route_id
+        ]
+        proof = matches[0] if len(matches) == 1 else None
+        if proof is None or (
+            attempt.model == decision.model
+            and (
+                proof.provider != decision.provider
+                or (selected_route_id is not None and proof.route_id != selected_route_id)
+            )
+        ):
+            dispatch_denial = "dispatch denied: missing route-bound admission proof"
+            continue
+        if relay_profile_digest is None:
+            dispatch_denial = "dispatch denied: task profile unavailable at relay"
+            continue
+        expected_scope = dispatch_scope(
+            gateway_origin=proxy_instance.base_url,
+            provider=proof.provider,
+            model=attempt.model,
+            route_id=proof.route_id,
+            profile_digest=relay_profile_digest,
+        )
+        now = datetime.now(timezone.utc)
+        attempt_id = _dispatch_attempt_id()
+        if proof.scope != expected_scope or proof.qualified_at > now:
+            dispatch_denial = "dispatch denied: proof scope or observation mismatch"
+            continue
+        permit = HealthCache(default_cache_path()).commit_dispatch(
+            expected_scope,
+            route_id=proof.route_id,
+            attempt_id=attempt_id,
+            authorization_digest=proof.authorization_digest,
+            expected_epoch=proof.epoch,
+            proof_deadline=min(
+                proof.expires_at,
+                proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
+            ),
+            now=now,
+        )
+        if permit is None:
+            dispatch_denial = "dispatch denied: permit commit rejected proof"
+            continue
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
             else:
                 result = await proxy_instance.chat(forwarded, idempotency_key=request_key)
+            validated_stream = None
             if isinstance(result, StreamedUpstreamResponse):
-                result = replace(result, body=_ValidatedSSEStream(result.body, surface=surface))
-                result = await _prime_stream(result)
+                validated_stream = ValidatedSSEStream(result.body, surface=surface)
+                result = replace(result, body=await prime_stream(validated_stream))
+            if HealthCache(default_cache_path()).revocation_epoch(proof.scope) != permit.epoch:
+                if isinstance(result, StreamedUpstreamResponse):
+                    assert validated_stream is not None
+                    await validated_stream.aclose()
+                raise RuntimeError("dispatch permit revoked after commit; possibly sent")
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
             # detection).  Error responses are always BufferedUpstreamResponse, so
@@ -2028,6 +2107,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if result.status_code >= 400 and isinstance(result, BufferedUpstreamResponse):
                 _error_body = result.body[:8192].decode("utf-8", errors="replace")
             _last_error_body = _error_body
+            if result.status_code in {401, 403} or (
+                result.status_code == 404 and _gateway_model_not_found(_error_body)
+            ):
+                HealthCache(default_cache_path()).record_revocation(
+                    proof.scope,
+                    route_id=proof.route_id,
+                    event_id=f"{request_id}:{permit.permit_id}:denied",
+                    source_revision=None,
+                    observed_at=datetime.now(timezone.utc),
+                )
             # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
             _record_execution_outcome(
@@ -2038,7 +2127,17 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 result=result,
             )
             served_model = result.actual_route.model_id if result.actual_route is not None else None
-            if fatal_identity_mismatch(attempt.model, served_model):
+            identity_status = identity_proof_status(
+                attempt.model, served_model, attested=result.actual_route is not None
+            )
+            if identity_status == "identity_mismatch":
+                HealthCache(default_cache_path()).record_revocation(
+                    proof.scope,
+                    route_id=proof.route_id,
+                    event_id=f"{request_id}:{permit.permit_id}:identity_mismatch",
+                    source_revision=None,
+                    observed_at=datetime.now(timezone.utc),
+                )
                 attempts_used.append(
                     {
                         "model": attempt.model,
@@ -2061,6 +2160,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         "served_model": served_model,
                     },
                 )
+                if validated_stream is not None:
+                    await validated_stream.aclose()
                 result = None
                 last_error = RuntimeError(
                     f"identity mismatch: selected {attempt.model!r}, served {served_model!r}"
@@ -2102,6 +2203,10 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 body=_error_body,
             ):
                 break
+            # A later denial fences this request even when its rejection or
+            # idempotency key would otherwise make an alternative safe.
+            if HealthCache(default_cache_path()).revocation_epoch(proof.scope) != permit.epoch:
+                break
             last_error = None
         except asyncio.CancelledError:
             outcome = build_outcome_event(
@@ -2135,10 +2240,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "transition_edge": edge.to_dict() if edge is not None else None,
                 },
             )
-            if not retryable_exception(exc):
-                break
+            # Once committed, a transport failure may have executed upstream.
+            break
 
     if result is None:
+        if dispatch_denial is not None and not attempts_used:
+            return _proxy_error(503, dispatch_denial)
         evidence = _finish_evidence(
             route_evidence,
             build_outcome_event(
@@ -2214,6 +2321,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             content=result.body, status_code=result.status_code, headers=response_headers
         )
     if isinstance(result, StreamedUpstreamResponse):
+        assert validated_stream is not None
 
         def finalize_stream(event: Any) -> None:
             _finish_evidence(route_evidence, event, evidence_key)
@@ -2225,6 +2333,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             cleanup_error: str | None,
             error_class: str | None,
         ) -> Any:
+            stream_outcome = validated_stream.outcome
             details: dict[str, Any] = {
                 "cleanup_status": "error" if cleanup_error else "closed",
                 "cleanup_attempted": True,
@@ -2250,7 +2359,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "actual_route": result.actual_route.to_dict()
                     if result.actual_route is not None
                     else None,
-                    "actual_route_status": (response_actual_route_status(result)),
+                    "actual_route_status": response_actual_route_status(result),
+                    "identity_proof_status": identity_proof_status(
+                        attempts_used[-1]["model"],
+                        result.actual_route.model_id if result.actual_route else None,
+                        attested=result.actual_route is not None,
+                    ),
+                    "stream_state": stream_outcome.state.value
+                    if stream_outcome is not None
+                    else None,
                 },
             )
 
@@ -2258,6 +2375,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             result.body,
             on_terminal=finalize_stream,
             event_factory=stream_event,
+            outcome_of=lambda: validated_stream.outcome,
             event_prefix=event_prefix,
         )
 

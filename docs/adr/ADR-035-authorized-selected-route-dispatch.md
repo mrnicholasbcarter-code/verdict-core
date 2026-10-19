@@ -53,3 +53,29 @@ OmniRoute remains inventory/execute/health only ([ADR-032](ADR-032-core-model-me
   dispatcher binding, legacy selector demotion), not ADR-023, for current dispatch architecture.
 - Demoted selector modules may remain as feeds/escapes until a later cleanup
   story removes them; they are not a second routing policy.
+
+
+## Addendum: BOD-433 API relay dispatch permits (2026-10-19)
+
+Trusted execution-path preparation retains the fresh passport for each confirmed
+admitted route. Selection is not dispatch authority. Immediately before each relay
+send, Core commits a durable, unique-attempt permit against that proof's captured
+revocation epoch and original expiry. Missing or superseded proof makes zero sends.
+
+The shared relay scope binds the resolved gateway origin, concrete provider/model
+and route id (canonical SHA-256 `config_generation`), prepared task profile digest,
+and `binding_id = "api_relay:" + route_id`. This reduced binding does not represent
+the full effective provider configuration or include key material.
+
+Complete explicit rejection responses already classified as retryable (for example
+429 or context overflow) may try another admitted route, with its own fresh attempt
+id and permit. A pre-byte 5xx fallback additionally requires the existing idempotency
+key and no-tools safety rule. Timeouts, transport failures, identity mismatch,
+output already forwarded, or a revocation after commit end the request without
+retry. Auth/forbidden,
+model-not-found, and identity-mismatch denials revoke the affected scope. The durable
+attempt remains MAYBE_SENT. Existing transport cancellation and stream cleanup
+remain responsible for stopping and closing upstream work where possible.
+
+CLI selection does not mint permits. Worker/orchestration handoffs are phase 2b:
+they need an admitted node-proof handoff before adopting the same commit seam.

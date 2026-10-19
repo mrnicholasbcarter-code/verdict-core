@@ -489,6 +489,12 @@ narrower boundary:
   is wired. It defaults to `None`.
 - When the provider is wired, the selected model and every alternative must be
   in the admitted set. A provider error returns 503 before any upstream call.
+- With `VERDICT_RELAY_ADMISSION_CACHE=true`, the API lifespan task reloads the
+  provider from local stores every 20 s (5 s deadline) and the 60 s cache TTL is
+  capped by the source evidence deadline (age < 600 s). `GET /v1/models` is the
+  local verified projection (fresh positive proof only, no gateway or model
+  call) and returns 503 with a classified reason when the inventory is absent,
+  corrupt, incomplete or expired.
 - Relay alternatives are admitted-only in every mode. An alternative is tried
   only when the decision carries `admitted: true` candidate state for it.
   Without that state, alternatives are dropped, not treated as eligible.

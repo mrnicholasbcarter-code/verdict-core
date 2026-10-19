@@ -20,7 +20,7 @@ from verdict.candidate_pool import (
     RouteHealth,
     build_candidate_pool,
 )
-from verdict.capability_gate import derive_requirements, gate_capability
+from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
 from verdict.chooser import ChooserError, apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
@@ -212,6 +212,20 @@ class IntelligenceRanking:
     ranked: list[RankedCandidate]
     task_spec_id: str
     profile: str
+
+
+def prepared_task_profile(
+    task: str, context: dict[str, Any], *, planner: StructuredPlanner | None = None
+) -> tuple[TaskRequirements, TaskProfile]:
+    """Derive the requirements and task profile that preparation binds into admission."""
+    planner_caps: tuple[str, ...] = ()
+    try:
+        planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
+        planner_caps = tuple(planned.required_capabilities)
+    except Exception:
+        planner_caps = ()
+    requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+    return requirements, profile_task(task, context=context, requirements=requirements)
 
 
 class IntelligenceService:
@@ -432,6 +446,54 @@ class IntelligenceService:
                 safety.append(f"bod104_gateway:{identity['gateway']}")
             if identity.get("route_id"):
                 safety.append(f"bod104_route_id:{identity['route_id']}")
+            from verdict.execution_path import ExecutionPathRequest
+            from verdict.relay import admission_proof, dispatch_scope
+
+            ep_request = (
+                context.get("execution_path_request") if isinstance(context, dict) else None
+            )
+            gateway_origin = (
+                context.get("_dispatch_gateway_origin") if isinstance(context, dict) else None
+            )
+            proofs = {}
+            if isinstance(ep_request, ExecutionPathRequest) and isinstance(gateway_origin, str):
+                profile_digest = next(
+                    (
+                        item.split("=", 1)[1]
+                        for item in ep_request.assumptions
+                        if item.startswith("task_profile=")
+                    ),
+                    "",
+                )
+                confirmation = (
+                    ep_request.pool_receipt.confirmation
+                    if ep_request.pool_receipt is not None
+                    else None
+                )
+                if profile_digest:
+                    for offer in ep_request.offers:
+                        route = offer.route
+                        scope = dispatch_scope(
+                            gateway_origin=gateway_origin,
+                            provider=route.provider,
+                            model=route.model,
+                            route_id=route.route_id,
+                            profile_digest=profile_digest,
+                        )
+                        proof = admission_proof(
+                            confirmation,
+                            route_id=route.route_id,
+                            scope=scope,
+                            authorization_digest=ep.decision_digest,
+                            provider=route.provider,
+                            model=route.model,
+                            now=datetime.now(timezone.utc),
+                        )
+                        if proof is not None:
+                            proofs[route.route_id] = proof
+            alternatives = [
+                proof.model for proof in proofs.values() if proof.model != identity["model"]
+            ]
             dec = RoutingDecision(
                 model=str(identity["model"]),
                 provider=str(identity.get("provider") or "unknown"),
@@ -442,6 +504,9 @@ class IntelligenceService:
                 request_id=request_id or "",
                 decision="selected",
                 safety_flags=safety,
+                admission_proofs=proofs,
+                alternatives=alternatives,
+                candidate_states=[{"model_id": model, "admitted": True} for model in alternatives],
             )
             if self.log_path:
                 log_decision(self.log_path, task_str, 2, dec, self.log_full_task)
@@ -901,14 +966,7 @@ class IntelligenceService:
                 "candidate pool requires Core metadata for a live execution-path request"
             )
         classification = classify_worthiness(task, criticality=criticality, context=context)
-        planner_caps: tuple[str, ...] = ()
-        try:
-            planned = self.planner.plan(task, context=context).task_spec
-            planner_caps = tuple(planned.required_capabilities)
-        except Exception:
-            planner_caps = ()
-        requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
-        profile = profile_task(task, context=context, requirements=requirements)
+        requirements, profile = prepared_task_profile(task, context, planner=self.planner)
         receipt = expand_admit_for_worthiness(
             admit_free_tier_active(snapshot),
             snapshot,
@@ -968,7 +1026,11 @@ class IntelligenceService:
         pool = replace(
             pool,
             confirmation={
-                "receipt_id": confirmed.receipt_id,
+                "receipt_id": confirmed.receipt_id
+                or "confirm:"
+                + hashlib.sha256(
+                    json.dumps(confirmed.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
                 "admitted": list(confirmed.admitted),
                 "exclusions": [item.to_dict() for item in confirmed.exclusions],
                 "passport": [

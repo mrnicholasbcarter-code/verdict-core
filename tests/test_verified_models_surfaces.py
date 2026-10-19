@@ -1234,3 +1234,33 @@ def test_post_projection_raising_callback_harmless_and_default_unchanged(tmp_pat
     assert {
         key: value for key, value in result.data.items() if key != "completion_warning"
     } == baseline.data
+
+
+def test_load_public_models_reads_local_stores_only_and_checks_strict_ages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.catalog_cache import put_cached_catalog
+    from verdict.free_tier_admit import _write_last_good, default_admit_last_good_path
+
+    monkeypatch.setenv("VERDICT_CATALOG_CACHE", str(tmp_path / "catalog-cache.json"))
+    origin = "http://127.0.0.1:20128"
+    adapter = adapter_for(tmp_path, ids=("cc/sonnet",), age=599)
+    put_cached_catalog(origin, None, {"data": [row("cc/sonnet")]}, now=NOW - timedelta(seconds=10))
+    _write_last_good(
+        default_admit_last_good_path(),
+        origin,
+        {"providers": {"connections": [conn("cc")]}},
+        NOW - timedelta(seconds=10),
+    )
+    state = surfaces.load_public_models(
+        gateway=origin, api_key=None, now=NOW, paths=adapter.paths, with_admission=True
+    )
+    assert [r.route_id for r in state.rows] == ["cc/sonnet"]
+    assert state.source_expires_at == NOW + timedelta(seconds=590)
+    assert state.admitted is not None
+
+    with pytest.raises(surfaces.PublicModelsUnavailableError) as expired:
+        surfaces.load_public_models(
+            gateway=origin, api_key=None, now=NOW + timedelta(seconds=590), paths=adapter.paths
+        )
+    assert expired.value.code == "inventory_expired"

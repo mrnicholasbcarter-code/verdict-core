@@ -853,3 +853,580 @@ def test_route_outcome_and_probe_result_imports() -> None:
     assert usable_until(NOW) == NOW + timedelta(seconds=1800)
     assert DEFAULT_MAX_REQUESTS == 40
     assert REQUESTS_PER_FULL_PROBE == 2
+
+
+# ---------------------------------------------------------------------------
+# BOD-297 / S05 phase 1: cross-producer qualification budget, scope, fairness
+# ---------------------------------------------------------------------------
+
+SCOPE_A = "gateway=http://a/profile=x/consent=manual"
+SCOPE_B = "gateway=http://b/profile=x/consent=manual"
+
+
+def _scope_snapshot(
+    rows: Sequence[RowInput], *, scope: str, generation: str = "rev1"
+) -> RefreshSnapshot:
+    return RefreshSnapshot(rows=tuple(rows), generation=generation, scope=scope)
+
+
+def _scope_owner(
+    directory: Path,
+    transport: Callable[[str, str, float], ProbeExchange] | None,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> RefreshCoordinator:
+    directory.mkdir(parents=True, exist_ok=True)
+    return RefreshCoordinator(
+        cache=HealthCache(directory / "health-cache.json"),
+        transport=transport,
+        clock=clock or (lambda: NOW),
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        lock_path=directory / "refresh.lock",
+        marker_path=directory / "refresh.json",
+    )
+
+
+def _fork_scope_owner(
+    lock_path: Path,
+    marker_path: Path,
+    cache_path: Path,
+    scope: str,
+    started: Any,
+    release: Any,
+    result_q: Any,
+) -> None:
+    """A real second process running one owned job under the shared flock."""
+    try:
+
+        def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+            started.set()
+            release.wait(timeout=1.0)
+            return _ok(route_id, phase)
+
+        coord = RefreshCoordinator(
+            cache=HealthCache(cache_path),
+            transport=transport,
+            lock_path=lock_path,
+            marker_path=marker_path,
+        )
+        rows = [_row("cc/a"), _row("cc/b")]
+        coord.refresh_for_consumer(
+            _scope_snapshot(rows, scope=scope),
+            consumer="picker",
+            needed_ids=["cc/a", "cc/b"],
+            config=RefreshConfig(wall_seconds=20.0),
+            explicit=True,
+        )
+        result_q.put("done")
+    except BaseException as exc:  # reported to the parent through the queue
+        result_q.put(f"error: {exc!r}")
+
+
+def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: Path) -> None:
+    """BOD-297/S05 phase 1: shared budgets, stable scope, caps before screening.
+
+    Phase 1 lands the coordinator substrate every producer (manual refresh,
+    census, live confirm) converges onto: one flock/marker owner, maintenance
+    caps applied before any screening call, a stable configuration/profile/
+    consent scope binding debounce and join reuse (a different gateway/profile
+    never reuses outcomes; own evidence revisions do not invalidate the
+    scope), and a real second process sharing the flock. Crash charge/refund,
+    concurrency lanes, renewal slots and the durable backlog cursor follow
+    with the S03 record shapes in phase 2.
+    """
+    import multiprocessing
+
+    from verdict.orchestration.verified_refresh import (
+        OUTCOME_LOCK_TIMEOUT,
+        REASON_LOCK_TIMEOUT,
+        maintenance_from_env,
+    )
+
+    # -- configuration knobs (A09 maintenance lane + qualification bounds) --
+    base = config_from_env({})
+    assert base.output_tokens == 4096
+    assert base.request_timeout_seconds == 30.0
+    assert base.max_per_provider is None  # interactive: no per-provider cap
+    assert base.cooldown_seconds == 300.0
+    assert base.maintenance is False
+    maintenance = maintenance_from_env({})
+    assert maintenance.maintenance is True
+    assert maintenance.max_routes == 4
+    assert maintenance.max_requests == 16
+    assert maintenance.wall_seconds == 600.0
+    assert maintenance.concurrency == 4
+    assert maintenance.debounce_seconds == 10.0
+    # Env keeps precedence and the hard-max guard style.
+    assert config_from_env({"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"}).max_per_provider == 3
+    with pytest.raises(RefreshConfigError):
+        config_from_env({"VERDICT_REFRESH_MAX_PER_PROVIDER": "0"})
+    with pytest.raises(RefreshConfigError):
+        config_from_env({"VERDICT_REFRESH_OUTPUT_TOKENS": "0"})
+    with pytest.raises(RefreshConfigError):
+        maintenance_from_env({"VERDICT_REFRESH_MAX_ROUTES": "51"})
+    assert maintenance.max_per_provider == 2
+    with pytest.raises(RefreshConfigError):
+        RefreshConfig(wall_seconds=600.0)
+    assert RefreshConfig(wall_seconds=600.0, maintenance=True).wall_seconds == 600.0
+
+    # -- 9,000 fake ids: caps apply before any screening call (A12) --
+    caps_dir = tmp_path / "caps"
+    rows = [
+        RowInput(
+            route_id=f"p{i % 900}/m{i}",
+            provider=f"p{i % 900}",
+            status="UNVERIFIED",
+            capacity_class=CAPACITY_FREE,
+            refreshable=True,
+        )
+        for i in range(9_000)
+    ]
+    manual_ids = [r.route_id for r in rows[:100]]
+    t_manual = ScriptedTransport({})
+    manual = _scope_owner(caps_dir, t_manual)
+    out = manual.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_A),
+        consumer="picker",
+        needed_ids=manual_ids,
+        config=maintenance,
+        explicit=True,
+    )
+    assert out.probed == 4
+    assert out.requests_made == 8  # 4 routes x 2 full-probe requests
+    assert out.requests_made <= maintenance.max_requests
+    assert len(t_manual.calls) == 8
+    assert {rid for rid, _phase in t_manual.calls} == {
+        rid for rid in manual_ids if rid in out.route_outcomes and out.route_outcomes[rid].probed
+    }
+    manual_probed = {rid for rid, o in out.route_outcomes.items() if o.probed}
+
+    # -- census and confirm triggers join the SAME owner/budgets (A12) --
+    census_ids = [r.route_id for r in rows[100:200]]
+    t_census = ScriptedTransport({})
+    census = _scope_owner(caps_dir, t_census, clock=lambda: NOW + timedelta(seconds=30))
+    out_census = census.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_A, generation="rev2"),
+        consumer="census",
+        needed_ids=census_ids,
+        config=maintenance,
+    )
+    assert out_census.probed == 4
+    assert out_census.requests_made <= maintenance.max_requests
+    census_probed = {rid for rid, o in out_census.route_outcomes.items() if o.probed}
+    assert census_probed.isdisjoint(manual_probed)
+
+    confirm_ids = [r.route_id for r in rows[200:300]]
+    t_confirm = ScriptedTransport({})
+    confirm = _scope_owner(caps_dir, t_confirm, clock=lambda: NOW + timedelta(seconds=60))
+    out_confirm = confirm.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_A, generation="rev3"),
+        consumer="admit_confirm",
+        needed_ids=confirm_ids,
+        config=maintenance,
+        authorized=True,
+    )
+    assert out_confirm.probed == 4
+    assert out_confirm.requests_made <= maintenance.max_requests
+    confirm_probed = {rid for rid, o in out_confirm.route_outcomes.items() if o.probed}
+    assert confirm_probed.isdisjoint(manual_probed | census_probed)
+
+    # -- stable scope: debounce binds scope, not evidence revision (A13) --
+    # The marker now holds the confirm job (scope A, confirm_ids, finished at
+    # NOW+60). A census trigger 3 s later with a NEW evidence revision but the
+    # SAME scope debounces: own evidence updates do not invalidate the scope.
+    t_again = ScriptedTransport({})
+    again = _scope_owner(caps_dir, t_again, clock=lambda: NOW + timedelta(seconds=63))
+    out_again = again.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_A, generation="rev9"),
+        consumer="census",
+        needed_ids=confirm_ids[:4],
+        config=maintenance,
+    )
+    assert out_again.outcome == OUTCOME_DEBOUNCED
+    assert t_again.calls == []
+
+    # A different gateway/profile within the same window, same ids, never
+    # reuses outcomes: only the stable scope differs.
+    t_other = ScriptedTransport({})
+    other = _scope_owner(caps_dir, t_other, clock=lambda: NOW + timedelta(seconds=64))
+    out_other = other.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_B, generation="rev9"),
+        consumer="census",
+        needed_ids=confirm_ids,
+        config=maintenance,
+    )
+    assert out_other.outcome != OUTCOME_DEBOUNCED
+    assert out_other.outcome == OUTCOME_CAPPED  # its own bounded job, route cap labelled
+    assert out_other.requests_made == 8
+    assert t_other.calls  # it ran its own job
+
+    # External epoch change (scope moved back) also never reuses outcomes.
+    t_back = ScriptedTransport({})
+    back = _scope_owner(caps_dir, t_back, clock=lambda: NOW + timedelta(seconds=95))
+    out_back = back.refresh_for_consumer(
+        _scope_snapshot(rows, scope=SCOPE_A, generation="rev9"),
+        consumer="census",
+        needed_ids=confirm_ids,
+        config=maintenance,
+    )
+    assert out_back.outcome == OUTCOME_CAPPED  # again its own job, never a reuse
+    assert t_back.calls
+
+    # -- per-provider fairness: at most 2 routes per provider (A14) --
+    fair_dir = tmp_path / "fairness"
+    t_fair = ScriptedTransport({})
+    fair = _scope_owner(fair_dir, t_fair)
+    five = [_row(f"cc/r{i}") for i in range(5)]
+    out_fair = fair.refresh_for_consumer(
+        _scope_snapshot(five, scope=SCOPE_A),
+        consumer="picker",
+        needed_ids=[r.route_id for r in five],
+        config=RefreshConfig(max_routes=10, max_per_provider=2),
+        explicit=True,
+    )
+    assert out_fair.probed == 2
+    assert len(t_fair.calls) == 4
+
+    # -- two real local processes share one flock/marker (A12, A13) --
+    procs_dir = tmp_path / "procs"
+    procs_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = procs_dir / "refresh.lock"
+    marker_path = procs_dir / "refresh.json"
+    cache_path = procs_dir / "health-cache.json"
+    ctx = multiprocessing.get_context("fork")
+
+    started = ctx.Event()
+    release = ctx.Event()
+    result_q = ctx.Queue()
+    child = ctx.Process(
+        target=_fork_scope_owner,
+        args=(lock_path, marker_path, cache_path, SCOPE_A, started, release, result_q),
+    )
+    child.start()
+    assert started.wait(timeout=10.0)
+    t_join = ScriptedTransport({})
+    joiner = RefreshCoordinator(
+        cache=HealthCache(cache_path),
+        transport=t_join,
+        lock_path=lock_path,
+        marker_path=marker_path,
+    )
+    out_join = joiner.refresh_for_consumer(
+        _scope_snapshot([_row("cc/a"), _row("cc/b")], scope=SCOPE_A),
+        consumer="census",
+        needed_ids=["cc/a", "cc/b"],
+        config=RefreshConfig(wall_seconds=10.0),
+    )
+    release.set()
+    child.join(timeout=30.0)
+    assert result_q.get(timeout=5.0) == "done"
+    assert child.exitcode == 0
+    assert out_join.outcome == OUTCOME_JOINED
+    assert t_join.calls == []  # the joiner never probed anything itself
+    assert out_join.route_outcomes["cc/a"].probed is True
+
+    # A different-scope caller under the SAME live owner never joins or
+    # reuses its outcomes: bounded, fail-closed, zero calls.
+    procs_dir2 = tmp_path / "procs2"
+    procs_dir2.mkdir(parents=True, exist_ok=True)
+    started2 = ctx.Event()
+    release2 = ctx.Event()
+    result_q2 = ctx.Queue()
+    child2 = ctx.Process(
+        target=_fork_scope_owner,
+        args=(
+            procs_dir2 / "refresh.lock",
+            procs_dir2 / "refresh.json",
+            procs_dir2 / "health-cache.json",
+            SCOPE_A,
+            started2,
+            release2,
+            result_q2,
+        ),
+    )
+    child2.start()
+    assert started2.wait(timeout=10.0)
+    t_mismatch = ScriptedTransport({})
+    mismatch = RefreshCoordinator(
+        cache=HealthCache(procs_dir2 / "health-cache.json"),
+        transport=t_mismatch,
+        lock_path=procs_dir2 / "refresh.lock",
+        marker_path=procs_dir2 / "refresh.json",
+    )
+    out_mismatch = mismatch.refresh_for_consumer(
+        _scope_snapshot([_row("cc/a"), _row("cc/b")], scope=SCOPE_B),
+        consumer="admit_confirm",
+        needed_ids=["cc/a", "cc/b"],
+        config=RefreshConfig(wall_seconds=10.0),
+        authorized=True,
+    )
+    release2.set()
+    child2.join(timeout=30.0)
+    assert result_q2.get(timeout=5.0) == "done"
+    assert out_mismatch.outcome == OUTCOME_LOCK_TIMEOUT
+    assert t_mismatch.calls == []
+    for route in out_mismatch.route_outcomes.values():
+        assert route.refresh_reason == REASON_LOCK_TIMEOUT
+        assert route.verified is False  # the other scope's proof is never reused
+
+
+# ---------------------------------------------------------------------------
+# BOD-297 / S05 phase 1 review fixes
+# ---------------------------------------------------------------------------
+
+
+def _hold_lock(path: Path) -> Any:
+    import fcntl
+
+    held = path.open("a+")
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+    return held
+
+
+def _marker_payload(
+    job_id: str, scope: str, *, running: bool, seq: int = 1, ids: Sequence[str] = ("cc/a",)
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "owner": "picker",
+        "scope": scope,
+        "ids": list(ids),
+        "running": running,
+        "sequence": seq,
+        "outcomes": {
+            rid: {"provider": rid.split("/")[0], "probed": True, "verified": True, "alive": True}
+            for rid in ids
+        }
+        if not running
+        else {},
+    }
+    if not running:
+        payload["finished_wall"] = 0.0
+    return payload
+
+
+def _write_marker_file(path: Path, payload: dict[str, Any]) -> None:
+    import json
+
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_empty_scope_is_gateway_derived_never_matches_across_gateways(tmp_path: Path) -> None:
+    rows = [_row("cc/a"), _row("cc/b")]
+
+    def snap(origin: str) -> RefreshSnapshot:
+        return RefreshSnapshot(rows=tuple(rows), generation="g", gateway_origin=origin)
+
+    t1 = ScriptedTransport({})
+    first = _coordinator(tmp_path, t1)
+    first.refresh_for_consumer(
+        snap("http://gw-a:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert t1.calls
+
+    # Different gateway, same window: never debounced onto gateway A's outcomes.
+    t2 = ScriptedTransport({})
+    second = _coordinator(tmp_path, t2, clock=lambda: NOW + timedelta(seconds=1))
+    out = second.refresh_for_consumer(
+        snap("http://gw-b:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert out.outcome != OUTCOME_DEBOUNCED
+    assert t2.calls
+
+    # Same gateway still debounces (the fix must not break own-scope reuse).
+    t3 = ScriptedTransport({})
+    third = _coordinator(tmp_path, t3, clock=lambda: NOW + timedelta(seconds=2))
+    again = third.refresh_for_consumer(
+        snap("http://gw-b:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert again.outcome == OUTCOME_DEBOUNCED
+    assert t3.calls == []
+
+
+def test_empty_scope_join_never_reuses_another_gateways_outcomes(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    rows = [_row("cc/a"), _row("cc/b")]
+    owner = _coordinator(tmp_path, ScriptedTransport({}))
+    owner.refresh_for_consumer(
+        RefreshSnapshot(rows=tuple(rows), gateway_origin="http://gw-a:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        t = ScriptedTransport({})
+        joiner = _coordinator(tmp_path, t, clock=lambda: NOW + timedelta(seconds=30))
+        out = joiner.refresh_for_consumer(
+            RefreshSnapshot(rows=tuple(rows), gateway_origin="http://gw-b:20128"),
+            consumer="picker",
+            needed_ids=["cc/a", "cc/b"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=1.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert t.calls == []
+    assert all(not r.verified for r in out.route_outcomes.values())
+
+
+def test_join_waits_past_stale_other_scope_finished_marker(tmp_path: Path) -> None:
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("old-b", SCOPE_B, running=False))
+    polls = {"n": 0}
+
+    def sleep(_s: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 2:
+            _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=True))
+        elif polls["n"] == 4:
+            _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=False, seq=2))
+
+    t = ScriptedTransport({})
+    joiner = _coordinator(tmp_path, t)
+    joiner.sleep = sleep
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_JOINED
+    assert out.job_id == "job-a"
+    assert out.route_outcomes["cc/a"].probed is True
+    assert t.calls == []
+
+
+def test_joined_job_survives_a_later_foreign_scope_marker(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=True))
+    polls = {"n": 0}
+
+    def sleep(_s: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            _write_marker_file(marker_path, _marker_payload("job-b", SCOPE_B, running=True))
+
+    joiner = _coordinator(tmp_path, ScriptedTransport({}))
+    joiner.sleep = sleep
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    # Reported as the joined job, still running/unfinished -- never as a mismatch
+    # and never carrying the foreign owner's job id.
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert out.job_id == "job-a"
+    assert out.complete is False
+
+
+def test_scope_mismatch_does_not_leak_foreign_job_id(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("foreign-job", SCOPE_B, running=True))
+    joiner = _coordinator(tmp_path, ScriptedTransport({}))
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert out.job_id != "foreign-job"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VERDICT_REFRESH_MAX_ROUTES": "5"},
+        {"VERDICT_REFRESH_MAX_REQUESTS": "17"},
+        {"VERDICT_REFRESH_WALL_SECONDS": "601"},
+        {"VERDICT_REFRESH_CONCURRENCY": "5"},
+        {"VERDICT_REFRESH_OUTPUT_TOKENS": "4097"},
+        {"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"},
+    ],
+)
+def test_maintenance_env_can_never_exceed_contract_caps(env: dict[str, str]) -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    with pytest.raises(RefreshConfigError):
+        maintenance_from_env(env)
+
+
+def test_maintenance_env_may_lower_caps() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    lowered = maintenance_from_env(
+        {
+            "VERDICT_REFRESH_MAX_ROUTES": "2",
+            "VERDICT_REFRESH_MAX_REQUESTS": "8",
+            "VERDICT_REFRESH_OUTPUT_TOKENS": "1024",
+            "VERDICT_REFRESH_MAX_PER_PROVIDER": "1",
+        }
+    )
+    assert (lowered.max_routes, lowered.max_requests) == (2, 8)
+    assert (lowered.output_tokens, lowered.max_per_provider) == (1024, 1)
+
+
+def test_per_provider_cap_normalizes_provider_names() -> None:
+    providers = ["OpenAI", "openai", "OpenAI ", "OPENAI"]
+    rows = [_row(f"x/m{i}", provider=p) for i, p in enumerate(providers)]
+    picked = select_candidates(
+        _snapshot(rows),
+        needed_ids=[r.route_id for r in rows],
+        explicit=True,
+        config=RefreshConfig(max_per_provider=2),
+    )
+    assert len(picked) == 2
+
+
+def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    assert RefreshConfig().max_per_provider is None
+    assert config_from_env({}).max_per_provider is None
+    assert maintenance_from_env({}).max_per_provider == 2
+    rows = [_row(f"cc/r{i}") for i in range(5)]
+    picked = select_candidates(
+        _snapshot(rows),
+        needed_ids=[r.route_id for r in rows],
+        explicit=True,
+        config=RefreshConfig(max_routes=10),
+    )
+    assert len(picked) == 5

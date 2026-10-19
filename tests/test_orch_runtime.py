@@ -1792,3 +1792,16 @@ async def test_slow_selector_reaches_full_concurrency_fast(repo: Path) -> None:
     )
     assert ex.max_active == 4, f"expected 4 concurrent dispatches, saw max {ex.max_active}"
     assert elapsed < 1.5, f"expected ~1s total, took {elapsed:.2f}s"
+
+
+async def test_authority_mode_denies_every_send_without_a_proof(repo: Path) -> None:
+    """BOD-433: with the authority flag set and no admission proof, zero executor calls."""
+    ex = Executor({})
+    rt, ev, _ = make(
+        repo, WorkGraph("g", (node("a"),)), ex, ["cc/s", "cx/g"], require_dispatch_permit=True
+    )
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.calls == []
+    assert result.nodes["a"].state is NodeState.BLOCKED
+    assert ev.of("failure", "a")[0]["category"] == "dispatch_denied"

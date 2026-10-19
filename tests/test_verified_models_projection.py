@@ -2703,3 +2703,21 @@ def test_exhausted_associations_consider_all_blockers_for_precedence():
     assert r.status is VerifiedStatus.UNAVAILABLE
     assert r.cooldown_scope == "account:a1"
     assert r.failure_category == "authentication"
+
+
+def test_public_model_entry_is_built_only_from_a_verified_projection_row() -> None:
+    from verdict.orchestration.verified_models import public_model_entry
+
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=599.999))
+        ),
+        now=NOW,
+    )
+    view = project_one([row("cc/sonnet")], [conn("cc")], snaps)
+    entry = public_model_entry(only_row(view))
+    assert entry["id"] == "cc/sonnet"
+    assert entry["object"] == "model"
+    assert entry["verdict"]["availability_state"] == "verified"
+    assert entry["verdict"]["fresh_until"] == iso(NOW + timedelta(milliseconds=1))
+    assert entry["verdict"]["capability_profile"]["context"] == 200_000
