@@ -267,6 +267,107 @@ def test_auth_gate_denies_outage_excludes_route_from_same_cycle_agentic(tmp_path
     assert entry is not None and not entry.healthy
 
 
+def test_unconfirmed_auth_gate_reports_budget_stop_not_outage(tmp_path: Path) -> None:
+    """Review finding 18a (2026-10-19): when the gate cannot run its own
+    confirmation (its request/wall budget is already spent), the job must
+    report a budget stop (request_cap/wall_cap), never a CONFIRMED outage
+    nobody actually checked. The failure is still never written, and the
+    agentic phase still runs (only a confirmed outage skips it).
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    cache = HealthCache(tmp_path / "cache.json")
+    tick = [0.0]
+
+    def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        tick[0] += 100.0  # the chat call itself crosses the wall budget
+        return ProbeExchange(http_status=401, ok=False, error_category="auth")
+
+    checks: list[float] = []
+
+    def check(timeout: float) -> ProbeExchange:
+        checks.append(timeout)
+        return ProbeExchange(http_status=200, ok=True)
+
+    agentic_calls: list[str] = []
+
+    def agentic(route_id: str, payload: object, timeout: float) -> ProbeExchange:
+        agentic_calls.append(route_id)
+        return ProbeExchange(http_status=200, ok=True)
+
+    prober = Prober(
+        cache,
+        lambda: [_free("p/m")],
+        chat,
+        max_wall_seconds=50.0,
+        agentic_transport=agentic,
+        agentic_wall_seconds=1000.0,
+        clock=lambda: now_local,
+        monotonic=lambda: tick[0],
+        gateway_auth_check=check,
+        epsilon=0,
+    )
+    stats = prober.run_once()
+    assert stats.auth_outage is False
+    assert stats.stopped_reason == "wall_cap"
+    assert checks == []
+    # The chat phase's unconfirmed 401 is never written; the agentic phase
+    # still runs (only a confirmed outage skips it) and is free to write its
+    # own result.
+    entry = cache.entry("p/m")
+    assert entry is not None and entry.probe_class == "agentic"
+    assert stats.agentic_probed == 1
+
+
+def test_gateway_check_counts_against_the_coordinator_request_budget(tmp_path: Path) -> None:
+    """Review finding 18b (2026-10-19): the gateway check's own live
+    request was not counted in the coordinator's requests_made, so a
+    second route could be admitted one request over max_requests. With
+    max_requests=4: chat ok, tool 401 (2 requests), one gateway check
+    (1 request) = 3 real requests before a second route could even be
+    considered -- the second route must never be admitted past that.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    cache = HealthCache(tmp_path / "cache.json")
+    calls: list[tuple[str, str]] = []
+
+    def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        calls.append((route_id, phase))
+        if route_id == "p/a" and phase == "tool":
+            return ProbeExchange(http_status=401, ok=False)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=(phase == "chat"), tool_called=(phase == "tool")
+        )
+
+    checks: list[float] = []
+
+    def check(timeout: float) -> ProbeExchange:
+        checks.append(timeout)
+        return ProbeExchange(http_status=200, ok=True)
+
+    routes = [AdmittedRoute("p/a", "p", "free"), AdmittedRoute("p2/b", "p2", "free")]
+    stats = Prober(
+        cache,
+        lambda: routes,
+        chat,
+        clock=lambda: now_local,
+        monotonic=lambda: 0.0,
+        epsilon=0,
+        max_requests=4,
+        gateway_auth_check=check,
+    ).run_once()
+    total_real_requests = len(calls) + len(checks)
+    assert total_real_requests <= 4
+    assert stats.requests == total_real_requests
+
+
 def test_agentic_phase_runs_after_the_chat_phase_hits_its_caps(tmp_path: Path) -> None:
     """A spent chat budget (request and wall cap) no longer skips agentic probing."""
     tick = [0.0]

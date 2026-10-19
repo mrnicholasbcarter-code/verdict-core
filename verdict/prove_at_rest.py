@@ -1073,7 +1073,7 @@ class Prober:
             for index, route in enumerate(prepaid)
         )
 
-        def auth_gate(route_id: str, http_status: int | None) -> bool:
+        def auth_gate(route_id: str, http_status: int | None) -> tuple[bool | None, int]:
             """BOD-338 breaker: confirm the gateway key once per cycle.
 
             Both production callers (``cli.py`` daemon, ``extra.py`` once)
@@ -1092,22 +1092,41 @@ class Prober:
             2026-10-19 item 16 -- the old majority-pool-of-failures
             heuristic was deleted; the coordinator's own provider stop
             already made it unreachable in its own fixtures).
+
+            Returns ``(result, requests_spent)``. ``requests_spent`` is 1 the
+            FIRST time this cycle a live gateway_auth_check call is made, 0
+            every time the memoized result is reused or no check was needed
+            at all -- so the coordinator can fold the gate's own live
+            request into ``requests_made`` (review finding 18b, 2026-10-19:
+            the check must count against the cycle's request budget, or a
+            following route could be admitted one request over it).
+
+            ``result`` is ``None`` (review finding 18a, 2026-10-19) when the
+            gate itself cannot run its own confirmation within the cycle's
+            remaining request/wall budget: the failure must still never be
+            written, but the job must stop for the REAL reason (request or
+            wall cap), not report a CONFIRMED outage that nobody actually
+            checked.
             """
             if self.gateway_auth_check is None:
-                return False
+                return False, 0
+            spent = 0
             if self._gateway_auth_result is None:
                 remaining = self.max_wall_seconds - (self.monotonic() - self._cycle_started)
                 if stats.requests >= self._request_cap or remaining <= 0:
                     stats.stopped_reason = "request_cap" if remaining > 0 else "wall_cap"
-                    return True  # cannot confirm within budget: treat as outage, no write
-                stats.requests += 1
+                    return None, 0  # cannot confirm within budget: unconfirmed, no write
+                # Not stats.requests += 1 here: the coordinator folds
+                # `spent` into its own requests_made, and _run_chat_phase
+                # adds that to stats.requests once, after this call returns.
+                spent = 1
                 try:
                     self._gateway_auth_result = self.gateway_auth_check(
                         min(self.probe_timeout_seconds, remaining)
                     )
                 except (TimeoutError, OSError, http.client.HTTPException):
                     self._gateway_auth_result = ProbeExchange(http_status=None, ok=False)
-            return self._gateway_auth_result.http_status in (401, 403)
+            return self._gateway_auth_result.http_status in (401, 403), spent
 
         coordinator = RefreshCoordinator(
             cache=self.cache,

@@ -810,13 +810,27 @@ class RefreshCoordinator:
     cache). ``refresh_for_consumer`` is the single public entry point.
 
     ``auth_gate`` (BOD-338 breaker, optional) is called with ``(route_id,
-    http_status)`` ONLY for a CATEGORY_AUTH outcome, BEFORE any write. It
-    returns True for a CONFIRMED gateway-key outage: the route's auth
-    failure is then NOT written (``REASON_AUTH_OUTAGE``, no poison) and the
-    job stops, matching ``prove_at_rest.Prober``'s existing buffer-then-
-    confirm behaviour. ``False`` (including the default ``None`` hook, which
-    always returns False) means a genuine per-route/provider auth failure:
-    written as today.
+    http_status)`` ONLY for a 401/403 outcome, BEFORE any write. It returns
+    ``(result, requests_spent)``: ``requests_spent`` is how many real HTTP
+    calls the gate itself made confirming this outcome (0 when it reused a
+    memoized result or never called out), so the coordinator can fold the
+    gate's own spend into this job's ``requests_made`` -- otherwise the
+    gate's live gateway-auth check (review finding 18b, 2026-10-19) would
+    never count against the cycle's request budget, and a following route
+    could be admitted one request over it. ``result`` is one of three
+    values:
+
+    - ``True``: a CONFIRMED gateway-key outage. The route's auth failure is
+      NOT written (``REASON_AUTH_OUTAGE``, no poison) and the job stops with
+      ``stats.auth_outage`` True, matching ``prove_at_rest.Prober``'s
+      existing buffer-then-confirm behaviour.
+    - ``False`` (including the default ``None`` hook, which always returns
+      False): a genuine per-route/provider auth failure, written as today.
+    - ``None``: the gate could not run its confirmation at all (its own
+      request/wall budget is exhausted). The route's auth failure is still
+      NOT written -- an unconfirmed 401/403 must never poison the cache --
+      but the job stops for the REAL reason (``REASON_REQUEST_CAP``/
+      ``REASON_WALL_CAP``), not a reported outage nobody actually checked.
     """
 
     cache: HealthCache
@@ -826,7 +840,7 @@ class RefreshCoordinator:
     sleep: Callable[[float], None] = field(default=time.sleep)
     lock_path: Path | None = None
     marker_path: Path | None = None
-    auth_gate: Callable[[str, int | None], bool] | None = None
+    auth_gate: Callable[[str, int | None], tuple[bool | None, int]] | None = None
     _seq: int = field(default=0, init=False, repr=False)
 
     def _paths(self) -> tuple[Path, Path]:
@@ -1082,15 +1096,22 @@ class RefreshCoordinator:
                 # per-route/provider rejection, not a broken gateway key,
                 # BEFORE any write (matches Prober._buffer_auth_failure's own
                 # (401, 403) check, not just CATEGORY_AUTH -- a 403 classifies
-                # as CATEGORY_PERMISSION, not CATEGORY_AUTH). A confirmed
-                # outage stops the job with zero poison; the caller's hook
-                # owns the confirmation call.
+                # as CATEGORY_PERMISSION, not CATEGORY_AUTH). True stops the
+                # job as a CONFIRMED outage; None means the gate itself could
+                # not run its own confirmation within budget -- the failure
+                # is still never written, but the job must report the REAL
+                # cap that stopped it (request/wall), never an outage nobody
+                # actually checked. False means a genuine per-route failure:
+                # written as today.
+                gate_result: bool | None = False
                 if (
                     not outcome.no_write
                     and outcome.http_status in (401, 403)
                     and self.auth_gate is not None
-                    and self.auth_gate(row.route_id, outcome.http_status)
                 ):
+                    gate_result, gate_requests = self.auth_gate(row.route_id, outcome.http_status)
+                    requests_made += gate_requests
+                if gate_result is not False:
                     outcomes[row.route_id] = RouteOutcome(
                         row.route_id,
                         row.provider,
@@ -1098,10 +1119,16 @@ class RefreshCoordinator:
                         False,
                         category=outcome.category,
                         http_status=outcome.http_status,
-                        refresh_reason=REASON_AUTH_OUTAGE,
+                        refresh_reason=(REASON_AUTH_OUTAGE if gate_result else REASON_NOT_TESTED),
                         requests_made=outcome.requests_made,
                     )
-                    cap_reason = REASON_AUTH_OUTAGE
+                    cap_reason = (
+                        REASON_AUTH_OUTAGE
+                        if gate_result
+                        else (
+                            REASON_WALL_CAP if self.monotonic() >= deadline else REASON_REQUEST_CAP
+                        )
+                    )
                     break
                 route_out = self._persist_and_classify(row, outcome, scopes, deadline=deadline)
             except HealthCacheLockTimeoutError:
