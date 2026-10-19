@@ -1599,7 +1599,10 @@ class Prober:
             match = re.search(r"\[(\d{3})\]", str(result.get("error") or ""))
             code = int(match.group(1)) if match else None
         if bool(result.get("rateLimited")) or code == 429:
-            self.cache.zero_bucket(route.provider, now + timedelta(seconds=60), pool=route.pool)
+            # A 429 is pool state: hold the pool past the next daemon cycle.
+            self.cache.zero_bucket(
+                route.provider, now + timedelta(seconds=self._screen_hold(result)), pool=route.pool
+            )
             return False
         if timed_out or result.get("isTransient") or result.get("skipped") or status != "error":
             return False
@@ -1626,6 +1629,20 @@ class Prober:
         if not scoped and category in POOL_COOLDOWN_CATEGORIES:
             self._revoke_half_open_for_pool(_pool_of(route))
         return False
+
+    def _screen_hold(self, result: Mapping[str, Any]) -> float:
+        """Seconds to hold a rate-limited pool: quotas 6 h, else past one cycle."""
+        error = str(result.get("error") or "").lower()
+        if result.get("isQuota") or any(word in error for word in ("quota", "month", "daily")):
+            return SCREEN_QUOTA_HOLD_SECONDS
+        retry_after = 0.0
+        seconds = result.get("retryAfter")
+        millis = result.get("retryAfterMs")
+        if isinstance(seconds, (int, float)):
+            retry_after = float(seconds)
+        elif isinstance(millis, (int, float)):
+            retry_after = float(millis) / 1000.0
+        return max(retry_after, float(self.interval_seconds) + 60.0)
 
     def _converse(
         self, route_id: str, deadline: float
@@ -2041,6 +2058,7 @@ def live_agentic_transport(
 
 # Hard cap on ids per /api/models/test-all call; larger screens time out upstream.
 SCREEN_TEST_ALL_MAX_MODELS = 20
+SCREEN_QUOTA_HOLD_SECONDS = 6 * 3600.0
 
 
 def live_screen_transport(base_url: str, *, api_key: str | None) -> ScreenTransportFn:
