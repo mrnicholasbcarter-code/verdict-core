@@ -634,6 +634,7 @@ import inspect  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Protocol  # noqa: E402
+from urllib.parse import urlsplit  # noqa: E402
 
 
 class WorkerExecutor(Protocol):
@@ -647,11 +648,41 @@ class WorkerExecutor(Protocol):
     ``tools=False`` asks for an answer-only call with no agent tools (planning
     needs only a JSON answer). Executors without the keyword are called
     exactly as before; see :func:`run_executor`.
+
+    An executor MAY also report the gateway it sends to, as a ``gateway_origin``
+    attribute (a URL), or, for wrappers that route per node, a
+    ``gateway_origin_for(node_id)`` method; see :func:`executor_gateway_origin`.
+    The runtime denies a send when that origin differs from the origin the
+    dispatch permit binds. Executors that cannot know their gateway report
+    nothing and are accepted: ``PrimeHeadlessExecutor`` sends through Prime's
+    ``omniroute`` provider, whose base URL is configured in Prime, outside
+    Verdict, and scripted or fake executors send nowhere.
     """
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal: ...
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def normalize_gateway_origin(url: str) -> str:
+    """``scheme://host:port`` of ``url``: lower-case, default port explicit, path dropped."""
+    parsed = urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port or _DEFAULT_PORTS.get(scheme)
+    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
+
+def executor_gateway_origin(executor: object, node_id: str) -> str | None:
+    """Normalized gateway origin ``executor`` sends ``node_id`` to, or None when unknown."""
+    resolve = getattr(executor, "gateway_origin_for", None)
+    origin = resolve(node_id) if callable(resolve) else getattr(executor, "gateway_origin", None)
+    return normalize_gateway_origin(origin) if isinstance(origin, str) and origin else None
 
 
 def _accepts_tools_flag(executor: object) -> bool:
