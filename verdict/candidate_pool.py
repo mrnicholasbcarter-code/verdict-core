@@ -399,6 +399,100 @@ def fingerprint_task_profile(profile: TaskProfile) -> TaskFingerprint:
     )
 
 
+def build_live_probe_receipt(
+    *,
+    objective: str,
+    candidates: Sequence[Mapping[str, Any]],
+    requirements: Sequence[str] = (),
+    task_family: str = "autodev",
+) -> CandidatePoolReceipt:
+    """Trusted shortlist receipt for a server-owned live probe ladder.
+
+    Only server code that observed its own probes may call this: every
+    candidate must carry ``probe_observed_at`` and ``probe_headers`` from a
+    probe this process performed, and ``candidates`` must already be in the
+    server's rank order. The shortlist copies that order; a client can never
+    supply this receipt through public JSON.
+    """
+
+    if not candidates:
+        raise CandidatePoolError("live probe receipt requires at least one probed candidate")
+    entries: list[ShortlistEntry] = []
+    probes: list[ProbeRecord] = []
+    evidence_rows: list[dict[str, Any]] = []
+    for rank, candidate in enumerate(candidates):
+        route_id = str(candidate["route_id"])
+        observed_at = candidate.get("probe_observed_at")
+        probe_headers = candidate.get("probe_headers")
+        if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
+            raise CandidatePoolError(
+                f"live probe receipt requires probe_observed_at for {route_id!r}"
+            )
+        if not isinstance(probe_headers, Mapping):
+            raise CandidatePoolError(f"live probe receipt requires probe_headers for {route_id!r}")
+        provider = str(candidate.get("provider") or route_id.split("/", 1)[0])
+        reason = str(candidate.get("selection_reason") or "live_probe_ok")
+        entries.append(
+            ShortlistEntry(
+                route_id=route_id,
+                metadata_id=None,
+                provider=provider,
+                family_key=provider,
+                score=float(len(candidates) - rank),
+                confidence=1.0,
+                score_features={},
+                inclusion_reason=reason,
+            )
+        )
+        probes.append(ProbeRecord(route_id=route_id, level="live_probe", passed=True, detail=None))
+        evidence_rows.append(
+            {
+                "route_id": route_id,
+                "probe_observed_at": observed_at,
+                "probe_headers": dict(probe_headers),
+            }
+        )
+    evidence_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps(evidence_rows, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    shortlist_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps([entry.route_id for entry in entries], separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    task_digest = (
+        "sha256:"
+        + sha256(
+            json.dumps(
+                {"objective": objective, "shortlist_digest": shortlist_digest},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(
+            digest=task_digest,
+            task_family=task_family,
+            required_capabilities=tuple(requirements),
+            objective_preview=objective[:120],
+        ),
+        discovered_count=len(entries),
+        eligible_count=len(entries),
+        requirements=tuple(requirements),
+        hard_drops=(),
+        probes=tuple(probes),
+        shortlist=tuple(entries),
+        uncertainty=(),
+        evidence_digest=evidence_digest,
+        shortlist_digest=shortlist_digest,
+    )
+
+
 def build_candidate_pool(
     advertised: Sequence[str],
     *,
@@ -1066,6 +1160,7 @@ __all__ = [
     "ShortlistEntry",
     "TaskFingerprint",
     "build_candidate_pool",
+    "build_live_probe_receipt",
     "fingerprint_task",
     "fingerprint_task_profile",
 ]

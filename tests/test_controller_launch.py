@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -597,6 +598,24 @@ class _FakeRecord:
         self.receipt_id = receipt_id
 
 
+def _fixture_pool_receipt(route_ids: list[str]) -> Any:
+    """Trusted pool receipt fixture: shortlist in the given rank order (BOD-432)."""
+    from verdict.candidate_pool import CandidatePoolReceipt, ShortlistEntry, TaskFingerprint
+
+    return CandidatePoolReceipt(
+        task_fingerprint=TaskFingerprint(digest="sha256:task", task_family="controller"),
+        discovered_count=len(route_ids),
+        hard_drops=(),
+        probes=(),
+        shortlist=tuple(
+            ShortlistEntry(r, None, "omniroute", r, 1.0, 1.0, {}, "fixture") for r in route_ids
+        ),
+        uncertainty=(),
+        evidence_digest="sha256:evidence",
+        shortlist_digest="sha256:shortlist",
+    )
+
+
 def _hooks(
     *,
     seed: list[ExecutionPathOffer],
@@ -622,10 +641,12 @@ def _hooks(
             for offer in request.offers
             if exclude_ids is None or offer.route.route_id not in exclude_ids
         )
-        # Simulate ContextPlan binding already present on seed offers.
+        # Simulate ContextPlan binding already present on seed offers, plus the
+        # trusted pool receipt the live preparation path attaches in production.
         return replace(
             request,
             offers=offers,
+            pool_receipt=_fixture_pool_receipt([offer.route.route_id for offer in offers]),
             assumptions=tuple([*request.assumptions, "live_eligibility_applied"]),
         )
 
@@ -733,7 +754,11 @@ def test_select_calls_live_eligibility_before_ranking() -> None:
     def prepare(task, criticality, context, request):
         order.append("prepare")
         prepared_calls.append(request)
-        return replace(request, offers=request.offers)
+        return replace(
+            request,
+            offers=request.offers,
+            pool_receipt=_fixture_pool_receipt([offer.route.route_id for offer in request.offers]),
+        )
 
     def optimize(request):
         order.append("optimize")
@@ -1057,6 +1082,7 @@ def test_production_factory_injected_path_compiles_real_prompt_digest() -> None:
         return replace(
             request,
             offers=tuple(rebound),
+            pool_receipt=_fixture_pool_receipt([offer.route.route_id for offer in rebound]),
             assumptions=tuple([*request.assumptions, "live_eligibility_applied"]),
         )
 
@@ -1496,7 +1522,11 @@ def test_evidence_backed_seed_reaches_bod104_only_with_certified_effective_capab
                     ),
                 )
             )
-        return replace(request, offers=tuple(promoted))
+        return replace(
+            request,
+            offers=tuple(promoted),
+            pool_receipt=_fixture_pool_receipt([offer.route.route_id for offer in promoted]),
+        )
 
     hooks, _, persist_calls = _hooks(seed=list(seeds), prepare=prepare_promote)
     # Use the real execution-path authority optimizer (ADR-035) (already default in _hooks via optimize_execution_path).

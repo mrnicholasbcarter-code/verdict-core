@@ -35,11 +35,14 @@ def _decision(route: ConcreteRoute, *, now: Any = None, trajectory_id: str = "tr
         cert_state=CertificationState.READY,
         is_cheap=True,
     )
+    from tests.test_execution_path import _receipt
+
     return optimize_execution_path(
         ExecutionPathRequest(
             task_slice=_slice(),
             trajectory_id=trajectory_id,
             offers=(offer,),
+            pool_receipt=_receipt(route.route_id),
             now=NOW if now is None else now,
         )
     )

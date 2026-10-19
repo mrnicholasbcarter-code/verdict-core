@@ -1279,13 +1279,18 @@ def cmd_probe(
 
 
 def _execution_path_decision_from_request_file(path: str, *, task: str) -> Any:
-    """Build the mandatory execution-path decision in-process from the public contract."""
+    """Build the mandatory execution-path decision in-process from the public contract.
 
-    from verdict.execution_path import optimize_execution_path
-    from verdict.subagent_resolver import public_execution_path_request
+    The request file is client input with no trusted ranking, so the request is
+    prepared through the IntelligenceService live path (BOD-432): it fails
+    closed with a named error when no live admit snapshot is available, and it
+    never falls back to price-based ranking.
+    """
+
+    from verdict.subagent_resolver import prepared_public_execution_path_decision
 
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return optimize_execution_path(public_execution_path_request(raw, task=task))
+    return prepared_public_execution_path_decision(raw, task=task)
 
 
 def _cli_execution_path_decision(
