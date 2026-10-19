@@ -469,6 +469,10 @@ class RouteOutcome:
     refresh_reason: str | None = None
     requests_made: int = 0
     alive: bool = False  # chat-only success, never coding-worker verification
+    # Sanitized provider message (e.g. a guard_transport fake-200 marker), so a
+    # consumer-side state machine can tell a fake-billing 402 apart from a
+    # genuine payment-required rejection without re-deriving it.
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -1327,6 +1331,7 @@ class RefreshCoordinator:
             http_status=outcome.http_status,
             refresh_reason=None,
             requests_made=outcome.requests_made,
+            detail=outcome.detail,
         )
 
     # -- join path ---------------------------------------------------------

@@ -752,13 +752,16 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
         max_per_provider=None,
         cooling_providers=cooldowns,
     )
+    # BOD-297/S05-A: the shared coordinator's maintenance contract (<=2 routes
+    # per provider) now bounds the actual probe count, even though census's
+    # own max_per_provider=None lifts its candidate-selection cap.
     assert requests == ["/api/resilience/model-cooldowns"]
-    assert report["probed"] == 6
-    assert report["updated"] == 6
-    assert report["reserved_tokens"] == 1536
-    assert {model for model, phase in calls} == {f"good/model-{i}" for i in range(6)}
-    assert len(calls) == 12
-    assert len(load_healthy_passports(tmp_path / "passports.json")) == 6
+    assert report["probed"] == 2
+    assert report["updated"] == 2
+    assert report["reserved_tokens"] == 512
+    assert {model for model, phase in calls} <= {f"good/model-{i}" for i in range(6)}
+    assert len(calls) == 4
+    assert len(load_healthy_passports(tmp_path / "passports.json")) == 2
 
 
 def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
@@ -774,7 +777,6 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
 
     from verdict.census_passports import run_census
     from verdict.free_tier_admit import snapshot_from_payloads
-    from verdict.orchestration.health_cache import default_cache_path
     from verdict.orchestration.verified_refresh import _JobLock
     from verdict.prove_at_rest import ProbeExchange
 
@@ -795,8 +797,7 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
         catalog={"data": [{"id": model, "owned_by": "good"} for model in ids]},
         free_tier={
             "perModel": [
-                {"provider": "good", "modelId": f"m{i}", "freeType": "keyless"}
-                for i in range(6)
+                {"provider": "good", "modelId": f"m{i}", "freeType": "keyless"} for i in range(6)
             ]
         },
         providers={"connections": [{"provider": "good", "isActive": True, "testStatus": "active"}]},
@@ -835,9 +836,7 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
     many_ids = [f"p{i % 4500}/m{i}" for i in range(9_000)]
     many_providers = sorted({model.split("/", 1)[0] for model in many_ids})
     big_snapshot = snapshot_from_payloads(
-        catalog={
-            "data": [{"id": model, "owned_by": model.split("/", 1)[0]} for model in many_ids]
-        },
+        catalog={"data": [{"id": model, "owned_by": model.split("/", 1)[0]} for model in many_ids]},
         free_tier={
             "perModel": [
                 {
@@ -861,7 +860,7 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
         calls2.append((model, phase))
         return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
 
-    report2 = run_census(
+    run_census(
         big_snapshot,
         transport2,
         cache=HealthCache(cache_path),
@@ -1241,7 +1240,9 @@ def test_census_reserves_an_exploration_slot_for_a_never_proven_route(tmp_path):
         max_tokens=1536,
     )
 
-    assert len(set(calls)) == 6
+    # BOD-297/S05-A: the shared coordinator's maintenance contract (4 routes
+    # per cycle) now bounds the actual probe count below census's own ask.
+    assert len(set(calls)) == 4
     assert "q/new" in calls
 
 
