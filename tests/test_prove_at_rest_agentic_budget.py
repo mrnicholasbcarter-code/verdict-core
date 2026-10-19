@@ -693,3 +693,27 @@ def test_agentic_phase_waits_for_bucket_refill_within_its_budget(tmp_path: Path)
     assert stats.agentic_passed == 2
     assert stats.agentic_stopped_reason == "bucket_empty"
     assert stats.skipped_bucket == 1
+
+
+def test_chat_phase_uses_the_callers_probe_timeout(tmp_path: Path) -> None:
+    """BOD-297/S05-D: the coordinator call gets ``--timeout``, not the 30 s default.
+
+    ``_run_chat_phase`` built its config from ``maintenance_from_env()`` without
+    ``probe_timeout_seconds``, so a daemon started with ``--timeout 5`` still
+    waited up to the coordinator's own 15 s cap per call.
+    """
+    seen: list[float] = []
+
+    def transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        seen.append(timeout)
+        return ProbeExchange(http_status=500, ok=False, error_category="upstream")
+
+    Prober(
+        HealthCache(tmp_path / "health.json"),
+        lambda: [_free("p0/m")],
+        transport,
+        clock=lambda: NOW,
+        probe_timeout_seconds=5.0,
+        agentic_max_routes=0,
+    ).run_once()
+    assert seen == [5.0]

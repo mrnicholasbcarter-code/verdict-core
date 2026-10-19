@@ -1028,6 +1028,7 @@ class Prober:
             CAPACITY_FREE,
             CAPACITY_SUBSCRIPTION,
             CONSUMER_PROVE_AT_REST,
+            HARD_MAX_REQUEST_TIMEOUT_SECONDS,
             HARD_MAX_REQUESTS,
             HARD_MAX_ROUTES,
             HARD_MAX_WALL_SECONDS_MAINTENANCE,
@@ -1151,6 +1152,9 @@ class Prober:
             max_routes=max(1, min(self.max_requests // 2, HARD_MAX_ROUTES)),
             max_requests=min(self.max_requests, HARD_MAX_REQUESTS),
             wall_seconds=min(self.max_wall_seconds, HARD_MAX_WALL_SECONDS_MAINTENANCE),
+            request_timeout_seconds=min(
+                self.probe_timeout_seconds, HARD_MAX_REQUEST_TIMEOUT_SECONDS
+            ),
         )
 
         if not rows:
