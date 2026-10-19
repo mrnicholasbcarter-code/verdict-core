@@ -32,7 +32,6 @@ from typing import Any, ClassVar
 import httpx
 
 from verdict.orchestration.contracts import (
-    LOCAL_EXECUTOR_ORIGIN,
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
@@ -245,16 +244,34 @@ class PrimeHeadlessExecutor:
         self.extra_args = tuple(extra_args)
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
+        self._pinned: dict[str, tempfile.TemporaryDirectory[str]] = {}
 
     def _child_env(self) -> dict[str, str]:
         return {**os.environ, **self.env} if self.env is not None else dict(os.environ)
 
-    @property
-    def gateway_origin(self) -> str | None:
-        """``baseUrl`` of this provider in the ``models.json`` the launch mirrors, or None."""
-        models = default_prime_agent_dir(self._child_env()) / "models.json"
+    def _prepare_launch(self) -> tempfile.TemporaryDirectory[str]:
+        # PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the
+        # launch dir mirrors auth.json, models.json, skills and the rest.
+        # Without that, a real launch would lose its credentials and registry.
+        launch = tempfile.TemporaryDirectory(prefix="verdict-prime-")
+        prepare_launch_agent_dir(
+            Path(launch.name), source=default_prime_agent_dir(self._child_env())
+        )
+        return launch
+
+    def gateway_origin_for(self, node_id: str) -> str | None:
+        """Pin ``node_id``'s next launch dir and report its provider ``baseUrl``.
+
+        The URL is read from the launch dir's private ``models.json`` copy, the
+        exact file that launch's Prime reads, so a later change to the operator's
+        ``models.json`` cannot move the send to another gateway. None when the
+        copy, the provider or its URL is missing or unparseable.
+        """
+        launch = self._prepare_launch()
+        # A replaced, never-launched dir is removed when it is collected.
+        self._pinned[node_id] = launch
         try:
-            data = json.loads(models.read_text())
+            data = json.loads((Path(launch.name) / "models.json").read_text())
             url = data["providers"][self.provider]["baseUrl"]
         except (OSError, ValueError, TypeError, KeyError):
             return None
@@ -303,14 +320,14 @@ class PrimeHeadlessExecutor:
         # Verdict-owned launches are one-shot, so the policy travels in a
         # per-launch agent dir, not in the tracked project file that every
         # session in this checkout would otherwise inherit.
-        launch_config = tempfile.TemporaryDirectory(prefix="verdict-prime-")
-        # PRIME_AGENT_CODING_AGENT_DIR replaces the WHOLE agent dir, so the
-        # launch dir mirrors auth.json, models.json, skills and the rest.
-        # Without that, a real launch would lose its credentials and registry.
-        launch_dir = prepare_launch_agent_dir(
-            Path(launch_config.name), source=default_prime_agent_dir(child_env)
+        # A worker attempt reuses the dir its gateway origin was checked against.
+        pinned = (
+            self._pinned.pop(cwd.name.rsplit("-a", 1)[0], None)
+            if _WORKER_ATTEMPT_DIR_RE.fullmatch(cwd.name)
+            else None
         )
-        config_dir = launch_dir.path
+        launch_config = pinned or self._prepare_launch()
+        config_dir = Path(launch_config.name)
         child_env[PRIME_AGENT_DIR_ENV] = str(config_dir)
         # Project settings win over this per-launch config dir in Prime, and
         # Prime 0.9.6 has no per-launch escape, so assert the EFFECTIVE merge.
@@ -735,10 +752,12 @@ class ScriptedExecutor:
     """Deterministic executor backed by a plain (sync or async) callable."""
 
     answer_only_supported = True
-    gateway_origin = LOCAL_EXECUTOR_ORIGIN  # sends nowhere
 
-    def __init__(self, script: ScriptFn) -> None:
+    def __init__(self, script: ScriptFn, *, gateway_origin: str | None = None) -> None:
         self.script = script
+        # The script is arbitrary code: it declares LOCAL_EXECUTOR_ORIGIN only
+        # when it sends nowhere, else the gateway it sends to.
+        self.gateway_origin = gateway_origin
 
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float

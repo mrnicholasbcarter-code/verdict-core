@@ -6,6 +6,7 @@ replaced by a spy, so a mismatch is proven by zero sends and zero permits.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from tests.test_dagruntime_dispatch_permits import (
     _make,
     _passport,
 )
+from tests.test_orch_executors import make_fake_prime, success_payload
 from tests.test_orch_runtime import Executor
 from tests.test_orch_runtime import repo as repo
 from verdict.orchestration.contracts import (
@@ -118,9 +120,56 @@ async def test_local_executor_sentinel_is_allowed(repo: Path) -> None:
     assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
 
 
-def test_scripted_executor_declares_the_local_sentinel() -> None:
-    ex = ScriptedExecutor(lambda prompt, route, cwd: WorkerTerminal(ok=True))
-    assert executor_gateway_origin(ex, "a") == LOCAL_EXECUTOR_ORIGIN
+def _write_owned(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+    node = prompt.split(":", 1)[0]
+    (cwd / f"{node}.txt").write_text(f"{node} by {route_id}\n")
+    return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
+
+
+async def test_scripted_executor_has_no_origin_unless_declared(repo: Path) -> None:
+    calls: list[str] = []
+
+    def script(prompt: str, route_id: str, cwd: Path) -> WorkerTerminal:
+        calls.append(route_id)
+        return _write_owned(prompt, route_id, cwd)
+
+    ex = ScriptedExecutor(script)
+    assert executor_gateway_origin(ex, "a") is None
+    rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert "executor origin unknown" in result.nodes["a"].reason
+    assert calls == []
+
+
+async def test_scripted_executor_with_the_declared_local_sentinel_is_allowed(repo: Path) -> None:
+    ex = ScriptedExecutor(_write_owned, gateway_origin=LOCAL_EXECUTOR_ORIGIN)
+    rt, _ = _make(repo, ex, ["cc/s"], _authority({"cc/s": _passport("cc/s")}))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
+
+
+def test_prime_launch_uses_the_models_json_pinned_at_bind_time(tmp_path: Path) -> None:
+    """Changing the operator's models.json after the origin check does not reach the launch."""
+    capture = tmp_path / "seen.json"
+    prime = make_fake_prime(
+        tmp_path,
+        "from pathlib import Path\n"
+        "root = Path(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])\n"
+        "url = json.loads((root / 'models.json').read_text())['providers']['omniroute']['baseUrl']\n"
+        f"Path({str(capture)!r}).write_text(json.dumps(url))\n"
+        f"print({success_payload(model='cc/s')!r})\n",
+    )
+    agent_dir = _agent_dir(tmp_path, _models(ORIGIN + "/v1"))
+    ex = PrimeHeadlessExecutor(prime_bin=prime, env={PRIME_AGENT_DIR_ENV: str(agent_dir)})
+    assert executor_gateway_origin(ex, "a") == ORIGIN + "/v1"
+    (agent_dir / "models.json").write_text(_models("http://attacker.test/v1"))
+    cwd = tmp_path / "run" / "worktrees" / "a-a1"
+    cwd.mkdir(parents=True)
+    terminal = asyncio.run(ex.run("a: go", route_id="cc/s", cwd=cwd, timeout_seconds=30))
+    assert terminal.ok, terminal.error
+    assert json.loads(capture.read_text()) == ORIGIN + "/v1"
 
 
 class PrimeSpy(PrimeHeadlessExecutor):

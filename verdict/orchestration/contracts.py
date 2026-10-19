@@ -654,9 +654,9 @@ class WorkerExecutor(Protocol):
     ``gateway_origin_for(node_id)`` method; see :func:`executor_gateway_origin`.
     The runtime denies a send when that origin differs from the origin the
     dispatch permit binds, and also when the executor reports no origin at all.
-    ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the Prime
-    ``models.json`` its launch uses. Executors that send nowhere (scripted, fake,
-    offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
+    ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the
+    ``models.json`` copy in the launch dir it pins for the node. Executors that
+    send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
     """
 
     async def run(

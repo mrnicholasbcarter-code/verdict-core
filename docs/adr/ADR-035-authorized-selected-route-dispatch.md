@@ -103,9 +103,12 @@ the route's own proof binding at selection time is unaffected, but nothing is se
 
 An executor that reports no origin at all (`None`) is denied (U1, reversed): it is
 BLOCKED with `dispatch_denied: executor origin unknown`, with no permit and no send.
-`PrimeHeadlessExecutor` reports its provider's `baseUrl` from the `models.json` of
-the Prime agent dir its launch mirrors, and `None` when that is missing or
-unparseable. Executors that never touch the network (scripted, fake, offline demo)
+`PrimeHeadlessExecutor` pins the node's launch dir when the origin is checked and
+reports its provider's `baseUrl` from that dir's private `models.json` copy, the
+file the launch's Prime reads; the attempt reuses the pinned dir, so a later edit
+of the operator's `models.json` cannot redirect the send. A missing or unparseable
+copy reports `None`. Executors that never touch the network (fake, offline demo)
 declare `LOCAL_EXECUTOR_ORIGIN` (`"local:"`), which matches any bound origin; no
-executor that sends to a gateway may declare it. `MixedExecutor` and `FaultInjectingExecutor` resolve the
+executor that sends to a gateway may declare it. `ScriptedExecutor` runs arbitrary
+code, so it has no origin unless its constructor is given one. `MixedExecutor` and `FaultInjectingExecutor` resolve the
 origin check per wrapped node or delegate to their inner executor, respectively.
