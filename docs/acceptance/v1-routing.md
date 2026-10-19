@@ -12,9 +12,17 @@ not every historical Core capability. All 30 rows (A01-A30) are listed. Determin
 proven today by their owning story's focused pytest file(s), re-run at this head (raw pass/fail
 below). Live rows (A23 live half, A29 installed-runtime provenance, A30 end-to-end vertical) are
 **registered, not executed**: no live gateway call, no `--allow-live-probe`, no `verdict acceptance
-run`, no three-cycle maintenance proof has been run by this story. They stay `BLOCKED` pending the
-operator's named consent/budget/deadline (operator rule: do not infer consent from story creation)
-and the parent's own merged-main execution.
+run`, no three-cycle maintenance proof has been run by this story.
+
+**Operator consent is already recorded** (BOD-342 comment, 2026-10-19 ~15:55Z, "yes and yes"):
+(1) the installed-runtime cutover via S11, with rollback captured first, after the combined PR
+merges to main; (2) BOD-410 live qualification on subscription and free routes only, with a hard
+request cap. Consent is therefore NOT the open gate for A23/A29/A30. The named gate these three
+rows stay `BLOCKED` on is **awaiting merge to main + install**: the live run must happen from the
+merged-main checkout (A29/A30) and, for A29/A23's acceptance-run reflecting the real cutover,
+after S11's operator-approved install step. Scope limits carried from the BOD-342/BOD-410 consent:
+subscription + free routes only, no metered calls, a hard per-cycle request cap (this story's own
+16 Core-requests/cycle ceiling is never raised to use the consent's headroom).
 
 ## Caps and constraints that govern every live row (ceilings, never knobs to raise)
 
@@ -342,12 +350,12 @@ Category | Preconditions | Exact command | Expected observable result | Anti-gam
 - **Gap/requirement:** Basic health conflated with capability/task correctness
 - **Falsifiable acceptance (contract text):** Basic-only route fails tool/schema/context/coding/session requirement; independent failing or skipped check prevents task success even after transport 200.
 - **Category:** Live (gateway/maintenance vertical)
-- **Preconditions:** BLOCKED: no named operator consent/budget/deadline recorded for this story's live cycles (operator rule: consent is never inferred from story creation). S09/S10/S11/S05-phase-2 code is present at this head but the live run itself has not happened.
+- **Preconditions:** AWAITING MERGE TO MAIN + INSTALL (not consent — BOD-342 operator consent recorded 2026-10-19 ~15:55Z ("yes and yes"): (1) the installed-runtime cutover via S11, with rollback captured first, after the combined PR merges; (2) BOD-410 live qualification on subscription and free routes only, with a hard request cap. Consent is NOT the open gate for this row.). The live half cannot run from this worktree: it needs the combined PR merged to main and (for A23's `acceptance run` to reflect the real installed cutover) S11's operator-approved install step done, per the BOD-342 consent's own ordering (S11 cutover + rollback captured first). Scope limits from the consent: subscription + free routes only, no metered, hard request cap per cycle (this story's 16 Core-requests/cycle ceiling, never raised).
 - **Exact command:** `Deterministic half: see test_map A23 above (PASSES). Live half (not run): `PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict acceptance run --gateway http://127.0.0.1:20128` then inspect the `eligibility` check's `independent_check` precision/recall and the `route`/`serve` checks for a basic-only route that fails a stronger task profile.`
 - **Expected observable result:** Not observed. Would-be: 3 cycles each respecting 4-route/16-request/4096-output/600s caps; `acceptance run` exit 0 (green) or exit 3 (red, recorded) with `eligible_free > 0` when supply exists; insufficient supply recorded as explicit BLOCKED, never forced green.
 - **Anti-gaming check:** No unbounded test-all; no new auto/opaque route; caps are ceilings only (never raised); insufficient supply must show BLOCKED not a fabricated pass; parent re-run required (author != confirmer, check_dod.py parent_confirmation).
-- **Evidence:** None yet. Target path once consented and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a23-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
-- **Status:** BLOCKED — no operator consent recorded; deterministic prerequisite code is present at this head
+- **Evidence:** None yet. Target path once merged to main, installed, and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a23-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
+- **Status:** AWAITING MERGE TO MAIN + INSTALL (consent already recorded, BOD-342 2026-10-19 ~15:55Z); deterministic prerequisite code is present at this head
 
 ### A24 — S08
 
@@ -414,24 +422,24 @@ Category | Preconditions | Exact command | Expected observable result | Anti-gam
 - **Gap/requirement:** Three source copies / independent installed loops
 - **Falsifiable acceptance (contract text):** Running entrypoint, imported modules, installed runtime and reviewed source have recorded matching build/config provenance; unexpected parallel loop/scope mismatch is diagnostic and cannot count as main proof.
 - **Category:** Live (gateway/maintenance vertical)
-- **Preconditions:** BLOCKED: no named operator consent/budget/deadline recorded for this story's live cycles (operator rule: consent is never inferred from story creation). S09/S10/S11/S05-phase-2 code is present at this head but the live run itself has not happened.
+- **Preconditions:** AWAITING MERGE TO MAIN + INSTALL (not consent — BOD-342 operator consent recorded 2026-10-19 ~15:55Z ("yes and yes"): (1) the installed-runtime cutover via S11, with rollback captured first, after the combined PR merges; (2) BOD-410 live qualification on subscription and free routes only, with a hard request cap. Consent is NOT the open gate for this row.). A29's live half specifically needs the S11 installed-runtime cutover executed (with rollback captured first) after the combined PR merges to main, per the BOD-342 consent item (1); doctor must then report the ACTUALLY INSTALLED runtime, not this worktree.
 - **Exact command:** ``PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict doctor --json` (installed runtime provenance rows) re-run from the ACTUALLY INSTALLED runtime (systemd units), not this worktree, after S11's cutover is operator-approved.`
 - **Expected observable result:** Not observed. Would-be: 3 cycles each respecting 4-route/16-request/4096-output/600s caps; `acceptance run` exit 0 (green) or exit 3 (red, recorded) with `eligible_free > 0` when supply exists; insufficient supply recorded as explicit BLOCKED, never forced green.
 - **Anti-gaming check:** No unbounded test-all; no new auto/opaque route; caps are ceilings only (never raised); insufficient supply must show BLOCKED not a fabricated pass; parent re-run required (author != confirmer, check_dod.py parent_confirmation).
-- **Evidence:** None yet. Target path once consented and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a29-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
-- **Status:** BLOCKED — no operator consent recorded; deterministic prerequisite code is present at this head
+- **Evidence:** None yet. Target path once merged to main, installed, and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a29-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
+- **Status:** AWAITING MERGE TO MAIN + INSTALL — specifically the S11 operator-approved installed-runtime cutover with rollback captured first (consent already recorded, BOD-342 2026-10-19 ~15:55Z); deterministic prerequisite code is present at this head
 
 ### A30 — S12 + S13 (live vertical)
 
 - **Gap/requirement:** No complete live vertical proof yet
 - **Falsifiable acceptance (contract text):** After implementation: exact-main bounded real inventory→qualification→selection→execution→independent check→joined receipt→feedback; repeat maintenance across three cycles/freshness windows, parent reruns and records raw result. Insufficient supply is explicit blocked.
 - **Category:** Live (gateway/maintenance vertical)
-- **Preconditions:** BLOCKED: no named operator consent/budget/deadline recorded for this story's live cycles (operator rule: consent is never inferred from story creation). S09/S10/S11/S05-phase-2 code is present at this head but the live run itself has not happened.
+- **Preconditions:** AWAITING MERGE TO MAIN + INSTALL (not consent — BOD-342 operator consent recorded 2026-10-19 ~15:55Z ("yes and yes"): (1) the installed-runtime cutover via S11, with rollback captured first, after the combined PR merges; (2) BOD-410 live qualification on subscription and free routes only, with a hard request cap. Consent is NOT the open gate for this row.). A30's three-cycle live vertical needs the combined PR merged to main first; BOD-410 consent item (2) bounds the run to subscription + free routes only, no metered, with a hard per-cycle request cap (16 Core-requests here, never raised) once merge+install clears the gate.
 - **Exact command:** `Cycle 1-3: `PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict prove-at-rest once --allow-live-probe --max-requests 16 --max-wall-seconds 600` spaced >= 600 s apart, each followed by `PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict acceptance run --gateway http://127.0.0.1:20128` and a `GET /v1/models` before/after capture.`
 - **Expected observable result:** Not observed. Would-be: 3 cycles each respecting 4-route/16-request/4096-output/600s caps; `acceptance run` exit 0 (green) or exit 3 (red, recorded) with `eligible_free > 0` when supply exists; insufficient supply recorded as explicit BLOCKED, never forced green.
 - **Anti-gaming check:** No unbounded test-all; no new auto/opaque route; caps are ceilings only (never raised); insufficient supply must show BLOCKED not a fabricated pass; parent re-run required (author != confirmer, check_dod.py parent_confirmation).
-- **Evidence:** None yet. Target path once consented and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a30-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
-- **Status:** BLOCKED — no operator consent recorded; deterministic prerequisite code is present at this head
+- **Evidence:** None yet. Target path once merged to main, installed, and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a30-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
+- **Status:** AWAITING MERGE TO MAIN + INSTALL (consent already recorded, BOD-342 2026-10-19 ~15:55Z, scope: subscription + free routes only, hard request cap, no metered); deterministic prerequisite code is present at this head
 
 
 ## Summary
@@ -439,9 +447,12 @@ Category | Preconditions | Exact command | Expected observable result | Anti-gam
 - 27 deterministic rows (A01-A22, A24-A28) re-run at `b120f484` in this worktree: all PASS
   (1824 tests, 41 focused files, 66.70s wall, 2026-10-19). Re-run required on merged main before
   any Done claim (operator rule: tests/CI/merge are never Done).
-- 3 live rows (A23 live half, A29, A30) are **BLOCKED**: no operator consent/budget/deadline is
-  recorded for the three-cycle live maintenance proof. The deterministic prerequisite code for
-  S05 phase 2 (maintenance lane), S09 (attempt ledger), S10 (verified history), S11 (installed
-  provenance) is present and tested at this head; the gap is exclusively the live execution step,
-  not missing code.
+- 3 live rows (A23 live half, A29, A30) are **BLOCKED on "awaiting merge to main + install"**,
+  NOT on consent: operator consent is already recorded (BOD-342, 2026-10-19 ~15:55Z, "yes and
+  yes" — (1) S11 installed-runtime cutover with rollback captured first after the combined PR
+  merges, (2) BOD-410 live qualification on subscription + free routes only with a hard request
+  cap). The deterministic prerequisite code for S05 phase 2 (maintenance lane), S09 (attempt
+  ledger), S10 (verified history), S11 (installed provenance) is present and tested at this head;
+  the remaining gap is the merge-to-main + install step itself, then the bounded live run within
+  the consented scope (subscription + free only, no metered, hard per-cycle request cap).
 - No code was edited by this story. No live/network call was made. `uv.lock` was not touched.
