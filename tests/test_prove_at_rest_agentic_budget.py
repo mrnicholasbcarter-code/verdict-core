@@ -717,3 +717,56 @@ def test_chat_phase_uses_the_callers_probe_timeout(tmp_path: Path) -> None:
         agentic_max_routes=0,
     ).run_once()
     assert seen == [5.0]
+
+
+@pytest.mark.parametrize("kind", ["joined", "debounced", "lock_timeout", "reused_fresh"])
+def test_chat_phase_reports_a_joined_job_by_name_and_keeps_the_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """BOD-297/S12 item 2: a run that did not own the coordinator job says so.
+
+    The owner's counts are not this process's work: probed stays 0 and the
+    durable cursor is neither advanced nor cleared.
+    """
+    from verdict.orchestration import verified_refresh
+    from verdict.orchestration.verified_refresh import RefreshOutcome, RouteOutcome
+
+    def fake_refresh(self: Any, snapshot: Any, **kwargs: Any) -> RefreshOutcome:
+        ids = [row.route_id for row in snapshot.rows]
+        return RefreshOutcome(
+            outcome=kind,
+            job_id="owner-job",
+            consumer="prove_at_rest",
+            probed=1,
+            verified=1,
+            failed=0,
+            unavailable=0,
+            requests_made=0,
+            elapsed_seconds=0.0,
+            route_outcomes={
+                rid: RouteOutcome(rid, rid.split("/", 1)[0], i == 0, i == 0)
+                for i, rid in enumerate(ids)
+            },
+            complete=True,
+        )
+
+    monkeypatch.setattr(verified_refresh.RefreshCoordinator, "refresh_for_consumer", fake_refresh)
+    cache = HealthCache(tmp_path / "cache.json")
+    cursor = {"cycle_open": True, "probed_ids": ["old/m"]}
+    cache.set_cursor(cursor)
+    cache.save()
+    calls: list[str] = []
+    stats = Prober(
+        cache,
+        lambda: [_free("a/m"), _free("b/m")],
+        lambda rid, phase, timeout: calls.append(rid) or _dead_chat(rid, phase, timeout),
+        agentic_max_routes=0,
+        clock=lambda: NOW,
+        sleep=lambda _s: None,
+    ).run_once()
+    assert stats.stopped_reason == kind
+    assert stats.probed == 0
+    assert stats.fresh == 0
+    assert stats.requests == 0
+    assert calls == []
+    assert HealthCache(cache.path).cursor == cursor

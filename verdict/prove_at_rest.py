@@ -352,6 +352,9 @@ ProbeTransportFn = Callable[[str, str, float], ProbeExchange]
 # returns the per-model results, or None when the screen itself failed.
 ScreenTransportFn = Callable[[str, Sequence[str], float], Mapping[str, Mapping[str, Any]] | None]
 
+# RefreshOutcome.outcome values where this process did not run the probe job.
+_NOT_OWNED_OUTCOMES = frozenset({"joined", "debounced", "lock_timeout", "reused_fresh"})
+
 
 @dataclass
 class CycleStats:
@@ -1173,6 +1176,12 @@ class Prober:
             config=config,
             explicit=True,
         )
+        if outcome.outcome in _NOT_OWNED_OUTCOMES:
+            # Another producer's job (or its fresh/debounced result) answered
+            # this cycle: this process probed nothing, so report the outcome
+            # by name and leave the cursor for the next owned cycle.
+            stats.stopped_reason = outcome.outcome
+            return
         stats.requests += outcome.requests_made
         stats.probed += outcome.probed
         stats.fresh += outcome.verified + outcome.alive
