@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -779,7 +780,10 @@ def _two_candidate_decision() -> Any:
             "certification_state": "ready",
             "certification_freshness": "fresh",
             "probe_observed_at": 1_760_000_000.0,
-            "probe_headers": {"x-omniroute-response-cost": "0"},
+            "probe_headers": {
+                "x-omniroute-model": route_id.split("/", 1)[1],
+                "x-omniroute-response-cost": "0",
+            },
         }
 
     from dataclasses import replace
@@ -801,6 +805,7 @@ def _two_candidate_decision() -> Any:
             objective="fix ruff errors",
             candidates=request["candidates"],
             requirements=request["proof_criteria"],
+            now=1_760_000_000.0,
         ),
     )
     return optimize_execution_path(prepared)
@@ -1857,8 +1862,11 @@ def _ad03_candidate(route_id: str) -> dict[str, Any]:
         "is_free": True,
         "certification_state": "ready",
         "certification_freshness": "fresh",
-        "probe_observed_at": 1_760_000_000.0,
-        "probe_headers": {"x-omniroute-response-cost": "0"},
+        "probe_observed_at": time.time(),
+        "probe_headers": {
+            "x-omniroute-model": route_id.split("/", 1)[1],
+            "x-omniroute-response-cost": "0",
+        },
     }
 
 
@@ -2226,3 +2234,76 @@ def test_retry_selection_accepts_subscription_candidates_from_live_selection(
     assert [c["selection_reason"] for c in remaining]
     assert retry.selected_route.model == remaining[0]["route_id"]
     assert "capacity=subscription" in remaining[0]["selection_reason"]
+
+
+# ── BOD-432: live-probe receipt freshness and named refusals ────────────────
+
+
+def test_retry_selection_refuses_stale_probe_evidence(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+
+    stale = {
+        **_ad03_candidate(FREE_A),
+        "probe_observed_at": time.time() - 86_400,
+        "probe_headers": {"x-omniroute-model": "alpha:free"},
+    }
+    plan = _decomposer(PLAN).decompose("fix ruff errors", repo_root=repo)
+    with pytest.raises(AutodevError, match=r"retry selection refused.*probe_observed_at"):
+        autodev._select_retry_route(plan.units[0], [stale], "fix ruff errors")
+
+
+def test_prepare_live_autodev_selected_names_receipt_refusal_as_autodev_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.candidate_pool import CandidatePoolError
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder([_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]),
+    )
+    _scripted_probe(monkeypatch)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    def refuse(**kwargs: Any) -> Any:
+        raise CandidatePoolError("live probe receipt requires probe_headers")
+
+    monkeypatch.setattr("verdict.candidate_pool.build_live_probe_receipt", refuse)
+    with pytest.raises(AutodevError, match="receipt refused"):
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+
+
+def test_prepare_live_autodev_names_receipt_refusal_as_autodev_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.autodev_run as autodev
+    from verdict.candidate_pool import CandidatePoolError
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": "model:free", "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    def refuse(**kwargs: Any) -> Any:
+        raise CandidatePoolError("live probe receipt requires probe_headers")
+
+    monkeypatch.setattr("verdict.candidate_pool.build_live_probe_receipt", refuse)
+    with pytest.raises(AutodevError, match="receipt refused"):
+        autodev.prepare_live_autodev(
+            "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+        )

@@ -564,7 +564,7 @@ def test_unknown_capability_never_promoted_to_sufficient() -> None:
     assert any("unknown" in r.reason for r in decision.rejected)
 
 
-def test_unknown_price_not_treated_as_free() -> None:
+def _unknown_vs_known_price_offers() -> tuple[ExecutionPathOffer, ...]:
     unknown_price = _route("mystery-price")
     known = _route("known-price", model="mid", provider="provider-b", tier=2)
     plan_u = _plan(candidate_id="mystery-price", digest="sha256:mystery")
@@ -586,7 +586,7 @@ def test_unknown_price_not_treated_as_free() -> None:
         is_free=False,
         qualified=True,
     )
-    offers = (
+    return (
         _offer(
             strategy="direct_cheap",
             route=unknown_price,
@@ -606,13 +606,16 @@ def test_unknown_price_not_treated_as_free() -> None:
             is_paid=True,
         ),
     )
+
+
+def test_unknown_price_not_treated_as_free() -> None:
     # A25: price no longer ranks; under a hard spend budget unknown cash is
     # rejected outright, so even a first-ranked unknown-price route cannot win.
     decision = optimize_execution_path(
         ExecutionPathRequest(
             task_slice=_slice(),
             trajectory_id="traj-104",
-            offers=offers,
+            offers=_unknown_vs_known_price_offers(),
             pool_receipt=_receipt("mystery-price", "known-price"),
             hard_spend_budget=10.0,
             now=NOW,
@@ -623,6 +626,54 @@ def test_unknown_price_not_treated_as_free() -> None:
     assert any("unknown" in r.reason and "price" in r.reason for r in decision.rejected) or (
         decision.selected_strategy == "direct_paid"
     )
+
+
+def test_unknown_price_selectable_without_hard_budget_per_a25() -> None:
+    # S02 AC3: "missing price alone is not a gate". Without an explicit hard
+    # spend budget an unknown-price route that the trusted shortlist ranks first
+    # is selectable; price never reorders the shortlist (A25).
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=_unknown_vs_known_price_offers(),
+            pool_receipt=_receipt("mystery-price", "known-price"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "mystery-price"
+    assert "candidate_pool_shortlist" in decision.why_selected
+
+
+def test_offers_not_on_trusted_shortlist_block_never_ordered_by_candidate_id() -> None:
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=tuple(reversed(_unknown_vs_known_price_offers())),
+            pool_receipt=_receipt("zzz"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_strategy == "blocked"
+    assert decision.selected_candidate_id is None
+    assert decision.why_selected == "blocked:missing_trusted_live_ranking"
+    assert {r.candidate_id for r in decision.rejected} == {"mystery-price", "known-price"}
+
+
+def test_offer_off_the_shortlist_is_rejected_while_a_shortlisted_offer_wins() -> None:
+    decision = optimize_execution_path(
+        ExecutionPathRequest(
+            task_slice=_slice(),
+            trajectory_id="traj-104",
+            offers=_unknown_vs_known_price_offers(),
+            pool_receipt=_receipt("known-price"),
+            now=NOW,
+        )
+    )
+    assert decision.selected_candidate_id == "known-price"
+    off = [r for r in decision.rejected if r.candidate_id == "mystery-price"]
+    assert [r.reason for r in off] == ["not_on_trusted_shortlist"]
 
 
 def test_missing_mandatory_tool_not_sufficient_despite_context() -> None:

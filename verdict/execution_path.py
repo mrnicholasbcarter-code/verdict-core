@@ -643,7 +643,7 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
     for offer in request.offers:
         if shortlist_ids is not None and offer.candidate_id not in shortlist_ids:
             drop_reason = pool_drop_reasons.get(offer.candidate_id)
-            rejection_reason = drop_reason if drop_reason else "not_in_candidate_pool_shortlist"
+            rejection_reason = drop_reason if drop_reason else "not_on_trusted_shortlist"
             rejected.append(
                 RejectedStrategy(
                     strategy=offer.strategy,
@@ -709,6 +709,16 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
                 )
             )
             session_pref = None
+
+    if (
+        not qualified
+        and shortlist_ids
+        and not any(
+            offer.candidate_id in shortlist_ids or offer.candidate_id in pool_drop_reasons
+            for offer in request.offers
+        )
+    ):
+        return _blocked_missing_live_ranking(request, (), rejected, assumptions, unknowns, when)
 
     if not qualified:
         blocked_payload: dict[str, Any] = {
@@ -782,7 +792,8 @@ def optimize_execution_path(request: ExecutionPathRequest) -> ExecutionPathDecis
             request, rank_pool, rejected, assumptions, unknowns, when
         )
     shortlist_map = {entry.route_id: idx for idx, entry in enumerate(shortlist)}
-    rank_pool.sort(key=lambda o: (shortlist_map.get(o.candidate_id, 999999), o.candidate_id))
+    # Qualification already dropped every offer that is not on the shortlist.
+    rank_pool.sort(key=lambda o: shortlist_map[o.candidate_id])
     selected_offer = rank_pool[0]
     for offer in rank_pool[1:]:
         rejected.append(
