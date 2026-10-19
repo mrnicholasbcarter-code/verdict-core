@@ -848,7 +848,10 @@ class DagRuntime:
                     return
                 continue
             if self.dispatch_authority is not None:
-                run.dispatch_proof = self._bind_proof(run.node, choice.route_id)
+                # Reads the passport store and health cache: keep it off the loop (BOD-341).
+                run.dispatch_proof = await asyncio.to_thread(
+                    self._bind_proof, run.node, choice.route_id
+                )
                 if run.dispatch_proof is None:
                     self.events.emit(
                         "eligibility",
