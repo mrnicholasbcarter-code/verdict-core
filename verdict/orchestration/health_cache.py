@@ -208,13 +208,6 @@ def is_long_negative(category: str, http_status: int | None) -> bool:
     return category in _LONG_TTL_CATEGORIES
 
 
-def is_transient(category: str, http_status: int | None) -> bool:
-    """5xx and timeouts use the doubling backoff."""
-    if category in {CATEGORY_TIMEOUT, CATEGORY_UPSTREAM}:
-        return True
-    return http_status is not None and http_status >= 500
-
-
 def negative_seconds(
     category: str,
     *,
@@ -249,11 +242,6 @@ def next_backoff_seconds(previous_seconds: float) -> float:
     if previous_seconds <= 0:
         return TRANSIENT_BASE_SECONDS
     return max(TRANSIENT_BASE_SECONDS, previous_seconds / 2.0)
-
-
-def fresh_until(checked_at: datetime) -> datetime:
-    """End of the fresh window for a healthy check."""
-    return _aware(checked_at, "checked_at") + timedelta(seconds=FRESH_SECONDS)
 
 
 def usable_until(checked_at: datetime) -> datetime:
@@ -2045,9 +2033,7 @@ __all__ = [
     "classify_state",
     "default_cache_path",
     "format_datetime",
-    "fresh_until",
     "is_long_negative",
-    "is_transient",
     "negative_seconds",
     "next_backoff_seconds",
     "parse_datetime",

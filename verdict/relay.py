@@ -206,10 +206,6 @@ def retryable_response_status(
     return retryable_transport_status(status_code)
 
 
-def retryable_exception(error: BaseException) -> bool:
-    return isinstance(error, (httpx.TimeoutException, httpx.NetworkError, ConnectionError, OSError))
-
-
 def failure_class(
     status_code: int | None = None, error: BaseException | None = None, *, body: str = ""
 ) -> str:
@@ -354,7 +350,6 @@ __all__ = [
     "protocol_for_surface",
     "response_actual_route_status",
     "retry_safety",
-    "retryable_exception",
     "retryable_response_status",
     "retryable_transport_status",
     "transition_edge",

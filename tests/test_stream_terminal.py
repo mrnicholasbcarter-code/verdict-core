@@ -18,7 +18,6 @@ from verdict.relay import (
     failure_class,
     fatal_identity_mismatch,
     retry_safety,
-    retryable_exception,
     retryable_response_status,
     retryable_transport_status,
 )
@@ -418,8 +417,7 @@ def test_replay_safety_membership_is_unchanged() -> None:
     assert retry_safety(_Request(), {"tools": tools}, "idem-key") == RetrySafety.UNSAFE
     assert retry_safety(_Request(), {"tools": tools}, None) == RetrySafety.UNKNOWN
     assert retry_safety(_Request(), {}, "idem-key") == RetrySafety.SAFE
-    # timeouts stay retryable; a compatibility 4xx never replays on the same route
-    assert retryable_exception(httpx.TimeoutException("t"))
+    # a compatibility 4xx never replays on the same route
     assert not retryable_response_status(400, compatibility_applied=True, body="")
 
 

@@ -166,8 +166,3 @@ class TaskSpec:
 
 # Capacity identity is re-exported here for legacy admission callers.
 from verdict.capacity_models import ConnectionIdentity  # noqa: E402,F401
-
-
-# Compatibility placeholder for older admission tests.
-class Route:  # pragma: no cover
-    pass

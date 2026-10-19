@@ -384,10 +384,6 @@
     "reason": "UNTRIAGED: verify_session_manifest has only non-production references; Provider-neutral, privacy-safe session JSONL import (verdict/memory_session_adapter.py)."
   },
   {
-    "qualified_name": "verdict.models.Route",
-    "reason": "UNTRIAGED: Route has no resolved reference; Core immutable data models used by Verdict routing (verdict/models.py)."
-  },
-  {
     "qualified_name": "verdict.motion.trace_step",
     "reason": "UNTRIAGED: trace_step has only non-production references; Pure, event-driven motion helpers. No scheduler, input polling, or delays (verdict/motion.py)."
   },
@@ -408,10 +404,6 @@
     "reason": "UNTRIAGED: dedupe has no resolved reference; Shared contracts for Verdict's goal -> DAG -> workers -> review -> receipt run (verdict/orchestration/contracts.py)."
   },
   {
-    "qualified_name": "verdict.orchestration.health_cache.is_transient",
-    "reason": "UNTRIAGED: is_transient has no resolved reference; File-backed route health cache with three states and per-provider buckets (verdict/orchestration/health_cache.py)."
-  },
-  {
     "qualified_name": "verdict.orchestration.prime_settings.resolved_retry_policy",
     "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
@@ -429,7 +421,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.verified_refresh.VerifiedRow",
-    "reason": "UNTRIAGED: VerifiedRow has no resolved reference; Bounded verification refresh coordinator (BOD-292, unit 3) (verdict/orchestration/verified_refresh.py)."
+    "reason": "KEEP: structural protocol documenting the row shape the coordinator reads (module docstring); concrete RowInput satisfies it and is the only production type, so the protocol has no runtime reference. Type contract, not dead code."
   },
   {
     "qualified_name": "verdict.policy.compile_policy",
@@ -738,10 +730,6 @@
   {
     "qualified_name": "verdict.orchestration.cockpit_nav.run_cockpit",
     "reason": "UNTRIAGED: run_cockpit has only non-production references; Interactive cockpit navigation for ``verdict watch`` (read-only) (verdict/orchestration/cockpit_nav.py)."
-  },
-  {
-    "qualified_name": "verdict.orchestration.health_cache.fresh_until",
-    "reason": "UNTRIAGED: fresh_until has no resolved reference; File-backed route health cache with three states and per-provider buckets (verdict/orchestration/health_cache.py)."
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
