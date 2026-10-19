@@ -384,6 +384,9 @@ def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
 # ---------------------------------------------------------------------------
 
 
+_GATEWAY_DERIVED_PREFIX = "gateway:"
+
+
 @dataclass(frozen=True)
 class RefreshSnapshot:
     """Everything the coordinator needs from a reloaded projection snapshot.
@@ -416,7 +419,7 @@ class RefreshSnapshot:
         if self.scope:
             return self.scope
         digest = hashlib.sha256(f"gateway_origin={self.gateway_origin}".encode()).hexdigest()
-        return f"gateway:{digest}"
+        return f"{_GATEWAY_DERIVED_PREFIX}{digest}"
 
     def by_id(self) -> dict[str, RowInput]:
         return {row.route_id: row for row in self.rows}
@@ -774,6 +777,20 @@ class _Scopes:
 _PROVIDER_STOP_CATEGORIES = frozenset(
     {CATEGORY_AUTH, CATEGORY_PAYMENT, CATEGORY_PERMISSION, CATEGORY_RATE_LIMITED}
 )
+
+
+def _marker_scope_matches(payload: Mapping[str, Any], scope: str) -> bool:
+    """True when a marker belongs to ``scope``.
+
+    A marker with no scope key predates scope binding. It carries no foreign-scope
+    evidence, so it matches only a caller whose scope was derived from the gateway
+    (no explicit scope); an explicit configuration/profile/consent scope never
+    adopts it.
+    """
+    marker_scope = str(payload.get("scope") or "")
+    if marker_scope:
+        return marker_scope == scope
+    return scope.startswith(_GATEWAY_DERIVED_PREFIX)
 
 
 @dataclass
@@ -1323,7 +1340,7 @@ class RefreshCoordinator:
         lock: _JobLock,
         on_progress: Callable[[ProgressEvent], None] | None,
         cancel: Callable[[], bool],
-        scope: str = "",
+        scope: str,
     ) -> RefreshOutcome:
         """Join an in-flight job: WAIT (bounded) and read its results.
 
@@ -1345,7 +1362,7 @@ class RefreshCoordinator:
                 published_id = str(payload.get("job_id") or "")
                 if joined_id is not None and published_id != joined_id:
                     break  # never cancel or consume a different owner's job
-                if str(payload.get("scope") or "") != scope:
+                if not _marker_scope_matches(payload, scope):
                     if payload.get("running"):
                         return self._scope_mismatch(candidates, consumer)
                     # A finished marker of another scope is stale history: the
@@ -1386,7 +1403,7 @@ class RefreshCoordinator:
         payload = marker.read() or {}
         if joined_id is not None and str(payload.get("job_id") or "") != joined_id:
             payload = {"job_id": joined_id, "running": True}
-        elif str(payload.get("scope") or "") != scope:
+        elif not _marker_scope_matches(payload, scope):
             # A marker from a different scope is never consumed.
             return self._scope_mismatch(candidates, consumer)
         if not payload.get("running", True) and not lock.live():
@@ -1536,7 +1553,7 @@ class RefreshCoordinator:
         *,
         scope: str = "",
     ) -> bool:
-        if str(prior.get("scope") or "") != scope:
+        if not _marker_scope_matches(prior, scope):
             return False  # a different gateway/profile/consent scope never reuses
         if prior.get("running", False):
             return False  # an in-flight job is JOINed, not debounced

@@ -1222,6 +1222,7 @@ def test_review3_cancel_is_job_keyed_before_publication(tmp_path: Path) -> None:
         lock=module._JobLock(tmp_path / "refresh.lock"),
         on_progress=None,
         cancel=lambda: False,
+        scope=RefreshSnapshot(()).effective_scope,
     )
     assert joined.outcome == "cancelled"
     assert not joined.complete
@@ -1404,6 +1405,7 @@ def test_review3_liveness_owner_marker_join_and_debounce(tmp_path: Path) -> None
         lock=module._JobLock(tmp_path / "refresh.lock"),
         on_progress=progress.append,
         cancel=lambda: False,
+        scope=RefreshSnapshot((row,)).effective_scope,
     )
     assert joined.verified == 0 and joined.alive == 1 and joined.failed == 0
     coord._emit_join_progress(progress.append, payload, 0.0)
