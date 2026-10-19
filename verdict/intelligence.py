@@ -814,11 +814,7 @@ class IntelligenceService:
             passport = passports.get(model_id)
             if passport is None:
                 continue
-            cost = passport.token_cost_per_1k
-            evidence[model_id] = RouteEvidence(
-                latency_ms=passport.latency_p95,
-                cost_per_million=None if cost is None else cost * 1000.0,
-            )
+            evidence[model_id] = RouteEvidence(latency_ms=passport.latency_p95)
         pool = build_candidate_pool(
             advertised,
             task_profile=profile,

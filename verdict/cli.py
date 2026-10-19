@@ -830,6 +830,14 @@ def cmd_route(
     terse: bool = False,
     allow_offline: bool = False,
     allow_legacy_selector: bool | None = None,
+    task_family: str | None = None,
+    min_context_tokens: int | None = None,
+    reasoning_required: bool = False,
+    tools_required: bool = False,
+    structured_output_required: bool = False,
+    streaming_required: bool = False,
+    vision_required: bool = False,
+    context: dict[str, Any] | None = None,
 ) -> None:
     """Route a single task.
 
@@ -844,7 +852,27 @@ def cmd_route(
     if allow_legacy_selector is None:
         allow_legacy_selector = False
 
-    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    ctx = dict(context or {})
+    if task_family:
+        ctx["task_family"] = task_family
+    if min_context_tokens:
+        ctx["min_context_tokens"] = min_context_tokens
+    if reasoning_required:
+        ctx["reasoning_required"] = True
+    if tools_required:
+        ctx["tools_required"] = True
+    if structured_output_required:
+        ctx["structured_output_required"] = True
+    if streaming_required:
+        ctx["streaming_required"] = True
+    if vision_required:
+        ctx["vision_required"] = True
+    if allow_legacy_selector:
+        from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+
+        ctx[CONTEXT_ALLOW_LEGACY] = True
+
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline, context=ctx)
     params = {
         "task": task,
         "criticality": criticality,
@@ -852,6 +880,7 @@ def cmd_route(
         "allow_legacy_selector": allow_legacy_selector,
         "gate": gate,
         "terse": terse,
+        "context": ctx,
     }
     if terse:
         result = run_action("route", params)

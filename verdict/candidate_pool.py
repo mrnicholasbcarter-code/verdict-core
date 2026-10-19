@@ -734,15 +734,6 @@ def _score_features(
     if latency is not None and latency >= 0:
         features["latency_fit"] = 1.0 / (1.0 + float(latency) / 1000.0)
 
-    # Cost pressure — lower is better when known.
-    cost = ev.cost_per_million
-    if cost is None:
-        cost_field = survivor.record.caps.input_cost_per_million
-        if cost_field is not None and isinstance(cost_field.value, (int, float)):
-            cost = float(cost_field.value)
-    if cost is not None and cost >= 0:
-        features["cost_fit"] = 1.0 / (1.0 + float(cost))
-
     # Uncertainty penalty — missing soft evidence or conflicts.
     uncertainty = 0.0
     if "task_similarity" not in features and "eval_score" not in features:
@@ -769,7 +760,6 @@ def _fuse_score(features: Mapping[str, float]) -> float:
     score += 0.40 * features.get("task_similarity", 0.0)
     score += 0.25 * features.get("eval_score", 0.0)
     score += 0.15 * features.get("health", 0.0)
-    score += 0.05 * features.get("cost_fit", 0.0)
     score += 0.05 * features.get("latency_fit", 0.0)
     score += 0.10 * features.get("context_fit", 0.0)
     score -= 0.30 * features.get("uncertainty_penalty", 0.0)

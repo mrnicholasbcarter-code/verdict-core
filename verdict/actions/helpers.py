@@ -102,7 +102,7 @@ def _report_bootstrap_notes(result: Any) -> None:
         print(f"verdict: {note.describe()}", file=sys.stderr)
 
 
-def build_route_gate(allow_offline: bool = False) -> Any:
+def build_route_gate(allow_offline: bool = False, context: dict[str, Any] | None = None) -> Any:
     """Build the CLI Gate from the shared bootstrap contract.
 
     Wraps the bootstrap/gate construction so actions can call it without
@@ -117,12 +117,24 @@ def build_route_gate(allow_offline: bool = False) -> Any:
         print(describe_bootstrap_failure(exc), file=sys.stderr)
         raise SystemExit(1) from exc
     _report_bootstrap_notes(bootstrap)
-    return Gate(
+    gate = Gate(
         primary_model=bootstrap.primary_model,
         providers=bootstrap.provider_configs(),
         log_path=bootstrap.log_path,
         allow_offline=allow_offline,
     )
+    if context:
+        original_route = gate.route
+        from verdict.models import RoutingDecision
+
+        def _route_with_context(
+            task: str, criticality: str = "medium", ctx: dict[str, object] | None = None
+        ) -> RoutingDecision:
+            merged = {**context, **(ctx or {})}
+            return original_route(task, criticality=criticality, context=merged)
+
+        gate.route = _route_with_context  # type: ignore[method-assign,assignment]
+    return gate
 
 
 def probe_result_payload(observation: Any) -> dict[str, Any]:
