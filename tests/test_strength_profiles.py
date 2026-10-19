@@ -234,3 +234,94 @@ def test_verified_history_changes_next_task_rank_with_smoothed_policy(
         observations, route_id="route/under-test", task_family=fp_task_family, as_of=fixed
     )
     assert score_a_again == score_a
+
+
+def test_duplicate_observation_id_counts_once_and_is_not_demoted() -> None:
+    """A restarted loader or a root read twice must not double-count one verified attempt."""
+    from verdict.candidate_pool import OutcomeObservation
+    from verdict.strength_profiles import score_task_history
+
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+    observed_at = as_of - timedelta(days=1)
+    # The same failing checker row, loaded three times (replay/restart duplicate).
+    duplicated = [
+        OutcomeObservation(
+            route_id="route/flaky",
+            task_family="implement",
+            success=False,
+            observed_at=observed_at,
+            quality_credit=0.0,
+            observation_id="run-x:node-a:1",
+        )
+        for _ in range(3)
+    ]
+
+    result = score_task_history(
+        duplicated, route_id="route/flaky", task_family="implement", as_of=as_of
+    )
+
+    assert result.observed_n == 1
+    # n < 3 (one real failure): never demoted regardless of score.
+    assert result.demoted is False
+
+
+def test_window_excludes_30d_boundary_and_includes_just_inside() -> None:
+    """Age must be in the half-open window [0, 30d): exactly 30d is excluded."""
+    from verdict.candidate_pool import OutcomeObservation
+    from verdict.strength_profiles import score_task_history
+
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+
+    at_boundary = OutcomeObservation(
+        route_id="route/edge",
+        task_family="implement",
+        success=True,
+        observed_at=as_of - timedelta(days=30),
+        quality_credit=1.0,
+        observation_id="run-edge:node-a:1",
+    )
+    result_at_boundary = score_task_history(
+        [at_boundary], route_id="route/edge", task_family="implement", as_of=as_of
+    )
+    assert result_at_boundary.observed_n == 0
+    assert result_at_boundary.score == 0.5
+
+    just_inside = OutcomeObservation(
+        route_id="route/edge",
+        task_family="implement",
+        success=True,
+        observed_at=as_of - timedelta(days=30) + timedelta(seconds=1),
+        quality_credit=1.0,
+        observation_id="run-edge:node-a:2",
+    )
+    result_inside = score_task_history(
+        [just_inside], route_id="route/edge", task_family="implement", as_of=as_of
+    )
+    assert result_inside.observed_n == 1
+    age_days = 30.0 - 1.0 / 86400.0
+    assert result_inside.weighted_n == pytest.approx(2.0 ** (-age_days / 7.0), rel=1e-9)
+
+
+def test_seven_day_half_life_weight_is_exact() -> None:
+    """At exactly one half-life (7d), the weight is exactly 0.5."""
+    from verdict.candidate_pool import OutcomeObservation
+    from verdict.strength_profiles import score_task_history
+
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+    observation = OutcomeObservation(
+        route_id="route/decay",
+        task_family="implement",
+        success=True,
+        observed_at=as_of - timedelta(days=7),
+        quality_credit=1.0,
+        observation_id="run-decay:node-a:1",
+    )
+
+    result = score_task_history(
+        [observation], route_id="route/decay", task_family="implement", as_of=as_of
+    )
+
+    assert result.observed_n == 1
+    assert result.weighted_n == pytest.approx(0.5, rel=1e-9)
+    # score = (0.5 + 1) / (0.5 + 2) = 0.6
+    assert result.score == pytest.approx(0.6, rel=1e-9)

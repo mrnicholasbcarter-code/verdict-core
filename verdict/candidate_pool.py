@@ -240,6 +240,11 @@ class OutcomeObservation:
     # unscored and must never enter score_task_history's denominator.
     observed_at: datetime | None = None
     quality_credit: float | None = None
+    # Stable per-attempt identity (e.g. "run_id:node_id:attempt_id") so a
+    # restarted loader or replayed root cannot double-count one verified
+    # attempt toward observed_n/weighted_n. None observations are never
+    # deduplicated against each other.
+    observation_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -249,6 +254,7 @@ class OutcomeObservation:
             "fingerprint_digest": self.fingerprint_digest,
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "quality_credit": self.quality_credit,
+            "observation_id": self.observation_id,
         }
 
 

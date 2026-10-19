@@ -344,17 +344,29 @@ def score_task_history(
     ``[0, 30d)`` before ``as_of``; it is weighted ``2 ** (-age_days / 7)``
     (a 7-day half-life). With no qualifying observations the score is the 0.5
     prior with ``observed_n = 0`` and ``demoted = False``.
+
+    ``observation_id`` gives one verified attempt a stable identity, so a
+    restarted loader or a root read twice counts that attempt once: duplicate
+    ids keep only the first-seen observation. Observations without an id are
+    never deduplicated against each other, matching callers that cannot name
+    a stable per-attempt identity. ``observed_n`` is therefore the count of
+    *unique* qualifying observations, as the demotion contract requires.
     """
     as_of = _utc(as_of, "as_of")
     weighted_accepted = 0.0
     weighted_partial = 0.0
     weighted_eligible = 0.0
     observed_n = 0
+    seen_ids: set[str] = set()
     for obs in observations:
         if obs.route_id != route_id or obs.task_family != task_family:
             continue
         if obs.quality_credit is None or obs.observed_at is None:
             continue
+        if obs.observation_id is not None:
+            if obs.observation_id in seen_ids:
+                continue
+            seen_ids.add(obs.observation_id)
         observed_at = _utc(obs.observed_at, "observed_at")
         age_days = (as_of - observed_at).total_seconds() / 86400.0
         if not (0 <= age_days < _HISTORY_WINDOW_DAYS):
