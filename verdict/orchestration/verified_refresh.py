@@ -810,15 +810,22 @@ class RefreshCoordinator:
     cache). ``refresh_for_consumer`` is the single public entry point.
 
     ``auth_gate`` (BOD-338 breaker, optional) is called with ``(route_id,
-    http_status)`` ONLY for a 401/403 outcome, BEFORE any write. It returns
-    ``(result, requests_spent)``: ``requests_spent`` is how many real HTTP
-    calls the gate itself made confirming this outcome (0 when it reused a
-    memoized result or never called out), so the coordinator can fold the
-    gate's own spend into this job's ``requests_made`` -- otherwise the
-    gate's live gateway-auth check (review finding 18b, 2026-10-19) would
-    never count against the cycle's request budget, and a following route
-    could be admitted one request over it. ``result`` is one of three
-    values:
+    http_status, remaining_requests)`` ONLY for a 401/403 outcome, BEFORE
+    any write. ``remaining_requests`` is THIS job's own
+    ``config.max_requests - requests_made`` (after the triggering probe's
+    own spend), so the gate checks the coordinator's real budget directly
+    instead of a separate counter that can drift from it (review finding
+    19, 2026-10-19: the gate tested ``Prober.stats.requests``, which stays
+    0 for the whole job until ``_run_chat_phase`` adds the coordinator's
+    ``requests_made`` back AFTER the job returns -- so the gate always saw
+    budget as free and spent a live check the coordinator's own cap had
+    already used up).
+
+    Returns ``(result, requests_spent)``: ``requests_spent`` is how many
+    real HTTP calls the gate itself made confirming this outcome (0 when it
+    reused a memoized result or never called out), so the coordinator can
+    fold the gate's own spend into this job's ``requests_made`` (review
+    finding 18b, 2026-10-19). ``result`` is one of three values:
 
     - ``True``: a CONFIRMED gateway-key outage. The route's auth failure is
       NOT written (``REASON_AUTH_OUTAGE``, no poison) and the job stops with
@@ -826,11 +833,12 @@ class RefreshCoordinator:
       existing buffer-then-confirm behaviour.
     - ``False`` (including the default ``None`` hook, which always returns
       False): a genuine per-route/provider auth failure, written as today.
-    - ``None``: the gate could not run its confirmation at all (its own
-      request/wall budget is exhausted). The route's auth failure is still
-      NOT written -- an unconfirmed 401/403 must never poison the cache --
-      but the job stops for the REAL reason (``REASON_REQUEST_CAP``/
-      ``REASON_WALL_CAP``), not a reported outage nobody actually checked.
+    - ``None``: the gate could not run its confirmation at all
+      (``remaining_requests < 1``, or its own wall budget is exhausted,
+      review finding 18a). The route's auth failure is still NOT written --
+      an unconfirmed 401/403 must never poison the cache -- but the job
+      stops for the REAL reason (``REASON_REQUEST_CAP``/``REASON_WALL_CAP``),
+      not a reported outage nobody actually checked.
     """
 
     cache: HealthCache
@@ -840,7 +848,7 @@ class RefreshCoordinator:
     sleep: Callable[[float], None] = field(default=time.sleep)
     lock_path: Path | None = None
     marker_path: Path | None = None
-    auth_gate: Callable[[str, int | None], tuple[bool | None, int]] | None = None
+    auth_gate: Callable[[str, int | None, int], tuple[bool | None, int]] | None = None
     _seq: int = field(default=0, init=False, repr=False)
 
     def _paths(self) -> tuple[Path, Path]:
@@ -1109,7 +1117,10 @@ class RefreshCoordinator:
                     and outcome.http_status in (401, 403)
                     and self.auth_gate is not None
                 ):
-                    gate_result, gate_requests = self.auth_gate(row.route_id, outcome.http_status)
+                    remaining_requests = config.max_requests - requests_made
+                    gate_result, gate_requests = self.auth_gate(
+                        row.route_id, outcome.http_status, remaining_requests
+                    )
                     requests_made += gate_requests
                 if gate_result is not False:
                     outcomes[row.route_id] = RouteOutcome(

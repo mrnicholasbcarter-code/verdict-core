@@ -427,7 +427,9 @@ def test_auth_gate_confirmed_outage_writes_nothing_and_stops_the_job(tmp_path: P
     transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
     gate_calls: list[tuple[str, int | None]] = []
 
-    def auth_gate(route_id: str, http_status: int | None) -> tuple[bool, int]:
+    def auth_gate(
+        route_id: str, http_status: int | None, remaining_requests: int
+    ) -> tuple[bool, int]:
         gate_calls.append((route_id, http_status))
         return True, 0  # confirmed outage, no live check spent
 
@@ -459,7 +461,7 @@ def test_auth_gate_denied_outage_records_the_real_auth_failure(tmp_path: Path) -
     """A rejected outage (False, or no hook) writes the auth failure as today."""
     transport = ScriptedTransport({("cc/a", "chat"): _fail(401)})
     coord = _coordinator(tmp_path, transport)
-    coord.auth_gate = lambda route_id, http_status: (False, 0)
+    coord.auth_gate = lambda route_id, http_status, remaining_requests: (False, 0)
     rows = [_row("cc/a", provider="cc", rank_hint=1), _row("cc/b", provider="cc", rank_hint=2)]
     out = coord.refresh_for_consumer(
         _snapshot(rows),
@@ -480,7 +482,9 @@ def test_auth_gate_fires_on_403_permission_category_too(tmp_path: Path) -> None:
     transport = ScriptedTransport({("cc/a", "chat"): _fail(403)})
     gate_calls: list[tuple[str, int | None]] = []
 
-    def auth_gate(route_id: str, http_status: int | None) -> tuple[bool, int]:
+    def auth_gate(
+        route_id: str, http_status: int | None, remaining_requests: int
+    ) -> tuple[bool, int]:
         gate_calls.append((route_id, http_status))
         return True, 0
 

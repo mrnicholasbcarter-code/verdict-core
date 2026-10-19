@@ -368,6 +368,59 @@ def test_gateway_check_counts_against_the_coordinator_request_budget(tmp_path: P
     assert stats.requests == total_real_requests
 
 
+def test_gate_denies_its_own_check_when_the_triggering_probe_used_the_whole_cap(
+    tmp_path: Path,
+) -> None:
+    """Review finding 19 (2026-10-19): the gate must check the coordinator's
+    OWN remaining budget (passed in as ``remaining_requests``), not
+    ``Prober.stats.requests`` -- that counter stays 0 for the whole chat
+    phase until AFTER the coordinator call returns, so the old check always
+    saw a free budget. With max_requests=2: chat ok + tool 401 already
+    spends the entire cap (2 requests); the gate must not spend a 3rd
+    request on a live check it cannot afford -- it reports unconfirmed
+    (no write) and the job stops with request_cap, not an outage.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.health_cache import HealthCache
+
+    now_local = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+    cache = HealthCache(tmp_path / "cache.json")
+    sent: list[tuple[str, str]] = []
+
+    def chat(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        sent.append((route_id, phase))
+        return ProbeExchange(
+            http_status=200 if phase == "chat" else 401,
+            ok=phase == "chat",
+            chat_exact=phase == "chat",
+        )
+
+    checks: list[float] = []
+
+    def check(timeout: float) -> ProbeExchange:
+        checks.append(timeout)
+        return ProbeExchange(http_status=200, ok=True)
+
+    stats = Prober(
+        cache,
+        lambda: [AdmittedRoute("a/m", "a", "free")],
+        chat,
+        clock=lambda: now_local,
+        monotonic=lambda: 0.0,
+        sleep=lambda _s: None,
+        epsilon=0,
+        max_requests=2,
+        gateway_auth_check=check,
+    ).run_once()
+    assert len(sent) == 2
+    assert checks == []
+    assert stats.requests == 2
+    assert stats.stopped_reason == "request_cap"
+    assert stats.auth_outage is False
+    assert cache.entry("a/m") is None
+
+
 def test_agentic_phase_runs_after_the_chat_phase_hits_its_caps(tmp_path: Path) -> None:
     """A spent chat budget (request and wall cap) no longer skips agentic probing."""
     tick = [0.0]
