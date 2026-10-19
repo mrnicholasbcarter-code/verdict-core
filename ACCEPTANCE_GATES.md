@@ -62,6 +62,15 @@ Each gate MUST have evidence linked in the evidence bundle.
 | G7.3 | README claims match observed behavior | Evidence: `readme_verification.log` |
 | G7.4 | Issue templates for bug/feature/security | Evidence: `.github/ISSUE_TEMPLATE/` |
 
+### G8: V1 Hardening Waves 5-7 (BOD-431 umbrella; pre-merge implementation and automated tests only)
+| ID | Criterion | Evidence Required |
+|----|-----------|-------------------|
+| G8.1 | S09 / BOD-437: every sent attempt gets one terminal ledger row; an independent checker result is the only row kind that may carry quality_credit, joined only under full verification | Tests: `tests/test_outcome_shadow.py`, `tests/test_autodev_outcome_attempts.py` |
+| G8.2 | S10 / BOD-438: verified-history scoring uses a 30-day window, 7-day half-life, smoothing, and order-only demotion; no unverified row ever scores history | Tests: `tests/test_strength_profiles.py`, `tests/test_candidate_pool.py`, `tests/test_intelligence_service.py` |
+| G8.3 | S11 / BOD-414: doctor reports installed-runtime build/gateway/scope provenance for every long-running service; an unrecorded build is never OK | Tests: `tests/test_doctor_installed_state.py`, `tests/test_prove_at_rest_service_state.py`, `tests/test_setup_preservation_ui.py` |
+| G8.4 | S05 phase 2 / BOD-297: census and prove-at-rest chat phase run through the shared RefreshCoordinator with their own bounded maintenance config, auth_gate confirmation before any write, and no partial-probe spend | Tests: `tests/test_census_passports.py`, `tests/test_auth_outage.py`, `tests/test_credential_pools.py`, `tests/test_prove_at_rest_agentic_budget.py`, `tests/test_health_cache.py`, `tests/test_verified_model_refresh.py` |
+| G8.5 | S03-C / BOD-433 addendum: dispatch denies on an executor-reported gateway-origin mismatch before permit commit; a reported `None` origin is accepted (U1) | Tests: `tests/test_orch_gateway_origin.py`, `tests/test_dagruntime_dispatch_permits.py`, `tests/test_mixed_executor.py` |
+
 ## Evidence Bundle Structure
 
 ```

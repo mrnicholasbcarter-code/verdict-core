@@ -87,3 +87,21 @@ of that handoff remains deferred to phase 2b.
 route id, hashed into `config_generation`) and the task profile digest. It never
 contains key material. It does not represent the full effective configuration;
 a full effective-config generation is a follow-up.
+
+## Addendum: Executor gateway-origin attestation (S03-C)
+
+Dispatch now attests the executor's own reported gateway origin against the bound
+`DispatchScope.gateway_origin`, immediately before `_commit_permit`. Both sides are
+normalized to `scheme://lower-case-host:explicit-port` (`normalize_gateway_origin`),
+with path, query and fragment dropped, and a malformed URL (an unparseable scheme,
+host, port, or a broken IPv6 literal) normalizes to no match rather than raising.
+
+An executor that reports a non-`None` origin which does not match the bound scope
+is BLOCKED with `dispatch_denied: executor origin mismatch`: no permit is committed
+and the executor is never called. There is no reselect or retry for this failure;
+the route's own proof binding at selection time is unaffected, but nothing is sent.
+
+An executor that reports no origin at all (`None`) is accepted (U1): its provider
+is configured outside Verdict (for example `PrimeHeadlessExecutor`), so there is
+nothing for Core to attest. `MixedExecutor` and `FaultInjectingExecutor` resolve the
+origin check per wrapped node or delegate to their inner executor, respectively.
