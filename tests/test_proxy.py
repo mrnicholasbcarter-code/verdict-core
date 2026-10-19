@@ -124,6 +124,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
                     [
                         b'data: {"choices":[',
                         b'{"delta":{"tool_calls":[{"index":0}]}}]}\n\n',
+                        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
                         b"data: [DONE]\n\n",
                     ]
                 ),
@@ -730,7 +731,9 @@ async def test_stream_adapter_explicit_close_finalizes_once_and_closes_upstream(
             "error_class": error_class,
         }
 
-    adapter = api._EvidenceStreamAdapter(upstream, on_terminal=events.append, event_factory=factory)
+    adapter = api._EvidenceStreamAdapter(
+        upstream, on_terminal=events.append, event_factory=factory, outcome_of=lambda: None
+    )
     assert await adapter.__anext__() == b"first"
     await adapter.aclose()
     await adapter.aclose()
@@ -754,6 +757,7 @@ async def test_stream_adapter_iterator_error_closes_upstream_and_preserves_error
     adapter = api._EvidenceStreamAdapter(
         upstream,
         on_terminal=events.append,
+        outcome_of=lambda: None,
         event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
             "event_type": event_type,
             "outcome": outcome,
@@ -779,6 +783,7 @@ async def test_stream_adapter_cancellation_closes_upstream_once() -> None:
     adapter = api._EvidenceStreamAdapter(
         upstream,
         on_terminal=events.append,
+        outcome_of=lambda: None,
         event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
             "event_type": event_type,
             "outcome": outcome,
@@ -808,6 +813,7 @@ async def test_stream_adapter_cleanup_error_does_not_mask_iterator_error() -> No
     adapter = api._EvidenceStreamAdapter(
         upstream,
         on_terminal=events.append,
+        outcome_of=lambda: None,
         event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
             "event_type": event_type,
             "outcome": outcome,
@@ -840,6 +846,7 @@ async def test_streaming_response_closes_unconsumed_body_after_disconnect() -> N
     adapter = api._EvidenceStreamAdapter(
         upstream,
         on_terminal=events.append,
+        outcome_of=lambda: None,
         event_factory=lambda event_type, outcome, phase, cleanup_error, error_class: {
             "event_type": event_type,
             "outcome": outcome,
@@ -877,7 +884,9 @@ def test_proxy_streaming_preserves_arbitrary_upstream_chunk_boundaries(monkeypat
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.text == (
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0}]}}]}\n\ndata: [DONE]\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0}]}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        "data: [DONE]\n\n"
     )
     assert transport.requests[0]["body"] == {**payload, "model": "selected-model"}
 
