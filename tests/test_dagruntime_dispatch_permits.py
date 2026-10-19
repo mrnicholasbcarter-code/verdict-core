@@ -7,7 +7,7 @@ fixtures, and the health cache lives in the isolated test HOME.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -284,7 +284,9 @@ async def test_run_golden_path_forwards_dispatch_authority_to_the_runtime(repo: 
         graph=WorkGraph("g", (node("a"),)),
         run_id="golden1",
         policy=RuntimePolicy(require_dispatch_permit=True),
-        dispatch_authority=_authority({"cc/s": _passport("cc/s", qualified=datetime.now(UTC))}),
+        dispatch_authority=_authority(
+            {"cc/s": _passport("cc/s", qualified=datetime.now(timezone.utc))}
+        ),
     )
     # The hydrated prompt does not drive the spy's file write, so verification
     # fails and the same route is retried: each send needs its own fresh permit.
