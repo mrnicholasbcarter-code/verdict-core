@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from verdict.orchestration.contracts import WorkerExecutor
 from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
-from verdict.orchestration.runtime import RuntimePolicy
+from verdict.orchestration.runtime import DispatchAuthority, RuntimePolicy
 
 DEFAULT_RUNS = Path(".verdict") / "runs"
 
@@ -783,6 +783,15 @@ def _orchestrate(args: argparse.Namespace) -> int:
         attempt_timeout_seconds=args.attempt_timeout,
         run_deadline_seconds=args.run_deadline,
         require_review=True,
+        require_dispatch_permit=True,
+    )
+    from verdict.admit_prove_confirm import passport_confirmation
+
+    # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
+    # Prime workers carry no gateway origin of their own; they go through --gateway.
+    dispatch_authority = DispatchAuthority(
+        gateway_origin=args.gateway.rstrip("/"),
+        confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()
@@ -816,6 +825,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             inflight=inflight,
             openspec_change_dir=openspec_change_dir,
             constraints=constraints,
+            dispatch_authority=dispatch_authority,
         )
     )
     stop.set()

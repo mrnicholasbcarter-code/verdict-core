@@ -7,7 +7,7 @@ fixtures, and the health cache lives in the isolated test HOME.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -205,3 +205,66 @@ async def test_flag_without_authority_still_denies_every_send(repo: Path) -> Non
     assert result.outcome is RunOutcome.BLOCKED
     assert ex.calls == []
     assert ev.of("failure", "a")[0]["category"] == "dispatch_denied"
+
+
+# ---------------------------------------------------------------- production wiring
+
+
+def _orchestrate_args(tmp_path: Path, *extra: str) -> Any:
+    import argparse
+
+    from verdict.orchestration import cli
+
+    parser = argparse.ArgumentParser()
+    cli.add_parsers(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["orchestrate", "ship it", "--repo", str(tmp_path), "--json", *extra])
+
+
+def test_orchestrate_cli_always_runs_with_dispatch_authority(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from verdict.orchestration import cli, run
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "fixture-only")
+    monkeypatch.setattr(cli, "build_selector", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_executor", lambda args: object())
+    monkeypatch.setattr(cli, "_planner_executor", lambda args: object())
+
+    async def fake_run(goal: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        receipt = tmp_path / "receipt.json"
+        receipt.write_text("{}")
+        return run.GoldenRunResult(tmp_path, "BLOCKED", "fixture", receipt)
+
+    monkeypatch.setattr(run, "run_golden_path", fake_run)
+    cli._orchestrate(_orchestrate_args(tmp_path, "--gateway", "http://gw.test:20128/"))
+    authority = seen["dispatch_authority"]
+    assert isinstance(authority, DispatchAuthority)
+    assert authority.gateway_origin == "http://gw.test:20128"
+    assert seen["policy"].require_dispatch_permit is True
+    # Production proofs come from the stored passports (read-only); none here.
+    assert authority.confirm(["cc/s"], NOW)["admitted"] == []
+
+
+async def test_run_golden_path_forwards_dispatch_authority_to_the_runtime(repo: Path) -> None:
+    from verdict.orchestration.run import run_golden_path
+
+    ex = PermitSpy()
+    result = await run_golden_path(
+        "write a",
+        repo=repo,
+        runs_root=repo.parent / "runs",
+        selector=Selector(["cc/s"]),
+        executor=ex,
+        classifier=Classifier(),
+        reviewer=Reviewer(),
+        graph=WorkGraph("g", (node("a"),)),
+        run_id="golden1",
+        policy=RuntimePolicy(require_dispatch_permit=True),
+        dispatch_authority=_authority({"cc/s": _passport("cc/s", qualified=datetime.now(UTC))}),
+    )
+    # The hydrated prompt does not drive the spy's file write, so verification
+    # fails and the same route is retried: each send needs its own fresh permit.
+    assert ex.attempt_ids == ["golden1:a-a1", "golden1:a-a2"], result.reason
+    assert ex.states_at_send == [PERMIT_STATE_MAYBE_SENT] * 2
