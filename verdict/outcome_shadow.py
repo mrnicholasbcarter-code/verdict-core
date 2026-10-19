@@ -503,9 +503,9 @@ def load_checked_attempts(
 
     The run bundle is only read. A row joins only when the receipt verifies,
     the row's ``checker_digest`` equals the receipt ``events_digest``, the
-    attempt key exists in the run, its credit equals the one recomputed from
-    the verified events, it is not after ``as_of`` and it is the first row for
-    that key. Everything else is returned as a rejection with a reason and
+    attempt key exists in the run, the whole row equals the checker row
+    recomputed from the verified events, the verified check time is not after
+    ``as_of`` and it is the first row for that key. Everything else is returned as a rejection with a reason and
     never becomes learning input.
     """
     cutoff = _utc(as_of)
@@ -538,13 +538,14 @@ def load_checked_attempts(
         key = (row.get("node_id"), row.get("attempt_id"))
         source = f"{run_id}:{key[0]}:{key[1]}"
         want = expected.get((str(key[0]), str(key[1])))
-        checked_at = _parse_ts(row.get("ts"))
+        # Time comes from the verified events, never from the ledger row itself.
+        checked_at = _parse_ts(want.ts) if want is not None else None
         reason = None
         if row.get("checker_digest") != digest:
             reason = "checker_digest_mismatch"
         elif want is None:
             reason = "scope_mismatch"
-        elif row.get("quality_credit") != want.quality_credit or row.get("model") != want.model:
+        elif row != want.to_dict():
             reason = "tampered"
         elif checked_at is None or checked_at > cutoff:
             reason = "future"

@@ -469,7 +469,9 @@ def _append_lines(target: Path, records: list[AttemptRecord], *, skip_existing: 
         payload = "".join(
             json.dumps(r.to_dict(), sort_keys=True, ensure_ascii=False) + "\n" for r in records
         ).encode("utf-8")
-        os.write(fd, payload)
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view) :]
         os.fsync(fd)
         return len(records)
     finally:

@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -366,3 +367,72 @@ def test_every_attempt_links_verified_checker_without_rewriting_receipts(
     assert credit == {("a", "2"): 1.0, ("b", "1"): 0.0}
     assert any(r["reason"] == "checker_digest_mismatch" for r in rejected)
     assert (run_dir / "receipt.json").read_bytes() == receipt_bytes
+
+
+def test_short_write_never_leaves_a_torn_ledger_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.outcome_records as outcome_records
+
+    real_write = os.write
+    calls = {"n": 0}
+
+    def short_first_write(fd: int, data: bytes) -> int:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_write(fd, data[:7])
+        return real_write(fd, data)
+
+    monkeypatch.setattr(outcome_records.os, "write", short_first_write)
+    for model in ("gh/gpt-5", "cc/claude-sonnet-5"):
+        record = build_attempt_record(
+            task_kind="implement",
+            harness="prime",
+            model=model,
+            outcome="failed",
+            failure_class="timeout",
+            source="test",
+        )
+        write_attempt_record(record, store_dir=tmp_path)
+
+    raw = attempt_records_path(tmp_path).read_text(encoding="utf-8")
+    assert raw.endswith("\n")
+    assert [json.loads(line)["model"] for line in raw.splitlines()] == [
+        "gh/gpt-5",
+        "cc/claude-sonnet-5",
+    ]
+
+
+def test_rewritten_checker_row_is_tampered_not_joined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.receipt import write_run_receipt
+    from verdict.outcome_shadow import load_checked_attempts
+
+    store = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store))
+    run_dir = _s09_run(tmp_path / "runs")
+    write_run_receipt(run_dir)
+    ledger = attempt_records_path(store)
+    rows = _ledger_rows(store)
+    for row in rows:
+        if row["record_kind"] == "checker_result" and row["node_id"] == "a":
+            # Same credit, but an earlier self-reported time and a different verdict.
+            row["ts"] = "2026-10-18T00:00:00+00:00"
+            row["outcome"] = "failed"
+    ledger.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    # as_of is before the verified check time: only the forged ts could pass it.
+    joined, rejected = load_checked_attempts(
+        run_dir, store_dir=store, as_of=datetime(2026, 10, 18, 12, tzinfo=timezone.utc)
+    )
+    assert joined == ()
+    assert {"source": "run-s09:a:2", "reason": "tampered"} in rejected
+
+    joined, _ = load_checked_attempts(
+        run_dir, store_dir=store, as_of=datetime(2026, 10, 20, tzinfo=timezone.utc)
+    )
+    assert {(j.node_id, j.attempt_id) for j in joined} == {("b", "1")}
+    assert all(j.checked_at == datetime(2026, 10, 19, 6, tzinfo=timezone.utc) for j in joined)
