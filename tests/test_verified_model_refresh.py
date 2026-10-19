@@ -947,7 +947,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     base = config_from_env({})
     assert base.output_tokens == 4096
     assert base.request_timeout_seconds == 30.0
-    assert base.max_per_provider == 2
+    assert base.max_per_provider is None  # interactive: no per-provider cap
     assert base.cooldown_seconds == 300.0
     assert base.maintenance is False
     maintenance = maintenance_from_env({})
@@ -965,6 +965,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         config_from_env({"VERDICT_REFRESH_OUTPUT_TOKENS": "0"})
     with pytest.raises(RefreshConfigError):
         maintenance_from_env({"VERDICT_REFRESH_MAX_ROUTES": "51"})
+    assert maintenance.max_per_provider == 2
     with pytest.raises(RefreshConfigError):
         RefreshConfig(wall_seconds=600.0)
     assert RefreshConfig(wall_seconds=600.0, maintenance=True).wall_seconds == 600.0
@@ -1081,7 +1082,7 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
         _scope_snapshot(five, scope=SCOPE_A),
         consumer="picker",
         needed_ids=[r.route_id for r in five],
-        config=RefreshConfig(max_routes=10),
+        config=RefreshConfig(max_routes=10, max_per_provider=2),
         explicit=True,
     )
     assert out_fair.probed == 2
@@ -1168,3 +1169,264 @@ def test_cross_producer_qualification_budget_scope_crash_and_fairness(tmp_path: 
     for route in out_mismatch.route_outcomes.values():
         assert route.refresh_reason == REASON_LOCK_TIMEOUT
         assert route.verified is False  # the other scope's proof is never reused
+
+
+# ---------------------------------------------------------------------------
+# BOD-297 / S05 phase 1 review fixes
+# ---------------------------------------------------------------------------
+
+
+def _hold_lock(path: Path) -> Any:
+    import fcntl
+
+    held = path.open("a+")
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+    return held
+
+
+def _marker_payload(
+    job_id: str, scope: str, *, running: bool, seq: int = 1, ids: Sequence[str] = ("cc/a",)
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "owner": "picker",
+        "scope": scope,
+        "ids": list(ids),
+        "running": running,
+        "sequence": seq,
+        "outcomes": {
+            rid: {"provider": rid.split("/")[0], "probed": True, "verified": True, "alive": True}
+            for rid in ids
+        }
+        if not running
+        else {},
+    }
+    if not running:
+        payload["finished_wall"] = 0.0
+    return payload
+
+
+def _write_marker_file(path: Path, payload: dict[str, Any]) -> None:
+    import json
+
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_empty_scope_is_gateway_derived_never_matches_across_gateways(tmp_path: Path) -> None:
+    rows = [_row("cc/a"), _row("cc/b")]
+
+    def snap(origin: str) -> RefreshSnapshot:
+        return RefreshSnapshot(rows=tuple(rows), generation="g", gateway_origin=origin)
+
+    t1 = ScriptedTransport({})
+    first = _coordinator(tmp_path, t1)
+    first.refresh_for_consumer(
+        snap("http://gw-a:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert t1.calls
+
+    # Different gateway, same window: never debounced onto gateway A's outcomes.
+    t2 = ScriptedTransport({})
+    second = _coordinator(tmp_path, t2, clock=lambda: NOW + timedelta(seconds=1))
+    out = second.refresh_for_consumer(
+        snap("http://gw-b:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert out.outcome != OUTCOME_DEBOUNCED
+    assert t2.calls
+
+    # Same gateway still debounces (the fix must not break own-scope reuse).
+    t3 = ScriptedTransport({})
+    third = _coordinator(tmp_path, t3, clock=lambda: NOW + timedelta(seconds=2))
+    again = third.refresh_for_consumer(
+        snap("http://gw-b:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    assert again.outcome == OUTCOME_DEBOUNCED
+    assert t3.calls == []
+
+
+def test_empty_scope_join_never_reuses_another_gateways_outcomes(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    rows = [_row("cc/a"), _row("cc/b")]
+    owner = _coordinator(tmp_path, ScriptedTransport({}))
+    owner.refresh_for_consumer(
+        RefreshSnapshot(rows=tuple(rows), gateway_origin="http://gw-a:20128"),
+        consumer="picker",
+        needed_ids=["cc/a", "cc/b"],
+        explicit=True,
+        config=RefreshConfig(),
+    )
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        t = ScriptedTransport({})
+        joiner = _coordinator(tmp_path, t, clock=lambda: NOW + timedelta(seconds=30))
+        out = joiner.refresh_for_consumer(
+            RefreshSnapshot(rows=tuple(rows), gateway_origin="http://gw-b:20128"),
+            consumer="picker",
+            needed_ids=["cc/a", "cc/b"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=1.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert t.calls == []
+    assert all(not r.verified for r in out.route_outcomes.values())
+
+
+def test_join_waits_past_stale_other_scope_finished_marker(tmp_path: Path) -> None:
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("old-b", SCOPE_B, running=False))
+    polls = {"n": 0}
+
+    def sleep(_s: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 2:
+            _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=True))
+        elif polls["n"] == 4:
+            _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=False, seq=2))
+
+    t = ScriptedTransport({})
+    joiner = _coordinator(tmp_path, t)
+    joiner.sleep = sleep
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_JOINED
+    assert out.job_id == "job-a"
+    assert out.route_outcomes["cc/a"].probed is True
+    assert t.calls == []
+
+
+def test_joined_job_survives_a_later_foreign_scope_marker(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("job-a", SCOPE_A, running=True))
+    polls = {"n": 0}
+
+    def sleep(_s: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            _write_marker_file(marker_path, _marker_payload("job-b", SCOPE_B, running=True))
+
+    joiner = _coordinator(tmp_path, ScriptedTransport({}))
+    joiner.sleep = sleep
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    # Reported as the joined job, still running/unfinished -- never as a mismatch
+    # and never carrying the foreign owner's job id.
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert out.job_id == "job-a"
+    assert out.complete is False
+
+
+def test_scope_mismatch_does_not_leak_foreign_job_id(tmp_path: Path) -> None:
+    from verdict.orchestration.verified_refresh import OUTCOME_LOCK_TIMEOUT
+
+    marker_path = tmp_path / "refresh.json"
+    _write_marker_file(marker_path, _marker_payload("foreign-job", SCOPE_B, running=True))
+    joiner = _coordinator(tmp_path, ScriptedTransport({}))
+    held = _hold_lock(tmp_path / "refresh.lock")
+    try:
+        out = joiner.refresh_for_consumer(
+            _scope_snapshot([_row("cc/a")], scope=SCOPE_A),
+            consumer="picker",
+            needed_ids=["cc/a"],
+            explicit=True,
+            config=RefreshConfig(wall_seconds=10.0),
+        )
+    finally:
+        held.close()
+    assert out.outcome == OUTCOME_LOCK_TIMEOUT
+    assert out.job_id != "foreign-job"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"VERDICT_REFRESH_MAX_ROUTES": "5"},
+        {"VERDICT_REFRESH_MAX_REQUESTS": "17"},
+        {"VERDICT_REFRESH_WALL_SECONDS": "601"},
+        {"VERDICT_REFRESH_CONCURRENCY": "5"},
+        {"VERDICT_REFRESH_OUTPUT_TOKENS": "4097"},
+        {"VERDICT_REFRESH_MAX_PER_PROVIDER": "3"},
+    ],
+)
+def test_maintenance_env_can_never_exceed_contract_caps(env: dict[str, str]) -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    with pytest.raises(RefreshConfigError):
+        maintenance_from_env(env)
+
+
+def test_maintenance_env_may_lower_caps() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    lowered = maintenance_from_env(
+        {
+            "VERDICT_REFRESH_MAX_ROUTES": "2",
+            "VERDICT_REFRESH_MAX_REQUESTS": "8",
+            "VERDICT_REFRESH_OUTPUT_TOKENS": "1024",
+            "VERDICT_REFRESH_MAX_PER_PROVIDER": "1",
+        }
+    )
+    assert (lowered.max_routes, lowered.max_requests) == (2, 8)
+    assert (lowered.output_tokens, lowered.max_per_provider) == (1024, 1)
+
+
+def test_per_provider_cap_normalizes_provider_names() -> None:
+    providers = ["OpenAI", "openai", "OpenAI ", "OPENAI"]
+    rows = [_row(f"x/m{i}", provider=p) for i, p in enumerate(providers)]
+    picked = select_candidates(
+        _snapshot(rows),
+        needed_ids=[r.route_id for r in rows],
+        explicit=True,
+        config=RefreshConfig(max_per_provider=2),
+    )
+    assert len(picked) == 2
+
+
+def test_interactive_has_no_per_provider_cap_but_maintenance_does() -> None:
+    from verdict.orchestration.verified_refresh import maintenance_from_env
+
+    assert RefreshConfig().max_per_provider is None
+    assert config_from_env({}).max_per_provider is None
+    assert maintenance_from_env({}).max_per_provider == 2
+    rows = [_row(f"cc/r{i}") for i in range(5)]
+    picked = select_candidates(
+        _snapshot(rows),
+        needed_ids=[r.route_id for r in rows],
+        explicit=True,
+        config=RefreshConfig(max_routes=10),
+    )
+    assert len(picked) == 5

@@ -161,10 +161,11 @@ ENV_COOLDOWN_SECONDS = "VERDICT_REFRESH_COOLDOWN_SECONDS"
 
 # Qualification bounds (BOD-297/S05): one request reserves this many output
 # tokens, gets this long, and one provider may contribute at most this many
-# routes per cycle; a negative scoped cooldown defaults to this duration.
+# routes per cycle (maintenance lane only; interactive has no per-provider
+# cap); a negative scoped cooldown defaults to this duration.
 DEFAULT_OUTPUT_TOKENS = 4096
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
-DEFAULT_MAX_PER_PROVIDER = 2
+MAINTENANCE_MAX_PER_PROVIDER = 2
 DEFAULT_COOLDOWN_SECONDS = 300.0
 
 # Maintenance lane defaults: the bounded shared-owner cycle producers join.
@@ -173,6 +174,7 @@ MAINTENANCE_MAX_REQUESTS = 16
 MAINTENANCE_WALL_SECONDS = 600.0
 MAINTENANCE_CONCURRENCY = 4
 MAINTENANCE_DEBOUNCE_SECONDS = 10.0
+MAINTENANCE_OUTPUT_TOKENS = 4096
 
 HARD_MAX_OUTPUT_TOKENS = 32_768
 HARD_MAX_REQUEST_TIMEOUT_SECONDS = 120.0
@@ -203,7 +205,7 @@ class RefreshConfig:
     debounce_seconds: float = DEBOUNCE_SECONDS
     output_tokens: int = DEFAULT_OUTPUT_TOKENS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
-    max_per_provider: int = DEFAULT_MAX_PER_PROVIDER
+    max_per_provider: int | None = None
     cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
     maintenance: bool = False
 
@@ -240,7 +242,9 @@ class RefreshConfig:
                 "request_timeout_seconds must be in "
                 f"(0, {HARD_MAX_REQUEST_TIMEOUT_SECONDS}], got {self.request_timeout_seconds}"
             )
-        if not (1 <= self.max_per_provider <= HARD_MAX_ROUTES):
+        if self.max_per_provider is not None and not (
+            1 <= self.max_per_provider <= HARD_MAX_ROUTES
+        ):
             raise RefreshConfigError(
                 f"max_per_provider must be in 1..{HARD_MAX_ROUTES}, got {self.max_per_provider}"
             )
@@ -262,6 +266,14 @@ def _parse_int(env: Mapping[str, str], name: str, default: int, *, hard_max: int
     if not (1 <= value <= hard_max):
         raise RefreshConfigError(f"{name} must be in 1..{hard_max}, got {value}")
     return value
+
+
+def _parse_per_provider(
+    env: Mapping[str, str], default: int | None, *, hard_max: int
+) -> int | None:
+    if not (env.get(ENV_MAX_PER_PROVIDER) or "").strip():
+        return default
+    return _parse_int(env, ENV_MAX_PER_PROVIDER, hard_max, hard_max=hard_max)
 
 
 def _parse_float(env: Mapping[str, str], name: str, default: float, *, hard_max: float) -> float:
@@ -306,9 +318,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
             DEFAULT_REQUEST_TIMEOUT_SECONDS,
             hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
         ),
-        max_per_provider=_parse_int(
-            source, ENV_MAX_PER_PROVIDER, DEFAULT_MAX_PER_PROVIDER, hard_max=HARD_MAX_ROUTES
-        ),
+        max_per_provider=_parse_per_provider(source, None, hard_max=HARD_MAX_ROUTES),
         cooldown_seconds=_parse_float(
             source,
             ENV_COOLDOWN_SECONDS,
@@ -331,10 +341,10 @@ def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
     auto = auto_raw not in {"0", "false", "no", "off"}
     return RefreshConfig(
         max_routes=_parse_int(
-            source, ENV_MAX_ROUTES, MAINTENANCE_MAX_ROUTES, hard_max=HARD_MAX_ROUTES
+            source, ENV_MAX_ROUTES, MAINTENANCE_MAX_ROUTES, hard_max=MAINTENANCE_MAX_ROUTES
         ),
         max_requests=_parse_int(
-            source, ENV_MAX_REQUESTS, MAINTENANCE_MAX_REQUESTS, hard_max=HARD_MAX_REQUESTS
+            source, ENV_MAX_REQUESTS, MAINTENANCE_MAX_REQUESTS, hard_max=MAINTENANCE_MAX_REQUESTS
         ),
         wall_seconds=_parse_float(
             source,
@@ -348,7 +358,7 @@ def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
         auto_refresh=auto,
         debounce_seconds=MAINTENANCE_DEBOUNCE_SECONDS,
         output_tokens=_parse_int(
-            source, ENV_OUTPUT_TOKENS, DEFAULT_OUTPUT_TOKENS, hard_max=HARD_MAX_OUTPUT_TOKENS
+            source, ENV_OUTPUT_TOKENS, MAINTENANCE_OUTPUT_TOKENS, hard_max=MAINTENANCE_OUTPUT_TOKENS
         ),
         request_timeout_seconds=_parse_float(
             source,
@@ -356,8 +366,8 @@ def maintenance_from_env(env: Mapping[str, str] | None = None) -> RefreshConfig:
             DEFAULT_REQUEST_TIMEOUT_SECONDS,
             hard_max=HARD_MAX_REQUEST_TIMEOUT_SECONDS,
         ),
-        max_per_provider=_parse_int(
-            source, ENV_MAX_PER_PROVIDER, DEFAULT_MAX_PER_PROVIDER, hard_max=HARD_MAX_ROUTES
+        max_per_provider=_parse_per_provider(
+            source, MAINTENANCE_MAX_PER_PROVIDER, hard_max=MAINTENANCE_MAX_PER_PROVIDER
         ),
         cooldown_seconds=_parse_float(
             source,
@@ -395,6 +405,18 @@ class RefreshSnapshot:
     generation: str = ""
     gateway_origin: str = ""
     scope: str = ""
+
+    @property
+    def effective_scope(self) -> str:
+        """The scope debounce/join bind to; an unset scope derives from the gateway.
+
+        Two snapshots for different gateways can therefore never match, even
+        when a caller supplies no explicit scope.
+        """
+        if self.scope:
+            return self.scope
+        digest = hashlib.sha256(f"gateway_origin={self.gateway_origin}".encode()).hexdigest()
+        return f"gateway:{digest}"
 
     def by_id(self) -> dict[str, RowInput]:
         return {row.route_id: row for row in self.rows}
@@ -589,13 +611,16 @@ def select_candidates(
     # Fairness cap: one provider may contribute at most ``max_per_provider``
     # routes per cycle, so a large single-provider pool cannot crowd out the
     # rest of the plan before the route cap is even reached.
+    if config.max_per_provider is None:
+        return ordered[: config.max_routes]
     per_provider: dict[str, int] = {}
     fair: list[RowInput] = []
     for row in ordered:
-        taken = per_provider.get(row.provider, 0)
+        key = row.provider.strip().lower()
+        taken = per_provider.get(key, 0)
         if taken >= config.max_per_provider:
             continue
-        per_provider[row.provider] = taken + 1
+        per_provider[key] = taken + 1
         fair.append(row)
     return fair[: config.max_routes]
 
@@ -870,7 +895,7 @@ class RefreshCoordinator:
         # selection still perform their exact fresh checks above.
         prior = marker.read()
         if prior is not None and self._debounce_match(
-            prior, candidates, config, lock, scope=snapshot.scope
+            prior, candidates, config, lock, scope=snapshot.effective_scope
         ):
             return self._from_marker(prior, consumer, OUTCOME_DEBOUNCED, note="debounced")
 
@@ -885,7 +910,7 @@ class RefreshCoordinator:
                     on_progress=on_progress,
                     cancel=cancel,
                     job_id=job_id or self._new_job_id(),
-                    scope=snapshot.scope,
+                    scope=snapshot.effective_scope,
                 )
             finally:
                 lock.release()
@@ -898,7 +923,7 @@ class RefreshCoordinator:
                 lock=lock,
                 on_progress=on_progress,
                 cancel=cancel,
-                scope=snapshot.scope,
+                scope=snapshot.effective_scope,
             )
 
     # -- owned job ---------------------------------------------------------
@@ -1316,12 +1341,17 @@ class RefreshCoordinator:
         poll_cap = min(JOIN_POLL_CAP, max(1, math.ceil(config.wall_seconds / 0.05) + 1))
         for _poll in range(poll_cap):
             payload = marker.read()
-            if payload is not None and str(payload.get("scope") or "") != scope:
-                return self._scope_mismatch(candidates, consumer, payload)
             if payload is not None:
                 published_id = str(payload.get("job_id") or "")
                 if joined_id is not None and published_id != joined_id:
                     break  # never cancel or consume a different owner's job
+                if str(payload.get("scope") or "") != scope:
+                    if payload.get("running"):
+                        return self._scope_mismatch(candidates, consumer)
+                    # A finished marker of another scope is stale history: the
+                    # live same-scope owner may not have published yet.
+                    payload = None
+            if payload is not None:
                 if payload.get("running") and published_id:
                     joined_id = published_id
                     if cancel():
@@ -1341,6 +1371,12 @@ class RefreshCoordinator:
                 # job did NOT finish -- unfinished routes stay NOT_TESTED.
                 payload = marker.read()
                 job_running_at_exit = bool(payload is None or payload.get("running", True))
+                if (
+                    joined_id is not None
+                    and payload is not None
+                    and str(payload.get("job_id") or "") != joined_id
+                ):
+                    job_running_at_exit = True  # a foreign marker never finishes our job
                 break
             if self.monotonic() >= deadline:
                 job_running_at_exit = True  # deadline hit a still-running job
@@ -1348,11 +1384,11 @@ class RefreshCoordinator:
             self.sleep(min(0.05, max(0.0, deadline - self.monotonic())))
 
         payload = marker.read() or {}
-        if str(payload.get("scope") or "") != scope:
-            # A finished marker from a different scope is never consumed.
-            return self._scope_mismatch(candidates, consumer, payload)
         if joined_id is not None and str(payload.get("job_id") or "") != joined_id:
             payload = {"job_id": joined_id, "running": True}
+        elif str(payload.get("scope") or "") != scope:
+            # A marker from a different scope is never consumed.
+            return self._scope_mismatch(candidates, consumer)
         if not payload.get("running", True) and not lock.live():
             job_running_at_exit = False
         job_id = str(payload.get("job_id") or "joined")
@@ -1566,20 +1602,14 @@ class RefreshCoordinator:
             note=note,
         )
 
-    def _scope_mismatch(
-        self, candidates: Sequence[RowInput], consumer: str, payload: Mapping[str, Any]
-    ) -> RefreshOutcome:
+    def _scope_mismatch(self, candidates: Sequence[RowInput], consumer: str) -> RefreshOutcome:
         """Bounded fail-closed answer for a caller whose stable scope differs.
 
         The caller made no calls and reuses none of the other scope's outcomes
         or proofs; every candidate stays untested under this scope.
         """
         return self._empty(
-            OUTCOME_LOCK_TIMEOUT,
-            consumer,
-            str(payload.get("job_id") or "scope_mismatch"),
-            candidates,
-            REASON_LOCK_TIMEOUT,
+            OUTCOME_LOCK_TIMEOUT, consumer, "scope_mismatch", candidates, REASON_LOCK_TIMEOUT
         )
 
     def _empty(
