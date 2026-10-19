@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -1043,10 +1044,13 @@ def _write_one_attempt_record(
     tokens_in: int | None,
     tokens_out: int | None,
     story_id: str | None,
+    lineage: Mapping[str, Any],
 ) -> None:
     """Build and write one executor attempt record; log and swallow write failures."""
     try:
         record = build_attempt_record(
+            **lineage,
+            record_kind="terminal",
             task_kind="autodev_unit",
             harness="verdict-autodev-executor",
             model=model,
@@ -1080,17 +1084,46 @@ def _classify_repair_first_error(first_error: str) -> str:
     return "spec_violation"
 
 
-def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: str | None) -> None:
+def _executor_lineage(
+    run_id: str, decision: Any, executor: PatchExecutor, unit_id: str, attempt: int
+) -> dict[str, Any]:
+    """BOD-437 attempt key and sent settings for one executor turn."""
+    return {
+        "run_id": run_id,
+        "decision_id": decision.decision_digest,
+        "node_id": unit_id,
+        "attempt_id": str(attempt),
+        "effective_parameters": {
+            "temperature": executor.config.temperature,
+            "max_tokens": executor.config.max_tokens,
+        },
+    }
+
+
+def _record_executor_attempt(
+    unit_id: str,
+    outcome: UnitOutcome,
+    *,
+    story_id: str | None,
+    run_id: str,
+    decision: Any,
+    executor: PatchExecutor,
+    first_attempt: int,
+) -> int:
     """Write BOD-353 attempt record(s) for an autodev executor turn.
 
     A unit's own executor turn may itself contain a repair sub-turn
     (``outcome.repair_attempt``): the first (patch-shape-rejected) turn and
     the repair turn are each one model attempt, so each gets its own record.
     A write failure is logged and never fails the run: the receipt already
-    holds the ground truth.
+    holds the ground truth. Returns the next attempt number for this unit.
     """
     served = outcome.served_model or outcome.model
     repair = outcome.repair_attempt
+
+    def lineage(attempt: int) -> dict[str, Any]:
+        return _executor_lineage(run_id, decision, executor, unit_id, attempt)
+
     if repair is None:
         outcome_label = "accepted" if outcome.verified else "failed"
         _write_one_attempt_record(
@@ -1102,8 +1135,9 @@ def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: st
             tokens_in=outcome.usage.prompt_tokens or None,
             tokens_out=outcome.usage.completion_tokens or None,
             story_id=story_id,
+            lineage=lineage(first_attempt),
         )
-        return
+        return first_attempt + 1
 
     # The primary turn was rejected for a patch-shape reason and got a repair turn.
     first_error = str(repair.get("first_error") or "")
@@ -1116,6 +1150,7 @@ def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: st
         tokens_in=None,
         tokens_out=None,
         story_id=story_id,
+        lineage=lineage(first_attempt),
     )
     # The repair turn's own outcome is what the unit landed on: the patch may
     # have applied (``repair["repaired"]``) and still fail verification, so the
@@ -1131,11 +1166,18 @@ def _record_executor_attempt(unit_id: str, outcome: UnitOutcome, *, story_id: st
         tokens_in=outcome.usage.prompt_tokens or None,
         tokens_out=outcome.usage.completion_tokens or None,
         story_id=story_id,
+        lineage=lineage(first_attempt + 1),
     )
+    return first_attempt + 2
 
 
 def _record_planner_attempts(
-    objective: str, attempts: Sequence[Mapping[str, Any]], *, story_id: str | None
+    objective: str,
+    attempts: Sequence[Mapping[str, Any]],
+    *,
+    story_id: str | None,
+    run_id: str,
+    decision: Any,
 ) -> None:
     """Write one BOD-353 attempt record per planner (decomposition) call.
 
@@ -1144,13 +1186,18 @@ def _record_planner_attempts(
     decomposition to the next model or try. A write failure is logged and
     never fails the run.
     """
-    for attempt in attempts:
+    for number, attempt in enumerate(attempts, 1):
         model = str(attempt.get("model") or "")
         if not model:
             continue
         error = str(attempt.get("error") or "")
         try:
             record = build_attempt_record(
+                run_id=run_id,
+                decision_id=decision.decision_digest,
+                node_id="planner",
+                attempt_id=str(number),
+                record_kind="terminal",
                 task_kind="autodev_plan",
                 harness="verdict-autodev-planner",
                 model=model,
@@ -2566,6 +2613,8 @@ def run_autodev(
     repo = Path(repo_path).resolve()
     if not (repo / ".git").exists():
         raise AutodevError(f"not a git repository: {repo}")
+    # BOD-437: one id joins this run's attempt-ledger rows to its outcome receipts.
+    attempt_run_id = f"autodev-{uuid.uuid4().hex}"
 
     decomposer = decomposer or Decomposer(
         DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
@@ -2576,7 +2625,13 @@ def run_autodev(
         try:
             plan = decomposer.decompose(objective, repo_root=repo, evidence=evidence)
         except DecompositionError as exc:
-            _record_planner_attempts(objective, exc.attempts, story_id=_story_id_from(objective))
+            _record_planner_attempts(
+                objective,
+                exc.attempts,
+                story_id=_story_id_from(objective),
+                run_id=attempt_run_id,
+                decision=decision,
+            )
             raise
 
     executor = executor or PatchExecutor(
@@ -2614,7 +2669,13 @@ def run_autodev(
 
         # Drop entries matching the selected model
         retry_ladder = tuple(r for r in retry_ladder if str(r["model"]) != executor.config.model)
-    _record_planner_attempts(objective, plan.attempts, story_id=_story_id_from(objective))
+    _record_planner_attempts(
+        objective,
+        plan.attempts,
+        story_id=_story_id_from(objective),
+        run_id=attempt_run_id,
+        decision=decision,
+    )
 
     outcomes: list[UnitOutcome] = []
     receipt_ids: list[str] = []
@@ -2627,8 +2688,17 @@ def run_autodev(
         outcome, executor_failed = _run_unit_once(
             unit, repo, executor, mechanical=mechanical, runner=runner
         )
+        next_attempt = 1
         if outcome.tier == "model":
-            _record_executor_attempt(unit.unit_id, outcome, story_id=_story_id_from(objective))
+            next_attempt = _record_executor_attempt(
+                unit.unit_id,
+                outcome,
+                story_id=_story_id_from(objective),
+                run_id=attempt_run_id,
+                decision=decision,
+                executor=executor,
+                first_attempt=next_attempt,
+            )
         retry_executor: PatchExecutor | None = None
         retry_decision: Any = None
         if executor_failed and retry_ladder:
@@ -2659,7 +2729,13 @@ def run_autodev(
                 unit, repo, retry_executor, mechanical=False, runner=runner
             )
             _record_executor_attempt(
-                unit.unit_id, retry_outcome, story_id=_story_id_from(objective)
+                unit.unit_id,
+                retry_outcome,
+                story_id=_story_id_from(objective),
+                run_id=attempt_run_id,
+                decision=retry_decision,
+                executor=retry_executor,
+                first_attempt=next_attempt,
             )
             retry_note = {
                 "failed_model": executor.config.model,
@@ -2686,6 +2762,7 @@ def run_autodev(
             "planner_attempts": list(plan.attempts),
             "strategy_authority": "verdict.execution_path.optimize_execution_path",
             "execution_path_decision_digest": decision.decision_digest,
+            "attempt_run_id": attempt_run_id,
             "execution_path_trajectory_id": decision.trajectory_id,
             "execution_path_task_slice_id": decision.task_slice_id,
             "execution_path_strategy": decision.selected_strategy,

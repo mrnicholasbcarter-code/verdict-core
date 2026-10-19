@@ -27,7 +27,14 @@ from pathlib import Path
 from typing import Any
 
 from verdict.candidate_pool import OutcomeObservation, ShortlistEntry, _fuse_score
-from verdict.orchestration.receipt import EVENTS_FILE, RECEIPT_FILE, verify_run_receipt
+from verdict.orchestration.receipt import (
+    EVENTS_FILE,
+    RECEIPT_FILE,
+    run_attempt_records,
+    verify_run_receipt,
+)
+from verdict.outcome_records import attempt_records_path
+from verdict.paths import verdict_home
 
 METRIC_NAME = "implement_validated_accept_reject_v1"
 WOULD_RANK_SCOPE = "live_shortlist_only"
@@ -475,6 +482,92 @@ def load_shadow_rows_from_run(
     return tuple(rows), None
 
 
+@dataclass(frozen=True)
+class CheckedAttempt:
+    """One ledger checker_result that matches the verified run it names (BOD-437)."""
+
+    run_id: str
+    node_id: str
+    attempt_id: str
+    model: str
+    task_family: str | None
+    quality_credit: float
+    checked_at: datetime
+    checker_digest: str
+
+
+def load_checked_attempts(
+    run_dir: Path, *, store_dir: Path | str, as_of: datetime
+) -> tuple[tuple[CheckedAttempt, ...], tuple[dict[str, str], ...]]:
+    """Join the ledger's checker_result rows for one run, verified against its bundle.
+
+    The run bundle is only read. A row joins only when the receipt verifies,
+    the row's ``checker_digest`` equals the receipt ``events_digest``, the
+    attempt key exists in the run, the whole row equals the checker row
+    recomputed from the verified events, the verified check time is not after
+    ``as_of`` and it is the first row for that key. Everything else is returned as a rejection with a reason and
+    never becomes learning input.
+    """
+    cutoff = _utc(as_of)
+    run_dir = Path(run_dir)
+    if verify_run_receipt(run_dir):
+        return (), ({"run": str(run_dir), "reason": "verify_failed"},)
+    receipt = _load_json(run_dir / RECEIPT_FILE)
+    if receipt is None:
+        return (), ({"run": str(run_dir), "reason": "receipt_unreadable"},)
+    run_id = str(receipt.get("run_id") or "")
+    digest = str(receipt.get("events_digest") or "")
+    expected = {
+        (r.node_id, r.attempt_id): r
+        for r in run_attempt_records(run_dir, receipt)
+        if r.record_kind == "checker_result"
+    }
+    joined: dict[tuple[str | None, str | None], CheckedAttempt] = {}
+    rejected: list[dict[str, str]] = []
+    path = attempt_records_path(store_dir)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("record_kind") != "checker_result":
+            continue
+        if row.get("run_id") != run_id:
+            continue
+        key = (row.get("node_id"), row.get("attempt_id"))
+        source = f"{run_id}:{key[0]}:{key[1]}"
+        want = expected.get((str(key[0]), str(key[1])))
+        # Time comes from the verified events, never from the ledger row itself.
+        checked_at = _parse_ts(want.ts) if want is not None else None
+        reason = None
+        if row.get("checker_digest") != digest:
+            reason = "checker_digest_mismatch"
+        elif want is None:
+            reason = "scope_mismatch"
+        elif row != want.to_dict():
+            reason = "tampered"
+        elif checked_at is None or checked_at > cutoff:
+            reason = "future"
+        elif key in joined:
+            reason = "duplicate"
+        if reason is not None or want is None or checked_at is None:
+            rejected.append({"source": source, "reason": reason or "invalid"})
+            continue
+        assert want.quality_credit is not None
+        joined[key] = CheckedAttempt(
+            run_id=run_id,
+            node_id=want.node_id or "",
+            attempt_id=want.attempt_id or "",
+            model=want.model,
+            task_family=want.task_family,
+            quality_credit=want.quality_credit,
+            checked_at=checked_at,
+            checker_digest=digest,
+        )
+    return tuple(joined.values()), tuple(rejected)
+
+
 def _metric_observations(
     rows: Sequence[ShadowAttemptRow], *, task_family: str
 ) -> tuple[OutcomeObservation, ...]:
@@ -627,6 +720,8 @@ def build_outcome_shadow(
     source_run_ids: list[str] = []
     source_digests: list[str] = []
     opened: list[str] = []
+    checker_joined = 0
+    checker_rejected: list[dict[str, str]] = []
 
     for root in limited:
         opened.append(str(root))
@@ -644,6 +739,9 @@ def build_outcome_shadow(
             source_run_ids.append(rows[0].run_id)
             source_digests.append(rows[0].events_digest)
             all_rows.extend(rows)
+            joined, refused = load_checked_attempts(root, store_dir=verdict_home(), as_of=as_of_dt)
+            checker_joined += len(joined)
+            checker_rejected.extend(refused)
 
     # Dedupe across roots
     deduped: dict[tuple[str, str, int, str], ShadowAttemptRow] = {}
@@ -755,6 +853,8 @@ def build_outcome_shadow(
         "would_rank": would,
         "rank_delta": rank_delta,
         "shadow_skip_reasons": skip_reasons,
+        # BOD-437: append-only checker rows joined against these verified runs.
+        "checker_join": {"joined": checker_joined, "rejected": checker_rejected},
     }
 
 
@@ -819,11 +919,13 @@ __all__ = [
     "SINK_FILENAME",
     "SINK_SCHEMA",
     "WOULD_RANK_SCOPE",
+    "CheckedAttempt",
     "OutcomeShadowNotConfiguredError",
     "ShadowAttemptRow",
     "append_outcome_shadow_record",
     "attach_outcome_shadow",
     "build_outcome_shadow",
+    "load_checked_attempts",
     "load_shadow_rows_from_run",
     "resolve_outcome_shadow_roots",
     "resolve_outcome_shadow_sink",
