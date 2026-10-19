@@ -62,7 +62,7 @@ from verdict.orchestration.receipt import (
     producer_from_started,
     write_run_receipt,
 )
-from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+from verdict.orchestration.runtime import DagRuntime, DispatchAuthority, RuntimePolicy
 
 # OpenSpec spec_changed marker
 SPEC_CHANGED = "spec_changed"
@@ -757,6 +757,7 @@ async def run_golden_path(
     openspec_change_dir: Path | None = None,
     decision_signal_provider: DecisionSignalProvider | None = None,
     mode: str = "",
+    dispatch_authority: DispatchAuthority | None = None,
 ) -> GoldenRunResult:
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
@@ -1142,6 +1143,7 @@ async def run_golden_path(
         reviewer=reviewer,
         policy=policy,
         inflight=inflight,
+        dispatch_authority=dispatch_authority,
     )
     # Attempts dispatched by an earlier controller life keep their numbers; the
     # next attempt continues after them so the receipt never merges two lives.

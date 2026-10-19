@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import inspect
+import json
 import os
 import secrets
 import shlex
@@ -27,11 +29,12 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from verdict.context_pack import ContextPlan, estimate_tokens
+from verdict.models import AdmissionProof
 from verdict.orchestration.candidate_builder import (
     MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
 )
@@ -70,6 +73,13 @@ from verdict.orchestration.controller_operations import (
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
+from verdict.orchestration.health_cache import (
+    PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    DispatchPermit,
+    DispatchScope,
+    HealthCache,
+    default_cache_path,
+)
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
 from verdict.orchestration.salvage import (
@@ -80,10 +90,13 @@ from verdict.orchestration.salvage import (
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import WorkerPrompt
+from verdict.relay import admission_proof, dispatch_scope
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
 _sleep = asyncio.sleep
+# BOD-433: failures that revoke the permit scope (credential denial, wrong model served).
+_REVOKING_CATEGORIES = frozenset({"authentication", "permission", "model_mismatch"})
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
 
@@ -144,9 +157,57 @@ class RuntimePolicy:
     # Repo quality gates belong to the integration runtime, not the planner.
     run_repo_gates: bool = True
     # BOD-433 authority mode: every worker send needs a minted dispatch permit.
-    # No route proof or gateway origin reaches DagRuntime yet (phase 2c), so
-    # when set, every send is denied. Off for compat and test runtimes.
+    # Without a DispatchAuthority to prove routes, every send is denied.
     require_dispatch_permit: bool = False
+
+
+@dataclass(frozen=True)
+class DispatchAuthority:
+    """Where DagRuntime gets route proofs for BOD-433 dispatch permits.
+
+    ``gateway_origin`` is the gateway the run's workers are sent through.
+    ``confirm(route_ids, now)`` returns a read-only passport confirmation in the
+    shape ``relay.admission_proof`` consumes.
+    """
+
+    gateway_origin: str
+    confirm: Callable[[Sequence[str], datetime], dict[str, Any]]
+
+
+def node_profile_digest(node: WorkNode) -> str:
+    """SHA-256 of the fields that define a node's work; the permit scope's profile digest.
+
+    The prompt is excluded: it is hydrated after binding and changes with retry feedback.
+    """
+    body = {
+        "objective": node.objective,
+        "kind": node.kind.value,
+        "acceptance": list(node.acceptance),
+        "verification_command": list(node.verification_command),
+        "owned_files": list(node.owned_files),
+        "required_capabilities": sorted(node.required_capabilities),
+        "min_context_tokens": node.min_context_tokens,
+        "coding": node.coding,
+        "reasoning": node.reasoning,
+        "risk": node.risk,
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _revocation_epoch(scope: DispatchScope) -> int:
+    return HealthCache(default_cache_path()).revocation_epoch(scope)
+
+
+def permit_attempt_id(run_dir: Path, node_id: str, attempt: int) -> str:
+    """Permit attempt id for one node attempt of one run directory.
+
+    Permit attempt ids live in one global table. Run ids repeat (``--run-id``,
+    resume, several runs roots), so the id carries a digest of the resolved run
+    directory: stable when the same run resumes, distinct for any other run.
+    """
+    digest = hashlib.sha256(str(run_dir.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"{run_dir.name}:{digest}:{node_id}-a{attempt}"
 
 
 @dataclass
@@ -171,6 +232,10 @@ class NodeRun:
     rehydrated_routes: set[str] = field(default_factory=set)
     excluded_pools: set[str] = field(default_factory=set)
     selected_context_window: int | None = None
+    # BOD-433: proof for the bound route; committed to a permit just before the send.
+    dispatch_proof: AdmissionProof | None = None
+    # BOD-433: the permit the current attempt was sent under (None = no send yet).
+    permit: DispatchPermit | None = None
 
 
 @dataclass(frozen=True)
@@ -305,8 +370,10 @@ class DagRuntime:
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         base_ref: str = "HEAD",
         inflight: dict[str, str] | None = None,
+        dispatch_authority: DispatchAuthority | None = None,
     ) -> None:
         self.repo, self.run_dir, self.graph = repo, run_dir, graph
+        self.dispatch_authority = dispatch_authority
         self.selector, self.executor, self.classifier = selector, executor, classifier
         self.events, self.prompt_for, self.reviewer = events, prompt_for, reviewer
         self.policy, self.runner, self.now = policy, runner, now
@@ -796,6 +863,36 @@ class DagRuntime:
                     )
                     return
                 continue
+            if self.dispatch_authority is not None:
+                # Reads the passport store and health cache: keep it off the loop (BOD-341).
+                run.dispatch_proof = await asyncio.to_thread(
+                    self._bind_proof, run.node, choice.route_id
+                )
+                if run.dispatch_proof is None:
+                    self.events.emit(
+                        "eligibility",
+                        node_id,
+                        **counts,
+                        **_evidence,
+                        selected=None,
+                        revoked=choice.route_id,
+                        reason="pre-dispatch recheck: no_fresh_passport",
+                    )
+                    tried.add(choice.route_id)
+                    revocations += 1
+                    if revocations > self.policy.max_attempts_per_node:
+                        run.reason = "pre-dispatch revalidation kept revoking selections"
+                        self._set(run, NodeState.BLOCKED, reason=run.reason)
+                        self.events.emit(
+                            "failure",
+                            node_id,
+                            category="pool_exhausted",
+                            action="FAIL_CLOSED",
+                            route_id=choice.route_id,
+                            evidence=run.reason,
+                        )
+                        return
+                    continue
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id
@@ -1163,6 +1260,7 @@ class DagRuntime:
     async def _attempt(self, run: NodeRun, failures: list[FailureClassification]) -> bool | None:
         """Run one attempt. ``None`` means revoked before dispatch (nothing ran)."""
         node = run.node
+        run.permit = None
         worktree = self.run_dir / "worktrees" / f"{node.node_id}-a{run.attempt}"
         branch = f"verdict/run-{self.run_dir.name}/{node.node_id}-a{run.attempt}"
         async with self._slots:
@@ -1320,7 +1418,21 @@ class DagRuntime:
                     self._set(run, NodeState.BLOCKED, reason=reason)
                     await self.git.remove_worktree(worktree)
                     return True  # attempt settled locally; do not reselect
-                if self.policy.require_dispatch_permit:
+                if self.dispatch_authority is not None:
+                    run.permit = await self._commit_permit(run)
+                    if run.permit is None:
+                        reason = "permit_denied: proof revoked or expired before the send"
+                        self._record_failure(
+                            run,
+                            WorkerTerminal(ok=False, error=reason),
+                            failures,
+                            failure=FailureClassification(
+                                "permit_denied", "REROUTE", 0, "none", reason
+                            ),
+                        )
+                        await self.git.remove_worktree(worktree)
+                        return False  # nothing was sent; reselect another route
+                elif self.policy.require_dispatch_permit:
                     reason = "dispatch_denied: no admission proof for the bound route"
                     terminal = WorkerTerminal(ok=False, error=reason)
                     self._record_failure(
@@ -1384,6 +1496,21 @@ class DagRuntime:
                     )
                 if not terminal.ok or not terminal.output.strip():
                     return await self._fail(run, terminal, failures, worktree)
+                if run.permit is not None and (
+                    await asyncio.to_thread(_revocation_epoch, run.permit.scope) != run.permit.epoch
+                ):
+                    # The scope was revoked while this send was in flight: the
+                    # output is discarded, never salvaged; the retry needs a new permit.
+                    reason = "permit_revoked_after_commit: scope revoked during the send"
+                    self._record_failure(
+                        run,
+                        terminal,
+                        failures,
+                        failure=FailureClassification(
+                            "permit_revoked_after_commit", "REROUTE", 0, "none", reason
+                        ),
+                    )
+                    return False
                 self._set(run, NodeState.TERMINAL_SUCCESS)
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
@@ -1408,6 +1535,72 @@ class DagRuntime:
             finally:
                 if worktree.exists():
                     await self.git.remove_worktree(worktree)
+
+    def _bind_proof(self, node: WorkNode, route_id: str) -> AdmissionProof | None:
+        """Fresh passport proof for the exact route, or None when there is none."""
+        assert self.dispatch_authority is not None
+        provider = route_provider(route_id)
+        scope = dispatch_scope(
+            gateway_origin=self.dispatch_authority.gateway_origin,
+            provider=provider,
+            model=route_id,
+            route_id=route_id,
+            profile_digest=node_profile_digest(node),
+        )
+        now = self.now()
+        confirmation = self.dispatch_authority.confirm([route_id], now)
+        return admission_proof(
+            confirmation,
+            route_id=route_id,
+            scope=scope,
+            authorization_digest=str(confirmation.get("receipt_id", "")),
+            provider=provider,
+            model=route_id,
+            now=now,
+        )
+
+    async def _commit_permit(self, run: NodeRun) -> DispatchPermit | None:
+        """Durably consume this attempt's unique id as MAYBE_SENT, or deny (None).
+
+        The id is namespaced by run: permit attempt ids are one global table and
+        node ids repeat across runs.
+        """
+        proof = run.dispatch_proof
+        if proof is None or proof.route_id != run.route_id:
+            return None
+        attempt_id = permit_attempt_id(self.run_dir, run.node.node_id, run.attempt)
+        deadline = min(
+            proof.expires_at,
+            proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
+        )
+
+        def commit() -> DispatchPermit | None:
+            cache = HealthCache(default_cache_path())
+            # Read the clock in the thread, at commit time: a late thread must not
+            # commit an already expired proof under an earlier timestamp.
+            return cache.commit_dispatch(
+                proof.scope,
+                route_id=proof.route_id,
+                attempt_id=attempt_id,
+                authorization_digest=proof.authorization_digest,
+                expected_epoch=proof.epoch,
+                proof_deadline=deadline,
+                now=self.now(),
+            )
+
+        permit = await asyncio.to_thread(commit)
+        if permit is not None:
+            self.events.emit(
+                "controller",
+                run.node.node_id,
+                phase="dispatch_permit",
+                route_id=permit.route_id,
+                attempt_id=attempt_id,
+                permit_id=permit.permit_id,
+                epoch=permit.epoch,
+                gateway_origin=permit.scope.gateway_origin,
+            )
+        return permit
 
     def _save_attempt(
         self, node_id: str, attempt: int, route_id: str, terminal: WorkerTerminal
@@ -1486,6 +1679,7 @@ class DagRuntime:
             self._set(run, NodeState.REJECTED, reason=failure.category)
         else:
             self._set(run, NodeState.TERMINAL_FAILURE, reason=failure.category)
+        permit = run.permit
         self.events.emit(
             "failure",
             run.node.node_id,
@@ -1495,6 +1689,11 @@ class DagRuntime:
             evidence=failure.evidence[:300],
             fault_injected=terminal.executor_kind == "fault-injected",
             attempt=run.attempt,
+            **(
+                {"permit_id": permit.permit_id, "permit_epoch": permit.epoch}
+                if permit is not None
+                else {}
+            ),
         )
         feedback = getattr(self.selector, "record_session_failure", None)
         if callable(feedback):
@@ -1558,6 +1757,19 @@ class DagRuntime:
     ) -> bool:
         try:
             self._record_failure(run, terminal, failures, validated=validated)
+            permit = run.permit
+            if permit is not None and failures[-1].category in _REVOKING_CATEGORIES:
+                event_id = f"{self.run_dir.name}:{permit.permit_id}:{failures[-1].category}"
+                observed_at = self.now()
+                await asyncio.to_thread(
+                    lambda: HealthCache(default_cache_path()).record_revocation(
+                        permit.scope,
+                        route_id=permit.route_id,
+                        event_id=event_id,
+                        source_revision=None,
+                        observed_at=observed_at,
+                    )
+                )
             # BOD-308: salvage owned partial work before discarding the worktree.
             if (
                 run.node.owned_files
