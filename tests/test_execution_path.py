@@ -2266,3 +2266,46 @@ def test_ep_escalate_strategy_requires_escalation_cost_term() -> None:
         "incomplete_expected_cost_missing" in r.reason and r.candidate_id == "cheap-1"
         for r in decision.rejected
     )
+
+
+def test_missing_pool_receipt_fails_closed_never_price_ranking() -> None:
+    """S02/A25 H2: without a trusted pool receipt the optimizer must not rank by price."""
+    cheap = _route("cheap-1")
+    paid = _route("paid-1", model="paid-model", provider="provider-b", tier=3)
+    cheap_plan = _plan(candidate_id="cheap-1", intrinsic=True)
+    paid_plan = _plan(candidate_id="paid-1", intrinsic=True, digest="sha256:paid-plan")
+    offers = (
+        _offer(
+            strategy="direct_cheap",
+            route=cheap,
+            plan=cheap_plan,
+            expected=_cost(
+                "direct_cheap:cheap-1",
+                assistance=cheap_plan.assistance_cost,
+                execution_tokens=10_000,
+                is_free=True,
+            ),
+            is_cheap=True,
+        ),
+        _offer(
+            strategy="direct_paid",
+            route=paid,
+            plan=paid_plan,
+            expected=_cost(
+                "direct_paid:paid-1", assistance=paid_plan.assistance_cost, execution_tokens=50_000
+            ),
+            is_paid=True,
+        ),
+    )
+    decision = optimize_execution_path(
+        ExecutionPathRequest(task_slice=_slice(), trajectory_id="traj-104", offers=offers, now=NOW)
+    )
+    assert decision.selected_strategy == "blocked"
+    assert decision.selected_candidate_id is None
+    assert decision.selected_route is None
+    assert decision.why_selected == "blocked:missing_trusted_live_ranking"
+    assert decision.strategy_selection_reason == "missing_trusted_live_ranking"
+    assert "missing_trusted_live_ranking" in decision.unknowns
+    assert {
+        r.candidate_id for r in decision.rejected if r.reason == "missing_trusted_live_ranking"
+    } == {"cheap-1", "paid-1"}

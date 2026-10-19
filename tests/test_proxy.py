@@ -1264,3 +1264,37 @@ def test_models_endpoint_forwards_upstream_catalog(monkeypatch) -> None:
             "model_family": None,
         },
     }
+
+
+def test_relay_rejects_raw_decision_flag_before_any_upstream_send(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "raw_decision": True,
+            },
+        )
+    assert response.status_code == 400
+    assert transport.requests == []
+
+
+def test_relay_never_forwards_null_reserved_decision_fields_upstream(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "raw_decision": None,
+                "routing_decision": None,
+            },
+        )
+    assert response.status_code == 200
+    assert transport.requests, "expected exactly one upstream send"
+    body = transport.requests[0]["body"]
+    assert "raw_decision" not in body
+    assert "routing_decision" not in body
