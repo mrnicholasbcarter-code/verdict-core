@@ -851,3 +851,93 @@ def test_load_verified_outcome_observations_bounded_and_omissions(
         [verified_root], task_family=task_family, as_of=before_cutoff
     )
     assert early_history.observations == ()
+
+
+def test_apply_candidate_pool_wires_verified_outcomes_into_demotion_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-438 S10 slice 10.3: a verified checker history demotes a route inside
+    the admitted set via the intelligence service's own clock and roots, without
+    dropping it from admission."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    store_home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(store_home))
+    as_of = datetime(2026, 10, 19, 6, 0, 0, tzinfo=timezone.utc)
+
+    # Route ids are chosen so that WITHOUT demotion, ties sort weak before mid
+    # (alphabetical route_id tie-break): "a-weak" < "z-mid". Only real
+    # demotion wiring can flip this to [mid, weak].
+    weak = "a-weak/history-wiring"
+    mid = "z-mid/no-history-wiring"
+
+    def _run(run_id: str, *, route_id: str, node_pass: bool) -> Path:
+        run_dir = tmp_path / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        graph = WorkGraph(
+            goal="implement the billing export wiring check",
+            nodes=(
+                WorkNode(
+                    "a", "route work", owned_files=("a.py",), verification_command=("pytest",)
+                ),
+            ),
+        )
+        (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
+        log = EventLog(run_dir / "events.jsonl", clock=lambda: as_of - timedelta(hours=1))
+        log.emit("run_started", run_id=run_id, goal=graph.goal)
+        log.emit("dispatch", node_id="a", attempt=1, route_id=route_id)
+        log.emit(
+            "terminal",
+            node_id="a",
+            attempt=1,
+            ok=True,
+            duration_seconds=3.0,
+            reported_model=route_id,
+        )
+        log.emit(
+            "verify", node_id="a", ok=node_pass, command="pytest", exit_code=0 if node_pass else 1
+        )
+        log.emit(
+            "node_state", node_id="a", attempt=1, state="VALIDATED" if node_pass else "REJECTED"
+        )
+        log.emit("run_finished", outcome="COMPLETE" if node_pass else "BLOCKED", reason="")
+        write_run_receipt(run_dir)
+        return run_dir
+
+    roots = [_run(f"run-weak-{i}", route_id=weak, node_pass=False) for i in range(3)]
+    goal = json.loads((roots[0] / "receipt.json").read_text())["goal"]
+    profile = _profile_for_goal(goal)
+    store = _store((weak, mid))
+
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        outcome_shadow_roots=roots,
+        admit_now=as_of,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+
+    base_receipt = _admit_receipt((weak, mid))
+    out, pool = svc._apply_candidate_pool(
+        base_receipt, profile=profile, metadata=store, identity_map=None
+    )
+
+    # Both routes stay admitted (demotion never drops a member).
+    assert set(out.admitted) == {weak, mid}
+    ids = [e.route_id for e in pool.shortlist]
+    assert set(ids) == {weak, mid}
+    # weak has 3 verified failures (score<0.4, n>=3): demoted after mid.
+    assert ids == [mid, weak]

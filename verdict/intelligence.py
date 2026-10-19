@@ -16,6 +16,7 @@ from verdict.candidate_pool import (
     HEALTH_OK,
     CandidatePoolError,
     CandidatePoolReceipt,
+    OutcomeObservation,
     RouteEvidence,
     RouteHealth,
     build_candidate_pool,
@@ -59,6 +60,7 @@ from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
+    load_verified_outcome_observations,
     resolve_outcome_shadow_roots,
     resolve_outcome_shadow_sink,
 )
@@ -913,6 +915,16 @@ class IntelligenceService:
             if passport is None:
                 continue
             evidence[model_id] = RouteEvidence(latency_ms=passport.latency_p95)
+        as_of = self.admit_now or datetime.now(timezone.utc)
+        # BOD-438: verified checker history feeds task-specific demotion inside
+        # build_candidate_pool (order-only, never membership). Loading never
+        # blocks admission: a failure here means no verified history, not a
+        # degraded admit.
+        outcomes: tuple[OutcomeObservation, ...] = ()
+        with contextlib.suppress(Exception):
+            outcomes = load_verified_outcome_observations(
+                self.outcome_shadow_roots, task_family=profile.task_family, as_of=as_of
+            ).observations
         pool = build_candidate_pool(
             advertised,
             task_profile=profile,
@@ -921,6 +933,8 @@ class IntelligenceService:
             health={model_id: RouteHealth(state=HEALTH_OK) for model_id in advertised},
             evidence=evidence,
             policy_allowed=policy_allowed,
+            outcomes=outcomes,
+            as_of=as_of,
             top_k=self.candidate_top_k,
         )
         hard_admitted = set(receipt.admitted)

@@ -17,7 +17,7 @@ import json
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -399,6 +399,10 @@ class _Survivor:
     eval_prior_provenance: dict[str, str] | None = None
     eval_prior_metadata_id: str | None = None
     eval_prior_kind: str = "absent"
+    # BOD-438: task-specific demotion from verified history. Order-only — a
+    # demoted survivor stays qualified and a pool member, _portfolio_shortlist
+    # only sorts it after non-demoted survivors.
+    demoted: bool = False
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -565,6 +569,7 @@ def build_candidate_pool(
     evidence: Mapping[str, RouteEvidence] | None = None,
     policy_allowed: Collection[str] | None = None,
     outcomes: Sequence[OutcomeObservation] | None = None,
+    as_of: datetime | None = None,
     top_k: int = 8,
     probe_budget: ProbeBudget | None = None,
     probe_fn: ProbeFn | None = None,
@@ -676,7 +681,7 @@ def build_candidate_pool(
     # Fuse evidence + score only among hard-eligible survivors.
     for survivor in survivors:
         features = _score_features(
-            survivor, task_fingerprint=task_fingerprint, outcomes=outcome_list
+            survivor, task_fingerprint=task_fingerprint, outcomes=outcome_list, as_of=as_of
         )
         survivor.features = features
         survivor.score = _fuse_score(features)
@@ -820,6 +825,7 @@ def _score_features(
     *,
     task_fingerprint: TaskFingerprint,
     outcomes: Sequence[OutcomeObservation],
+    as_of: datetime | None = None,
 ) -> dict[str, float]:
     features: dict[str, float] = {}
     ev = survivor.evidence
@@ -836,7 +842,22 @@ def _score_features(
             )
         )
     ]
-    if matched:
+    verified = [o for o in matched if o.quality_credit is not None and o.observed_at is not None]
+    if verified:
+        # BOD-438: a verified checker history smooths and may demote — never a
+        # raw accept rate once independently-checked observations exist.
+        from verdict.strength_profiles import score_task_history
+
+        history = score_task_history(
+            matched,
+            route_id=survivor.route_id,
+            task_family=task_fingerprint.task_family,
+            as_of=as_of or datetime.now(timezone.utc),
+        )
+        features["task_similarity"] = history.score
+        features["outcome_n"] = float(history.observed_n)
+        survivor.demoted = history.demoted
+    elif matched:
         successes = sum(1 for o in matched if o.success)
         features["task_similarity"] = successes / len(matched)
         features["outcome_n"] = float(len(matched))
@@ -1058,7 +1079,9 @@ def _portfolio_shortlist(
 
     # ``by_meta`` removes only proven aliases that resolve to the same Core
     # identity. Do not collapse same-leaf IDs across providers: provider
-    # diversity must remain available to the portfolio pass.
+    # diversity must remain available to the portfolio pass. Membership
+    # selection below (top-k and provider-diversity fallback) is score-only —
+    # BOD-438 demotion must never change which routes are admitted.
     ranked = sorted(by_meta.values(), key=lambda s: (-s.score, s.route_id))
 
     selected: list[_Survivor] = []
@@ -1099,6 +1122,12 @@ def _portfolio_shortlist(
                     break
         # Re-sort after possible swap.
         selected = sorted(selected, key=lambda s: (-s.score, s.route_id))[:top_k]
+
+    # BOD-438: order-only task-specific demotion. Membership (``selected``) is
+    # already final above; this only reorders the admitted set so a demoted
+    # route (score<.4, observed unique n>=3) sorts after every non-demoted
+    # route, with a stable fuse/ID order inside each group.
+    selected = sorted(selected, key=lambda s: (s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []
     for survivor in selected:
