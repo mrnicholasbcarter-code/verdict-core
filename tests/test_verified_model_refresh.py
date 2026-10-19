@@ -472,6 +472,34 @@ def test_auth_gate_denied_outage_records_the_real_auth_failure(tmp_path: Path) -
     assert cache.cooldown_for("provider:cc", NOW) is not None
 
 
+def test_auth_gate_fires_on_403_permission_category_too(tmp_path: Path) -> None:
+    """A 403 classifies as CATEGORY_PERMISSION, not CATEGORY_AUTH -- the gate
+    must still fire, matching Prober._buffer_auth_failure's own (401, 403)
+    check rather than one specific category string.
+    """
+    transport = ScriptedTransport({("cc/a", "chat"): _fail(403)})
+    gate_calls: list[tuple[str, int | None]] = []
+
+    def auth_gate(route_id: str, http_status: int | None) -> bool:
+        gate_calls.append((route_id, http_status))
+        return True
+
+    coord = _coordinator(tmp_path, transport)
+    coord.auth_gate = auth_gate
+    rows = [_row("cc/a", provider="cc", rank_hint=1), _row("cc/b", provider="cc", rank_hint=2)]
+    out = coord.refresh_for_consumer(
+        _snapshot(rows),
+        consumer="verified_view",
+        needed_ids=[r.route_id for r in rows],
+        config=RefreshConfig(),
+    )
+    assert gate_calls == [("cc/a", 403)]
+    assert out.route_outcomes["cc/a"].refresh_reason == "auth_outage"
+    assert ("cc/b", "chat") not in transport.calls
+    cache = HealthCache(tmp_path / "health-cache.json")
+    assert cache.entry("cc/a") is None
+
+
 def test_429_honors_retry_after_and_zeroes_bucket(tmp_path: Path) -> None:
     transport = ScriptedTransport({("cc/a", "chat"): _fail(429, "rate_limited", retry_after=120.0)})
     coord = _coordinator(tmp_path, transport)

@@ -1077,13 +1077,16 @@ class RefreshCoordinator:
                         monotonic=self.monotonic,
                         sleep=self.sleep,
                     )
-                # BOD-338 breaker: confirm a CATEGORY_AUTH failure is a real
+                # BOD-338 breaker: confirm a 401/403 failure is a real
                 # per-route/provider rejection, not a broken gateway key,
-                # BEFORE any write. A confirmed outage stops the job with
-                # zero poison; the caller's hook owns the confirmation call.
+                # BEFORE any write (matches Prober._buffer_auth_failure's own
+                # (401, 403) check, not just CATEGORY_AUTH -- a 403 classifies
+                # as CATEGORY_PERMISSION, not CATEGORY_AUTH). A confirmed
+                # outage stops the job with zero poison; the caller's hook
+                # owns the confirmation call.
                 if (
                     not outcome.no_write
-                    and outcome.category == CATEGORY_AUTH
+                    and outcome.http_status in (401, 403)
                     and self.auth_gate is not None
                     and self.auth_gate(row.route_id, outcome.http_status)
                 ):
