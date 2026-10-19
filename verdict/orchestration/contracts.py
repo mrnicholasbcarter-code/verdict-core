@@ -673,13 +673,13 @@ def normalize_gateway_origin(url: str) -> str | None:
     None when ``url`` does not parse as an origin (no scheme, no host or an invalid
     port): such an origin equals nothing, not even itself.
     """
-    parsed = urlsplit(url.strip())
-    scheme = parsed.scheme.lower()
-    host = (parsed.hostname or "").lower()
     try:
+        parsed = urlsplit(url.strip())
         explicit_port = parsed.port
     except ValueError:
         return None
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
     port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
     if not scheme or not host or port is None:
         return None

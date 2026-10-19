@@ -59,6 +59,7 @@ class GatewaySpy(DirectGatewayExecutor):
         "http://gateway.test:0",  # port 0 is not the default port 80
         "http://gateway.test:99999",  # invalid port: fails closed
         "gateway.test",  # no scheme: fails closed
+        "http://[::1",  # malformed: urlsplit raises, fails closed
     ],
 )
 async def test_other_gateway_origin_is_denied_before_any_permit_or_send(
@@ -117,7 +118,9 @@ def test_normalize_gateway_origin() -> None:
     assert normalize_gateway_origin("http://g.test:0") == "http://g.test:0"
 
 
-@pytest.mark.parametrize("url", ["http://g.test:99999", "http://g.test:x", "g.test", "http://", ""])
+@pytest.mark.parametrize(
+    "url", ["http://g.test:99999", "http://g.test:x", "http://[::1", "g.test", "http://", ""]
+)
 def test_unparseable_origin_matches_nothing(url: str) -> None:
     assert normalize_gateway_origin(url) is None
     assert not gateway_origin_matches(url, url)
