@@ -68,6 +68,8 @@ jobs:
       - name: Install build tooling
         run: uv pip install build
       - name: Canonical full proof (no-cache final mode)
+        env:
+          PYTEST_ADDOPTS: "-p xdist -n auto"
         run: |
           uv run python scripts/proof/run.py \
             --mode full \
