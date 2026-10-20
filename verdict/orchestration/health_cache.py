@@ -13,7 +13,8 @@ A route with no entry, or a negative whose ``until`` has elapsed, is
 
 TTL policy (pure functions in ``ttl_for`` / ``next_backoff_seconds``)
 ----------------------------------------------------------------------
-- healthy: 10 min fresh, usable-stale until 30 min;
+- healthy evidence: configurable fresh lifetime, 6 h by default (bounded to 60 s..48 h), then 30 min stale grace;
+- dispatch permits: independently capped at 10 min;
 - 429: ``Retry-After`` when given, otherwise 60 s;
 - 5xx / timeout: 60 s, doubling on each consecutive failure, capped at 15 min;
 - 401 / 402 / 403 / 404 / 410 / catalog_stale: 6 h, growing to 24 h;
@@ -88,8 +89,30 @@ _LONG_TTL_CATEGORIES = frozenset(
     }
 )
 
-FRESH_SECONDS = 600.0
-USABLE_SECONDS = 1800.0
+DEFAULT_EVIDENCE_FRESH_SECONDS = 6 * 60 * 60.0
+MIN_EVIDENCE_FRESH_SECONDS = 60.0
+MAX_EVIDENCE_FRESH_SECONDS = 48 * 60 * 60.0
+
+
+def _evidence_fresh_seconds() -> float:
+    raw = os.getenv("VERDICT_EVIDENCE_FRESH_SECONDS")
+    if raw and raw.strip():
+        try:
+            value = float(raw.strip())
+            if math.isfinite(value):
+                return min(MAX_EVIDENCE_FRESH_SECONDS, max(MIN_EVIDENCE_FRESH_SECONDS, value))
+        except ValueError:
+            pass
+    return DEFAULT_EVIDENCE_FRESH_SECONDS
+
+
+EVIDENCE_FRESH_SECONDS = _evidence_fresh_seconds()
+# Backward-compatible public name; it means healthy-evidence freshness only.
+FRESH_SECONDS = EVIDENCE_FRESH_SECONDS
+USABLE_STALE_GRACE_SECONDS = 1800.0
+USABLE_SECONDS = EVIDENCE_FRESH_SECONDS + USABLE_STALE_GRACE_SECONDS
+PERMIT_PROOF_MAX_VALIDITY_SECONDS = 600.0
+
 # Multi-turn tool use is a stable model property; current liveness is gated
 # separately at HEALTHY. One constant sets both how long a probe-based agentic
 # PASS qualifies a route and how often the prober re-runs the agentic probe.
@@ -102,11 +125,8 @@ LONG_CAP_SECONDS = 24 * 3600.0
 
 # BOD-433/S03 dispatch permits. A commit only consumes a proof whose deadline
 # is still ahead of ``now`` (basic proof expires at its deadline, equality
-# included) and no further ahead than the basic-proof age: a deadline beyond
-# that window implies an observation timestamp in the future, which never
-# authorizes.
+# included) and no further ahead than the independent 10-minute permit window.
 PERMIT_STATE_MAYBE_SENT = "maybe_sent"
-PERMIT_PROOF_MAX_VALIDITY_SECONDS = FRESH_SECONDS
 
 DEFAULT_BUCKET_CAPACITY = 10
 DEFAULT_BUCKET_WINDOW_SECONDS = 60.0
@@ -252,8 +272,7 @@ def usable_until(checked_at: datetime) -> datetime:
 def classify_state(*, healthy: bool, checked_at: datetime, until: datetime, now: datetime) -> str:
     """Map a stored entry onto ``fresh``, ``stale``, ``negative`` or ``unprobed``.
 
-    A healthy entry is fresh until ``checked_at + 10 min``, stale until
-    ``checked_at + 30 min``, then unprobed. A negative entry stays negative
+    A healthy entry is fresh for the configured evidence lifetime. A negative entry stays negative
     until ``until``, then becomes unprobed (half-open: eligible to probe,
     not healthy).
     """
@@ -261,7 +280,7 @@ def classify_state(*, healthy: bool, checked_at: datetime, until: datetime, now:
     deadline = _aware(until, "until")
     current = _aware(now, "now")
     if healthy:
-        if current < checked + timedelta(seconds=FRESH_SECONDS):
+        if current < checked + timedelta(seconds=EVIDENCE_FRESH_SECONDS):
             return STATE_FRESH
         if current < checked + timedelta(seconds=USABLE_SECONDS):
             return STATE_STALE
@@ -2005,11 +2024,15 @@ __all__ = [
     "CATEGORY_UPSTREAM",
     "DEFAULT_BUCKET_CAPACITY",
     "DEFAULT_BUCKET_WINDOW_SECONDS",
+    "DEFAULT_EVIDENCE_FRESH_SECONDS",
     "ENV_CACHE_PATH",
+    "EVIDENCE_FRESH_SECONDS",
     "FRESH_SECONDS",
     "HEALTH_CACHE_SCHEMA_VERSION",
     "LONG_BASE_SECONDS",
     "LONG_CAP_SECONDS",
+    "MAX_EVIDENCE_FRESH_SECONDS",
+    "MIN_EVIDENCE_FRESH_SECONDS",
     "PERMIT_PROOF_MAX_VALIDITY_SECONDS",
     "PERMIT_STATE_MAYBE_SENT",
     "RATE_LIMIT_SECONDS",
@@ -2020,6 +2043,7 @@ __all__ = [
     "TRANSIENT_BASE_SECONDS",
     "TRANSIENT_CAP_SECONDS",
     "USABLE_SECONDS",
+    "USABLE_STALE_GRACE_SECONDS",
     "DispatchPermit",
     "DispatchScope",
     "HealthCache",

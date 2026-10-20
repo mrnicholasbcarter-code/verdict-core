@@ -24,7 +24,7 @@ from typing import Any
 from verdict.actions.base import ActionResult
 from verdict.admission import RuntimeEvidence, RuntimeObservation, active_controller_route, admit
 from verdict.free_tier_admit import normalize_omniroute_origin
-from verdict.orchestration.health_cache import FRESH_SECONDS, HealthCache
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS, HealthCache
 from verdict.orchestration.verified_models import (
     EvidenceSnapshots,
     VerifiedModelQuery,
@@ -320,8 +320,8 @@ class VerifiedSnapshotAdapter:
 # Public catalog: local verified projection (BOD-435 / S07)
 # ---------------------------------------------------------------------------
 
-#: Strict upper bound (age < bound) for inventory authority and basic proof.
-PUBLIC_AUTHORITY_MAX_AGE_SECONDS = FRESH_SECONDS
+#: Strict upper bound (age < bound) for live inventory and connection authority.
+PUBLIC_AUTHORITY_MAX_AGE_SECONDS = EVIDENCE_FRESH_SECONDS
 
 
 class PublicModelsUnavailableError(Exception):

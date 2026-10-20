@@ -248,9 +248,8 @@ class TestAvailabilityStateParity:
             _map_to_accepted_state(AvailabilityState.QUARANTINED) is AvailabilityState.UNAVAILABLE
         )
 
-    def test_passport_ttl_constant(self) -> None:
-        # BOD-387: two census intervals (2 x 240 s) plus margin.
-        assert PASSPORT_TTL_SECONDS == 600
+    def test_passport_ttl_uses_evidence_lifetime(self) -> None:
+        assert PASSPORT_TTL_SECONDS == 6 * 60 * 60
         assert MODEL_PASSPORT_SCHEMA_VERSION == "1"
 
 
