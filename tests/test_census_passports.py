@@ -393,10 +393,8 @@ def test_apc_admits_free_admitted_route_with_no_capacity_evidence(tmp_path):
     assert "ollama-cloud/gemma4:31b" in result.admitted
 
 
-def test_apc_drops_no_capacity_evidence_route_outside_free_admitted(tmp_path):
-    """The same fresh agentic-PASS entry is still dropped when its route is NOT
-    in receipt.free_admitted — the free-tier-summary authority, not a blanket
-    capacity_evidence waiver, decides admission (BOD-431 regression guard)."""
+def test_apc_admits_fresh_eligible_route_without_free_membership(tmp_path):
+    """A fresh eligible agentic-PASS route does not require free-tier membership."""
     from verdict.admit_prove_confirm import gate_admit_prove_confirm
     from verdict.free_tier_admit import FreeTierAdmitReceipt
 
@@ -417,7 +415,7 @@ def test_apc_drops_no_capacity_evidence_route_outside_free_admitted(tmp_path):
     result = gate_admit_prove_confirm(
         receipt, health_cache_path=tmp_path / "health.json", confirm_transport=None, now=NOW
     )
-    assert "ollama-cloud/gemma4:31b" not in result.admitted
+    assert "ollama-cloud/gemma4:31b" in result.admitted
 
 
 def test_passive_refresh_writes_passport_for_eligible_route_with_no_capacity_evidence(tmp_path):

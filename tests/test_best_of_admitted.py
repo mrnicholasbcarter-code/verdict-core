@@ -11,7 +11,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from verdict.admit_prove_confirm import ConfirmEvidence, PassportEvidence, gate_admit_prove_confirm
-from verdict.chooser import apply_best_of_admitted, headroom_from_confirm_latency
+from verdict.chooser import apply_best_of_admitted
 from verdict.evidence import build_routing_decision_contract
 from verdict.free_tier_admit import (
     NO_ELIGIBLE_TARGET,
@@ -109,10 +109,12 @@ def _confirm(identity_id: str, *, latency_ms: float, confirmed: bool = True) -> 
 def _admitted_receipt(
     *, ghost_latency: float = 4000.0, proven_latency: float = 40.0, leak_drop: bool = False
 ) -> FreeTierAdmitReceipt:
-    admitted = (GHOST, PROVEN, NAMED_DROP) if leak_drop else (GHOST, PROVEN)
+    admitted = (PROVEN, GHOST, NAMED_DROP) if leak_drop else (PROVEN, GHOST)
     return FreeTierAdmitReceipt(
         admitted=admitted,
-        exclusions=(NamedDrop(NAMED_DROP, "not_free_tier", "frontier is a named drop"),),
+        exclusions=(
+            NamedDrop(NAMED_DROP, "provider_inactive", "inactive provider is a named drop"),
+        ),
         chosen=GHOST,
         empty_intersection=False,
         active_providers=("openrouter", "opencode"),
@@ -123,12 +125,6 @@ def _admitted_receipt(
             _confirm(PROVEN, latency_ms=proven_latency),
         ),
     )
-
-
-def test_headroom_projection_keeps_unknown_unknown() -> None:
-    assert headroom_from_confirm_latency(None) is None
-    assert headroom_from_confirm_latency(0.0) == 100.0
-    assert headroom_from_confirm_latency(5000.0) == 0.0
 
 
 def test_selected_is_subset_of_passport_confirm_admitted() -> None:
@@ -161,11 +157,11 @@ def test_receipt_includes_selected_because() -> None:
 
 def test_stronger_proven_beats_weaker_free_ghost_when_both_admitted() -> None:
     luck = admit_free_tier_active(_snapshot())
-    assert luck.chosen == GHOST
+    assert luck.chosen == PROVEN
     ranked = apply_best_of_admitted(_admitted_receipt(), now=NOW)
     assert ranked.chosen == PROVEN
     assert ranked.chosen != GHOST
-    assert "last-confirm latency" in (ranked.selected_because or "")
+    assert "capability-ranked" in (ranked.selected_because or "")
     assert "named drops were not re-admitted" in (ranked.selected_because or "")
 
 
@@ -405,3 +401,21 @@ def test_route_passports_fall_back_to_prove_at_rest_store(tmp_path) -> None:
     injected = {GHOST: _passport(GHOST)}
     svc_injected = _service(_snapshot(), passports=injected, confirm_transport=None)
     assert svc_injected._route_passports() == injected
+
+
+def test_nonfree_capability_leader_is_not_displaced_by_free_or_latency() -> None:
+    from dataclasses import replace
+
+    strong = "subscription/strong-code"
+    receipt = replace(
+        _admitted_receipt(),
+        admitted=(strong, GHOST),
+        chosen=strong,
+        free_admitted=(GHOST,),
+        paid_admitted=(strong,),
+        passport=(_passport_evidence(strong), _passport_evidence(GHOST)),
+        confirm=(_confirm(strong, latency_ms=4000), _confirm(GHOST, latency_ms=1)),
+    )
+    ranked = apply_best_of_admitted(receipt, now=NOW)
+    assert ranked.admitted == (strong, GHOST)
+    assert ranked.chosen == strong

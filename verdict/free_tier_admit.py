@@ -2165,13 +2165,6 @@ def _is_combo_identity(identity_id: str) -> bool:
     return identity_id.split("/", 1)[0] in _COMBO_PREFIXES
 
 
-def is_frontier_identity(identity_id: str, allowlist: tuple[str, ...] | None = None) -> bool:
-    """Named frontier/high-cap identity. Never inferred from 'sounds expensive'."""
-    if allowlist:
-        return identity_id in allowlist
-    return classify(identity_id) <= 1
-
-
 def expand_admit_for_worthiness(
     receipt: FreeTierAdmitReceipt,
     snapshot: OmniRouteAdmitSnapshot,
@@ -2228,7 +2221,6 @@ __all__ = [
     "build_cheap_path_context_pack",
     "execute_offload_chat",
     "expand_admit_for_worthiness",
-    "is_frontier_identity",
     "load_omniroute_admit_snapshot",
     "normalize_omniroute_origin",
     "omniroute_endpoint_from_env",
