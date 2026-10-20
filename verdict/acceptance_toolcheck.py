@@ -9,10 +9,12 @@ yardstick the prober's eligibility list is measured against. Turn 1 must call
 from __future__ import annotations
 
 import json
+import math
 import random
+import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -26,6 +28,13 @@ PRECISION_MIN = 0.95
 RECALL_MIN = 0.90
 LISTED_SAMPLE = 8
 UNLISTED_SAMPLE = 12
+
+#: Catalog id markers of models that cannot hold a tool conversation at all.
+_NON_CHAT_ID = re.compile(
+    r"embed|rerank|bge-|tts|whisper|transcri|speech|dialogue|text-to-|image|dall-e|imagen"
+    r"|flux|diffusion|moderation|content-safety",
+    re.IGNORECASE,
+)
 
 _NOTE = "verdict acceptance probe 7"
 _TOOLS = [
@@ -170,6 +179,26 @@ def cooling_providers(connections: Sequence[Mapping[str, Any]], now: datetime) -
     return {name for name, flags in by_provider.items() if flags and all(flags)}
 
 
+def inactive_providers(connections: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Providers whose every connection is switched off or failed its gateway test."""
+    by_provider: dict[str, list[bool]] = {}
+    for row in connections:
+        off = row.get("isActive") is False or row.get("testStatus", "active") != "active"
+        by_provider.setdefault(str(row.get("provider", "")), []).append(off)
+    return {name for name, flags in by_provider.items() if flags and all(flags)}
+
+
+def wilson_interval(passes: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95% Wilson score interval for ``passes`` out of ``n``; ``None`` when ``n`` is 0."""
+    if n <= 0:
+        return None
+    p = passes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 def measure(
     listed: Sequence[Mapping[str, Any]],
     verdicts: Sequence[Mapping[str, Any]],
@@ -177,6 +206,7 @@ def measure(
     synced: Mapping[str, Any],
     catalog: Mapping[str, Any] | None = None,
     cooling: set[str],
+    inactive: Set[str] = frozenset(),
     post: Post,
     seed: str,
     concurrency: int = 6,
@@ -189,7 +219,9 @@ def measure(
     ``/v1/models`` (``catalog``): the synced endpoint can omit an active
     provider that ``/v1/models`` still lists as live (see ``_live_ids``).
     Routes answering 401/402/403/429 are removed from both ratios.
-    Unmeasurable ratios are ``None``, which the caller treats as FAIL.
+    The unlisted population leaves out, by catalog facts only, non-chat models
+    (``_NON_CHAT_ID``) and routes of ``inactive`` providers, so the recall
+    sample measures real candidates. Unmeasurable ratios are ``None``.
     """
     live = _live_ids(synced, catalog)
     listed_ids = {str(row["route_id"]) for row in listed}
@@ -198,14 +230,20 @@ def measure(
     }
     unserved = listed_ids - live
     probe_listed = sorted(listed_ids - unserved - cooling_hits)
-    population = sorted(
-        str(v["route_id"])
+    candidates = [
+        v
         for v in verdicts
         if v.get("capacity_class") == "free"
         and str(v["route_id"]) in live
         and str(v["route_id"]) not in listed_ids
         and str(v.get("provider", "")) not in cooling
         and v.get("reason") not in {"effort_duplicate", "admission:missing_capability:tools"}
+    ]
+    population = sorted(
+        str(v["route_id"])
+        for v in candidates
+        if str(v.get("provider", "")) not in inactive
+        and not _NON_CHAT_ID.search(str(v["route_id"]).split("/", 1)[-1])
     )
     rng = random.Random(seed)
     sample_listed = rng.sample(probe_listed, min(LISTED_SAMPLE, len(probe_listed)))
@@ -242,6 +280,11 @@ def measure(
         "listed_unserved": sorted(unserved),
         "listed_in_cooling_pool": sorted(cooling_hits),
         "unlisted_population": len(population),
+        "population_before": len(candidates),
+        "population_after": len(population),
+        "unlisted_measured": len(measured_unlisted),
+        "unlisted_passes": unlisted_pass,
+        "unlisted_wilson": wilson_interval(unlisted_pass, len(measured_unlisted)),
         "precision": precision,
         "recall_estimate": recall,
         "estimated_missed": missed,
