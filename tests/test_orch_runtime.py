@@ -1921,6 +1921,7 @@ async def test_worker_escalation_excludes_failed_credential_pool(repo: Path):
     assert seen[1].exclude_pools == frozenset({"claude"})
 
 
+@pytest.mark.timing
 async def test_slow_selector_reaches_full_concurrency_fast(repo: Path) -> None:
     """BOD-341: selection must not block the event loop. A selector whose
     select() takes 0.5s must let 4 ready nodes reach 4 concurrent dispatches

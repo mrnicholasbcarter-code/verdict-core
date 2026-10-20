@@ -162,7 +162,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
-    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "timing: asserts a wall-clock bound; CI runs these serially without coverage"
 ]
 
 [tool.coverage.run]
