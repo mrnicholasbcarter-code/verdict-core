@@ -619,3 +619,116 @@ def test_judge_route_refuses_logs_and_random_prose() -> None:
     passed, reason, detail = acceptance.judge_route(0, "error: gateway connection refused", "")
     assert passed is False
     assert detail["reason"] == "invalid route name"
+
+
+# -- recall is a reported trend (BOD-342 2026-10-20) ----------------------------
+
+
+def test_wilson_interval_matches_the_textbook_values() -> None:
+    low, high = acceptance_toolcheck.wilson_interval(1, 12)
+    assert low == pytest.approx(0.0149, abs=0.001)
+    assert high == pytest.approx(0.3539, abs=0.001)
+
+
+def test_unlisted_population_drops_non_chat_and_inactive_provider_routes() -> None:
+    listed = [_verdict("p/a", eligible=True)]
+    unlisted = [
+        "af/wan2.7-image-pro",
+        "api-airforce/text-to-dialogue",
+        "off/chat-model",
+        "q/coder",
+        "agy/gemini-3.1-flash-image",
+        "antigravity/gemini-3.1-flash-image",
+        "nv/nv-embedqa-e5-v5",
+    ]
+    synced = {
+        "p": [{"id": "a"}],
+        **{u.split("/")[0]: [{"id": u.split("/", 1)[1]}] for u in unlisted},
+    }
+    text = {"output_modalities": ["text"], "capabilities": {"tool_calling": True}}
+    catalog = {
+        "data": [
+            {"id": "af/wan2.7-image-pro", "type": "image", "output_modalities": ["image"]},
+            {"id": "api-airforce/text-to-dialogue", "output_modalities": ["audio"]},
+            {"id": "q/coder", **text},
+            {"id": "agy/gemini-3.1-flash-image", "input_modalities": ["text", "image"], **text},
+            {"id": "antigravity/gemini-3.1-flash-image", "type": "image"},
+        ]
+    }
+    verdicts = [*listed, *(_verdict(u, eligible=False) for u in unlisted)]
+    connections = [
+        {"provider": "off", "isActive": False, "testStatus": "active"},
+        {"provider": "q", "isActive": True, "testStatus": "active"},
+        {"provider": "af", "isActive": True, "testStatus": "active"},
+    ]
+    inactive = acceptance_toolcheck.inactive_providers(connections)
+    assert inactive == {"off"}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        verdicts,
+        synced=synced,
+        catalog=catalog,
+        cooling=set(),
+        inactive=inactive,
+        post=_good_tool_gateway(),
+        seed="s",
+    )
+    assert quality["population_before"] == 7
+    assert quality["population_after"] == quality["unlisted_population"] == 2
+    sampled = sorted(c["route"] for c in quality["checks"] if not c["listed"])
+    assert sampled == ["agy/gemini-3.1-flash-image", "q/coder"]
+    assert quality["population_excluded"] == {
+        "inactive_provider": 1,
+        "catalog_non_chat": 3,
+        "id_non_chat": 1,
+    }
+    assert quality["unlisted_measured"] == 2 and quality["unlisted_passes"] == 2
+
+
+def _eligibility_with_quality(
+    live: Path, monkeypatch: pytest.MonkeyPatch, *, precision: float, recall: float
+) -> dict[str, Any]:
+    quality = {
+        "precision": precision,
+        "recall_estimate": recall,
+        "precision_min": 0.95,
+        "recall_min": 0.90,
+        "unlisted_measured": 12,
+        "unlisted_passes": 1,
+        "unlisted_wilson": [0.0149, 0.3539],
+        "population_before": 137,
+        "population_after": 60,
+        "population_excluded": {"catalog_non_chat": 70, "id_non_chat": 2, "inactive_provider": 5},
+    }
+    monkeypatch.setattr(acceptance_toolcheck, "measure", lambda *a, **k: dict(quality))
+    monkeypatch.setattr(
+        acceptance, "run_cli", _fake_cli({"verdicts": [_verdict("p/a", eligible=True)]})
+    )
+    result = acceptance.run_acceptance(gateway="http://gw")
+    return next(c for c in result["checks"] if c["name"] == "eligibility")
+
+
+def test_low_recall_is_reported_but_does_not_fail_eligibility(
+    live: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = _eligibility_with_quality(live, monkeypatch, precision=1.0, recall=0.04)
+    assert check["passed"] is True
+    trend = check["detail"]["recall_trend"]
+    assert trend == {
+        "estimate": 0.04,
+        "n": 12,
+        "passes": 1,
+        "wilson_low": 0.0149,
+        "wilson_high": 0.3539,
+        "population_before": 137,
+        "population_after": 60,
+        "excluded": {"catalog_non_chat": 70, "id_non_chat": 2, "inactive_provider": 5},
+    }
+    assert "recall 4%" in check["reason"]
+
+
+def test_low_precision_still_fails_eligibility(live: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    check = _eligibility_with_quality(live, monkeypatch, precision=0.5, recall=0.95)
+    assert check["passed"] is False
+    assert "precision 50% < 95%" in check["reason"]
+    assert "recall_trend" in check["detail"]

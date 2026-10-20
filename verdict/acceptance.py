@@ -331,7 +331,12 @@ def gateway_get(base_url: str, api_key: str | None, path: str, timeout: float = 
 
 
 def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
-    from verdict.acceptance_toolcheck import cooling_providers, gateway_post, measure
+    from verdict.acceptance_toolcheck import (
+        cooling_providers,
+        gateway_post,
+        inactive_providers,
+        measure,
+    )
 
     args = ["eligibility", "--json", "--gateway", gateway]
     started = time.monotonic()
@@ -383,6 +388,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 check.detail["v1_models_error"] = type(exc).__name__
             connections = providers.get("connections") if isinstance(providers, dict) else []
             cooling = cooling_providers(connections or [], datetime.now(timezone.utc))
+            inactive = inactive_providers(connections or [])
             # Runs even with nothing listed: the sample shows what Verdict misses.
             quality = measure(
                 listed,
@@ -390,6 +396,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 synced=synced if isinstance(synced, dict) else {},
                 catalog=catalog if isinstance(catalog, dict) else None,
                 cooling=cooling,
+                inactive=inactive,
                 post=gateway_post(gateway, api_key, timeout=60),
                 seed=seed,
             )
@@ -403,11 +410,25 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 failures.append(f"{len(unproven)} listed without agentic proof")
             if precision is None or precision < quality["precision_min"]:
                 failures.append(f"precision {_pct(precision)} < {_pct(quality['precision_min'])}")
-            if recall is None or recall < quality["recall_min"]:
-                failures.append(f"recall {_pct(recall)} < {_pct(quality['recall_min'])}")
+            # BOD-342 (2026-10-20): recall is a reported trend, never a failure.
+            interval = quality.get("unlisted_wilson") or (None, None)
+            check.detail["recall_trend"] = {
+                "estimate": recall,
+                "n": quality.get("unlisted_measured"),
+                "passes": quality.get("unlisted_passes"),
+                "wilson_low": interval[0],
+                "wilson_high": interval[1],
+                "population_before": quality.get("population_before"),
+                "population_after": quality.get("population_after"),
+                "excluded": quality.get("population_excluded"),
+            }
+            trend = f"recall {_pct(recall)} (trend, {quality.get('unlisted_passes')}/"
+            trend += f"{quality.get('unlisted_measured')} unlisted pass)"
             check.passed = not failures
-            check.reason = "; ".join(failures) or (
-                f"{len(listed)} eligible; precision {_pct(precision)}, recall {_pct(recall)}"
+            check.reason = (
+                "; ".join([*failures, trend])
+                if failures
+                else (f"{len(listed)} eligible; precision {_pct(precision)}, {trend}")
             )
         if not listed and not check.reason.startswith("0 FREE"):
             check.reason = "0 FREE tool-capable routes eligible; " + check.reason
