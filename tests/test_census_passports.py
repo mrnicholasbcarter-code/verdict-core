@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from verdict.orchestration.health_cache import FRESH_SECONDS, HealthCache, ProbeResult
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS, HealthCache, ProbeResult
 from verdict.prove_at_rest_legacy import load_healthy_passports
 
 NOW = datetime(2026, 10, 9, 18, tzinfo=timezone.utc)
@@ -186,7 +186,9 @@ def test_passive_refresh_rejects_stale_source_evidence(tmp_path):
     from verdict.census_passports import passive_refresh
 
     cache = HealthCache(tmp_path / "health.json")
-    cache.record("gc/stale:free", _free_result(), NOW - timedelta(seconds=FRESH_SECONDS + 1))
+    cache.record(
+        "gc/stale:free", _free_result(), NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1)
+    )
     result = passive_refresh(cache, 10, tmp_path / "state.json", NOW)
     assert result["updated"] == 0
     assert not load_healthy_passports(tmp_path / "state.json")
@@ -305,8 +307,8 @@ def test_apc_stale_health_cache_does_not_pass_fast_path(tmp_path):
     from verdict.admit_prove_confirm import gate_admit_prove_confirm
     from verdict.free_tier_admit import FreeTierAdmitReceipt
 
-    # record before FRESH_SECONDS ago → stale
-    stale_time = NOW - timedelta(seconds=FRESH_SECONDS + 60)
+    # A healthy entry exactly at the evidence deadline is expired.
+    stale_time = NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS)
     cache = HealthCache(tmp_path / "health.json")
     cache.record("gc/gemini:free", _free_result(), stale_time)
     cache.save()
@@ -1260,7 +1262,7 @@ def test_passport_ttl_outlives_two_census_intervals():
     assert PASSPORT_TTL_SECONDS >= 2 * CENSUS_INTERVAL_SECONDS
 
 
-def test_census_reproves_a_passport_that_would_expire_before_the_next_tick(tmp_path):
+def test_census_does_not_reprobe_a_passport_within_evidence_lifetime(tmp_path):
     from verdict.census_passports import passive_refresh, run_census
     from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
 
@@ -1281,12 +1283,7 @@ def test_census_reproves_a_passport_that_would_expire_before_the_next_tick(tmp_p
         now=NOW,
     )
 
-    assert route in calls
-    from verdict.model_passports import PASSPORT_TTL_SECONDS
-
-    assert load_healthy_passports(store)[route].expires_at == NOW + timedelta(
-        seconds=PASSPORT_TTL_SECONDS
-    )
+    assert route not in calls
 
 
 def test_census_spends_budget_on_previously_proven_routes_across_families(tmp_path):
@@ -1296,8 +1293,12 @@ def test_census_spends_budget_on_previously_proven_routes_across_families(tmp_pa
     proven = ["n/agnes", "n/laguna", "v/gemma"]
     unprobed = [f"a/x{i}" for i in range(6)]
     cache = HealthCache(tmp_path / "health.json")
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     for route in proven:
-        cache.record(route, _free_result(), NOW - timedelta(minutes=12))
+        cache.record(
+            route, _free_result(), NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 12 * 60)
+        )
     calls: list[str] = []
     result = run_census(
         _census_snapshot(proven + unprobed),
@@ -1314,10 +1315,14 @@ def test_census_spends_budget_on_previously_proven_routes_across_families(tmp_pa
 
 
 def _proven_cache(tmp_path, routes):
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     cache = HealthCache(tmp_path / "health.json")
     for route in routes:
-        # Proven by an earlier tick; too old to copy, so its passport is due.
-        cache.record(route, _free_result(), NOW - timedelta(minutes=12))
+        # Outside fresh lifetime but within usable-stale grace: passport is due.
+        cache.record(
+            route, _free_result(), NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 12 * 60)
+        )
     return cache
 
 

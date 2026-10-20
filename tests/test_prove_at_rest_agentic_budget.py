@@ -16,7 +16,6 @@ import pytest
 
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
-    FRESH_SECONDS,
     HealthCache,
     ProbeResult,
     agentic_capability,
@@ -662,8 +661,10 @@ def test_agentic_ttl_equals_the_reprobe_interval(tmp_path: Path) -> None:
     )["qualified"]
     prober = Prober(cache, lambda: [], _dead_chat)
     assert not prober._needs_agentic(_free("p/m"), later)
-    # Liveness stays short and separate: the HEALTHY stage still needs a fresh probe.
-    assert cache.lookup("p/m", NOW + timedelta(seconds=FRESH_SECONDS + 1)).state != "fresh"
+    # Agentic qualification is still separate and remains bounded to 24 hours.
+    assert (
+        cache.lookup("p/m", NOW + timedelta(seconds=AGENTIC_PROBE_TTL_SECONDS + 1)).state != "fresh"
+    )
 
 
 def test_agentic_phase_waits_for_bucket_refill_within_its_budget(tmp_path: Path) -> None:

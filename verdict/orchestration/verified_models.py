@@ -44,7 +44,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
-    FRESH_SECONDS,
+    EVIDENCE_FRESH_SECONDS,
     USABLE_SECONDS,
 )
 from verdict.orchestration.provider_catalog import resolve_provider
@@ -1521,7 +1521,7 @@ def _classify_row(
     # -- Rule 4/5: VERIFIED / STALE (validated at-rest positive) -----------
     if at_rest is not None and at_rest.is_positive_proof():
         age = (now - at_rest.checked_at).total_seconds()
-        fresh_until = at_rest.checked_at + timedelta(seconds=FRESH_SECONDS)
+        fresh_until = at_rest.checked_at + timedelta(seconds=EVIDENCE_FRESH_SECONDS)
         expires_at = at_rest.checked_at + timedelta(seconds=USABLE_SECONDS)
         last_success = at_rest.last_success_at or at_rest.checked_at
         coding_ok = at_rest.tool_ok and tools is not False
@@ -1534,7 +1534,7 @@ def _classify_row(
         )
         if not agentic_fresh:
             restrictions.append("agentic_not_fresh")
-        if age < FRESH_SECONDS:
+        if age < EVIDENCE_FRESH_SECONDS:
             status = VerifiedStatus.VERIFIED
             freshness = "fresh"
         else:

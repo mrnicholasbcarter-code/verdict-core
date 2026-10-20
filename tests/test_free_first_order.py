@@ -27,7 +27,7 @@ from verdict.orchestration.eligibility import (
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_OK,
-    FRESH_SECONDS,
+    EVIDENCE_FRESH_SECONDS,
     STATE_FRESH,
     STATE_STALE,
     USABLE_SECONDS,
@@ -333,9 +333,12 @@ class TestStaleFresh:
         assert lookup.entry.agentic_ok is True
 
     def test_agentic_pass_outlives_the_liveness_window(self, tmp_path: Path) -> None:
-        """Agentic capability is stable: a PASS older than FRESH_SECONDS still qualifies."""
+        """Agentic qualification has an independent 24-hour TTL."""
         entry = _fresh_entry(
-            "free/m", agentic_ok=True, probe_class="agentic", age_seconds=FRESH_SECONDS + 60
+            "free/m",
+            agentic_ok=True,
+            probe_class="agentic",
+            age_seconds=EVIDENCE_FRESH_SECONDS + 60,
         )
         cache = _build_cache(tmp_path, [entry])
         rows = [_row("free/m", owned_by="free", pricing={"input": 0, "output": 0})]
@@ -623,7 +626,7 @@ class TestAgenticCheckedAtSeparation:
         """Agentic PASS at T0, single-call PASSes at T0+23h and T0+25h.
 
         At T0+25h the agentic gate must say stale because agentic_checked_at
-        is T0, which is 25 h ago (beyond FRESH_SECONDS = 10 min).
+        is T0, which is 25 h ago (beyond its unchanged 24-hour TTL).
         """
 
         t0 = NOW - timedelta(hours=25)
