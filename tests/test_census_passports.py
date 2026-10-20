@@ -349,6 +349,103 @@ def test_apc_fast_path_absent_when_no_health_cache(tmp_path):
     assert "gc/gemini:free" not in result.admitted
 
 
+def _free_result_no_evidence(*, tool_ok: bool = True) -> ProbeResult:
+    """Agentic PASS exactly like _free_result, but capacity_evidence is None.
+
+    Mirrors ollama-cloud/* entries in the real health-cache: fresh, chat_ok,
+    tool_ok, but the OmniRoute connection-metadata-derived capacity_evidence
+    never resolves to the literal string "free" (BOD-431).
+    """
+    return ProbeResult(
+        "ok",
+        chat_ok=True,
+        tool_ok=tool_ok,
+        capacity_evidence=None,
+        probe_class="agentic",
+        agentic_ok=tool_ok,
+    )
+
+
+def test_apc_admits_free_admitted_route_with_no_capacity_evidence(tmp_path):
+    """A health-cache entry with capacity_evidence=None still becomes a passport
+    when its route is in receipt.free_admitted (the free-tier-summary authority),
+    without any confirm transport call (BOD-431)."""
+    from verdict.admit_prove_confirm import gate_admit_prove_confirm
+    from verdict.free_tier_admit import FreeTierAdmitReceipt
+
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("ollama-cloud/gemma4:31b", _free_result_no_evidence(), NOW)
+    cache.save()
+
+    receipt = FreeTierAdmitReceipt(
+        admitted=("ollama-cloud/gemma4:31b",),
+        chosen="ollama-cloud/gemma4:31b",
+        empty_intersection=False,
+        exclusions=(),
+        active_providers=frozenset({"ollama-cloud"}),
+        free_admitted=("ollama-cloud/gemma4:31b",),
+        free_tier_providers=frozenset({"ollama-cloud"}),
+    )
+
+    result = gate_admit_prove_confirm(
+        receipt, health_cache_path=tmp_path / "health.json", confirm_transport=None, now=NOW
+    )
+    assert "ollama-cloud/gemma4:31b" in result.admitted
+
+
+def test_apc_drops_no_capacity_evidence_route_outside_free_admitted(tmp_path):
+    """The same fresh agentic-PASS entry is still dropped when its route is NOT
+    in receipt.free_admitted — the free-tier-summary authority, not a blanket
+    capacity_evidence waiver, decides admission (BOD-431 regression guard)."""
+    from verdict.admit_prove_confirm import gate_admit_prove_confirm
+    from verdict.free_tier_admit import FreeTierAdmitReceipt
+
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("ollama-cloud/gemma4:31b", _free_result_no_evidence(), NOW)
+    cache.save()
+
+    receipt = FreeTierAdmitReceipt(
+        admitted=("ollama-cloud/gemma4:31b",),
+        chosen="ollama-cloud/gemma4:31b",
+        empty_intersection=False,
+        exclusions=(),
+        active_providers=frozenset({"ollama-cloud"}),
+        free_admitted=(),
+        free_tier_providers=frozenset({"ollama-cloud"}),
+    )
+
+    result = gate_admit_prove_confirm(
+        receipt, health_cache_path=tmp_path / "health.json", confirm_transport=None, now=NOW
+    )
+    assert "ollama-cloud/gemma4:31b" not in result.admitted
+
+
+def test_passive_refresh_writes_passport_for_eligible_route_with_no_capacity_evidence(tmp_path):
+    """census passive_refresh writes a passport for a fresh agentic-PASS route
+    with capacity_evidence=None when it is in the caller-supplied eligible_routes
+    set (already free-tier-summary-authoritative), mirroring run_census's own
+    call with eligible_routes=set(candidates) derived from receipt.free_admitted
+    (BOD-431)."""
+    from verdict.census_passports import passive_refresh
+
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("ollama-cloud/gemma4:31b", _free_result_no_evidence(), NOW)
+    cache.save()
+
+    store_path = tmp_path / "state.json"
+    result = passive_refresh(
+        cache,
+        max_passports=10,
+        passport_store_path=store_path,
+        now=NOW,
+        eligible_routes={"ollama-cloud/gemma4:31b"},
+    )
+
+    assert result["updated"] == 1
+    passports = load_healthy_passports(store_path)
+    assert "ollama-cloud/gemma4:31b" in passports
+
+
 def test_census_active_candidates_filtered_and_budgeted(tmp_path):
     from dataclasses import replace
 
