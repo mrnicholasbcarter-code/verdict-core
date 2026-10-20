@@ -11,6 +11,7 @@ baseline is always available.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -66,6 +67,9 @@ WAVE1_BASELINE_ORDER: tuple[str, ...] = (
     "repo.state",
 )
 _SKIP_DIR_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", ".tox"}
+# file_count is a size signal for receipts, not an inventory: a workspace such as
+# /tmp has ~720k files and counting them cost 109 s of a cold request (BOD-431).
+MAX_COUNT_FILES = 20_000
 _SECRET = re.compile(
     r"(?i)(?:api[_-]?key\s*[:=]|password\s*[:=]|bearer\s+[a-z0-9._~+/=-]{16,}|sk-[a-z0-9]{20,})"
 )
@@ -615,9 +619,16 @@ def _is_dump_slice(item: RetrievalSlice, proof_root: Path) -> bool:
 
 
 def _count_files(root: Path) -> int:
+    """Files under ``root`` outside skipped directories, stopping at ``MAX_COUNT_FILES``."""
     if not root.is_dir():
         return 0
-    return sum(1 for path in root.rglob("*") if path.is_file() and not _skip_path(path))
+    count = 0
+    for _dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
+        count += len(filenames)
+        if count >= MAX_COUNT_FILES:
+            return MAX_COUNT_FILES
+    return count
 
 
 def _matches(text: str, query: str, required_fact: str | None) -> bool:
