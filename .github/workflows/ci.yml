@@ -71,10 +71,10 @@ jobs:
           pip install -e ".[dev,server,dashboard]"
       - name: Run tests
         if: matrix.python-version != '3.13'
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -n auto --dist loadfile -q --tb=short
       - name: Run tests with coverage
         if: matrix.python-version == '3.13'
-        run: pytest tests/ -v --tb=short --cov=verdict --cov-report=xml --cov-fail-under=70
+        run: pytest tests/ -n auto --dist loadfile -q --tb=short --cov=verdict --cov-report=xml --cov-fail-under=70
       - name: Validate versioned contract schema
         run: python scripts/validate_contract_schema.py
       - name: Validate public proof matrix and claims ledger
