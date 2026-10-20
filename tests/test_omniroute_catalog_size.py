@@ -120,23 +120,29 @@ def test_build_availability_cache_reads_connections_when_health_omits_the_provid
     catalog = {
         "data": [
             {"id": "nara/laguna-s-2.1", "owned_by": "nara"},
+            {"id": "mistral/codestral-latest", "owned_by": "mistral"},
             {"id": "ghost/model-x", "owned_by": "ghost"},
         ]
     }
     health = {
         "status": "healthy",
-        "providerHealth": {"cursor": {"state": "CLOSED"}, "ollama": {"state": "CLOSED"}},
+        "providerHealth": {
+            "cursor": {"state": "CLOSED"},
+            "cursor-api": {"state": "HALF_OPEN"},
+            "ollama": {"state": "CLOSED"},
+        },
         "providerBreakers": [{"provider": "cursor", "state": "CLOSED"}],
     }
     connections = {
         "connections": [
             {
-                "provider": "nara",
+                "provider": provider,
                 "isActive": True,
                 "isCoolingDown": False,
                 "cooldownRemainingMs": 0,
                 "breaker": None,
             }
+            for provider in ("nara", "mistral", "codestral", "cursor", "ollama")
         ]
     }
 
@@ -164,4 +170,22 @@ def test_build_availability_cache_reads_connections_when_health_omits_the_provid
     states = {c.model.id: c.state for c in cache.get("nara/laguna-s-2.1").candidates}
 
     assert states["nara/laguna-s-2.1"] == AvailabilityState.READY
+    assert states["mistral/codestral-latest"] == AvailabilityState.READY
     assert states["ghost/model-x"] == AvailabilityState.UNKNOWN
+
+
+def test_serve_startup_names_health_only_runtime_sources(monkeypatch) -> None:
+    """Without a management token, serve's startup diagnostics say why
+    providers outside OmniRoute's monitored set read as unknown."""
+    import verdict.api as api
+
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN", raising=False)
+    without = {d["code"]: d for d in api.server_bootstrap_diagnostics()["diagnostics"]}
+    assert without["runtime_sources_health_only"]["detail"] == (
+        "runtime sources: health only (no management token); providers outside "
+        "OmniRoute's monitored set read as unknown"
+    )
+
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "mgmt-test-token")
+    with_token = {d["code"] for d in api.server_bootstrap_diagnostics()["diagnostics"]}
+    assert "runtime_sources_health_only" not in with_token

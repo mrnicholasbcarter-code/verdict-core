@@ -590,6 +590,21 @@ def server_bootstrap_diagnostics(
                 "fatal": False,
             }
         )
+    if not os.getenv("OMNIROUTE_MANAGEMENT_TOKEN", "").strip():
+        report["diagnostics"].append(
+            {
+                "code": "runtime_sources_health_only",
+                "class": "configuration",
+                "field": "OMNIROUTE_MANAGEMENT_TOKEN",
+                "source": "missing",
+                "detail": (
+                    "runtime sources: health only (no management token); providers outside "
+                    "OmniRoute's monitored set read as unknown"
+                ),
+                "remediation": "verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin",
+                "fatal": False,
+            }
+        )
     try:
         bootstrap = resolve_provider_bootstrap(credential_store_env=load_credential_store_env())
     except BootstrapError as exc:
