@@ -178,6 +178,18 @@ class Executor:
                 return WorkerTerminal(
                     ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
                 )
+            if kind == "owned_under_venv":
+                # The node's single owned_files entry is itself under venv/, an
+                # otherwise-excluded byproduct prefix. A worker-created byproduct
+                # sibling (venv/lib/x.py, not owned) must still be ignored.
+                owned_path = cwd / f"venv/src/{node}.txt"
+                owned_path.parent.mkdir(parents=True, exist_ok=True)
+                owned_path.write_text(f"{node} by {route_id}\n")
+                (cwd / "venv" / "lib").mkdir(parents=True, exist_ok=True)
+                (cwd / "venv" / "lib" / "x.py").write_text("byproduct")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
             if kind == "badcode":
                 (cwd / f"{node}.txt").write_text("FAIL")
                 return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
@@ -216,14 +228,21 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def node(nid: str, deps: tuple[str, ...] = (), kind: NodeKind = NodeKind.IMPLEMENT) -> WorkNode:
-    check = ["sh", "-c", f"test -f {nid}.txt && ! grep -q FAIL {nid}.txt"]
+def node(
+    nid: str,
+    deps: tuple[str, ...] = (),
+    kind: NodeKind = NodeKind.IMPLEMENT,
+    owned_files: tuple[str, ...] | None = None,
+) -> WorkNode:
+    owned = owned_files if owned_files is not None else (f"{nid}.txt",)
+    target = owned[0]
+    check = ["sh", "-c", f"test -f {target} && ! grep -q FAIL {target}"]
     return WorkNode(
         nid,
         f"write {nid}",
         kind=kind,
         depends_on=deps,
-        owned_files=(f"{nid}.txt",),
+        owned_files=owned,
         verification_command=tuple(check),
     )
 
@@ -422,6 +441,27 @@ async def test_tool_byproducts_are_not_ownership_violations(repo: Path) -> None:
     barrier = ev.of("barrier", "a")[0]
     assert barrier["name"] == "ownership" and barrier["ok"] is True
     assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
+
+
+async def test_owned_path_under_byproduct_prefix_stays_a_deliverable(repo: Path) -> None:
+    """A node that genuinely owns a path under venv/ must still see it as its
+    deliverable: the byproduct exclude must never hide an owned path, only a
+    worker-created sibling the node does not own."""
+    graph = WorkGraph("g", (node("a", owned_files=("venv/src/a.txt",)),))
+    ex = Executor({("a", "cc/s"): "owned_under_venv"})
+    rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    barrier = ev.of("barrier", "a")[0]
+    assert barrier["name"] == "ownership" and barrier["ok"] is True
+    assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
+    out = subprocess.run(
+        ["git", "show", f"{result.integration_ref}:venv/src/a.txt"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0 and "a by cc/s" in out.stdout
 
 
 async def test_verification_failure_is_rejected_not_validated(repo: Path) -> None:

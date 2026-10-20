@@ -266,28 +266,6 @@ BYPRODUCT_EXCLUDES = (
 )
 
 
-def _ensure_local_excludes(cwd: Path) -> None:
-    """Append byproduct patterns to the worktree's info/exclude (untracked, local only)."""
-    git_path = cwd / ".git"
-    try:
-        if git_path.is_file():
-            gitdir = Path(git_path.read_text().split(":", 1)[1].strip())
-            common = gitdir / "commondir"
-            if common.exists():
-                gitdir = (gitdir / common.read_text().strip()).resolve()
-        else:
-            gitdir = git_path
-        exclude = gitdir / "info" / "exclude"
-        exclude.parent.mkdir(parents=True, exist_ok=True)
-        current = exclude.read_text() if exclude.exists() else ""
-        missing = [p for p in BYPRODUCT_EXCLUDES if p not in current.splitlines()]
-        if missing:
-            with exclude.open("a", encoding="utf-8") as stream:
-                stream.write("\n# verdict orchestration byproducts\n" + "\n".join(missing) + "\n")
-    except OSError:
-        pass
-
-
 class Git:
     """Minimal git worktree operations for node isolation and integration."""
 
@@ -322,9 +300,27 @@ class Git:
         async with self._worktree_lock:
             await self._remove_worktree_unlocked(path)
 
-    async def changed_files(self, cwd: Path, base: str) -> list[str]:
-        _ensure_local_excludes(cwd)
-        await self.call("add", "-A", cwd=cwd)
+    async def changed_files(
+        self, cwd: Path, base: str, *, owned_files: Sequence[str] = ()
+    ) -> list[str]:
+        """``git diff`` of the deliverable, excluding tool byproducts.
+
+        Directory byproducts (``venv/``, ``.serena/``, ``__pycache__/``, ...)
+        are never staged UNLESS a path under one of those prefixes is itself in
+        ``owned_files`` — a node that legitimately owns a path like
+        ``venv/src/module.py`` must still see it as its deliverable, not have
+        it silently hidden by the exclude.
+        """
+        dir_excludes = [p for p in BYPRODUCT_EXCLUDES if p.endswith("/")]
+        pathspec = [f":(exclude){pattern}" for pattern in BYPRODUCT_EXCLUDES]
+        await self.call("add", "-A", "--", ".", *pathspec, cwd=cwd)
+        owned_under_byproduct = [
+            p for p in owned_files if any(p.startswith(prefix) for prefix in dir_excludes)
+        ]
+        if owned_under_byproduct:
+            existing = [p for p in owned_under_byproduct if (cwd / p).exists()]
+            if existing:
+                await self.call("add", "-f", "--", *existing, cwd=cwd)
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
@@ -1815,7 +1811,9 @@ class DagRuntime:
                 and terminal.executor_kind != "fault-injected"
             ):
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
-                changed = await self.git.changed_files(worktree, await self._node_base(run.node))
+                changed = await self.git.changed_files(
+                    worktree, await self._node_base(run.node), owned_files=run.node.owned_files
+                )
                 result = salvage_owned_files(
                     worktree,
                     run.node.owned_files,
@@ -1948,7 +1946,7 @@ class DagRuntime:
 
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
-        changed = await self.git.changed_files(worktree, base)
+        changed = await self.git.changed_files(worktree, base, owned_files=node.owned_files)
         if node.kind is NodeKind.IMPLEMENT:
             outside = [p for p in changed if not node.owns(p)]
             self.events.emit(
