@@ -213,6 +213,11 @@ class EligibilityGate:
 
         report = self.availability_source(model_id)
         state, source = _state_for(report, model_id)
+        # When the candidate is absent because the whole catalog/runtime fetch
+        # failed (report.errors non-empty), surface that transport detail
+        # instead of only the generic state so "live availability unknown"
+        # does not hide a diagnosable cause (e.g. response too large).
+        detail = f" ({report.errors[0]})" if report is not None and report.errors else ""
 
         # If the adapter has already deemed this candidate eligible (present in
         # report.eligible), respect that decision. The adapter evaluates
@@ -251,7 +256,7 @@ class EligibilityGate:
                     verdict=EligibilityVerdict.RUNTIME_TRUTH_ABSENT,
                     state=state,
                     source=source,
-                    reason=f"protected work: live availability {state}",
+                    reason=f"protected work: live availability {state}{detail}",
                 )
             if dev_mode and self.allow_unverified_in_dev and not protected:
                 # Degraded/unknown in dev: admit but flag so ranking can prefer
@@ -272,7 +277,7 @@ class EligibilityGate:
                 verdict=EligibilityVerdict.RUNTIME_TRUTH_ABSENT,
                 state=state,
                 source=source,
-                reason=f"live availability {state}",
+                reason=f"live availability {state}{detail}",
             )
 
         # Denied / quota_exhausted / rate_limited / locked_out / circuit_open /

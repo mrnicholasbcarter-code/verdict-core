@@ -31,7 +31,7 @@ from verdict.availability import (
     OmniRouteAvailabilityAdapter,
     StaticOmniRouteTransport,
 )
-from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.orchestration.effort import PRIME_THINKING_LEVELS, choose_effort, effort_reason
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
@@ -998,7 +998,7 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
                 management_token=management_token, usage_api_key_id=usage_api_key_id
             ),
             allow_private_hosts={"127.0.0.1", "::1"},
-            max_response_bytes=16_777_216,
+            max_response_bytes=CATALOG_MAX_RESPONSE_BYTES,
         )
         catalog_payload, runtime_payload = await asyncio.gather(
             asyncio.to_thread(transport.catalog), asyncio.to_thread(transport.runtime)

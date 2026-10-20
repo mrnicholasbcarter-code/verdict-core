@@ -155,7 +155,7 @@ class SubagentModelSelector:
         management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
         usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
 
-        from verdict.omniroute import OmniRouteHTTPTransport
+        from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 
         transport = OmniRouteHTTPTransport(
             base_url,
@@ -164,7 +164,7 @@ class SubagentModelSelector:
             usage_api_key_id=usage_api_key_id,
             runtime_sources={"health", "connections"} if management_token else {"health"},
             allow_private_hosts={"127.0.0.1", "::1"},
-            max_response_bytes=16_777_216,
+            max_response_bytes=CATALOG_MAX_RESPONSE_BYTES,
             # OmniRoute caches its health stamp ~20 s; 30 s left late reads stale (BOD-387).
             ttl_seconds=90,
         )

@@ -39,6 +39,13 @@ _USAGE_SCOPED_SOURCES = frozenset({"budget", "token_limits"})
 _DEFAULT_RUNTIME_SOURCES = frozenset({"health"})
 _MAX_JSON_CONTAINER_DEPTH = 64
 
+# The transport's hard upper bound (see the max_response_bytes validation
+# below). The gateway's live /v1/models catalog has been observed well above
+# the 1 MiB default (BOD-431: 4.9 MB), so every caller that fetches the
+# catalog must opt into this ceiling instead of silently failing closed on
+# "response too large".
+CATALOG_MAX_RESPONSE_BYTES = 16_777_216
+
 
 class OmniRouteHTTPTransport:
     """Fetch a bounded allowlist of documented OmniRoute JSON operations.

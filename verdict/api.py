@@ -76,7 +76,7 @@ from verdict.intelligence import (
 )
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
-from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     HealthCache,
@@ -446,6 +446,7 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
             allow_private_hosts=allow_private,
+            max_response_bytes=CATALOG_MAX_RESPONSE_BYTES,
         )
     except Exception as exc:
         if not is_omniroute_configured:
