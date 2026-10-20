@@ -49,3 +49,19 @@ def test_read_api_key_raises_when_nothing_resolves(
     reviewer = _reviewer(tmp_path)
     with pytest.raises(KeyError, match="missing API key env"):
         reviewer._read_api_key()
+
+
+def test_custom_api_key_env_takes_precedence_over_resolve_gateway_key(
+    key_file: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CUSTOM_REVIEW_KEY", "custom-value")
+    reviewer = _reviewer(tmp_path, api_key_env="CUSTOM_REVIEW_KEY")
+    assert reviewer._read_api_key() == "custom-value"
+
+
+def test_custom_api_key_env_falls_back_to_resolve_gateway_key_when_unset(
+    key_file: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CUSTOM_REVIEW_KEY", raising=False)
+    reviewer = _reviewer(tmp_path, api_key_env="CUSTOM_REVIEW_KEY")
+    assert reviewer._read_api_key() == FILE_KEY
