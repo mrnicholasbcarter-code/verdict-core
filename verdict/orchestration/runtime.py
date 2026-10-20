@@ -260,6 +260,9 @@ BYPRODUCT_EXCLUDES = (
     ".coverage",
     "node_modules/",
     ".verdict/",
+    ".serena/",
+    "venv/",
+    ".venv/",
 )
 
 

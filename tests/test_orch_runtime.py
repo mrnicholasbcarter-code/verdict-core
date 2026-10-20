@@ -169,6 +169,15 @@ class Executor:
             if kind == "outside":
                 (cwd / "not_owned.txt").write_text("x")
                 return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+            if kind == "byproducts":
+                (cwd / f"{node}.txt").write_text(f"{node} by {route_id}\n")
+                (cwd / ".serena").mkdir(parents=True, exist_ok=True)
+                (cwd / ".serena" / "project.yml").write_text("x")
+                (cwd / "venv" / "lib").mkdir(parents=True, exist_ok=True)
+                (cwd / "venv" / "lib" / "x.py").write_text("x")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
             if kind == "badcode":
                 (cwd / f"{node}.txt").write_text("FAIL")
                 return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
@@ -400,6 +409,19 @@ async def test_ownership_violation_rejected_and_reassigned(repo: Path) -> None:
     barrier = ev.of("barrier", "a")[0]
     assert barrier["name"] == "ownership" and barrier["ok"] is False
     assert any(r["state"] == "REJECTED" for r in ev.of("node_state", "a"))
+
+
+async def test_tool_byproducts_are_not_ownership_violations(repo: Path) -> None:
+    """A worker creating .serena/ and venv/ alongside the owned file must not trip the
+    ownership barrier: tool byproducts are not deliverables (BYPRODUCT_EXCLUDES)."""
+    graph = WorkGraph("g", (node("a"),))
+    ex = Executor({("a", "cc/s"): "byproducts"})
+    rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    barrier = ev.of("barrier", "a")[0]
+    assert barrier["name"] == "ownership" and barrier["ok"] is True
+    assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
 
 
 async def test_verification_failure_is_rejected_not_validated(repo: Path) -> None:
