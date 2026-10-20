@@ -1,4 +1,4 @@
-"""Admit free-tier ∩ active-provider concrete identities for offloadable work.
+"""Admit active-provider concrete identities for offloadable work.
 
 Live OmniRoute surfaces used:
 
@@ -14,10 +14,9 @@ fails closed — the caller must not treat frontier-primary fallback as success.
 Serve cheap-path callers then intersect this receipt with fresh prove-at-rest
 passports and a budgeted confirm probe (see ``verdict.admit_prove_confirm``).
 
-This module is a candidate *feed* only. ``chosen`` is an
-advisory ranking of admitted free∩active identities — never production
-serve-path strategy authority. Serve path must consume
-``optimize_execution_path`` / ``ExecutionPathDecision``.
+This module is a candidate *feed* only. ``chosen`` is an advisory
+inventory order, not a capability ranking. Serve callers apply candidate-pool
+ranking, capability gates and fresh proof before selecting a route.
 """
 
 from __future__ import annotations
@@ -91,7 +90,7 @@ _ALIAS_PREFIXES = frozenset({"oc", "kr", "cf", "or", "nv"})
 _SMALL_TOKENS = ("nano", "flash", "haiku", "mini", "small", "lite", "instant")
 
 NO_ELIGIBLE_TARGET = "no_eligible_target"
-FAIL_CLOSED_REASON = "fail_closed — empty free∩active ∩ fresh-passport ∩ confirmed intersection"
+FAIL_CLOSED_REASON = "fail_closed — empty active ∩ fresh-passport ∩ confirmed intersection"
 
 
 DEFAULT_CHEAP_PATH_TOKEN_BUDGET = 16_384
@@ -190,7 +189,7 @@ class NamedDrop:
 
 @dataclass(frozen=True)
 class OmniRouteAdmitSnapshot:
-    """Normalized live (or fixture) surfaces for free∩active admit."""
+    """Normalized live (or fixture) surfaces for active admit."""
 
     catalog: tuple[CatalogIdentity, ...]
     free_tier: tuple[FreeTierModel, ...]
@@ -243,7 +242,7 @@ class IncludedProvenance:
 
 @dataclass(frozen=True)
 class CheapPathContextPack:
-    """Compiled task pack used on the free∩active offload path."""
+    """Compiled task pack used on the active offload path."""
 
     pack_digest: str
     compiled_prompt: str
@@ -945,7 +944,7 @@ class FreeTierAdmitReceipt:
                 verdict=EligibilityVerdict.ELIGIBLE,
                 state="eligible",
                 source="free_tier_active_admit",
-                reason="free-tier ∩ active provider",
+                reason="active provider",
             )
             for model in admitted_models
         ]
@@ -1486,16 +1485,14 @@ def resolve_catalog_matches(
 
 
 def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitReceipt:
-    """Admit concrete identities proven free by metadata and usable provider state.
+    """Admit concrete catalog identities on active, healthy, quota-available providers.
 
-    `/v1/models` is inventory only. Free authority comes from
-    `/api/free-tier/summary`; connection/health authority comes from
-    `/api/providers`. A model name (including ``:free``) is never evidence.
+    Pricing and free-tier membership describe inventory but never restrict it.
+    Callers must still apply task capability and fresh proof/confirmation gates.
     """
-    catalog = snapshot.catalog
     exclusions: list[NamedDrop] = []
     admitted: list[str] = []
-    admitted_set: set[str] = set()
+    free_ids: set[str] = set()
     connections = _provider_connections_by_name(snapshot.connections)
 
     def provider_reason(provider: str) -> tuple[str, str] | None:
@@ -1504,14 +1501,6 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
             return block.reason, block.detail or "account quota exhausted"
         return _provider_rejection(connections.get(provider))
 
-    def admit(identity_id: str) -> None:
-        if identity_id not in admitted_set:
-            admitted_set.add(identity_id)
-            admitted.append(identity_id)
-
-    # Free-tier rows are the sole free authority. Catalog rows that only look
-    # free are deliberately ignored; they may later be considered as paid only
-    # when explicit price metadata exists.
     for row in snapshot.free_tier:
         label = f"{row.provider}/{row.model_id}"
         if is_opaque_route_id(row.model_id) or is_opaque_route_id(label):
@@ -1519,29 +1508,21 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
                 NamedDrop(label, REASON_OPAQUE_ROUTE_DISALLOWED, "opaque route is not auditable")
             )
             continue
-        if (row.free_type or "").lower() == "discontinued":
-            exclusions.append(NamedDrop(label, REASON_NOT_FREE_TIER, "free tier discontinued"))
-            continue
         blocked = provider_reason(row.provider)
         if blocked is not None:
             exclusions.append(NamedDrop(label, blocked[0], blocked[1]))
             continue
-        matches = resolve_catalog_matches(row.model_id, row.provider, catalog)
+        matches = resolve_catalog_matches(row.model_id, row.provider, snapshot.catalog)
         concrete = [item for item in matches if not is_opaque_route_id(item)]
         if not concrete:
             reason = REASON_OPAQUE_ROUTE_DISALLOWED if matches else REASON_METADATA_GHOST
             exclusions.append(
                 NamedDrop(label, reason, "free-tier row has no concrete inventory identity")
             )
-            continue
-        for identity_id in concrete:
-            admit(identity_id)
+        elif (row.free_type or "").lower() != "discontinued":
+            free_ids.update(concrete)
 
-    # Explain catalog candidates that did not enter the authoritative free set.
-    free_providers = snapshot.free_tier_providers
-    for identity in catalog:
-        if identity.identity_id in admitted_set:
-            continue
+    for identity in snapshot.catalog:
         blocked = provider_reason(identity.provider)
         if blocked is not None:
             exclusions.append(NamedDrop(identity.identity_id, blocked[0], blocked[1]))
@@ -1553,34 +1534,22 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
                     "opaque/combo route is not a concrete auditable identity",
                 )
             )
-        elif _looks_free_by_name(identity.identity_id):
-            exclusions.append(
-                NamedDrop(
-                    identity.identity_id,
-                    REASON_NOT_FREE_TIER,
-                    "model name is not authoritative free-tier evidence",
-                )
-            )
+        else:
+            admitted.append(identity.identity_id)
 
-    admitted_sorted = tuple(sorted(admitted))
-    healthy = frozenset(
-        provider
-        for provider, connection in connections.items()
-        if provider_reason(provider) is None
-    )
-    chosen = (
-        sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy, admitted_sorted))[0]
-        if admitted_sorted
-        else None
+    admitted_sorted = tuple(sorted(set(admitted)))
+    healthy = tuple(
+        sorted(provider for provider in connections if provider_reason(provider) is None)
     )
     return FreeTierAdmitReceipt(
         admitted=admitted_sorted,
         exclusions=tuple(exclusions),
-        chosen=chosen,
-        empty_intersection=chosen is None,
-        active_providers=tuple(sorted(healthy)),
-        free_tier_providers=tuple(sorted(free_providers)),
-        free_admitted=admitted_sorted,
+        chosen=admitted_sorted[0] if admitted_sorted else None,
+        empty_intersection=not admitted_sorted,
+        active_providers=healthy,
+        free_tier_providers=tuple(sorted(snapshot.free_tier_providers)),
+        free_admitted=tuple(item for item in admitted_sorted if item in free_ids),
+        paid_admitted=tuple(item for item in admitted_sorted if item not in free_ids),
     )
 
 
@@ -2203,58 +2172,6 @@ def is_frontier_identity(identity_id: str, allowlist: tuple[str, ...] | None = N
     return classify(identity_id) <= 1
 
 
-def _catalog_paid_identities(
-    snapshot: OmniRouteAdmitSnapshot, *, skip: set[str]
-) -> tuple[tuple[str, ...], tuple[NamedDrop, ...]]:
-    """Return connected concrete identities with explicit non-free pricing."""
-    admitted: list[str] = []
-    seen: set[str] = set(skip)
-    drops: list[NamedDrop] = []
-    connections = _provider_connections_by_name(snapshot.connections)
-    free_ids = set(skip)
-    for identity in snapshot.catalog:
-        identity_id = identity.identity_id
-        if identity_id in seen:
-            continue
-        if is_opaque_route_id(identity_id) or _is_combo_identity(identity_id):
-            drops.append(
-                NamedDrop(identity_id, REASON_OPAQUE_ROUTE_DISALLOWED, "route is not concrete")
-            )
-            continue
-        quota_block = next(
-            (row for row in snapshot.quota_blocks if row.model_id == identity.provider), None
-        )
-        blocked = (
-            (quota_block.reason, quota_block.detail or "account quota exhausted")
-            if quota_block
-            else _provider_rejection(connections.get(identity.provider))
-        )
-        if blocked is not None:
-            drops.append(NamedDrop(identity_id, blocked[0], blocked[1]))
-            continue
-        if identity_id in free_ids:
-            continue
-        if not identity.price_known:
-            drops.append(
-                NamedDrop(identity_id, REASON_PRICE_UNKNOWN, "authoritative price is unavailable")
-            )
-            continue
-        # An explicit all-zero price is not silently reclassified as paid. It
-        # must appear in authoritative free-tier metadata to be free.
-        if identity.input_cost == 0 and identity.output_cost == 0:
-            drops.append(
-                NamedDrop(
-                    identity_id,
-                    REASON_NOT_FREE_TIER,
-                    "zero inventory price lacks authoritative free-tier membership",
-                )
-            )
-            continue
-        seen.add(identity_id)
-        admitted.append(identity_id)
-    return tuple(admitted), tuple(drops)
-
-
 def expand_admit_for_worthiness(
     receipt: FreeTierAdmitReceipt,
     snapshot: OmniRouteAdmitSnapshot,
@@ -2265,125 +2182,17 @@ def expand_admit_for_worthiness(
     spend_policy: str | None = None,
     task_profile_digest: str | None = None,
 ) -> FreeTierAdmitReceipt:
-    """Ordinary: keep free and add lesser-paid. Worthy: drop free-for-cost, keep frontier paid.
+    """Annotate task classification without economic filtering or reordering.
 
-    ``spend_policy`` (BOD-S1) is a hard economic boundary applied *after* class
-    semantics: ``free_only`` can never admit a paid identity regardless of task
-    class or score (every paid candidate gets a named exclusion), and
-    ``frontier_required`` keeps only frontier-class paid identities. Policy
-    decides who may compete; nothing here silently escalates spend.
+    The legacy signature is retained for callers; price and resource class do
+    not decide which qualified identities may compete.
     """
-    from verdict.task_profile import (  # lazy: breaks the verdict.__init__ cycle
-        SPEND_FREE_ONLY,
-        SPEND_FREE_PREFERRED,
-        SPEND_FRONTIER_REQUIRED,
-        normalize_spend_policy,
-    )
-
-    policy = normalize_spend_policy(spend_policy)
-    free_set = frozenset(receipt.free_admitted or receipt.admitted)
-    paid, extra_drops = _catalog_paid_identities(snapshot, skip=set(receipt.admitted))
-    exclusions = list(receipt.exclusions)
-    exclusions.extend(extra_drops)
-
-    if task_class == "worthy":
-        for identity_id in receipt.admitted:
-            exclusions.append(
-                NamedDrop(
-                    identity_id,
-                    REASON_WORTHY_EXCLUDES_FREE,
-                    "worthy path never selects free-tier solely for cost",
-                )
-            )
-        frontier = tuple(item for item in paid if is_frontier_identity(item, frontier_allowlist))
-        for identity_id in paid:
-            if identity_id not in frontier:
-                exclusions.append(
-                    NamedDrop(
-                        identity_id,
-                        REASON_NOT_FREE_TIER,
-                        "ordinary/lesser-paid identity is not frontier-class for worthy work",
-                    )
-                )
-        remaining = frontier
-        chosen = remaining[0] if remaining else None
-        free_admitted = receipt.free_admitted or receipt.admitted
-        paid_admitted: tuple[str, ...] = frontier
-    else:
-        merged = tuple(dict.fromkeys((*receipt.admitted, *paid)))
-        chosen = receipt.chosen if receipt.chosen in merged else (merged[0] if merged else None)
-        remaining = merged
-        free_admitted = receipt.free_admitted or receipt.admitted
-        paid_admitted = paid
-
-    # Hard policy filter: remove anyone the economic policy forbids, naming why.
-    if policy == SPEND_FREE_ONLY:
-        for identity_id in paid:
-            if not any(
-                drop.model_id == identity_id and drop.reason == REASON_SPEND_POLICY_EXCLUDES_PAID
-                for drop in exclusions
-            ):
-                exclusions.append(
-                    NamedDrop(
-                        identity_id,
-                        REASON_PAID_MODEL_NOT_ALLOWED,
-                        "spend_policy=free_only forbids paid identities regardless of score",
-                    )
-                )
-        kept = tuple(item for item in remaining if item in free_set)
-        for identity_id in remaining:
-            if identity_id not in free_set:
-                exclusions.append(
-                    NamedDrop(
-                        identity_id,
-                        REASON_PAID_MODEL_NOT_ALLOWED,
-                        "spend_policy=free_only forbids paid identities regardless of score",
-                    )
-                )
-        remaining = kept
-        paid_admitted = ()
-        chosen = chosen if chosen in free_set else (kept[0] if kept else None)
-    elif policy == SPEND_FRONTIER_REQUIRED:
-        allowed = frozenset(frontier_allowlist) if frontier_allowlist else None
-        kept = tuple(
-            item
-            for item in remaining
-            if item not in free_set
-            and (item in allowed if allowed is not None else is_frontier_identity(item))
-        )
-        for identity_id in remaining:
-            if identity_id not in kept:
-                exclusions.append(
-                    NamedDrop(
-                        identity_id,
-                        REASON_SPEND_POLICY_REQUIRES_FRONTIER,
-                        "spend_policy=frontier_required admits frontier-class paid identities only",
-                    )
-                )
-        remaining = kept
-        paid_admitted = kept
-        chosen = chosen if chosen in kept else (kept[0] if kept else None)
-    elif policy == SPEND_FREE_PREFERRED:
-        # Free candidates keep competing; chosen prefers a qualified free
-        # identity whenever one survived (paid stays fallback-only).
-        chosen = (
-            chosen
-            if chosen in free_set
-            else (next((item for item in remaining if item in free_set), chosen))
-        )
-
     return replace(
         receipt,
-        admitted=remaining,
-        exclusions=tuple(exclusions),
-        chosen=chosen,
-        empty_intersection=chosen is None,
         task_class=task_class,
         class_reasons=class_reasons,
-        free_admitted=free_admitted,
-        paid_admitted=paid_admitted,
         task_profile_digest=task_profile_digest,
-        spend_policy=policy,
+        spend_policy=spend_policy,
     )
 
 

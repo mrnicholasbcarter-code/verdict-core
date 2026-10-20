@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import verdict.api as api
@@ -520,25 +521,28 @@ def test_serve_without_cost_header_records_unmeasured_outcome(monkeypatch, tmp_p
     assert outcome["status_code"] == 200
 
 
-def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "identity", ["openrouter/nvidia/nemotron-3-nano-30b-a3b:free", "subscription/strong-code"]
+)
+def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(
+    monkeypatch, identity
+) -> None:
     """BOD-431 (B): the production free-tier admit decision (no test proof
     wrapper) must carry an admission proof for the chosen route, so the relay
     forwards instead of answering 503 "missing route-bound admission proof"."""
     now = datetime.now(timezone.utc)
-    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    provider = identity.split("/", 1)[0]
     snapshot = _snapshot(
         catalog=[_catalog_row(identity)],
-        free_tier=[
-            {
-                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
-                "provider": "openrouter",
-                "freeType": "recurring-daily",
-            }
-        ],
-        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+        free_tier=(
+            [{"modelId": identity.split("/", 1)[1], "provider": provider, "freeType": "keyless"}]
+            if provider == "openrouter"
+            else []
+        ),
+        providers=[{"provider": provider, "isActive": True, "testStatus": "active"}],
     )
     passport = ModelPassport(
-        provider="openrouter",
+        provider=provider,
         model_id=identity,
         auth_state="authorized",
         availability_state="eligible",
@@ -589,6 +593,8 @@ def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(monkeyp
             },
         )
 
+    assert len(minted) == 1
+    assert list(minted[0]) == [identity]
     assert response.status_code == 200, response.text
     assert response.headers["x-verdict-model"] == identity
     assert [request["body"]["model"] for request in transport.requests] == [identity]

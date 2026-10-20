@@ -17,7 +17,6 @@ from verdict.free_tier_admit import (
     FAIL_CLOSED_REASON,
     NO_ELIGIBLE_TARGET,
     REASON_METADATA_GHOST,
-    REASON_NOT_FREE_TIER,
     REASON_OPAQUE_ROUTE_DISALLOWED,
     REASON_PROVIDER_INACTIVE,
     REASON_PROVIDER_NOT_CONNECTED,
@@ -84,8 +83,8 @@ def test_free_intersect_active_wins_concrete_identity() -> None:
     assert "openrouter/nvidia/nemotron-3-nano-30b-a3b:free" in receipt.admitted
     assert "opencode/hy3-free" in receipt.admitted
     assert "openrouter/auto" not in receipt.admitted
-    assert "anthropic/claude-3-opus-20240229" not in receipt.admitted
-    assert receipt.chosen == "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    assert "anthropic/claude-3-opus-20240229" in receipt.admitted
+    assert receipt.chosen == "anthropic/claude-3-opus-20240229"
     assert receipt.empty_intersection is False
     opaque = [drop for drop in receipt.exclusions if drop.reason == REASON_OPAQUE_ROUTE_DISALLOWED]
     assert any(drop.model_id.endswith("/auto") for drop in opaque)
@@ -176,7 +175,7 @@ def test_metadata_ghosts_and_inactive_providers_are_named_drops() -> None:
     assert "mistral/mistral-large-latest" not in receipt.admitted
 
 
-def test_empty_intersection_fails_closed() -> None:
+def test_active_nonfree_inventory_is_not_an_empty_intersection() -> None:
     snapshot = _snapshot(
         catalog=[
             _catalog_row("anthropic/claude-3-opus-20240229", "claude"),
@@ -198,27 +197,28 @@ def test_empty_intersection_fails_closed() -> None:
         ],
     )
     receipt = admit_free_tier_active(snapshot)
-    assert receipt.admitted == ()
-    assert receipt.chosen is None
-    assert receipt.empty_intersection is True
+    assert receipt.admitted == ("anthropic/claude-3-opus-20240229",)
+    assert receipt.chosen == "anthropic/claude-3-opus-20240229"
+    assert receipt.empty_intersection is False
     named = {drop.reason for drop in receipt.exclusions}
     assert REASON_OPAQUE_ROUTE_DISALLOWED in named
     assert REASON_PROVIDER_INACTIVE in named
     assert REASON_METADATA_GHOST in named or REASON_PROVIDER_INACTIVE in named
 
 
-def test_discontinued_free_tier_is_not_free_tier_drop() -> None:
+def test_discontinued_free_metadata_does_not_exclude_active_catalog_route() -> None:
     snapshot = _snapshot(
         catalog=[_catalog_row("opencode/old-free")],
         free_tier=[{"modelId": "old-free", "provider": "opencode", "freeType": "discontinued"}],
         providers=[{"provider": "opencode", "isActive": True, "testStatus": "active"}],
     )
     receipt = admit_free_tier_active(snapshot)
-    assert receipt.empty_intersection is True
-    assert any(drop.reason == REASON_NOT_FREE_TIER for drop in receipt.exclusions)
+    assert receipt.admitted == ("opencode/old-free",)
+    assert receipt.free_admitted == ()
+    assert receipt.exclusions == ()
 
 
-def test_catalog_free_suffix_without_authoritative_row_is_rejected() -> None:
+def test_catalog_admission_does_not_depend_on_free_metadata() -> None:
     snapshot = _snapshot(
         catalog=[
             _catalog_row("openrouter/google/gemma-4-31b-it:free"),
@@ -228,14 +228,13 @@ def test_catalog_free_suffix_without_authoritative_row_is_rejected() -> None:
         providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
     )
     receipt = admit_free_tier_active(snapshot)
-    assert "openrouter/google/gemma-4-31b-it:free" not in receipt.admitted
-    assert "openrouter/google/lyria-3-pro-preview" not in receipt.admitted
-    assert receipt.chosen is None
-    assert any(
-        drop.model_id == "openrouter/google/gemma-4-31b-it:free"
-        and drop.reason == REASON_NOT_FREE_TIER
-        for drop in receipt.exclusions
-    )
+    assert set(receipt.admitted) == {
+        "openrouter/google/gemma-4-31b-it:free",
+        "openrouter/google/lyria-3-pro-preview",
+    }
+    assert receipt.chosen == "openrouter/google/gemma-4-31b-it:free"
+    assert receipt.free_admitted == ()
+    assert any(drop.reason == REASON_METADATA_GHOST for drop in receipt.exclusions)
 
 
 def _fresh_passport(identity_id: str) -> ModelPassport:
@@ -1221,3 +1220,113 @@ def test_unknown_catalog_shape_is_unknown_not_observed_zero() -> None:
     assert zero.catalog == ()
     assert zero.inventory_complete is True
     assert zero.inventory_diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    "pricing", [{"input": 5.0, "output": 15.0}, None], ids=["subscription", "price-unknown"]
+)
+def test_active_catalog_route_admitted_without_free_or_price_evidence(pricing) -> None:
+    row = _catalog_row("subscription/strong-code")
+    if pricing is not None:
+        row["pricing"] = pricing
+    snapshot = _snapshot(
+        catalog=[row],
+        free_tier=[],
+        providers=[{"provider": "subscription", "isActive": True, "testStatus": "active"}],
+    )
+    receipt = admit_free_tier_active(snapshot)
+    assert receipt.admitted == ("subscription/strong-code",)
+    assert not any(drop.reason in {"not_free_tier", "price_unknown"} for drop in receipt.exclusions)
+
+
+def test_subscription_with_higher_coding_score_wins_after_fresh_confirmation() -> None:
+    from verdict.metadata.records import (
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+
+    strong, weak = "subscription/strong-code", "free/weak-code"
+    fetched = "2026-09-17T18:00:00Z"
+
+    def field(value):
+        return ProvenancedField(
+            value=value, provenance=FieldProvenance(source="models.dev", fetched_at=fetched)
+        )
+
+    snapshot = _snapshot(
+        catalog=[
+            {**_catalog_row(strong), "pricing": {"input": 5.0, "output": 15.0}},
+            _catalog_row(weak),
+        ],
+        free_tier=[{"modelId": "weak-code", "provider": "free", "freeType": "keyless"}],
+        providers=[
+            {"provider": p, "isActive": True, "testStatus": "active"}
+            for p in ("subscription", "free")
+        ],
+    )
+    svc = _service(snapshot, passports={r: _fresh_passport(r) for r in (strong, weak)})
+    svc.metadata_snapshot = MetadataSnapshot(
+        schema_version="1",
+        refreshed_at=fetched,
+        sources={},
+        records=tuple(
+            ModelMetadataRecord(
+                id=r,
+                provider=r.split("/")[0],
+                omniroute_ids=(r,),
+                caps=CapabilityCaps(tools=field(True), context=field(128000)),
+                scores=SoftScores(aa_coding=field(score)),
+            )
+            for r, score in ((strong, 95.0), (weak, 25.0))
+        ),
+    )
+    decision = asyncio.run(
+        svc.route(
+            "Fix this Python code",
+            criticality="low",
+            context={"tools_required": True, "task_family": "coding"},
+        )
+    )
+    assert decision.model == strong, decision.admit_receipt
+    assert decision.admit_receipt is not None
+    assert strong in decision.admit_receipt["admitted"]
+    assert decision.admit_receipt["confirm"] == []
+
+
+@pytest.mark.parametrize("policy", ["free_only", "free_preferred", "frontier_required"])
+@pytest.mark.parametrize("task_class", ["ordinary", "worthy"])
+def test_legacy_economic_labels_do_not_filter_qualified_routes(policy, task_class) -> None:
+    from verdict.free_tier_admit import expand_admit_for_worthiness
+
+    snapshot = _snapshot(
+        catalog=[_catalog_row("subscription/strong-code")],
+        free_tier=[],
+        providers=[{"provider": "subscription", "isActive": True, "testStatus": "active"}],
+    )
+    base = admit_free_tier_active(snapshot)
+    receipt = expand_admit_for_worthiness(
+        base, snapshot, task_class=task_class, class_reasons=(), spend_policy=policy
+    )
+    assert receipt.admitted == ("subscription/strong-code",)
+    assert receipt.exclusions == ()
+
+
+@pytest.mark.parametrize("active,proven", [(True, True), (True, False), (False, True)])
+def test_unknown_price_still_requires_active_provider_and_fresh_proof(active, proven) -> None:
+    identity = "subscription/strong-code"
+    snapshot = _snapshot(
+        catalog=[_catalog_row(identity)],
+        free_tier=[],
+        providers=[{"provider": "subscription", "isActive": active, "testStatus": "active"}],
+    )
+    service = _service(snapshot, passports={identity: _fresh_passport(identity)} if proven else {})
+    decision = asyncio.run(service.route("summarize this paragraph", criticality="low"))
+    assert decision.model == (identity if active and proven else NO_ELIGIBLE_TARGET)
+    if not active or not proven:
+        assert decision.admit_receipt is not None
+        reasons = {row["reason"] for row in decision.admit_receipt["exclusions"]}
+        assert (REASON_PROVIDER_INACTIVE if not active else "no_passport") in reasons
