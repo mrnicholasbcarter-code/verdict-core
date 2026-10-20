@@ -30,6 +30,7 @@ from verdict.candidate_pool import OutcomeObservation, ShortlistEntry, _fuse_sco
 from verdict.orchestration.receipt import (
     EVENTS_FILE,
     RECEIPT_FILE,
+    VERIFIED_RUNS_FILE,
     run_attempt_records,
     verify_run_receipt,
 )
@@ -60,6 +61,9 @@ DEFAULT_MAX_ROOTS = 8
 DEFAULT_MAX_EVENTS_BYTES = 2_000_000
 DEFAULT_MAX_EVENTS_LINES = 20_000
 DEFAULT_MAX_RECEIPT_BYTES = 512_000
+# Index entries checked per resolve when the roots env var is absent.
+DEFAULT_MAX_INDEX_CANDIDATES = 32
+DEFAULT_MAX_INDEX_TAIL_BYTES = 64_000
 
 _VALIDATED_STATES = frozenset({"VALIDATED"})
 _REJECT_STATES = frozenset({"TERMINAL_FAILURE", "REJECTED", "BLOCKED"})
@@ -85,15 +89,20 @@ def _parse_ts(raw: Any) -> datetime | None:
 def resolve_outcome_shadow_roots(
     configured: Sequence[Path | str] | None = None, *, env: Mapping[str, str] | None = None
 ) -> tuple[Path, ...]:
-    """Exact run directories only. None/empty → disabled (default empty).
+    """Exact run directories for verified outcome history.
 
-    When ``configured`` is None, read ``VERDICT_OUTCOME_SHADOW_ROOTS`` (OS
-    path-sep list, or a single manifest file of one path per line). Explicit
-    empty sequence disables even if env is set.
+    ``configured`` wins; an explicit empty sequence disables. When it is None,
+    read ``VERDICT_OUTCOME_SHADOW_ROOTS`` (OS path-sep list, or a single
+    manifest file of one path per line). The variable set but blank disables.
+    The variable absent from the environment means: the newest
+    ``DEFAULT_MAX_ROOTS`` finished runs with a verifying receipt from the
+    host-wide run index that ``write_run_receipt`` appends to.
     """
     if configured is not None:
         return _canonicalize_roots(configured)
     source = os.environ if env is None else env
+    if ENV_ROOTS not in source:
+        return _indexed_verified_roots(verdict_home(source))
     raw = (source.get(ENV_ROOTS) or "").strip()
     if not raw:
         return ()
@@ -114,6 +123,50 @@ def resolve_outcome_shadow_roots(
         else:
             parts.append(chunk)
     return _canonicalize_roots(parts)
+
+
+def _indexed_verified_roots(
+    home: Path,
+    *,
+    max_roots: int = DEFAULT_MAX_ROOTS,
+    max_candidates: int = DEFAULT_MAX_INDEX_CANDIDATES,
+) -> tuple[Path, ...]:
+    """Newest-first finished, verifying runs from ``<home>/verified-runs.txt``.
+
+    Only the last ``DEFAULT_MAX_INDEX_TAIL_BYTES`` of the index are read. At
+    most ``max_candidates`` distinct index entries are checked, each with
+    the same pre-verify bounds as the history reader. Every skipped entry is
+    logged with its reason.
+    """
+    try:
+        with (home / VERIFIED_RUNS_FILE).open("rb") as index:
+            size = index.seek(0, os.SEEK_END)
+            index.seek(max(0, size - DEFAULT_MAX_INDEX_TAIL_BYTES))
+            tail = index.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ()
+    if size > DEFAULT_MAX_INDEX_TAIL_BYTES:
+        tail = tail[1:]  # the first line may be cut
+    candidates = _canonicalize_roots([line.strip() for line in reversed(tail) if line.strip()])
+    roots: list[Path] = []
+    for run_dir in candidates[: max(0, max_candidates)]:
+        if len(roots) >= max_roots:
+            break
+        reason = _preverify_bounds(
+            run_dir,
+            max_events_bytes=DEFAULT_MAX_EVENTS_BYTES,
+            max_events_lines=DEFAULT_MAX_EVENTS_LINES,
+            max_receipt_bytes=DEFAULT_MAX_RECEIPT_BYTES,
+        )
+        if reason is None and verify_run_receipt(run_dir):
+            reason = "verify_failed"
+        if reason is None and not (_load_json(run_dir / RECEIPT_FILE) or {}).get("finished_at"):
+            reason = "incomplete"
+        if reason is not None:
+            _LOG.warning("outcome history: skipped indexed run %s (%s)", run_dir, reason)
+            continue
+        roots.append(run_dir)
+    return tuple(roots)
 
 
 def resolve_outcome_shadow_sink(*, env: Mapping[str, str] | None = None) -> Path | None:

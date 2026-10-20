@@ -62,6 +62,8 @@ EVENTS_FILE = "events.jsonl"
 GRAPH_FILE = "graph.json"
 REVIEW_FILE = "review.json"
 RECEIPT_FILE = "receipt.json"
+# Host-wide index under verdict_home(): one absolute run dir per receipt write.
+VERIFIED_RUNS_FILE = "verified-runs.txt"
 REDACTED = "[REDACTED]"
 
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -828,10 +830,17 @@ def run_attempt_records(run_dir: Path, receipt: Mapping[str, Any]) -> list[Attem
 
 
 def _record_run_attempts(run_dir: Path, receipt: Mapping[str, Any]) -> None:
-    """Append this run's attempt and checker rows to the shared ledger (idempotent)."""
+    """Append this run's attempt and checker rows to the shared ledger (idempotent).
+
+    Also append the run's absolute path to the host-wide run index, so the
+    outcome history reader finds runs written under any ``--runs-dir``.
+    """
     from verdict.paths import verdict_home
 
-    append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=verdict_home())
+    home = verdict_home()
+    append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=home)
+    with (home / VERIFIED_RUNS_FILE).open("a", encoding="utf-8") as index:
+        index.write(f"{run_dir.resolve()}\n")
 
 
 def write_run_receipt(run_dir: Path) -> Path:

@@ -752,3 +752,16 @@ def test_capture_producer_version_metadata_fallback_only_without_source_version(
     monkeypatch.delattr(verdict, "__version__")
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "wheel-metadata")
     assert capture_producer()["verdict_version"] == "wheel-metadata"
+
+
+def test_write_run_receipt_appends_absolute_run_dir_to_host_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(home))
+    _run(tmp_path, review=PASS)
+    monkeypatch.chdir(tmp_path)
+    write_run_receipt(Path("run"))
+    write_run_receipt(Path("run"))
+    lines = (home / "verified-runs.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == [str((tmp_path / "run").resolve())] * 2

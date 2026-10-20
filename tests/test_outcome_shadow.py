@@ -1053,3 +1053,179 @@ def test_history_loader_success_discloses_observation_count_and_omissions(
     serialized = json.dumps(disclosure, default=str)
     assert str(tmp_path) not in serialized
     assert "an-unreadable-run" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# A30 option 3: with VERDICT_OUTCOME_SHADOW_ROOTS unset, the roots come from
+# the host-wide verified-runs index that write_run_receipt appends to. An
+# explicitly empty value still disables. The reader never depends on its cwd.
+# ---------------------------------------------------------------------------
+
+
+def _orchestrate_run(
+    run_dir: Path, *, route_id: str, goal: str, fails: int, at: datetime, finished: bool = True
+) -> Path:
+    """One orchestrate run whose implement node fails its check ``fails`` times."""
+    from verdict.orchestration.contracts import WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    run_dir.mkdir(parents=True)
+    graph = WorkGraph(
+        goal=goal,
+        nodes=(
+            WorkNode("a", "route work", owned_files=("a.py",), verification_command=("pytest",)),
+        ),
+    )
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
+    log = EventLog(run_dir / "events.jsonl", clock=lambda: at)
+    log.emit("run_started", run_id=run_dir.name, goal=goal)
+    for attempt in range(1, max(fails, 1) + 1):
+        ok = fails == 0
+        log.emit("dispatch", node_id="a", attempt=attempt, route_id=route_id)
+        log.emit(
+            "terminal",
+            node_id="a",
+            attempt=attempt,
+            ok=True,
+            duration_seconds=3.0,
+            reported_model=route_id,
+        )
+        log.emit("verify", node_id="a", ok=ok, command="pytest", exit_code=0 if ok else 1)
+        log.emit(
+            "node_state", node_id="a", attempt=attempt, state="VALIDATED" if ok else "REJECTED"
+        )
+    if finished:
+        log.emit("run_finished", outcome="COMPLETE" if fails == 0 else "BLOCKED", reason="")
+    write_run_receipt(run_dir)
+    return run_dir
+
+
+def test_unset_env_resolves_newest_verified_runs_from_host_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from datetime import timedelta
+
+    home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(home))
+    monkeypatch.delenv(ENV_ROOTS, raising=False)
+    start = datetime(2026, 10, 19, 6, 0, tzinfo=timezone.utc)
+    runs = [
+        _orchestrate_run(
+            tmp_path / "runs" / f"r{i:02d}",
+            route_id="route/x",
+            goal="implement the billing export",
+            fails=0,
+            at=start + timedelta(minutes=i),
+        )
+        for i in range(8)
+    ]
+    unverifiable = _orchestrate_run(
+        tmp_path / "runs" / "r08-tampered",
+        route_id="route/x",
+        goal="implement the billing export",
+        fails=0,
+        at=start + timedelta(minutes=8),
+    )
+    events = unverifiable / "events.jsonl"
+    events.write_text(events.read_text().replace('"ok":true', '"ok":false'))
+    _orchestrate_run(
+        tmp_path / "runs" / "r09-unfinished",
+        route_id="route/x",
+        goal="implement the billing export",
+        fails=0,
+        at=start + timedelta(minutes=9),
+        finished=False,
+    )
+    # One older verified run beyond the cap, appended first so it is the oldest.
+    index = home / "verified-runs.txt"
+    oldest = tmp_path / "runs" / "r-old"
+    shutil.copytree(runs[0], oldest)
+    index.write_text(f"{oldest.resolve()}\n" + index.read_text(), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+        roots = resolve_outcome_shadow_roots(None)
+
+    assert roots == tuple(path.resolve() for path in reversed(runs))
+    assert len(roots) == DEFAULT_MAX_ROOTS
+    skipped = " ".join(record.getMessage() for record in caplog.records)
+    assert "r08-tampered" in skipped and "verify_failed" in skipped
+    assert "r09-unfinished" in skipped and "incomplete" in skipped
+
+
+def test_explicitly_empty_env_disables_even_with_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(home))
+    _orchestrate_run(
+        tmp_path / "runs" / "r1",
+        route_id="route/x",
+        goal="implement the billing export",
+        fails=0,
+        at=datetime(2026, 10, 19, 6, 0, tzinfo=timezone.utc),
+    )
+    assert (home / "verified-runs.txt").is_file()
+    monkeypatch.setenv(ENV_ROOTS, "")
+    assert resolve_outcome_shadow_roots(None) == ()
+    assert (
+        resolve_outcome_shadow_roots(None, env={ENV_ROOTS: "  ", "VERDICT_HOME": str(home)}) == ()
+    )
+    monkeypatch.delenv(ENV_ROOTS)
+    assert resolve_outcome_shadow_roots(None) == ((tmp_path / "runs" / "r1").resolve(),)
+
+
+def test_relative_orchestrate_run_feeds_demotion_from_another_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: `verdict orchestrate` writes runs under a relative .verdict/runs.
+    A service built later in a different cwd, with no env, still demotes the
+    route whose verified implement attempt failed its check 3 times."""
+    from datetime import timedelta
+
+    class _NoSignals:
+        def collect(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    monkeypatch.delenv(ENV_ROOTS, raising=False)
+    as_of = datetime(2026, 10, 19, 6, 0, tzinfo=timezone.utc)
+    weak = "a-weak/orchestrate-feedback"
+    mid = "z-mid/orchestrate-feedback"
+    goal = "implement the billing export feedback check"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    _orchestrate_run(
+        Path(".verdict") / "runs" / "run-weak",
+        route_id=weak,
+        goal=goal,
+        fails=3,
+        at=as_of - timedelta(hours=1),
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    profile = _profile_for_goal(goal)
+    store = _store((weak, mid))
+    svc = IntelligenceService(
+        primary_model="test/primary",
+        providers={},
+        profile="test",
+        log_path=":memory:",
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        admit_now=as_of,
+        decision_signal_provider=_NoSignals(),
+        metadata_snapshot=store,
+    )
+    assert svc.outcome_shadow_roots == ((repo / ".verdict" / "runs" / "run-weak").resolve(),)
+    out, pool = svc._apply_candidate_pool(
+        _admit_receipt((weak, mid)), profile=profile, metadata=store, identity_map=None
+    )
+    assert set(out.admitted) == {weak, mid}
+    assert (out.candidate_pool or {})["history_disclosure"]["observations_count"] == 3
+    # Without demotion the alphabetical tie-break puts weak first.
+    assert [entry.route_id for entry in pool.shortlist] == [mid, weak]
