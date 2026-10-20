@@ -545,6 +545,45 @@ async def test_owned_path_with_wildcard_character_is_not_expanded_as_a_glob(repo
     assert "A  venv/src/xzzzy.py" not in status
 
 
+async def test_owned_add_real_failure_raises_not_silently_omitted(repo: Path) -> None:
+    """A real git failure (index lock, permission, ...) on the owned force-add
+    must raise OrchestrationError, not be swallowed into a silently incomplete
+    changed_files() result that drops a real deliverable."""
+    from verdict.orchestration.contracts import OrchestrationError
+    from verdict.orchestration.runtime import Git, subprocess_runner
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    (repo / "venv" / "src" / "module.py").write_text("owned\n")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    async def failing_runner(argv: Any, cwd: Path, timeout: float) -> tuple[int, str]:
+        if "add" in argv and "-f" in argv:
+            return 128, "fatal: Unable to create '.git/index.lock': File exists."
+        return await subprocess_runner(argv, cwd, timeout)
+
+    git = Git(repo, runner=failing_runner)
+    with pytest.raises(OrchestrationError, match=r"index\.lock"):
+        await git.changed_files(repo, base, owned_files=("venv/src/module.py",))
+
+
+async def test_owned_path_untracked_and_absent_is_skipped_without_error(repo: Path) -> None:
+    """An owned path that is neither tracked by git nor present on disk (e.g.
+    the worker never created it) must be skipped silently: there is nothing
+    for this node to stage, and that is not an error."""
+    from verdict.orchestration.runtime import Git
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=("venv/src/never_created.py",))
+
+    assert changed == []
+
+
 async def test_verification_failure_is_rejected_not_validated(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"),))
     ex = Executor({("a", "cc/s"): "badcode"})

@@ -321,14 +321,22 @@ class Git:
         owned_under_byproduct = [
             p for p in owned_files if any(p.startswith(prefix) for prefix in dir_excludes)
         ]
-        if owned_under_byproduct:
-            literal_pathspec = [f":(literal){p}" for p in owned_under_byproduct]
-            # -A also stages a deletion of an already-tracked owned path; a
-            # pathspec matching nothing (never tracked, no longer on disk) is
-            # not an error for this node, so each is tried independently.
-            for spec in literal_pathspec:
-                with contextlib.suppress(OrchestrationError):
-                    await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
+        for p in owned_under_byproduct:
+            spec = f":(literal){p}"
+            # Skip only when the path is neither tracked by git nor present on
+            # disk: nothing for THIS node to stage, not an error. Anything else
+            # (index lock, permission, ...) must raise, not disappear a real
+            # deliverable.
+            on_disk = (cwd / p).exists() or (cwd / p).is_symlink()
+            if not on_disk:
+                code, _ = await self.run(
+                    ("git", "ls-files", "--error-unmatch", "--", spec), cwd, 30
+                )
+                if code != 0:
+                    continue
+            # -A also stages a deletion of an already-tracked owned path even
+            # when it no longer exists on disk.
+            await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
