@@ -420,6 +420,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 "wilson_high": interval[1],
                 "population_before": quality.get("population_before"),
                 "population_after": quality.get("population_after"),
+                "excluded": quality.get("population_excluded"),
             }
             trend = f"recall {_pct(recall)} (trend, {quality.get('unlisted_passes')}/"
             trend += f"{quality.get('unlisted_measured')} unlisted pass)"

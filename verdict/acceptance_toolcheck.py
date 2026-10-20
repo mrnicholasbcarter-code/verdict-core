@@ -29,11 +29,13 @@ RECALL_MIN = 0.90
 LISTED_SAMPLE = 8
 UNLISTED_SAMPLE = 12
 
-#: Catalog id markers of models that cannot hold a tool conversation at all.
+#: ``/v1/models`` ``type`` values of models that cannot hold a tool conversation.
+_NON_CHAT_TYPES = frozenset(
+    {"image", "embedding", "audio", "tts", "transcription", "rerank", "moderation"}
+)
+#: Unambiguous id markers, used only for routes with no ``/v1/models`` row.
 _NON_CHAT_ID = re.compile(
-    r"embed|rerank|bge-|tts|whisper|transcri|speech|dialogue|text-to-|image|dall-e|imagen"
-    r"|flux|diffusion|moderation|content-safety",
-    re.IGNORECASE,
+    r"embed|rerank|tts|whisper|transcri|dall-e|stable-diffusion|sdxl|flux", re.IGNORECASE
 )
 
 _NOTE = "verdict acceptance probe 7"
@@ -164,6 +166,28 @@ def _live_ids(synced: Mapping[str, Any], catalog: Mapping[str, Any] | None = Non
     return ids
 
 
+def _catalog_rows(catalog: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    rows = catalog.get("data", []) if isinstance(catalog, Mapping) else []
+    if not isinstance(rows, list):
+        return {}
+    return {str(r["id"]): r for r in rows if isinstance(r, Mapping) and r.get("id")}
+
+
+def _non_chat_reason(route: str, row: Mapping[str, Any] | None) -> str | None:
+    """Why ``route`` is not a chat candidate, from its catalog row, else its id."""
+    if row is None:
+        return "id_non_chat" if _NON_CHAT_ID.search(route.split("/", 1)[-1]) else None
+    outputs = row.get("output_modalities")
+    caps = row.get("capabilities")
+    if (
+        (isinstance(outputs, list) and "text" not in outputs)
+        or str(row.get("type", "")).lower() in _NON_CHAT_TYPES
+        or (isinstance(caps, Mapping) and caps.get("tool_calling") is False)
+    ):
+        return "catalog_non_chat"
+    return None
+
+
 def cooling_providers(connections: Sequence[Mapping[str, Any]], now: datetime) -> set[str]:
     """Providers whose every connection has an active ``rateLimitedUntil``."""
     by_provider: dict[str, list[bool]] = {}
@@ -219,9 +243,10 @@ def measure(
     ``/v1/models`` (``catalog``): the synced endpoint can omit an active
     provider that ``/v1/models`` still lists as live (see ``_live_ids``).
     Routes answering 401/402/403/429 are removed from both ratios.
-    The unlisted population leaves out, by catalog facts only, non-chat models
-    (``_NON_CHAT_ID``) and routes of ``inactive`` providers, so the recall
-    sample measures real candidates. Unmeasurable ratios are ``None``.
+    The unlisted population leaves out routes of ``inactive`` providers and
+    non-chat models: by the ``/v1/models`` row when there is one (output
+    modalities, type, ``tool_calling``), else by unambiguous id markers. So the
+    recall sample measures real candidates. Unmeasurable ratios are ``None``.
     """
     live = _live_ids(synced, catalog)
     listed_ids = {str(row["route_id"]) for row in listed}
@@ -239,12 +264,21 @@ def measure(
         and str(v.get("provider", "")) not in cooling
         and v.get("reason") not in {"effort_duplicate", "admission:missing_capability:tools"}
     ]
-    population = sorted(
-        str(v["route_id"])
-        for v in candidates
-        if str(v.get("provider", "")) not in inactive
-        and not _NON_CHAT_ID.search(str(v["route_id"]).split("/", 1)[-1])
-    )
+    rows = _catalog_rows(catalog)
+    excluded = {"inactive_provider": 0, "catalog_non_chat": 0, "id_non_chat": 0}
+    kept: list[str] = []
+    for v in candidates:
+        route = str(v["route_id"])
+        reason = (
+            "inactive_provider"
+            if str(v.get("provider", "")) in inactive
+            else _non_chat_reason(route, rows.get(route))
+        )
+        if reason:
+            excluded[reason] += 1
+        else:
+            kept.append(route)
+    population = sorted(kept)
     rng = random.Random(seed)
     sample_listed = rng.sample(probe_listed, min(LISTED_SAMPLE, len(probe_listed)))
     sample_unlisted = rng.sample(population, min(UNLISTED_SAMPLE, len(population)))
@@ -282,6 +316,7 @@ def measure(
         "unlisted_population": len(population),
         "population_before": len(candidates),
         "population_after": len(population),
+        "population_excluded": excluded,
         "unlisted_measured": len(measured_unlisted),
         "unlisted_passes": unlisted_pass,
         "unlisted_wilson": wilson_interval(unlisted_pass, len(measured_unlisted)),
