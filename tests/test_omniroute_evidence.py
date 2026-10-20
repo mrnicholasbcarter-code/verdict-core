@@ -76,7 +76,10 @@ def test_expired_quota_window_no_longer_blocks_connection(sources):
 def test_absent_connection_limit_cache_is_not_unlimited(sources):
     del sources["limits"]["caches"]["ok"]
     evidence = parse_omniroute_evidence(**sources, now=NOW)
-    assert "alpha" not in evidence.usable_providers
+    assert "alpha" in evidence.usable_providers
+    connection = next(c for c in evidence.connections if c.connection_id == "ok")
+    assert connection.quota_state == "unknown"
+    assert connection.quota_reason == "cache_missing"
 
 
 def test_catalog_aliases_and_cooldowns_retain_exact_ids(sources):
@@ -152,3 +155,143 @@ def test_batch_is_explicit_selected_and_does_not_trust_local_pass(sources, monke
     assert posts == [{"mode": "selected", "connectionIds": ["cool"]}]
     assert not result["cool"].usable
     assert module.run_test_batch("http://gateway", api_key="secret", connection_ids=[]) == {}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "null",
+        "unreported",
+        "stale",
+        "past_reset",
+        "missing_time",
+        "bad_time",
+        "future_time",
+        "missing_interval",
+        "scoped",
+        "unresolved",
+    ],
+)
+def test_quota_unknown_never_fabricates_health_or_connection_exhaustion(sources, case):
+    cache = sources["limits"]["caches"]["empty"]
+    window = cache["quotas"]["weekly"]
+    if case == "null":
+        cache["quotas"] = None
+        cache["message"] = "No quota observation"
+    elif case == "unreported":
+        window["fractionReported"] = False
+    elif case == "stale":
+        cache["fetchedAt"] = "2026-10-20T09:00:00Z"
+    elif case == "past_reset":
+        window["resetAt"] = "2026-10-20T12:59:00Z"
+    elif case == "missing_time":
+        del cache["fetchedAt"]
+    elif case == "bad_time":
+        cache["fetchedAt"] = "not-a-date"
+    elif case == "future_time":
+        cache["fetchedAt"] = "2026-10-21T12:00:00Z"
+    elif case == "missing_interval":
+        del sources["limits"]["intervalMinutes"]
+    elif case == "scoped":
+        window["claudeQuota"].update(kind="weekly_scoped", modelId="unrelated-model")
+    else:
+        del window["claudeQuota"]
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    connection = next(c for c in evidence.connections if c.connection_id == "empty")
+    assert connection.usable
+    assert connection.quota_state == "unknown"
+    assert connection.reason is None
+    assert connection.quota_reason
+
+
+def test_fresh_explicit_global_exhaustion_is_distinct_from_unknown(sources):
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    c = next(c for c in evidence.connections if c.connection_id == "empty")
+    assert not c.usable
+    assert c.quota_state == "exhausted"
+    assert c.reason == "quota_exhausted"
+    assert c.quota_observed_at == NOW - timedelta(hours=1)
+
+
+def test_positive_scoped_window_is_not_global_headroom(sources):
+    w = sources["limits"]["caches"]["empty"]["quotas"]["weekly"]
+    w.update(remainingPercentage=50)
+    w["claudeQuota"].update(kind="weekly_scoped", modelId="some-model")
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.usable
+    assert c.quota_state == "unknown"
+
+
+def test_fresh_reported_global_headroom(sources):
+    w = sources["limits"]["caches"]["empty"]["quotas"]["weekly"]
+    w.update(remainingPercentage=50)
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.usable
+    assert c.quota_state == "available"
+
+
+@pytest.mark.parametrize("interval", [None, 0, -1, "70", True, float("inf")])
+def test_invalid_sync_interval_cannot_grant_quota_knowledge(sources, interval):
+    sources["limits"]["intervalMinutes"] = interval
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.usable
+    assert c.quota_state == "unknown"
+
+
+@pytest.mark.parametrize("other", ["exhausted", "unreported", "past_reset", "bad_reset", "scoped"])
+def test_multiple_global_constraints_exhaustion_wins_and_unknown_is_not_available(sources, other):
+    from copy import deepcopy
+
+    cache = sources["limits"]["caches"]["empty"]
+    first = cache["quotas"]["weekly"]
+    first["remainingPercentage"] = 50
+    second = deepcopy(first)
+    if other == "exhausted":
+        second["remainingPercentage"] = 0
+    elif other == "unreported":
+        second["fractionReported"] = False
+    elif other == "past_reset":
+        second["resetAt"] = "2026-10-20T12:59:00Z"
+    elif other == "bad_reset":
+        second["resetAt"] = "invalid"
+    else:
+        second["claudeQuota"]["kind"] = "weekly_scoped"
+    cache["quotas"]["other"] = second
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.quota_state == ("exhausted" if other == "exhausted" else "unknown")
+    assert c.usable is (other != "exhausted")
+
+
+def test_explicit_unlimited_is_known_nonblocking_with_fresh_global_scope(sources):
+    window = sources["limits"]["caches"]["empty"]["quotas"]["weekly"]
+    window.update(unlimited=True, fractionReported=False, resetAt=None)
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.quota_state == "available"
+    assert c.usable
+
+
+@pytest.mark.parametrize("active,severity", [(False, "critical"), (True, "warning"), (None, None)])
+def test_claude_zero_without_blocking_metadata_is_not_exhaustion(sources, active, severity):
+    window = sources["limits"]["caches"]["empty"]["quotas"]["weekly"]
+    window["claudeQuota"].update(active=active, severity=severity)
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.usable
+    assert c.quota_state == "unknown"
+
+
+def test_exhausted_global_wins_over_unresolved_scoped_window(sources):
+    sources["limits"]["caches"]["empty"]["quotas"]["opaque"] = {"remainingPercentage": 80}
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert not c.usable
+    assert c.quota_state == "exhausted"
+
+
+def test_freshness_boundary_is_two_configured_sync_intervals(sources):
+    cache = sources["limits"]["caches"]["empty"]
+    cache["fetchedAt"] = (NOW - timedelta(minutes=140)).isoformat()
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.quota_state == "exhausted"
+    cache["fetchedAt"] = (NOW - timedelta(minutes=140, seconds=1)).isoformat()
+    c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
+    assert c.quota_state == "unknown"
+    assert c.usable
