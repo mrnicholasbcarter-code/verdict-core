@@ -53,20 +53,32 @@
   "limits": {
     "caches": {
       "ok": {
-        "quotas": null
+        "quotas": null,
+        "fetchedAt": "2026-10-20T12:00:00Z"
       },
       "cool": {
-        "quotas": null
+        "quotas": null,
+        "fetchedAt": "2026-10-20T12:00:00Z"
       },
       "empty": {
         "quotas": {
           "weekly": {
             "remainingPercentage": 0,
-            "resetAt": "2026-10-23T12:00:00Z"
+            "resetAt": "2026-10-23T12:00:00Z",
+            "claudeQuota": {
+              "kind": "weekly_all",
+              "active": true,
+              "severity": "critical",
+              "scopeKey": null,
+              "modelId": null,
+              "modelDisplayName": null
+            }
           }
-        }
+        },
+        "fetchedAt": "2026-10-20T12:00:00Z"
       }
-    }
+    },
+    "intervalMinutes": 70
   },
   "cooldowns": {
     "items": []

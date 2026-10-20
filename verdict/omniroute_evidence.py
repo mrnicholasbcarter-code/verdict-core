@@ -7,11 +7,12 @@ also require a usable provider and respect ``cooled_models`` at dispatch time.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 from urllib.request import Request
 
@@ -27,6 +28,9 @@ class ConnectionHealth:
     reason: str | None
     last_tested: datetime | None
     test_status: str | None
+    quota_state: Literal["unknown", "available", "exhausted"] = "unknown"
+    quota_reason: str | None = None
+    quota_observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -69,25 +73,77 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def _exhausted(window: dict[str, Any], now: datetime) -> bool:
-    if window.get("unlimited") is True:
-        return False
-    reset = _date(window.get("resetAt"))
-    if reset is not None and reset <= now:
-        return False
-    remaining = _number(window.get("remainingPercentage"))
-    if remaining is None:
-        remaining = _number(window.get("remaining"))
-    if remaining is not None:
-        return remaining <= 0
-    used, total = _number(window.get("used")), _number(window.get("total"))
-    return used is not None and total is not None and total > 0 and used >= total
+# Verdict freshness policy, not an upstream API TTL; no additional scheduler.
+QUOTA_MAX_SYNC_INTERVALS = 2
+
+
+def _quota_evidence(
+    cache: dict[str, Any] | None, interval_minutes: Any, now: datetime
+) -> tuple[Literal["unknown", "available", "exhausted"], str | None, datetime | None]:
+    if cache is None:
+        return "unknown", "cache_missing", None
+    observed = _date(cache.get("fetchedAt"))
+    interval = _number(interval_minutes)
+    if interval is None or not math.isfinite(interval) or interval <= 0:
+        return "unknown", "sync_interval_unknown", observed
+    if observed is None or observed > now:
+        return "unknown", "observation_time_unknown", observed
+    age_minutes = (now - observed).total_seconds() / 60
+    if age_minutes > QUOTA_MAX_SYNC_INTERVALS * interval:
+        return "unknown", "observation_stale", observed
+    quotas = cache.get("quotas")
+    if not isinstance(quotas, dict) or not quotas or cache.get("message"):
+        return "unknown", "quota_unreported", observed
+    unknown = False
+    for window in quotas.values():
+        if not isinstance(window, dict):
+            unknown = True
+            continue
+        # Only native explicit-global metadata establishes connection scope.
+        # Generic names such as weekly/credits are not a scope contract.
+        scope = window.get("claudeQuota")
+        if not isinstance(scope, dict) or scope.get("kind") not in {"session", "weekly_all"}:
+            unknown = True
+            continue
+        reset = _date(window.get("resetAt"))
+        if reset is not None and reset <= now:
+            unknown = True
+            continue
+        if window.get("unlimited") is True:
+            continue
+        if window.get("fractionReported") is False or reset is None:
+            unknown = True
+            continue
+        remaining = _number(window.get("remainingPercentage"))
+        if remaining is None:
+            remaining = _number(window.get("remaining"))
+        if remaining is None:
+            used, total = _number(window.get("used")), _number(window.get("total"))
+            if used is not None and total is not None and total > 0:
+                remaining = total - used
+        if remaining is None or not math.isfinite(remaining):
+            unknown = True
+        elif remaining <= 0:
+            # Claude current-limit percentages can be predictive display data.
+            # Native preflight requires active critical metadata and a future reset.
+            if (
+                scope.get("active") is True
+                and scope.get("severity") in {None, "critical"}
+                and reset is not None
+            ):
+                return "exhausted", "global_window_exhausted", observed
+            unknown = True
+    if cache.get("modelQuotas"):
+        unknown = True
+    if unknown:
+        return "unknown", "window_scope_or_value_unknown", observed
+    return "available", None, observed
 
 
 def _connection_reason(
     row: dict[str, Any],
     live: dict[str, Any] | None,
-    cache: dict[str, Any] | None,
+    quota_state: Literal["unknown", "available", "exhausted"],
     breakers: dict[str, str],
     now: datetime,
     missing: bool,
@@ -98,7 +154,7 @@ def _connection_reason(
         return "test_not_passed"
     if missing:
         return "availability_unknown"
-    if live is None or cache is None:
+    if live is None:
         return "connection_evidence_missing"
     if live.get("connectionStatus") != "healthy":
         return "connection_not_healthy"
@@ -109,12 +165,7 @@ def _connection_reason(
     state = breaker.get("state") if isinstance(breaker, dict) else breakers.get(row["provider"])
     if state is not None and state != "CLOSED":
         return "breaker_not_closed"
-    quotas = cache.get("quotas")
-    if quotas is not None and not isinstance(quotas, dict):
-        return "limits_unknown"
-    if isinstance(quotas, dict) and any(
-        _exhausted(window, now) for window in quotas.values() if isinstance(window, dict)
-    ):
+    if quota_state == "exhausted":
         return "quota_exhausted"
     return None
 
@@ -131,9 +182,9 @@ def parse_omniroute_evidence(
 ) -> OmniRouteEvidence:
     """Parse audited API shapes; missing source payloads never grant availability.
 
-    ``quotas: null`` means OmniRoute has no upstream quota API for that
-    connection, not an exhausted window. Missing connection caches are unknown.
-    Exhausted windows are conservative connection-wide exclusions until reset.
+    Sparse or null quota rows remain unknown, independently of connection health.
+    Only fresh, reported, explicitly global blocking windows exclude connections.
+    Model-scoped or unresolved windows remain the gateway's request-time concern.
     Catalog aliases are retained only when owned_by + root match exactly.
     """
     sources = {
@@ -175,13 +226,15 @@ def parse_omniroute_evidence(
         if not isinstance(connection_id, str) or not isinstance(provider, str):
             continue
         cache = caches.get(connection_id)
-        reason = _connection_reason(
-            row,
-            live.get(connection_id),
+        quota_state, quota_reason, observed = _quota_evidence(
             cache if isinstance(cache, dict) else None,
-            breakers,
+            limits.get("intervalMinutes") if "limits" not in errors else None,
             now,
-            missing,
+        )
+        if "limits" in errors:
+            quota_reason = "source_unavailable"
+        reason = _connection_reason(
+            row, live.get(connection_id), quota_state, breakers, now, missing
         )
         connections.append(
             ConnectionHealth(
@@ -191,6 +244,9 @@ def parse_omniroute_evidence(
                 reason,
                 _date(row.get("lastTested")),
                 row.get("testStatus") if isinstance(row.get("testStatus"), str) else None,
+                quota_state,
+                quota_reason,
+                observed,
             )
         )
     routes: dict[tuple[str, str], list[str]] = {}
