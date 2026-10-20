@@ -464,6 +464,87 @@ async def test_owned_path_under_byproduct_prefix_stays_a_deliverable(repo: Path)
     assert out.returncode == 0 and "a by cc/s" in out.stdout
 
 
+async def test_owned_deletion_under_byproduct_prefix_is_staged(repo: Path) -> None:
+    """A tracked owned file under venv/ that the node deletes must show up as a
+    deletion in changed_files, not disappear because it no longer exists on disk."""
+    from verdict.orchestration.runtime import Git
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    (repo / "venv" / "src" / "module.py").write_text("tracked\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "track venv/src/module.py"], cwd=repo, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "venv" / "src" / "module.py").unlink()
+    (repo / "venv" / "lib").mkdir(parents=True)
+    (repo / "venv" / "lib" / "byproduct.py").write_text("x\n")
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=("venv/src/module.py",))
+
+    assert changed == ["venv/src/module.py"]
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert "D  venv/src/module.py" in status
+    assert "venv/lib" not in status.replace("??", "").strip() or "?? venv/" in status
+
+
+async def test_owned_path_with_pathspec_magic_name_is_staged_literally(repo: Path) -> None:
+    """An owned path containing a git pathspec wildcard character (``*``) must
+    be matched literally, so a worker's unowned sibling under the same
+    byproduct-excluded directory is never swept in by accidental glob magic."""
+    from verdict.orchestration.runtime import Git
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "venv" / "src").mkdir(parents=True)
+    owned_literal_name = ":(glob)x.py"
+    (repo / "venv" / "src" / owned_literal_name).write_text("owned\n")
+    (repo / "venv" / "src" / "unowned_sibling.py").write_text("not owned\n")
+    weird_name = f"venv/src/{owned_literal_name}"
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=(weird_name,))
+
+    assert changed == [weird_name]
+
+
+async def test_owned_path_with_wildcard_character_is_not_expanded_as_a_glob(repo: Path) -> None:
+    """A node's declared owned_files entry whose exact name contains a pathspec
+    wildcard character (``*``) must be matched literally: deleting that exact
+    tracked path must never, via glob expansion, also sweep in and stage an
+    unrelated unowned sibling that happens to match the same glob pattern.
+    """
+    from verdict.orchestration.runtime import Git
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    owned_path = "venv/src/x*y.py"
+    (repo / owned_path).write_text("tracked owned file with a literal '*' in its name\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "track owned glob-named file"], cwd=repo, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    (repo / owned_path).unlink()
+    unowned_sibling = repo / "venv" / "src" / "xzzzy.py"  # matches the glob "x*y.py"
+    unowned_sibling.write_text("unowned sibling that happens to match the glob pattern\n")
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=(owned_path,))
+
+    assert changed == [owned_path]
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert f"D  {owned_path}" in status
+    assert "xzzzy.py" not in status.split("\n", 1)[0]
+    assert "A  venv/src/xzzzy.py" not in status
+
+
 async def test_verification_failure_is_rejected_not_validated(repo: Path) -> None:
     graph = WorkGraph("g", (node("a"),))
     ex = Executor({("a", "cc/s"): "badcode"})

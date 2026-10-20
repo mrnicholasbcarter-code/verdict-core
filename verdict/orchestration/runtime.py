@@ -308,19 +308,27 @@ class Git:
         Directory byproducts (``venv/``, ``.serena/``, ``__pycache__/``, ...)
         are never staged UNLESS a path under one of those prefixes is itself in
         ``owned_files`` — a node that legitimately owns a path like
-        ``venv/src/module.py`` must still see it as its deliverable, not have
-        it silently hidden by the exclude.
+        ``venv/src/module.py`` must still see it as its deliverable (including
+        a deletion of it), not have it silently hidden by the exclude.
+
+        Owned paths are staged as literal pathspecs (``:(literal)<path>``) so a
+        path containing git pathspec magic characters (e.g. a filename starting
+        with ``:(``) is matched exactly rather than reinterpreted.
         """
         dir_excludes = [p for p in BYPRODUCT_EXCLUDES if p.endswith("/")]
-        pathspec = [f":(exclude){pattern}" for pattern in BYPRODUCT_EXCLUDES]
-        await self.call("add", "-A", "--", ".", *pathspec, cwd=cwd)
+        exclude_pathspec = [f":(exclude){pattern}" for pattern in BYPRODUCT_EXCLUDES]
+        await self.call("add", "-A", "--", ".", *exclude_pathspec, cwd=cwd)
         owned_under_byproduct = [
             p for p in owned_files if any(p.startswith(prefix) for prefix in dir_excludes)
         ]
         if owned_under_byproduct:
-            existing = [p for p in owned_under_byproduct if (cwd / p).exists()]
-            if existing:
-                await self.call("add", "-f", "--", *existing, cwd=cwd)
+            literal_pathspec = [f":(literal){p}" for p in owned_under_byproduct]
+            # -A also stages a deletion of an already-tracked owned path; a
+            # pathspec matching nothing (never tracked, no longer on disk) is
+            # not an error for this node, so each is tried independently.
+            for spec in literal_pathspec:
+                with contextlib.suppress(OrchestrationError):
+                    await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
