@@ -385,7 +385,6 @@ def test_skip_identity_verify_requires_test_mode(monkeypatch):
     assert exc.value.code == 2
 
 
-@pytest.mark.timing
 def test_cli_identity_mismatch_blocks_before_mission_watchdog(tmp_path):
     """Popen is required for roster observation; mission/watchdog must not run after mismatch.
 

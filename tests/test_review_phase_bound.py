@@ -236,7 +236,6 @@ async def test_review_scope_closes_after_timeout(
     assert review_ops[0]["status"] == "ended"
 
 
-@pytest.mark.timing
 async def test_blocking_reviewer_selector_does_not_block_event_loop_or_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

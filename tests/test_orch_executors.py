@@ -367,7 +367,6 @@ def test_nonzero_exit_uses_stderr_tail(tmp_path: Path) -> None:
     assert result.error.endswith("x")
 
 
-@pytest.mark.timing
 def test_timeout_kills_process_group(tmp_path: Path) -> None:
     marker = tmp_path / "grandchild.pid"
     body = (
