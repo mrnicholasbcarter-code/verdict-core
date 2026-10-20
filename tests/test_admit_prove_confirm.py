@@ -144,6 +144,11 @@ def test_live_consent_refreshes_expired_passport_inside_confirm_budget() -> None
     """Operational TTL expiry must not empty the pool when a bounded confirm works."""
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    from dataclasses import replace
+
+    base = replace(
+        base, admitted=(identity, *(r for r in base.admitted if r != identity)), chosen=identity
+    )
     other = "opencode/hy3-free"
     expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     probed: list[str] = []
@@ -183,6 +188,11 @@ def test_live_consent_refreshes_expired_passport_inside_confirm_budget() -> None
 def test_confirm_refresh_persists_when_store_path_is_configured(tmp_path: Path) -> None:
     base = admit_free_tier_active(_snapshot())
     identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    from dataclasses import replace
+
+    base = replace(
+        base, admitted=(identity, *(r for r in base.admitted if r != identity)), chosen=identity
+    )
     path = tmp_path / "state.json"
     expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=5))
     ProveAtRestStore(path=path).write(
@@ -319,8 +329,8 @@ def test_gate_loads_passports_from_prove_at_rest_store(tmp_path: Path) -> None:
 # --- authoritative free-first confirm shortlist --------------------
 
 
-def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
-    """A free model named without ``:free``/``-free`` must not lose the shortlist to paid."""
+def test_confirm_preserves_capability_shortlist_order_without_free_priority() -> None:
+    """Price labels cannot reorder the supplied capability shortlist."""
     from dataclasses import replace
 
     from verdict.free_tier_admit import expand_admit_for_worthiness
@@ -371,12 +381,12 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
         live=True,
         consented=True,
     )
-    assert probed == [free_plain], "free candidate must be confirmed before any paid fallback"
-    assert gated.chosen == free_plain
+    assert probed == [paid], "confirm must preserve incoming shortlist order"
+    assert gated.chosen == paid
     named = {item.model_id: item.reason for item in gated.exclusions}
-    assert named[paid] == "confirm_budget_exhausted"
+    assert named[free_plain] == "confirm_budget_exhausted"
 
-    # Name heuristics alone would have put the alphabetically-earlier paid model first.
+    # Removing free-tier metadata must not change confirm order.
     heuristic_only = replace(ordinary, free_admitted=())
     probed.clear()
     gate_admit_prove_confirm(
@@ -395,7 +405,7 @@ def test_free_identity_without_free_suffix_is_confirmed_before_paid() -> None:
         live=True,
         consented=True,
     )
-    assert probed == [paid], "sanity: the fix is the authoritative free_admitted set"
+    assert probed == [paid], "free membership does not control confirm order"
 
 
 # --- no-passport candidates reach live confirm probe (BOD-349) --------
@@ -665,4 +675,30 @@ def test_one_fresh_passport_skips_three_stale_candidates() -> None:
     assert calls == []
     assert result.admitted == (ids[-1],)
     assert result.chosen == ids[-1]
+    assert result.confirm == ()
+
+
+def test_nonfree_route_reuses_fresh_health_cache_proof(tmp_path: Path) -> None:
+    from verdict.free_tier_admit import FreeTierAdmitReceipt
+    from verdict.orchestration.health_cache import HealthCache, ProbeResult
+
+    identity = "subscription/strong-code"
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
+    cache.record(identity, ProbeResult("ok", chat_ok=True, tool_ok=True), NOW)
+    cache.save()
+    receipt = FreeTierAdmitReceipt(
+        admitted=(identity,),
+        chosen=identity,
+        empty_intersection=False,
+        exclusions=(),
+        active_providers=("subscription",),
+        free_tier_providers=(),
+        free_admitted=(),
+    )
+    result = gate_admit_prove_confirm(
+        receipt, passport_store_path=tmp_path / "absent.json", health_cache_path=path, now=NOW
+    )
+    assert result.admitted == (identity,)
+    assert result.passport[0].fresh
     assert result.confirm == ()
