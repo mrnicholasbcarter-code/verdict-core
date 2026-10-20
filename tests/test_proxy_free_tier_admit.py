@@ -564,6 +564,18 @@ def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(monkeyp
     transport = RecordingTransport()
     _configure(monkeypatch, transport, service)
 
+    from verdict import intelligence
+
+    minted: list[dict[str, Any]] = []
+    real_proof = intelligence._chosen_route_proof
+
+    def recording(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        proofs = real_proof(*args, **kwargs)
+        minted.append(proofs)
+        return proofs
+
+    monkeypatch.setattr(intelligence, "_chosen_route_proof", recording)
+
     with TestClient(api.app) as client:
         response = client.post(
             "/v1/chat/completions",
@@ -572,12 +584,17 @@ def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(monkeyp
                 "messages": [{"role": "user", "content": "summarize this paragraph"}],
                 "max_tokens": 16,
                 "criticality": "low",
+                # A client cannot choose the origin the proof is bound to.
+                "_dispatch_gateway_origin": "http://attacker.example",
             },
         )
 
     assert response.status_code == 200, response.text
     assert response.headers["x-verdict-model"] == identity
     assert [request["body"]["model"] for request in transport.requests] == [identity]
+    assert [proof.scope.gateway_origin for proof in minted[-1].values()] == [
+        "http://127.0.0.1:20128"
+    ]
 
 
 def test_admit_decision_mints_no_proof_without_fresh_passport() -> None:
@@ -601,3 +618,13 @@ def test_admit_decision_mints_no_proof_without_fresh_passport() -> None:
     context = {"_dispatch_gateway_origin": "http://127.0.0.1:20128/v1"}
 
     assert _chosen_route_proof(receipt, identity, "openrouter", context) == {}
+
+
+def test_authority_context_drops_client_supplied_internal_keys() -> None:
+    """Underscore keys are server-internal (e.g. the trusted dispatch origin the
+    relay proof is bound to); a client payload cannot supply them."""
+    context = api._authority_context(
+        {"model": "auto", "_dispatch_gateway_origin": "http://attacker.example"}, task="t"
+    )
+    assert "_dispatch_gateway_origin" not in context
+    assert context["model"] == "auto"

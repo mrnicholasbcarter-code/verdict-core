@@ -623,11 +623,13 @@ def _count_files(root: Path) -> int:
     if not root.is_dir():
         return 0
     count = 0
-    for _dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
-        count += len(filenames)
-        if count >= MAX_COUNT_FILES:
-            return MAX_COUNT_FILES
+        for name in filenames:
+            if os.path.isfile(os.path.join(dirpath, name)):
+                count += 1
+                if count >= MAX_COUNT_FILES:
+                    return MAX_COUNT_FILES
     return count
 
 

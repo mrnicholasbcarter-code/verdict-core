@@ -1313,7 +1313,9 @@ def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
                 raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
             raise ExecutionPathError(f"reserved control field {key!r} is not accepted")
 
-    context = dict(payload)
+    # Underscore keys are server-internal (e.g. the trusted dispatch origin set
+    # after this call); a client payload never supplies them.
+    context = {key: value for key, value in payload.items() if not str(key).startswith("_")}
 
     # Server policy: critical tasks are protected and cannot be lowered by client fields
     if (

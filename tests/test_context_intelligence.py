@@ -171,3 +171,16 @@ def test_count_files_stops_at_the_cap_without_walking_the_rest(
     monkeypatch.setattr(ci.os, "walk", spy_walk)
     assert ci._count_files(tmp_path) == 25
     assert len(walked) <= 4  # root plus the few directories needed to reach 25 files
+
+
+def test_count_files_counts_regular_files_only(tmp_path: Path) -> None:
+    """os.walk lists a symlink to a directory and a broken symlink under
+    filenames; neither is a file (the previous Path.is_file() semantics)."""
+    import verdict.context_intelligence as ci
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.txt").write_text("x")
+    (tmp_path / "dir_link").symlink_to(real, target_is_directory=True)
+    (tmp_path / "broken_link").symlink_to(tmp_path / "missing")
+    assert ci._count_files(tmp_path) == 1
