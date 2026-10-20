@@ -266,6 +266,33 @@ BYPRODUCT_EXCLUDES = (
 )
 
 
+def _ensure_local_excludes(cwd: Path) -> None:
+    """Append byproduct patterns to the worktree's info/exclude (untracked, local only).
+
+    This protects every ``git add -A`` and merge in the worktree (node commits,
+    integration), not just ``changed_files`` staging. Owned paths under an
+    excluded prefix are force-added separately in ``Git.changed_files``.
+    """
+    git_path = cwd / ".git"
+    try:
+        if git_path.is_file():
+            gitdir = Path(git_path.read_text().split(":", 1)[1].strip())
+            common = gitdir / "commondir"
+            if common.exists():
+                gitdir = (gitdir / common.read_text().strip()).resolve()
+        else:
+            gitdir = git_path
+        exclude = gitdir / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        current = exclude.read_text() if exclude.exists() else ""
+        missing = [p for p in BYPRODUCT_EXCLUDES if p not in current.splitlines()]
+        if missing:
+            with exclude.open("a", encoding="utf-8") as stream:
+                stream.write("\n# verdict orchestration byproducts\n" + "\n".join(missing) + "\n")
+    except OSError:
+        pass
+
+
 class Git:
     """Minimal git worktree operations for node isolation and integration."""
 
@@ -315,9 +342,9 @@ class Git:
         path containing git pathspec magic characters (e.g. a filename starting
         with ``:(``) is matched exactly rather than reinterpreted.
         """
+        _ensure_local_excludes(cwd)
         dir_excludes = [p for p in BYPRODUCT_EXCLUDES if p.endswith("/")]
-        exclude_pathspec = [f":(exclude){pattern}" for pattern in BYPRODUCT_EXCLUDES]
-        await self.call("add", "-A", "--", ".", *exclude_pathspec, cwd=cwd)
+        await self.call("add", "-A", cwd=cwd)
         owned_under_byproduct = [
             p for p in owned_files if any(p.startswith(prefix) for prefix in dir_excludes)
         ]
