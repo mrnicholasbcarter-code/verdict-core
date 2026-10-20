@@ -1229,3 +1229,25 @@ def test_relative_orchestrate_run_feeds_demotion_from_another_cwd(
     assert (out.candidate_pool or {})["history_disclosure"]["observations_count"] == 3
     # Without demotion the alphabetical tie-break puts weak first.
     assert [entry.route_id for entry in pool.shortlist] == [mid, weak]
+
+
+def test_malformed_index_lines_are_skipped_and_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(home))
+    monkeypatch.delenv(ENV_ROOTS, raising=False)
+    run = _orchestrate_run(
+        tmp_path / "runs" / "good",
+        route_id="route/x",
+        goal="implement the billing export",
+        fails=0,
+        at=datetime(2026, 10, 19, 6, 0, tzinfo=timezone.utc),
+    )
+    index = home / "verified-runs.txt"
+    with index.open("a", encoding="utf-8") as handle:
+        handle.write("relative/run\n/runs/half\x00/runs/other\n")
+    with caplog.at_level(logging.WARNING, logger="verdict.outcome_shadow"):
+        assert resolve_outcome_shadow_roots(None) == (run.resolve(),)
+    malformed = [r.getMessage() for r in caplog.records if "malformed" in r.getMessage()]
+    assert len(malformed) == 2

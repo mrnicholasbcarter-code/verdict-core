@@ -147,7 +147,16 @@ def _indexed_verified_roots(
         return ()
     if size > DEFAULT_MAX_INDEX_TAIL_BYTES:
         tail = tail[1:]  # the first line may be cut
-    candidates = _canonicalize_roots([line.strip() for line in reversed(tail) if line.strip()])
+    entries: list[str] = []
+    for line in reversed(tail):
+        entry = line.strip()
+        if not entry:
+            continue
+        if not entry.startswith("/") or "\ufffd" in entry or "\x00" in entry:
+            _LOG.warning("outcome history: skipped index line %r (malformed)", entry[:200])
+            continue
+        entries.append(entry)
+    candidates = _canonicalize_roots(entries)
     roots: list[Path] = []
     for run_dir in candidates[: max(0, max_candidates)]:
         if len(roots) >= max_roots:

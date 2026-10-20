@@ -27,6 +27,7 @@ when empty so existing committed receipts still verify.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -839,8 +840,25 @@ def _record_run_attempts(run_dir: Path, receipt: Mapping[str, Any]) -> None:
 
     home = verdict_home()
     append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=home)
-    with (home / VERIFIED_RUNS_FILE).open("a", encoding="utf-8") as index:
-        index.write(f"{run_dir.resolve()}\n")
+    append_run_index(home, run_dir)
+
+
+def append_run_index(home: Path, run_dir: Path) -> None:
+    """Append one absolute run dir line to ``<home>/verified-runs.txt``.
+
+    Same pattern as ``outcome_records._append_lines``: the whole line goes out
+    in one ``os.write`` on an ``O_APPEND`` fd held under an exclusive
+    ``flock``, so concurrent runs never interleave a line.
+    """
+    line = f"{Path(run_dir).resolve()}\n".encode()
+    home.mkdir(parents=True, exist_ok=True)
+    fd = os.open(home / VERIFIED_RUNS_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.write(fd, line) != len(line):
+            raise OSError(f"short write to {home / VERIFIED_RUNS_FILE}")
+    finally:
+        os.close(fd)
 
 
 def write_run_receipt(run_dir: Path) -> Path:
