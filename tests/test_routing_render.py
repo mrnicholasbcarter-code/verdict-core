@@ -374,6 +374,7 @@ class TestFilterPaginate:
 
 
 class TestLargeCatalog:
+    @pytest.mark.timing
     def test_ten_thousand_rows_render_under_one_second(self) -> None:
         selected = _cand("cc/win", reached="SELECTED", reason="selected", rank=0)
         rows = [selected]
