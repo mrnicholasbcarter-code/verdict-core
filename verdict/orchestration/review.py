@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from verdict.credentials_store import resolve_gateway_key
 from verdict.orchestration.contracts import (
     FailureClassification,
     ModelSelector,
@@ -696,12 +697,14 @@ class OpenCodeReviewer:
     # -- internals ---------------------------------------------------------
 
     def _read_api_key(self) -> str:
-        import os
-
-        value = os.environ.get(self._api_key_env)
-        if not value:
-            raise KeyError(f"missing API key env {self._api_key_env}")
-        return value
+        if self._api_key_env != "VERDICT_OMNIROUTE_API_KEY":
+            value = os.environ.get(self._api_key_env)
+            if value:
+                return value
+        resolved = resolve_gateway_key()
+        if resolved is not None:
+            return resolved[0]
+        raise KeyError(f"missing API key env {self._api_key_env}")
 
     def _write_isolated_config(self, home_dir: Path, api_key: str) -> None:
         cfg_dir = home_dir / ".opencodereview"
