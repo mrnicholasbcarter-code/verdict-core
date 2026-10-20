@@ -86,3 +86,44 @@ def test_prefilter_reads_a_bounded_prefix(tmp_path: Path, monkeypatch: pytest.Mo
     assert not cs._mentions(big, (b"target_fn",))
     monkeypatch.setattr(cs, "MAX_SCAN_FILE_BYTES", 1 << 20)
     assert cs._mentions(big, (b"target_fn",))
+
+
+def test_matched_files_are_bounded_by_count_and_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-431 (E): with cwd=/tmp as the workspace, plain words matched 6,835 files
+    (135 MB). Each one was parsed and cached as an AST (~35x the source), and serve
+    was OOM-killed. The matched set is capped by count and bytes and reported."""
+    for i in range(30):
+        (tmp_path / f"m_{i}.py").write_text(f"def target_fn_{i}():\n    return 'target_fn'\n")
+    monkeypatch.setattr(cs, "MAX_MATCHED_FILES", 10)
+    files, bounded = cs._iter_py_files(tmp_path, None, ("target_fn",))
+    assert len(files) == 10
+    assert bounded is True
+
+    monkeypatch.setattr(cs, "MAX_MATCHED_FILES", 1_000)
+    one = (tmp_path / "m_0.py").stat().st_size
+    monkeypatch.setattr(cs, "MAX_MATCHED_BYTES", one * 5)
+    files, bounded = cs._iter_py_files(tmp_path, None, ("target_fn",))
+    assert sum(p.stat().st_size for p in files) <= one * 5
+    assert bounded is True
+
+
+def test_oversized_file_is_skipped_by_size_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "small.py").write_text("def target_fn():\n    pass\n")
+    (tmp_path / "huge.py").write_text("def target_fn():\n    pass\n" + "x = 1\n" * 1000)
+    monkeypatch.setattr(cs, "MAX_SCAN_FILE_BYTES", 100)
+    opened: list[str] = []
+    real = cs._mentions
+
+    def spy(path: Path, needles: tuple[bytes, ...]) -> bool:
+        opened.append(path.name)
+        return real(path, needles)
+
+    monkeypatch.setattr(cs, "_mentions", spy)
+    files, bounded = cs._iter_py_files(tmp_path, None, ("target_fn",))
+    assert [p.name for p in files] == ["small.py"]
+    assert "huge.py" not in opened
+    assert bounded is False
