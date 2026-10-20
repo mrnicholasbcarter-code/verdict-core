@@ -1,0 +1,117 @@
+{
+  "providers": {
+    "connections": [
+      {
+        "id": "ok",
+        "provider": "alpha",
+        "isActive": true,
+        "testStatus": "active",
+        "lastTested": "2026-10-20T12:00:00Z"
+      },
+      {
+        "id": "cool",
+        "provider": "beta",
+        "isActive": true,
+        "testStatus": "active",
+        "lastTested": "2026-10-20T12:00:00Z"
+      },
+      {
+        "id": "empty",
+        "provider": "gamma",
+        "isActive": true,
+        "testStatus": "active",
+        "lastTested": "2026-10-20T12:00:00Z"
+      }
+    ]
+  },
+  "resilience": {
+    "connections": [
+      {
+        "id": "ok",
+        "provider": "alpha",
+        "connectionStatus": "healthy",
+        "cooldownRemainingMs": 0,
+        "lockouts": []
+      },
+      {
+        "id": "cool",
+        "provider": "beta",
+        "connectionStatus": "cooling_down",
+        "cooldownRemainingMs": 0,
+        "lockouts": []
+      },
+      {
+        "id": "empty",
+        "provider": "gamma",
+        "connectionStatus": "healthy",
+        "cooldownRemainingMs": 0,
+        "lockouts": []
+      }
+    ],
+    "breakers": []
+  },
+  "limits": {
+    "caches": {
+      "ok": {
+        "quotas": null
+      },
+      "cool": {
+        "quotas": null
+      },
+      "empty": {
+        "quotas": {
+          "weekly": {
+            "remainingPercentage": 0,
+            "resetAt": "2026-10-23T12:00:00Z"
+          }
+        }
+      }
+    }
+  },
+  "cooldowns": {
+    "items": []
+  },
+  "health_matrix": {
+    "providers": [
+      {
+        "provider": "alpha",
+        "accounts": [
+          {
+            "connectionId": "ok",
+            "models": [
+              {
+                "model": "best",
+                "status": "healthy",
+                "requests": 3,
+                "successes": 3,
+                "lastStatus": 200,
+                "lastRequestAt": "2026-10-20T12:00:00Z"
+              },
+              {
+                "model": "not-entitled",
+                "status": "error",
+                "requests": 40,
+                "successes": 0,
+                "lastStatus": 403
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "v1_models": {
+    "data": [
+      {
+        "id": "a/best",
+        "owned_by": "alpha",
+        "root": "best"
+      },
+      {
+        "id": "a/not-entitled",
+        "owned_by": "alpha",
+        "root": "not-entitled"
+      }
+    ]
+  }
+}
