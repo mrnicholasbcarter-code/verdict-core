@@ -189,3 +189,86 @@ def test_serve_startup_names_health_only_runtime_sources(monkeypatch) -> None:
     monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "mgmt-test-token")
     with_token = {d["code"] for d in api.server_bootstrap_diagnostics()["diagnostics"]}
     assert "runtime_sources_health_only" not in with_token
+
+
+def test_connections_rows_carry_their_own_read_time_not_the_health_stamp(monkeypatch) -> None:
+    """BOD-431 (D): OmniRoute's /api/monitoring/health stamp is as old as the
+    gap since the previous read (live: 128 s on a cold serve). Provider rows the
+    live connections read speaks for must carry that read's time, so a healthy
+    connection is not marked stale by the health stamp. Fresh negatives from
+    connections still block; a provider with only the stale health row stays
+    unknown."""
+    from datetime import datetime, timedelta, timezone
+
+    import verdict.api as api
+    from verdict.availability import AvailabilityState
+
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "mgmt-test-token")
+
+    stale_stamp = (datetime.now(timezone.utc) - timedelta(seconds=128)).isoformat()
+    catalog = {
+        "data": [
+            {"id": "nara/laguna-s-2.1", "owned_by": "nara"},
+            {"id": "broken/model-b", "owned_by": "broken"},
+            {"id": "cool/model-d", "owned_by": "cool"},
+            {"id": "cursor/model-c", "owned_by": "cursor"},
+        ]
+    }
+    health = {
+        "status": "healthy",
+        "timestamp": stale_stamp,
+        "providerHealth": {
+            "nara": {"state": "CLOSED"},
+            "broken": {"state": "CLOSED"},
+            "cool": {"state": "CLOSED"},
+            "cursor": {"state": "CLOSED"},
+        },
+    }
+    connections = {
+        "connections": [
+            {"provider": "nara", "isActive": True, "isCoolingDown": False, "breaker": None},
+            {
+                "provider": "broken",
+                "isActive": True,
+                "isCoolingDown": False,
+                "breaker": {"state": "OPEN"},
+            },
+            {
+                "provider": "cool",
+                "isActive": True,
+                "isCoolingDown": True,
+                "cooldownRemainingMs": 60_000,
+                "breaker": None,
+            },
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies = {
+            "/v1/models": catalog,
+            "/api/monitoring/health": health,
+            "/api/resilience/connections": connections,
+        }
+        return httpx.Response(200, json=bodies.get(request.url.path, {}))
+
+    real_transport = OmniRouteHTTPTransport
+
+    def wrapped(*args: object, **kwargs: object) -> OmniRouteHTTPTransport:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_transport(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(api, "OmniRouteHTTPTransport", wrapped)
+
+    built = api._build_availability_cache()
+    assert built is not None
+    cache, _gate = built
+    states = {c.model.id: c.state for c in cache.get("nara/laguna-s-2.1").candidates}
+
+    assert states["nara/laguna-s-2.1"] == AvailabilityState.READY
+    # Negative live connection data wins over a closed health row.
+    assert states["broken/model-b"] == AvailabilityState.CIRCUIT_OPEN
+    assert states["cool/model-d"] == AvailabilityState.LOCKED_OUT
+    assert states["cursor/model-c"] == AvailabilityState.UNKNOWN

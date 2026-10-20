@@ -475,7 +475,14 @@ def _merge_connections(
     connection the strongest blocker wins: an open breaker, else a cooldown
     as a lockout until it ends. A model lockout applies only when every usable
     connection of the provider has it.
+
+    Connections is a live read of current gateway state, so the provider rows it
+    speaks for carry this read's time. The health payload's ``timestamp`` is a
+    cached stamp as old as the gap since its previous read (BOD-431: 128 s on a
+    cold ``verdict serve``) and would mark them stale.
     """
+    read_at = received_at.isoformat()
+    base = {**base, "observed_at": read_at}
     by_provider: dict[str, list[Mapping[str, Any]]] = {}
     for record in _records(payload, "connections"):
         provider = record.get("provider")
@@ -512,6 +519,8 @@ def _merge_connections(
             )
         else:
             _merge_observation(observations, provider, {"health": "degraded"}, base)
+        if provider in observations:
+            observations[provider]["observed_at"] = read_at
         locked: dict[str, int] | None = None
         for record in usable:
             current: dict[str, int] = {}
