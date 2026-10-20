@@ -169,6 +169,27 @@ class Executor:
             if kind == "outside":
                 (cwd / "not_owned.txt").write_text("x")
                 return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+            if kind == "byproducts":
+                (cwd / f"{node}.txt").write_text(f"{node} by {route_id}\n")
+                (cwd / ".serena").mkdir(parents=True, exist_ok=True)
+                (cwd / ".serena" / "project.yml").write_text("x")
+                (cwd / "venv" / "lib").mkdir(parents=True, exist_ok=True)
+                (cwd / "venv" / "lib" / "x.py").write_text("x")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+            if kind == "owned_under_venv":
+                # The node's single owned_files entry is itself under venv/, an
+                # otherwise-excluded byproduct prefix. A worker-created byproduct
+                # sibling (venv/lib/x.py, not owned) must still be ignored.
+                owned_path = cwd / f"venv/src/{node}.txt"
+                owned_path.parent.mkdir(parents=True, exist_ok=True)
+                owned_path.write_text(f"{node} by {route_id}\n")
+                (cwd / "venv" / "lib").mkdir(parents=True, exist_ok=True)
+                (cwd / "venv" / "lib" / "x.py").write_text("byproduct")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
             if kind == "badcode":
                 (cwd / f"{node}.txt").write_text("FAIL")
                 return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
@@ -207,14 +228,21 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def node(nid: str, deps: tuple[str, ...] = (), kind: NodeKind = NodeKind.IMPLEMENT) -> WorkNode:
-    check = ["sh", "-c", f"test -f {nid}.txt && ! grep -q FAIL {nid}.txt"]
+def node(
+    nid: str,
+    deps: tuple[str, ...] = (),
+    kind: NodeKind = NodeKind.IMPLEMENT,
+    owned_files: tuple[str, ...] | None = None,
+) -> WorkNode:
+    owned = owned_files if owned_files is not None else (f"{nid}.txt",)
+    target = owned[0]
+    check = ["sh", "-c", f"test -f {target} && ! grep -q FAIL {target}"]
     return WorkNode(
         nid,
         f"write {nid}",
         kind=kind,
         depends_on=deps,
-        owned_files=(f"{nid}.txt",),
+        owned_files=owned,
         verification_command=tuple(check),
     )
 
@@ -400,6 +428,160 @@ async def test_ownership_violation_rejected_and_reassigned(repo: Path) -> None:
     barrier = ev.of("barrier", "a")[0]
     assert barrier["name"] == "ownership" and barrier["ok"] is False
     assert any(r["state"] == "REJECTED" for r in ev.of("node_state", "a"))
+
+
+async def test_tool_byproducts_are_not_ownership_violations(repo: Path) -> None:
+    """A worker creating .serena/ and venv/ alongside the owned file must not trip the
+    ownership barrier: tool byproducts are not deliverables (BYPRODUCT_EXCLUDES)."""
+    graph = WorkGraph("g", (node("a"),))
+    ex = Executor({("a", "cc/s"): "byproducts"})
+    rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    barrier = ev.of("barrier", "a")[0]
+    assert barrier["name"] == "ownership" and barrier["ok"] is True
+    assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
+
+
+async def test_owned_path_under_byproduct_prefix_stays_a_deliverable(repo: Path) -> None:
+    """A node that genuinely owns a path under venv/ must still see it as its
+    deliverable: the byproduct exclude must never hide an owned path, only a
+    worker-created sibling the node does not own."""
+    graph = WorkGraph("g", (node("a", owned_files=("venv/src/a.txt",)),))
+    ex = Executor({("a", "cc/s"): "owned_under_venv"})
+    rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    barrier = ev.of("barrier", "a")[0]
+    assert barrier["name"] == "ownership" and barrier["ok"] is True
+    assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
+    out = subprocess.run(
+        ["git", "show", f"{result.integration_ref}:venv/src/a.txt"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0 and "a by cc/s" in out.stdout
+
+
+async def test_owned_deletion_under_byproduct_prefix_is_staged(repo: Path) -> None:
+    """A tracked owned file under venv/ that the node deletes must show up as a
+    deletion in changed_files, not disappear because it no longer exists on disk."""
+    from verdict.orchestration.runtime import Git
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    (repo / "venv" / "src" / "module.py").write_text("tracked\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "track venv/src/module.py"], cwd=repo, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "venv" / "src" / "module.py").unlink()
+    (repo / "venv" / "lib").mkdir(parents=True)
+    (repo / "venv" / "lib" / "byproduct.py").write_text("x\n")
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=("venv/src/module.py",))
+
+    assert changed == ["venv/src/module.py"]
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert "D  venv/src/module.py" in status
+    assert "venv/lib" not in status.replace("??", "").strip() or "?? venv/" in status
+
+
+async def test_owned_path_with_pathspec_magic_name_is_staged_literally(repo: Path) -> None:
+    """An owned path containing a git pathspec wildcard character (``*``) must
+    be matched literally, so a worker's unowned sibling under the same
+    byproduct-excluded directory is never swept in by accidental glob magic."""
+    from verdict.orchestration.runtime import Git
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "venv" / "src").mkdir(parents=True)
+    owned_literal_name = ":(glob)x.py"
+    (repo / "venv" / "src" / owned_literal_name).write_text("owned\n")
+    (repo / "venv" / "src" / "unowned_sibling.py").write_text("not owned\n")
+    weird_name = f"venv/src/{owned_literal_name}"
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=(weird_name,))
+
+    assert changed == [weird_name]
+
+
+async def test_owned_path_with_wildcard_character_is_not_expanded_as_a_glob(repo: Path) -> None:
+    """A node's declared owned_files entry whose exact name contains a pathspec
+    wildcard character (``*``) must be matched literally: deleting that exact
+    tracked path must never, via glob expansion, also sweep in and stage an
+    unrelated unowned sibling that happens to match the same glob pattern.
+    """
+    from verdict.orchestration.runtime import Git
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    owned_path = "venv/src/x*y.py"
+    (repo / owned_path).write_text("tracked owned file with a literal '*' in its name\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "track owned glob-named file"], cwd=repo, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    (repo / owned_path).unlink()
+    unowned_sibling = repo / "venv" / "src" / "xzzzy.py"  # matches the glob "x*y.py"
+    unowned_sibling.write_text("unowned sibling that happens to match the glob pattern\n")
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=(owned_path,))
+
+    assert changed == [owned_path]
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert f"D  {owned_path}" in status
+    assert "xzzzy.py" not in status.split("\n", 1)[0]
+    assert "A  venv/src/xzzzy.py" not in status
+
+
+async def test_owned_add_real_failure_raises_not_silently_omitted(repo: Path) -> None:
+    """A real git failure (index lock, permission, ...) on the owned force-add
+    must raise OrchestrationError, not be swallowed into a silently incomplete
+    changed_files() result that drops a real deliverable."""
+    from verdict.orchestration.contracts import OrchestrationError
+    from verdict.orchestration.runtime import Git, subprocess_runner
+
+    (repo / "venv" / "src").mkdir(parents=True)
+    (repo / "venv" / "src" / "module.py").write_text("owned\n")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    async def failing_runner(argv: Any, cwd: Path, timeout: float) -> tuple[int, str]:
+        if "add" in argv and "-f" in argv:
+            return 128, "fatal: Unable to create '.git/index.lock': File exists."
+        return await subprocess_runner(argv, cwd, timeout)
+
+    git = Git(repo, runner=failing_runner)
+    with pytest.raises(OrchestrationError, match=r"index\.lock"):
+        await git.changed_files(repo, base, owned_files=("venv/src/module.py",))
+
+
+async def test_owned_path_untracked_and_absent_is_skipped_without_error(repo: Path) -> None:
+    """An owned path that is neither tracked by git nor present on disk (e.g.
+    the worker never created it) must be skipped silently: there is nothing
+    for this node to stage, and that is not an error."""
+    from verdict.orchestration.runtime import Git
+
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    git = Git(repo)
+    changed = await git.changed_files(repo, base, owned_files=("venv/src/never_created.py",))
+
+    assert changed == []
 
 
 async def test_verification_failure_is_rejected_not_validated(repo: Path) -> None:

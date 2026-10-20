@@ -300,7 +300,9 @@ async def test_hydrated_command_matches_runtime_execution(
         return 0, "ok"
 
     class Git:
-        async def changed_files(self, worktree: Path, base: str) -> list[str]:
+        async def changed_files(
+            self, worktree: Path, base: str, *, owned_files: tuple[str, ...] = ()
+        ) -> list[str]:
             return ["a.py"]
 
     class Events:
