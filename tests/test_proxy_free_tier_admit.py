@@ -518,3 +518,86 @@ def test_serve_without_cost_header_records_unmeasured_outcome(monkeypatch, tmp_p
     assert outcome["observed_cost_usd"] is None, "no header means unmeasured, never $0"
     assert outcome["cost_source"] is None
     assert outcome["status_code"] == 200
+
+
+def test_serve_admit_decision_carries_route_bound_proof_for_chosen_route(monkeypatch) -> None:
+    """BOD-431 (B): the production free-tier admit decision (no test proof
+    wrapper) must carry an admission proof for the chosen route, so the relay
+    forwards instead of answering 503 "missing route-bound admission proof"."""
+    now = datetime.now(timezone.utc)
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    snapshot = _snapshot(
+        catalog=[_catalog_row(identity)],
+        free_tier=[
+            {
+                "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+                "provider": "openrouter",
+                "freeType": "recurring-daily",
+            }
+        ],
+        providers=[{"provider": "openrouter", "isActive": True, "testStatus": "active"}],
+    )
+    passport = ModelPassport(
+        provider="openrouter",
+        model_id=identity,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=now - timedelta(minutes=1),
+        last_verified_timestamp=now - timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=10),
+    )
+    service = IntelligenceService(
+        primary_model="anthropic/claude-3-opus-20240229",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=snapshot,
+        execute_offload=False,
+        passports={identity: passport},
+        confirm_transport=_ok_confirm_transport(),
+        admit_now=now,
+        context_roots=(),
+        mcp_root="",
+    )
+    transport = RecordingTransport()
+    _configure(monkeypatch, transport, service)
+
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "auto",
+                "messages": [{"role": "user", "content": "summarize this paragraph"}],
+                "max_tokens": 16,
+                "criticality": "low",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-verdict-model"] == identity
+    assert [request["body"]["model"] for request in transport.requests] == [identity]
+
+
+def test_admit_decision_mints_no_proof_without_fresh_passport() -> None:
+    """The chosen-route proof needs a fresh passport row; otherwise none is minted
+    and the relay keeps denying dispatch."""
+    from verdict.free_tier_admit import FreeTierAdmitReceipt
+    from verdict.intelligence import _chosen_route_proof
+
+    identity = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
+    receipt = FreeTierAdmitReceipt(
+        admitted=(identity,),
+        exclusions=(),
+        chosen=identity,
+        empty_intersection=False,
+        active_providers=("openrouter",),
+        free_tier_providers=("openrouter",),
+        passport=({"identity_id": identity, "fresh": False, "reason": "passport_stale"},),
+        receipt_id="vrct_test",
+        task_profile_digest="sha256:profile",
+    )
+    context = {"_dispatch_gateway_origin": "http://127.0.0.1:20128/v1"}
+
+    assert _chosen_route_proof(receipt, identity, "openrouter", context) == {}

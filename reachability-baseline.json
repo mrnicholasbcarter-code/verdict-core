@@ -65,7 +65,7 @@
   },
   {
     "qualified_name": "verdict.availability_cache.build_cache_report",
-    "reason": "UNTRIAGED: build_cache_report has only non-production references; Bounded availability cache with documented TTL and stale-while-revalidate (verdict/availability_cache.py)."
+    "reason": "Public SDK/library API: build_cache_report is exported from verdict/__init__.py as the per-model freshness report over AvailabilityCache; local callers are tests."
   },
   {
     "qualified_name": "verdict.capability_registry.make_agentshield_stub",

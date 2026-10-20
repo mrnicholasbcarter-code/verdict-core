@@ -58,7 +58,7 @@ from verdict.metadata.store import (
     lookup_omniroute_id,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.models import AdmissionProof, ModelInfo, ProviderConfig, RoutingDecision
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
     load_verified_outcome_observations,
@@ -280,6 +280,47 @@ def _omission_reason_counts(omissions: Sequence[str]) -> dict[str, int]:
         reason = item.rsplit(":", 1)[-1] if item else "unknown"
         counts[reason] = counts.get(reason, 0) + 1
     return counts
+
+
+def _chosen_route_proof(
+    receipt: FreeTierAdmitReceipt, chosen: str, provider: str, context: dict[str, Any]
+) -> dict[str, AdmissionProof]:
+    """Relay admission proof for the chosen route only, from the admit receipt's evidence.
+
+    Missing evidence (gateway origin, profile digest, receipt id or a fresh
+    passport row) mints nothing, so the relay keeps denying dispatch.
+    """
+    from verdict.relay import admission_proof, dispatch_scope
+
+    gateway_origin = context.get("_dispatch_gateway_origin")
+    if (
+        not isinstance(gateway_origin, str)
+        or not receipt.task_profile_digest
+        or not receipt.receipt_id
+    ):
+        return {}
+    confirmation = {
+        "admitted": list(receipt.admitted),
+        "receipt_id": receipt.receipt_id,
+        "passport": [row.to_dict() if hasattr(row, "to_dict") else row for row in receipt.passport],
+    }
+    scope = dispatch_scope(
+        gateway_origin=gateway_origin,
+        provider=provider,
+        model=chosen,
+        route_id=chosen,
+        profile_digest=receipt.task_profile_digest,
+    )
+    proof = admission_proof(
+        confirmation,
+        route_id=chosen,
+        scope=scope,
+        authorization_digest=receipt.receipt_id,
+        provider=provider,
+        model=chosen,
+        now=datetime.now(timezone.utc),
+    )
+    return {chosen: proof} if proof is not None else {}
 
 
 class IntelligenceService:
@@ -1533,6 +1574,7 @@ class IntelligenceService:
                 provider="none",
                 decision="denied",
                 reason=f"fail_closed — 2 execution attempts exhausted: {error}",
+                admission_proofs={},
                 safety_flags=[*(_admit_dec.safety_flags or []), "fail_closed_attempts_exhausted"],
             )
         if _admit_path_advisory_flags:
@@ -1858,6 +1900,7 @@ class IntelligenceService:
             provider=provider,
             tier=final_tier,
             reason=f"free∩active ∩ fresh-passport ∩ confirmed admitted {chosen}",
+            admission_proofs=_chosen_route_proof(receipt, chosen, provider, contract),
             alternatives=list(receipt.admitted[:8]),
             escalated=escalated,
             escalation_reason=esc_reason or None,
