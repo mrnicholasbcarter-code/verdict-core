@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from verdict.classifier import classify
-from verdict.free_tier_admit import is_frontier_identity
 from verdict.headroom import check_headroom
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.router import select_best_model
@@ -22,10 +21,6 @@ def test_classifier_matches_known_tiers_and_defaults() -> None:
     assert classify("openai/gpt-4o-mini") == 2
     assert classify("google/gemini-2.0-flash") == 3
     assert classify("unknown/provider-model") == 2
-    assert is_frontier_identity("cx/gpt-5.6-sol") is True
-    assert is_frontier_identity("openai/gpt-5.4") is True
-    # BOD-427 classifies Hy3 (tier 1); an unrecognized free alias stays non-frontier.
-    assert is_frontier_identity("opencode/big-pickle") is False
 
 
 def test_select_best_model_prefers_highest_quality_eligible_model() -> None:

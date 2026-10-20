@@ -23,6 +23,7 @@ from verdict.candidate_pool import (
     build_candidate_pool,
 )
 from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
+from verdict.chooser import apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
 from verdict.cost_ledger import CostTerm
@@ -1500,10 +1501,8 @@ class IntelligenceService:
             )
             eligibility = gated
         if receipt.admitted:
-            receipt = replace(
-                receipt,
-                chosen=receipt.admitted[0],
-                selected_because="selected because task-capable confirmed candidate ranked first",
+            receipt = apply_best_of_admitted(
+                receipt, now=self.admit_now, task_class=classification.protected_ranker_class
             )
         # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
