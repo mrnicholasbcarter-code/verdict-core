@@ -27,6 +27,7 @@ when empty so existing committed receipts still verify.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -62,6 +63,8 @@ EVENTS_FILE = "events.jsonl"
 GRAPH_FILE = "graph.json"
 REVIEW_FILE = "review.json"
 RECEIPT_FILE = "receipt.json"
+# Host-wide index under verdict_home(): one absolute run dir per receipt write.
+VERIFIED_RUNS_FILE = "verified-runs.txt"
 REDACTED = "[REDACTED]"
 
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -267,8 +270,16 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                     "fault_injected": False,
                 },
             )
-            route = str(data.get("route_id") or row["route_id"])
-            row["route_id"] = route
+            if event.type == "failure" and "_terminal_ok" in row:
+                # A failure event after this attempt's terminal (e.g. a
+                # pool_exhausted FAIL_CLOSED emitted while reselecting the
+                # NEXT candidate) carries the revoked candidate's route_id,
+                # not the route this attempt actually dispatched/executed.
+                # Never let it overwrite the attempt's already-recorded route.
+                route = row["route_id"]
+            else:
+                route = str(data.get("route_id") or row["route_id"])
+                row["route_id"] = route
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
@@ -828,10 +839,34 @@ def run_attempt_records(run_dir: Path, receipt: Mapping[str, Any]) -> list[Attem
 
 
 def _record_run_attempts(run_dir: Path, receipt: Mapping[str, Any]) -> None:
-    """Append this run's attempt and checker rows to the shared ledger (idempotent)."""
+    """Append this run's attempt and checker rows to the shared ledger (idempotent).
+
+    Also append the run's absolute path to the host-wide run index, so the
+    outcome history reader finds runs written under any ``--runs-dir``.
+    """
     from verdict.paths import verdict_home
 
-    append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=verdict_home())
+    home = verdict_home()
+    append_new_attempt_records(run_attempt_records(run_dir, receipt), store_dir=home)
+    append_run_index(home, run_dir)
+
+
+def append_run_index(home: Path, run_dir: Path) -> None:
+    """Append one absolute run dir line to ``<home>/verified-runs.txt``.
+
+    Same pattern as ``outcome_records._append_lines``: the whole line goes out
+    in one ``os.write`` on an ``O_APPEND`` fd held under an exclusive
+    ``flock``, so concurrent runs never interleave a line.
+    """
+    line = f"{Path(run_dir).resolve()}\n".encode()
+    home.mkdir(parents=True, exist_ok=True)
+    fd = os.open(home / VERIFIED_RUNS_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.write(fd, line) != len(line):
+            raise OSError(f"short write to {home / VERIFIED_RUNS_FILE}")
+    finally:
+        os.close(fd)
 
 
 def write_run_receipt(run_dir: Path) -> Path:

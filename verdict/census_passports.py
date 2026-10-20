@@ -42,7 +42,7 @@ def passive_refresh(
             entry.state_at(now) != STATE_FRESH
             or not entry.chat_ok
             or not entry.tool_ok
-            or entry.capacity_evidence != "free"
+            or (eligible_routes is None and entry.capacity_evidence != "free")
         ):
             continue
         passport = passport_from_probe(

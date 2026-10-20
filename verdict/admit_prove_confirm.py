@@ -294,6 +294,7 @@ def gate_admit_prove_confirm(
         from verdict.prove_at_rest import passport_from_probe
 
         cache = HealthCache(health_cache_path)
+        free_admitted = frozenset(receipt.free_admitted)
         cached_ids = [
             identity_id
             for identity_id in receipt.admitted
@@ -307,7 +308,7 @@ def gate_admit_prove_confirm(
             and entry.state_at(current) == STATE_FRESH
             and entry.chat_ok
             and entry.tool_ok
-            and entry.capacity_evidence == "free"
+            and identity_id in free_admitted
             and (
                 passive_health is None
                 or any(

@@ -9,10 +9,12 @@ yardstick the prober's eligibility list is measured against. Turn 1 must call
 from __future__ import annotations
 
 import json
+import math
 import random
+import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -26,6 +28,15 @@ PRECISION_MIN = 0.95
 RECALL_MIN = 0.90
 LISTED_SAMPLE = 8
 UNLISTED_SAMPLE = 12
+
+#: ``/v1/models`` ``type`` values of models that cannot hold a tool conversation.
+_NON_CHAT_TYPES = frozenset(
+    {"image", "embedding", "audio", "tts", "transcription", "rerank", "moderation"}
+)
+#: Unambiguous id markers, used only for routes with no ``/v1/models`` row.
+_NON_CHAT_ID = re.compile(
+    r"embed|rerank|tts|whisper|transcri|dall-e|stable-diffusion|sdxl|flux", re.IGNORECASE
+)
 
 _NOTE = "verdict acceptance probe 7"
 _TOOLS = [
@@ -155,6 +166,28 @@ def _live_ids(synced: Mapping[str, Any], catalog: Mapping[str, Any] | None = Non
     return ids
 
 
+def _catalog_rows(catalog: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    rows = catalog.get("data", []) if isinstance(catalog, Mapping) else []
+    if not isinstance(rows, list):
+        return {}
+    return {str(r["id"]): r for r in rows if isinstance(r, Mapping) and r.get("id")}
+
+
+def _non_chat_reason(route: str, row: Mapping[str, Any] | None) -> str | None:
+    """Why ``route`` is not a chat candidate, from its catalog row, else its id."""
+    if row is None:
+        return "id_non_chat" if _NON_CHAT_ID.search(route.split("/", 1)[-1]) else None
+    outputs = row.get("output_modalities")
+    caps = row.get("capabilities")
+    if (
+        (isinstance(outputs, list) and "text" not in outputs)
+        or str(row.get("type", "")).lower() in _NON_CHAT_TYPES
+        or (isinstance(caps, Mapping) and caps.get("tool_calling") is False)
+    ):
+        return "catalog_non_chat"
+    return None
+
+
 def cooling_providers(connections: Sequence[Mapping[str, Any]], now: datetime) -> set[str]:
     """Providers whose every connection has an active ``rateLimitedUntil``."""
     by_provider: dict[str, list[bool]] = {}
@@ -170,6 +203,26 @@ def cooling_providers(connections: Sequence[Mapping[str, Any]], now: datetime) -
     return {name for name, flags in by_provider.items() if flags and all(flags)}
 
 
+def inactive_providers(connections: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Providers whose every connection is switched off or failed its gateway test."""
+    by_provider: dict[str, list[bool]] = {}
+    for row in connections:
+        off = row.get("isActive") is False or row.get("testStatus", "active") != "active"
+        by_provider.setdefault(str(row.get("provider", "")), []).append(off)
+    return {name for name, flags in by_provider.items() if flags and all(flags)}
+
+
+def wilson_interval(passes: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95% Wilson score interval for ``passes`` out of ``n``; ``None`` when ``n`` is 0."""
+    if n <= 0:
+        return None
+    p = passes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 def measure(
     listed: Sequence[Mapping[str, Any]],
     verdicts: Sequence[Mapping[str, Any]],
@@ -177,6 +230,7 @@ def measure(
     synced: Mapping[str, Any],
     catalog: Mapping[str, Any] | None = None,
     cooling: set[str],
+    inactive: Set[str] = frozenset(),
     post: Post,
     seed: str,
     concurrency: int = 6,
@@ -189,7 +243,10 @@ def measure(
     ``/v1/models`` (``catalog``): the synced endpoint can omit an active
     provider that ``/v1/models`` still lists as live (see ``_live_ids``).
     Routes answering 401/402/403/429 are removed from both ratios.
-    Unmeasurable ratios are ``None``, which the caller treats as FAIL.
+    The unlisted population leaves out routes of ``inactive`` providers and
+    non-chat models: by the ``/v1/models`` row when there is one (output
+    modalities, type, ``tool_calling``), else by unambiguous id markers. So the
+    recall sample measures real candidates. Unmeasurable ratios are ``None``.
     """
     live = _live_ids(synced, catalog)
     listed_ids = {str(row["route_id"]) for row in listed}
@@ -198,15 +255,30 @@ def measure(
     }
     unserved = listed_ids - live
     probe_listed = sorted(listed_ids - unserved - cooling_hits)
-    population = sorted(
-        str(v["route_id"])
+    candidates = [
+        v
         for v in verdicts
         if v.get("capacity_class") == "free"
         and str(v["route_id"]) in live
         and str(v["route_id"]) not in listed_ids
         and str(v.get("provider", "")) not in cooling
         and v.get("reason") not in {"effort_duplicate", "admission:missing_capability:tools"}
-    )
+    ]
+    rows = _catalog_rows(catalog)
+    excluded = {"inactive_provider": 0, "catalog_non_chat": 0, "id_non_chat": 0}
+    kept: list[str] = []
+    for v in candidates:
+        route = str(v["route_id"])
+        reason = (
+            "inactive_provider"
+            if str(v.get("provider", "")) in inactive
+            else _non_chat_reason(route, rows.get(route))
+        )
+        if reason:
+            excluded[reason] += 1
+        else:
+            kept.append(route)
+    population = sorted(kept)
     rng = random.Random(seed)
     sample_listed = rng.sample(probe_listed, min(LISTED_SAMPLE, len(probe_listed)))
     sample_unlisted = rng.sample(population, min(UNLISTED_SAMPLE, len(population)))
@@ -242,6 +314,12 @@ def measure(
         "listed_unserved": sorted(unserved),
         "listed_in_cooling_pool": sorted(cooling_hits),
         "unlisted_population": len(population),
+        "population_before": len(candidates),
+        "population_after": len(population),
+        "population_excluded": excluded,
+        "unlisted_measured": len(measured_unlisted),
+        "unlisted_passes": unlisted_pass,
+        "unlisted_wilson": wilson_interval(unlisted_pass, len(measured_unlisted)),
         "precision": precision,
         "recall_estimate": recall,
         "estimated_missed": missed,

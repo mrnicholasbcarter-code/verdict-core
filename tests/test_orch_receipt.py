@@ -752,3 +752,69 @@ def test_capture_producer_version_metadata_fallback_only_without_source_version(
     monkeypatch.delattr(verdict, "__version__")
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "wheel-metadata")
     assert capture_producer()["verdict_version"] == "wheel-metadata"
+
+
+def test_write_run_receipt_appends_absolute_run_dir_to_host_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "verdict-home"
+    monkeypatch.setenv("VERDICT_HOME", str(home))
+    _run(tmp_path, review=PASS)
+    monkeypatch.chdir(tmp_path)
+    write_run_receipt(Path("run"))
+    write_run_receipt(Path("run"))
+    lines = (home / "verified-runs.txt").read_text(encoding="utf-8").splitlines()
+    assert lines == [str((tmp_path / "run").resolve())] * 2
+
+
+def _append_paths_worker(home: str, prefix: str, count: int) -> None:
+    from verdict.orchestration.receipt import append_run_index
+
+    for i in range(count):
+        append_run_index(Path(home), Path(f"/runs/{prefix}-{i:04d}-" + "x" * 200))
+
+
+def test_concurrent_run_index_appends_never_interleave(tmp_path: Path) -> None:
+    import multiprocessing
+
+    from verdict.orchestration.receipt import VERIFIED_RUNS_FILE
+
+    ctx = multiprocessing.get_context("fork")
+    procs = [
+        ctx.Process(target=_append_paths_worker, args=(str(tmp_path), name, 200))
+        for name in ("p1", "p2")
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(60)
+        assert proc.exitcode == 0
+    lines = (tmp_path / VERIFIED_RUNS_FILE).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 400
+    assert len(set(lines)) == 400
+    assert all(line.startswith("/runs/p") and line.endswith("x" * 200) for line in lines)
+
+
+def test_run_index_line_is_one_write_under_exclusive_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+    import os
+
+    import verdict.orchestration.receipt as receipt_module
+
+    calls: list[tuple[str, Any]] = []
+    real_flock, real_write = fcntl.flock, os.write
+
+    def spy_flock(fd: int, op: int) -> None:
+        calls.append(("flock", op))
+        real_flock(fd, op)
+
+    def spy_write(fd: int, data: bytes) -> int:
+        calls.append(("write", bytes(data)))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(receipt_module.fcntl, "flock", spy_flock)
+    monkeypatch.setattr(receipt_module.os, "write", spy_write)
+    receipt_module.append_run_index(tmp_path, Path("/runs/one"))
+    assert calls == [("flock", fcntl.LOCK_EX), ("write", b"/runs/one\n")]
