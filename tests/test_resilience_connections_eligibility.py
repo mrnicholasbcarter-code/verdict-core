@@ -143,13 +143,14 @@ def test_from_environment_accepts_gateway_cached_health_but_not_stale(tmp_path, 
     monkeypatch.setenv("VERDICT_PROVE_AT_REST_STATE", str(tmp_path / "state.json"))
     adapter = SubagentModelSelector.from_environment().availability_cache.source.__self__
 
-    def report_at(age_seconds: int):
+    def report_at(age_seconds: int, *, connected: bool = False):
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/v1/models":
                 return httpx.Response(200, json={"data": MODELS[:1]})
             if request.url.path == "/api/monitoring/health":
                 stamp = NOW - timedelta(seconds=age_seconds)
-                # The provider row comes from health, so it carries the gateway's stamp.
+                # Without a connection row for p, its row comes from health only and
+                # carries the gateway's cached stamp.
                 return httpx.Response(
                     200,
                     json={
@@ -157,7 +158,9 @@ def test_from_environment_accepts_gateway_cached_health_but_not_stale(tmp_path, 
                         "providerHealth": {"p": {"state": "closed"}},
                     },
                 )
-            return httpx.Response(200, json={"connections": [_connection("p")]})
+            return httpx.Response(
+                200, json={"connections": [_connection("p")] if connected else []}
+            )
 
         adapter.transport.transport = httpx.MockTransport(handler)
         adapter.transport.clock = lambda: NOW
@@ -168,3 +171,5 @@ def test_from_environment_accepts_gateway_cached_health_but_not_stale(tmp_path, 
     stale = report_at(120)
     assert stale.state is AvailabilityState.UNKNOWN
     assert stale.reasons == ("stale observation",)
+    # BOD-431: a live connections read speaks for p with its own read time.
+    assert report_at(120, connected=True).state is AvailabilityState.ELIGIBLE

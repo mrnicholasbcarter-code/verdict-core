@@ -76,7 +76,7 @@ from verdict.intelligence import (
 )
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
-from verdict.omniroute import OmniRouteHTTPTransport
+from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     HealthCache,
@@ -445,7 +445,11 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
             api_key=api_key,
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
+            # providerHealth lists only the providers OmniRoute is monitoring right
+            # now (it can shrink to a handful); connections covers every active one.
+            runtime_sources={"health", "connections"} if management_token else {"health"},
             allow_private_hosts=allow_private,
+            max_response_bytes=CATALOG_MAX_RESPONSE_BYTES,
         )
     except Exception as exc:
         if not is_omniroute_configured:
@@ -583,6 +587,21 @@ def server_bootstrap_diagnostics(
                     f"{DEFAULT_UPSTREAM_BASE_URL}"
                 ),
                 "remediation": "set LLMGATE_UPSTREAM_BASE_URL or OMNIROUTE_BASE_URL",
+                "fatal": False,
+            }
+        )
+    if not os.getenv("OMNIROUTE_MANAGEMENT_TOKEN", "").strip():
+        report["diagnostics"].append(
+            {
+                "code": "runtime_sources_health_only",
+                "class": "configuration",
+                "field": "OMNIROUTE_MANAGEMENT_TOKEN",
+                "source": "missing",
+                "detail": (
+                    "runtime sources: health only (no management token); providers outside "
+                    "OmniRoute's monitored set read as unknown"
+                ),
+                "remediation": "verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin",
                 "fatal": False,
             }
         )
@@ -1294,7 +1313,9 @@ def _authority_context(payload: dict[str, Any], *, task: str) -> dict[str, Any]:
                 raise ExecutionPathError("client-supplied execution_path_decision is not accepted")
             raise ExecutionPathError(f"reserved control field {key!r} is not accepted")
 
-    context = dict(payload)
+    # Underscore keys are server-internal (e.g. the trusted dispatch origin set
+    # after this call); a client payload never supplies them.
+    context = {key: value for key, value in payload.items() if not str(key).startswith("_")}
 
     # Server policy: critical tasks are protected and cannot be lowered by client fields
     if (

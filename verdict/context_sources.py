@@ -35,6 +35,11 @@ DEFAULT_MAX_FILE_BYTES = 8_192
 DEFAULT_MAX_UNITS = 8
 MAX_SCAN_FILES = 20_000
 MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024  # larger generated files are not hand-written source
+# Matched files are parsed and cached as ASTs (~35x the source size), so the
+# matched set is bounded too: 8 MiB of source is ~280 MB of trees. This repo's
+# whole Python tree is ~900 files / 13 MB; a symbol matching more is not targeted.
+MAX_MATCHED_FILES = 500
+MAX_MATCHED_BYTES = 8 * 1024 * 1024
 _SKIP_DIR_PARTS = {
     ".git",
     ".hg",
@@ -359,13 +364,16 @@ def _iter_py_files(
 
     A definition, reference, caller or test of a symbol names it textually, so
     files without any symbol are never parsed or passed to the source filter.
-    Skipped directories are pruned rather than walked.
+    Skipped directories are pruned rather than walked. Files over
+    ``MAX_SCAN_FILE_BYTES`` are skipped by size; the matched set stops at
+    ``MAX_MATCHED_FILES`` / ``MAX_MATCHED_BYTES`` and reports the bound.
     """
     if not root.is_dir():
         return [], False
     needles = tuple(s.lower().encode() for s in symbols if s)
     files: list[Path] = []
     scanned = 0
+    matched_bytes = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
         for name in filenames:
@@ -375,10 +383,20 @@ def _iter_py_files(
             if scanned > MAX_SCAN_FILES:
                 return sorted(files), True
             path = Path(dirpath, name)
-            if not path.is_file() or (needles and not _mentions(path, needles)):
+            try:
+                size = path.stat().st_size
+            except OSError:
                 continue
-            if _source_allowed(path, hints):
-                files.append(path)
+            if not path.is_file() or size > MAX_SCAN_FILE_BYTES:
+                continue
+            if needles and not _mentions(path, needles):
+                continue
+            if not _source_allowed(path, hints):
+                continue
+            if len(files) >= MAX_MATCHED_FILES or matched_bytes + size > MAX_MATCHED_BYTES:
+                return sorted(files), True
+            files.append(path)
+            matched_bytes += size
     return sorted(files), False
 
 

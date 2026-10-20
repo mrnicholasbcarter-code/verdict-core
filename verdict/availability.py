@@ -1393,7 +1393,7 @@ class OmniRouteAvailabilityAdapter:
             return AvailabilityReport((), (), "omniroute", None, (str(exc),))
         except OmniRouteTransportMalformed as exc:
             return AvailabilityReport(
-                (), (), "omniroute", None, (f"{exc.operation} transport: malformed",)
+                (), (), "omniroute", None, (f"{exc.operation} transport: malformed ({exc.detail})",)
             )
         except OmniRouteTransportError as exc:
             return AvailabilityReport(

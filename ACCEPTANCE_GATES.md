@@ -20,7 +20,7 @@ Each gate MUST have evidence linked in the evidence bundle.
 | G2.1 | Bounded cache with TTL + stale-while-revalidate | Test: `test_cache_ttl_swr` |
 | G2.2 | Explicit `unknown`/`error` states (not silent fallback) | Test: `test_unknown_error_states` |
 | G2.3 | Concurrent refresh deduplication | Test: `test_refresh_deduplication` |
-| G2.4 | Isolation by provider/model/policy-version | Test: `test_isolation_keys` |
+| G2.4 | Isolation by policy version (one shared catalog entry) | Test: `test_isolation_keys` |
 
 ### G3: Cost & Latency Optimization
 | ID | Criterion | Evidence Required |

@@ -143,3 +143,44 @@ def test_compaction_keeps_required_fact() -> None:
     )
     assert token in pack.compiled_prompt
     assert pack.used_tokens <= 400
+
+
+def test_count_files_stops_at_the_cap_without_walking_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-431 (F): a cold serve from cwd=/tmp counted 723,751 files (109 s of a
+    137 s request) only to report file_count. The count stops at its cap."""
+    import os
+
+    import verdict.context_intelligence as ci
+
+    for d in range(20):
+        sub = tmp_path / f"d{d}"
+        sub.mkdir()
+        for i in range(10):
+            (sub / f"f{i}.txt").write_text("x")
+    monkeypatch.setattr(ci, "MAX_COUNT_FILES", 25)
+    walked: list[str] = []
+    real_walk = os.walk
+
+    def spy_walk(top, *args, **kwargs):  # type: ignore[no-untyped-def]
+        for entry in real_walk(top, *args, **kwargs):
+            walked.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(ci.os, "walk", spy_walk)
+    assert ci._count_files(tmp_path) == 25
+    assert len(walked) <= 4  # root plus the few directories needed to reach 25 files
+
+
+def test_count_files_counts_regular_files_only(tmp_path: Path) -> None:
+    """os.walk lists a symlink to a directory and a broken symlink under
+    filenames; neither is a file (the previous Path.is_file() semantics)."""
+    import verdict.context_intelligence as ci
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.txt").write_text("x")
+    (tmp_path / "dir_link").symlink_to(real, target_is_directory=True)
+    (tmp_path / "broken_link").symlink_to(tmp_path / "missing")
+    assert ci._count_files(tmp_path) == 1

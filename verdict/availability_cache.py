@@ -3,11 +3,12 @@
 The cache wraps an :class:`OmniRouteAvailabilityAdapter` (or any callable that
 returns an :class:`AvailabilityReport`).  It deliberately never trusts a stale
 entry for protected routing unless an explicit policy opt-in allows degraded
-mode, and it isolates entries per provider/model/policy-version so one
-source can never poison another.
+mode.  The source evaluates the whole catalog without a model id, so all
+models share one entry per policy version; a policy change never reuses an
+entry from another version.
 
 Design constraints (from issue #56 acceptance criteria):
-- Cache keys include provider/model and the relevant policy/contract version.
+- Cache keys include the relevant policy/contract version.
 - Expired or refresh-failed states are explicit ``unknown``/``error`` states.
 - Concurrent refreshes are bounded and deduplicated.
 - ``explain`` output identifies freshness and source.
@@ -91,7 +92,7 @@ def _confidence_for(report: AvailabilityReport) -> float:
 
 @dataclass
 class AvailabilityCache:
-    """Bounded, per-key availability cache with stale-while-revalidate.
+    """Shared-catalog availability cache with stale-while-revalidate.
 
     ``get`` returns a cached report when fresh.  When the entry is within
     the stale window it returns the stale report (so callers keep working)
@@ -110,6 +111,8 @@ class AvailabilityCache:
     # Reentrant lock: ``get`` may call ``_refresh_locked`` while already holding
     # the lock (nested acquisition), so a plain ``Lock`` would deadlock.
     _entries: dict[CacheKey, _Entry] = field(default_factory=dict)
+    # Model ids looked up through this cache, oldest first, for ``keys()``.
+    _seen_models: dict[str, None] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -124,7 +127,15 @@ class AvailabilityCache:
             raise TypeError("source must be callable and return an AvailabilityReport")
 
     def _key(self, model_id: str) -> CacheKey:
-        return CacheKey.for_candidate(model_id, self.policy_version)
+        # ``source()`` takes no model id and evaluates the whole catalog, so
+        # every model shares one entry per policy version. Keying per model
+        # refetched and stored the full catalog once per candidate.
+        with self._lock:
+            self._seen_models.pop(model_id, None)
+            self._seen_models[model_id] = None
+            if len(self._seen_models) > self.max_entries:
+                del self._seen_models[next(iter(self._seen_models))]
+        return CacheKey(provider="*", model="*", policy_version=self.policy_version)
 
     def get(self, model_id: str) -> AvailabilityReport:
         """Return a cached-or-refreshed report for ``model_id``.
@@ -150,9 +161,9 @@ class AvailabilityCache:
             return self._refresh_locked(key, now)
 
     def get_requirements(self, requirements: CandidateRequirements) -> AvailabilityReport:
-        """Get availability report for given requirements, bypassing per-model cache.
+        """Get availability report for given requirements, bypassing the cache.
 
-        This bypasses the per-model cache and calls the source directly with
+        This bypasses the shared catalog cache and calls the source directly with
         the given CandidateRequirements. Use this for role-based selection where
         you need the full candidate set with runtime state, not a single model's
         cached report.
@@ -295,18 +306,20 @@ class AvailabilityCache:
         return AvailabilityReport((), (), "cache", None, (f"availability cache: {detail}",))
 
     def keys(self) -> list[str]:
-        """Return the model ids currently held in the cache (for diagnostics)."""
+        """Return the model ids looked up while the shared entry is held (diagnostics)."""
         with self._lock:
-            return [str(k.model) for k in self._entries]
+            return list(self._seen_models) if self._entries else []
 
     def invalidate(self, model_id: str) -> None:
-        """Drop a single key (e.g. on explicit policy version change)."""
+        """Drop the shared entry so the next lookup refetches the catalog."""
         with self._lock:
             self._entries.pop(self._key(model_id), None)
+            self._seen_models.pop(model_id, None)
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._seen_models.clear()
 
 
 def explain_freshness(
