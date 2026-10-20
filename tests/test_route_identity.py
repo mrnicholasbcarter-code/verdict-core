@@ -632,7 +632,10 @@ def test_route_id_not_overwritten_by_later_pool_exhausted_failure(tmp_path: Path
 
     log.emit("run_started", run_id="run-1", goal="test")
     log.emit(
-        "dispatch", node_id="task", attempt=2, route_id="mistral/codestral-latest",
+        "dispatch",
+        node_id="task",
+        attempt=2,
+        route_id="mistral/codestral-latest",
         capacity_class="free",
     )
     log.emit(
@@ -645,7 +648,10 @@ def test_route_id_not_overwritten_by_later_pool_exhausted_failure(tmp_path: Path
         duration_seconds=11.4,
     )
     log.emit(
-        "failure", node_id="task", attempt=2, category="ownership_violation",
+        "failure",
+        node_id="task",
+        attempt=2,
+        category="ownership_violation",
         route_id="mistral/codestral-latest",
     )
     # Reselection for attempt 3 exhausts the pool; this failure event has no
