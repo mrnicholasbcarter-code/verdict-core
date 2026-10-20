@@ -159,6 +159,7 @@ def test_run_partial_offsets(commands, command):
     assert any(apply_completion(doc, c) == f"/{command} run-123 trailing" for c in completions)
 
 
+@pytest.mark.timing
 def test_bounds_and_timing(commands):
     snap = snapshot(
         models=[{"route_id": f"cc/{i:05d}", "status": "UNVERIFIED"} for i in range(10_000)]

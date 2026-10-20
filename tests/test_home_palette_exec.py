@@ -679,6 +679,7 @@ def test_history_file_operations(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timing
 def test_startup_motion_fast_probe_completes_quickly() -> None:
     """With a fast probe, startup completes in under 0.3s with animation."""
     import time
@@ -700,6 +701,7 @@ def test_startup_motion_fast_probe_completes_quickly() -> None:
     assert "REACHABLE" in output or "gateway" in output
 
 
+@pytest.mark.timing
 def test_startup_motion_slow_probe_stops_after_probe() -> None:
     """With a 0.5s probe, sweep stops within ~0.1s after the probe returns."""
     import time

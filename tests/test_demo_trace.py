@@ -409,6 +409,7 @@ def _intervals(events: list[dict[str, Any]], node_id: str) -> list[tuple[int, in
     return spans
 
 
+@pytest.mark.timing
 def test_scripted_workers_overlap_when_duration_is_positive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

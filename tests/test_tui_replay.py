@@ -180,6 +180,7 @@ def test_follow_replay_deterministic(tmp_path: Path) -> None:
     assert view1.event_count == view2.event_count == 3
 
 
+@pytest.mark.timing
 def test_follow_replay_speed_scaling(tmp_path: Path) -> None:
     """Speed parameter scales timing."""
     import time
@@ -213,6 +214,7 @@ def test_follow_replay_speed_scaling(tmp_path: Path) -> None:
     assert view.outcome == "COMPLETE"
 
 
+@pytest.mark.timing
 def test_follow_replay_max_gap_caps_delays(tmp_path: Path) -> None:
     """max_gap caps individual event delays."""
     import time

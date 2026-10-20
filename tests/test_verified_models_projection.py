@@ -1264,6 +1264,7 @@ def test_availability_category_order_auth_before_ratelimit():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timing
 def test_7000_rows_projects_under_2s():
     n = 7000
     inv = [row(f"omniroute/cc/m{i:05d}") for i in range(n)]

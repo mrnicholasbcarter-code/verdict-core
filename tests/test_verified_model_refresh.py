@@ -1640,6 +1640,7 @@ class _BarrierChatTransport:
                 self.in_flight[pool] -= 1
 
 
+@pytest.mark.timing
 def test_probes_run_four_at_once_one_per_pool(tmp_path: Path) -> None:
     import time
 

@@ -671,6 +671,7 @@ class TestAC9EndToEndLargeInventory:
             pytest.skip("ranking_connections.json fixture missing")
         return p
 
+    @pytest.mark.timing
     def test_real_inventory_to_view_and_render_under_1s(
         self, ranking_inv_path: Path, ranking_conn_path: Path
     ) -> None:
@@ -739,6 +740,7 @@ class TestAC9EndToEndLargeInventory:
         assert all(isinstance(c.pool, str) for c in ev.candidates)
         assert all(isinstance(c.cooldown_scope, str) for c in ev.candidates)
 
+    @pytest.mark.timing
     def test_ac7_filter_works_on_real_inventory(
         self, ranking_inv_path: Path, ranking_conn_path: Path
     ) -> None:
