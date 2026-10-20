@@ -445,6 +445,9 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
             api_key=api_key,
             management_token=management_token,
             usage_api_key_id=usage_api_key_id,
+            # providerHealth lists only the providers OmniRoute is monitoring right
+            # now (it can shrink to a handful); connections covers every active one.
+            runtime_sources={"health", "connections"} if management_token else {"health"},
             allow_private_hosts=allow_private,
             max_response_bytes=CATALOG_MAX_RESPONSE_BYTES,
         )

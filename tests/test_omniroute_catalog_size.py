@@ -99,3 +99,69 @@ def test_build_availability_cache_uses_a_catalog_safe_transport(monkeypatch) -> 
 
     assert report.errors == ()
     assert any(c.model.id == "provider/model-0" for c in report.candidates)
+
+
+def test_build_availability_cache_reads_connections_when_health_omits_the_provider(
+    monkeypatch,
+) -> None:
+    """BOD-431 (C): OmniRoute's providerHealth lists only the providers it is
+    currently monitoring (live: monitoredCount flips between 41 and 3). The
+    serve cache must also read /api/resilience/connections, so an active,
+    breaker-closed provider missing from that health window stays admitted.
+    A provider with no observation in either source still fails closed."""
+    import verdict.api as api
+    from verdict.availability import AvailabilityState
+
+    monkeypatch.delenv("VERDICT_OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "mgmt-test-token")
+
+    catalog = {
+        "data": [
+            {"id": "nara/laguna-s-2.1", "owned_by": "nara"},
+            {"id": "ghost/model-x", "owned_by": "ghost"},
+        ]
+    }
+    health = {
+        "status": "healthy",
+        "providerHealth": {"cursor": {"state": "CLOSED"}, "ollama": {"state": "CLOSED"}},
+        "providerBreakers": [{"provider": "cursor", "state": "CLOSED"}],
+    }
+    connections = {
+        "connections": [
+            {
+                "provider": "nara",
+                "isActive": True,
+                "isCoolingDown": False,
+                "cooldownRemainingMs": 0,
+                "breaker": None,
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=catalog)
+        if request.url.path == "/api/monitoring/health":
+            return httpx.Response(200, json=health)
+        if request.url.path == "/api/resilience/connections":
+            return httpx.Response(200, json=connections)
+        return httpx.Response(404, json={"error": "missing"})
+
+    real_transport = OmniRouteHTTPTransport
+
+    def wrapped(*args: object, **kwargs: object) -> OmniRouteHTTPTransport:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_transport(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(api, "OmniRouteHTTPTransport", wrapped)
+
+    built = api._build_availability_cache()
+    assert built is not None
+    cache, _gate = built
+
+    states = {c.model.id: c.state for c in cache.get("nara/laguna-s-2.1").candidates}
+
+    assert states["nara/laguna-s-2.1"] == AvailabilityState.READY
+    assert states["ghost/model-x"] == AvailabilityState.UNKNOWN
