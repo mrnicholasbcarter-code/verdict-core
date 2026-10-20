@@ -132,14 +132,16 @@ def test_invalidation_drops_entry() -> None:
     assert source.calls == 2  # invalidation forced a fresh refresh
 
 
-def test_isolation_across_providers_is_strong() -> None:
+def test_providers_share_one_catalog_entry_per_policy_version() -> None:
     clock = FakeClock(NOW)
     source = FakeSource(_report())
     cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
-    cache.get("prov/a")
-    cache.get("prov-b/x")  # different provider -> distinct key
-    assert source.calls == 2
-    assert len(cache._entries) == 2
+    first = cache.get("prov/a")
+    second = cache.get("prov-b/x")  # the model-independent catalog serves every provider
+    assert first is second
+    assert source.calls == 1
+    assert len(cache._entries) == 1
+    assert cache.keys() == ["prov/a", "prov-b/x"]
 
 
 def test_concurrent_get_does_not_deadlock_reentrant_lock() -> None:
@@ -216,3 +218,20 @@ def test_policy_version_change_isolates_entries() -> None:
     other = AvailabilityCache(source=source, clock=clock, policy_version="policy-2026-07-14.2")
     # Different policy_version -> different key namespace in the same source.
     assert other._key("prov/a") != cache._key("prov/a")
+
+
+def test_shared_catalog_evaluated_once_per_ttl_for_many_models() -> None:
+    """BOD-431: N distinct model lookups within one TTL window must trigger
+    exactly one full catalog evaluation, not one per model. The live host saw
+    a 346 s request because the per-model AvailabilityCache keyed the fetch
+    per model id, so a 9,471-row catalog was refetched/renormalized on every
+    EligibilityGate._judge call (one per candidate)."""
+    clock = FakeClock(NOW)
+    source = FakeSource(_report())
+    cache = AvailabilityCache(source=source, clock=clock, ttl_seconds=60, stale_window_seconds=30)
+
+    for index in range(25):
+        cache.get(f"prov/model-{index}")
+
+    assert source.calls == 1
+    assert len(cache._entries) == 1  # one shared catalog entry, not one per model

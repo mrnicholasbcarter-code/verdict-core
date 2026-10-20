@@ -207,9 +207,10 @@ def test_refresh_deduplication() -> None:
 
 
 def test_isolation_keys() -> None:
-    """G2.4: Cache entries are isolated by provider/model/policy-version.
+    """G2.4: Cache entries are isolated by policy version.
 
-    Different providers, models, or policy versions must not share cache entries.
+    The catalog report is model-independent, so models share one entry per
+    policy version; different policy versions must not share entries.
     """
 
     class FakeSource:
@@ -223,16 +224,19 @@ def test_isolation_keys() -> None:
     source = FakeSource()
     cache = AvailabilityCache(source=source, policy_version="policy-v1")
 
-    # Different models -> different keys
-    cache.get("provider-a/model-1")
-    cache.get("provider-a/model-2")
-    assert source.calls == 2
-    assert len(cache._entries) == 2
+    # The source evaluates the whole catalog with no model id, so models and
+    # providers share one entry (BOD-431: per-model keys refetched it per model).
+    first = cache.get("provider-a/model-1")
+    assert cache.get("provider-a/model-2") is first
+    assert cache.get("provider-b/model-1") is first
+    assert source.calls == 1
+    assert len(cache._entries) == 1
 
-    # Different providers -> different keys
-    cache.get("provider-b/model-1")
-    assert source.calls == 3
-    assert len(cache._entries) == 3
+    # A different policy version never reuses that entry.
+    other = AvailabilityCache(source=source, policy_version="policy-v2")
+    other.get("provider-a/model-1")
+    assert source.calls == 2
+    assert other._key("provider-a/model-1") != cache._key("provider-a/model-1")
 
     # Same model, different policy version -> different key
     key1 = CacheKey.for_candidate("provider-a/model-1", "policy-v1")
