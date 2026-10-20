@@ -267,8 +267,16 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                     "fault_injected": False,
                 },
             )
-            route = str(data.get("route_id") or row["route_id"])
-            row["route_id"] = route
+            if event.type == "failure" and "_terminal_ok" in row:
+                # A failure event after this attempt's terminal (e.g. a
+                # pool_exhausted FAIL_CLOSED emitted while reselecting the
+                # NEXT candidate) carries the revoked candidate's route_id,
+                # not the route this attempt actually dispatched/executed.
+                # Never let it overwrite the attempt's already-recorded route.
+                route = row["route_id"]
+            else:
+                route = str(data.get("route_id") or row["route_id"])
+                row["route_id"] = route
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])

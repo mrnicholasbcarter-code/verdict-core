@@ -611,3 +611,58 @@ def test_route_identity_real_e2e_with_runtime(tmp_path: Path) -> None:
 
     # No warning: the successful attempt matched
     assert "route_identity_warning" not in receipt
+
+
+def test_route_id_not_overwritten_by_later_pool_exhausted_failure(tmp_path: Path) -> None:
+    """A pool_exhausted FAIL_CLOSED failure emitted while reselecting the NEXT
+    attempt (after this attempt's terminal+failure) must not overwrite this
+    attempt's route_id with the revoked candidate it carries.
+
+    Reproduces the live run shape (BOD-431 orchestrate-ownership-noise-brief):
+    attempt 2 dispatches/terminates/fails on mistral/codestral-latest
+    (ownership_violation), then a later pool_exhausted failure event (no
+    "attempt" field, so it falls back to the current attempt number) carries
+    a different candidate's route_id. The receipt must keep attempt 2's
+    route_id as the route that actually executed it.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_simple_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+
+    log.emit("run_started", run_id="run-1", goal="test")
+    log.emit(
+        "dispatch", node_id="task", attempt=2, route_id="mistral/codestral-latest",
+        capacity_class="free",
+    )
+    log.emit(
+        "terminal",
+        node_id="task",
+        attempt=2,
+        ok=True,
+        route_id="mistral/codestral-latest",
+        reported_model="mistral/codestral-latest",
+        duration_seconds=11.4,
+    )
+    log.emit(
+        "failure", node_id="task", attempt=2, category="ownership_violation",
+        route_id="mistral/codestral-latest",
+    )
+    # Reselection for attempt 3 exhausts the pool; this failure event has no
+    # "attempt" field and carries the revoked candidate's route_id.
+    log.emit(
+        "failure",
+        node_id="task",
+        category="pool_exhausted",
+        route_id="nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    )
+    log.emit("run_finished", outcome="BLOCKED", reason="pool exhausted")
+
+    receipt = build_run_receipt(run_dir)
+
+    task_node = receipt["nodes"][0]
+    attempt = task_node["attempts"][-1]
+    assert attempt["attempt"] == 2
+    assert attempt["route_id"] == "mistral/codestral-latest"
+    assert attempt["intended_route"] == "mistral/codestral-latest"
+    assert attempt["executed_model"] == "mistral/codestral-latest"
