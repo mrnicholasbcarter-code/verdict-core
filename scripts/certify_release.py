@@ -27,6 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from security_exceptions import build_pip_audit_ignore_flags
+
 # === Data Models ===
 
 
@@ -559,6 +562,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
                 "pip-audit",
                 "--local",
                 "--skip-editable",
+                *build_pip_audit_ignore_flags(),
                 "-f",
                 "json",
                 "-o",
@@ -658,6 +662,7 @@ def step_security(repo_path: Path, venv_bin: Path) -> StepResult:
                 str(pip_audit_bin),
                 "--local",
                 "--skip-editable",
+                *build_pip_audit_ignore_flags(),
                 "-f",
                 "json",
                 "-o",

@@ -494,6 +494,87 @@ def test_step_security_bandit_missing():
     assert "uv sync --extra dev" in result.reason
 
 
+def test_step_security_pip_audit_command_carries_exception_ignore_flags():
+    """step_security's real pip-audit command includes --ignore-vuln flags sourced
+    from config/security_exceptions.json (BOD-342 Option B), not a second hardcoded list."""
+    import json
+    from pathlib import Path
+    from unittest.mock import patch
+
+    repo_path = Path("/fake/repo")
+    venv_bin = Path("/fake/venv/bin")
+
+    bandit_json = json.dumps({"results": []})
+    audit_json = json.dumps({"dependencies": []})
+
+    captured_commands = []
+
+    def capture_and_write(cmd, **kwargs):
+        captured_commands.append(cmd)
+        return fake_run_writing(bandit_json, audit_json)(cmd, **kwargs)
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=capture_and_write),
+    ):
+        certify_release.step_security(repo_path, venv_bin)
+
+    pip_audit_cmd = next(cmd for cmd in captured_commands if "pip-audit" in str(cmd[0]))
+    assert "--ignore-vuln" in pip_audit_cmd
+    assert "CVE-2026-112895" in pip_audit_cmd  # one of the 9 real pillow exceptions
+    assert pip_audit_cmd.count("--ignore-vuln") == 9  # exactly the scoped pillow IDs, no more
+
+
+def test_step_security_unlisted_pillow_vulnerability_still_fails():
+    """An unlisted pillow CVE (not in config/security_exceptions.json) still FAILs the
+    real step_security, proving the exception cannot silently widen."""
+    import json
+    from pathlib import Path
+    from unittest.mock import patch
+
+    repo_path = Path("/fake/repo")
+    venv_bin = Path("/fake/venv/bin")
+
+    bandit_json = json.dumps({"results": []})
+    # pip-audit reports pillow with one unlisted CVE alongside the exempt ones; pip-audit
+    # itself would already drop --ignore-vuln IDs, so this models the unlisted-ID case
+    # pip-audit would still emit.
+    audit_json = json.dumps(
+        {
+            "dependencies": [
+                {
+                    "name": "pillow",
+                    "version": "12.3.0",
+                    "vulns": [{"id": "CVE-2099-00000", "description": "not in the exception list"}],
+                }
+            ]
+        }
+    )
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=fake_run_writing(bandit_json, audit_json)),
+    ):
+        result = certify_release.step_security(repo_path, venv_bin)
+
+    assert result.status == "FAIL"
+    assert "pip-audit:" in result.reason
+
+
 def test_step_security_bandit_only_low_findings_passes():
     """Test that bandit with only LOW findings (filtered by -ll) passes."""
     import json

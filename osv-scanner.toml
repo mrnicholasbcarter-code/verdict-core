@@ -4,3 +4,51 @@
 group = "dev"
 vulnerability.ignore = true
 reason = "Development-only dependency; excluded from the runtime security gate."
+
+# BEGIN generated IgnoredVulns -- run: python scripts/generate_osv_exceptions.py
+[[IgnoredVulns]]
+id = "CVE-2026-112395"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112397"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112400"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112403"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112404"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112895"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112896"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112897"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+[[IgnoredVulns]]
+id = "CVE-2026-112899"
+ignoreUntil = 2026-12-31
+reason = "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL (package=pillow version=12.3.0; removal: when streamlit allows pillow>=13: bump pillow, delete this exception)"
+
+# END generated IgnoredVulns

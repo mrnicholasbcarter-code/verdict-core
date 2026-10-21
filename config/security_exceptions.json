@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "id": "CVE-2026-112395",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112397",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112400",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112403",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112404",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112895",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112896",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112897",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    },
+    {
+      "id": "CVE-2026-112899",
+      "package": "pillow",
+      "version": "12.3.0",
+      "reason": "transitive via streamlit<13 in the optional dashboard extra; Verdict does not import PIL",
+      "expires": "2026-12-31",
+      "removal_trigger": "when streamlit allows pillow>=13: bump pillow, delete this exception"
+    }
+  ]
+}
