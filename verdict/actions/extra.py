@@ -289,20 +289,35 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
     requires = frozenset(p.strip() for p in kwargs.get("requires", "").split(",") if p.strip())
     capacity = tuple(p.strip() for p in kwargs.get("capacity", "").split(",") if p.strip())
     model: str | None = kwargs.get("model")
-    payload: dict[str, Any] = {"task_class": task_class, "selected": None}
+    from verdict.task_profile import profile_task
+
+    no_confirm = bool(kwargs.get("no_confirm", False))
+    family = profile_task(str(kwargs.get("task") or "")).task_family
+    payload: dict[str, Any] = {
+        "task_class": task_class,
+        "selected": None,
+        "no_confirm": no_confirm,
+        "confirm": "skipped_no_confirm" if no_confirm else "production_ladder",
+    }
     try:
         gateway = normalize_omniroute_origin(resolve_gateway_binding()[0])
         requirements = TaskRequirements(
             required_capabilities=(
                 requires - {"code"} if requires else TaskRequirements().required_capabilities
             ),
-            coding="code" in requires or task_class == "implementation",
+            coding="code" in requires
+            or task_class == "implementation"
+            or family.startswith("code"),
             reasoning="reasoning" in requires,
             frontier_worthy=task_class
             in {"architecture", "orchestration", "hard-debug", "final-review"},
         )
         selection = select_route_for_task(
-            requirements, gateway=gateway, capacity=capacity, explicit_model=model
+            requirements,
+            gateway=gateway,
+            capacity=capacity,
+            explicit_model=model,
+            no_confirm=no_confirm,
         )
     except (OrchestrationError, ValueError) as exc:
         reason = (

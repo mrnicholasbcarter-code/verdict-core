@@ -1239,7 +1239,7 @@ def test_active_catalog_route_admitted_without_free_or_price_evidence(pricing) -
     assert not any(drop.reason in {"not_free_tier", "price_unknown"} for drop in receipt.exclusions)
 
 
-def test_subscription_with_higher_coding_score_wins_after_fresh_confirmation() -> None:
+def test_ordinary_free_beats_higher_coding_score_after_fresh_confirmation() -> None:
     from verdict.metadata.records import (
         CapabilityCaps,
         FieldProvenance,
@@ -1291,7 +1291,7 @@ def test_subscription_with_higher_coding_score_wins_after_fresh_confirmation() -
             context={"tools_required": True, "task_family": "coding"},
         )
     )
-    assert decision.model == strong, decision.admit_receipt
+    assert decision.model == weak, decision.admit_receipt
     assert decision.admit_receipt is not None
     assert strong in decision.admit_receipt["admitted"]
     assert decision.admit_receipt["confirm"] == []

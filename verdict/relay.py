@@ -13,6 +13,7 @@ import httpx
 from verdict.capability_passports import RouteIdentity
 from verdict.models import AdmissionProof, RoutingDecision
 from verdict.orchestration.health_cache import (
+    CATEGORY_PAYMENT,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
     DispatchScope,
@@ -263,6 +264,8 @@ def failure_class(
     # Context-length overflow is request-scoped; not a provider/model defect.
     if status_code in {400, 413} and is_context_length_error(body):
         return "context_length_overflow"
+    if status_code == 402:
+        return "payment_required"
     if status_code in {401, 403}:
         return "auth_failure"
     if status_code in {408, 409, 425, 429}:
@@ -278,6 +281,7 @@ def failure_class(
 # Everything else (caller, input, auth, capability and generic request errors)
 # stays ledger-only; auth and model-404 keep the dispatch revocation path.
 _RELAY_FEEDBACK_CATEGORIES: Mapping[str, str] = {
+    "payment_required": CATEGORY_PAYMENT,
     "transport_upstream": CATEGORY_UPSTREAM,
     "transport_timeout": CATEGORY_TIMEOUT,
     "transport_connection": CATEGORY_UPSTREAM,
@@ -346,6 +350,7 @@ def relay_failure_feedback(
                 failure_scope="route",
                 feedback_source="serve_request",
                 feedback_category=failure,
+                capacity_evidence="billing_402_metered" if category == CATEGORY_PAYMENT else None,
                 feedback_provenance=opaque_source,
             ),
             now,

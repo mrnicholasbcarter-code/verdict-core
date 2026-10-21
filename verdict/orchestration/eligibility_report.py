@@ -152,6 +152,7 @@ def build_selector(
     session_ledger: SessionLedger | None = None,
     openrouter_free_set: Any = _OPENROUTER_FREE_SET_OMITTED,
     now: datetime | None = None,
+    no_confirm: bool = False,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -207,14 +208,36 @@ def build_selector(
         openrouter_free_set = None
     # Canonical admission over the full live inventory first. Scope, provider
     # family and the active controller are extra narrowing on that set.
+    runtime = default_runtime_evidence(
+        now=now, state_dir=state_path.parent, ladder_state=state_path
+    ).merged(load_omniroute_health(gateway, api_key=key, now=now))
+    if no_confirm:
+        from verdict.admission import RuntimeEvidence, RuntimeObservation
+        from verdict.admit_prove_confirm import passport_confirmation
+
+        proof = passport_confirmation([str(row.get("id", "")) for row in rows], now=now)
+        fresh = set(proof["admitted"])
+        runtime = runtime.merged(
+            RuntimeEvidence(
+                tuple(
+                    RuntimeObservation(
+                        key=f"route:{row['identity_id']}",
+                        state="healthy",
+                        category="ok",
+                        source="passport_confirmation",
+                        observed_at=row.get("qualified_at"),
+                        until=row.get("expires_at"),
+                    )
+                    for row in proof["passport"]
+                    if row["identity_id"] in fresh
+                ),
+                ("passport_confirmation",),
+            )
+        )
     admitted = admit(
         rows,
         connections,
-        # Evidence comes from the ladder state file this ladder reads, so the
-        # admitted set and the ladder cannot disagree about cached health.
-        default_runtime_evidence(
-            now=now, state_dir=state_path.parent, ladder_state=state_path
-        ).merged(load_omniroute_health(gateway, api_key=key, now=now)),
+        runtime,
         now=now,
         required_capabilities=required_capabilities,
         min_context_tokens=min_context_tokens,
@@ -246,7 +269,8 @@ def build_selector(
             source="orchestrate:capacity",
         )
     receipt_path = state_path.parent / "admission-latest.json"
-    admitted.write_receipt(receipt_path)
+    if not no_confirm:
+        admitted.write_receipt(receipt_path)
     # Prime visibility reads (and, only when sync_visibility=True, refreshes)
     # from the FULL live catalog. Scope and provider-family filters only
     # narrow what this ladder evaluates; they must never shrink the
@@ -256,7 +280,11 @@ def build_selector(
         rows = [r for r in rows if str(r.get("id", "")).startswith(prefixes)]
     if provider_families:
         rows = [r for r in rows if route_prefix(str(r.get("id", ""))) in provider_families]
-    raw_probe = openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
+    raw_probe = (
+        (lambda _: HealthResult(False, "not_probed"))
+        if no_confirm
+        else openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
+    )
     # Read the same health cache the selection refresh hook writes. With an
     # explicit --state-file (or --inject chaos state) that hook writes beside
     # the state file (StorePaths.defaults(state_dir)); otherwise both use
@@ -291,11 +319,12 @@ def build_selector(
         load=load,
         harness_visible=harness_visible,
         admitted=admitted,
-        admission_receipt=receipt_path,
+        admission_receipt=None if no_confirm else receipt_path,
         refresh_hook=refresh_hook,
         health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         openrouter_free_set=openrouter_free_set,
+        max_probes_per_select=0 if no_confirm else 8,
     )
 
 

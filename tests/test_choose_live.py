@@ -277,3 +277,80 @@ def test_live_implementation_without_requires_keeps_default_tools(
     cli.main()
     payload = json.loads(capsys.readouterr().out)
     assert payload["selected"]["route_id"] == "free/weak"
+
+
+def test_no_confirm_selects_only_fresh_proof(live_pool, monkeypatch, capsys, tmp_path):
+    from unittest.mock import Mock
+
+    forbidden = Mock(side_effect=AssertionError("read-only choose must not construct a probe"))
+    monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", forbidden)
+    from verdict.admit_prove_confirm import record_dispatch_observation
+
+    record_dispatch_observation("free/weak", healthy=True, observed_at=datetime.now(timezone.utc))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    _choose(monkeypatch, "--no-confirm")
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["no_confirm"] is True
+    assert payload["confirm"] == "skipped_no_confirm"
+    assert payload["selected"]["route_id"] == "free/weak"
+    forbidden.assert_not_called()
+    (tmp_path / "health-cache.json").unlink()
+    from verdict.prove_at_rest import default_state_path
+
+    default_state_path().unlink()
+    with pytest.raises(SystemExit) as exc:
+        _choose(monkeypatch, "--no-confirm")
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"] is None
+    assert payload["reason"] == "no_eligible_route"
+    forbidden.assert_not_called()
+
+
+def test_free_text_choose_task_uses_coding_rating(live_pool, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["verdict", "choose", "--task", "edit a python function and run its test", "--json"],
+    )
+    cli.main()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["provenance"]["rating_metric"] == "aa_coding"
+
+
+def test_no_confirm_matches_confirming_path_with_fresh_proofs(live_pool, monkeypatch, capsys):
+    from verdict.admit_prove_confirm import record_dispatch_observation
+
+    for route in ("free/weak", "sub/strong"):
+        record_dispatch_observation(route, healthy=True, observed_at=datetime.now(timezone.utc))
+    _choose(monkeypatch)
+    confirming = json.loads(capsys.readouterr().out)
+    _choose(monkeypatch, "--no-confirm")
+    readonly = json.loads(capsys.readouterr().out)
+    assert readonly["selected"]["route_id"] == confirming["selected"]["route_id"]
+    assert readonly["provenance"]["rating_metric"] == confirming["provenance"]["rating_metric"]
+    assert readonly["confirm"] == "skipped_no_confirm"
+
+
+def test_no_confirm_rejects_stale_or_negative_proof(live_pool, monkeypatch, capsys):
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    from verdict.admit_prove_confirm import record_dispatch_observation
+    from verdict.orchestration.health_cache import default_cache_path
+
+    now = datetime.now(timezone.utc)
+    record_dispatch_observation("free/weak", healthy=True, observed_at=now - timedelta(seconds=601))
+    record_dispatch_observation("sub/strong", healthy=True, observed_at=now - timedelta(seconds=2))
+    cache = HealthCache(default_cache_path())
+    cache.record("sub/strong", ProbeResult("upstream", False, False), now)
+    cache.save()
+    forbidden = Mock(side_effect=AssertionError("read-only choose must not probe"))
+    monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", forbidden)
+    with pytest.raises(SystemExit) as exc:
+        _choose(monkeypatch, "--no-confirm")
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"] is None
+    assert payload["confirm"] == "skipped_no_confirm"
+    forbidden.assert_not_called()

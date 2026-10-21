@@ -26,6 +26,7 @@ def select_route_for_task(
     capacity: tuple[str, ...] = (),
     explicit_model: str | None = None,
     now: datetime | None = None,
+    no_confirm: bool = False,
 ) -> SelectionResult:
     """Select with the existing admission, ranking and bounded confirmation.
 
@@ -42,6 +43,7 @@ def select_route_for_task(
         capacity=capacity,
         route_ids=frozenset({explicit_model}) if explicit_model else None,
         visibility_executor="direct-gateway",
+        no_confirm=no_confirm,
         now=now,
     )
     route, verdicts = selector.select(requirements, now=now)

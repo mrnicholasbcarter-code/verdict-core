@@ -5,7 +5,7 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -23,6 +23,7 @@ from verdict.candidate_pool import (
     build_candidate_pool,
 )
 from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
+from verdict.capacity import CapacityClass, billing_capacity_override, classify_route_capacity
 from verdict.chooser import apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
@@ -955,6 +956,52 @@ class IntelligenceService:
 
         return load_healthy_passports(self.passport_store_path)
 
+    def _route_capacity(
+        self, snapshot: OmniRouteAdmitSnapshot, route_ids: Sequence[str]
+    ) -> dict[str, CapacityClass]:
+        from verdict.free_tier_admit import _provider_connections_by_name
+        from verdict.openrouter_free_set import load_openrouter_free_set
+        from verdict.orchestration.health_cache import HealthCache, default_cache_path
+        from verdict.orchestration.provider_catalog import resolve_provider
+        from verdict.paths import verdict_home
+
+        now = self.admit_now or datetime.now(timezone.utc)
+        free_set = load_openrouter_free_set(
+            now=now, cache_path=verdict_home() / "openrouter-free-set.json", refresh=False
+        )
+        cache = HealthCache(default_cache_path())
+        connections = _provider_connections_by_name(snapshot.connections)
+        catalog = {item.identity_id: item for item in snapshot.catalog}
+        capacity: dict[str, CapacityClass] = {}
+        for route_id in route_ids:
+            if billing_capacity_override(cache, route_id, now):
+                capacity[route_id] = CapacityClass.METERED
+                continue
+            identity = catalog.get(route_id)
+            provider = route_id.split("/", 1)[0].lower()
+            connection = connections.get(provider) or connections.get(resolve_provider(provider))
+            if connection is None and identity is not None:
+                connection = connections.get(identity.provider)
+            conn = (
+                None
+                if connection is None
+                else {
+                    "provider": connection.provider,
+                    "authType": connection.auth_type,
+                    "plan_label": connection.plan_label,
+                    "import_free_only": connection.import_free_only,
+                }
+            )
+            row = (
+                {}
+                if identity is None or not identity.price_known
+                else {"pricing": {"input": identity.input_cost, "output": identity.output_cost}}
+            )
+            capacity[route_id] = classify_route_capacity(
+                conn, row, route_id=route_id, openrouter_free_set=free_set
+            )[0]
+        return capacity
+
     def _apply_candidate_pool(
         self,
         receipt: FreeTierAdmitReceipt,
@@ -964,8 +1011,13 @@ class IntelligenceService:
         identity_map: IdentityMap | None,
         candidate_universe: Sequence[str] | None = None,
         policy_allowed: Sequence[str] | None = None,
+        capacity: Mapping[str, CapacityClass] | None = None,
     ) -> tuple[FreeTierAdmitReceipt, CandidatePoolReceipt]:
-        """Bound hard-admitted identities before any active confirmation."""
+        """Bound hard-admitted identities before any active confirmation.
+
+        Ordinary tasks carry capacity tiers. Frontier-worthy callers retain
+        their existing proof-bar ranking until outcome evidence supports more.
+        """
 
         passports = self.passports or {}
         advertised = tuple(candidate_universe or receipt.admitted)
@@ -1014,6 +1066,7 @@ class IntelligenceService:
             health={model_id: RouteHealth(state=HEALTH_OK) for model_id in advertised},
             evidence=evidence,
             policy_allowed=policy_allowed,
+            capacity=capacity,
             outcomes=outcomes,
             as_of=as_of,
             top_k=self.candidate_top_k,
@@ -1130,6 +1183,11 @@ class IntelligenceService:
                 metadata=metadata,
                 identity_map=identity_map,
                 candidate_universe=offered_universe,
+                capacity=(
+                    self._route_capacity(snapshot, offered_universe)
+                    if classification.task_class != "worthy"
+                    else None
+                ),
                 policy_allowed=policy_admitted,
             )
         except CandidatePoolError as exc:
@@ -1427,6 +1485,11 @@ class IntelligenceService:
                 metadata=metadata_for_gate,
                 identity_map=identity_map,
                 candidate_universe=policy_admitted,
+                capacity=(
+                    self._route_capacity(snapshot, policy_admitted)
+                    if classification.task_class != "worthy"
+                    else None
+                ),
                 policy_allowed=policy_admitted,
             )
         confirm_transport = self._resolve_confirm_transport(endpoint)

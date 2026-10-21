@@ -2246,6 +2246,8 @@ def cmd_choose(
     candidates_json: str | None = None,
     output_json: bool = False,
     capacity: str = "",
+    no_confirm: bool = False,
+    task: str = "",
 ) -> None:
     """Select an eligible execution target for Prime dispatch."""
     from verdict.actions.registry import run_action
@@ -2258,6 +2260,8 @@ def cmd_choose(
             "model": model,
             "candidates_json": candidates_json,
             "capacity": capacity,
+            "no_confirm": no_confirm,
+            "task": task,
         },
     )
     if not result.ok:

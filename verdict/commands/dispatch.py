@@ -674,6 +674,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             candidates_json=args.candidates_json,
             output_json=args.json,
             capacity=args.capacity,
+            no_confirm=args.no_confirm,
+            task=args.task,
         )
     elif args.command == "models":
         legacy.cmd_models(
