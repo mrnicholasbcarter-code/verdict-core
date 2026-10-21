@@ -268,14 +268,37 @@ jobs:
           python -m venv /tmp/verdict-dashboard
           /tmp/verdict-dashboard/bin/python -m pip install --upgrade pip
           /tmp/verdict-dashboard/bin/python -m pip install ".[dashboard]"
-          /tmp/verdict-dashboard/bin/python -c 'import importlib.util as u; assert u.find_spec("verdict.dashboard"); import streamlit, plotly, pandas'
+          if [ "${{ matrix.python-version }}" = "3.10" ]; then
+            /tmp/verdict-dashboard/bin/python -c 'import importlib.util as u; assert u.find_spec("verdict.dashboard"); import plotly, pandas; assert u.find_spec("streamlit") is None'
+            if output=$(/tmp/verdict-dashboard/bin/verdict ui 2>&1); then
+              echo "expected dashboard to reject Python 3.10"
+              exit 1
+            else
+              test "$?" -eq 1
+            fi
+            test "$output" = 'The dashboard needs Python 3.11 or newer (streamlit 1.66 and pillow 13 require it); core Verdict works on 3.10.'
+          else
+            /tmp/verdict-dashboard/bin/python -c 'import importlib.util as u; assert u.find_spec("verdict.dashboard"); import streamlit, plotly, pandas'
+          fi
       - name: All extras smoke (what `verdict serve` / `verdict dashboard` recommend)
         run: |
           python -m venv /tmp/verdict-all
           /tmp/verdict-all/bin/python -m pip install --upgrade pip
           /tmp/verdict-all/bin/python -m pip install ".[all]"
           /tmp/verdict-all/bin/verdict detect --json
-          /tmp/verdict-all/bin/python -c 'from verdict.api import app; assert app is not None; import streamlit, plotly, pandas'
+          if [ "${{ matrix.python-version }}" = "3.10" ]; then
+            /tmp/verdict-all/bin/python -c 'from verdict.api import app; assert app is not None'
+            /tmp/verdict-all/bin/python -c 'import importlib.util as u; import plotly, pandas; assert u.find_spec("streamlit") is None'
+            if output=$(/tmp/verdict-all/bin/verdict ui 2>&1); then
+              echo "expected dashboard to reject Python 3.10"
+              exit 1
+            else
+              test "$?" -eq 1
+            fi
+            test "$output" = 'The dashboard needs Python 3.11 or newer (streamlit 1.66 and pillow 13 require it); core Verdict works on 3.10.'
+          else
+            /tmp/verdict-all/bin/python -c 'from verdict.api import app; assert app is not None; import streamlit, plotly, pandas'
+          fi
       - name: Complete install smoke
         run: |
           python -m venv /tmp/verdict-complete

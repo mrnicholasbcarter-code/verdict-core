@@ -1,7 +1,7 @@
 [
   {
     "qualified_name": "verdict.actions.launch.supervise_run",
-    "reason": "UNTRIAGED: supervise_run has no resolved reference; Domain launch entries for BOD-275 Lane E (verdict/actions/launch.py)."
+    "reason": "KEEP: dynamic launch target in verdict.actions.registry.LAUNCH[supervise]; verdict.home._run_command dispatches LaunchSpec.entry through _call_launch_entry using importlib/getattr, which the static checker cannot resolve. The CLI separately uses verdict.orchestration.supervisor.dispatch; retain the palette launch contract."
   },
   {
     "qualified_name": "verdict.actions.registry.get_action",
