@@ -978,7 +978,7 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
 
 
 def test_census_install_updates_runtime_and_reports_last_result(tmp_path, monkeypatch):
-    from verdict.census_passports_service import census_status, manage_census_service
+    from verdict.census_passports_service import manage_census_service
 
     source = tmp_path / "installed"
     (source / "verdict").mkdir(parents=True)
@@ -999,24 +999,21 @@ def test_census_install_updates_runtime_and_reports_last_result(tmp_path, monkey
     )
     assert (runtime / "repo/verdict/__init__.py").read_text() == 'VERSION = "two"\n'
     assert second["runtime_version"] != first["runtime_version"]
-    status = census_status(runtime_root=runtime)
-    assert status["version"] == second["runtime_version"]
-    assert status["last_result"] == {"updated": 4, "probed": 6}
+    version_stamp = json.loads((runtime / "version.json").read_text())
+    assert version_stamp["runtime_version"] == second["runtime_version"]
+    last_result = json.loads((runtime / "last-result.json").read_text())
+    assert last_result == {"updated": 4, "probed": 6}
 
 
 def test_doctor_census_section_marks_retired_runtime_without_install_advice():
     from verdict.doctor_diagnostics import census_runtime_section
 
-    for status in (
-        {"version": "0.5.0+abc123", "last_result": {"updated": 4, "probed": 6}},
-        {"version": None, "last_result": None},
-    ):
-        row = census_runtime_section(status)
-        assert row[0] == "Census runtime"
-        assert row[1] == "note"
-        assert "retired" in row[2]
-        assert "identify" in row[2]
-        assert "--install" not in row[2]
+    row = census_runtime_section()
+    assert row[0] == "Census runtime"
+    assert row[1] == "note"
+    assert "retired" in row[2]
+    assert "identify" in row[2]
+    assert "--install" not in row[2]
 
 
 def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, capsys):
@@ -1024,7 +1021,7 @@ def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, ca
     # module-level import retains this test double after monkeypatch teardown.
     from verdict import census_passports, free_tier_admit, intelligence, prove_at_rest
     from verdict.census_passports import cmd_census
-    from verdict.census_passports_service import census_status
+    from verdict.census_passports_service import default_runtime_root
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     # Initialize and patch both bindings so a first lazy import cannot retain
@@ -1049,11 +1046,10 @@ def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, ca
 
     cmd_census(health_cache_path=tmp_path / "h.json", passport_store_path=tmp_path / "p.json")
 
-    status = census_status()
-    assert status["version"] is None
-    assert status["last_result"]["updated"] == 4
-    assert status["last_result"]["probed"] == 6
-    assert status["last_result"]["finished_at"]
+    last_result = json.loads((default_runtime_root() / "last-result.json").read_text())
+    assert last_result["updated"] == 4
+    assert last_result["probed"] == 6
+    assert last_result["finished_at"]
 
 
 def test_census_command_survives_cooldown_endpoint_failures(tmp_path, monkeypatch):
@@ -1171,21 +1167,6 @@ def test_load_census_cooldowns_tolerates_payload_shapes():
             lambda request, _payload=payload: httpx.Response(200, json=_payload)
         )
         assert load_census_cooldowns("http://gw", transport=transport) == expected
-
-
-def test_doctor_census_section_is_retired_regardless_of_old_result_age():
-    from verdict.doctor_diagnostics import census_runtime_section
-
-    for finished_at in (
-        datetime.now(timezone.utc),
-        datetime.now(timezone.utc) - timedelta(hours=2),
-    ):
-        row = census_runtime_section(
-            {"version": "v", "last_result": {"finished_at": finished_at.isoformat()}}
-        )
-        assert row[1] == "note"
-        assert "retired" in row[2]
-        assert "verdict-census.timer" not in row[2]
 
 
 def test_census_skips_routes_with_unexpired_negative_health(tmp_path):

@@ -239,14 +239,10 @@ def test_screen_unit_command_parses_with_the_approved_bounds(monkeypatch, capsys
 
 
 def test_doctor_never_recommends_retired_installers():
-    for status in (
-        {},
-        {"version": "old", "last_result": {"finished_at": "2020-01-01T00:00:00+00:00"}},
-    ):
-        section = doctor_diagnostics.census_runtime_section(status)
-        assert "census --install" not in str(section)
-        assert "prove-at-rest install-service" not in str(section)
-        assert "retired" in str(section)
+    section = doctor_diagnostics.census_runtime_section()
+    assert "census --install" not in str(section)
+    assert "prove-at-rest install-service" not in str(section)
+    assert "retired" in str(section)
 
 
 @pytest.mark.parametrize("unit", ["verdict-identify.timer", "verdict-identify-screen.timer"])

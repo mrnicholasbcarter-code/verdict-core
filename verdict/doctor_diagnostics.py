@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -274,7 +274,7 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
 
 
-def census_runtime_section(status: Mapping[str, Any]) -> tuple[str, str, str]:
+def census_runtime_section() -> tuple[str, str, str]:
     """The legacy census is retired; never recommend reinstalling it."""
     return (
         "Census runtime",
@@ -706,7 +706,7 @@ def _collect_doctor_diagnostics(
     except Exception as e:
         issues_found.append(f"Credential check failed: {e}")
 
-    sections.append(census_runtime_section({}))
+    sections.append(census_runtime_section())
 
     sections.append(("Installed services", "header", ""))
     for row in (*installed_service_rows(), *service_code_path_rows(), *installed_runtime_rows()):

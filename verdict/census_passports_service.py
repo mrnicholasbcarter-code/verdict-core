@@ -209,17 +209,6 @@ def package_build(package: Path) -> str:
     return f"git {commit[:12]}" if commit else "unrecorded"
 
 
-def census_status(runtime_root: Path | None = None) -> dict[str, Any]:
-    """Version of the installed runtime copy and its last census result."""
-    runtime = runtime_root or default_runtime_root()
-    stamp = _read_json(runtime / VERSION_FILE)
-    return {
-        "version": None if stamp is None else stamp.get("runtime_version"),
-        "last_result": _read_json(runtime / LAST_RESULT_FILE),
-        "runtime_root": str(runtime),
-    }
-
-
 def write_census_last_result(
     report: dict[str, Any], runtime_root: Path | None = None
 ) -> dict[str, Any]:
