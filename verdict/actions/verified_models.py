@@ -320,7 +320,8 @@ class VerifiedSnapshotAdapter:
 # Public catalog: local verified projection (BOD-435 / S07)
 # ---------------------------------------------------------------------------
 
-#: Strict upper bound (age < bound) for live inventory and connection authority.
+#: Strict upper bound (age < bound) for live inventory and connection authority, and
+#: for the basic-proof age of rows published by ``GET /v1/models``.
 PUBLIC_AUTHORITY_MAX_AGE_SECONDS = 600.0
 
 
@@ -341,8 +342,20 @@ class PublicModelsState:
     admitted: Any = None
 
     def rows_at(self, now: datetime) -> tuple[VerifiedModelRow, ...]:
-        """Rows whose basic proof is still strictly inside its freshness window."""
-        return tuple(r for r in self.rows if r.fresh_until is not None and now < r.fresh_until)
+        """Rows whose basic proof is fresh and younger than the public 600 s bound.
+
+        ``GET /v1/models`` keeps its own proof-age bound; the longer positive
+        evidence lifetime of the health cache does not extend it.
+        """
+        bound = timedelta(seconds=PUBLIC_AUTHORITY_MAX_AGE_SECONDS)
+        return tuple(
+            r
+            for r in self.rows
+            if r.fresh_until is not None
+            and now < r.fresh_until
+            and r.checked_at is not None
+            and now - r.checked_at < bound
+        )
 
 
 class PublicModelsReadiness:
