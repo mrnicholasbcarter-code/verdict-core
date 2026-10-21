@@ -2207,6 +2207,46 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 break
         else:
             edge = None
+        capacity = next(
+            (
+                row.get("capacity_order")
+                for row in decision.candidate_states
+                if row.get("model_id") == attempt.model
+            ),
+            None,
+        )
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 1:
+            free_routes = [
+                str(row["route_id"])
+                for row in decision.candidate_states
+                if row.get("capacity_order") == 0 and isinstance(row.get("route_id"), str)
+            ]
+            try:
+                HealthCache(default_cache_path()).request_rescreen(
+                    free_routes, now=datetime.now(timezone.utc)
+                )
+                rescreen = "queued"
+            except Exception as exc:
+                rescreen = f"persistence_error:{type(exc).__name__}"
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_subscription_fallback",
+                details={
+                    "fallback": "subscription",
+                    "reason": "free attempts failed" if index else "no free route qualifies",
+                    "rescreen": rescreen,
+                    "free_routes": free_routes,
+                },
+            )
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 2:
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_metered_fallback",
+                details={
+                    "fallback": "metered",
+                    "reason": "free and capable subscription attempts unavailable or failed",
+                },
+            )
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
         for local_field in _RELAY_LOCAL_FIELDS:

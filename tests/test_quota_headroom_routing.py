@@ -45,14 +45,50 @@ def test_near_exhausted_account_is_not_selected(tmp_path: Path) -> None:
     assert _selected(ladder) == CC
 
 
-def test_more_remaining_quota_ranks_first_within_a_capacity_class(tmp_path: Path) -> None:
+def test_subscription_unknown_usage_keeps_order_not_remaining_quota(tmp_path: Path) -> None:
     ladder, _ = make_ladder(
         tmp_path,
         _rows(),
         [_quota("codex", 12.0), _quota("claude", 77.0)],
         prefer_providers=("codex",),
     )
-    assert _selected(ladder) == CC
+    assert _verdict(ladder, CX).rank_components["expected_tokens"] is None
+    assert _verdict(ladder, CC).rank_components["expected_tokens"] is None
+    assert _selected(ladder) == CX
+
+
+def test_subscription_lower_token_usage_wins_with_three_validated_rows(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from types import SimpleNamespace
+
+    from verdict.candidate_pool import OutcomeObservation
+
+    observations = tuple(
+        OutcomeObservation(
+            route_id=route,
+            task_family="code_edit",
+            success=True,
+            quality_credit=1.0,
+            total_tokens=total,
+            observation_id=f"{route}:{attempt}",
+        )
+        for route, total in ((CX, 1000), (CC, 10000))
+        for attempt in range(3)
+    )
+    monkeypatch.setattr(
+        "verdict.outcome_shadow.load_verified_outcome_observations",
+        lambda *args, **kwargs: SimpleNamespace(observations=observations, omissions=()),
+    )
+    ladder, _ = make_ladder(
+        tmp_path,
+        _rows(),
+        [_quota("codex", 12.0), _quota("claude", 77.0)],
+        prefer_providers=("claude",),
+    )
+    assert _verdict(ladder, CX).rank_components["expected_tokens"] == 1000
+    assert _verdict(ladder, CC).rank_components["expected_tokens"] == 10000
+    assert _selected(ladder) == CX
 
 
 def test_unmeasured_quota_keeps_existing_ranking(tmp_path: Path) -> None:

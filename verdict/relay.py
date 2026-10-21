@@ -243,6 +243,16 @@ def retryable_response_status(
     """
     if status_code in {400, 413} and is_context_length_error(body):
         return True
+    if status_code in {400, 404, 422} and any(
+        marker in body.lower()
+        for marker in (
+            "tool_not_supported",
+            "tools_not_supported",
+            "unsupported_tool",
+            "does not support tools",
+        )
+    ):
+        return True
     if compatibility_applied and status_code in {400, 404, 422}:
         return False
     return retryable_transport_status(status_code)
@@ -393,6 +403,21 @@ def build_attempts(
     )
     if admitted is not None and decision.model not in admitted:
         return ()
+    if "subscription_fallback_policy" in decision.safety_flags:
+        capacities = {
+            row.get("model_id"): row.get("capacity_order") for row in decision.candidate_states
+        }
+        models = [model for model in models if capacities.get(model) in (0, 1, 2)]
+        free = [model for model in models if capacities.get(model) == 0]
+        subscription = [model for model in models if capacities.get(model) == 1]
+        metered = [model for model in models if capacities.get(model) == 2]
+        # Fallback tiers consume the same three-attempt budget, never extend it.
+        reserved = [*subscription[:1], *metered[:1]]
+        models = (
+            [*free[: 3 - len(reserved)], *reserved]
+            if free
+            else [*subscription[: 2 if metered else 3], *metered[:1]]
+        )
     attempts: list[RelayAttempt] = []
     seen: set[str] = set()
     for model in models:
