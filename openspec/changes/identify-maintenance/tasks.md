@@ -5,5 +5,4 @@
 - [x] Wire explicit private passive persistence and comma-separated capacity filters.
 - [x] Replace the setup warm-cache installer and doctor timer/freshness checks.
 - [x] Complete focused tests and static checks (387 passed; mypy/ruff/collection/reachability/spec validation green).
-- [ ] Parent review and push acceptance.
-- [ ] Parent installs merged main, proves raw systemd/report output, and verifies freshness survival. No Done or archive claim before that proof.
+- [x] Parent review and push acceptance: cross-family review APPROVE (NVIDIA Nemotron, /home/nick/dev/work/identify-correction/pr935-review.md) and push gate PASS (vgate: PASS, /home/nick/dev/work/identify-correction/timer-pr-push.txt).

@@ -20,3 +20,7 @@ BOD-350 and BOD-342 D3/D4 replace the retired five-minute prove-at-rest/census l
 ## Impact
 
 CLI parser/dispatch, identify, service rendering, setup, doctor, tests. No dependency changes or legacy unit activation. Real-host installation and full DoD remain parent responsibilities after merge.
+
+## Rollout / verification after merge
+
+Merge and fresh-main real-host proof remain release work, not completed implementation tasks. This change is not Done until the parent installs from merged main, runs `verdict identify install-service`, shows raw `systemctl --user status` and report output, and verifies freshness survival across the passive/screen interval.
