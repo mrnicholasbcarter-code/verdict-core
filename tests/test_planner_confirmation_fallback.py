@@ -1,8 +1,8 @@
 """Offline regressions for bounded planner confirmation: proven routes confirm first.
 
-Selection is price-free: capacity class never orders confirmation. A route the
-health cache already proved healthy is confirmed before cold catalog aliases,
-whatever its capacity class, and a failed confirmation never launches.
+Within one capacity tier, a route the health cache already proved healthy is
+confirmed before equal-rated cold aliases. A failed confirmation never launches.
+D6 cross-tier ordering is covered by test_cheapest_proven_selection.
 """
 
 from pathlib import Path
@@ -24,7 +24,7 @@ REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=2)
 def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
     cold = [f"ghost/deepseek-v3-{i}" for i in range(10)]
     rows = [row(r) for r in cold] + [row(FREE, "freemodel-dev"), row(SUB)]
-    connections = [conn("ghost", plan="free"), conn("freemodel-dev", plan="free"), conn("codex")]
+    connections = [conn("ghost"), conn("freemodel-dev"), conn("codex")]
     cache = HealthCache(tmp_path / "health-cache.json")
     for route in [SUB] + ([FREE] if fresh_free else []):
         cache.record(route, ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)
@@ -49,7 +49,7 @@ def test_proven_routes_confirm_before_cold_aliases(tmp_path: Path) -> None:
     selector, probe, _ = ladder(tmp_path, fresh_free=True)
     choice, _ = selector.select(REQ, now=NOW)
     # Both proven routes rank equal on rating; codex sorts before freemodel-dev
-    # (price-free tie-break), and the first proven route confirms.
+    # (within-tier tie-break), and the first proven route confirms.
     assert choice is not None and choice.route_id == SUB
     assert probe.calls == [SUB]
     assert selector.admitted.launchable(SUB)

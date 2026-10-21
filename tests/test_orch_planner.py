@@ -1021,7 +1021,7 @@ async def test_credential_cooldown_on_one_alias_blocks_every_alias(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_planner_reselection_follows_rating_not_capacity_class(tmp_path, monkeypatch):
+async def test_planner_reselection_follows_cheapest_qualified_capacity(tmp_path, monkeypatch):
     from tests.test_orch_eligibility import NOW, conn
 
     routes = [
@@ -1031,14 +1031,14 @@ async def test_planner_reselection_follows_rating_not_capacity_class(tmp_path, m
     ]
     connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
     ladder = _planner_ladder(tmp_path, routes, connections)
-    planner = _RoutedPlanner(lambda r: _COLLIDING_PLAN if r.startswith("cc/") else _GOOD_PLAN)
+    planner = _RoutedPlanner(lambda r: _COLLIDING_PLAN if r.startswith("gl/") else _GOOD_PLAN)
 
     rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
 
-    # Price excluded: the stronger subscription route is tried first; free
-    # capacity class does not jump ahead. Reselection then leaves the pool.
+    # D6: free qualifies and is attempted before subscription. A bad plan
+    # still reselects to another qualifying route rather than readmitting it.
     started = [(r["route_id"], r["capacity_class"]) for r in rows if r["type"] == "plan_started"]
-    assert started == [("cc/claude-sonnet-5", "subscription"), ("gl/glm-5", "free")]
+    assert started == [("gl/glm-5", "free"), ("ms/mistral-large", "free")]
 
 
 @pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])

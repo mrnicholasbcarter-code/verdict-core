@@ -302,6 +302,7 @@ class VerifiedSnapshotAdapter:
                 provider=row.provider,
                 status=row.status.value,
                 capacity_class=row.capacity_class or "unknown",
+                capacity_evidence=row.capacity_evidence,
                 refreshable=row.refreshable,
                 refresh_reason=row.refresh_reason,
                 last_success_at=row.last_success_at,

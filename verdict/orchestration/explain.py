@@ -26,8 +26,9 @@ from verdict.orchestration.contracts import EligibilityStage, RouteVerdict
 # rank_components. Kept in this module (rather than imported) so consumers can
 # not accidentally depend on a private ladder attribute; a mismatch is caught by
 # the unit test that sorts candidates on these exact keys and compares to the
-# real selector. Price and capacity class are display-only, never a reason.
+# real selector. Capacity tier is first; marginal price is display-only.
 _RANK_COMPONENT_ORDER: tuple[str, ...] = (
+    "capacity_order",
     "rating_basis",
     "rating",
     "declared_tier",
@@ -101,6 +102,8 @@ def _runner_up(verdicts: Sequence[RouteVerdict], *, exclude: str) -> RouteVerdic
 
 def _describe(component: str, chosen: Any, other: Any) -> str:
     """One line comparing one rank component. Never invents a delta."""
+    if component == "capacity_order":
+        return f"cheaper qualified capacity tier than runner-up: {chosen} vs {other}"
     if component == "rating_basis":
         return f"stronger rating evidence than runner-up: {chosen} vs {other}"
     if component == "rating":

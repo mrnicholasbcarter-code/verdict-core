@@ -403,24 +403,31 @@ def test_auto_mixed_capacity_probes_prepaid_only(tmp_path: Path) -> None:
     assert [(rid, phase) for rid, phase, _ in transport.calls] == [
         ("cc/prepaid", "chat"),
         ("cc/prepaid", "tool"),
+        ("zz/unknown", "chat"),
+        ("zz/unknown", "tool"),
     ]
     rows = rows_by_id(result.data)
     assert rows["cc/prepaid"]["status"] == "VERIFIED"
-    for rid, capacity in (("ap/metered", "metered"), ("zz/unknown", "unknown")):
+    assert rows["zz/unknown"]["status"] == "VERIFIED"
+    assert rows["zz/unknown"]["capacity_class"] == "free"
+    for rid, capacity in (("ap/metered", "metered"),):
         assert rows[rid]["capacity_class"] == capacity
         assert rows[rid]["status"] == "STALE"
         assert rows[rid]["refresh_reason"] == "requires_confirmation"
         assert rows[rid]["coding_ok"] is False
 
 
-def test_metered_unknown_only_zero_calls_and_no_wait(
+def test_specific_metered_only_zero_calls_and_no_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = adapter_for(
         tmp_path,
         ("ap/metered", "zz/unknown"),
         age=None,
-        inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0}), row("zz/unknown")],
+        inventory=[
+            row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
+            row("zz/unknown", pricing={"input": 1.0}),
+        ],
         connections=[conn("ap", auth="apikey", plan="PAYG"), conn("zz", auth="apikey", plan="")],
     )
     monkeypatch.setattr(WaitRunner, "run", forbidden)
@@ -892,7 +899,7 @@ def test_manual_refresh_decline_defaults_no_and_zero_calls_writes(
     assert files_under(tmp_path) == before
 
 
-def test_manual_yes_exact_plan_metered_and_unknown_liveness_only(
+def test_manual_plan_metered_liveness_and_assumed_free_tool_screen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = adapter_for(
@@ -911,14 +918,16 @@ def test_manual_yes_exact_plan_metered_and_unknown_liveness_only(
     assert [(rid, phase) for rid, phase, _ in transport.calls] == [
         ("ap/metered", "chat"),
         ("zz/unknown", "chat"),
+        ("zz/unknown", "tool"),
     ]
-    assert result.data["refresh"]["requests_made"] == 2
+    assert result.data["refresh"]["requests_made"] == 3
     assert result.data["refresh"]["outcome"] == "completed"
-    assert result.data["refresh"]["verified"] == 0
-    assert result.data["refresh"]["alive"] == 2
-    assert all(r["status"] == "VERIFIED" and not r["coding_ok"] for r in result.data["rows"])
+    assert result.data["refresh"]["verified"] == 1
+    assert result.data["refresh"]["alive"] == 1
+    assert all(r["status"] == "VERIFIED" for r in result.data["rows"])
+    assert {r["route_id"] for r in result.data["rows"] if r["coding_ok"]} == {"zz/unknown"}
     assert "Selected routes (2)" in "\n".join(lines)
-    assert "estimated_requests=2" in "\n".join(lines)
+    assert "estimated_requests=3" in "\n".join(lines)
 
 
 def test_progress_distinguishes_healthy_chat_from_full_verified() -> None:
@@ -1300,3 +1309,25 @@ def test_public_source_authority_expires_independently_of_fresh_model_proof(
 
     assert expired.value.code == "inventory_expired"
     assert files_under(tmp_path) == before
+
+
+def test_assumed_free_refresh_records_capacity_evidence(tmp_path):
+    from verdict.orchestration.health_cache import HealthCache
+
+    inventory = [row("zz/unknown")]
+    adapter = adapter_for(
+        tmp_path,
+        ("zz/unknown",),
+        age=None,
+        inventory=inventory,
+        connections=[conn("zz", auth="apikey", plan="")],
+    )
+    transport = RecordingTransport()
+    result = consume(adapter, transport=transport)
+    assert result.ok
+    assert [(rid, phase) for rid, phase, _ in transport.calls] == [
+        ("zz/unknown", "chat"),
+        ("zz/unknown", "tool"),
+    ]
+    entry = HealthCache(adapter.paths.health_cache).entry("zz/unknown")
+    assert entry.capacity_evidence == "assumed_free_no_paid_evidence"

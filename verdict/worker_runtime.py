@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from verdict.admission import AdmittedSet, active_controller_route, load_live_admission
-from verdict.admit_prove_confirm import passport_confirmation
+from verdict.admit_prove_confirm import passport_confirmation, record_dispatch_observation
 from verdict.availability import (
     AvailabilityCandidate,
     AvailabilityReport,
@@ -531,6 +531,29 @@ class WorkerController:
                     "replacement budget exhausted; increase max_attempts "
                     "or restore provider capacity",
                 )
+            if self.gateway_origin is not None:
+                scope = dispatch_scope(
+                    gateway_origin=self.gateway_origin,
+                    provider=candidate.route_id.split("/", 1)[0],
+                    model=candidate.route_id,
+                    route_id=candidate.route_id,
+                    profile_digest=worker_profile_digest(self.task, prompt),
+                )
+                from verdict.relay import revocation_is_active
+
+                if revocation_is_active(
+                    DispatchCache(default_cache_path()), scope, candidate.route_id, self.now()
+                ):
+                    self.event(
+                        "exclusion",
+                        model=candidate.selector,
+                        provider=provider,
+                        classification="no_fresh_passport",
+                        provider_wide=False,
+                        replacement=True,
+                    )
+                    previous = candidate.selector
+                    continue
             health = self.cache.usable(candidate.selector, now=self.now())
             # Launch gate: an admitted route that is not proven healthy needs a
             # bounded live confirmation (this probe) for this exact route first.
@@ -540,9 +563,27 @@ class WorkerController:
                 and not self.admitted.launchable(candidate.route_id)
                 and (health is None or health.healthy)
             )
-            if confirming:
+            if self.gateway_origin is not None:
+                proof_rows = (self.confirmation or {}).get("passport", [])
+                proof_row = next(
+                    (row for row in proof_rows if row.get("identity_id") == candidate.route_id),
+                    None,
+                )
+                if proof_row is None or not proof_row.get("qualified_at"):
+                    confirming = True
+                else:
+                    qualified = datetime.fromisoformat(
+                        str(proof_row["qualified_at"]).replace("Z", "+00:00")
+                    )
+                    confirming = (
+                        confirming
+                        or (self.now() - qualified).total_seconds()
+                        >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
+                    )
+            if confirming and (health is None or health.healthy):
                 health = None
             if health is None:
+                probe_started = self.now()
                 try:
                     health = await asyncio.wait_for(
                         asyncio.to_thread(self.probe, candidate),
@@ -552,6 +593,11 @@ class WorkerController:
                         raise AttemptFailureError("malformed_probe")
                 except Exception as exc:
                     health = self.failure(exc)
+                record_dispatch_observation(
+                    candidate.route_id, healthy=health.healthy, observed_at=probe_started
+                )
+                if self.gateway_origin is not None:
+                    self.confirmation = passport_confirmation([candidate.route_id], now=self.now())
                 if health.healthy:
                     self.cache.record(candidate.selector, health, now=self.now())
                 else:
@@ -788,6 +834,7 @@ class WorkerController:
                 previous = candidate.selector
                 continue
             self.attempts.append((candidate.selector, "completed"))
+            record_dispatch_observation(candidate.route_id, healthy=True, observed_at=self.now())
             self.cache.record(candidate.selector, HealthResult(True, "healthy"), now=self.now())
             return self.finish("SUCCESS", output=output, candidate=candidate, spawn_id=spawn_id)
         detail = ", ".join(f"{model}:{category}" for model, category in self.attempts)

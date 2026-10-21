@@ -721,26 +721,32 @@ def _consume_mixed(tmp_path: Path, transport: _Transport, **kwargs: Any) -> Any:
     )
 
 
-def test_free_only_makes_zero_calls_to_unknown_or_metered_routes(isolated_home: Path) -> None:
+def test_free_only_includes_assumed_free_but_not_metered_routes(isolated_home: Path) -> None:
     transport = _Transport()
     lines: list[str] = []
     result = _consume_mixed(isolated_home, transport, read_line=lambda _p: "f", write=lines.append)
     assert result.ok, result.data
-    assert sorted(transport.calls) == [("fr/free", "chat"), ("fr/free", "tool")]
+    assert sorted(transport.calls) == [
+        ("fr/free", "chat"),
+        ("fr/free", "tool"),
+        ("zz/unknown", "chat"),
+        ("zz/unknown", "tool"),
+    ]
     summary = result.data["refresh"]
     assert summary["approved_classes"] == [CAPACITY_FREE]
     reasons = {rid: o["refresh_reason"] for rid, o in summary["route_outcomes"].items()}
     assert reasons == {
         "fr/free": None,
         "cc/sub": "not_approved",
-        "zz/unknown": "not_approved",
+        "zz/unknown": None,
         "ap/metered": "not_approved",
     }
     statuses = {r["route_id"]: r["status"] for r in result.data["rows"]}
     assert statuses["fr/free"] == "VERIFIED"
-    assert statuses["zz/unknown"] == statuses["ap/metered"] == "UNVERIFIED"
+    assert statuses["zz/unknown"] == "VERIFIED"
+    assert statuses["ap/metered"] == "UNVERIFIED"
     shown = "".join(lines)
-    assert "UNKNOWN: 1 route" in shown and "estimated spend unknown (no pricing)" in shown
+    assert "FREE: 2 route" in shown
     assert "METERED: 1 route" in shown and "estimated spend ~$" in shown
 
 
@@ -749,7 +755,7 @@ def test_manual_yes_with_group_defaults_probes_only_prepaid(isolated_home: Path)
     answers = iter(["y", "", "", "", ""])
     result = _consume_mixed(isolated_home, transport, read_line=lambda _p: next(answers))
     assert result.ok, result.data
-    assert transport.routes_called() == {"fr/free", "cc/sub"}
+    assert transport.routes_called() == {"fr/free", "cc/sub", "zz/unknown"}
 
 
 def test_non_interactive_manual_refresh_skips_costly_groups_without_flags(
@@ -762,14 +768,18 @@ def test_non_interactive_manual_refresh_skips_costly_groups_without_flags(
 
     result = _consume_mixed(isolated_home, transport, read_line=no_prompt, interactive=False)
     assert result.ok, result.data
-    assert transport.routes_called() == {"fr/free", "cc/sub"}
+    assert transport.routes_called() == {"fr/free", "cc/sub", "zz/unknown"}
 
     transport = _Transport()
     result = _consume_mixed(
         isolated_home, transport, read_line=no_prompt, interactive=False, opt_in=(CAPACITY_UNKNOWN,)
     )
     assert result.ok, result.data
-    assert ("zz/unknown", "chat") in transport.calls
+    assert transport.calls == []  # assumed-free was already refreshed by the first call
+    assert (
+        next(r for r in result.data["rows"] if r["route_id"] == "zz/unknown")["status"]
+        == "VERIFIED"
+    )
     assert "ap/metered" not in transport.routes_called()
 
 

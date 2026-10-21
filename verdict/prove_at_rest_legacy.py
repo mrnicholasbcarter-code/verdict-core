@@ -1,4 +1,4 @@
-"""Legacy prove-at-rest cycle document (read-only).
+"""Legacy prove-at-rest cycle document and current dispatch passport store.
 
 The current prober in ``verdict.prove_at_rest`` ignores this schema. It does
 not read or delete ``~/.verdict/prove-at-rest/state.json``. These types stay
@@ -10,6 +10,7 @@ Do not construct ``ProveAtRestDaemon`` for new work.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
@@ -53,7 +54,9 @@ def default_state_path() -> Path:
     configured = os.getenv(ENV_STATE_PATH)
     if configured and configured.strip():
         return Path(configured).expanduser().resolve()
-    return (Path.home() / ".verdict" / "prove-at-rest" / "state.json").resolve()
+    from verdict.paths import verdict_home
+
+    return (verdict_home() / "prove-at-rest" / "state.json").resolve()
 
 
 def _now() -> datetime:
@@ -328,16 +331,45 @@ class ProveAtRestStore:
     def record_confirm(
         self, identity_id: str, observation: ProbeObservation, *, now: datetime | None = None
     ) -> None:
-        """Persist one budgeted confirm without replacing the rest of the cycle.
+        """Persist exact-route evidence atomically, including on a cold host.
 
-        A successful confirm refreshes that identity's passport. A failed
-        confirm records the failure. Missing state is left untouched because a
-        confirm must not invent a prove cycle.
+        The observation time is the call's start, so a negative arriving during
+        that call cannot be overwritten by its late successful response.
         """
-        cycle = self.read()
-        if cycle is None:
-            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(self.path.suffix + ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self._record_confirm_locked(identity_id, observation, now=now)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _record_confirm_locked(
+        self, identity_id: str, observation: ProbeObservation, *, now: datetime | None
+    ) -> None:
         current = now or observation.observed_at
+        cycle = self.read() or ProveAtRestCycle(
+            cycle_id="dispatch-observations",
+            started_at=current,
+            finished_at=current,
+            results=(),
+            admitted=(),
+            active_providers=(),
+            free_tier_providers=(),
+        )
+        previous = next((r for r in cycle.results if r.identity_id == identity_id), None)
+        if (
+            previous is not None
+            and previous.proved_at is not None
+            and (
+                previous.proved_at > observation.observed_at
+                or (
+                    previous.proved_at == observation.observed_at
+                    and previous.status != STATUS_HEALTHY
+                )
+            )
+        ):
+            return
         provider = _provider_of(identity_id)
         ready = observation.availability_state == "ready" and observation.error is None
         passport = (

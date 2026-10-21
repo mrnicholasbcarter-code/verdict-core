@@ -639,9 +639,9 @@ def test_capacity_class_matches_the_ladder() -> None:
             CapacityClass.METERED,
         ),
         ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
-        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
+        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.FREE),
         # Bool pricing values must NOT be treated as prices (True == 1 in Python).
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.FREE),
     ]
     for conn, row, expected_class in shared_shapes:
         via_standalone = capacity_class_of(conn, row)

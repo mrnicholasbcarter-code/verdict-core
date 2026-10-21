@@ -30,7 +30,7 @@ from typing import Any
 from verdict.admission import canonical_route_id, is_opaque, route_provider_prefix
 from verdict.availability import QuotaEvidence, account_forms
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import _marginal_price, capacity_class_of
+from verdict.orchestration.eligibility import _classify_capacity, _marginal_price
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
@@ -562,6 +562,7 @@ class VerifiedModelRow:
     agentic_ok: bool | None = None
     agentic_checked_at: datetime | None = None
     capacity_class: str | None = None
+    capacity_evidence: str | None = None
     price: float | None = None  # inventory price per 1M tokens (in + out); None = unknown
     refreshable: bool = False
     refresh_reason: str | None = None
@@ -613,6 +614,11 @@ class VerifiedModelRow:
             "agentic_ok": self.agentic_ok,
             "agentic_checked_at": _iso(self.agentic_checked_at),
             "capacity_class": _display_safe(self.capacity_class),
+            **(
+                {"capacity_evidence": self.capacity_evidence}
+                if self.capacity_evidence == "assumed_free_no_paid_evidence"
+                else {}
+            ),
             "price": self.price,
             "refreshable": self.refreshable,
             "refresh_reason": _display_safe(self.refresh_reason),
@@ -1173,9 +1179,11 @@ def _negative_deadline(
 
 def _capacity_for_row(
     row: Mapping[str, Any], connection: Mapping[str, Any] | None
-) -> CapacityClass:
-    cls, _ = capacity_class_of(connection, row)
-    return cls
+) -> tuple[CapacityClass, str]:
+    cls, _, evidence = _classify_capacity(
+        connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=None
+    )
+    return cls, evidence
 
 
 def _refresh_decision(
@@ -1257,7 +1265,7 @@ def _classify_row(
         c for c in _active_connections_for(provider_names, conn_index) if c.get("isActive") is True
     ]
     connection = active_conns[0] if active_conns else None
-    capacity = _capacity_for_row(row, connection)
+    capacity, capacity_evidence = _capacity_for_row(row, connection)
     price, price_known = _marginal_price(row)
 
     restrictions: list[str] = []
@@ -1336,6 +1344,7 @@ def _classify_row(
             tools=tools,
             structured=structured,
             capacity_class=capacity.value,
+            capacity_evidence=capacity_evidence,
             price=price if price_known else None,
             hints=tuple(hints),
             availability_evidence=tuple(

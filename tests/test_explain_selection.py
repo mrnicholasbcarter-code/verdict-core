@@ -280,6 +280,7 @@ class TestBehaviourParityAcrossFixtures:
         for v in candidates:
             assert v.rank_components is not None
             assert list(v.rank_components) == [  # ordered dict, rank keys first
+                "capacity_order",
                 "rating_basis",
                 "rating",
                 "declared_tier",
@@ -293,9 +294,9 @@ class TestBehaviourParityAcrossFixtures:
                 "load",
                 "fit",
                 "route_id",
-                "capacity_order",
                 "price",
                 "probe_class",
+                "evidence_level",
                 "cache_checked_at",
                 "cache_freshness",
                 "session_score",
@@ -357,7 +358,7 @@ def _verdict(
         failed_stage=failed_stage,
         reason=reason,
         rank=rank,
-        rank_components=rc,
+        rank_components={"capacity_order": 0, **rc} if rc is not None else None,
     )
 
 
@@ -442,7 +443,7 @@ class TestExplainSelection:
             "load": 0,
             "fit": 2,
             "route_id": "p/sel",
-            "capacity_order": 2,
+            "capacity_order": 0,
             "price": 0.5,
         }
         rc_next = {
@@ -469,11 +470,12 @@ class TestExplainSelection:
         assert out["runner_up"]["route_id"] == "p/next"
         reasons = out["selected_because"]
         # The rating decides; a cheaper, free runner-up is never the reason.
-        assert reasons[0].startswith("equal on rating_basis")
-        assert "higher task rating than runner-up: 70.0 vs 40.0" in reasons[1]
-        assert not any("price" in r or "capacity" in r for r in reasons)
+        assert reasons[0].startswith("equal on capacity_order")
+        assert reasons[1].startswith("equal on rating_basis")
+        assert "higher task rating than runner-up: 70.0 vs 40.0" in reasons[2]
+        assert not any("price" in r for r in reasons)
         # Nothing after the deciding component.
-        assert len(reasons) == 2
+        assert len(reasons) == 3
 
     def test_selected_because_names_intelligence_fallback_basis(self) -> None:
         rc_sel = {
@@ -505,7 +507,7 @@ class TestExplainSelection:
             ),
         ]
         reasons = explain_selection(vs)["selected_because"]
-        assert reasons[0] == (
+        assert reasons[1] == (
             "stronger rating evidence than runner-up: intelligence_fallback vs unknown"
         )
 
@@ -539,8 +541,8 @@ class TestExplainSelection:
             ),
         ]
         reasons = explain_selection(vs)["selected_because"]
-        assert reasons[0].startswith("equal on rating_basis: intelligence_fallback")
-        assert "higher task rating than runner-up: 57.6 vs 40.0" in reasons[1]
+        assert reasons[1].startswith("equal on rating_basis: intelligence_fallback")
+        assert "higher task rating than runner-up: 57.6 vs 40.0" in reasons[2]
 
     def test_all_equal_or_unknown(self) -> None:
         rc_sel = {
@@ -665,8 +667,8 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
 def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
     """_rank_components is the single source of truth for _rank_key (500 routes).
 
-    The key is price-free: rating evidence, then slack, quota, provider
-    preference, load, fit and route_id. Capacity class and price never enter it.
+    The key is capacity tier, rating evidence, then slack, quota, provider
+    preference, load, fit and route_id. Marginal price never enters it.
     """
     import random
 
@@ -718,6 +720,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
     for a in candidates:
         c = ladder._rank_components(a)
         assert ladder._rank_key(a) == (
+            c["capacity_order"],
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
@@ -744,10 +747,10 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
     assert [a.route_id for a in cheap_candidates] == [a.route_id for a in candidates]
 
 
-def test_capacity_class_is_never_a_selection_reason() -> None:
+def test_capacity_class_is_first_selection_reason() -> None:
     """Price excluded: a cheaper capacity class is never reported as the reason."""
     from verdict.orchestration.explain import _RANK_COMPONENT_ORDER
 
-    assert "capacity_order" not in _RANK_COMPONENT_ORDER
+    assert _RANK_COMPONENT_ORDER[0] == "capacity_order"
     assert "price" not in _RANK_COMPONENT_ORDER
-    assert _RANK_COMPONENT_ORDER[:3] == ("rating_basis", "rating", "declared_tier")
+    assert _RANK_COMPONENT_ORDER[1:4] == ("rating_basis", "rating", "declared_tier")

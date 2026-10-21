@@ -97,6 +97,7 @@ class OmniRouteEvidence:
     route_capacities: Mapping[str, str] = field(default_factory=dict)
     inventory_route_ids: frozenset[str] = frozenset()
     traffic_by_route: Mapping[str, TrafficEvidence] = field(default_factory=dict)
+    route_capacity_evidence: Mapping[str, str] = field(default_factory=dict)
 
 
 def _date(value: Any) -> datetime | None:
@@ -295,12 +296,13 @@ def parse_omniroute_evidence(
                 observed,
             )
         )
-    from verdict.orchestration.eligibility import capacity_class_of
+    from verdict.orchestration.eligibility import _classify_capacity
 
     usable_ids = {c.connection_id for c in connections if c.usable}
     provider_rows = _rows(providers.get("connections")) if "providers" not in errors else []
     identities: dict[str, tuple[str, str]] = {}
     capacities: dict[str, str] = {}
+    capacity_rules: dict[str, str] = {}
     routes: dict[tuple[str, str], list[str]] = {}
     inventory: set[str] = set()
     for row in _rows(v1_models.get("data")) if "v1_models" not in errors else []:
@@ -314,12 +316,15 @@ def parse_omniroute_evidence(
             # Only the catalog's explicit root establishes shared model identity.
             if isinstance(row.get("root"), str) and row["root"]:
                 identities[route_id] = (provider, row["root"])
-            classes = {
-                capacity_class_of(conn, row, route_id=route_id)[0].value
+            classifications = [
+                _classify_capacity(conn, row, route_id=route_id, openrouter_free_set=None)
                 for conn in provider_rows
                 if conn.get("id") in usable_ids and conn.get("provider") == provider
-            }
+            ]
+            classes = {item[0].value for item in classifications}
+            rules = {item[2] for item in classifications}
             capacities[route_id] = next(iter(classes)) if len(classes) == 1 else "unknown"
+            capacity_rules[route_id] = next(iter(rules)) if len(rules) == 1 else "unknown"
             routes.setdefault((provider, model), []).append(route_id)
             routes.setdefault((provider, route_id), []).append(route_id)
     cooled: set[str] = set()
@@ -375,6 +380,7 @@ def parse_omniroute_evidence(
         MappingProxyType(capacities),
         frozenset(inventory),
         MappingProxyType(traffic_by_route),
+        MappingProxyType(capacity_rules),
     )
 
 

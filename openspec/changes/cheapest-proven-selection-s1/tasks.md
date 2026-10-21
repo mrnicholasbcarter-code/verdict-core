@@ -1,0 +1,6 @@
+## Implementation and local proof
+- [x] Add red actual-selection and stale-proof regressions, then show green. Initial regression: 3 failed / 1 passed; first green: 4 passed. D7 classification red: 2 failed / 2 passed. Capacity-provenance regression first failed with a null durable rule, then passed.
+- [x] Implement D6/D7 policy with unchanged task qualification and permit safeguards. Focused failure-confirmation suite: 1490 passed. New tests cover consumed attempts, revoked epochs, active negative denial, concurrent negative precedence, and recovery after existing backoff.
+- [x] Run and disclose full-suite results and static checks; validate this OpenSpec change. Confirming full suite: 1 failed, 10583 passed, 31 skipped, 24 xfailed (the chained proxy test). Parent-approved test-only split then passed all 65 proxy/feedback tests; no further author full run authorized. Mypy: 324 source files clean; ruff clean; reachability has zero new findings. Parent runs the full suite on the committed PR head before acceptance.
+
+Post-merge host proof is listed in the proposal's Rollout / verification after merge section. This task list records performed local verification, not a green full-suite or host-acceptance claim.

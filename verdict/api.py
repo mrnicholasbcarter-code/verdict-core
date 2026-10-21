@@ -2522,6 +2522,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     response_headers.update(_evidence_headers(route_evidence))
 
     if isinstance(result, BufferedUpstreamResponse):
+        if result.status_code < 400 and response_actual_route_status(result) != "mismatch":
+            from verdict.admit_prove_confirm import record_dispatch_observation
+
+            record_dispatch_observation(
+                attempts_used[-1]["model"], healthy=True, observed_at=datetime.now(timezone.utc)
+            )
         evidence = _finish_evidence(
             route_evidence,
             build_outcome_event(
@@ -2558,6 +2564,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         def finalize_stream(event: Any) -> None:
             _finish_evidence(route_evidence, event, evidence_key)
             label, cls = _stream_ledger_outcome(validated_stream.outcome)
+            if label == "accepted":
+                from verdict.admit_prove_confirm import record_dispatch_observation
+
+                record_dispatch_observation(
+                    stream_ledger["model"], healthy=True, observed_at=datetime.now(timezone.utc)
+                )
             usage = validated_stream.outcome.usage if validated_stream.outcome else None
             ledger(
                 stream_ledger["attempt_id"],

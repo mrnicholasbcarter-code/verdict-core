@@ -117,6 +117,7 @@ def screen(tmp_path, calls, **kwargs):
         max_per_provider=1,
         max_routes=2,
         clock=lambda: NOW,
+        capacities=("subscription",),
     )
     options.update(kwargs)
     return identify.screen_models(snapshot(), **options)
@@ -132,11 +133,11 @@ def test_screen_without_consent_sends_nothing(tmp_path):
 
 def test_screen_caps_strongest_first_alias_dedupe_and_subscription_proof(tmp_path):
     calls = []
-    report = screen(tmp_path, calls)
+    report = screen(tmp_path, calls, capacities=("free", "subscription"))
     checked = [r for r in report["routes"] if r["turns_sent"]]
-    assert [r["route_id"] for r in checked] == ["alias/strong", "q/model"]
+    assert [r["route_id"] for r in checked] == ["p/weak", "q/model"]
     assert checked[0]["basis"] == "score"
-    assert checked[0]["score"] == 90
+    assert checked[0]["score"] == 10
     assert checked[0]["provider"] == "p"
     assert all(r["result"] == "pass" and r["turns_sent"] == 3 for r in checked)
     assert report["routes_checked"] == report["passed"] == 2
@@ -144,7 +145,7 @@ def test_screen_caps_strongest_first_alias_dedupe_and_subscription_proof(tmp_pat
     assert report["stopped_reason"] == "route_cap"
     assert {r["result"] for r in report["routes"]} >= {"skipped_alias", "skipped_cap"}
     cache = HealthCache(tmp_path / "health.json")
-    entry = cache.entry("alias/strong")
+    entry = cache.entry("p/weak")
     assert entry.agentic_ok and entry.identity == "verified"
     assert entry.agentic_checked_at == NOW
     assert cache.entry("p/strong") is None
@@ -159,7 +160,9 @@ def test_total_and_per_provider_caps_are_independent(tmp_path):
     assert report["routes_checked"] == 1
     assert report["stopped_reason"] == "route_cap"
     other = tmp_path / "other"
-    report = screen(other, [], max_routes=5, max_per_provider=1)
+    report = screen(
+        other, [], max_routes=5, max_per_provider=1, capacities=("free", "subscription")
+    )
     assert report["routes_checked"] == 2
     assert report["stopped_reason"] == "provider_cap"
 
@@ -191,7 +194,7 @@ def test_fresh_agentic_is_skipped_but_chat_does_not_qualify(tmp_path):
     calls = []
     report = screen(tmp_path, calls, cache=cache)
     assert report["routes"][0]["result"] == "skipped_fresh"
-    assert [r[0] for r in calls] == ["q/model"] * 3 + ["p/weak"] * 3
+    assert [r[0] for r in calls] == ["q/model"] * 3
     assert cache.entry("alias/strong").agentic_checked_at == NOW - timedelta(hours=1)
     assert cache.entry("q/model").agentic_ok
 
@@ -212,8 +215,8 @@ def test_429_writes_no_capability_and_stops_provider_only(tmp_path, limit_turn):
     assert report["model_requests_sent"] == limit_turn + 3
     assert report["routes"][0]["result"] == "rate_limited"
     assert (
-        next(r for r in report["routes"] if r["route_id"] == "p/weak")["result"]
-        == "skipped_provider_stopped"
+        next(r for r in report["routes"] if r["route_id"] == "p/strong")["result"]
+        == "skipped_alias"
     )
     cache = HealthCache(tmp_path / "health.json")
     assert cache.entry("alias/strong") is None
@@ -250,9 +253,12 @@ def test_current_negative_and_cooldown_are_skipped(tmp_path):
     )
     cache.save()
     calls = []
-    report = screen(tmp_path, calls, cache=cache)
+    report = screen(tmp_path, calls, cache=cache, capacities=("free", "subscription"))
     assert [r[0] for r in calls] == ["p/weak"] * 3
-    assert report["routes"][0]["result"] == "skipped_negative"
+    assert (
+        next(r for r in report["routes"] if r["route_id"] == "alias/strong")["result"]
+        == "skipped_negative"
+    )
     assert (
         next(r for r in report["routes"] if r["route_id"] == "q/model")["result"]
         == "skipped_cooldown"
@@ -420,3 +426,36 @@ def test_screen_auth_keeps_existing_failure_scope_and_pool_cooldown(
     assert entry.failure_scope == scope
     assert entry.pool == "alias"
     assert ("alias" in _cooled_pools(cache, NOW)) is cooled
+
+
+def test_free_screens_before_higher_rated_subscription(tmp_path):
+    calls = []
+    report = screen(tmp_path, calls, capacities=("free", "subscription"))
+    checked = [r for r in report["routes"] if r["turns_sent"]]
+    assert [r["route_id"] for r in checked] == ["p/weak", "q/model"]
+    assert [r[0] for r in calls] == ["p/weak"] * 3 + ["q/model"] * 3
+    assert report["passed"] == 2
+
+
+def test_assumed_free_screen_records_capacity_evidence(tmp_path):
+    evidence = replace(
+        snapshot(),
+        route_capacities={"p/weak": "free"},
+        route_capacity_evidence={"p/weak": "assumed_free_no_paid_evidence"},
+    )
+    cache = HealthCache(tmp_path / "health.json")
+    report = identify.screen_models(
+        evidence,
+        metadata=ratings(),
+        cache=cache,
+        transport=passing([]),
+        allow_live_probe=True,
+        max_per_provider=1,
+        max_routes=1,
+        capacities=("free",),
+        clock=lambda: NOW,
+    )
+    row = next(r for r in report["routes"] if r["route_id"] == "p/weak")
+    assert row["result"] == "pass"
+    assert row["capacity_evidence"] == "assumed_free_no_paid_evidence"
+    assert cache.entry("p/weak").capacity_evidence == "assumed_free_no_paid_evidence"

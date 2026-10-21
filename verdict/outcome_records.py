@@ -297,9 +297,13 @@ class AttemptRecord:
     checker_digest: str | None = None
     quality_credit: float | None = None  # 0/.5/1 only on a checker_result with evidence
     effective_parameters: dict[str, Any] | None = None
+    evidence_level: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.evidence_level is None:
+            payload.pop("evidence_level")
+        return payload
 
     def key(self) -> tuple[str | None, ...]:
         """The append-only identity: one terminal and one checker row per digest."""
@@ -380,6 +384,7 @@ def build_attempt_record(
     checker_digest: str | None = None,
     quality_credit: float | None = None,
     effective_parameters: Mapping[str, Any] | None = None,
+    evidence_level: str | None = None,
 ) -> AttemptRecord:
     """Validate and canonicalize one attempt into an :class:`AttemptRecord`.
 
@@ -447,6 +452,7 @@ def build_attempt_record(
         checker_digest=checker_digest,
         quality_credit=None if quality_credit is None else float(quality_credit),
         effective_parameters=dict(effective_parameters) if effective_parameters else None,
+        evidence_level=_optional_text(evidence_level),
     )
 
 

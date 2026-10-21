@@ -54,7 +54,7 @@ _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
-# Display only: capacity class never orders selection (price is excluded).
+# D6: prefer the cheapest capacity tier that passed every admission gate.
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.FREE: 0,
     CapacityClass.SUBSCRIPTION: 1,
@@ -196,8 +196,9 @@ class _Assessment:
     agentic_capability: Mapping[str, Any] | None = None
     # Measured remaining subscription quota (percent), None when not reported.
     quota_percent: float | None = None
-    # Task rating from Core's metadata store; the first ranking component.
+    # Task rating from Core's metadata store; the within-tier ranking component.
     rating: RatedModel | None = None
+    evidence_level: str | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -453,86 +454,18 @@ class EligibilityLadder:
     def _capacity_class(
         self, conn: Mapping[str, Any] | None, row: Mapping[str, Any], route_id: str = ""
     ) -> tuple[CapacityClass, str, str]:
-        """Classify capacity with evidence.
+        """Classify from specific account evidence; absent pricing is assumed free.
 
-        Returns ``(capacity, plan_label, evidence_rule)`` where
-        ``evidence_rule`` names the classification rule that fired.
-
-        Priority order (design §B, plus origin/main signals restored):
-        (0) conn is None → UNKNOWN (no connection data; checked before all
-            other rules, so even a ``:free``-suffixed route without a
-            connection returns UNKNOWN, not FREE).
-        (a) ``:free`` suffix → FREE (overrides oauth → subscription).
-        (b) Connection free signals (``importFreeModelsOnly``,
-            ``import_free_only``, free tier/plan, ``plan_label`` containing
-            ``free`` for any auth type) → FREE.
-        (c) oauth without a free signal → SUBSCRIPTION.
-        (d) all-zero explicit pricing → FREE.
-        (e) apikey with positive pricing → METERED.
-        (f) otherwise UNKNOWN with a named reason.
+        Missing connections remain UNKNOWN and cannot pass ENTITLED. Public
+        OpenRouter free membership takes precedence; other OpenRouter routes
+        and the Anthropic API-key connection are specifically metered.
         """
-        if conn is None:
-            return CapacityClass.UNKNOWN, "", "no_connection"
-        plan_label = sanitized_plan_label(conn.get("plan_label", ""))
-        auth_type = str(conn.get("authType", "")).strip().lower()
-        auth_evidence = auth_type if auth_type in {"apikey", "oauth", "none"} else "other"
-
-        # BOD-418: openrouter-family FREE requires public 0/0 membership.
-        # Suffix / connection free signals alone must not mark paid OpenRouter
-        # routes FREE (they previously cooled the whole openrouter-free pool).
-        if route_id and is_openrouter_catalog_route(route_id):
-            free_set = getattr(self, "openrouter_free_set", None)
-            if openrouter_route_is_public_free(route_id, free_set):
-                return CapacityClass.FREE, plan_label, "openrouter_public_zero"
-            # Fall through: never treat openrouter-family as FREE from suffix
-            # or import_free_only. Inventory pricing / oauth rules still apply.
-
-        # (a) :free suffix overrides oauth → subscription (fixes D5: 72
-        # kilocode :free misclassed as SUBSCRIPTION). Openrouter-family is
-        # handled above and must not take this shortcut.
-        if route_id and has_free_suffix(route_id) and not is_openrouter_catalog_route(route_id):
-            return CapacityClass.FREE, plan_label, "free_suffix"
-
-        # (b) Connection-level free signals. Openrouter-family is excluded:
-        # OmniRoute may set importFreeModelsOnly on a free-only key while the
-        # catalog still lists paid models.
-        is_free, signal = connection_signals_free(conn)
-        if is_free and not (route_id and is_openrouter_catalog_route(route_id)):
-            return CapacityClass.FREE, plan_label, signal
-
-        # (c) oauth without a free signal → SUBSCRIPTION.
-        if auth_type == "oauth":
-            return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
-
-        # Pricing evidence for apikey connections.
-        pricing = row.get("pricing")
-        prices: list[float] = []
-        if isinstance(pricing, Mapping):
-            for value in pricing.values():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    prices.append(float(value))
-        all_zero = bool(prices) and all(p == 0 for p in prices)
-        positive = any(p > 0 for p in prices)
-
-        # All-zero explicit inventory pricing is FREE even for apikey, but not
-        # for openrouter-family when a public free set is available (public
-        # catalog is authoritative there). Without a free set we still refuse
-        # to assert FREE for openrouter-family from inventory alone.
-        if all_zero and not (route_id and is_openrouter_catalog_route(route_id)):
-            return CapacityClass.FREE, plan_label, "all_zero_pricing"
-
-        # (e) apikey with positive pricing → METERED.
-        if auth_type == "apikey" and positive:
-            return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
-
-        # (f) UNKNOWN with a named, bounded reason. Never persist the raw
-        # connection authType: inventory fields are untrusted and may contain
-        # account identifiers or credentials.
-        if route_id and is_openrouter_catalog_route(route_id):
-            reason = "openrouter_not_in_public_free_set"
-            return CapacityClass.UNKNOWN, plan_label, reason
-        reason = f"no_pricing_data:auth={auth_evidence}"
-        return CapacityClass.UNKNOWN, plan_label, reason
+        return _classify_capacity(
+            conn,
+            row,
+            route_id=route_id,
+            openrouter_free_set=getattr(self, "openrouter_free_set", None),
+        )
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
@@ -762,6 +695,12 @@ class EligibilityLadder:
                 a.reason = "insufficient_capability"
                 return a
             a.slack = requirements.max_capability_tier - a.tier
+        if (
+            a.capacity == CapacityClass.FREE
+            and not requirements.frontier_worthy
+            and requirements.max_capability_tier == 3
+        ):
+            a.evidence_level = "probation"
         a.price, a.price_known = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
         snapshot, mapping = self._rating_evidence()
@@ -870,12 +809,11 @@ class EligibilityLadder:
         """Compute all ranking components used to sort candidates.
 
         This is the single source of truth for ranking values. Sort order
-        (see :meth:`_rank_key`): rating (fresh task score, then fresh
+        (see :meth:`_rank_key`): capacity tier, then rating (fresh task score, then fresh
         intelligence fallback for code families missing ``aa_coding``, then
         declared tier, then unknown) -> ``slack`` -> ``quota_rank`` -> ``provider_pref`` ->
-        ``load`` -> ``-fit`` -> ``route_id``. Price and capacity class never
-        order selection; ``capacity_order`` and ``price_for_rank`` are kept for
-        display only.
+        ``load`` -> ``-fit`` -> ``route_id``. Marginal price is display only;
+        capacity class orders already-qualified candidates, never admission.
 
         Uses ``getattr`` with defaults so partially-mocked ladders (BOD-203
         post-probe tests that bypass ``__init__``) keep working.
@@ -922,11 +860,12 @@ class EligibilityLadder:
             "load": load_value,
             "fit": getattr(a, "fit", 0),
             "route_id": a.route_id,
-            # Informational only; _rank_key never reads these.
+            # D6 capacity tier is the first selection key; marginal price is not.
             "capacity_order": _CAPACITY_ORDER.get(a.capacity, 3),
             "price_for_rank": price_value if price_known else 0.0,
             "price_known": price_known,
             "probe_class": probe_class,
+            "evidence_level": getattr(a, "evidence_level", None),
             "cache_checked_at": cache_checked_at,
             "cache_freshness": cache_freshness,
             # Observational only in phase 1; _rank_key intentionally ignores these.
@@ -939,10 +878,12 @@ class EligibilityLadder:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, float, int, int, int, int, int, int, str]:
+    def _rank_key(
+        self, a: _Assessment
+    ) -> tuple[int, int, float, int, int, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
-        Most capable first: a fresh task score (higher first) beats a fresh
+        Cheapest qualified tier first, then a fresh task score (higher first) beats a fresh
         intelligence fallback, which beats a declared tier, which beats
         unknown. Coding scores and intelligence fallbacks are different
         metrics and are never compared directly. Capability slack, measured
@@ -951,6 +892,7 @@ class EligibilityLadder:
         """
         c = self._rank_components(a)
         return (
+            c["capacity_order"],
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
@@ -966,12 +908,13 @@ class EligibilityLadder:
         """Transform internal rank_components to consumer-facing format.
 
         Rank keys come first, in sort order. ``price`` (None when unknown) and
-        ``capacity_order`` follow as informational fields; ``price_known`` and
+        ``capacity_order`` is first; marginal price follows as information; ``price_known`` and
         ``rating_rank`` (encoded by ``rating_basis``) are omitted.
         """
         price_known = components.get("price_known", False)
         price_value = components.get("price_for_rank", 0.0)
         display = {
+            "capacity_order": components["capacity_order"],
             "rating_basis": components["rating_basis"],
             "rating": components["rating"],
             "declared_tier": components["declared_tier"],
@@ -985,9 +928,9 @@ class EligibilityLadder:
             "load": components["load"],
             "fit": components["fit"],  # stays positive
             "route_id": components["route_id"],
-            "capacity_order": components["capacity_order"],
             "price": price_value if price_known else None,
             "probe_class": components.get("probe_class", "none"),
+            "evidence_level": components.get("evidence_level"),
             "cache_checked_at": components.get("cache_checked_at"),
             "cache_freshness": components.get("cache_freshness"),
             "session_score": components.get("session_score"),
@@ -1119,7 +1062,18 @@ class EligibilityLadder:
             # bounded live confirmation for this exact route. A cached healthy
             # hit in the ladder state is not proof for an unverified route.
             confirming = self._admitted is not None and not self._admitted.launchable(a.route_id)
-            if a.health != "healthy" or confirming:
+            from verdict.admit_prove_confirm import passport_confirmation
+            from verdict.orchestration.health_cache import PERMIT_PROOF_MAX_VALIDITY_SECONDS
+
+            confirmation = passport_confirmation([a.route_id], now=now)
+            rows = confirmation["passport"]
+            qualified = _parse_iso(str(rows[0].get("qualified_at", ""))) if rows else None
+            proof_stale = (
+                a.route_id not in confirmation["admitted"]
+                or qualified is None
+                or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
+            )
+            if a.health != "healthy" or confirming or proof_stale:
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"
                     continue
@@ -1128,6 +1082,18 @@ class EligibilityLadder:
                 self._record_health(a.route_id, result, now, provider=a.provider)
                 if confirming:
                     self._record_confirmation(a.route_id, result, now)
+                cache = getattr(self, "_health_cache", None)
+                if cache is not None:
+                    cache.reload()
+                    latest = cache.entry(a.route_id)
+                    if (
+                        result.healthy
+                        and latest is not None
+                        and not latest.healthy
+                        and latest.checked_at >= now
+                    ):
+                        a.failed_stage, a.reason = EligibilityStage.HEALTHY, "newer_negative"
+                        continue
                 if not result.healthy:
                     a.health = "unhealthy"
                     a.failed_stage = EligibilityStage.HEALTHY
@@ -1219,10 +1185,10 @@ class EligibilityLadder:
         return selected, final_verdicts
 
     def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
-        """Strongest rating first; schedule equal ratings by freshness and provider.
+        """Cheapest tier first, then rating; equal ratings retain bounded scheduling.
 
         Within an equal rating, fresh confirmations and provider round-robin
-        retain the bounded scheduler. Capacity class never affects the order.
+        retain the bounded scheduler. Scheduling never moves a costlier tier ahead of a cheaper qualified tier.
         """
         order: list[_Assessment] = []
         by_provider: dict[str, list[_Assessment]] = {}
@@ -1239,12 +1205,19 @@ class EligibilityLadder:
             for i in range(depth):
                 order.extend(q[i] for q in queues if i < len(q))
         return sorted(
-            order, key=lambda a: rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)
+            order,
+            key=lambda a: (
+                _CAPACITY_ORDER.get(a.capacity, 3),
+                *(rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)),
+            ),
         )
 
     def _record_health(
         self, route_id: str, result: HealthResult, now: datetime, *, provider: str = ""
     ) -> None:
+        from verdict.admit_prove_confirm import record_dispatch_observation
+
+        record_dispatch_observation(route_id, healthy=result.healthy, observed_at=now)
         # Reclassify catalog-stale errors: OmniRoute returns bad_request with
         # a specific message for ids not in the live catalog.
         category = result.category
@@ -1338,6 +1311,9 @@ class EligibilityLadder:
         )
 
     def record_success(self, route_id: str, *, now: datetime) -> None:
+        from verdict.admit_prove_confirm import record_dispatch_observation
+
+        record_dispatch_observation(route_id, healthy=True, observed_at=now)
         with self._persist_lock:
             pool_key = f"pool:{pool_of(route_id)}"
             entry = self._state["cooldowns"].get(pool_key)
@@ -1435,9 +1411,8 @@ def _capability_facts(row: Mapping[str, Any]) -> tuple[int | None, bool | None, 
 def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
     """Return ``(price_for_ranking, price_known)``.
 
-    Ranking treats an unknown price as zero (so unpriced capacity such as
-    subscription/free still ranks by capacity class and slack). BOD-277 also
-    needs to distinguish "known and free" from "no pricing metadata"; the
+    Marginal price is informational, not a ranking key. Receipts still
+    distinguish "known and free" from "no pricing metadata"; the
     boolean flag captures whether any explicit non-negative numeric was found
     on the inventory row (mirrors ``free_tier_admit._catalog_prices``).
     """
@@ -1456,26 +1431,56 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
     return total, known
 
 
-def capacity_class_of(
+def _classify_capacity(
     conn: Mapping[str, Any] | None,
     row: Mapping[str, Any],
     *,
-    route_id: str | None = None,
-    openrouter_free_set: OpenRouterFreeSet | None = None,
-) -> tuple[CapacityClass, str]:
-    """Classify a route's capacity without instantiating a ladder.
-
-    Applies the same rules as ``EligibilityLadder._capacity_class`` for the
-    prove-at-rest path. OpenRouter-family FREE requires public 0/0 membership
-    (BOD-418); suffix / import_free_only alone are not enough there.
-    ``True``/``False`` values in ``pricing`` are not treated as prices.
-    """
+    route_id: str,
+    openrouter_free_set: OpenRouterFreeSet | None,
+) -> tuple[CapacityClass, str, str]:
+    """D7 account evidence shared by live selection and at-rest classification."""
     if conn is None:
-        return CapacityClass.UNKNOWN, ""
-    plan_label = str(conn.get("plan_label", ""))
-    plan_lower = plan_label.lower()
-    auth_type = str(conn.get("authType", "")).lower()
-    rid = route_id or str(row.get("id") or "")
+        return CapacityClass.UNKNOWN, "", "no_connection"
+    plan_label = sanitized_plan_label(conn.get("plan_label", ""))
+    auth_type = str(conn.get("authType", "")).strip().lower()
+
+    # BOD-418: openrouter-family FREE requires public 0/0 membership.
+    # Suffix / connection free signals alone must not mark paid OpenRouter
+    # routes FREE (they previously cooled the whole openrouter-free pool).
+    if route_id and is_openrouter_catalog_route(route_id):
+        free_set = openrouter_free_set
+        if openrouter_route_is_public_free(route_id, free_set):
+            return CapacityClass.FREE, plan_label, "openrouter_public_zero"
+        # Fall through: never treat openrouter-family as FREE from suffix
+        # or import_free_only. Inventory pricing / oauth rules still apply.
+
+    # D7: public non-free OpenRouter catalog membership and the Anthropic
+    # API-key connection are specific paid evidence even without local pricing.
+    if (route_id and is_openrouter_catalog_route(route_id)) or str(
+        conn.get("provider", "")
+    ).lower() == "openrouter":
+        return CapacityClass.METERED, plan_label, "openrouter_not_in_public_free_set"
+    if str(conn.get("provider", "")).lower() == "anthropic" and auth_type == "apikey":
+        return CapacityClass.METERED, plan_label, "anthropic_apikey"
+
+    # (a) :free suffix overrides oauth → subscription (fixes D5: 72
+    # kilocode :free misclassed as SUBSCRIPTION). Openrouter-family is
+    # handled above and must not take this shortcut.
+    if route_id and has_free_suffix(route_id) and not is_openrouter_catalog_route(route_id):
+        return CapacityClass.FREE, plan_label, "free_suffix"
+
+    # (b) Connection-level free signals. Openrouter-family is excluded:
+    # OmniRoute may set importFreeModelsOnly on a free-only key while the
+    # catalog still lists paid models.
+    is_free, signal = connection_signals_free(conn)
+    if is_free and not (route_id and is_openrouter_catalog_route(route_id)):
+        return CapacityClass.FREE, plan_label, signal
+
+    # (c) oauth without a free signal → SUBSCRIPTION.
+    if auth_type == "oauth":
+        return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
+
+    # Pricing evidence for apikey connections.
     pricing = row.get("pricing")
     prices: list[float] = []
     if isinstance(pricing, Mapping):
@@ -1484,19 +1489,35 @@ def capacity_class_of(
                 prices.append(float(value))
     all_zero = bool(prices) and all(p == 0 for p in prices)
     positive = any(p > 0 for p in prices)
-    if rid and is_openrouter_catalog_route(rid):
-        if openrouter_route_is_public_free(rid, openrouter_free_set):
-            return CapacityClass.FREE, plan_label or "openrouter_public_zero"
-        # Do not assert FREE from connection free signals / plan_label / suffix.
-        if auth_type == "oauth":
-            return CapacityClass.SUBSCRIPTION, plan_label
-        if auth_type == "apikey" and positive:
-            return CapacityClass.METERED, plan_label
-        return CapacityClass.UNKNOWN, plan_label
-    if auth_type == "oauth" and "free" not in plan_lower:
-        return CapacityClass.SUBSCRIPTION, plan_label
-    if bool(conn.get("import_free_only")) or "free" in plan_lower or all_zero:
-        return CapacityClass.FREE, plan_label
-    if auth_type == "apikey" and positive:
-        return CapacityClass.METERED, plan_label
-    return CapacityClass.UNKNOWN, plan_label
+
+    # All-zero explicit inventory pricing is FREE even for apikey, but not
+    # for openrouter-family when a public free set is available (public
+    # catalog is authoritative there). Without a free set we still refuse
+    # to assert FREE for openrouter-family from inventory alone.
+    if all_zero and not (route_id and is_openrouter_catalog_route(route_id)):
+        return CapacityClass.FREE, plan_label, "all_zero_pricing"
+
+    # (e) apikey with positive pricing → METERED.
+    if positive:
+        return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+
+    # D7: absence of specific paid/subscription evidence is assumed free,
+    # not proof of capability. The same agentic gate still applies.
+    return CapacityClass.FREE, plan_label, "assumed_free_no_paid_evidence"
+
+
+def capacity_class_of(
+    conn: Mapping[str, Any] | None,
+    row: Mapping[str, Any],
+    *,
+    route_id: str | None = None,
+    openrouter_free_set: OpenRouterFreeSet | None = None,
+) -> tuple[CapacityClass, str]:
+    """Use the same D7 account-evidence policy as the eligibility ladder."""
+    capacity, plan, _ = _classify_capacity(
+        conn,
+        row,
+        route_id=route_id or str(row.get("id") or ""),
+        openrouter_free_set=openrouter_free_set,
+    )
+    return capacity, plan

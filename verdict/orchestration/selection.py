@@ -29,7 +29,7 @@ def select_route_for_task(
 ) -> SelectionResult:
     """Select with the existing admission, ranking and bounded confirmation.
 
-    Capacity is an opt-in admission filter, never a ranking preference. This
+    Capacity filters narrow admission; D6 tier-first ordering applies afterward. This
     call can send a model confirmation through the ladder for unproven routes.
     """
     now = now or datetime.now(timezone.utc)

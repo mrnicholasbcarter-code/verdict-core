@@ -113,6 +113,10 @@ def passport_is_fresh(passport: ModelPassport, *, now: datetime | None = None) -
     current = now or _now()
     if current.tzinfo is None:
         raise ValueError("now must be timezone-aware")
+    from verdict.orchestration.health_cache import PERMIT_PROOF_MAX_VALIDITY_SECONDS
+
+    if (current - passport.qualified_at).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS:
+        return False
     if passport.expires_at <= current:
         return False
     if passport.auth_state != "authorized":
@@ -171,10 +175,21 @@ def passport_confirmation(
     SHA-256 of the canonical JSON of the passports used.
     """
     loaded = load_healthy_passports(passport_store_path) if passports is None else dict(passports)
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+    cache = HealthCache(default_cache_path())
     admitted: list[str] = []
     rows: list[dict[str, Any]] = []
     for route_id in route_ids:
         passport = loaded.get(route_id)
+        negative = cache.entry(route_id)
+        if (
+            passport is not None
+            and negative is not None
+            and not negative.healthy
+            and negative.checked_at >= passport.qualified_at
+        ):
+            passport = None
         evidence = _passport_evidence(route_id, passport, now=now)
         rows.append(evidence.to_dict())
         if evidence.fresh:
@@ -221,14 +236,45 @@ def _persist_confirm_observations(
 
     An explicit passport map with no store path is an in-memory fixture and
     must not touch the operator's default store. Production passes the store
-    path even when it also passes a preloaded passport map. A missing cycle is
-    left untouched.
+    path even when it also passes a preloaded passport map. A real observation
+    can initialize a cold store.
     """
     if not observations or (passports_were_explicit and passport_store_path is None):
         return
     store = ProveAtRestStore(passport_store_path or default_state_path())
     for identity_id, observation in observations.items():
         store.record_confirm(identity_id, observation, now=now)
+
+
+def record_dispatch_observation(
+    route_id: str, *, healthy: bool, observed_at: datetime, passport_store_path: Path | None = None
+) -> None:
+    """Refresh permit proof from a real confirm, screen or completed dispatch.
+
+    This is liveness/authorization evidence only, never tool or task-quality
+    credit. Callers supply the call's start time so concurrent negatives win.
+    """
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+    latest = HealthCache(default_cache_path()).entry(route_id)
+    if (
+        healthy
+        and latest is not None
+        and not latest.healthy
+        and (latest.checked_at >= observed_at or latest.until > observed_at)
+    ):
+        return
+    ProveAtRestStore(passport_store_path or default_state_path()).record_confirm(
+        route_id,
+        ProbeObservation(
+            model_id=route_id,
+            availability_state="ready" if healthy else "denied",
+            status="ok" if healthy else "failed",
+            observed_at=observed_at,
+            error=None if healthy else "dispatch_failed",
+        ),
+        now=observed_at,
+    )
 
 
 def _confirm_ok(observation: ProbeObservation) -> bool:
@@ -609,6 +655,18 @@ def gate_admit_prove_confirm(
                 )
             )
             continue
+        if health_cache_path is not None and _confirm_ok(observation):
+            from verdict.orchestration.health_cache import HealthCache
+
+            latest = HealthCache(health_cache_path).entry(identity_id)
+            if (
+                latest is not None
+                and not latest.healthy
+                and latest.checked_at >= observation.observed_at
+            ):
+                observation = replace(
+                    observation, availability_state="denied", error="newer_negative"
+                )
         confirm = _confirm_from_observation(observation)
         confirm_rows.append(confirm)
         if confirm.confirmed:

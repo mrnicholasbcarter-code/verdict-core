@@ -115,15 +115,15 @@ def test_shared_seam_returns_ladder_rating_provenance(live_pool: list[dict[str, 
         TaskRequirements(required_capabilities=frozenset({"tools"})), gateway="http://127.0.0.1:1"
     )
     assert result.route is not None
-    assert result.route.route_id == "sub/strong"
+    assert result.route.route_id == "free/weak"
     assert result.reasons
-    assert result.provenance["rating"] == 80
+    assert result.provenance["rating"] == 30
     assert result.provenance["rating_metric"] == "aa_coding"
     assert result.provenance["rating_source"]
     assert result.provenance["rating_as_of"]
 
 
-def test_live_choose_passes_acceptance_and_ignores_price(
+def test_live_choose_passes_acceptance_and_prefers_cheapest_tier(
     live_pool: list[dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -131,9 +131,9 @@ def test_live_choose_passes_acceptance_and_ignores_price(
     _choose(monkeypatch)
     output = capsys.readouterr().out
     payload = json.loads(output)
-    assert payload["selected"]["route_id"] == "sub/strong"
+    assert payload["selected"]["route_id"] == "free/weak"
     assert payload["reasons"]
-    assert payload["provenance"]["rating"] == 80
+    assert payload["provenance"]["rating"] == 30
     assert payload["gateway"] == "http://127.0.0.1:1"
     assert judge_choose(0, output, "")[0]
 
@@ -215,8 +215,8 @@ def test_live_choose_human_output(
     )
     cli.main()
     output = capsys.readouterr().out
-    assert "sub/strong" in output
-    assert "higher task rating" in output
+    assert "free/weak" in output
+    assert "cheaper qualified capacity" in output
 
 
 def test_explicit_eligible_model_in_shared_pool_wins(

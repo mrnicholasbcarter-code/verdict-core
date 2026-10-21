@@ -954,7 +954,7 @@ class DagRuntime:
             # Emit probe-class fields so receipts record qualifying probe info.
             _probe_fields: dict[str, Any] = {}
             if choice.rank_components:
-                for _pf in ("probe_class", "cache_checked_at", "cache_freshness"):
+                for _pf in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                     if choice.rank_components.get(_pf) is not None:
                         _probe_fields[_pf] = str(choice.rank_components[_pf])
             # Record UNKNOWN capacity opt-in when an UNKNOWN route was selected.

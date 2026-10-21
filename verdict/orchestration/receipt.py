@@ -284,7 +284,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
             # Free-first story 3: probe class and cache freshness.
-            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+            for field in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                 if data.get(field):
                     row[field] = str(data[field])
             # Apply buffered selection-event probe fields only to an attempt on
@@ -333,7 +333,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             # before dispatch must not leak its evidence to the next route.
             pending_probe_fields = {}
             pending_route = str(data.get("route_id") or "")
-            for field in ("probe_class", "cache_checked_at", "cache_freshness"):
+            for field in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                 if data.get(field):
                     pending_probe_fields[field] = str(data[field])
             # UNKNOWN capacity opt-in flag.
@@ -794,6 +794,7 @@ def run_attempt_records(run_dir: Path, receipt: Mapping[str, Any]) -> list[Attem
                 "node_id": node_id,
                 "attempt_id": str(number),
                 "task_family": family,
+                "evidence_level": attempt.get("evidence_level"),
             }
             records.append(
                 build_attempt_record(
