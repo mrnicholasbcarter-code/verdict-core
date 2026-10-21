@@ -169,7 +169,7 @@
   },
   {
     "qualified_name": "verdict.controller_selection.ControllerSelector",
-    "reason": "UNTRIAGED: ControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: typing Protocol for controller selectors; implemented by InjectableControllerSelector and documented in docs/guides/controller-routing.md. A structural type has no call sites by design."
   },
   {
     "qualified_name": "verdict.decision_kernel.verify_decision",
@@ -405,7 +405,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.resolved_retry_policy",
-    "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+    "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence — Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
   {
     "qualified_name": "verdict.orchestration.provider_catalog.is_not_free_overridden",
@@ -417,7 +417,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
-    "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline \u2014 feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
+    "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline — feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
   },
   {
     "qualified_name": "verdict.orchestration.verified_refresh.VerifiedRow",
@@ -449,7 +449,7 @@
   },
   {
     "qualified_name": "verdict.prove_at_rest_legacy.build_legacy_daemon",
-    "reason": "UNTRIAGED: build_legacy_daemon has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
+    "reason": "Deferred (BOD-350): legacy prove-at-rest daemon factory with no production caller; the current prober in verdict.prove_at_rest replaces it. Kept with ProveAtRestDaemon until BOD-350 removes the legacy cycle; its probe scope stays free-tier only."
   },
   {
     "qualified_name": "verdict.provider_bootstrap.GatewayProbeResult",
@@ -493,11 +493,11 @@
   },
   {
     "qualified_name": "verdict.runtime_certification.register_detector",
-    "reason": "UNTRIAGED: register_detector has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
+    "reason": "UNTRIAGED: register_detector has only non-production references; Runtime certification — evidence-only discovery→normalize→certify (passport) (verdict/runtime_certification.py)."
   },
   {
     "qualified_name": "verdict.runtime_certification.reset_detectors",
-    "reason": "UNTRIAGED: reset_detectors has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
+    "reason": "UNTRIAGED: reset_detectors has only non-production references; Runtime certification — evidence-only discovery→normalize→certify (passport) (verdict/runtime_certification.py)."
   },
   {
     "qualified_name": "verdict.runtime_compatibility.build_runtime_compatibility_report",
@@ -553,15 +553,15 @@
   },
   {
     "qualified_name": "verdict.trusted_change_report.compute_report_digest",
-    "reason": "UNTRIAGED: compute_report_digest has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: compute_report_digest has only non-production references; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.trusted_change_report.reproduce_report",
-    "reason": "UNTRIAGED: reproduce_report has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: reproduce_report has no resolved reference; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.trusted_change_report.verify_report",
-    "reason": "UNTRIAGED: verify_report has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: verify_report has only non-production references; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.tui_verified_controls.ProgressRecorder",
@@ -578,10 +578,6 @@
   {
     "qualified_name": "verdict.benchmarking.run_comparison_benchmarks",
     "reason": "UNTRIAGED: run_comparison_benchmarks has only non-production references; Deterministic local benchmark harnesses for verdict (verdict/benchmarking.py)."
-  },
-  {
-    "qualified_name": "verdict.chooser.human_summary",
-    "reason": "UNTRIAGED: human_summary has no resolved reference; Evidence-based model chooser (verdict/chooser.py)."
   },
   {
     "qualified_name": "verdict.commands.parsers_config.register",
@@ -617,15 +613,15 @@
   },
   {
     "qualified_name": "verdict.controller_selection.InjectableControllerSelector",
-    "reason": "UNTRIAGED: InjectableControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production supervisor entry; scripts/prime_supervisor.py exposes it through a lazy module __getattr__ (dynamic access the checker cannot resolve). Documented in docs/guides/controller-routing.md."
   },
   {
     "qualified_name": "verdict.controller_selection.build_production_controller_selection_bundle",
-    "reason": "UNTRIAGED: build_production_controller_selection_bundle has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production caller scripts/prime_supervisor.py:1528-1529 resolves it with hasattr/getattr on the lazily imported module (dynamic access the checker cannot resolve)."
   },
   {
     "qualified_name": "verdict.controller_selection.select_controller_launch",
-    "reason": "UNTRIAGED: select_controller_launch has only non-production references; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production caller scripts/prime_supervisor.py:143-145 lazy wrapper (_cs().select_controller_launch) and InjectableControllerSelector.select_controller_launch; dynamic module access the checker cannot resolve."
   },
   {
     "qualified_name": "verdict.harness_claude.certify",
@@ -733,7 +729,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
-    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence — Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
   {
     "qualified_name": "verdict.present.reset",
@@ -745,6 +741,6 @@
   },
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",
-    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   }
 ]

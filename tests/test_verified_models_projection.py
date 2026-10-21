@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS, USABLE_SECONDS
 from verdict.orchestration.verified_models import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -161,34 +162,37 @@ def test_verified_fresh_full_proof():
     assert r.last_success_at == NOW - timedelta(seconds=60)
 
 
-def test_stale_usable_between_600_and_1800():
+def test_two_hour_old_evidence_remains_verified():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=900))
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(hours=2))
         ),
         now=NOW,
+    )
+    r = only_row(project_one(inv, conns, snaps))
+    assert EVIDENCE_FRESH_SECONDS == 6 * 60 * 60
+    assert r.status is VerifiedStatus.VERIFIED
+    assert r.freshness == "fresh"
+    assert r.coding_ok is True
+
+
+def test_evidence_stale_after_lifetime_retains_history():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
+    inv = [row("omniroute/cc/sonnet")]
+    conns = [conn("cc")]
+    checked_at = NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1)
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(at_rest_entry("cc/sonnet", checked_at=checked_at)), now=NOW
     )
     r = only_row(project_one(inv, conns, snaps))
     assert r.status is VerifiedStatus.STALE
     assert r.freshness == "stale"
-    assert r.coding_ok is False
-
-
-def test_stale_expired_after_1800_retains_history():
-    inv = [row("omniroute/cc/sonnet")]
-    conns = [conn("cc")]
-    snaps = snapshots_from_documents(
-        health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=3600))
-        ),
-        now=NOW,
-    )
-    r = only_row(project_one(inv, conns, snaps))
-    assert r.status is VerifiedStatus.STALE
-    assert r.freshness == "expired"
-    assert r.last_success_at == NOW - timedelta(seconds=3600)
+    assert r.last_success_at == checked_at
 
 
 def test_failed_route_negative():
@@ -353,27 +357,32 @@ def test_excluded_policy():
 # ---------------------------------------------------------------------------
 
 
-def test_boundary_600s_exact_is_stale():
+def test_boundary_evidence_freshness_is_stale_at_exact_ttl():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=600))
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS))
         ),
         now=NOW,
     )
     r = only_row(project_one(inv, conns, snaps))
-    # age >= 600 is STALE (design: VERIFIED is age < 600s)
     assert r.status is VerifiedStatus.STALE
     assert r.freshness == "stale"
 
 
-def test_boundary_just_under_600s_is_verified():
+def test_boundary_just_under_evidence_ttl_is_verified():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=599))
+            at_rest_entry(
+                "cc/sonnet", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS - 1)
+            )
         ),
         now=NOW,
     )
@@ -381,31 +390,36 @@ def test_boundary_just_under_600s_is_verified():
     assert r.status is VerifiedStatus.VERIFIED
 
 
-def test_boundary_1800s_exact_is_expired():
+def test_boundary_just_under_usable_evidence_ttl_is_stale():
+    from verdict.orchestration.health_cache import USABLE_SECONDS
+
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=1800))
-        ),
-        now=NOW,
-    )
-    r = only_row(project_one(inv, conns, snaps))
-    assert r.status is VerifiedStatus.STALE
-    assert r.freshness == "expired"
-
-
-def test_boundary_just_under_1800s_is_usable_stale():
-    inv = [row("omniroute/cc/sonnet")]
-    conns = [conn("cc")]
-    snaps = snapshots_from_documents(
-        health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=1799))
+            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=USABLE_SECONDS - 1))
         ),
         now=NOW,
     )
     r = only_row(project_one(inv, conns, snaps))
     assert r.freshness == "stale"
+
+
+@pytest.mark.parametrize("after_fresh, freshness", [(1199, "stale"), (1200, "expired")])
+def test_projection_stale_grace_ends_twenty_minutes_after_evidence_freshness(
+    after_fresh, freshness
+):
+    checked_at = NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + after_fresh)
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(at_rest_entry("cc/sonnet", checked_at=checked_at)), now=NOW
+    )
+
+    result = only_row(project_one([row("cc/sonnet")], [conn("cc")], snaps))
+
+    assert result.status is VerifiedStatus.STALE
+    assert result.freshness == freshness
+    assert result.expires_at == checked_at + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1200)
+    assert result.coding_ok is False
 
 
 def test_negative_until_equality_is_expired_half_open():
@@ -840,12 +854,16 @@ def test_filtered_counts_reconcile_to_filtered_count():
 
 
 def test_status_filter():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     inv = [row("omniroute/cc/sonnet"), row("omniroute/cc/haiku")]
     conns = [conn("cc")]
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
             at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=30)),
-            at_rest_entry("cc/haiku", checked_at=NOW - timedelta(seconds=900)),
+            at_rest_entry(
+                "cc/haiku", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 900)
+            ),
         ),
         now=NOW,
     )
@@ -1097,11 +1115,15 @@ def test_no_secret_from_policy_reason_sanitized():
 
 
 def test_prepaid_stale_is_refreshable():
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     inv = [row("omniroute/cc/sonnet")]
     conns = [conn("cc", auth="oauth", plan="Max")]  # subscription
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=900))
+            at_rest_entry(
+                "cc/sonnet", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 900)
+            )
         ),
         now=NOW,
     )
@@ -2502,8 +2524,8 @@ def test_expired_binding_cooldowns_are_not_ambiguous(deadline):
         ("last_success_at", iso(NOW)),
         ("checked_at", iso(NOW)),
         ("evidence_source", "health_cache"),
-        ("fresh_until", iso(NOW + timedelta(seconds=600))),
-        ("expires_at", iso(NOW + timedelta(seconds=1800))),
+        ("fresh_until", iso(NOW + timedelta(seconds=EVIDENCE_FRESH_SECONDS))),
+        ("expires_at", iso(NOW + timedelta(seconds=USABLE_SECONDS))),
         ("freshness", "fresh"),
         ("capabilities", {"context_window": 200_000, "tools": True, "structured": False}),
         ("restriction", None),
@@ -2619,11 +2641,17 @@ def test_associated_cooldowns_from_each_store(scope, source):
 )
 @pytest.mark.parametrize("kind", ["pool", "account"])
 def test_partial_bindings_preserve_status_and_secondary_restriction(status, kind):
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
     entry = at_rest_entry("cc/demo", checked_at=NOW)
     docs = {"now": NOW}
     cd = {f"{kind}:a1": {"until": iso(NOW + timedelta(seconds=200))}}
     if status is VerifiedStatus.STALE:
-        entry = at_rest_entry("cc/demo", checked_at=NOW - timedelta(seconds=900))
+        from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
+
+        entry = at_rest_entry(
+            "cc/demo", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 900)
+        )
     elif status is VerifiedStatus.FAILED:
         entry = at_rest_entry(
             "cc/demo",
@@ -2707,11 +2735,14 @@ def test_exhausted_associations_consider_all_blockers_for_precedence():
 
 
 def test_public_model_entry_is_built_only_from_a_verified_projection_row() -> None:
+    from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
     from verdict.orchestration.verified_models import public_model_entry
 
     snaps = snapshots_from_documents(
         health_cache_doc=health_cache(
-            at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(seconds=599.999))
+            at_rest_entry(
+                "cc/sonnet", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS - 0.001)
+            )
         ),
         now=NOW,
     )
@@ -2720,5 +2751,5 @@ def test_public_model_entry_is_built_only_from_a_verified_projection_row() -> No
     assert entry["id"] == "cc/sonnet"
     assert entry["object"] == "model"
     assert entry["verdict"]["availability_state"] == "verified"
-    assert entry["verdict"]["fresh_until"] == iso(NOW + timedelta(milliseconds=1))
+    assert entry["verdict"]["fresh_until"] == iso(NOW + timedelta(seconds=0.001))
     assert entry["verdict"]["capability_profile"]["context"] == 200_000

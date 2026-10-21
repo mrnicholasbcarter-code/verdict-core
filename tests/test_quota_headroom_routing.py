@@ -95,14 +95,15 @@ def test_every_account_exhausted_blocks_until_the_earliest_reset(tmp_path: Path)
     assert verdict.cooldown_until == "2026-02-03T00:00:00+00:00"
 
 
-def test_quota_never_buys_a_pricier_route(tmp_path: Path) -> None:
+def test_more_quota_wins_whatever_the_price(tmp_path: Path) -> None:
     rows = [
         row(CX, owned_by="codex", pricing={"input": 0.1, "output": 0.2}),
         row(CC, owned_by="claude", pricing={"input": 3.0, "output": 15.0}),
     ]
     conns = [_quota("codex", 30.0, authType="apikey"), _quota("claude", 95.0, authType="apikey")]
     ladder, _ = make_ladder(tmp_path, rows, conns)
-    assert _selected(ladder) == CX
+    # Price is excluded from selection: the measured quota headroom decides.
+    assert _selected(ladder) == CC
 
 
 def test_model_window_matches_exact_model_or_effort_variant_only(tmp_path: Path) -> None:

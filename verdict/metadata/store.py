@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -89,10 +90,7 @@ class MetadataSnapshot:
             raise ModelMetadataError("snapshot records must have unique ids")
 
     def record_by_id(self, models_dev_id: str) -> ModelMetadataRecord | None:
-        for item in self.records:
-            if item.id == models_dev_id:
-                return item
-        return None
+        return self._records_by_id.get(models_dev_id)
 
     def index_omniroute(self) -> dict[str, ModelMetadataRecord]:
         index: dict[str, ModelMetadataRecord] = {}
@@ -101,6 +99,22 @@ class MetadataSnapshot:
             for omni_id in item.omniroute_ids:
                 index[omni_id] = item
         return index
+
+    # Lookup indexes, built once per snapshot: records are an immutable tuple.
+    @cached_property
+    def _records_by_id(self) -> dict[str, ModelMetadataRecord]:
+        index: dict[str, ModelMetadataRecord] = {}
+        for item in self.records:
+            index.setdefault(item.id, item)
+        return index
+
+    @cached_property
+    def _omniroute_index(self) -> dict[str, ModelMetadataRecord]:
+        return self.index_omniroute()
+
+    @cached_property
+    def _leaf_index(self) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
+        return unique_leaf_models_json_index(self)
 
     def is_stale(self, now: datetime, max_age: timedelta) -> bool:
         refreshed = datetime.fromisoformat(self.refreshed_at.replace("Z", "+00:00"))
@@ -297,14 +311,13 @@ def lookup_omniroute_id(
                 ),
             )
 
-    index = snapshot.index_omniroute()
+    index = snapshot._omniroute_index
     models_dev_id = identity_map.models_dev_id_for(key) if identity_map is not None else None
     if models_dev_id is None and key in index:
         models_dev_id = index[key].id
     if models_dev_id is None:
         leaf = model_id_leaf(key)
-        leaf_index = unique_leaf_models_json_index(snapshot)
-        leaf_hit = leaf_index.get(leaf)
+        leaf_hit = snapshot._leaf_index.get(leaf)
         if isinstance(leaf_hit, ModelMetadataRecord):
             models_dev_id = leaf_hit.id
         elif isinstance(leaf_hit, tuple):

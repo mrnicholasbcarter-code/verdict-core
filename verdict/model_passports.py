@@ -27,6 +27,7 @@ from typing import Any
 
 from verdict.capability_passports import CapabilityPassportError
 from verdict.models import ModelInfo
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
 from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
 
 MODEL_PASSPORT_SCHEMA_VERSION = "1"
@@ -37,10 +38,9 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 LARGE_TASK_TOKENS = 50_000
 CAPACITY_CONFIDENCE_THRESHOLD = 0.8
 
-# Passport freshness window (seconds). It must cover two census timer
-# intervals (CENSUS_INTERVAL_SECONDS=240): OnUnitInactiveSec counts from the
-# end of a run, so one TTL has to outlive a tick plus the next run (BOD-387).
-PASSPORT_TTL_SECONDS = 600
+# Passport expiry uses the same configurable lifetime as positive health-cache
+# evidence; dispatch permits keep their own shorter validity window.
+PASSPORT_TTL_SECONDS = EVIDENCE_FRESH_SECONDS
 
 # Sentinel marking "caller did not supply expires_at", so __post_init__ can derive it
 # from qualified_at. A plain default_factory cannot see sibling fields, and defaulting

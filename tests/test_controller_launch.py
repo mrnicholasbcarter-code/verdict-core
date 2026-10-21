@@ -1194,6 +1194,53 @@ def test_production_factory_seed_offers_use_passport_price_evidence() -> None:
     assert offer.expected_cost.terms
 
 
+def test_production_factory_does_not_mark_paid_admitted_routes_free() -> None:
+    """Admission is price-free, so only ``free_admitted`` is free evidence.
+
+    A paid-only admit snapshot must not turn its admitted route into a free
+    identity with an invented zero price.
+    """
+    from verdict.controller_selection import build_production_controller_selection_hooks
+    from verdict.free_tier_admit import admit_free_tier_active, snapshot_from_payloads
+    from verdict.model_passports import ModelPassport
+
+    identity = "omniroute/paid/strong"
+    passport = ModelPassport(
+        provider="omniroute",
+        model_id=identity,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=NOW - timedelta(minutes=1),
+        last_verified_timestamp=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(minutes=30),
+        tool_support=True,
+    )
+    admit_snapshot = snapshot_from_payloads(
+        catalog={"data": [{"id": identity, "owned_by": "omniroute"}]},
+        free_tier={"perModel": []},
+        providers={
+            "connections": [{"provider": "omniroute", "isActive": True, "testStatus": "active"}]
+        },
+    )
+    bundle = build_production_controller_selection_hooks(
+        prepare_execution_request=lambda *a, **k: a[-1],
+        prime_target_map={
+            identity: _factory_target(identity, provider="omniroute", model="paid/strong")
+        },
+        healthy_passports={identity: passport},
+        metadata_snapshot=object(),
+        admit_snapshot=admit_snapshot,
+        certification_by_id={identity: (CertificationState.READY, "fresh")},
+        cost_state_factory=_cost_state,
+        task_state_factory=_task_state,
+        require_live_sources=False,
+    )
+    assert admit_free_tier_active(admit_snapshot).admitted == (identity,)
+    with pytest.raises(ControllerLaunchError) as exc:
+        bundle.hooks.seed_offers(_mission(), NOW)
+    assert exc.value.reason_code == "no_eligible_route"
+
+
 def test_expired_authorized_passport_still_seeds_offer() -> None:
     """Operational expiry must not remove a previously authorized passport."""
     from verdict.controller_selection import build_evidence_backed_seed_offers

@@ -1,4 +1,9 @@
-"""Offline regressions for bounded planner confirmation fallback."""
+"""Offline regressions for bounded planner confirmation: proven routes confirm first.
+
+Selection is price-free: capacity class never orders confirmation. A route the
+health cache already proved healthy is confirmed before cold catalog aliases,
+whatever its capacity class, and a failed confirmation never launches.
+"""
 
 from pathlib import Path
 
@@ -40,39 +45,40 @@ def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
     return selector, probe, cold
 
 
-def test_fresh_free_confirms_before_cold_aliases(tmp_path: Path) -> None:
+def test_proven_routes_confirm_before_cold_aliases(tmp_path: Path) -> None:
     selector, probe, _ = ladder(tmp_path, fresh_free=True)
-    ranked = selector.evaluate(REQ, now=NOW)
-    assert next(v for v in ranked if v.route_id == FREE).rank != 0
     choice, _ = selector.select(REQ, now=NOW)
-    assert choice is not None and choice.route_id == FREE
-    assert probe.calls == [FREE]
-    assert selector.admitted.launchable(FREE)
-
-
-def test_last_slot_confirms_fresh_subscription_fallback(tmp_path: Path) -> None:
-    selector, probe, _ = ladder(tmp_path)
-    choice, _ = selector.select(REQ, now=NOW)
+    # Both proven routes rank equal on rating; codex sorts before freemodel-dev
+    # (price-free tie-break), and the first proven route confirms.
     assert choice is not None and choice.route_id == SUB
-    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
-    assert choice.reason == "reserved_fallback_slot"
+    assert probe.calls == [SUB]
     assert selector.admitted.launchable(SUB)
 
 
-def test_failed_fallback_never_launches_or_readmits(tmp_path: Path) -> None:
+def test_proven_route_confirms_before_cold_aliases(tmp_path: Path) -> None:
+    selector, probe, _ = ladder(tmp_path)
+    choice, _ = selector.select(REQ, now=NOW)
+    assert choice is not None and choice.route_id == SUB
+    assert probe.calls == [SUB]
+    assert choice.reason == "selected"
+    assert selector.admitted.launchable(SUB)
+
+
+def test_failed_confirmation_never_launches_or_readmits(tmp_path: Path) -> None:
     selector, probe, _ = ladder(tmp_path, sub_ok=False)
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is None
-    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert len(probe.calls) == 8 and probe.calls[0] == SUB
     assert SUB not in selector.admitted
 
 
-def test_confirmed_cold_free_still_wins(tmp_path: Path) -> None:
+def test_confirmed_cold_route_wins_when_no_route_is_proven(tmp_path: Path) -> None:
     selector, probe, cold = ladder(tmp_path)
+    selector._health_cache._routes.pop(SUB, None)
     probe.results[cold[0]] = HealthResult(True, "ok")
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is not None and choice.route_id == cold[0]
-    assert probe.calls == [cold[0]]
+    assert SUB not in probe.calls[: probe.calls.index(cold[0])]
 
 
 @pytest.mark.parametrize("block", ["excluded", "refresh", "cooldown"])
@@ -97,7 +103,7 @@ def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monkeypatch) -> None:
+async def test_planner_event_records_proven_confirmation(tmp_path: Path, monkeypatch) -> None:
     from types import SimpleNamespace
 
     from verdict.orchestration.contracts import WorkerTerminal
@@ -125,27 +131,24 @@ async def test_planner_event_records_reserved_confirmation(tmp_path: Path, monke
         now=lambda: NOW,
     )
     event = next(e for e in events.read() if e.type == "plan_started")
-    assert event.data["selection_reason"] == "reserved_fallback_slot"
+    assert event.data["selection_reason"] == "selected"
+    assert event.data["route_id"] == SUB
 
 
-def test_reserved_slot_counts_probes_spent_not_list_position(tmp_path: Path) -> None:
-    """Review: skipped (refresh-failed) entries must not move the fallback ahead of cold probes.
-
-    Two cold routes are already marked failed by the refresh hook, so they use no
-    probe. The fallback must still wait until 7 real probes were spent.
-    """
-    selector, probe, cold = ladder(tmp_path)
+def test_refresh_failed_entries_use_no_probe(tmp_path: Path) -> None:
+    """Skipped (refresh-failed) entries never spend a probe."""
+    selector, probe, cold = ladder(tmp_path, sub_ok=False)
     selector._refresh_hook = lambda routes, now: {cold[0]: "failed", cold[1]: "failed"}
     choice, _ = selector.select(REQ, now=NOW)
-    assert choice is not None and choice.route_id == SUB
-    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert choice is None
+    assert len(probe.calls) == 8 and probe.calls[0] == SUB
     assert cold[0] not in probe.calls and cold[1] not in probe.calls
 
 
 def test_refresh_written_positive_is_used_in_the_same_select(tmp_path: Path) -> None:
     """Cold home (CI): health is empty at assessment; the refresh job writes a
-    fresh positive for the subscription route; that same select must use it as
-    the reserved fallback instead of ending with no planner."""
+    fresh positive for the subscription route; that same select must confirm it
+    first instead of spending the budget on cold aliases."""
     selector, probe, _cold = ladder(tmp_path)
     cache = selector._health_cache
     # Start cold: drop the pre-seeded subscription positive.
@@ -159,13 +162,12 @@ def test_refresh_written_positive_is_used_in_the_same_select(tmp_path: Path) -> 
     selector._refresh_hook = hook
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is not None and choice.route_id == SUB
-    assert choice.reason == "reserved_fallback_slot"
-    assert len(probe.calls) == 8 and probe.calls[-1] == SUB
+    assert probe.calls == [SUB]
 
 
 def test_refresh_written_by_another_cache_object_is_seen(tmp_path: Path) -> None:
     """The real refresh job writes through its own HealthCache object to disk."""
-    selector, _probe, _cold = ladder(tmp_path)
+    selector, probe, _cold = ladder(tmp_path)
     cache = selector._health_cache
     cache._routes.pop(SUB, None)
     cache.save()
@@ -179,7 +181,7 @@ def test_refresh_written_by_another_cache_object_is_seen(tmp_path: Path) -> None
     selector._refresh_hook = hook
     choice, _ = selector.select(REQ, now=NOW)
     assert choice is not None and choice.route_id == SUB
-    assert choice.reason == "reserved_fallback_slot"
+    assert probe.calls == [SUB]
 
 
 def test_refresh_failed_candidate_is_never_upgraded_by_the_health_reread(tmp_path: Path) -> None:

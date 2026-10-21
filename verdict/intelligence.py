@@ -23,7 +23,7 @@ from verdict.candidate_pool import (
     build_candidate_pool,
 )
 from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
-from verdict.chooser import ChooserError, apply_best_of_admitted
+from verdict.chooser import apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
 from verdict.cost_ledger import CostTerm
@@ -1269,7 +1269,7 @@ class IntelligenceService:
         *,
         attempts: tuple[dict[str, Any], ...] = (),
     ) -> RoutingDecision | None:
-        """Admit free-tier ∩ active-provider identities for offloadable work.
+        """Admit active-provider identities for offloadable work.
 
         Returns ``None`` when OmniRoute admit surfaces are not configured *or*
         cannot be loaded, so the historical catalog/fallback path still runs for
@@ -1501,17 +1501,9 @@ class IntelligenceService:
             )
             eligibility = gated
         if receipt.admitted:
-            try:
-                receipt = apply_best_of_admitted(
-                    receipt,
-                    passports=self._route_passports(),
-                    now=self.admit_now,
-                    task_class=classification.protected_ranker_class,
-                )
-            except ChooserError:
-                receipt = replace(
-                    receipt, chosen=None, empty_intersection=True, selected_because=None
-                )
+            receipt = apply_best_of_admitted(
+                receipt, now=self.admit_now, task_class=classification.protected_ranker_class
+            )
         # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
         # ranker would have no pricing/tier data to sort on.  Record this explicitly
@@ -1899,7 +1891,7 @@ class IntelligenceService:
             model=chosen,
             provider=provider,
             tier=final_tier,
-            reason=f"free∩active ∩ fresh-passport ∩ confirmed admitted {chosen}",
+            reason=f"active ∩ fresh-passport ∩ confirmed admitted {chosen}",
             admission_proofs=_chosen_route_proof(receipt, chosen, provider, contract),
             alternatives=list(receipt.admitted[:8]),
             escalated=escalated,

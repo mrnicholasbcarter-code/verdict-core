@@ -29,6 +29,7 @@ from verdict.orchestration import cli, eligibility_report
 from verdict.orchestration import run as orchestration_run
 from verdict.orchestration.contracts import TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder, HarnessVisibility
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
 from verdict.orchestration.verified_models import VerifiedModelQuery
 from verdict.orchestration.verified_models_render import (
     format_verified_progress,
@@ -42,6 +43,7 @@ from verdict.terminal_ui import TerminalUI
 from verdict.tui_verified_controls import WaitRunner
 
 GATEWAY = "http://offline.invalid:20128/v1/"
+STALE_MODEL_AGE = int(EVIDENCE_FRESH_SECONDS) + 300
 
 
 def forbidden(*_args: Any, **_kwargs: Any) -> Any:
@@ -98,7 +100,7 @@ def adapter_for(
     tmp_path: Path,
     ids: tuple[str, ...] = ("cc/sonnet",),
     *,
-    age: int | None = 900,
+    age: int | None = STALE_MODEL_AGE,
     inventory: list[dict[str, Any]] | None = None,
     connections: list[dict[str, Any]] | None = None,
 ) -> VerifiedSnapshotAdapter:
@@ -506,7 +508,9 @@ def test_cancel_after_chat_renders_last_known_without_partial_proof(tmp_path: Pa
     assert {r["refresh_reason"] for r in result.data["rows"]} == {"cancelled"}
     assert "CANCELLED / LAST-KNOWN" in render_verified_plain(result.data)
     stored = json.loads(adapter.paths.health_cache.read_text())["routes"]
-    assert {entry["checked_at"] for entry in stored.values()} == {iso(NOW - timedelta(seconds=900))}
+    assert {entry["checked_at"] for entry in stored.values()} == {
+        iso(NOW - timedelta(seconds=STALE_MODEL_AGE))
+    }
 
 
 def test_concurrent_consumers_join_singleflight_without_sleep(
@@ -693,7 +697,7 @@ def test_unscoped_default_preserves_chat_only_small_context_and_all_statuses(
         health_cache(
             at_rest_entry("cc/full", checked_at=NOW - timedelta(seconds=30)),
             at_rest_entry("cc/chat", checked_at=NOW - timedelta(seconds=30), tool_ok=False),
-            at_rest_entry("kr/stale", checked_at=NOW - timedelta(seconds=900)),
+            at_rest_entry("kr/stale", checked_at=NOW - timedelta(seconds=STALE_MODEL_AGE)),
             at_rest_entry(
                 "cc/failed",
                 checked_at=NOW - timedelta(seconds=10),
@@ -1191,7 +1195,7 @@ ORIGINAL_BUILD_SELECTOR = eligibility_report.build_selector
 
 
 def test_post_projection_callback_once_after_reload_not_initial(tmp_path: Path) -> None:
-    adapter = adapter_for(tmp_path, age=900)
+    adapter = adapter_for(tmp_path, age=STALE_MODEL_AGE)
     events: list[Any] = []
 
     def updated(_rid: str, _phase: str) -> None:
@@ -1264,3 +1268,35 @@ def test_load_public_models_reads_local_stores_only_and_checks_strict_ages(
             gateway=origin, api_key=None, now=NOW + timedelta(seconds=590), paths=adapter.paths
         )
     assert expired.value.code == "inventory_expired"
+
+
+@pytest.mark.parametrize("expired_source", ["catalog", "connections"])
+@pytest.mark.parametrize("source_age", [600, 900])
+def test_public_source_authority_expires_independently_of_fresh_model_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expired_source: str, source_age: int
+) -> None:
+    from verdict.catalog_cache import put_cached_catalog
+    from verdict.free_tier_admit import _write_last_good, default_admit_last_good_path
+
+    monkeypatch.setenv("VERDICT_CATALOG_CACHE", str(tmp_path / "catalog-cache.json"))
+    origin = "http://127.0.0.1:20128"
+    adapter = adapter_for(tmp_path, age=60)
+    put_cached_catalog(
+        origin,
+        None,
+        {"data": [row("cc/sonnet")]},
+        now=NOW - timedelta(seconds=source_age if expired_source == "catalog" else 10),
+    )
+    _write_last_good(
+        default_admit_last_good_path(),
+        origin,
+        {"providers": {"connections": [conn("cc")]}},
+        NOW - timedelta(seconds=source_age if expired_source == "connections" else 10),
+    )
+    before = files_under(tmp_path)
+
+    with pytest.raises(surfaces.PublicModelsUnavailableError) as expired:
+        surfaces.load_public_models(gateway=origin, api_key=None, now=NOW, paths=adapter.paths)
+
+    assert expired.value.code == "inventory_expired"
+    assert files_under(tmp_path) == before

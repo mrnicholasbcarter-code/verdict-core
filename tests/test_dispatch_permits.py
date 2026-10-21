@@ -13,7 +13,6 @@ import pytest
 
 from verdict.orchestration.health_cache import (
     CATEGORY_OK,
-    FRESH_SECONDS,
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     PERMIT_STATE_MAYBE_SENT,
     DispatchPermit,
@@ -165,7 +164,23 @@ def test_proof_expiry_window_never_authorizes_stale_or_future_proofs(tmp_path: P
         )
         is not None
     )
-    assert PERMIT_PROOF_MAX_VALIDITY_SECONDS == FRESH_SECONDS
+    assert PERMIT_PROOF_MAX_VALIDITY_SECONDS == 600
+
+
+def test_permit_rejects_proof_older_than_eleven_minutes(tmp_path: Path) -> None:
+    cache = HealthCache(tmp_path / "health.json")
+    assert (
+        cache.commit_dispatch(
+            SCOPE,
+            route_id=ROUTE,
+            attempt_id="aged-proof",
+            authorization_digest="auth-digest",
+            expected_epoch=0,
+            proof_deadline=NOW + timedelta(seconds=60),
+            now=NOW - timedelta(minutes=11),
+        )
+        is None
+    )
 
 
 def test_scope_and_permit_inputs_are_validated(tmp_path: Path) -> None:

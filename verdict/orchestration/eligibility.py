@@ -7,12 +7,13 @@ import json
 import os
 import re
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from verdict.identify_rank import RatedModel, rate_model, rating_key
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
     is_openrouter_catalog_route,
@@ -44,23 +45,22 @@ from verdict.subagent_selection import HealthResult
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
+    from verdict.metadata.mapping import IdentityMap
+    from verdict.metadata.store import MetadataSnapshot
     from verdict.orchestration.session_evidence import SessionLedger, SessionStats
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
-# Capacity that costs nothing extra per call (already paid for or free).
-_PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 # Ranks an unknown-capability route after every known one (tiers span 0..3).
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
 _CODING_MARKERS = ("code", "codex", "sonnet", "fable", "opus")
-# All roles rank free capacity first after the capability/admission gates.
+# Display only: capacity class never orders selection (price is excluded).
 _CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.FREE: 0,
     CapacityClass.SUBSCRIPTION: 1,
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
-_WORKER_CAPACITY_ORDER = _CAPACITY_ORDER
 ENV_ALLOW_UNKNOWN = "VERDICT_ALLOW_UNKNOWN_CAPACITY"
 _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "rate_limited": 60.0,
@@ -78,6 +78,8 @@ _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
     "catalog_stale": CATALOG_STALE_COOLDOWN_SECONDS,
 }
 _DEFAULT_COOLDOWN_SECONDS = 60.0
+# Sentinel: no snapshot passed, so the ladder reads the default metadata store.
+_DEFAULT_METADATA = object()
 # Probe outcomes that describe the provider account (billing, entitlement), not
 # one route: every sibling route would fail the same way, so the whole provider
 # is cooled down and its remaining candidates are skipped without probing.
@@ -194,6 +196,8 @@ class _Assessment:
     agentic_capability: Mapping[str, Any] | None = None
     # Measured remaining subscription quota (percent), None when not reported.
     quota_percent: float | None = None
+    # Task rating from Core's metadata store; the first ranking component.
+    rating: RatedModel | None = None
 
     @property
     def reached(self) -> EligibilityStage | None:
@@ -273,6 +277,8 @@ class EligibilityLadder:
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
         openrouter_free_set: OpenRouterFreeSet | None = None,
+        metadata: Any = _DEFAULT_METADATA,
+        identity_map: IdentityMap | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -322,10 +328,43 @@ class EligibilityLadder:
         self.openrouter_free_set = openrouter_free_set
         # Route ids whose health the last select() re-read upgraded after refresh.
         self._last_refresh_upgrades: tuple[str, ...] = ()
+        # Rating evidence: the default Core metadata store unless the caller passes
+        # a snapshot (or None for no ratings). Loaded once, on first ranking.
+        self._metadata_arg = metadata
+        self._identity_map = identity_map
+        self._rating_evidence_cache: tuple[MetadataSnapshot | None, IdentityMap | None] | None = (
+            None
+        )
 
     @property
     def admitted(self) -> AdmittedSet | None:
         return self._admitted
+
+    def _rating_evidence(self) -> tuple[MetadataSnapshot | None, IdentityMap | None]:
+        """Metadata snapshot and identity map for ratings, loaded once per ladder."""
+        cached: tuple[MetadataSnapshot | None, IdentityMap | None] | None = getattr(
+            self, "_rating_evidence_cache", None
+        )
+        if cached is not None:
+            return cached
+        from verdict.metadata.mapping import load_identity_map
+        from verdict.metadata.records import ModelMetadataError
+        from verdict.metadata.store import load_store
+
+        snapshot = getattr(self, "_metadata_arg", None)
+        if snapshot is _DEFAULT_METADATA:
+            try:
+                snapshot = load_store()
+            except (OSError, ValueError):  # missing or unreadable store: no ratings
+                snapshot = None
+        mapping = getattr(self, "_identity_map", None)
+        if mapping is None and snapshot is not None:
+            try:
+                mapping = load_identity_map()
+            except (OSError, ModelMetadataError):
+                mapping = None
+        self._rating_evidence_cache = (snapshot, mapping)
+        return snapshot, mapping
 
     def require_launchable(self, route_id: str, *, surface: str) -> None:
         """Launch precondition for callers that bind a selected route.
@@ -725,6 +764,15 @@ class EligibilityLadder:
             a.slack = requirements.max_capability_tier - a.tier
         a.price, a.price_known = _marginal_price(row)
         a.fit = self._fit(row, route_id, requirements)
+        snapshot, mapping = self._rating_evidence()
+        a.rating = rate_model(
+            route_id,
+            metadata=snapshot,
+            task_family="code_edit" if requirements.coding else "general",
+            declared_tier=_declared_tier(row),
+            identity_map=mapping,
+            now=now,
+        )
         return a
 
     def _task_gate(
@@ -757,27 +805,9 @@ class EligibilityLadder:
         if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):
             return "excluded_family"
         lowered = route_id.lower()
-        # Spend guard: frontier capability (classifier tier 0, or a declared
-        # tier 0) is kept off non-frontier-worthy work only when it would cost
-        # per call. Subscription/free frontier capacity is already paid for, so
-        # it may serve as a fallback; the capability-slack ranking still
-        # prefers the cheapest sufficient route, so it never wins by strength.
-        if (
-            not req.frontier_worthy
-            and _capability_tier(row, route_id) == 0
-            and capacity not in _PREPAID_CAPACITY
-        ):
-            return "frontier_restricted"
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:
                 return "effort_duplicate"
-        # UNKNOWN capacity gate: never for implementation unless opted in.
-        if (
-            capacity == CapacityClass.UNKNOWN
-            and not req.frontier_worthy
-            and not getattr(self, "_allow_unknown", False)
-        ):
-            return "unknown_capacity_not_opted_in"
         # Agentic gate: a FREE route qualifies as an implementation worker
         # only when a FRESH AGENTIC probe PASS is in the health cache.
         # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
@@ -839,22 +869,12 @@ class EligibilityLadder:
     def _rank_components(self, a: _Assessment) -> dict[str, Any]:
         """Compute all ranking components used to sort candidates.
 
-        This is the single source of truth for ranking values. Returns an ordered
-        dict with these keys (in sort order):
-
-        - ``capacity_order``: int from _CAPACITY_ORDER mapping
-        - ``slack``: capability tiers beyond task floor
-        - ``price_for_rank``: float, always 0.0 when price_known is False
-        - ``provider_pref``: index in prefer_providers or len() if not listed
-        - ``load``: current assignment count for this route
-        - ``fit``: capability tiers from task floor to route tier (positive)
-        - ``route_id``: lexicographic tiebreaker
-        - ``price_known``: bool, whether inventory had explicit pricing
-
-        The sort tuple built by :meth:`_rank_key` negates ``fit`` so stronger
-        routes rank lower (smaller is better). Exposed ``rank_components`` in
-        :class:`RouteVerdict` shows ``price`` as ``None`` when ``price_known``
-        is False (display truth) and ``fit`` as positive (capability distance).
+        This is the single source of truth for ranking values. Sort order
+        (see :meth:`_rank_key`): rating (fresh task score, then declared tier,
+        then unknown) -> ``slack`` -> ``quota_rank`` -> ``provider_pref`` ->
+        ``load`` -> ``-fit`` -> ``route_id``. Price and capacity class never
+        order selection; ``capacity_order`` and ``price_for_rank`` are kept for
+        display only.
 
         Uses ``getattr`` with defaults so partially-mocked ladders (BOD-203
         post-probe tests that bypass ``__init__``) keep working.
@@ -868,7 +888,10 @@ class EligibilityLadder:
         load_value = int(load_fn(a.route_id)) if callable(load_fn) else 0
         price_known = bool(getattr(a, "price_known", False))
         price_value = getattr(a, "price", 0.0)
-        cap_order = _CAPACITY_ORDER.get(a.capacity, 3)
+        rating: RatedModel | None = getattr(a, "rating", None)
+        if rating is None:
+            rating = RatedModel(a.route_id, a.provider, None, None, None, None)
+        rating_rank, neg_score, declared = rating_key(rating)
         # Health cache freshness for the receipt (read-only, never written).
         cache = getattr(self, "_health_cache", None)
         probe_class = "none"
@@ -884,15 +907,23 @@ class EligibilityLadder:
                 cache_freshness = lookup.state
         quota = getattr(a, "quota_percent", None)
         components = {
-            "capacity_order": cap_order,
+            "rating_rank": rating_rank,
+            "rating_basis": rating.basis,
+            "rating": -neg_score if rating_rank == 0 else None,
+            "declared_tier": declared if rating_rank == 1 else None,
+            "rating_metric": rating.metric,
+            "rating_source": rating.source,
+            "rating_as_of": rating.as_of,
             "slack": getattr(a, "slack", 0),
-            "price_for_rank": price_value if price_known else 0.0,
             "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
             "quota_percent": quota if isinstance(quota, (int, float)) else None,
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
             "route_id": a.route_id,
+            # Informational only; _rank_key never reads these.
+            "capacity_order": _CAPACITY_ORDER.get(a.capacity, 3),
+            "price_for_rank": price_value if price_known else 0.0,
             "price_known": price_known,
             "probe_class": probe_class,
             "cache_checked_at": cache_checked_at,
@@ -907,18 +938,19 @@ class EligibilityLadder:
             components["session_evidence_error"] = error
         return components
 
-    def _rank_key(self, a: _Assessment) -> tuple[int, int, float, int, int, int, int, str]:
-        """Build the sort tuple from :meth:`_rank_components`.
+    def _rank_key(self, a: _Assessment) -> tuple[int, float, int, int, int, int, int, int, str]:
+        """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
-        Negates ``fit`` so stronger routes rank lower (smaller tuple wins).
-        Among equally sufficient, equally priced routes, more measured quota left
-        ranks first, ahead of static provider preference.
+        Most capable first: a fresh task score (higher first) beats a declared
+        tier, which beats unknown. Capability slack, measured quota, provider
+        preference, load and fit only break ties. Price is excluded.
         """
         c = self._rank_components(a)
         return (
-            c["capacity_order"],
+            c["rating_rank"],
+            -(c["rating"] or 0.0),
+            c["declared_tier"] or 0,
             c["slack"],
-            c["price_for_rank"],
             c["quota_rank"],
             c["provider_pref"],
             c["load"],
@@ -929,21 +961,28 @@ class EligibilityLadder:
     def _rank_components_for_display(self, components: dict[str, Any]) -> dict[str, Any]:
         """Transform internal rank_components to consumer-facing format.
 
-        Internal format has ``price_for_rank`` (always a float, 0.0 when unknown)
-        and ``price_known`` (bool). Consumer format replaces these with ``price``
-        (None when unknown, float otherwise) and omits ``price_known``.
+        Rank keys come first, in sort order. ``price`` (None when unknown) and
+        ``capacity_order`` follow as informational fields; ``price_known`` and
+        ``rating_rank`` (encoded by ``rating_basis``) are omitted.
         """
         price_known = components.get("price_known", False)
         price_value = components.get("price_for_rank", 0.0)
         display = {
-            "capacity_order": components["capacity_order"],
+            "rating_basis": components["rating_basis"],
+            "rating": components["rating"],
+            "declared_tier": components["declared_tier"],
+            "rating_metric": components["rating_metric"],
+            "rating_source": components["rating_source"],
+            "rating_as_of": components["rating_as_of"],
             "slack": components["slack"],
-            "price": price_value if price_known else None,
+            "quota_rank": components["quota_rank"],
             "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],
             "load": components["load"],
             "fit": components["fit"],  # stays positive
             "route_id": components["route_id"],
+            "capacity_order": components["capacity_order"],
+            "price": price_value if price_known else None,
             "probe_class": components.get("probe_class", "none"),
             "cache_checked_at": components.get("cache_checked_at"),
             "cache_freshness": components.get("cache_freshness"),
@@ -1039,9 +1078,8 @@ class EligibilityLadder:
             # The refresh job may just have written fresh positives into the
             # health cache (a cold VERDICT_HOME, as in CI, starts empty). It
             # writes through its own HealthCache object, so reload this one
-            # from disk first, then re-read health so probe ordering and the
-            # reserved fallback see them. Never upgrade a candidate the
-            # refresh marked failed.
+            # from disk first, then re-read health so probe ordering sees
+            # them. Never upgrade a candidate the refresh marked failed.
             cache = getattr(self, "_health_cache", None)
             if cache is not None and cache.path.exists():
                 with contextlib.suppress(Exception):
@@ -1066,52 +1104,7 @@ class EligibilityLadder:
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         probe_order = self._probe_order(candidates)
-        # Keep one exact-confirmation slot for a fresh prepaid fallback. Cold
-        # FREE catalog aliases must not starve a known-live subscription route.
-        # Earlier FREE successes still win; neither ranking nor admission widens.
-        fallback = next(
-            (
-                a
-                for a in candidates
-                if a.capacity is CapacityClass.SUBSCRIPTION
-                and a.health == "healthy"
-                and a.failed_stage is None
-            ),
-            None,
-        )
-        reserved_route = ""
-        if (
-            fallback is not None
-            and self._max_probes > 0
-            and probe_order.index(fallback) >= self._max_probes
-        ):
-            # With max_probes == 1 the single probe goes to this fallback, even
-            # when a fresh FREE route exists: the reserved slot is the last one.
-            # Reserve by probes actually spent, not list position: skipped
-            # entries (refresh-failed, provider-blocked, already launchable)
-            # use no probe, so the fallback waits until exactly one probe is
-            # left and earlier cold routes have had every other slot.
-            probe_order.remove(fallback)
-            reserved_route = fallback.route_id
-        fallback_tried = False
-
-        def _ordered() -> Iterator[_Assessment]:
-            nonlocal fallback_tried
-            for item in probe_order:
-                if (
-                    reserved_route
-                    and not fallback_tried
-                    and fallback is not None
-                    and probes_used >= self._max_probes - 1
-                ):
-                    fallback_tried = True
-                    yield fallback
-                yield item
-            if reserved_route and not fallback_tried and fallback is not None:
-                fallback_tried = True
-                yield fallback
-
-        for a in _ordered():
+        for a in probe_order:
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:
@@ -1165,9 +1158,7 @@ class EligibilityLadder:
                     provider=a.provider,
                     reached=EligibilityStage.SELECTED,
                     failed_stage=None,
-                    reason=(
-                        "reserved_fallback_slot" if a.route_id == reserved_route else "selected"
-                    ),
+                    reason="selected",
                     capacity_class=a.capacity,
                     plan_label=a.plan_label,
                     cooldown_until=None,
@@ -1224,28 +1215,28 @@ class EligibilityLadder:
         return selected, final_verdicts
 
     def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
-        """Rank order, but round-robin across providers within each capacity class.
+        """Strongest rating first; schedule equal ratings by freshness and provider.
 
-        One provider's failing top routes can no longer consume the whole probe
-        budget. Capacity classes stay in order, so spreading never trades a
-        SUBSCRIPTION route for a METERED one.
+        Within an equal rating, fresh confirmations and provider round-robin
+        retain the bounded scheduler. Capacity class never affects the order.
         """
         order: list[_Assessment] = []
-        tiers: dict[CapacityClass, dict[str, list[_Assessment]]] = {}
+        by_provider: dict[str, list[_Assessment]] = {}
         for a in candidates:  # already rank-sorted; dicts keep first-seen order
-            tiers.setdefault(a.capacity, {}).setdefault(a.provider, []).append(a)
-        for by_provider in tiers.values():
-            # Fresh cache evidence changes confirmation scheduling, never
-            # launch authority. These routes still pass the exact live probe.
-            for fresh in (True, False):
-                queues = [
-                    [a for a in queue if (a.health == "healthy") == fresh]
-                    for queue in by_provider.values()
-                ]
-                depth = max((len(q) for q in queues), default=0)
-                for i in range(depth):
-                    order.extend(q[i] for q in queues if i < len(q))
-        return order
+            by_provider.setdefault(a.provider, []).append(a)
+        # Fresh cache evidence changes confirmation scheduling, never
+        # launch authority. These routes still pass the exact live probe.
+        for fresh in (True, False):
+            queues = [
+                [a for a in queue if (a.health == "healthy") == fresh]
+                for queue in by_provider.values()
+            ]
+            depth = max((len(q) for q in queues), default=0)
+            for i in range(depth):
+                order.extend(q[i] for q in queues if i < len(q))
+        return sorted(
+            order, key=lambda a: rating_key(a.rating) if a.rating is not None else (2, 0.0, 0)
+        )
 
     def _record_health(
         self, route_id: str, result: HealthResult, now: datetime, *, provider: str = ""
@@ -1380,13 +1371,22 @@ class EligibilityLadder:
         }
 
 
+def _declared_tier(row: Mapping[str, Any]) -> int | None:
+    """Capability tier the inventory row declares; never derived from the id."""
+    declared = row.get("capability_tier")
+    if isinstance(declared, int) and not isinstance(declared, bool) and 0 <= declared <= 3:
+        return declared
+    return None
+
+
 def _capability_tier(row: Mapping[str, Any], route_id: str) -> int | None:
     """Declared capability tier from inventory metadata, else the id classifier.
 
-    ``None`` means unknown: neither the inventory nor the classifier knows it.
+    Used for the sufficiency gate and the slack tie-break only, never as a
+    rating. ``None`` means unknown: neither the inventory nor the classifier knows it.
     """
-    declared = row.get("capability_tier")
-    if isinstance(declared, int) and not isinstance(declared, bool) and 0 <= declared <= 3:
+    declared = _declared_tier(row)
+    if declared is not None:
         return declared
     from verdict.classifier import classify_known
 

@@ -18,6 +18,7 @@ from rich.console import Console
 
 from tests.test_verified_models_projection import NOW
 from verdict import home
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
 from verdict.terminal_ui import TerminalUI
 from verdict.tui_completion import SCHEMA, CompletionSnapshot, VerdictCompleter
 from verdict.tui_completion_snapshot import publish_snapshot
@@ -195,7 +196,11 @@ def test_home_render_and_snapshot_reload_after_prepaid_refresh(
     paths = StorePaths.defaults(tmp_path)
     paths.health_cache.write_text(
         __import__("json").dumps(
-            health_cache(at_rest_entry("cc/sonnet", checked_at=NOW - timedelta(minutes=15)))
+            health_cache(
+                at_rest_entry(
+                    "cc/sonnet", checked_at=NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 300)
+                )
+            )
         )
     )
     adapter = VerifiedSnapshotAdapter(

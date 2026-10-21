@@ -27,7 +27,7 @@ from verdict.orchestration.health_cache import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_TIMEOUT,
     CATEGORY_UPSTREAM,
-    FRESH_SECONDS,
+    EVIDENCE_FRESH_SECONDS,
     LONG_BASE_SECONDS,
     LONG_CAP_SECONDS,
     STATE_FRESH,
@@ -58,21 +58,66 @@ def _at(seconds: float) -> datetime:
 
 
 def test_healthy_windows() -> None:
-    assert FRESH_SECONDS == 600
-    assert USABLE_SECONDS == 1800
+    assert EVIDENCE_FRESH_SECONDS == 6 * 60 * 60
+    assert USABLE_SECONDS == EVIDENCE_FRESH_SECONDS + 1200
     assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(599)) == STATE_FRESH
+        classify_state(
+            healthy=True, checked_at=NOW, until=_at(USABLE_SECONDS), now=_at(2 * 60 * 60)
+        )
+        == STATE_FRESH
     )
     assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(600)) == STATE_STALE
+        classify_state(
+            healthy=True, checked_at=NOW, until=_at(USABLE_SECONDS), now=_at(EVIDENCE_FRESH_SECONDS)
+        )
+        == STATE_STALE
     )
-    assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(1799)) == STATE_STALE
+
+
+@pytest.mark.parametrize("after_fresh, expected", [(1199, STATE_STALE), (1200, STATE_UNPROBED)])
+def test_healthy_evidence_retains_only_twenty_minutes_of_stale_grace(
+    tmp_path: Path, after_fresh: int, expected: str
+) -> None:
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("p/m", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+
+    assert cache.lookup("p/m", _at(EVIDENCE_FRESH_SECONDS + after_fresh)).state == expected
+
+
+def test_evidence_freshness_override_is_honoured_and_bounded(monkeypatch) -> None:
+    from verdict.orchestration import health_cache
+
+    for value, expected in (("7200", 7200), ("1", 60), ("1728000", 172800)):
+        monkeypatch.setenv("VERDICT_EVIDENCE_FRESH_SECONDS", value)
+        assert health_cache._evidence_fresh_seconds() == expected
+
+    for value in ("not-a-number", "nan", "inf"):
+        monkeypatch.setenv("VERDICT_EVIDENCE_FRESH_SECONDS", value)
+        assert health_cache._evidence_fresh_seconds() == 6 * 60 * 60
+
+    for value in ("-10", "1"):
+        monkeypatch.setenv("VERDICT_EVIDENCE_FRESH_SECONDS", value)
+        assert health_cache._evidence_fresh_seconds() == 60
+
+    monkeypatch.delenv("VERDICT_EVIDENCE_FRESH_SECONDS", raising=False)
+    assert health_cache._evidence_fresh_seconds() == 6 * 60 * 60
+
+
+def test_two_hour_old_healthy_entry_remains_fresh_and_new_failure_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VERDICT_EVIDENCE_FRESH_SECONDS", raising=False)
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(
+        "p/m",
+        ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
+        NOW - timedelta(hours=2),
     )
-    assert (
-        classify_state(healthy=True, checked_at=NOW, until=_at(1800), now=_at(1800))
-        == STATE_UNPROBED
-    )
+    assert cache.lookup("p/m", NOW).state == STATE_FRESH
+
+    cache.record("p/m", ProbeResult(category=CATEGORY_TIMEOUT, chat_ok=False, tool_ok=False), NOW)
+    assert cache.lookup("p/m", NOW).state == STATE_NEGATIVE
+    assert cache.lookup("p/m", NOW).healthy is False
 
 
 def test_rate_limit_uses_retry_after_or_sixty_seconds() -> None:
@@ -249,7 +294,7 @@ def test_order_is_half_open_then_stale_then_free_then_others(tmp_path: Path) -> 
     cache.record(
         "free/stale",
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
-        NOW - timedelta(seconds=700),
+        NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 100),
     )
     cache.record(
         "free/fresh",
@@ -727,7 +772,7 @@ def test_cursor_resumes_at_first_unprobed_route_after_cap(tmp_path: Path) -> Non
 
     # Second cycle, after the fresh window: resume at r1 without repeating r0.
     transport.calls.clear()
-    later = NOW + timedelta(seconds=FRESH_SECONDS + 1)
+    later = NOW + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1)
     prober2 = Prober(
         cache=cache,
         routes_loader=lambda: routes,
@@ -920,7 +965,7 @@ def test_request_cap_after_chat_does_not_record_negative(tmp_path: Path) -> None
     seeded = cache.record(
         "cx/rc-target",
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True, latency_ms=7.0),
-        NOW - timedelta(seconds=FRESH_SECONDS + 1),
+        NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1),
     )
     cache.save()  # establish the persisted revision before testing no-write
     persisted = cache.entry(seeded.route_id)
@@ -983,7 +1028,7 @@ def test_cursor_resume_survives_route_reorder_and_removal(tmp_path: Path) -> Non
     assert set(cache.cursor.get("probed_ids") or []) == {r0.route_id, r1.route_id}
 
     transcript.clear()
-    now["t"] = NOW + timedelta(seconds=FRESH_SECONDS + 1)
+    now["t"] = NOW + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1)
     prober2 = Prober(
         cache=cache,
         routes_loader=lambda: [r1, r3, r2],
@@ -1021,7 +1066,7 @@ def test_half_open_and_stale_paid_routes_get_liveness_kind(tmp_path: Path) -> No
     cache.record(
         "meter/model",
         ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True),
-        NOW - timedelta(seconds=700),
+        NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 100),
     )
     routes = [
         _route("sub/model", "subscription"),
@@ -1518,7 +1563,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-6",
             authorization_digest="auth-digest",
             expected_epoch=0,
-            proof_deadline=later + timedelta(seconds=FRESH_SECONDS + 1),
+            proof_deadline=later + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1),
             now=later,
         )
         is None

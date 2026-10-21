@@ -937,8 +937,9 @@ async def _plan(tmp_path, monkeypatch, ladder, planner, now):
 async def test_invalid_plan_reselects_outside_the_alias_pool(tmp_path, monkeypatch):
     from tests.test_orch_eligibility import NOW, conn
 
-    routes = [(r, "claude", 2) for r in _HAIKU]
-    routes += [("kr/claude-haiku-4-5", "kiro", 2), ("cx/gpt-5.5", "codex", 1)]
+    # Declared tiers make the haiku aliases the strongest (rating-first ranking).
+    routes = [(r, "claude", 1) for r in _HAIKU]
+    routes += [("kr/claude-haiku-4-5", "kiro", 1), ("cx/gpt-5.5", "codex", 2)]
     ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("kiro"), conn("codex")])
     planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else _COLLIDING_PLAN)
 
@@ -957,9 +958,9 @@ async def test_invalid_plan_from_no_think_wrapper_excludes_the_inner_pool(tmp_pa
     from tests.test_orch_eligibility import NOW, conn
 
     routes = [
-        ("no-think/cc/claude-haiku-4-5", "claude", 2),
-        ("no-think/cc/claude-sonnet-5", "claude", 1),
-        ("cx/gpt-5.5", "codex", 1),
+        ("no-think/cc/claude-haiku-4-5", "claude", 1),
+        ("no-think/cc/claude-sonnet-5", "claude", 2),
+        ("cx/gpt-5.5", "codex", 2),
     ]
     ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("codex")])
     planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else _COLLIDING_PLAN)
@@ -977,7 +978,7 @@ async def test_invalid_plan_from_no_think_wrapper_excludes_the_inner_pool(tmp_pa
 async def test_route_failure_skips_aliases_but_keeps_sibling_models(tmp_path, monkeypatch):
     from tests.test_orch_eligibility import NOW, conn
 
-    routes = [(r, "claude", 2) for r in _HAIKU] + [("cc/claude-sonnet-5", "claude", 1)]
+    routes = [(r, "claude", 1) for r in _HAIKU] + [("cc/claude-sonnet-5", "claude", 2)]
     ladder = _planner_ladder(tmp_path, routes, [conn("claude")])
     timeout = WorkerTerminal(ok=False, error="timeout", stop_reason="timeout")
     planner = _RoutedPlanner(lambda r: timeout if "haiku" in r else _GOOD_PLAN)
@@ -997,9 +998,9 @@ async def test_credential_cooldown_on_one_alias_blocks_every_alias(tmp_path, mon
     from tests.test_orch_eligibility import NOW, conn
     from verdict.orchestration.contracts import TaskRequirements
 
-    # Only ``first`` has zero capability slack, so it ranks first and fails first.
-    routes = [(r, "claude", 2 if r == first else 1) for r in _HAIKU]
-    routes.append(("cx/gpt-5.5", "codex", 1))
+    # Only ``first`` declares the strongest tier, so it ranks first and fails first.
+    routes = [(r, "claude", 1 if r == first else 2) for r in _HAIKU]
+    routes.append(("cx/gpt-5.5", "codex", 2))
     ladder = _planner_ladder(tmp_path, routes, [conn("claude"), conn("codex")])
     limited = WorkerTerminal(ok=False, status_code=429, error="rate limited")
     planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cx/") else limited)
@@ -1020,7 +1021,7 @@ async def test_credential_cooldown_on_one_alias_blocks_every_alias(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_planner_reselection_tries_free_routes_before_subscription(tmp_path, monkeypatch):
+async def test_planner_reselection_follows_rating_not_capacity_class(tmp_path, monkeypatch):
     from tests.test_orch_eligibility import NOW, conn
 
     routes = [
@@ -1030,16 +1031,14 @@ async def test_planner_reselection_tries_free_routes_before_subscription(tmp_pat
     ]
     connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
     ladder = _planner_ladder(tmp_path, routes, connections)
-    planner = _RoutedPlanner(lambda r: _GOOD_PLAN if r.startswith("cc/") else _COLLIDING_PLAN)
+    planner = _RoutedPlanner(lambda r: _COLLIDING_PLAN if r.startswith("cc/") else _GOOD_PLAN)
 
     rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)
 
+    # Price excluded: the stronger subscription route is tried first; free
+    # capacity class does not jump ahead. Reselection then leaves the pool.
     started = [(r["route_id"], r["capacity_class"]) for r in rows if r["type"] == "plan_started"]
-    assert started == [
-        ("gl/glm-5", "free"),
-        ("ms/mistral-large", "free"),
-        ("cc/claude-sonnet-5", "subscription"),
-    ]
+    assert started == [("cc/claude-sonnet-5", "subscription"), ("gl/glm-5", "free")]
 
 
 @pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])

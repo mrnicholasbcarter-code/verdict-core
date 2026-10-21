@@ -1,4 +1,4 @@
-"""Gate free∩active admit with fresh prove-at-rest passports + budgeted confirm.
+"""Gate active admit with fresh prove-at-rest passports + budgeted confirm.
 
 Serve cheap-path admit must not select on OmniRoute ``isActive`` alone. After
 ``admit_free_tier_active``, candidates are intersected with healthy/fresh
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.admission import RuntimeEvidence
-from verdict.free_tier_admit import FreeTierAdmitReceipt, NamedDrop, _choose_sort
+from verdict.free_tier_admit import FreeTierAdmitReceipt, NamedDrop
 from verdict.model_passports import ModelPassport
 from verdict.probes import ProbeBudget, ProbeObservation, ProbePolicy, ProbeRunner, ProbeTransport
 from verdict.prove_at_rest import (
@@ -41,9 +41,7 @@ DEFAULT_CONFIRM_TIMEOUT_SECONDS = 5.0
 DEFAULT_CONFIRM_TOKEN_BUDGET_PER_REQUEST = 128
 _CONFIRM_PROVIDER = "admit_confirm"
 
-FAIL_CLOSED_PROVE_CONFIRM = (
-    "fail_closed — empty free∩active ∩ fresh-passport ∩ confirmed intersection"
-)
+FAIL_CLOSED_PROVE_CONFIRM = "fail_closed — empty active ∩ fresh-passport ∩ confirmed intersection"
 
 
 @dataclass(frozen=True)
@@ -268,7 +266,7 @@ def gate_admit_prove_confirm(
     max_confirm_candidates: int = DEFAULT_CONFIRM_MAX_CANDIDATES,
     confirm_timeout_seconds: float = DEFAULT_CONFIRM_TIMEOUT_SECONDS,
 ) -> FreeTierAdmitReceipt:
-    """Intersect free∩active admit with fresh passports + budgeted confirm.
+    """Intersect active admit with fresh passports + budgeted confirm.
 
     Named drops are appended for ``no_passport``, ``passport_stale``,
     ``confirm_failed``, ``confirm_budget_exhausted``, and ``confirm_unavailable``.
@@ -294,7 +292,6 @@ def gate_admit_prove_confirm(
         from verdict.prove_at_rest import passport_from_probe
 
         cache = HealthCache(health_cache_path)
-        free_admitted = frozenset(receipt.free_admitted)
         cached_ids = [
             identity_id
             for identity_id in receipt.admitted
@@ -308,7 +305,6 @@ def gate_admit_prove_confirm(
             and entry.state_at(current) == STATE_FRESH
             and entry.chat_ok
             and entry.tool_ok
-            and identity_id in free_admitted
             and (
                 passive_health is None
                 or any(
@@ -404,12 +400,8 @@ def gate_admit_prove_confirm(
     confirm_rows: list[ConfirmEvidence] = []
     confirmed_ids: list[str] = []
 
-    healthy = frozenset(receipt.active_providers)
-    # free-tier ordering: free candidates are confirmed before paid fallbacks, keyed on the
-    # authoritative free_admitted set rather than an ID-suffix heuristic.
-    free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
     if fresh_ids:
-        ordered_fresh = sorted(fresh_ids, key=lambda item: _choose_sort(item, healthy, free_set))
+        ordered_fresh = fresh_ids
         confirmed = ordered_fresh[:max_confirm_candidates]
         excluded_ids = {drop.model_id for drop in exclusions}
         for identity_id in ordered_fresh[max_confirm_candidates:]:
@@ -447,19 +439,10 @@ def gate_admit_prove_confirm(
             for identity_id in receipt.admitted
             if _passport_can_refresh(loaded.get(identity_id))
         ]
-        ordered_ids = sorted(
-            set(fresh_ids) | set(passive_fresh_ids) | set(refreshable),
-            key=lambda item: (
-                _choose_sort(item, healthy, free_set)[0],
-                item not in passive_ids,
-                _choose_sort(item, healthy, free_set),
-            ),
-        )
+        eligible_ids = set(fresh_ids) | set(passive_fresh_ids) | set(refreshable)
     else:
-        ordered_ids = sorted(
-            set(fresh_ids) | set(passive_fresh_ids),
-            key=lambda item: _choose_sort(item, healthy, free_set),
-        )
+        eligible_ids = set(fresh_ids) | set(passive_fresh_ids)
+    ordered_ids = [item for item in receipt.admitted if item in eligible_ids]
     ordered = ordered_ids
     shortlist = ordered[:max_confirm_candidates]
     deferred = ordered[max_confirm_candidates:]
@@ -667,12 +650,9 @@ def _finalize(
     passport_evidence: Sequence[PassportEvidence],
     confirm_evidence: Sequence[ConfirmEvidence],
 ) -> FreeTierAdmitReceipt:
-    admitted_sorted = tuple(sorted(admitted))
-    healthy = frozenset(receipt.active_providers)
-    free_set = frozenset(receipt.free_admitted) if receipt.free_admitted else None
-    chosen = None
-    if admitted_sorted:
-        chosen = sorted(admitted_sorted, key=lambda item: _choose_sort(item, healthy, free_set))[0]
+    admitted_set = set(admitted)
+    admitted_sorted = tuple(item for item in receipt.admitted if item in admitted_set)
+    chosen = admitted_sorted[0] if admitted_sorted else None
     return replace(
         receipt,
         admitted=admitted_sorted,

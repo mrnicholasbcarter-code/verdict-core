@@ -1928,7 +1928,8 @@ def build_production_controller_selection_hooks(
             from verdict.free_tier_admit import admit_free_tier_active
 
             receipt = admit_free_tier_active(admit_snapshot)
-            free_ids = frozenset(receipt.free_admitted or receipt.admitted or ())
+            # Admission is price-free; only free_admitted is free evidence.
+            free_ids = frozenset(receipt.free_admitted)
         except Exception as exc:
             raise ControllerLaunchError(
                 "admit_snapshot_unusable",

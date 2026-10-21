@@ -21,7 +21,13 @@ from verdict.actions.model_refresh import (
     action_models_refresh_plan,
     plan_digest,
 )
-from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult, usable_until
+from verdict.orchestration.health_cache import (
+    CATEGORY_OK,
+    USABLE_SECONDS,
+    HealthCache,
+    ProbeResult,
+    usable_until,
+)
 from verdict.orchestration.verified_refresh import (
     CAPACITY_FREE,
     CAPACITY_METERED,
@@ -967,7 +973,7 @@ def test_route_outcome_and_probe_result_imports() -> None:
     assert RouteOutcome("x/y", "x", False, False).route_id == "x/y"
     r = ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True)
     assert r.healthy
-    assert usable_until(NOW) == NOW + timedelta(seconds=1800)
+    assert usable_until(NOW) == NOW + timedelta(seconds=USABLE_SECONDS)
     assert DEFAULT_MAX_REQUESTS == 40
     assert REQUESTS_PER_FULL_PROBE == 2
 

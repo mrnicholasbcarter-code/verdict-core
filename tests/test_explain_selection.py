@@ -160,17 +160,15 @@ class TestRankComponentsMirrorSelector:
         assert chosen is not None
         ranked = [v for v in verdicts if v.rank is not None]
 
-        # Reconstruct the sort tuple from exposed values only.
+        # Reconstruct the sort tuple from exposed values only (price is not a key).
         def key(v: RouteVerdict) -> tuple[Any, ...]:
             rc = v.rank_components or {}
-            price = rc.get("price")
-            # None price is fine for tie-break; real ranking uses 0.0 as the
-            # tuple entry, and the exposed None only masks "unknown price".
-            price_key = 0.0 if price is None else price
             return (
-                rc.get("capacity_order"),
+                ("score", "tier", "unknown").index(rc.get("rating_basis", "unknown")),
+                -(rc.get("rating") or 0.0),
+                rc.get("declared_tier") or 0,
                 rc.get("slack"),
-                price_key,
+                rc.get("quota_rank"),
                 rc.get("provider_pref"),
                 rc.get("load"),
                 -int(rc.get("fit", 0)),
@@ -279,15 +277,22 @@ class TestBehaviourParityAcrossFixtures:
         assert candidates
         for v in candidates:
             assert v.rank_components is not None
-            assert list(v.rank_components) == [  # ordered dict, matches _rank_key
-                "capacity_order",
+            assert list(v.rank_components) == [  # ordered dict, rank keys first
+                "rating_basis",
+                "rating",
+                "declared_tier",
+                "rating_metric",
+                "rating_source",
+                "rating_as_of",
                 "slack",
-                "price",
+                "quota_rank",
                 "quota_percent",
                 "provider_pref",
                 "load",
                 "fit",
                 "route_id",
+                "capacity_order",
+                "price",
                 "probe_class",
                 "cache_checked_at",
                 "cache_freshness",
@@ -426,22 +431,30 @@ class TestExplainSelection:
 
     def test_selected_because_reports_first_differing_component(self) -> None:
         rc_sel = {
-            "capacity_order": 0,
+            "rating_basis": "score",
+            "rating": 70.0,
+            "declared_tier": None,
             "slack": 0,
-            "price": 0.2,
+            "quota_rank": 2,
             "provider_pref": 0,
             "load": 0,
             "fit": 2,
             "route_id": "p/sel",
+            "capacity_order": 2,
+            "price": 0.5,
         }
         rc_next = {
-            "capacity_order": 0,
+            "rating_basis": "score",
+            "rating": 40.0,
+            "declared_tier": None,
             "slack": 0,
-            "price": 0.5,
+            "quota_rank": 2,
             "provider_pref": 0,
             "load": 0,
             "fit": 2,
             "route_id": "p/next",
+            "capacity_order": 0,
+            "price": 0.2,
         }
         vs = [
             _verdict("p/sel", "p", EligibilityStage.SELECTED, None, "selected", rank=0, rc=rc_sel),
@@ -453,27 +466,31 @@ class TestExplainSelection:
         assert out["selected"]["route_id"] == "p/sel"
         assert out["runner_up"]["route_id"] == "p/next"
         reasons = out["selected_because"]
-        # First two components are equal; the third (price) is the deciding one.
-        assert reasons[0].startswith("equal on capacity_order")
-        assert reasons[1].startswith("equal on slack")
-        assert "lower price than runner-up: 0.2 vs 0.5" in reasons[2]
+        # The rating decides; a cheaper, free runner-up is never the reason.
+        assert reasons[0].startswith("equal on rating_basis")
+        assert "higher task rating than runner-up: 70.0 vs 40.0" in reasons[1]
+        assert not any("price" in r or "capacity" in r for r in reasons)
         # Nothing after the deciding component.
-        assert len(reasons) == 3
+        assert len(reasons) == 2
 
     def test_all_equal_or_unknown(self) -> None:
         rc_sel = {
-            "capacity_order": 0,
+            "rating_basis": "unknown",
+            "rating": None,
+            "declared_tier": None,
             "slack": 0,
-            "price": None,
+            "quota_rank": 2,
             "provider_pref": 0,
             "load": 0,
             "fit": 2,
             "route_id": "p/sel",
         }
         rc_next = {
-            "capacity_order": 0,
+            "rating_basis": "unknown",
+            "rating": None,
+            "declared_tier": None,
             "slack": 0,
-            "price": None,
+            "quota_rank": 2,
             "provider_pref": 0,
             "load": 0,
             "fit": 2,
@@ -487,7 +504,7 @@ class TestExplainSelection:
         ]
         reasons = explain_selection(vs)["selected_because"]
         # No component can decide; walk records honest state without inventing.
-        assert any("price unknown for both" in r for r in reasons)
+        assert any("rating unknown for both" in r for r in reasons)
         # route_id differs -> deciding component (tiebroken by route_id).
         assert reasons[-1].startswith("tiebroken by route_id: p/sel vs p/next")
 
@@ -576,39 +593,14 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
     assert len(blob.encode()) < 32_768
 
 
-def test_rank_key_parity_with_original(tmp_path: Path) -> None:
-    """Verify that refactored ranking produces identical sort order to origin/main.
+def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
+    """_rank_components is the single source of truth for _rank_key (500 routes).
 
-    BOD-277 follow-up: _rank_components is now the single source of truth, and
-    _rank_key builds its tuple from those components. This test freezes the
-    original _rank_key logic and verifies byte-identical ranking on 500 routes.
+    The key is price-free: rating evidence, then slack, quota, provider
+    preference, load, fit and route_id. Capacity class and price never enter it.
     """
     import random
 
-    # Freeze the original _rank_key implementation from origin/main
-    def _original_rank_key(
-        ladder: EligibilityLadder,
-        a: Any,
-        prefer_providers: tuple[str, ...],
-        load_map: Mapping[str, int],
-    ) -> tuple[int, int, float, int, int, int, str]:
-        from verdict.orchestration.eligibility import _CAPACITY_ORDER
-
-        try:
-            pref = prefer_providers.index(a.provider)
-        except ValueError:
-            pref = len(prefer_providers)
-        return (
-            _CAPACITY_ORDER[a.capacity],
-            a.slack,
-            a.price,
-            pref,
-            load_map.get(a.route_id, 0),
-            -a.fit,
-            a.route_id,
-        )
-
-    # Create a ladder with 500 synthetic routes
     random.seed(42)
     rows = []
     for i in range(500):
@@ -637,13 +629,7 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
         _conn("google", plan="max"),
         _conn("meta", plan="max"),
     ]
-
-    # Create synthetic load map
     load_map = {row["id"]: random.randint(0, 5) for row in rows}
-
-    def load_fn(rid: str) -> int:
-        return load_map.get(rid, 0)
-
     ladder = EligibilityLadder(
         inventory_rows=rows,
         connections=conns,
@@ -652,49 +638,47 @@ def test_rank_key_parity_with_original(tmp_path: Path) -> None:
         prefer_providers=("anthropic", "openai"),
         max_probes_per_select=0,
         max_per_route=10,
-        load=load_fn,
+        load=lambda rid: load_map.get(rid, 0),
     )
-
+    # Synthetic ids carry no classifier tier, so accept any tier (unknown ranks last).
     requirements = TaskRequirements(
-        max_capability_tier=2, min_context_tokens=16_000, required_capabilities=frozenset()
+        max_capability_tier=3, min_context_tokens=16_000, required_capabilities=frozenset()
     )
-
-    # Get all assessments
     _assessments, candidates = ladder._assess_all(requirements, NOW)
+    assert len(candidates) > 100
+    for a in candidates:
+        c = ladder._rank_components(a)
+        assert ladder._rank_key(a) == (
+            c["rating_rank"],
+            -(c["rating"] or 0.0),
+            c["declared_tier"] or 0,
+            c["slack"],
+            c["quota_rank"],
+            c["provider_pref"],
+            c["load"],
+            -c["fit"],
+            c["route_id"],
+        )
+    # Changing only the price never moves a route.
+    repriced = [{**row, "pricing": {"input": 0.0, "output": 0.0}} for row in rows]
+    cheap = EligibilityLadder(
+        inventory_rows=repriced,
+        connections=conns,
+        probe=_Probe(),
+        state_path=tmp_path / "repriced.json",
+        prefer_providers=("anthropic", "openai"),
+        max_probes_per_select=0,
+        max_per_route=10,
+        load=lambda rid: load_map.get(rid, 0),
+    )
+    _, cheap_candidates = cheap._assess_all(requirements, NOW)
+    assert [a.route_id for a in cheap_candidates] == [a.route_id for a in candidates]
 
-    # Compute both sort keys
-    prefer = ("anthropic", "openai")
-    original_keys = [_original_rank_key(ladder, a, prefer, load_map) for a in candidates]
-    new_keys = [ladder._rank_key(a) for a in candidates]
 
-    # Verify byte-identical tuples
-    assert original_keys == new_keys, "Ranking keys must be byte-identical to origin/main"
+def test_capacity_class_is_never_a_selection_reason() -> None:
+    """Price excluded: a cheaper capacity class is never reported as the reason."""
+    from verdict.orchestration.explain import _RANK_COMPONENT_ORDER
 
-    # Verify sort order is identical
-    original_sorted = sorted(range(len(candidates)), key=lambda i: original_keys[i])
-    new_sorted = sorted(range(len(candidates)), key=lambda i: new_keys[i])
-    assert original_sorted == new_sorted, "Sort order must be identical to origin/main"
-
-    # Verify that _rank_components produces values that match the key
-    # (except fit is positive in components, negated in the key)
-    for a in candidates[:10]:  # Check first 10
-        components = ladder._rank_components(a)
-        key = ladder._rank_key(a)
-        assert components["capacity_order"] == key[0]
-        assert components["slack"] == key[1]
-        assert components["price_for_rank"] == key[2]
-        assert components["provider_pref"] == key[3]
-        assert components["load"] == key[4]
-        assert -components["fit"] == key[5]  # fit is negated in the key
-        assert components["route_id"] == key[6]
-
-
-def test_capacity_order_label_matches_free_first_ranking() -> None:
-    """Review F1: order 0 is free, not subscription (labels follow the ladder)."""
-    from verdict.orchestration.explain import _format_capacity_order
-
-    assert _format_capacity_order(0) == "free"
-    assert _format_capacity_order(1) == "subscription"
-    assert _format_capacity_order(2) == "metered"
-    assert _format_capacity_order(3) == "unknown"
-    assert _format_capacity_order(9) == "9"
+    assert "capacity_order" not in _RANK_COMPONENT_ORDER
+    assert "price" not in _RANK_COMPONENT_ORDER
+    assert _RANK_COMPONENT_ORDER[:3] == ("rating_basis", "rating", "declared_tier")
