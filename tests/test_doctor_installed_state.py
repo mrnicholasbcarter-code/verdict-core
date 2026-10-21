@@ -527,10 +527,10 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         "verdict-acceptance.service": _unit(
             stale.parent, stale_python, "-m verdict acceptance run --notify dry-run"
         ),
-        "verdict-census.service": _unit(
+        "verdict-identify.service": _unit(
             runtime, source_python, "-m verdict census --max-per-provider 2"
         ),
-        "verdict-prove-at-rest.service": _unit(
+        "verdict-identify-screen.service": _unit(
             tmp_path,
             tool_python,
             "-m verdict prove-at-rest daemon --allow-live-probe --interval 300",
@@ -564,12 +564,12 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
     acceptance_row = by_unit["verdict-acceptance.service"]
     assert acceptance_row["status"] == "failed"
     assert str(stale) in acceptance_row["detail"] and "5a941b68aaaa" in acceptance_row["detail"]
-    census = by_unit["verdict-census.service"]
+    census = by_unit["verdict-identify.service"]
     assert census["status"] == "failed"
     assert str(runtime / "verdict") in census["detail"]
     assert "unrecorded" in census["detail"]
     # Reviewed build, but a different state scope cannot count as main proof.
-    prove = by_unit["verdict-prove-at-rest.service"]
+    prove = by_unit["verdict-identify-screen.service"]
     assert prove["status"] == "failed"
     assert "state scope" in prove["detail"] and str(tmp_path / "other-home") in prove["detail"]
     assert "http://gw:20128" in prove["detail"]
@@ -581,11 +581,7 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
     assert "gateway default" in metadata_row["detail"]
     assert str(tmp_path / "home" / ".verdict") in metadata_row["detail"]
 
-    # Two independent qualification loops: the standalone census is diagnosed.
-    owner = next(row for row in rows if row["label"] == "Qualification owner")
-    assert owner["status"] == "warning"
-    assert "verdict-census.service" in owner["detail"]
-    assert "verdict-prove-at-rest.service" in owner["detail"]
+    assert not any(row["label"] == "Qualification owner" for row in rows)
 
     # Converged host: every unit on the reviewed build and scope. The census
     # runtime copy counts only when it records the reviewed build and content.
@@ -595,7 +591,7 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         )
         for name, unit in units.items()
     }
-    converged["verdict-census.service"] = _unit(
+    converged["verdict-identify.service"] = _unit(
         runtime, tool_python, "-m verdict census --max-per-provider 2"
     )
     (runtime / "verdict" / "__init__.py").write_text('__version__ = "0.5.0"\n')
@@ -610,12 +606,10 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         state_home=tmp_path / "home" / ".verdict",
     )
     assert [row["status"] for row in rows] == ["ok"] * len(rows), rows
-    owner = next(row for row in rows if row["label"] == "Qualification owner")
-    assert "verdict-prove-at-rest.service" in owner["detail"]
-    assert "verdict-census.service" in owner["detail"]
+    assert not any(row["label"] == "Qualification owner" for row in rows)
 
     # A separate health cache is a separate coordinator lock and ledger.
-    converged["verdict-census.service"]["Environment"] = (
+    converged["verdict-identify.service"]["Environment"] = (
         f"VERDICT_HEALTH_CACHE={tmp_path / 'elsewhere' / 'health-cache.json'}"
     )
     rows = dd.installed_runtime_rows(
@@ -625,11 +619,10 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         home=tmp_path / "home",
         state_home=tmp_path / "home" / ".verdict",
     )
-    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    census = next(row for row in rows if row.get("unit") == "verdict-identify.service")
     assert census["status"] == "failed" and "health cache" in census["detail"]
-    owner = next(row for row in rows if row["label"] == "Qualification owner")
-    assert owner["status"] == "warning"
-    converged["verdict-census.service"]["Environment"] = ""
+    assert not any(row["label"] == "Qualification owner" for row in rows)
+    converged["verdict-identify.service"]["Environment"] = ""
 
     # A copy whose content drifted from the reviewed build fails even with a stamp.
     (runtime / "verdict" / "extra.py").write_text("STALE = True\n")
@@ -640,12 +633,12 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         home=tmp_path / "home",
         state_home=tmp_path / "home" / ".verdict",
     )
-    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    census = next(row for row in rows if row.get("unit") == "verdict-identify.service")
     assert census["status"] == "failed"
     assert "content differs" in census["detail"]
 
     # An interpreter whose own install is another copy fails even from a clean cwd.
-    converged["verdict-census.service"] = _unit(
+    converged["verdict-identify.service"] = _unit(
         reviewed.parent, source_python, "-m verdict census --max-per-provider 2"
     )
     rows = dd.installed_runtime_rows(
@@ -655,7 +648,7 @@ def test_installed_runtime_provenance_and_shared_coordinator_cutover(tmp_path: P
         home=tmp_path / "home",
         state_home=tmp_path / "home" / ".verdict",
     )
-    census = next(row for row in rows if row.get("unit") == "verdict-census.service")
+    census = next(row for row in rows if row.get("unit") == "verdict-identify.service")
     assert census["status"] == "failed"
     assert f"interpreter {source_python} installs {source}" in census["detail"]
 
@@ -702,3 +695,98 @@ def test_installed_runtime_unrecorded_build_is_never_ok_and_gateway_is_redacted(
     assert row["status"] == "ok", row
     assert "git 4f642962894d" in row["detail"]
     assert "secret" not in row["detail"]
+
+
+@pytest.mark.parametrize("unit", ["verdict-census.service", "verdict-prove-at-rest.service"])
+def test_retired_disabled_runtime_is_note_without_import_probe(tmp_path, unit):
+    props = {
+        unit: {
+            "LoadState": "loaded",
+            "WorkingDirectory": "/stale/repo",
+            "UnitFileState": "disabled",
+            "ActiveState": "inactive",
+        },
+        unit.replace(".service", ".timer"): {
+            "LoadState": "loaded",
+            "UnitFileState": "disabled",
+            "ActiveState": "inactive",
+        },
+    }
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: props.get(name, {"LoadState": "not-found"}),
+        resolve=lambda *_: pytest.fail("retired runtime must not be imported"),
+        reviewed_package=tmp_path,
+    )
+    row = next(row for row in rows if row.get("unit") == unit)
+    assert row["status"] == "note"
+    assert "retired; disabled" in row["detail"]
+    assert not any(row["label"] == "Qualification owner" for row in rows)
+
+
+@pytest.mark.parametrize("unit", ["verdict-census.service", "verdict-prove-at-rest.service"])
+@pytest.mark.parametrize("enabled,active", [("enabled", "inactive"), ("disabled", "active")])
+def test_retired_timer_reactivation_fails_even_on_reviewed_build(tmp_path, unit, enabled, active):
+    props = {
+        unit: {"LoadState": "loaded", "UnitFileState": "disabled", "ActiveState": "inactive"},
+        unit.replace(".service", ".timer"): {
+            "LoadState": "loaded",
+            "UnitFileState": enabled,
+            "ActiveState": active,
+        },
+    }
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: props.get(name, {"LoadState": "not-found"}),
+        resolve=lambda *_: str(tmp_path),
+        reviewed_package=tmp_path,
+    )
+    row = next(row for row in rows if row.get("unit") == unit)
+    assert row["status"] == "failed"
+    assert "retired timer" in row["detail"]
+    owner = next(row for row in rows if row["label"] == "Qualification owner")
+    assert owner["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing-enabled", "missing-active", "empty-enabled", "empty-active"]
+)
+@pytest.mark.parametrize("target", ["timer", "service"])
+def test_loaded_retired_runtime_state_unreadable_fails(tmp_path, failure, target):
+    unit = "verdict-census.service"
+    timer = "verdict-census.timer"
+
+    def run(args):
+        name = args[-1]
+        if name == (timer if target == "timer" else unit):
+            stdout = {
+                "missing-enabled": "LoadState=loaded\nActiveState=inactive\n",
+                "missing-active": "LoadState=loaded\nUnitFileState=disabled\n",
+                "empty-enabled": "LoadState=loaded\nUnitFileState=\nActiveState=inactive\n",
+                "empty-active": "LoadState=loaded\nUnitFileState=disabled\nActiveState=\n",
+            }[failure]
+        else:
+            stdout = "LoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n"
+        return subprocess.CompletedProcess(args, 0, stdout=stdout)
+
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: dd._systemctl_show_props(name, run=run),
+        resolve=lambda *_: pytest.fail("unreadable retired state must not import runtime"),
+        reviewed_package=tmp_path,
+    )
+    row = next(row for row in rows if row.get("unit") == unit)
+    assert row["status"] == "failed"
+    assert f"{timer}: state unreadable (systemctl show failed)" in row["detail"]
+
+
+@pytest.mark.parametrize("failure", ["oserror", "empty"])
+def test_unavailable_systemctl_skips_retired_runtime_rows(tmp_path, failure):
+    def run(args):
+        if failure == "oserror":
+            raise OSError("systemctl unavailable")
+        return subprocess.CompletedProcess(args, 0, stdout="")
+
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: dd._systemctl_show_props(name, run=run),
+        resolve=lambda *_: pytest.fail("unloaded runtime must not be imported"),
+        reviewed_package=tmp_path,
+    )
+    assert rows == []

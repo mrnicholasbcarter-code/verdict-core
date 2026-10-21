@@ -105,9 +105,12 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
         "last_trigger": values.get("LastTriggerUSec") or "unknown",
         "last_completion": service.get("ExecMainExitTimestamp") or "unknown",
         "result": result,
-        "next_run": values.get("NextElapseUSecRealtime")
-        or values.get("NextElapseUSecMonotonic")
-        or "unknown",
+        # Monotonic timestamps are relative to boot, not calendar dates.
+        "next_run": (
+            values["NextElapseUSecRealtime"]
+            if values.get("NextElapseUSecRealtime") not in (None, "", "n/a", "0")
+            else "unknown"
+        ),
     }
 
 
