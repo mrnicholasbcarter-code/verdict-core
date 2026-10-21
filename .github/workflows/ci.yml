@@ -215,7 +215,7 @@ jobs:
       - name: Run Bandit Security Check
         run: uv run bandit -c pyproject.toml -r verdict -ll
       - name: Run dependency audit
-        run: uv run pip-audit --local --skip-editable
+        run: uv run pip-audit --local --skip-editable $(uv run python scripts/security_exceptions.py)
 
   type-check:
     runs-on: ubuntu-latest

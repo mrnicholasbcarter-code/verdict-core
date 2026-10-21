@@ -20,7 +20,7 @@ from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is
 # Provisional entry point ``<python> -m verdict.harness_claude hook <Event>`` shipped
 # before the controller's 23:10Z decision; migrated away like the legacy /tmp hooks.
 _PROVISIONAL_MODULE = "verdict.harness_claude"
-_LEGACY_PROMPT_FILES = ("/tmp/claude_last_prompt", "/tmp/claude_session_prompt")
+_LEGACY_PROMPT_FILES = ("/tmp/claude_last_prompt", "/tmp/claude_session_prompt")  # nosec B108: detection-only comparison values for migrating away legacy hooks, never written
 
 
 def _is_verdict_command(command: object) -> bool:
