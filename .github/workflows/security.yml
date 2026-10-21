@@ -57,9 +57,7 @@ jobs:
           retention-days: 30
 
       - name: Run pip-audit
-        run: |
-          IGNORE_FLAGS=$(uv run python scripts/security_exceptions.py)
-          uv run pip-audit --local -f json -o pip-audit-results.json $IGNORE_FLAGS
+        run: uv run pip-audit --local -f json -o pip-audit-results.json $(uv run python scripts/security_exceptions.py)
 
       - name: Upload pip-audit results
         if: always()
