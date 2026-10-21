@@ -77,10 +77,14 @@ def identify_models(
             and observed_traffic.last_status >= 400
         ):
             reason = f"traffic_last_status_error:{observed_traffic.last_status}"
-        elif observed_traffic is not None and observed_traffic.status not in {"healthy", "degraded"}:
+        elif observed_traffic is not None and observed_traffic.status not in {
+            "healthy",
+            "degraded",
+        }:
             reason = f"traffic_last_status_error:{observed_traffic.status}"
         elif (
-            observed_traffic is not None and observed_traffic.provider not in evidence.usable_providers
+            observed_traffic is not None
+            and observed_traffic.provider not in evidence.usable_providers
         ):
             reason = "provider_unavailable"
         elif route in evidence.cooled_models:
