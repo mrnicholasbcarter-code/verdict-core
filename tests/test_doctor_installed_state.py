@@ -746,23 +746,22 @@ def test_retired_timer_reactivation_fails_even_on_reviewed_build(tmp_path, unit,
     assert owner["status"] == "failed"
 
 
-@pytest.mark.parametrize("failure", ["oserror", "empty", "missing-enabled", "missing-active"])
+@pytest.mark.parametrize(
+    "failure", ["missing-enabled", "missing-active", "empty-enabled", "empty-active"]
+)
 @pytest.mark.parametrize("target", ["timer", "service"])
-def test_retired_runtime_state_unreadable_fails(tmp_path, failure, target):
-    import subprocess
-
+def test_loaded_retired_runtime_state_unreadable_fails(tmp_path, failure, target):
     unit = "verdict-census.service"
     timer = "verdict-census.timer"
 
     def run(args):
         name = args[-1]
         if name == (timer if target == "timer" else unit):
-            if failure == "oserror":
-                raise OSError("systemctl unavailable")
             stdout = {
-                "empty": "",
                 "missing-enabled": "LoadState=loaded\nActiveState=inactive\n",
                 "missing-active": "LoadState=loaded\nUnitFileState=disabled\n",
+                "empty-enabled": "LoadState=loaded\nUnitFileState=\nActiveState=inactive\n",
+                "empty-active": "LoadState=loaded\nUnitFileState=disabled\nActiveState=\n",
             }[failure]
         else:
             stdout = "LoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n"
@@ -776,3 +775,18 @@ def test_retired_runtime_state_unreadable_fails(tmp_path, failure, target):
     row = next(row for row in rows if row.get("unit") == unit)
     assert row["status"] == "failed"
     assert f"{timer}: state unreadable (systemctl show failed)" in row["detail"]
+
+
+@pytest.mark.parametrize("failure", ["oserror", "empty"])
+def test_unavailable_systemctl_skips_retired_runtime_rows(tmp_path, failure):
+    def run(args):
+        if failure == "oserror":
+            raise OSError("systemctl unavailable")
+        return subprocess.CompletedProcess(args, 0, stdout="")
+
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: dd._systemctl_show_props(name, run=run),
+        resolve=lambda *_: pytest.fail("unloaded runtime must not be imported"),
+        reviewed_package=tmp_path,
+    )
+    assert rows == []

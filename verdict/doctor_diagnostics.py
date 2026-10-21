@@ -1184,7 +1184,7 @@ def installed_runtime_rows(
             timer = unit.removesuffix(".service") + ".timer"
             timer_props = unit_props(timer)
             unreadable = any(
-                state.get("LoadState") != "not-found"
+                state.get("LoadState") == "loaded"
                 and (not state.get("UnitFileState") or not state.get("ActiveState"))
                 for state in (props, timer_props)
             )

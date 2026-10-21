@@ -15,9 +15,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import verdict.identify_service as _identify_service
 import verdict.prove_at_rest_service as _prove_at_rest_service
 from verdict import cli
 from verdict import doctor_diagnostics as dd
+
+_SYSTEMCTL_SHOW_PROPS = dd._systemctl_show_props
+_IDENTIFY_TIMER_STATE = _identify_service.timer_state
 
 
 def _fake_timer_state_active(unit: str) -> dict[str, object]:
@@ -325,3 +329,40 @@ def test_doctor_shared_memory_not_configured(
     # No diagnosis fields when not configured
     assert "diagnosis_state" not in sm
     assert not any("shared memory degraded" in w for w in report["warnings"])
+
+
+@pytest.mark.parametrize("failure", ["oserror", "empty"])
+def test_doctor_unreadable_systemctl_fails_identify_timer_without_retired_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    import subprocess
+
+    import verdict.identify_service as identify_service
+
+    _base_healthy_fixture(tmp_path, monkeypatch)
+
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if failure == "oserror":
+            raise OSError("systemctl unavailable")
+        return subprocess.CompletedProcess(args, 0, stdout="")
+
+    monkeypatch.setattr(
+        dd, "_systemctl_show_props", lambda unit: _SYSTEMCTL_SHOW_PROPS(unit, run=run)
+    )
+    monkeypatch.setattr(identify_service, "timer_state", _IDENTIFY_TIMER_STATE)
+    monkeypatch.setattr(identify_service, "_run_show", run)
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    sections = {row["label"]: row for row in report["sections"]}
+    assert sections["Identify timer"]["state"] == "failed"
+    assert identify_service.TIMER in sections["Identify timer"]["detail"]
+    assert "Runtime census" not in sections
+    assert "Runtime prove-at-rest" not in sections
