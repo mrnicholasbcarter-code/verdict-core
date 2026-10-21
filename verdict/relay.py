@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -10,7 +12,17 @@ import httpx
 
 from verdict.capability_passports import RouteIdentity
 from verdict.models import AdmissionProof, RoutingDecision
-from verdict.orchestration.health_cache import DispatchScope, HealthCache, default_cache_path
+from verdict.orchestration.health_cache import (
+    CATEGORY_TIMEOUT,
+    CATEGORY_UPSTREAM,
+    DispatchScope,
+    HealthCache,
+    HealthCacheError,
+    HealthEntry,
+    ProbeResult,
+    default_cache_path,
+    format_datetime,
+)
 from verdict.policy import Policy, PolicyCandidate
 from verdict.subagent_selection import is_context_length_error
 
@@ -231,6 +243,91 @@ def failure_class(
     if status_code in {400, 404, 422}:
         return "capability_or_request_failure"
     return "upstream_failure"
+
+
+# Real relay failures that are availability evidence for the shared cache.
+# Everything else (caller, input, auth, capability and generic request errors)
+# stays ledger-only; auth and model-404 keep the dispatch revocation path.
+_RELAY_FEEDBACK_CATEGORIES: Mapping[str, str] = {
+    "transport_upstream": CATEGORY_UPSTREAM,
+    "transport_timeout": CATEGORY_TIMEOUT,
+    "transport_connection": CATEGORY_UPSTREAM,
+}
+
+
+@dataclass(frozen=True)
+class RelayFeedbackResult:
+    """Write acknowledgement for one relay failure. Skips carry an explicit reason."""
+
+    recorded: bool
+    reason: str
+    entry: HealthEntry | None = None
+
+
+def relay_failure_feedback(
+    cache: HealthCache,
+    *,
+    route_id: str,
+    status_code: int | None = None,
+    error: BaseException | None = None,
+    body: str = "",
+    now: datetime,
+    provenance: str | None = None,
+) -> RelayFeedbackResult:
+    """Project one real relay dispatch failure into the shared health cache.
+
+    Classification reuses ``failure_class``; only upstream 5xx responses and
+    transport timeout/connection failures are availability evidence. The
+    negative is route-scoped through the same serialized writer
+    (``merge_and_save`` -> ``record``) orchestrate session feedback uses, with
+    the same skip/report semantics: non-availability failures return an
+    explicit reason instead of writing, a newer cache observation wins, and
+    lock/persistence errors propagate so the caller can report the failed
+    write. One failing model or request never blocks sibling routes, pools or
+    the provider.
+    """
+    failure = failure_class(status_code, error, body=body)
+    category = _RELAY_FEEDBACK_CATEGORIES.get(failure)
+    if category is None:
+        return RelayFeedbackResult(False, "non_availability_failure")
+    if not isinstance(route_id, str) or not route_id.strip():
+        raise HealthCacheError("selected route must be non-empty")
+    format_datetime(now)  # Reject naive timestamps before mutating any state.
+    opaque_source = None
+    if provenance:
+        digest = hashlib.sha256(provenance.encode("utf-8")).hexdigest()
+        opaque_source = f"sha256:{digest}"
+    result = RelayFeedbackResult(False, "not_written")
+
+    def _mutate(locked: HealthCache) -> None:
+        nonlocal result
+        previous = locked.entry(route_id)
+        if previous is not None and (
+            previous.checked_at > now or (previous.checked_at == now and not previous.healthy)
+        ):
+            result = RelayFeedbackResult(False, "superseded_or_duplicate")
+            return
+        entry = locked.record(
+            route_id,
+            ProbeResult(
+                category=category,
+                chat_ok=False,
+                tool_ok=False,
+                http_status=status_code,
+                failure_scope="route",
+                feedback_source="serve_request",
+                feedback_category=failure,
+                feedback_provenance=opaque_source,
+            ),
+            now,
+        )
+        result = RelayFeedbackResult(True, "recorded", entry)
+
+    cache.merge_and_save(_mutate)
+    # Return the revision allocated by the serialized writer, not its pre-write copy.
+    if result.recorded:
+        result = RelayFeedbackResult(True, "recorded", cache.entry(route_id))
+    return result
 
 
 def response_actual_route_status(response: Any) -> str:

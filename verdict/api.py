@@ -92,6 +92,7 @@ from verdict.relay import (
     idempotency_key,
     is_opaque_alias,
     protocol_for_surface,
+    relay_failure_feedback,
     response_actual_route_status,
     retry_safety,
     retryable_response_status,
@@ -2146,6 +2147,42 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             **row,
         )
 
+    # Real-request availability failures narrow the shared health cache the same
+    # way orchestrate session feedback does. A failed cache write never breaks
+    # the response path; it is reported on the outcome evidence event instead.
+    health_cache_feedback: list[dict[str, Any]] = []
+
+    def record_failure_feedback(
+        *,
+        route_id: str,
+        attempt_id: str,
+        status_code: int | None = None,
+        error: BaseException | None = None,
+        body: str = "",
+    ) -> None:
+        try:
+            feedback = relay_failure_feedback(
+                HealthCache(default_cache_path()),
+                route_id=route_id,
+                status_code=status_code,
+                error=error,
+                body=body,
+                now=datetime.now(timezone.utc),
+                provenance=f"{decision.request_id}:{attempt_id}",
+            )
+        except Exception as exc:
+            health_cache_feedback.append(
+                {
+                    "route_id": route_id,
+                    "recorded": False,
+                    "reason": f"persistence_error:{type(exc).__name__}",
+                }
+            )
+            return
+        health_cache_feedback.append(
+            {"route_id": route_id, "recorded": feedback.recorded, "reason": feedback.reason}
+        )
+
     selected_route_id = next(
         (
             flag.split(":", 1)[1]
@@ -2259,6 +2296,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     event_id=f"{request_id}:{permit.permit_id}:denied",
                     source_revision=None,
                     observed_at=datetime.now(timezone.utc),
+                )
+            if result.status_code >= 500:
+                # A general upstream 5xx is route-scoped availability evidence;
+                # it must also narrow the shared health cache, not just the ledger.
+                record_failure_feedback(
+                    route_id=proof.route_id,
+                    attempt_id=attempt_id,
+                    status_code=result.status_code,
+                    body=_error_body,
                 )
             # outcome receipts: the only place execution cost is observable is *after* the
             # upstream answers. Persist it per attempt, keyed to the decision.
@@ -2413,6 +2459,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "transition_edge": edge.to_dict() if edge is not None else None,
                 },
             )
+            record_failure_feedback(route_id=proof.route_id, attempt_id=attempt_id, error=exc)
             # Once committed, a transport failure may have executed upstream.
             break
 
@@ -2430,7 +2477,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 retries=max(0, len(attempts_used) - 1),
                 fallbacks=attempts_used[1:],
                 latency_ms=(monotonic() - started_at) * 1000,
-                details={"attempted_routes": attempts_used},
+                details={
+                    "attempted_routes": attempts_used,
+                    **(
+                        {"health_cache_feedback": health_cache_feedback}
+                        if health_cache_feedback
+                        else {}
+                    ),
+                },
             ),
             evidence_key,
         )
@@ -2482,6 +2536,11 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 details={
                     "attempted_routes": attempts_used,
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    **(
+                        {"health_cache_feedback": health_cache_feedback}
+                        if health_cache_feedback
+                        else {}
+                    ),
                 },
             ),
             evidence_key,
@@ -2540,6 +2599,11 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     **details,
                     "attempted_routes": attempts_used,
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    **(
+                        {"health_cache_feedback": health_cache_feedback}
+                        if health_cache_feedback
+                        else {}
+                    ),
                     "actual_route": result.actual_route.to_dict()
                     if result.actual_route is not None
                     else None,
