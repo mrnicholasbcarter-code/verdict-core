@@ -169,7 +169,7 @@
   },
   {
     "qualified_name": "verdict.controller_selection.ControllerSelector",
-    "reason": "UNTRIAGED: ControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: typing Protocol for controller selectors; implemented by InjectableControllerSelector and documented in docs/guides/controller-routing.md. A structural type has no call sites by design."
   },
   {
     "qualified_name": "verdict.decision_kernel.verify_decision",
@@ -449,7 +449,7 @@
   },
   {
     "qualified_name": "verdict.prove_at_rest_legacy.build_legacy_daemon",
-    "reason": "UNTRIAGED: build_legacy_daemon has no resolved reference; Legacy prove-at-rest cycle document (read-only) (verdict/prove_at_rest_legacy.py)."
+    "reason": "Deferred (BOD-350): legacy prove-at-rest daemon factory with no production caller; the current prober in verdict.prove_at_rest replaces it. Kept with ProveAtRestDaemon until BOD-350 removes the legacy cycle; its probe scope stays free-tier only."
   },
   {
     "qualified_name": "verdict.provider_bootstrap.GatewayProbeResult",
@@ -613,15 +613,15 @@
   },
   {
     "qualified_name": "verdict.controller_selection.InjectableControllerSelector",
-    "reason": "UNTRIAGED: InjectableControllerSelector has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production supervisor entry; scripts/prime_supervisor.py exposes it through a lazy module __getattr__ (dynamic access the checker cannot resolve). Documented in docs/guides/controller-routing.md."
   },
   {
     "qualified_name": "verdict.controller_selection.build_production_controller_selection_bundle",
-    "reason": "UNTRIAGED: build_production_controller_selection_bundle has no resolved reference; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production caller scripts/prime_supervisor.py:1528-1529 resolves it with hasattr/getattr on the lazily imported module (dynamic access the checker cannot resolve)."
   },
   {
     "qualified_name": "verdict.controller_selection.select_controller_launch",
-    "reason": "UNTRIAGED: select_controller_launch has only non-production references; Live controller selection before Prime launch (verdict/controller_selection.py)."
+    "reason": "KEEP: production caller scripts/prime_supervisor.py:143-145 lazy wrapper (_cs().select_controller_launch) and InjectableControllerSelector.select_controller_launch; dynamic module access the checker cannot resolve."
   },
   {
     "qualified_name": "verdict.harness_claude.certify",
