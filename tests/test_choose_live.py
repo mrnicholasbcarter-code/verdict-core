@@ -189,6 +189,10 @@ def test_discovery_failure_is_named_and_fails_closed(
     def unavailable(*args: Any, **kwargs: Any) -> Any:
         raise urllib.error.URLError("offline")
 
+    from unittest.mock import Mock
+
+    model_probe = Mock(side_effect=AssertionError("discovery failure must not probe a model"))
+    monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", model_probe)
     monkeypatch.setattr(run, "fetch_inventory", unavailable)
     with pytest.raises(SystemExit) as exc:
         _choose(monkeypatch)
@@ -197,6 +201,7 @@ def test_discovery_failure_is_named_and_fails_closed(
     assert payload["selected"] is None
     assert payload["reason"] == "gateway_discovery_failed"
     assert "/v1/models" in payload["reasons"][0]
+    model_probe.assert_not_called()
 
 
 def test_live_choose_human_output(
