@@ -2,8 +2,8 @@
 
 Proves:
 - routing test #3: free_only can never admit a paid identity (named exclusion)
-- routing test #4: free_preferred keeps qualified free candidates competing,
-  paid only as explicit fallback set
+- routing test #4: explicit free_preferred keeps qualified free candidates competing,
+  paid only as explicit fallback set; the default policy is price-free (paid_allowed)
 - profile digest is deterministic and rides on the receipt
 - policy is normalized from explicit request fields, never from model names
 """
@@ -18,6 +18,7 @@ from verdict.free_tier_admit import (
     FreeTierAdmitReceipt,
     NamedDrop,
     OmniRouteAdmitSnapshot,
+    admit_free_tier_active,
     expand_admit_for_worthiness,
 )
 from verdict.task_profile import (
@@ -32,37 +33,37 @@ from verdict.task_profile import (
 
 
 def _snapshot(paid_ids: tuple[str, ...]) -> OmniRouteAdmitSnapshot:
-    from verdict.free_tier_admit import CatalogIdentity, ProviderConnection
+    """Two free-tier identities plus explicitly priced non-free identities."""
+    from verdict.free_tier_admit import CatalogIdentity, FreeTierModel, ProviderConnection
 
-    providers = tuple({ident.split("/", 1)[0] for ident in paid_ids})
+    providers = {"free"} | {ident.split("/", 1)[0] for ident in paid_ids}
     return OmniRouteAdmitSnapshot(
-        catalog=tuple(
-            CatalogIdentity(
-                identity_id=ident,
-                provider=ident.split("/", 1)[0],
-                price_known=True,
-                input_cost=1.0,
-                output_cost=1.0,
-            )
-            for ident in paid_ids
+        catalog=(
+            CatalogIdentity(identity_id="free/one", provider="free"),
+            CatalogIdentity(identity_id="free/two", provider="free"),
+            *(
+                CatalogIdentity(
+                    identity_id=ident,
+                    provider=ident.split("/", 1)[0],
+                    price_known=True,
+                    input_cost=1.0,
+                    output_cost=1.0,
+                )
+                for ident in paid_ids
+            ),
         ),
-        free_tier=(),
+        free_tier=(FreeTierModel("one", "free"), FreeTierModel("two", "free")),
         connections=tuple(
-            ProviderConnection(provider=p, is_active=True, test_status="active") for p in providers
+            ProviderConnection(provider=p, is_active=True, test_status="active")
+            for p in sorted(providers)
         ),
     )
 
 
-def _free_receipt() -> FreeTierAdmitReceipt:
-    return FreeTierAdmitReceipt(
-        admitted=("free/one", "free/two"),
-        exclusions=(),
-        chosen="free/one",
-        empty_intersection=False,
-        active_providers=("free",),
-        free_tier_providers=("free",),
-        free_admitted=("free/one", "free/two"),
-    )
+def _free_receipt(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitReceipt:
+    receipt = admit_free_tier_active(snapshot)
+    assert receipt.free_admitted == ("free/one", "free/two")
+    return receipt
 
 
 # ── spend policy normalization ──────────────────────────────────────────────
@@ -76,8 +77,8 @@ def _free_receipt() -> FreeTierAdmitReceipt:
         ("free_preferred", SPEND_FREE_PREFERRED),
         ("paid_allowed", SPEND_PAID_ALLOWED),
         ("frontier_required", SPEND_FRONTIER_REQUIRED),
-        (None, SPEND_FREE_PREFERRED),
-        ("", SPEND_FREE_PREFERRED),
+        (None, SPEND_PAID_ALLOWED),
+        ("", SPEND_PAID_ALLOWED),
     ],
 )
 def test_normalize_spend_policy(raw: str | None, expected: str) -> None:
@@ -182,7 +183,7 @@ def test_profile_preserves_task_class_hint_and_requirements() -> None:
 def test_free_only_never_admits_paid_and_names_the_exclusion() -> None:
     snapshot = _snapshot(("paid/strong", "paid/frontier-x"))
     receipt = expand_admit_for_worthiness(
-        _free_receipt(),
+        _free_receipt(snapshot),
         snapshot,
         task_class="ordinary",
         class_reasons=(),
@@ -199,26 +200,30 @@ def test_free_only_never_admits_paid_and_names_the_exclusion() -> None:
 def test_free_only_never_admits_paid_for_worthy_tasks() -> None:
     snapshot = _snapshot(("paid/frontier-a", "paid/strong"))
     receipt = expand_admit_for_worthiness(
-        _free_receipt(),
+        _free_receipt(snapshot),
         snapshot,
         task_class="worthy",
         class_reasons=("server-classified-worthy",),
         spend_policy=SPEND_FREE_ONLY,
     )
 
-    assert receipt.admitted == ()
-    assert receipt.chosen is None
+    # Task class never excludes free routes for cost; the explicit free_only
+    # policy still removes every non-free identity with a named exclusion.
+    assert receipt.admitted == ("free/one", "free/two")
+    assert receipt.chosen == "free/one"
     assert receipt.paid_admitted == ()
-    assert {drop.reason for drop in receipt.exclusions} >= {
-        REASON_WORTHY_EXCLUDES_FREE,
-        REASON_PAID_MODEL_NOT_ALLOWED,
+    excluded = {drop.model_id: drop.reason for drop in receipt.exclusions}
+    assert excluded == {
+        "paid/frontier-a": REASON_PAID_MODEL_NOT_ALLOWED,
+        "paid/strong": REASON_PAID_MODEL_NOT_ALLOWED,
     }
+    assert REASON_WORTHY_EXCLUDES_FREE not in excluded.values()
 
 
 def test_free_preferred_keeps_free_competing_and_marks_paid_fallback() -> None:
     snapshot = _snapshot(("paid/strong",))
     receipt = expand_admit_for_worthiness(
-        _free_receipt(),
+        _free_receipt(snapshot),
         snapshot,
         task_class="ordinary",
         class_reasons=(),
@@ -236,7 +241,7 @@ def test_free_preferred_keeps_free_competing_and_marks_paid_fallback() -> None:
 def test_frontier_required_drops_free_for_frontier_only() -> None:
     snapshot = _snapshot(("paid/frontier-a", "paid/lesser"))
     receipt = expand_admit_for_worthiness(
-        _free_receipt(),
+        _free_receipt(snapshot),
         snapshot,
         task_class="worthy",
         class_reasons=("test",),
@@ -252,7 +257,7 @@ def test_receipt_carries_profile_digest_and_policy() -> None:
     profile = profile_task("repair x", context={"spend_policy": "free_only"})
     snapshot = _snapshot(("paid/strong",))
     receipt = expand_admit_for_worthiness(
-        _free_receipt(),
+        _free_receipt(snapshot),
         snapshot,
         task_class="ordinary",
         class_reasons=(),

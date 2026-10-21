@@ -2175,57 +2175,63 @@ def expand_admit_for_worthiness(
     spend_policy: str | None = None,
     task_profile_digest: str | None = None,
 ) -> FreeTierAdmitReceipt:
-    """Annotate task classification without economic filtering or reordering.
+    """Record task classification and apply only an explicit caller spend policy.
 
-    The legacy signature is retained for callers; price and resource class do
-    not decide which qualified identities may compete.
+    Verdict imposes no economics of its own: the default policy is
+    ``paid_allowed`` and task class never filters by price. An explicit
+    ``free_only`` or ``frontier_required`` request is a caller filter, like
+    ``--capacity``: it removes identities with a named exclusion and never
+    re-admits. ``free_preferred`` keeps everyone competing and prefers a free
+    identity for ``chosen``. Free membership comes only from ``free_admitted``.
     """
+    from verdict.task_profile import (  # lazy: breaks the verdict.__init__ cycle
+        SPEND_FREE_ONLY,
+        SPEND_FREE_PREFERRED,
+        SPEND_FRONTIER_REQUIRED,
+        normalize_spend_policy,
+    )
+
+    policy = normalize_spend_policy(spend_policy)
+    free_set = frozenset(receipt.free_admitted)
+    admitted = receipt.admitted
+    exclusions = list(receipt.exclusions)
+    if policy == SPEND_FREE_ONLY:
+        kept = tuple(item for item in admitted if item in free_set)
+        reason, detail = (
+            REASON_PAID_MODEL_NOT_ALLOWED,
+            "spend_policy=free_only forbids non-free identities regardless of score",
+        )
+    elif policy == SPEND_FRONTIER_REQUIRED:
+        allowed = frozenset(frontier_allowlist) if frontier_allowlist else None
+        kept = tuple(
+            item
+            for item in admitted
+            if item not in free_set
+            and (item in allowed if allowed is not None else classify(item) <= 1)
+        )
+        reason, detail = (
+            REASON_SPEND_POLICY_REQUIRES_FRONTIER,
+            "spend_policy=frontier_required admits frontier-class non-free identities only",
+        )
+    else:
+        kept = admitted
+        reason = detail = ""
+    exclusions.extend(NamedDrop(item, reason, detail) for item in admitted if item not in kept)
+    chosen = receipt.chosen if receipt.chosen in kept else (kept[0] if kept else None)
+    if policy == SPEND_FREE_PREFERRED:
+        chosen = next((item for item in kept if item in free_set), chosen)
+    kept_set = set(kept)
     return replace(
         receipt,
+        admitted=kept,
+        exclusions=tuple(exclusions),
+        chosen=chosen,
+        empty_intersection=chosen is None,
+        free_admitted=tuple(item for item in receipt.free_admitted if item in kept_set),
+        paid_admitted=tuple(item for item in receipt.paid_admitted if item in kept_set),
         task_class=task_class,
         class_reasons=class_reasons,
         task_profile_digest=task_profile_digest,
-        spend_policy=spend_policy,
+        spend_policy=policy,
     )
 
-
-__all__ = [
-    "DEFAULT_CHEAP_PATH_TOKEN_BUDGET",
-    "FAIL_CLOSED_REASON",
-    "NO_ELIGIBLE_TARGET",
-    "REASON_CAPABILITY_MISMATCH",
-    "REASON_INACTIVE_UNCONNECTED",
-    "REASON_METADATA_GHOST",
-    "REASON_NOT_FREE_TIER",
-    "REASON_OPAQUE_AUTO",
-    "REASON_REQUIRED_UNKNOWN",
-    "REASON_SPEND_POLICY_EXCLUDES_PAID",
-    "REASON_SPEND_POLICY_REQUIRES_FRONTIER",
-    "REASON_STALE",
-    "REASON_TASK_INSTRUCTIONS_OMITTED",
-    "REASON_UNMAPPED",
-    "REASON_WORTHY_EXCLUDES_FREE",
-    "TASK_SOURCE_URI",
-    "CatalogIdentity",
-    "CheapPathContextPack",
-    "FreeTierAdmitReceipt",
-    "FreeTierModel",
-    "IncludedProvenance",
-    "LiveAdmitError",
-    "NamedDrop",
-    "NamedOmission",
-    "OmniRouteAdmitSnapshot",
-    "PackState",
-    "ProviderConnection",
-    "admit_free_tier_active",
-    "build_cheap_path_context_pack",
-    "execute_offload_chat",
-    "expand_admit_for_worthiness",
-    "load_omniroute_admit_snapshot",
-    "normalize_omniroute_origin",
-    "omniroute_endpoint_from_env",
-    "parse_catalog_identities",
-    "parse_free_tier_models",
-    "parse_provider_connections",
-    "snapshot_from_payloads",
-]

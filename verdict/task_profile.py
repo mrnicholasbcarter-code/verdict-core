@@ -24,9 +24,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-# Spend policy groups: policy decides WHO MAY COMPETE; utility decides who wins
-# inside the allowed economic set. There is no silent paid escalation: every
-# transition out of the free set requires an explicit policy that permits it.
+# Spend policy groups: an explicit caller policy decides WHO MAY COMPETE; utility
+# decides who wins inside the allowed set. Verdict imposes no economics itself.
 SPEND_FREE_ONLY = "free_only"
 SPEND_FREE_PREFERRED = "free_preferred"
 SPEND_PAID_ALLOWED = "paid_allowed"
@@ -36,8 +35,8 @@ SPEND_POLICIES = frozenset(
     {SPEND_FREE_ONLY, SPEND_FREE_PREFERRED, SPEND_PAID_ALLOWED, SPEND_FRONTIER_REQUIRED}
 )
 
-# Canonical default: free-first unless the request says otherwise.
-DEFAULT_SPEND_POLICY = SPEND_FREE_PREFERRED
+# Canonical default: price-free. Only an explicit request narrows or reorders by price.
+DEFAULT_SPEND_POLICY = SPEND_PAID_ALLOWED
 
 _POLICY_ALIASES = {
     "free-only": SPEND_FREE_ONLY,
@@ -60,10 +59,9 @@ class TaskProfileError(ValueError):
 def normalize_spend_policy(raw: str | None) -> str:
     """Normalize an explicit spend-policy request; refuse unknown values.
 
-    Missing/empty means the canonical free-first default. An unrecognized
+    Missing/empty means the canonical price-free default. An unrecognized
     value is a refusal, never a guess: silently treating ``"cheapest_possible"``
-    as paid_allowed would be exactly the silent economic escalation the policy
-    group exists to prevent.
+    as the default would drop the caller's explicit economic restriction.
     """
     if raw is None:
         return DEFAULT_SPEND_POLICY

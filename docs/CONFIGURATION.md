@@ -499,6 +499,24 @@ narrower boundary:
   only when the decision carries `admitted: true` candidate state for it.
   Without that state, alternatives are dropped, not treated as eligible.
 
+### Request spend policy
+
+A request may set `spend_policy` (body field on `/v1/chat/completions`, or the
+routing context). Verdict imposes no price policy of its own: when the field is
+absent, the policy is `paid_allowed` and every admitted, proven route competes
+on capability. Explicit values are caller filters, like `--capacity`:
+
+| Value | Effect |
+|---|---|
+| `paid_allowed` (default) | No price filter or price ordering. |
+| `free_preferred` | Everyone competes; the first capability-ranked free route is chosen when one is admitted. |
+| `free_only` | Non-free routes are excluded with `paid_model_not_allowed`. |
+| `frontier_required` | Only non-free frontier-class (or allowlisted) routes remain; others get `spend_policy_requires_frontier`. |
+
+Free membership comes only from OmniRoute free-tier metadata (`free_admitted`),
+never from a model name. Unknown values are refused. The applied policy is
+recorded in the admit receipt (`spend_policy`).
+
 ### Receipts / evidence
 
 | Variable | Meaning |

@@ -1,8 +1,8 @@
 """Worthiness classifier: worthy vs ordinary with named reasons (task-class routing).
 
-Worthiness runs before cheapness. Rules are explicit keyword/escalation matches —
-never an invented score. ``worthy`` admits frontier/high-cap models only;
-``ordinary`` is free-first then lesser-paid.
+Rules are explicit keyword/escalation matches —
+never an invented score. The class is recorded on the admit receipt; it does not
+filter or order routes by price.
 """
 
 from __future__ import annotations

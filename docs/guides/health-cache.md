@@ -1,18 +1,18 @@
 # Health cache and the prove-at-rest prober
 
 `verdict prove-at-rest` probes admitted OmniRoute routes and records the
-result in one health cache. The selection ladder reads this cache to apply
-free-first worker ordering and the agentic gate.
+result in one health cache. The selection ladder reads this cache for health
+freshness and the agentic gate.
 
-## Free-first worker order
+## Worker order
 
-Implementation workers use the capacity order:
-**FREE** (with agentic probe PASS) → **SUBSCRIPTION** → **METERED**.
-UNKNOWN is never used for implementation unless explicitly opted in
-(set `VERDICT_ALLOW_UNKNOWN_CAPACITY=1` or pass `allow_unknown_capacity=True`).
-
-Planning, controller, and independent review tasks use:
-**SUBSCRIPTION** → **FREE** → **METERED** → **UNKNOWN**.
+Price and capacity class (FREE, SUBSCRIPTION, METERED, UNKNOWN) never order
+selection or decide membership. The ladder ranks eligible routes strongest
+first: a fresh task rating, then a declared capability tier, then unknown.
+Capability slack, measured quota, provider preference and load only break ties.
+Capacity class is still shown in the output. An explicit caller filter such as
+`--capacity` or a request `spend_policy` (`free_only`, `frontier_required`,
+`free_preferred`) still applies. The default `spend_policy` is `paid_allowed`.
 
 A FREE route qualifies as an implementation worker **only** when a fresh
 AGENTIC probe PASS is in the health cache. An agentic PASS also requires every
@@ -21,11 +21,12 @@ a failure. A failed agentic probe is retried once per interval, not every cycle.
 qualifies it for chat or summary roles (frontier-worthy tasks).
 
 Without a health cache attached, FREE routes are **not** implementation-eligible
-(`no_health_cache`); selection falls through to SUBSCRIPTION / METERED.
+(`no_health_cache`).
 
-Free-first ordering applies to the **eligibility ladder** when a health
-cache is attached. `verdict orchestrate` does not use this path yet;
-the live proof will land in a follow-up.
+Positive health evidence stays fresh for `VERDICT_EVIDENCE_FRESH_SECONDS`
+(6 h by default, bounded to 60 s..48 h), then has a 20 min stale grace. Dispatch
+permits, public catalog/connection authority and `GET /v1/models` proof age keep
+their own 600 s bounds.
 
 ## Probe classes
 

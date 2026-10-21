@@ -514,6 +514,21 @@ def apply_best_of_admitted(
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         raise ValueError("now must be timezone-aware")
+    if receipt.spend_policy == "free_preferred":
+        # Only an explicit caller policy reorders by price; free evidence is
+        # free_admitted, never a model name.
+        free = next((item for item in admitted if item in receipt.free_admitted), None)
+        if free is not None:
+            return replace(
+                receipt,
+                admitted=admitted,
+                chosen=free,
+                empty_intersection=False,
+                selected_because=(
+                    "selected because explicit spend_policy=free_preferred picks the first "
+                    "capability-ranked free admitted candidate; named drops were not re-admitted"
+                ),
+            )
     return replace(
         receipt,
         admitted=admitted,
