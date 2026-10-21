@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
 from verdict.metadata import store as metadata_store
+from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.records import (
+    SOURCE_MODELS_DEV,
     SOURCE_MODELS_DEV_MODELS,
     SOURCE_OPENROUTER_AA,
     CapabilityCaps,
@@ -551,3 +553,102 @@ def test_ordinary_selection_ignores_economic_class_but_requires_confirmation(
         assert "op/strong" not in ladder.admitted
         rejected = next(v for v in verdicts if v.route_id == "op/strong")
         assert rejected.reason == "authentication" and rejected.failed_stage is not None
+
+
+class TestShippedMapJoinsDotIdRatings:
+    """BOD-345 identify gap 1: the Claude 5.5 family is spelled two ways.
+
+    The OmniRoute inventory and models.dev models.json use dash ids
+    (``anthropic/claude-opus-5-5``); the OpenRouter Artificial Analysis mirror
+    rows use dot ids (``anthropic/claude-opus-5.5``) and the ratings join that
+    record in Core's store. The shipped explicit identity map joins the four
+    affected inventory routes to the record that carries the rating. Verified
+    read-only against the real local store 2026-10-21: exactly these dot ids
+    exist and hold the AA scores; the dash twins hold none. No dash/dot
+    normaliser and no related-model substitution may produce the join.
+    """
+
+    DOT_TARGETS: ClassVar[dict[str, tuple[str, float]]] = {
+        "cc/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
+        "claude/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
+        "cc/claude-fable-5-1": ("anthropic/claude-fable-5.1", 81.6),
+        "cc/claude-sonnet-5-5": ("anthropic/claude-sonnet-5.5", 71.5),
+    }
+
+    def _store_record(
+        self, model_id: str, *, models_json: bool, **scores: ProvenancedField
+    ) -> ModelMetadataRecord:
+        # Real-store shape: dash records come from models.dev models.json and
+        # carry no AA scores; dot records come from the models.dev api.json and
+        # carry the OpenRouter Artificial Analysis mirror scores.
+        source = SOURCE_MODELS_DEV_MODELS if models_json else SOURCE_MODELS_DEV
+        context = ProvenancedField(
+            value=1_000_000, provenance=FieldProvenance(source=source, fetched_at=FETCHED)
+        )
+        return ModelMetadataRecord(
+            id=model_id,
+            caps=CapabilityCaps(context=context),
+            scores=SoftScores(**scores),
+            provider="anthropic",
+        )
+
+    def _snapshot(self) -> MetadataSnapshot:
+        return _snapshot(
+            self._store_record("anthropic/claude-opus-5-5", models_json=True),
+            self._store_record(
+                "anthropic/claude-opus-5.5", models_json=False, aa_coding=_score(80.0)
+            ),
+            self._store_record("anthropic/claude-fable-5-1", models_json=True),
+            self._store_record(
+                "anthropic/claude-fable-5.1", models_json=False, aa_coding=_score(81.6)
+            ),
+            self._store_record("anthropic/claude-sonnet-5-5", models_json=True),
+            self._store_record(
+                "anthropic/claude-sonnet-5.5", models_json=False, aa_coding=_score(71.5)
+            ),
+            # A different model with a similar name: keeps its own rating.
+            self._store_record("anthropic/claude-opus-5", models_json=True, aa_coding=_score(78.0)),
+        )
+
+    def _shipped_map(self) -> IdentityMap:
+        from verdict.metadata.mapping import default_mapping_path, load_identity_map
+
+        return load_identity_map(default_mapping_path())
+
+    def test_four_claude_5_5_routes_resolve_to_the_scored_record(self) -> None:
+        from verdict.identify_rank import rate_model
+
+        snapshot = self._snapshot()
+        mapping = self._shipped_map()
+        for route, (target, score) in self.DOT_TARGETS.items():
+            found = lookup_omniroute_id(snapshot, route, identity_map=mapping)
+            assert found.record is not None, route
+            assert found.record.id == target, route
+            assert found.drop is None, route
+            rated = rate_model(route, metadata=snapshot, identity_map=mapping, now=NOW)
+            assert (rated.basis, rated.score, rated.metric) == ("score", score, "aa_coding"), route
+            assert rated.source == SOURCE_OPENROUTER_AA, route
+
+    def test_similar_name_keeps_its_own_rating(self) -> None:
+        from verdict.identify_rank import rate_model
+
+        snapshot = self._snapshot()
+        mapping = self._shipped_map()
+        # Opus 5 (not 5.5): resolves to its own record, never the dot rating.
+        found = lookup_omniroute_id(snapshot, "cc/claude-opus-5", identity_map=mapping)
+        assert found.record is not None
+        assert found.record.id == "anthropic/claude-opus-5"
+        rated = rate_model("cc/claude-opus-5", metadata=snapshot, identity_map=mapping, now=NOW)
+        assert (rated.basis, rated.score) == ("score", 78.0)
+
+    def test_dot_spelled_inventory_id_is_not_normalised(self) -> None:
+        from verdict.metadata.records import DROP_UNMAPPED
+
+        snapshot = self._snapshot()
+        mapping = self._shipped_map()
+        # The map keys dash inventory ids only; a dot-spelled id is a named
+        # drop, proving the join is explicit data and not a normaliser.
+        found = lookup_omniroute_id(snapshot, "cc/claude-opus-5.5", identity_map=mapping)
+        assert found.record is None
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
