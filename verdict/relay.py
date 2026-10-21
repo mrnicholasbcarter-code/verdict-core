@@ -407,11 +407,17 @@ def build_attempts(
         capacities = {
             row.get("model_id"): row.get("capacity_order") for row in decision.candidate_states
         }
-        models = [model for model in models if capacities.get(model) in (0, 1)]
-        subscription = next((model for model in models if capacities.get(model) == 1), None)
-        if subscription is not None and capacities.get(decision.model) == 0:
-            # Policy.max_attempts is three; fallback consumes, never extends, it.
-            models = [*[model for model in models if capacities.get(model) == 0][:2], subscription]
+        models = [model for model in models if capacities.get(model) in (0, 1, 2)]
+        free = [model for model in models if capacities.get(model) == 0]
+        subscription = [model for model in models if capacities.get(model) == 1]
+        metered = [model for model in models if capacities.get(model) == 2]
+        # Fallback tiers consume the same three-attempt budget, never extend it.
+        reserved = [*subscription[:1], *metered[:1]]
+        models = (
+            [*free[: 3 - len(reserved)], *reserved]
+            if free
+            else [*subscription[: 2 if metered else 3], *metered[:1]]
+        )
     attempts: list[RelayAttempt] = []
     seen: set[str] = set()
     for model in models:

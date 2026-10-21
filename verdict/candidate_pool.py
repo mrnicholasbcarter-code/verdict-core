@@ -612,7 +612,6 @@ def build_candidate_pool(
     health: Mapping[str, RouteHealth] | None = None,
     evidence: Mapping[str, RouteEvidence] | None = None,
     capacity: Mapping[str, CapacityClass] | None = None,
-    allow_metered: bool = False,
     policy_allowed: Collection[str] | None = None,
     outcomes: Sequence[OutcomeObservation] | None = None,
     as_of: datetime | None = None,
@@ -728,14 +727,6 @@ def build_candidate_pool(
                 ),
             )
         )
-
-    if capacity is not None and not allow_metered:
-        for survivor in survivors:
-            if survivor.capacity_order == CAPACITY_ORDER[CapacityClass.METERED]:
-                hard_drops.append(HardDrop(survivor.route_id, "metered_fallback_disallowed"))
-        survivors = [
-            s for s in survivors if s.capacity_order != CAPACITY_ORDER[CapacityClass.METERED]
-        ]
 
     # Fuse evidence + score only among hard-eligible survivors.
     for survivor in survivors:
@@ -1196,10 +1187,25 @@ def _portfolio_shortlist(
     # already final above; this only reorders the admitted set so a demoted
     # route (score<.4, observed unique n>=3) sorts after non-demoted routes
     # within its capacity tier, with stable fuse/ID order inside each group.
-    # Keep one proven subscription fallback inside the existing shortlist cap.
-    subscription = next((s for s in ranked if s.capacity_order == 1), None)
-    if top_k >= 2 and subscription is not None and subscription not in selected:
-        selected[-1] = subscription
+    # Reserve fallback tiers inside Top-k, retaining the cheapest primary.
+    reserved = {selected[0].route_id} if selected else set()
+    for capacity in (1, 2):
+        fallback = next((s for s in ranked if s.capacity_order == capacity), None)
+        if fallback is None or fallback in selected:
+            if fallback is not None:
+                reserved.add(fallback.route_id)
+            continue
+        slot = next(
+            (
+                index
+                for index in range(len(selected) - 1, 0, -1)
+                if selected[index].route_id not in reserved
+            ),
+            None,
+        )
+        if slot is not None:
+            selected[slot] = fallback
+            reserved.add(fallback.route_id)
     selected = sorted(selected, key=lambda s: (*rank(s)[:3], s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []

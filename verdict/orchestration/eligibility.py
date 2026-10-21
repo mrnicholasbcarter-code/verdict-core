@@ -265,7 +265,6 @@ class EligibilityLadder:
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
-        allow_metered: bool = False,
         openrouter_free_set: OpenRouterFreeSet | None = None,
         metadata: Any = _DEFAULT_METADATA,
         identity_map: IdentityMap | None = None,
@@ -313,7 +312,6 @@ class EligibilityLadder:
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
         self._min_quota_percent = min_quota_percent
-        self._allow_metered = allow_metered
         # BOD-418: public OpenRouter 0/0 pricing set. When present, openrouter-
         # family FREE membership requires membership in this set.
         self.openrouter_free_set = openrouter_free_set
@@ -1073,14 +1071,6 @@ class EligibilityLadder:
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         probe_order = self._probe_order(candidates)
         for a in probe_order:
-            if (
-                a.capacity == CapacityClass.METERED
-                and not requirements.frontier_worthy
-                and not getattr(self, "_allow_metered", False)
-            ):
-                a.failed_stage = EligibilityStage.TASK_ELIGIBLE
-                a.reason = "metered_fallback_disallowed"
-                continue
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:

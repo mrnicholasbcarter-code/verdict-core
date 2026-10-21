@@ -530,23 +530,6 @@ class IntelligenceService:
             require_execution_path_authority=self.require_execution_path_authority,
         )
         if ep is not None:
-            if ep.selected_strategy == "blocked":
-                request = (
-                    context.get("execution_path_request") if isinstance(context, dict) else None
-                )
-                pool_receipt = getattr(request, "pool_receipt", None)
-                if pool_receipt is not None and (
-                    any(row.capacity_order != 3 for row in pool_receipt.shortlist)
-                    or any(
-                        row.reason == "metered_fallback_disallowed"
-                        for row in pool_receipt.hard_drops
-                    )
-                ):
-                    drops = ", ".join(sorted({row.reason for row in pool_receipt.hard_drops}))
-                    raise ExecutionPathError(
-                        "no qualified free or capable subscription route; "
-                        f"task proof/admission failed: {drops or 'no confirmed candidate'}"
-                    )
             require_serve_path_decision(ep, surface="intelligence.route")
             identity = selected_route_dispatch_identity(ep)
             payload = ep.to_dict()
@@ -651,11 +634,7 @@ class IntelligenceService:
                 safety.extend(
                     ["fallback: subscription", "fallback_reason: no free route qualifies"]
                 )
-            if (
-                capacities
-                and 2 not in capacities.values()
-                and any(value in (0, 1) for value in capacities.values())
-            ):
+            if capacities and any(value in (0, 1, 2) for value in capacities.values()):
                 safety.append("subscription_fallback_policy")
             dec = RoutingDecision(
                 model=str(identity["model"]),
@@ -1134,7 +1113,6 @@ class IntelligenceService:
             evidence=evidence,
             policy_allowed=policy_allowed,
             capacity=capacity,
-            allow_metered=profile.spend_policy == "frontier_required",
             outcomes=outcomes,
             as_of=as_of,
             top_k=self.candidate_top_k,

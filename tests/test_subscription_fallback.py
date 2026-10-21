@@ -91,7 +91,7 @@ def test_subscription_reserved_inside_full_free_shortlist():
     assert [r.route_id for r in pool.shortlist] == [live.NEW, live.STRONG]
 
 
-def test_paid_never_in_ordinary_fallback(tmp_path):
+def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
     ladder = EligibilityLadder(
         [_ladder_row("paid/model", pricing={"input": 1})],
         [_conn("paid", auth="apikey")],
@@ -99,9 +99,8 @@ def test_paid_never_in_ordinary_fallback(tmp_path):
         tmp_path / "state.json",
         metadata=None,
     )
-    selected, verdicts = ladder.select(TaskRequirements(), now=NOW)
-    assert selected is None
-    assert verdicts[0].reason == "metered_fallback_disallowed"
+    selected, _ = ladder.select(TaskRequirements(), now=NOW)
+    assert selected is not None and selected.route_id == "paid/model"
 
 
 def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
@@ -231,7 +230,7 @@ def test_token_metric_requires_three_unique_accepted_same_family_samples():
     )
 
 
-def test_no_capable_subscription_fails_closed_and_never_dispatches_paid(monkeypatch):
+def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
@@ -268,10 +267,8 @@ def test_no_capable_subscription_fails_closed_and_never_dispatches_paid(monkeypa
         response = client.post(
             "/v1/chat/completions", json={"messages": [{"role": "user", "content": "fix code"}]}
         )
-    assert response.status_code >= 400
-    assert "no qualified free or capable subscription route" in response.text
-    assert "metered_fallback_disallowed" in response.text
-    assert not transport.requests
+    assert response.status_code == 200, response.text
+    assert [row["body"]["model"] for row in transport.requests] == [live.STRONG.split("/")[1]]
 
 
 def test_known_subscription_tokens_always_before_unknown(monkeypatch):
@@ -297,7 +294,7 @@ def test_subscription_token_tie_uses_rating(monkeypatch):
     assert prepared.pool_receipt.shortlist[0].route_id == live.NEW
 
 
-def test_explicit_metered_pool_and_ladder_filter_remain_allowed(tmp_path):
+def test_capable_metered_pool_and_ladder_remain_allowed(tmp_path):
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -306,7 +303,6 @@ def test_explicit_metered_pool_and_ladder_filter_remain_allowed(tmp_path):
         task="fix code",
         metadata=live._metadata(),
         capacity={live.STRONG: CapacityClass.METERED},
-        allow_metered=True,
     )
     assert [row.route_id for row in pool.shortlist] == [live.STRONG]
     ladder = EligibilityLadder(
@@ -314,14 +310,13 @@ def test_explicit_metered_pool_and_ladder_filter_remain_allowed(tmp_path):
         [_conn("paid", auth="apikey")],
         lambda _: HealthResult(True, "ok"),
         tmp_path / "state.json",
-        allow_metered=True,
         metadata=None,
     )
     selected, _ = ladder.select(TaskRequirements(), now=NOW)
     assert selected is not None and selected.route_id == "paid/model"
 
 
-def test_active_payment_negative_still_blocks_explicit_metered(tmp_path):
+def test_active_payment_negative_still_blocks_metered(tmp_path):
     from verdict.orchestration.health_cache import ProbeResult
 
     cache = HealthCache(tmp_path / "health.json")
@@ -336,7 +331,6 @@ def test_active_payment_negative_still_blocks_explicit_metered(tmp_path):
         [_conn("paid", auth="apikey")],
         lambda _: HealthResult(True, "ok"),
         tmp_path / "state.json",
-        allow_metered=True,
         health_cache=cache,
         metadata=None,
     )
@@ -391,3 +385,26 @@ def test_usage_is_recomputed_from_verified_run_not_ledger_label(tmp_path, monkey
             row.setdefault("usage", {})["input_tokens"] = 1
     events.write_text("\n".join(json.dumps(row) for row in event_rows) + "\n")
     assert not load_verified_outcome_observations([run], task_family=family, as_of=now).observations
+
+
+def test_relay_three_tiers_stay_within_three_attempts():
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+    from verdict.relay import build_attempts
+
+    ids = ("free/a", "free/b", "sub/a", "paid/a")
+    decision = RoutingDecision(
+        model=ids[0],
+        provider="free",
+        tier=2,
+        reason="fixture",
+        alternatives=list(ids[1:]),
+        safety_flags=["subscription_fallback_policy"],
+        candidate_states=[
+            {"model_id": model, "admitted": True, "capacity_order": tier}
+            for model, tier in zip(ids, (0, 0, 1, 2), strict=True)
+        ],
+    )
+    proxy = UpstreamProxy("http://upstream.test/v1")
+    attempts = build_attempts(proxy, decision, protocol="openai.chat.completions")
+    assert [attempt.model for attempt in attempts] == [ids[0], ids[2], ids[3]]

@@ -116,7 +116,6 @@ def _run_mixed(tmp_path: Path) -> Path:
         _HealthyProbe(),
         workspace / "health.json",
         allow_unknown_capacity=True,
-        allow_metered=True,  # Offline scripted fixture only.
     )
 
     executor = MixedExecutor(
@@ -439,7 +438,6 @@ def test_executor_map_unmatched_warning_via_supplied_graph(
         _HealthyProbe(),
         workspace / "health.json",
         allow_unknown_capacity=True,
-        allow_metered=True,  # Offline scripted fixture only.
     )
     executor = MixedExecutor(
         node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
@@ -516,7 +514,6 @@ def test_executor_map_unmatched_warning_via_frontier_planning(
         _HealthyProbe(),
         workspace / "health.json",
         allow_unknown_capacity=True,
-        allow_metered=True,  # Offline scripted fixture only.
     )
     executor = MixedExecutor(
         node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
@@ -588,7 +585,6 @@ def test_executor_map_unmatched_fires_through_fault_injecting_wrapper(
         _HealthyProbe(),
         workspace / "health.json",
         allow_unknown_capacity=True,
-        allow_metered=True,  # Offline scripted fixture only.
     )
     mix = MixedExecutor(
         node_map={"does-not-exist": _scripted(_KIND_A), "node-1": _scripted(_KIND_A)},
