@@ -576,7 +576,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "identify":
         from verdict.identify import cmd_identify
 
-        cmd_identify(output_json=args.output_json)
+        cmd_identify(
+            output_json=args.output_json,
+            screen=args.screen,
+            allow_live_probe=args.allow_live_probe,
+            max_per_provider=args.max_per_provider,
+            max_routes=args.max_routes,
+            providers=args.providers,
+            capacities=args.capacities,
+        )
     elif args.command == "census":
         from verdict.census_passports import cmd_census
 

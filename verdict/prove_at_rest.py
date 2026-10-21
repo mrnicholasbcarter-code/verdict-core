@@ -1679,14 +1679,85 @@ class Prober:
             conversation.extend(tool_results)
         return exchanges, fake_file, True
 
+    def screen_route(self, route: AdmittedRoute, *, deadline: float) -> dict[str, Any]:
+        """One synchronous, capacity-independent agentic check; no chat phase or scheduler.
+
+        The caller supplies consent, ordering and route caps. Share the existing
+        conversation, identity scoring, cache writer and durable pool budget.
+        Partial conversations never become capability evidence.
+        """
+        observed = self.clock()
+        outcome: dict[str, Any] = {
+            "result": "skipped_cooldown",
+            "turns_sent": 0,
+            "latency_ms": None,
+        }
+        if self.monotonic() >= deadline:
+            outcome["result"] = "skipped_deadline"
+            return outcome
+        reservation = self.cache.reserve_bucket(
+            route.provider,
+            observed,
+            pool=route.pool,
+            amount=AGENTIC_TURNS,
+            deadline=deadline,
+            monotonic=self.monotonic,
+        )
+        if reservation is None:
+            return outcome
+        exchanges, fake_file, finished = self._converse(route.route_id, deadline)
+        outcome["turns_sent"] = len(exchanges)
+        latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
+        outcome["latency_ms"] = sum(latencies) if latencies else None
+        if not finished or not exchanges:
+            outcome["result"] = "skipped_deadline"
+            return outcome
+        stats = CycleStats()
+        superseded = False
+
+        def record(cache: HealthCache) -> None:
+            nonlocal superseded
+            previous = cache.entry(route.route_id)
+            if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
+                self._note_rate_limit(route, exchanges[-1], observed)
+                return
+            if previous is not None and (
+                previous.checked_at > observed
+                or (
+                    previous.checked_at == observed
+                    and previous.state_at(observed) == STATE_NEGATIVE
+                )
+            ):
+                superseded = True
+                return
+            self._record_agentic(route, exchanges, fake_file, stats, observed_at=observed)
+
+        self.cache.merge_and_save(record, monotonic=self.monotonic)
+        if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
+            outcome["result"] = "rate_limited"
+        elif superseded:
+            outcome["result"] = "skipped_newer_evidence"
+        elif stats.agentic_passed:
+            outcome["result"] = "pass"
+        else:
+            entry = self.cache.entry(route.route_id)
+            outcome["result"] = (
+                "identity_mismatch"
+                if entry is not None and entry.category == CATEGORY_MODEL_MISMATCH
+                else "fail"
+            )
+        return outcome
+
     def _record_agentic(
         self,
         route: AdmittedRoute,
         exchanges: Sequence[ProbeExchange],
         fake_file: AgenticFakeFile,
         stats: CycleStats,
+        *,
+        observed_at: datetime | None = None,
     ) -> None:
-        now = self.clock()
+        now = observed_at if observed_at is not None else self.clock()
         last = exchanges[-1]
         self._note_rate_limit(route, last, now)
         if category_for(last) == CATEGORY_RATE_LIMITED:
@@ -2017,7 +2088,7 @@ def live_agentic_transport(
 ) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
     """OpenAI-compatible transport for agentic probes (arbitrary payloads).
 
-    Built only for a consented live daemon behind ``--allow-live-probe``.
+    Built only behind explicit ``--allow-live-probe`` consent.
     """
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):
