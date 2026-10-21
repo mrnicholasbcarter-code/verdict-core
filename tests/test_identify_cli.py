@@ -12,8 +12,8 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
     from verdict import cli, identify, omniroute_evidence, prove_at_rest
     from verdict.credentials_store import resolve_gateway_binding
     from verdict.metadata import store
-    from verdict.prove_at_rest_legacy import ProveAtRestStore
     from verdict.orchestration.health_cache import HealthCache
+    from verdict.prove_at_rest_legacy import ProveAtRestStore
 
     data = payloads()
     calls = []

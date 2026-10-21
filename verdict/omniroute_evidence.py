@@ -372,7 +372,7 @@ def _request_json(
         return json.loads(response.read())
 
 
-def _read_chunks_bounded(response: Any, *, budget: "_DecodedBudget", deadline: float) -> bytes:
+def _read_chunks_bounded(response: Any, *, budget: _DecodedBudget, deadline: float) -> bytes:
     """Read a response body in fixed chunks, never past the byte budget or deadline.
 
     Each chunk read is itself bounded by the socket timeout already passed to
@@ -401,7 +401,7 @@ def _request_json_bounded(
     api_key: str | None,
     timeout: float,
     *,
-    budget: "_DecodedBudget",
+    budget: _DecodedBudget,
     deadline: float,
     row_limit: int,
 ) -> Any:
@@ -422,9 +422,9 @@ def _request_json_bounded(
         raw = _read_chunks_bounded(response, budget=budget, deadline=deadline)
     payload = json.loads(raw)
     field = _SOURCE_LIST_FIELD.get(name)
-    if field is not None and isinstance(payload, dict) and isinstance(payload.get(field), list):
-        if len(payload[field]) > row_limit:
-            raise _BoundedReadError(f"{name} exceeded the raw row limit {row_limit}")
+    rows = payload.get(field) if field is not None and isinstance(payload, dict) else None
+    if isinstance(rows, list) and len(rows) > row_limit:
+        raise _BoundedReadError(f"{name} exceeded the raw row limit {row_limit}")
     return payload
 
 
