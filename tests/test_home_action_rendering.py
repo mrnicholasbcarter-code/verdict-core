@@ -75,7 +75,7 @@ def test_home_doctor_json_is_explicit(home_ui, monkeypatch):
 
 def test_home_setup_plain_defaults_do_not_apply(home_ui):
     output = run_command(home_ui, "/setup")
-    for label in ("Gateway", "Harness", "Memory", "Documentation", "Warm-cache"):
+    for label in ("Gateway", "Harness", "Memory", "Documentation", "Identify maintenance"):
         assert label in output
     assert "Current:" in output and "Recommended:" in output
     assert "Confirm" in output and "Summary" in output
@@ -89,7 +89,7 @@ def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
     save_setup_config({"primary_model": "fixture"})
     monkeypatch.setattr("verdict.home.probe_gateway", lambda *a, **k: (True, 2, None))
     # gateway + check; three choices/confirms; five catalog reviews; three manual;
-    # warm-cache and metadata choices/confirms; final save.
+    # identify maintenance and metadata choices/confirms; final save.
     answers = [
         "http://fixture",
         "y",

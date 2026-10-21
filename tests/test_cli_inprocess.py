@@ -35,7 +35,7 @@ def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No doctor test reads the host's real systemd user units (BOD-411 review).
 
     CI runners have neither unit installed, so without this every test that
@@ -45,6 +45,22 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     ``verdict.prove_at_rest_service.timer_state`` again, explicitly.
     """
     monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
+    import verdict.identify_service as identify_service
+
+    monkeypatch.setattr(identify_service, "timer_state", _fake_timer_state_active)
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(
+        identify_service, "latest_report_path", lambda: tmp_path / "identify-latest.json"
+    )
+    identify_service.save_report(
+        {
+            "mode": "passive",
+            "model_calls": 0,
+            "source_errors": [],
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 @pytest.fixture(autouse=True)

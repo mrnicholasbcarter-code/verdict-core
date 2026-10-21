@@ -345,6 +345,7 @@ def identify_report(
 
 def cmd_identify(
     *,
+    save_report: bool = False,
     output_json: bool = False,
     screen: bool = False,
     allow_live_probe: bool = False,
@@ -374,6 +375,10 @@ def cmd_identify(
         raise SystemExit(f"health_cache_{exc.reason}: {exc}") from exc
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    if save_report:
+        from verdict.identify_service import save_report as persist_report
+
+        persist_report(report)
     if output_json:
         print(json.dumps(report, sort_keys=True, allow_nan=False))
     elif screen:

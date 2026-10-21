@@ -253,19 +253,35 @@ def _warm_cache(
     tui: TerminalUI, reader: Callable[[], str | None] | None, gateway: str, notes: list[str]
 ) -> None:
     del gateway
-    from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
-    from verdict.prove_at_rest_service import manage_service, timer_state
+    from verdict.identify_service import (
+        PASSIVE_INTERVAL_SECONDS,
+        SCREEN_CALENDAR,
+        SCREEN_CAPACITY,
+        SCREEN_MAX_PER_PROVIDER,
+        SCREEN_MAX_ROUTES,
+        manage_service,
+        timer_state,
+    )
+    from verdict.identify_service import TIMER as IDENTIFY_TIMER
 
-    current = timer_state(PROVE_AT_REST_TIMER)["state"]
-    choice = _choice(tui, reader, "5 / Warm-cache daemon", current, "on", ["off", "on"])
-    tui.console.print(Text(f"Enables: background health cache. Current timer state: {current}."))
+    current = timer_state(IDENTIFY_TIMER)["state"]
+    choice = _choice(tui, reader, "5 / Identify maintenance", current, "on", ["off", "on"])
     tui.console.print(
-        Text("Live probes may spend credits. 'on' installs and starts the systemd user timer.")
+        Text(
+            f"Enables: passive reports and bounded daily missing-proof screening. Current timer state: {current}."
+        )
+    )
+    tui.console.print(
+        Text(
+            f"'on' installs a {PASSIVE_INTERVAL_SECONDS // 3600}h passive timer (0 model calls) "
+            f"and {SCREEN_CALENDAR} screen: {SCREEN_CAPACITY}; {SCREEN_MAX_PER_PROVIDER}/provider, "
+            f"{SCREEN_MAX_ROUTES} routes maximum."
+        )
     )
     if choice == "on":
         try:
             result = manage_service(dry_run=False)
-            new_state = timer_state(PROVE_AT_REST_TIMER)["state"]
+            new_state = timer_state(IDENTIFY_TIMER)["state"]
             plan = ", ".join(f"{name} {step}" for name, step in result.get("plan", {}).items())
             rollback = result.get("rollback") or "nothing replaced"
             tui.console.print(
@@ -274,12 +290,12 @@ def _warm_cache(
                     f" Units: {plan or 'unchanged'}. Rollback copy: {rollback}."
                 )
             )
-            notes.append(f"Warm-cache: {PROVE_AT_REST_TIMER} is {new_state}; rollback: {rollback}.")
+            notes.append(f"Identify: {IDENTIFY_TIMER} is {new_state}; rollback: {rollback}.")
         except Exception as exc:
             tui.console.print(Text(f"Service installer failed: {exc}"))
-            notes.append(f"Warm-cache: service installer failed ({exc}); timer is {current}.")
+            notes.append(f"Identify: service installer failed ({exc}); timer is {current}.")
     else:
-        notes.append(f"Warm-cache: unchanged; timer is {current}.")
+        notes.append(f"Identify: unchanged; timer is {current}.")
 
     metadata_choice = _choice(
         tui, reader, "6 / Metadata refresh timer", "not checked", "off", ["off", "on"]

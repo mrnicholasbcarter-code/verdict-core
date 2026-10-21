@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -274,48 +274,13 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
 
 
-def census_runtime_section(status: Mapping[str, Any]) -> tuple[str, str, str]:
-    """One doctor row: census runtime version and its last result."""
-    version = status.get("version")
-    if not version:
-        return (
-            "Census runtime",
-            "warn",
-            "runtime copy not installed (run: verdict census --install)",
-        )
-    last = status.get("last_result")
-    if not last:
-        detail = "no census result recorded yet"
-    else:
-        detail = ", ".join(
-            f"{key}={value}"
-            for key, value in sorted(last.items())
-            if isinstance(value, (str, int, float, bool))
-        )
-    stale = _census_result_stale(last)
-    if stale:
-        return ("Census runtime", "warn", f"version {version} ({stale})")
-    return ("Census runtime", "ok", f"version {version} ({detail})")
-
-
-def _census_result_stale(last: Any) -> str | None:
-    """Warn when the last census result is older than three timer intervals."""
-    from datetime import datetime, timezone
-
-    from verdict.census_passports_service import CENSUS_INTERVAL_SECONDS
-
-    if not isinstance(last, Mapping):
-        return None
-    finished = last.get("finished_at")
-    if not isinstance(finished, str):
-        return None
-    try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(finished)).total_seconds()
-    except ValueError:
-        return None
-    if age > 3 * CENSUS_INTERVAL_SECONDS:
-        return f"last census {int(age)}s ago is stale; check: systemctl --user status verdict-census.timer"
-    return None
+def census_runtime_section() -> tuple[str, str, str]:
+    """The legacy census is retired; never recommend reinstalling it."""
+    return (
+        "Census runtime",
+        "note",
+        "Census retired in favour of the identify timers; keep legacy units disabled.",
+    )
 
 
 def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
@@ -741,20 +706,8 @@ def _collect_doctor_diagnostics(
     except Exception as e:
         issues_found.append(f"Credential check failed: {e}")
 
-    # Background census runtime (BOD-350): the systemd timer probes from a
-    # runtime copy; doctor must show which version it runs and its last result.
-    sections.append(("Background census", "header", ""))
-    try:
-        from verdict.census_passports_service import census_status
+    sections.append(census_runtime_section())
 
-        sections.append(census_runtime_section(census_status()))
-    except Exception as e:
-        issues_found.append(f"Census runtime check failed: {e}")
-
-    # Installed-state ownership (BOD-411): doctor fails when the background
-    # prober/sync timers are missing, inactive or failed, or when the health
-    # cache is too stale or empty to mean anything, instead of only checking
-    # docs/config/gateway and leaving the actual background service unverified.
     sections.append(("Installed services", "header", ""))
     for row in (*installed_service_rows(), *service_code_path_rows(), *installed_runtime_rows()):
         sections.append((row["label"], row["status"], row["detail"]))
@@ -772,35 +725,48 @@ def installed_service_rows(
     A missing or inactive timer, an ``is-failed`` unit, or a health cache
     that is too stale or empty to be useful are all reported with ``status:
     "failed"`` and named by unit/file so the drill
-    (``systemctl --user stop verdict-prove-at-rest.timer; verdict doctor``)
+    (``systemctl --user stop verdict-identify.timer; verdict doctor``)
     exits non-zero and names the unit. ``now`` and ``timer_state`` are
     injectable for tests; without injection this reads the host's real
     systemd user units (never available on a CI runner).
     """
-    from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
+    from verdict.identify_service import SCREEN_TIMER, TIMER, report_row
+    from verdict.identify_service import timer_state as identify_timer_state
     from verdict.prove_at_rest_service import timer_state as _real_timer_state
 
     injected_timer_state = timer_state
     timer_state = timer_state or _real_timer_state
-
     rows: list[dict[str, str]] = []
     for unit, label in (
-        (PROVE_AT_REST_TIMER, "Prove-at-rest timer"),
+        (TIMER, "Identify timer"),
+        (SCREEN_TIMER, "Identify screen timer"),
         ("verdict-prime-sync.timer", "Prime-sync timer"),
     ):
-        state = timer_state(unit)
-        if state["state"] in {"missing", "failed", "inactive"}:
-            rows.append(
-                {
-                    "label": label,
-                    "status": "failed",
-                    "detail": f"{unit} is {state['state']}; run 'verdict prove-at-rest install-service'"
-                    if unit == PROVE_AT_REST_TIMER
-                    else f"{unit} is {state['state']}",
-                }
+        state = (
+            (injected_timer_state or identify_timer_state)(unit)
+            if unit in {TIMER, SCREEN_TIMER}
+            else timer_state(unit)
+        )
+        failed = state.get("state") != "active" or state.get("result") not in {
+            None,
+            "unknown",
+            "success",
+        }
+        facts = f"{unit} is {state.get('state', 'unknown')}"
+        if unit in {TIMER, SCREEN_TIMER}:
+            command = (
+                "identify --passive --json --save-report" if unit == TIMER else "identify --screen"
             )
-        else:
-            rows.append({"label": label, "status": "ok", "detail": f"{unit} is active"})
+            facts += f"; command verdict {command}"
+            facts += (
+                f"; last attempt {state.get('last_trigger', 'unknown')}; "
+                f"last completion {state.get('last_completion', 'unknown')}; "
+                f"result {state.get('result', 'unknown')}; next run {state.get('next_run', 'unknown')}"
+            )
+            if failed:
+                facts += "; run 'verdict identify install-service'"
+        rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
+    rows.append(report_row(now=now))
 
     from verdict.metadata import default_store_path, load_store
     from verdict.metadata_service import TIMER as METADATA_TIMER
@@ -918,10 +884,9 @@ def _parse_systemd_time(value: str) -> datetime:
 def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
     """Doctor row for ``health-cache.json`` staleness and emptiness.
 
-    Failed when the cache is missing, when its newest entry is older than
-    2x the probe interval, or when it has no fresh and no stale route
-    (``fresh + stale == 0``): either state means the background prober is
-    not keeping eligibility current, whatever the timers report.
+    Failed when the cache is missing or unreadable, or when it has
+    no fresh and no stale route (``fresh + stale == 0``). Evidence freshness
+    follows the cache TTL, not the retired prober's five-minute cadence.
 
     ``now`` is injectable so tests can exercise staleness with a fake clock
     instead of racing the real one.
@@ -940,7 +905,7 @@ def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
         return {
             "label": "Health cache",
             "status": "failed",
-            "detail": f"{path} does not exist; the prober has not run yet",
+            "detail": f"{path} does not exist; screening has not produced evidence yet",
         }
     try:
         cache = HealthCache(path)
@@ -954,18 +919,8 @@ def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
         return {
             "label": "Health cache",
             "status": "failed",
-            "detail": f"{path} has no fresh or stale route; the prober is not producing usable evidence",
+            "detail": f"{path} has no fresh or stale route; screening is not producing usable evidence",
         }
-    newest_checked = max((entry.checked_at for entry in routes.values()), default=None)
-    if newest_checked is not None:
-        age_seconds = (now - newest_checked).total_seconds()
-        probe_interval_seconds = 300.0
-        if age_seconds > 2 * probe_interval_seconds:
-            return {
-                "label": "Health cache",
-                "status": "failed",
-                "detail": f"{path} newest entry is {int(age_seconds)}s old (> 2x the {int(probe_interval_seconds)}s probe interval)",
-            }
     return {
         "label": "Health cache",
         "status": "ok",
@@ -1141,6 +1096,8 @@ def service_code_path_rows(
 # ---------------------------------------------------------------------------
 
 _RUNTIME_UNITS = (
+    "verdict-identify.service",
+    "verdict-identify-screen.service",
     "verdict-prove-at-rest.service",
     "verdict-census.service",
     "verdict-acceptance.service",
