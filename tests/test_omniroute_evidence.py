@@ -100,6 +100,101 @@ def test_latest_error_is_not_proof_even_after_old_success(sources):
     assert not evidence.proven_by_traffic
 
 
+def test_oversized_source_fails_closed_not_partial_healthy(sources, monkeypatch):
+    from io import BytesIO
+
+    from verdict import omniroute_evidence as module
+
+    def transport(request, *, timeout):
+        path = request.full_url.removeprefix("http://gateway")
+        name = {
+            "/api/providers": "providers",
+            "/api/resilience/connections": "resilience",
+            "/api/usage/provider-limits": "limits",
+            "/api/resilience/model-cooldowns": "cooldowns",
+            "/api/providers/health-matrix?range=7d": "health_matrix",
+            "/v1/models": "v1_models",
+        }[path]
+        return BytesIO(json.dumps(sources[name]).encode())
+
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/", api_key=None, timeout=7, decoded_byte_budget=10
+    )
+    assert set(evidence.source_errors) == {
+        "providers",
+        "resilience",
+        "limits",
+        "cooldowns",
+        "health_matrix",
+        "v1_models",
+    }
+    assert not evidence.usable_providers
+    assert not evidence.proven_by_traffic
+
+
+def test_raw_row_limit_fails_source_closed(sources, monkeypatch):
+    from io import BytesIO
+
+    from verdict import omniroute_evidence as module
+
+    oversized = dict(sources["v1_models"])
+    oversized["data"] = list(sources["v1_models"]["data"]) + [
+        {"id": f"pad/{i}", "owned_by": "pad", "root": str(i)} for i in range(5)
+    ]
+
+    def transport(request, *, timeout):
+        path = request.full_url.removeprefix("http://gateway")
+        if path == "/v1/models":
+            return BytesIO(json.dumps(oversized).encode())
+        name = {
+            "/api/providers": "providers",
+            "/api/resilience/connections": "resilience",
+            "/api/usage/provider-limits": "limits",
+            "/api/resilience/model-cooldowns": "cooldowns",
+            "/api/providers/health-matrix?range=7d": "health_matrix",
+        }[path]
+        return BytesIO(json.dumps(sources[name]).encode())
+
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/", api_key=None, timeout=7, raw_row_limit=6
+    )
+    assert evidence.source_errors == ("v1_models",)
+    assert "alpha" in evidence.usable_providers
+
+
+def test_aggregate_deadline_exceeded_fails_remaining_sources_closed(sources, monkeypatch):
+    from io import BytesIO
+
+    from verdict import omniroute_evidence as module
+
+    def transport(request, *, timeout):
+        path = request.full_url.removeprefix("http://gateway")
+        name = {
+            "/api/providers": "providers",
+            "/api/resilience/connections": "resilience",
+            "/api/usage/provider-limits": "limits",
+            "/api/resilience/model-cooldowns": "cooldowns",
+            "/api/providers/health-matrix?range=7d": "health_matrix",
+            "/v1/models": "v1_models",
+        }[path]
+        return BytesIO(json.dumps(sources[name]).encode())
+
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/", api_key=None, timeout=7, aggregate_deadline_seconds=0.0
+    )
+    assert evidence.source_errors == (
+        "providers",
+        "resilience",
+        "limits",
+        "cooldowns",
+        "health_matrix",
+        "v1_models",
+    )
+
+
 def test_fetch_is_get_only_and_retains_source_failure(sources, monkeypatch):
     from io import BytesIO
     from urllib.error import HTTPError

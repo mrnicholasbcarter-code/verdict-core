@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,46 @@ from urllib.request import Request
 
 from verdict.credentials_store import resolve_api_key
 from verdict.http_safety import open_no_redirect
+
+# BOD-345/S04 discovery bounds (same contract as verdict.free_tier_admit): a
+# 20s per-HTTP-read timeout, a 30s aggregate deadline shared across the six
+# GETs, a 16 MiB cumulative decoded-byte budget and a 50,000 raw-row cap per
+# source. Any bound exceeded fails that source closed (``source_errors``),
+# never a partial or truncated payload treated as healthy. The per-read bound
+# relies on the socket timeout passed to ``open_no_redirect``; a server that
+# trickles data just under that timeout is only caught by the aggregate
+# wall-clock deadline between chunks, not by strict read cancellation.
+_CHUNK_READ_BYTES = 64 * 1024
+_PER_READ_TIMEOUT_SECONDS = 20.0
+_AGGREGATE_DEADLINE_SECONDS = 30.0
+_DECODED_BYTE_BUDGET = 16 * 1024 * 1024
+_RAW_ROW_LIMIT = 50_000
+_SOURCE_LIST_FIELD = {
+    "providers": "connections",
+    "resilience": "connections",
+    "limits": "caches",
+    "cooldowns": "items",
+    "health_matrix": "providers",
+    "v1_models": "data",
+}
+
+
+class _BoundedReadError(Exception):
+    """A source exceeded a discovery bound; it is never served as partial-healthy."""
+
+
+class _DecodedBudget:
+    """Cumulative decoded-byte budget shared across the six evidence GETs."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._used = 0
+
+    def charge(self, nbytes: int) -> bool:
+        if self._used + nbytes > self.limit:
+            return False
+        self._used += nbytes
+        return True
 
 
 @dataclass(frozen=True)
@@ -314,6 +355,11 @@ def _request_json(
     timeout: float,
     body: dict[str, Any] | None = None,
 ) -> Any:
+    """Unbounded JSON request used only by the explicit opt-in test-batch POST.
+
+    The six passive evidence GETs use ``_request_json_bounded`` instead; this
+    helper is intentionally left as-is for ``run_test_batch``.
+    """
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -326,10 +372,79 @@ def _request_json(
         return json.loads(response.read())
 
 
+def _read_chunks_bounded(response: Any, *, budget: "_DecodedBudget", deadline: float) -> bytes:
+    """Read a response body in fixed chunks, never past the byte budget or deadline.
+
+    Each chunk read is itself bounded by the socket timeout already passed to
+    ``open_no_redirect``; a server that trickles bytes just under that
+    per-read timeout is only caught here, between chunks, by the aggregate
+    wall-clock deadline. This is an honest wall-clock/byte bound, not strict
+    read cancellation.
+    """
+    chunks: list[bytes] = []
+    while True:
+        if time.monotonic() > deadline:
+            raise _BoundedReadError("aggregate discovery deadline exceeded")
+        chunk = response.read(_CHUNK_READ_BYTES)
+        if not chunk:
+            break
+        if not budget.charge(len(chunk)):
+            raise _BoundedReadError(f"exceeded the decoded byte budget ({budget.limit} bytes)")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _request_json_bounded(
+    base_url: str,
+    name: str,
+    path: str,
+    api_key: str | None,
+    timeout: float,
+    *,
+    budget: "_DecodedBudget",
+    deadline: float,
+    row_limit: int,
+) -> Any:
+    """GET one evidence source under the shared S04 discovery bounds.
+
+    Reads the body in fixed chunks against the cumulative decoded-byte
+    budget and the aggregate deadline, then caps the source's own list field
+    at ``row_limit`` raw rows. Any bound exceeded raises ``_BoundedReadError``;
+    the caller records that source as failed, never as a truncated success.
+    """
+    if time.monotonic() > deadline:
+        raise _BoundedReadError("aggregate discovery deadline exceeded")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(base_url.rstrip("/") + path, headers=headers)
+    with open_no_redirect(request, timeout=timeout) as response:
+        raw = _read_chunks_bounded(response, budget=budget, deadline=deadline)
+    payload = json.loads(raw)
+    field = _SOURCE_LIST_FIELD.get(name)
+    if field is not None and isinstance(payload, dict) and isinstance(payload.get(field), list):
+        if len(payload[field]) > row_limit:
+            raise _BoundedReadError(f"{name} exceeded the raw row limit {row_limit}")
+    return payload
+
+
 def fetch_omniroute_evidence(
-    base_url: str, *, api_key: str | None, timeout: float = 30.0, health_range: str = "7d"
+    base_url: str,
+    *,
+    api_key: str | None,
+    timeout: float = 30.0,
+    health_range: str = "7d",
+    aggregate_deadline_seconds: float = _AGGREGATE_DEADLINE_SECONDS,
+    decoded_byte_budget: int = _DECODED_BYTE_BUDGET,
+    raw_row_limit: int = _RAW_ROW_LIMIT,
 ) -> OmniRouteEvidence:
-    """GET the six evidence sources, isolating failures by source name only."""
+    """GET the six evidence sources, isolating failures by source name only.
+
+    Each read is bounded by the S04 discovery bounds (per-read timeout,
+    aggregate deadline, cumulative decoded-byte budget, raw-row cap). A
+    source exceeding any bound is recorded as a source error, never served
+    partial.
+    """
     key = api_key if api_key is not None else resolve_api_key()
     paths = {
         "providers": "/api/providers",
@@ -339,11 +454,22 @@ def fetch_omniroute_evidence(
         "health_matrix": "/api/providers/health-matrix?" + urlencode({"range": health_range}),
         "v1_models": "/v1/models",
     }
+    budget = _DecodedBudget(max(1, decoded_byte_budget))
+    deadline = time.monotonic() + aggregate_deadline_seconds
     payloads: dict[str, Any] = {}
     for name, path in paths.items():
         try:
-            payloads[name] = _request_json(base_url, path, key, timeout)
-        except (OSError, ValueError):
+            payloads[name] = _request_json_bounded(
+                base_url,
+                name,
+                path,
+                key,
+                timeout,
+                budget=budget,
+                deadline=deadline,
+                row_limit=raw_row_limit,
+            )
+        except (OSError, ValueError, _BoundedReadError):
             # Exception bodies and URLs can echo credentials. Retain only source names.
             payloads[name] = None
     return parse_omniroute_evidence(**payloads, now=datetime.now(timezone.utc))

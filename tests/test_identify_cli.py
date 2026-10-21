@@ -31,7 +31,8 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
 
     class Response:
         def __init__(self, payload):
-            self.payload = payload
+            self._body = json.dumps(payload).encode()
+            self._offset = 0
 
         def __enter__(self):
             return self
@@ -39,8 +40,13 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
         def __exit__(self, *args):
             return None
 
-        def read(self):
-            return json.dumps(self.payload).encode()
+        def read(self, size=-1):
+            if size is None or size < 0:
+                chunk, self._offset = self._body[self._offset :], len(self._body)
+                return chunk
+            chunk = self._body[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
 
     def get_only(request, **kwargs):
         assert request.get_method() == "GET"
