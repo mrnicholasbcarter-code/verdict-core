@@ -700,7 +700,12 @@ def test_installed_runtime_unrecorded_build_is_never_ok_and_gateway_is_redacted(
 @pytest.mark.parametrize("unit", ["verdict-census.service", "verdict-prove-at-rest.service"])
 def test_retired_disabled_runtime_is_note_without_import_probe(tmp_path, unit):
     props = {
-        unit: {"LoadState": "loaded", "WorkingDirectory": "/stale/repo"},
+        unit: {
+            "LoadState": "loaded",
+            "WorkingDirectory": "/stale/repo",
+            "UnitFileState": "disabled",
+            "ActiveState": "inactive",
+        },
         unit.replace(".service", ".timer"): {
             "LoadState": "loaded",
             "UnitFileState": "disabled",
@@ -722,7 +727,7 @@ def test_retired_disabled_runtime_is_note_without_import_probe(tmp_path, unit):
 @pytest.mark.parametrize("enabled,active", [("enabled", "inactive"), ("disabled", "active")])
 def test_retired_timer_reactivation_fails_even_on_reviewed_build(tmp_path, unit, enabled, active):
     props = {
-        unit: {"LoadState": "loaded"},
+        unit: {"LoadState": "loaded", "UnitFileState": "disabled", "ActiveState": "inactive"},
         unit.replace(".service", ".timer"): {
             "LoadState": "loaded",
             "UnitFileState": enabled,
@@ -739,3 +744,35 @@ def test_retired_timer_reactivation_fails_even_on_reviewed_build(tmp_path, unit,
     assert "retired timer" in row["detail"]
     owner = next(row for row in rows if row["label"] == "Qualification owner")
     assert owner["status"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["oserror", "empty", "missing-enabled", "missing-active"])
+@pytest.mark.parametrize("target", ["timer", "service"])
+def test_retired_runtime_state_unreadable_fails(tmp_path, failure, target):
+    import subprocess
+
+    unit = "verdict-census.service"
+    timer = "verdict-census.timer"
+
+    def run(args):
+        name = args[-1]
+        if name == (timer if target == "timer" else unit):
+            if failure == "oserror":
+                raise OSError("systemctl unavailable")
+            stdout = {
+                "empty": "",
+                "missing-enabled": "LoadState=loaded\nActiveState=inactive\n",
+                "missing-active": "LoadState=loaded\nUnitFileState=disabled\n",
+            }[failure]
+        else:
+            stdout = "LoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n"
+        return subprocess.CompletedProcess(args, 0, stdout=stdout)
+
+    rows = dd.installed_runtime_rows(
+        unit_props=lambda name: dd._systemctl_show_props(name, run=run),
+        resolve=lambda *_: pytest.fail("unreadable retired state must not import runtime"),
+        reviewed_package=tmp_path,
+    )
+    row = next(row for row in rows if row.get("unit") == unit)
+    assert row["status"] == "failed"
+    assert f"{timer}: state unreadable (systemctl show failed)" in row["detail"]

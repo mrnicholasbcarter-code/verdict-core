@@ -1183,6 +1183,21 @@ def installed_runtime_rows(
         if unit in _QUALIFIER_UNITS:
             timer = unit.removesuffix(".service") + ".timer"
             timer_props = unit_props(timer)
+            unreadable = any(
+                state.get("LoadState") != "not-found"
+                and (not state.get("UnitFileState") or not state.get("ActiveState"))
+                for state in (props, timer_props)
+            )
+            if unreadable:
+                rows.append(
+                    {
+                        "label": label,
+                        "unit": unit,
+                        "status": "failed",
+                        "detail": f"{timer}: state unreadable (systemctl show failed)",
+                    }
+                )
+                continue
             enabled = timer_props.get("UnitFileState", "").startswith("enabled")
             active = timer_props.get("ActiveState", "inactive") in {
                 "active",
