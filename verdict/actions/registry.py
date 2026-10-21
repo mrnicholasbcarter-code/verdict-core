@@ -553,6 +553,13 @@ def _action_receipt_show(**kwargs: Any) -> ActionResult:
     return ActionResult(data={"error": f"unknown receipt action: {action}"}, ok=False, exit_code=1)
 
 
+def _action_identify(**kwargs: Any) -> ActionResult:
+    """Passive identification report: six OmniRoute GETs plus local ratings, no model calls."""
+    from verdict.identify import identify_report
+
+    return ActionResult(data=identify_report())
+
+
 def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
     import os
@@ -1491,6 +1498,16 @@ def _register_builtins() -> None:
                 "eligibility", "health", "read", "Evaluate the eligibility ladder", "Health"
             ),
             _action_eligibility,
+        ),
+        (
+            ActionSpec(
+                "identify",
+                "health",
+                "read",
+                "Report passive availability and task ratings",
+                "Health",
+            ),
+            _action_identify,
         ),
         (
             ActionSpec(

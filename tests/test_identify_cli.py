@@ -126,3 +126,14 @@ def test_missing_metadata_stays_unknown_and_human_output_is_bounded(monkeypatch,
     assert all(r["basis"] == "unknown" for r in report["available_routes"])
     identify.cmd_identify(output_json=False)
     assert len(capsys.readouterr().out.splitlines()) <= 5
+
+
+def test_identify_action_returns_the_cli_domain_report(monkeypatch):
+    from verdict import identify
+    from verdict.actions.registry import run_action
+
+    report = {"mode": "passive", "model_calls": 0}
+    monkeypatch.setattr(identify, "identify_report", lambda: report)
+    result = run_action("identify")
+    assert result.ok
+    assert result.data == report

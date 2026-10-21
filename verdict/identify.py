@@ -115,7 +115,8 @@ def identify_models(
     }
 
 
-def cmd_identify(*, output_json: bool = False) -> None:
+def identify_report() -> dict[str, Any]:
+    """Read the six passive OmniRoute sources and local metadata into one report."""
     base_url, key = resolve_gateway_binding()
     evidence = fetch_omniroute_evidence(normalize_omniroute_origin(base_url), api_key=key)
     metadata_error = None
@@ -132,6 +133,11 @@ def cmd_identify(*, output_json: bool = False) -> None:
         mapping_error = "identity_map_unavailable"
     report = identify_models(evidence, metadata=metadata, identity_map=identity_map)
     report.update(metadata_error=metadata_error, identity_map_error=mapping_error)
+    return report
+
+
+def cmd_identify(*, output_json: bool = False) -> None:
+    report = identify_report()
     if output_json:
         print(json.dumps(report, sort_keys=True, allow_nan=False))
     else:
@@ -140,4 +146,4 @@ def cmd_identify(*, output_json: bool = False) -> None:
             f"{len(report['available_routes'])} available mapped traffic routes."
         )
         print("Inventory coverage unknown; traffic scope mixed_or_unknown; historical chat only.")
-        print(f"Source errors: {', '.join(evidence.source_errors) or 'none'}; model calls: 0.")
+        print(f"Source errors: {', '.join(report['source_errors']) or 'none'}; model calls: 0.")
