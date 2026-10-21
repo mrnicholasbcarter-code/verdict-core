@@ -446,9 +446,10 @@ class ProveAtRestDaemon:
                 )
             )
 
-        # Only free∩active concrete identities are probed.
-        if receipt.admitted:
-            results.extend(self._prove_admitted(receipt.admitted, observed_at=started))
+        # Admission no longer filters by price, so this legacy prover keeps its
+        # original spend scope explicitly: only free∩active identities are probed.
+        if receipt.free_admitted:
+            results.extend(self._prove_admitted(receipt.free_admitted, observed_at=started))
 
         finished = self.clock()
         cycle = ProveAtRestCycle(
@@ -456,7 +457,7 @@ class ProveAtRestDaemon:
             started_at=started,
             finished_at=finished,
             results=tuple(results),
-            admitted=receipt.admitted,
+            admitted=receipt.free_admitted,
             active_providers=receipt.active_providers,
             free_tier_providers=receipt.free_tier_providers,
         )

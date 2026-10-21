@@ -9,7 +9,7 @@ import pytest
 
 from verdict.free_tier_admit import (
     REASON_INACTIVE_UNCONNECTED,
-    REASON_NOT_FREE_TIER,
+    REASON_METADATA_GHOST,
     REASON_OPAQUE_ROUTE_DISALLOWED,
     snapshot_from_payloads,
 )
@@ -241,7 +241,14 @@ def test_daemon_loop_stops_and_rewrites_state(tmp_path: Path) -> None:
     last = daemon.run_forever()
     assert last is not None
     assert last.summary[STATUS_HEALTHY] == 1
-    assert any(item.reason == REASON_NOT_FREE_TIER for item in last.results)
+    # The discontinued free-tier row has no catalog identity: a named skip, never probed.
+    assert any(
+        item.identity_id == "opencode/discontinued-free"
+        and item.status == STATUS_SKIPPED
+        and item.reason == REASON_METADATA_GHOST
+        for item in last.results
+    )
+    assert calls == ["opencode/hy3-free"]
     assert sleeps  # slept once then stop()
     assert (tmp_path / "state.json").exists()
 
