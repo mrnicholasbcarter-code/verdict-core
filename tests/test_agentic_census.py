@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from verdict.orchestration.health_cache import HealthCache, ProbeResult
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS, HealthCache, ProbeResult
 from verdict.orchestration.session_evidence import import_worker_outcomes
 
 NOW = datetime(2026, 10, 9, 18, tzinfo=timezone.utc)
@@ -221,7 +221,7 @@ def test_full_cache_eligibility_counts_not_refresh_sample(tmp_path):
         ProbeResult(
             "ok", True, True, capacity_evidence="free", probe_class="agentic", agentic_ok=True
         ),
-        NOW - timedelta(minutes=11),
+        NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 60),
     )
     cache.record("bad/m", ProbeResult("timeout", False, False), NOW)
     report = status_report(cache, now=NOW)
@@ -261,7 +261,12 @@ def test_liveness_refresh_preserves_session_qualification_timestamp(tmp_path):
 
 @pytest.mark.parametrize(
     "age,live_age,failure,eligible",
-    [(2, 0, False, True), (2, 11, False, False), (2, 0, True, False), (8, 0, False, False)],
+    [
+        (2, 0, False, True),
+        (2, EVIDENCE_FRESH_SECONDS / 60 + 1, False, False),
+        (2, 0, True, False),
+        (8, 0, False, False),
+    ],
 )
 def test_session_capability_and_liveness_are_separate(tmp_path, age, live_age, failure, eligible):
     from tests.test_orch_eligibility import REQ, conn, make_ladder

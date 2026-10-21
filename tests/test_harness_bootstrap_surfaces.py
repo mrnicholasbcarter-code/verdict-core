@@ -16,6 +16,7 @@ from verdict.actions.registry import get_action, run_action
 from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter
 from verdict.harness_prime_compat import PrimeCompatibilityContext
 from verdict.harness_prime_selection import PrimeDependencies, SelectionPaths
+from verdict.orchestration.health_cache import EVIDENCE_FRESH_SECONDS
 from verdict.orchestration.verified_refresh import RefreshConfig
 from verdict.tui_bootstrap_controls import consume_prime, parse_bootstrap_args
 
@@ -143,7 +144,8 @@ def test_multi_apply_restore_and_refresh_order(fixture: dict[str, Any]) -> None:
     assert fixture["paths"].settings.read_bytes() == fixture["old"]
 
 
-@pytest.mark.parametrize("age", [900, None])
+# Older than the evidence lifetime that sets each row's fresh_until.
+@pytest.mark.parametrize("age", [EVIDENCE_FRESH_SECONDS + 300, None])
 def test_stale_unverified_refused(fixture: dict[str, Any], age: int | None) -> None:
     path = fixture["adapter"].paths.health_cache
     if age is None:
@@ -464,7 +466,8 @@ def test_expired_original_preview_refuses_after_confirmation(fixture: dict[str, 
     fixture["clock"] = lambda: clock[0]
 
     def answer(_prompt: str) -> str:
-        clock[0] = NOW + timedelta(minutes=10)
+        # Proof checked 30 s before NOW; the preview deadline is its fresh_until.
+        clock[0] = NOW + timedelta(seconds=EVIDENCE_FRESH_SECONDS)
         return "y"
 
     result = consume(fixture, read_line=answer)
