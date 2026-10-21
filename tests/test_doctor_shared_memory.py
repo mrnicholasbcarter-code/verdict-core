@@ -37,7 +37,9 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setattr(identify_service, "timer_state", _fake_timer_state_active)
     from datetime import datetime, timezone
 
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    monkeypatch.setattr(
+        identify_service, "latest_report_path", lambda: tmp_path / "identify-latest.json"
+    )
     identify_service.save_report(
         {
             "mode": "passive",

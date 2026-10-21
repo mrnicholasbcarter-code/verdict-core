@@ -1020,12 +1020,21 @@ def test_doctor_census_section_marks_retired_runtime_without_install_advice():
 
 
 def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, capsys):
-    from verdict import census_passports, free_tier_admit, prove_at_rest
+    # Import the consumer before patching its source module; otherwise its
+    # module-level import retains this test double after monkeypatch teardown.
+    from verdict import census_passports, free_tier_admit, intelligence, prove_at_rest
     from verdict.census_passports import cmd_census
     from verdict.census_passports_service import census_status
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    # Initialize and patch both bindings so a first lazy import cannot retain
+    # this fixture endpoint after monkeypatch teardown.
+    monkeypatch.setattr(
+        free_tier_admit, "omniroute_endpoint_from_env", lambda *a, **k: ("http://gw", "k")
+    )
+    monkeypatch.setattr(
+        intelligence, "omniroute_endpoint_from_env", lambda *a, **k: ("http://gw", "k")
+    )
     keyfile = tmp_path / ".config/verdict/omniroute-api-key"
     keyfile.parent.mkdir(parents=True, exist_ok=True)
     keyfile.write_text("k")
@@ -1051,11 +1060,20 @@ def test_census_command_survives_cooldown_endpoint_failures(tmp_path, monkeypatc
     """A cooldown-endpoint outage or malformed payload must not kill the census."""
     import httpx
 
-    from verdict import census_passports, free_tier_admit, prove_at_rest
+    # Import the consumer before patching its source module; otherwise its
+    # module-level import retains this test double after monkeypatch teardown.
+    from verdict import census_passports, free_tier_admit, intelligence, prove_at_rest
     from verdict.census_passports import cmd_census
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(free_tier_admit, "omniroute_endpoint_from_env", lambda: ("http://gw", "k"))
+    # Initialize and patch both bindings so a first lazy import cannot retain
+    # this fixture endpoint after monkeypatch teardown.
+    monkeypatch.setattr(
+        free_tier_admit, "omniroute_endpoint_from_env", lambda *a, **k: ("http://gw", "k")
+    )
+    monkeypatch.setattr(
+        intelligence, "omniroute_endpoint_from_env", lambda *a, **k: ("http://gw", "k")
+    )
     keyfile = tmp_path / ".config/verdict/omniroute-api-key"
     keyfile.parent.mkdir(parents=True, exist_ok=True)
     keyfile.write_text("k")
