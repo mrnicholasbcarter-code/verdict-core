@@ -192,6 +192,7 @@ def _isolate_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(args, 0, stdout="LoadState=not-found\n", stderr="")
 
     monkeypatch.setattr("verdict.metadata_service._run_show", not_installed)
+    monkeypatch.setattr("verdict.identify_service._run_show", not_installed)
     monkeypatch.setattr("verdict.prove_at_rest_service._run_systemctl_show", not_installed)
     monkeypatch.setattr("verdict.doctor_diagnostics._run_systemctl_show_props", not_installed)
 
@@ -245,6 +246,7 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     from verdict import (
         acceptance_service,
         census_passports_service,
+        identify_service,
         metadata_service,
         prove_at_rest_service,
     )
@@ -252,6 +254,7 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     for installer in (
         acceptance_service.manage_service,
         census_passports_service.manage_census_service,
+        identify_service.manage_service,
         metadata_service.manage_service,
         prove_at_rest_service.manage_service,
     ):

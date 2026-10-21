@@ -50,7 +50,9 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setattr(identify_service, "timer_state", _fake_timer_state_active)
     from datetime import datetime, timezone
 
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    monkeypatch.setattr(
+        identify_service, "latest_report_path", lambda: tmp_path / "identify-latest.json"
+    )
     identify_service.save_report(
         {
             "mode": "passive",
@@ -2823,18 +2825,6 @@ def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
     monkeypatch.setattr(preflight, "discover_sources", discover)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
-    from datetime import datetime, timezone
-
-    from verdict.identify_service import save_report
-
-    save_report(
-        {
-            "mode": "passive",
-            "model_calls": 0,
-            "source_errors": [],
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
     for name in (
         "VERDICT_RUFLO_ROOT",
         "VERDICT_RUVECTOR_ROOT",
