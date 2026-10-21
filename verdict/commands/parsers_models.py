@@ -49,7 +49,10 @@ def register(subparsers: Any) -> None:
     choose_p.add_argument(
         "--candidates-json",
         default=None,
-        help="JSON file of CandidateEvidence fixtures (required for P0)",
+        help="Explicit offline fixture mode: JSON file of CandidateEvidence",
+    )
+    choose_p.add_argument(
+        "--capacity", default="", help="Optional live capacity filter (e.g. free,subscription)"
     )
     choose_p.add_argument(
         "--json", action="store_true", help="Output machine-readable JSON receipt"
