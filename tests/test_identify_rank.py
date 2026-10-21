@@ -189,6 +189,90 @@ class TestRankModels:
         ]
 
 
+class TestIntelligenceFallbackRanking:
+    """BOD-345 A2 follow-up: code routes without aa_coding use fresh aa_intelligence.
+
+    Order: fresh aa_coding score > fresh aa_intelligence fallback > declared
+    tier > unknown. Scores from different metrics are never compared directly.
+    """
+
+    def test_fresh_intelligence_ranks_below_coding_above_unknown(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/opus", "cc/opus", aa_intelligence=_score(57.6)),
+            _record("acme/weak", "p/weak", aa_coding=_score(5.0)),
+            _record("acme/none", "p/none"),
+        )
+        rows = rank_models(["p/none", "cc/opus", "p/weak"], metadata=meta, now=NOW)
+        assert [(r.route_id, r.basis) for r in rows] == [
+            ("p/weak", "score"),
+            ("cc/opus", "intelligence_fallback"),
+            ("p/none", "unknown"),
+        ]
+        opus = rows[1]
+        assert (opus.score, opus.metric, opus.source, opus.as_of) == (
+            57.6,
+            "aa_intelligence",
+            SOURCE_OPENROUTER_AA,
+            FETCHED,
+        )
+
+    def test_every_coding_score_outranks_every_fallback(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/tiny", "p/tiny", aa_coding=_score(1.0)),
+            _record("acme/smart", "cc/smart", aa_intelligence=_score(99.0)),
+        )
+        rows = rank_models(["cc/smart", "p/tiny"], metadata=meta, now=NOW)
+        assert [r.route_id for r in rows] == ["p/tiny", "cc/smart"]
+
+    def test_stale_intelligence_does_not_count(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/old", "cc/old", aa_intelligence=_score(57.6, STALE)),
+            _record("acme/new", "p/new", aa_coding=_score(5.0)),
+        )
+        rows = rank_models(
+            ["cc/old", "p/new"], metadata=meta, declared_tiers={"cc/old": 0}, now=NOW
+        )
+        assert [(r.route_id, r.basis) for r in rows] == [("p/new", "score"), ("cc/old", "tier")]
+
+    def test_stale_coding_with_fresh_intelligence_uses_fallback(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/s", "p/s", aa_coding=_score(99.0, STALE), aa_intelligence=_score(40.0)),
+            _record("acme/fresh", "p/fresh", aa_coding=_score(5.0)),
+        )
+        rows = rank_models(["p/s", "p/fresh"], metadata=meta, now=NOW)
+        assert [(r.route_id, r.basis) for r in rows] == [
+            ("p/fresh", "score"),
+            ("p/s", "intelligence_fallback"),
+        ]
+
+    def test_fresh_coding_ignores_intelligence_entirely(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/c", "p/c", aa_coding=_score(10.0), aa_intelligence=_score(99.0, STALE))
+        )
+        (row,) = rank_models(["p/c"], metadata=meta, now=NOW)
+        assert (row.basis, row.metric, row.score) == ("score", "aa_coding", 10.0)
+
+    def test_non_code_family_has_no_coding_fallback(self) -> None:
+        from verdict.identify_rank import rank_models
+
+        meta = _snapshot(
+            _record("acme/coding-only", "p/c", aa_coding=_score(80.0)),
+            _record("acme/smart", "p/s", aa_intelligence=_score(60.0)),
+        )
+        rows = rank_models(["p/c", "p/s"], metadata=meta, task_family="chat", now=NOW)
+        assert [(r.route_id, r.basis) for r in rows] == [("p/s", "score"), ("p/c", "unknown")]
+
+
 class TestLadderRanksByCapabilityNotPrice:
     def test_stronger_paid_route_beats_weaker_free_route(self, tmp_path: Path) -> None:
         rows = [
@@ -376,6 +460,53 @@ class TestActualSelectionRatingOrder:
         assert any("higher task rating" in reason for reason in reasons)
         assert not any("price" in reason or "capacity" in reason for reason in reasons)
 
+    def test_ladder_orders_fallback_between_coding_score_and_unknown(self, tmp_path: Path) -> None:
+        rows = [
+            _ladder_row("cc/opus", pricing={"input": 15.0, "output": 75.0}),
+            _ladder_row("p/weak", pricing={}),
+            _ladder_row("p/none", pricing={}),
+        ]
+        conns = [_conn("cc", auth="oauth"), _conn("p", auth="apikey")]
+        meta = _snapshot(
+            _record("acme/opus", "cc/opus", aa_intelligence=_score(57.6)),
+            _record("acme/weak", "p/weak", aa_coding=_score(5.0)),
+            _record("acme/none", "p/none"),
+        )
+        ladder = _ladder(tmp_path, rows, conns, meta)
+        assert _ranked(ladder, REQ) == ["p/weak", "cc/opus", "p/none"]
+        verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
+        rc = verdicts["cc/opus"].rank_components
+        assert rc is not None
+        assert (rc["rating_basis"], rc["rating"], rc["rating_metric"]) == (
+            "intelligence_fallback",
+            57.6,
+            "aa_intelligence",
+        )
+
+    def test_explain_names_the_intelligence_fallback_basis(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from verdict.orchestration.explain import explain_selection
+
+        rows = [
+            _ladder_row("cc/opus", pricing={"input": 15.0, "output": 75.0}),
+            _ladder_row("p/none", pricing={}),
+        ]
+        meta = _snapshot(_record("acme/opus", "cc/opus", aa_intelligence=_score(57.6)))
+        monkeypatch.setattr(
+            EligibilityLadder, "_rating_evidence", lambda self: (meta, None), raising=False
+        )
+        ladder = EligibilityLadder(
+            rows,
+            [_conn("cc", auth="oauth"), _conn("p", auth="apikey")],
+            lambda _route: HealthResult(True, "ok"),
+            tmp_path / "state.json",
+        )
+        selected, verdicts = ladder.select(REQ, now=NOW)
+        assert selected is not None and selected.route_id == "cc/opus"
+        reasons = explain_selection(verdicts)["selected_because"]
+        assert any("intelligence_fallback" in reason for reason in reasons)
+
     def test_stronger_failed_confirmation_falls_back_without_readmission(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -445,7 +576,12 @@ def test_rating_freshness_uses_each_field_not_snapshot_timestamp() -> None:
     )
     code = rank_models(["p/a", "p/b"], metadata=metadata, now=NOW)
     general = rank_models(["p/a", "p/b"], metadata=metadata, task_family="chat", now=NOW)
-    assert [(r.route_id, r.basis) for r in code] == [("p/b", "score"), ("p/a", "unknown")]
+    # p/a's stale coding score stays stale (no snapshot-timestamp rescue);
+    # its fresh intelligence is only a fallback, ranked behind p/b's coding.
+    assert [(r.route_id, r.basis) for r in code] == [
+        ("p/b", "score"),
+        ("p/a", "intelligence_fallback"),
+    ]
     assert [(r.route_id, r.basis) for r in general] == [("p/a", "score"), ("p/b", "unknown")]
 
 

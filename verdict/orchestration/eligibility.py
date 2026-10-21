@@ -870,8 +870,9 @@ class EligibilityLadder:
         """Compute all ranking components used to sort candidates.
 
         This is the single source of truth for ranking values. Sort order
-        (see :meth:`_rank_key`): rating (fresh task score, then declared tier,
-        then unknown) -> ``slack`` -> ``quota_rank`` -> ``provider_pref`` ->
+        (see :meth:`_rank_key`): rating (fresh task score, then fresh
+        intelligence fallback for code families missing ``aa_coding``, then
+        declared tier, then unknown) -> ``slack`` -> ``quota_rank`` -> ``provider_pref`` ->
         ``load`` -> ``-fit`` -> ``route_id``. Price and capacity class never
         order selection; ``capacity_order`` and ``price_for_rank`` are kept for
         display only.
@@ -909,8 +910,8 @@ class EligibilityLadder:
         components = {
             "rating_rank": rating_rank,
             "rating_basis": rating.basis,
-            "rating": -neg_score if rating_rank == 0 else None,
-            "declared_tier": declared if rating_rank == 1 else None,
+            "rating": -neg_score if rating_rank in (0, 1) else None,
+            "declared_tier": declared if rating_rank == 2 else None,
             "rating_metric": rating.metric,
             "rating_source": rating.source,
             "rating_as_of": rating.as_of,
@@ -941,9 +942,12 @@ class EligibilityLadder:
     def _rank_key(self, a: _Assessment) -> tuple[int, float, int, int, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
-        Most capable first: a fresh task score (higher first) beats a declared
-        tier, which beats unknown. Capability slack, measured quota, provider
-        preference, load and fit only break ties. Price is excluded.
+        Most capable first: a fresh task score (higher first) beats a fresh
+        intelligence fallback, which beats a declared tier, which beats
+        unknown. Coding scores and intelligence fallbacks are different
+        metrics and are never compared directly. Capability slack, measured
+        quota, provider preference, load and fit only break ties. Price is
+        excluded.
         """
         c = self._rank_components(a)
         return (
@@ -1235,7 +1239,7 @@ class EligibilityLadder:
             for i in range(depth):
                 order.extend(q[i] for q in queues if i < len(q))
         return sorted(
-            order, key=lambda a: rating_key(a.rating) if a.rating is not None else (2, 0.0, 0)
+            order, key=lambda a: rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)
         )
 
     def _record_health(

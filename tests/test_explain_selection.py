@@ -164,7 +164,9 @@ class TestRankComponentsMirrorSelector:
         def key(v: RouteVerdict) -> tuple[Any, ...]:
             rc = v.rank_components or {}
             return (
-                ("score", "tier", "unknown").index(rc.get("rating_basis", "unknown")),
+                ("score", "intelligence_fallback", "tier", "unknown").index(
+                    rc.get("rating_basis", "unknown")
+                ),
                 -(rc.get("rating") or 0.0),
                 rc.get("declared_tier") or 0,
                 rc.get("slack"),
@@ -472,6 +474,73 @@ class TestExplainSelection:
         assert not any("price" in r or "capacity" in r for r in reasons)
         # Nothing after the deciding component.
         assert len(reasons) == 2
+
+    def test_selected_because_names_intelligence_fallback_basis(self) -> None:
+        rc_sel = {
+            "rating_basis": "intelligence_fallback",
+            "rating": 57.6,
+            "declared_tier": None,
+            "slack": 0,
+            "quota_rank": 2,
+            "provider_pref": 0,
+            "load": 0,
+            "fit": 2,
+            "route_id": "p/sel",
+        }
+        rc_next = {
+            "rating_basis": "unknown",
+            "rating": None,
+            "declared_tier": None,
+            "slack": 0,
+            "quota_rank": 2,
+            "provider_pref": 0,
+            "load": 0,
+            "fit": 2,
+            "route_id": "p/next",
+        }
+        vs = [
+            _verdict("p/sel", "p", EligibilityStage.SELECTED, None, "selected", rank=0, rc=rc_sel),
+            _verdict(
+                "p/next", "p", EligibilityStage.TASK_ELIGIBLE, None, "ranked", rank=1, rc=rc_next
+            ),
+        ]
+        reasons = explain_selection(vs)["selected_because"]
+        assert reasons[0] == (
+            "stronger rating evidence than runner-up: intelligence_fallback vs unknown"
+        )
+
+    def test_equal_fallback_bases_compare_their_own_metric_only(self) -> None:
+        rc_sel = {
+            "rating_basis": "intelligence_fallback",
+            "rating": 57.6,
+            "declared_tier": None,
+            "slack": 0,
+            "quota_rank": 2,
+            "provider_pref": 0,
+            "load": 0,
+            "fit": 2,
+            "route_id": "p/sel",
+        }
+        rc_next = {
+            "rating_basis": "intelligence_fallback",
+            "rating": 40.0,
+            "declared_tier": None,
+            "slack": 0,
+            "quota_rank": 2,
+            "provider_pref": 0,
+            "load": 0,
+            "fit": 2,
+            "route_id": "p/next",
+        }
+        vs = [
+            _verdict("p/sel", "p", EligibilityStage.SELECTED, None, "selected", rank=0, rc=rc_sel),
+            _verdict(
+                "p/next", "p", EligibilityStage.TASK_ELIGIBLE, None, "ranked", rank=1, rc=rc_next
+            ),
+        ]
+        reasons = explain_selection(vs)["selected_because"]
+        assert reasons[0].startswith("equal on rating_basis: intelligence_fallback")
+        assert "higher task rating than runner-up: 57.6 vs 40.0" in reasons[1]
 
     def test_all_equal_or_unknown(self) -> None:
         rc_sel = {
