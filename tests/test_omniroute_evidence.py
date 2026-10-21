@@ -361,3 +361,17 @@ def test_freshness_boundary_is_two_configured_sync_intervals(sources):
     c = parse_omniroute_evidence(**sources, now=NOW).connections[2]
     assert c.quota_state == "unknown"
     assert c.usable
+
+
+@pytest.mark.parametrize("last_status", [429, 401])
+def test_inventory_and_failed_traffic_are_retained_without_granting_proof(sources, last_status):
+    row = sources["health_matrix"]["providers"][0]["accounts"][0]["models"][0]
+    row.update(status="error", successes=2, lastStatus=last_status)
+    sources["v1_models"]["data"].append({"id": "alpha/no-traffic"})
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert evidence.inventory_route_ids == frozenset(
+        {"a/best", "a/not-entitled", "alpha/no-traffic"}
+    )
+    assert not evidence.proven_by_traffic
+    assert evidence.traffic_by_route["a/best"].last_status == last_status
+    assert evidence.traffic_by_route["a/best"].status == "error"

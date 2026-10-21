@@ -10,7 +10,7 @@ import json
 import math
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Literal
@@ -82,6 +82,7 @@ class TrafficEvidence:
     requests: int
     successes: int
     last_request_at: datetime | None
+    last_status: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,10 @@ class OmniRouteEvidence:
     proven_by_traffic: Mapping[str, TrafficEvidence]
     cooled_models: frozenset[str]
     source_errors: tuple[str, ...]
+    route_identities: Mapping[str, tuple[str, str]] = field(default_factory=dict)
+    route_capacities: Mapping[str, str] = field(default_factory=dict)
+    inventory_route_ids: frozenset[str] = frozenset()
+    traffic_by_route: Mapping[str, TrafficEvidence] = field(default_factory=dict)
 
 
 def _date(value: Any) -> datetime | None:
@@ -290,13 +295,31 @@ def parse_omniroute_evidence(
                 observed,
             )
         )
+    from verdict.orchestration.eligibility import capacity_class_of
+
+    usable_ids = {c.connection_id for c in connections if c.usable}
+    provider_rows = _rows(providers.get("connections")) if "providers" not in errors else []
+    identities: dict[str, tuple[str, str]] = {}
+    capacities: dict[str, str] = {}
     routes: dict[tuple[str, str], list[str]] = {}
+    inventory: set[str] = set()
     for row in _rows(v1_models.get("data")) if "v1_models" not in errors else []:
         route_id, provider = row.get("id"), row.get("owned_by", row.get("provider"))
+        if isinstance(route_id, str) and route_id:
+            inventory.add(route_id)
         if not isinstance(route_id, str) or not isinstance(provider, str):
             continue
         model = row.get("root") or route_id.partition("/")[2]
         if isinstance(model, str) and model:
+            # Only the catalog's explicit root establishes shared model identity.
+            if isinstance(row.get("root"), str) and row["root"]:
+                identities[route_id] = (provider, row["root"])
+            classes = {
+                capacity_class_of(conn, row, route_id=route_id)[0].value
+                for conn in provider_rows
+                if conn.get("id") in usable_ids and conn.get("provider") == provider
+            }
+            capacities[route_id] = next(iter(classes)) if len(classes) == 1 else "unknown"
             routes.setdefault((provider, model), []).append(route_id)
             routes.setdefault((provider, route_id), []).append(route_id)
     cooled: set[str] = set()
@@ -307,6 +330,7 @@ def parse_omniroute_evidence(
             if isinstance(provider, str):
                 cooled.update(routes.get((provider, model), []))
     proven: dict[str, TrafficEvidence] = {}
+    traffic_by_route: dict[str, TrafficEvidence] = {}
     for group in _rows(health_matrix.get("providers")) if "health_matrix" not in errors else []:
         provider = group.get("provider")
         if not isinstance(provider, str):
@@ -320,10 +344,9 @@ def parse_omniroute_evidence(
                 requests = _number(row.get("requests")) or 0
                 last = _number(row.get("lastStatus"))
                 status = row.get("status")
-                if successes <= 0 or not (
+                is_proven = successes > 0 and (
                     status in {"healthy", "degraded"} or (last is not None and 200 <= last < 400)
-                ):
-                    continue
+                )
                 for route_id in routes.get((provider, model), []):
                     candidate = TrafficEvidence(
                         route_id,
@@ -332,12 +355,15 @@ def parse_omniroute_evidence(
                         int(requests),
                         int(successes),
                         _date(row.get("lastRequestAt")),
+                        int(last) if last is not None else None,
                     )
-                    previous = proven.get(route_id)
-                    if previous is None or (
-                        candidate.last_request_at or datetime.min.replace(tzinfo=timezone.utc)
-                    ) > (previous.last_request_at or datetime.min.replace(tzinfo=timezone.utc)):
-                        proven[route_id] = candidate
+                    targets = [traffic_by_route, proven] if is_proven else [traffic_by_route]
+                    for target in targets:
+                        previous = target.get(route_id)
+                        if previous is None or (
+                            candidate.last_request_at or datetime.min.replace(tzinfo=timezone.utc)
+                        ) > (previous.last_request_at or datetime.min.replace(tzinfo=timezone.utc)):
+                            target[route_id] = candidate
     return OmniRouteEvidence(
         now,
         tuple(connections),
@@ -345,6 +371,10 @@ def parse_omniroute_evidence(
         MappingProxyType(proven),
         frozenset(cooled),
         errors,
+        MappingProxyType(identities),
+        MappingProxyType(capacities),
+        frozenset(inventory),
+        MappingProxyType(traffic_by_route),
     )
 
 

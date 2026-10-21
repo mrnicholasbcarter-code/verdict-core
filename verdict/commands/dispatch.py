@@ -576,7 +576,16 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     elif args.command == "identify":
         from verdict.identify import cmd_identify
 
-        cmd_identify(output_json=args.output_json)
+        cmd_identify(
+            output_json=args.output_json,
+            all_excluded=args.all_excluded,
+            screen=args.screen,
+            allow_live_probe=args.allow_live_probe,
+            max_per_provider=args.max_per_provider,
+            max_routes=args.max_routes,
+            providers=args.providers,
+            capacities=args.capacities,
+        )
     elif args.command == "census":
         from verdict.census_passports import cmd_census
 
@@ -644,6 +653,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             model=args.model,
             candidates_json=args.candidates_json,
             output_json=args.json,
+            capacity=args.capacity,
         )
     elif args.command == "models":
         legacy.cmd_models(

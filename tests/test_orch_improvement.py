@@ -20,6 +20,16 @@ GRAPH = WorkGraph(
 )
 
 
+@pytest.fixture(autouse=True)
+def _stable_producer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cycle inputs must not depend on concurrent changes to this checkout."""
+    monkeypatch.setattr(
+        improvement,
+        "capture_producer",
+        lambda: {"verdict_version": "test", "git_sha": "a" * 40, "dirty": False},
+    )
+
+
 class _FailingExecutor:
     async def run(self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float) -> Any:
         return WorkerTerminal(ok=False, error="worker crashed", model=route_id)

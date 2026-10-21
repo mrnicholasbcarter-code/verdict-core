@@ -2245,16 +2245,11 @@ def cmd_choose(
     model: str | None = None,
     candidates_json: str | None = None,
     output_json: bool = False,
+    capacity: str = "",
 ) -> None:
     """Select an eligible execution target for Prime dispatch."""
     from verdict.actions.registry import run_action
 
-    if not candidates_json:
-        print(
-            "verdict choose requires --candidates-json until live catalog probing is in a later story",
-            file=sys.stderr,
-        )
-        sys.exit(2)
     result = run_action(
         "choose",
         {
@@ -2262,6 +2257,7 @@ def cmd_choose(
             "requires": requires,
             "model": model,
             "candidates_json": candidates_json,
+            "capacity": capacity,
         },
     )
     if not result.ok:

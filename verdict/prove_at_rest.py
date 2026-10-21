@@ -1216,6 +1216,9 @@ class Prober:
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
         """Write every buffered auth-outage-window negative as a real failure."""
         for buffered_id, buffered_result, buffered_now in self._auth_fail_buffer:
+            previous = self.cache.entry(buffered_id)
+            if previous is not None and previous.checked_at > buffered_now:
+                continue
             self.cache.record(buffered_id, buffered_result, buffered_now)
             stats.probed += 1
             stats.negative += 1
@@ -1679,14 +1682,86 @@ class Prober:
             conversation.extend(tool_results)
         return exchanges, fake_file, True
 
+    def screen_route(self, route: AdmittedRoute, *, deadline: float) -> dict[str, Any]:
+        """One synchronous, capacity-independent agentic check; no chat phase or scheduler.
+
+        The caller supplies consent, ordering and route caps. Share the existing
+        conversation, identity scoring, cache writer and durable pool budget.
+        Partial conversations never become capability evidence.
+        """
+        observed = self.clock()
+        outcome: dict[str, Any] = {"result": "skipped_bucket", "turns_sent": 0, "latency_ms": None}
+        if self.monotonic() >= deadline:
+            outcome["result"] = "skipped_deadline"
+            return outcome
+        reservation = self.cache.reserve_bucket(
+            route.provider,
+            observed,
+            pool=route.pool,
+            amount=AGENTIC_TURNS,
+            deadline=deadline,
+            monotonic=self.monotonic,
+        )
+        if reservation is None:
+            return outcome
+        exchanges, fake_file, finished = self._converse(route.route_id, deadline)
+        outcome["turns_sent"] = len(exchanges)
+        latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
+        outcome["latency_ms"] = sum(latencies) if latencies else None
+        if not finished or not exchanges:
+            outcome["result"] = "skipped_deadline"
+            return outcome
+        stats = CycleStats()
+        superseded = False
+
+        def record(cache: HealthCache) -> None:
+            nonlocal superseded
+            previous = cache.entry(route.route_id)
+            if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
+                self._note_rate_limit(route, exchanges[-1], observed)
+                return
+            if previous is not None and (
+                previous.checked_at > observed
+                or (
+                    previous.checked_at == observed
+                    and previous.state_at(observed) == STATE_NEGATIVE
+                )
+            ):
+                superseded = True
+                return
+            self._record_agentic(
+                route, exchanges, fake_file, stats, observed_at=observed, buffer_auth=False
+            )
+
+        self.cache.merge_and_save(record, monotonic=self.monotonic)
+        if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
+            outcome["result"] = "rate_limited"
+        elif superseded:
+            outcome["result"] = "skipped_newer_evidence"
+        elif exchanges[-1].http_status in (401, 403):
+            outcome["result"] = "auth_failed"
+        elif stats.agentic_passed:
+            outcome["result"] = "pass"
+        else:
+            entry = self.cache.entry(route.route_id)
+            outcome["result"] = (
+                "identity_mismatch"
+                if entry is not None and entry.category == CATEGORY_MODEL_MISMATCH
+                else "fail"
+            )
+        return outcome
+
     def _record_agentic(
         self,
         route: AdmittedRoute,
         exchanges: Sequence[ProbeExchange],
         fake_file: AgenticFakeFile,
         stats: CycleStats,
+        *,
+        observed_at: datetime | None = None,
+        buffer_auth: bool = True,
     ) -> None:
-        now = self.clock()
+        now = observed_at if observed_at is not None else self.clock()
         last = exchanges[-1]
         self._note_rate_limit(route, last, now)
         if category_for(last) == CATEGORY_RATE_LIMITED:
@@ -1727,7 +1802,7 @@ class Prober:
         )
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
-        if self._buffer_auth_failure(route, result, now, stats):
+        if buffer_auth and self._buffer_auth_failure(route, result, now, stats):
             # Auth buffer may later flush as a real pool-cooling negative.
             # If this result is already a pool-cooling category and not
             # route-scoped, revoke half-open now so a sibling cannot start.
@@ -2017,7 +2092,7 @@ def live_agentic_transport(
 ) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
     """OpenAI-compatible transport for agentic probes (arbitrary payloads).
 
-    Built only for a consented live daemon behind ``--allow-live-probe``.
+    Built only behind explicit ``--allow-live-probe`` consent.
     """
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):

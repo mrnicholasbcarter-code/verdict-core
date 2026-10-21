@@ -94,14 +94,25 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
     assert "accounts" not in raw
 
 
-def test_native_cli_requires_explicit_passive_and_refuses_screen(monkeypatch):
-    from verdict import cli
+def test_native_cli_requires_explicit_mode_and_live_consent(monkeypatch):
+    from verdict import cli, identify
 
-    for args in [["identify", "--json"], ["identify", "--screen", "--json"]]:
-        monkeypatch.setattr("sys.argv", ["verdict", *args])
-        with pytest.raises(SystemExit) as exc:
-            cli.main()
-        assert exc.value.code == 2
+    monkeypatch.setattr("sys.argv", ["verdict", "identify", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unconsented or unbounded screen reached transport/evidence")
+
+    monkeypatch.setattr(identify, "live_agentic_transport", forbidden)
+    monkeypatch.setattr(identify, "fetch_omniroute_evidence", forbidden)
+    monkeypatch.setattr("sys.argv", ["verdict", "identify", "--screen", "--json"])
+    with pytest.raises(SystemExit, match="live_probe_consent_required"):
+        cli.main()
+    monkeypatch.setattr("sys.argv", ["verdict", "identify", "--screen", "--allow-live-probe"])
+    with pytest.raises(SystemExit, match="screen_caps_required"):
+        cli.main()
 
 
 def test_missing_metadata_stays_unknown_and_human_output_is_bounded(monkeypatch, capsys):
@@ -137,3 +148,99 @@ def test_identify_action_returns_the_cli_domain_report(monkeypatch):
     result = run_action("identify")
     assert result.ok
     assert result.data == report
+
+
+def test_native_screen_cli_calls_existing_conversation_with_filters(monkeypatch, capsys, tmp_path):
+    from test_identify_screen import NOW as SCREEN_NOW
+    from test_identify_screen import passing, ratings, snapshot
+
+    from verdict import cli, identify
+    from verdict.orchestration.health_cache import HealthCache
+
+    calls = []
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://127.0.0.1:20128/v1", None)
+    )
+    monkeypatch.setattr(identify, "fetch_omniroute_evidence", lambda *a, **kw: snapshot())
+    monkeypatch.setattr(identify, "load_store", ratings)
+    monkeypatch.setattr(identify, "live_agentic_transport", lambda *a, **kw: passing(calls))
+    monkeypatch.setattr(identify, "default_cache_path", lambda: tmp_path / "health.json")
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return SCREEN_NOW
+
+    monkeypatch.setattr(identify, "datetime", Clock)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "identify",
+            "--screen",
+            "--allow-live-probe",
+            "--max-per-provider",
+            "1",
+            "--max-routes",
+            "1",
+            "--provider",
+            "q",
+            "--capacity",
+            "subscription",
+            "--json",
+        ],
+    )
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert [row[0] for row in calls] == ["q/model"] * 3
+    assert report["mode"] == "screen" and report["model_requests_sent"] == 3
+    assert report["passed"] == 1
+    assert HealthCache(tmp_path / "health.json").entry("q/model").agentic_ok
+
+
+@pytest.mark.parametrize("all_excluded", [False, True])
+def test_native_passive_all_excluded_flag(monkeypatch, capsys, all_excluded):
+    from verdict import cli, identify
+    from verdict.omniroute_evidence import parse_omniroute_evidence
+
+    data = payloads()
+    data["v1_models"]["data"].extend(
+        {"id": f"alpha/unobserved-{i}", "owned_by": "alpha"} for i in range(200)
+    )
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://127.0.0.1:20128", None)
+    )
+    monkeypatch.setattr(
+        identify,
+        "fetch_omniroute_evidence",
+        lambda *a, **kw: parse_omniroute_evidence(**data, now=NOW),
+    )
+    monkeypatch.setattr(identify, "load_store", metadata)
+    args = ["verdict", "identify", "--passive", "--json"]
+    if all_excluded:
+        args.append("--all-excluded")
+    monkeypatch.setattr("sys.argv", args)
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["excluded_routes"]) == (202 if all_excluded else 100)
+    assert report["excluded_routes_total"] == 202
+    assert report["excluded_routes_truncated"] is not all_excluded
+
+
+@pytest.mark.parametrize("error", ["lock", "value"])
+def test_identify_expected_errors_exit_cleanly(monkeypatch, error):
+    from verdict import cli, identify
+    from verdict.orchestration.health_cache import HealthCacheLockTimeoutError
+
+    def fail(**kwargs):
+        if error == "lock":
+            raise HealthCacheLockTimeoutError("cache lock wait expired")
+        raise ValueError("screen_caps_required: positive caps required")
+
+    monkeypatch.setattr(identify, "identify_report", fail)
+    monkeypatch.setattr("sys.argv", ["verdict", "identify", "--passive", "--json"])
+    with pytest.raises(
+        SystemExit, match="lock_timeout" if error == "lock" else "screen_caps_required"
+    ) as exc:
+        cli.main()
+    assert exc.value.code != 0

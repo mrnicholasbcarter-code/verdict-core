@@ -144,6 +144,7 @@ def build_selector(
     required_capabilities: frozenset[str] = frozenset(),
     min_context_tokens: int = 0,
     capacity: tuple[str, ...] = (),
+    route_ids: frozenset[str] | None = None,
     refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
     sync_visibility: bool = False,
     visibility_executor: str = "prime",
@@ -221,6 +222,13 @@ def build_selector(
     prefixes = tuple(p.strip() for p in scope.split(",") if p.strip())
     admitted = admitted.restrict_prefixes(prefixes).restrict_families(provider_families)
     admitted = admitted.exclude_controller(active_controller_route())
+    if route_ids is not None:
+        admitted = admitted.narrow(
+            AdmissionStage.POLICY,
+            "outside_route_filter",
+            lambda rid: rid in route_ids,
+            source="selection:route_ids",
+        )
     if capacity:
         if any(c not in {"free", "subscription", "metered", "unknown"} for c in capacity):
             raise ValueError("Invalid capacity filter")

@@ -595,7 +595,16 @@ def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
             "choose",
             cli(
                 "choose",
-                ["choose", "--task-class", "implementation", "--requires", "tools,code", "--json"],
+                [
+                    "choose",
+                    "--task-class",
+                    "implementation",
+                    "--requires",
+                    "tools,code",
+                    "--capacity",
+                    "free,subscription",
+                    "--json",
+                ],
                 180,
                 judge_choose,
             ),

@@ -593,7 +593,7 @@
   },
   {
     "qualified_name": "verdict.commands.parsers_models.register",
-    "reason": "UNTRIAGED: register has only non-production references; Argument registration for Verdict models command family (verdict/commands/parsers_models.py)."
+    "reason": "KEEP: argparse registrar for the models command family, called from verdict/cli.py main() registrar loop (verdict/cli.py:3313-3324, parsers_models in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop."
   },
   {
     "qualified_name": "verdict.commands.parsers_openspec.register",
