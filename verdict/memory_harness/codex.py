@@ -38,7 +38,7 @@ CODEX_HOOK_EVENTS: tuple[str, ...] = (
 HOOK_TIMEOUT_SECONDS = 10
 
 HOOK_MODULE = "verdict.memory_harness.codex"
-_LEGACY_PROMPT_FILES = ("/tmp/codex_last_prompt", "/tmp/codex_session_prompt")
+_LEGACY_PROMPT_FILES = ("/tmp/codex_last_prompt", "/tmp/codex_session_prompt")  # nosec B108: detection-only comparison values for migrating away legacy hooks, never written
 
 
 def hook_command(event: str) -> str:
