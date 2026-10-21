@@ -405,6 +405,23 @@ def test_boundary_just_under_usable_evidence_ttl_is_stale():
     assert r.freshness == "stale"
 
 
+@pytest.mark.parametrize("after_fresh, freshness", [(1199, "stale"), (1200, "expired")])
+def test_projection_stale_grace_ends_twenty_minutes_after_evidence_freshness(
+    after_fresh, freshness
+):
+    checked_at = NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + after_fresh)
+    snaps = snapshots_from_documents(
+        health_cache_doc=health_cache(at_rest_entry("cc/sonnet", checked_at=checked_at)), now=NOW
+    )
+
+    result = only_row(project_one([row("cc/sonnet")], [conn("cc")], snaps))
+
+    assert result.status is VerifiedStatus.STALE
+    assert result.freshness == freshness
+    assert result.expires_at == checked_at + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1200)
+    assert result.coding_ok is False
+
+
 def test_negative_until_equality_is_expired_half_open():
     # until == now: the negative is expired -> not FAILED, route is half-open UNVERIFIED.
     inv = [row("omniroute/cc/sonnet")]
