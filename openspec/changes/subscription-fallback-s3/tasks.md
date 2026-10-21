@@ -4,4 +4,3 @@
 - [x] Run affected reference test files, then corrected focused281 passed in51.82s. All five nonquota full-suite failures pass unchanged after parent corrected paid-last rule and accepted error-layer diagnosis. Only existing assertion migrations are approved token-order/explain contracts.
 - [x] Run authorized confirming full suite under4G/1800s,4workers/loadfile: 10631 passed, 31 skipped, 24 xfailed, 40 warnings in 264.47s (0:04:24). First full result remains recorded:6 failed,10623 passed,31 skipped,24 xfailed; parent authorized one correcting run after fixing the brief.
 - [x] Static checks: ruff330 files clean; strict mypy325 source files clean; reachability2352 public symbols/0 NEW and13 orphans/0 NEW; strict OpenSpec validation valid; diff check clean.
-- [ ] Parent merged-main installed-host acceptance (not claimed by PR).
