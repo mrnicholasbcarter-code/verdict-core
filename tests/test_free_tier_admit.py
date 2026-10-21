@@ -1264,7 +1264,12 @@ def test_ordinary_free_beats_higher_coding_score_after_fresh_confirmation() -> N
         ],
         free_tier=[{"modelId": "weak-code", "provider": "free", "freeType": "keyless"}],
         providers=[
-            {"provider": p, "isActive": True, "testStatus": "active"}
+            {
+                "provider": p,
+                "isActive": True,
+                "testStatus": "active",
+                "authType": "oauth" if p == "subscription" else "apikey",
+            }
             for p in ("subscription", "free")
         ],
     )

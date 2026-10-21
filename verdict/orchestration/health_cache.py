@@ -48,7 +48,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1144,6 +1144,7 @@ class HealthCache:
         self.bucket_window_seconds = bucket_window_seconds
         self.bucket_overrides = dict(bucket_overrides or {})
         self._routes: dict[str, HealthEntry] = {}
+        self._rescreen_requests: dict[str, str] = {}
         self._buckets: dict[str, TokenBucket] = {}
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
@@ -1216,6 +1217,7 @@ class HealthCache:
         _private_cache_mode(self.path)
         if not self.path.exists():
             self._routes = {}
+            self._rescreen_requests = {}
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
@@ -1234,6 +1236,16 @@ class HealthCache:
         if not isinstance(routes, Mapping) or not isinstance(buckets, Mapping):
             raise HealthCacheError("routes and buckets must be objects")
         self._routes = {key: HealthEntry.from_dict(value) for key, value in routes.items()}
+        requests = payload.get("rescreen_requests", {})
+        self._rescreen_requests = (
+            {
+                str(route): str(at)
+                for route, at in requests.items()
+                if isinstance(route, str) and isinstance(at, str)
+            }
+            if isinstance(requests, Mapping)
+            else {}
+        )
         migrating = {_legacy_pool_key(key) for key in buckets if _legacy_pool_key(key) != key}
         for key, value in buckets.items():
             if not isinstance(value, Mapping):
@@ -1288,6 +1300,8 @@ class HealthCache:
             "buckets": {key: bucket.to_dict() for key, bucket in sorted(self._buckets.items())},
             "cursor": self._cursor,
         }
+        if self._rescreen_requests:
+            snapshot["rescreen_requests"] = dict(self._rescreen_requests)
         # Additive: only emit ``cooldowns`` when non-empty so existing readers
         # and byte-for-byte goldens for cooldown-free caches stay unchanged.
         if self._cooldowns:
@@ -1466,6 +1480,29 @@ class HealthCache:
         return dict(self._routes)
 
     # -- write API ---------------------------------------------------------
+
+    def rescreen_requests(self) -> set[str]:
+        """Scheduling hints only; never health, proof or dispatch permission."""
+        return set(self._rescreen_requests)
+
+    def request_rescreen(self, routes: Sequence[str], *, now: datetime) -> None:
+        """Queue exact free identities for the already-consented screen job."""
+        if not routes:
+            return
+        stamp = format_datetime(now)
+
+        def mutate(cache: HealthCache) -> None:
+            cache._rescreen_requests.update({route: stamp for route in routes})
+
+        self.merge_and_save(mutate)
+
+    def complete_rescreen(self, route: str) -> None:
+        """Consume a hint only after the existing screen actually sent a turn."""
+
+        def mutate(cache: HealthCache) -> None:
+            cache._rescreen_requests.pop(route, None)
+
+        self.merge_and_save(mutate)
 
     def record_agentic_evidence(
         self, route: str, *, passed: bool, at: datetime, source: str, child_id: str | None = None

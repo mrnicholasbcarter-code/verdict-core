@@ -101,7 +101,7 @@ def test_more_quota_wins_whatever_the_price(tmp_path: Path) -> None:
         row(CC, owned_by="claude", pricing={"input": 3.0, "output": 15.0}),
     ]
     conns = [_quota("codex", 30.0, authType="apikey"), _quota("claude", 95.0, authType="apikey")]
-    ladder, _ = make_ladder(tmp_path, rows, conns)
+    ladder, _ = make_ladder(tmp_path, rows, conns, allow_metered=True)
     # Price is excluded from selection: the measured quota headroom decides.
     assert _selected(ladder) == CC
 

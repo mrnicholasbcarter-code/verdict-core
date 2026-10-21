@@ -2207,6 +2207,37 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 break
         else:
             edge = None
+        capacity = next(
+            (
+                row.get("capacity_order")
+                for row in decision.candidate_states
+                if row.get("model_id") == attempt.model
+            ),
+            None,
+        )
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 1:
+            free_routes = [
+                str(row["route_id"])
+                for row in decision.candidate_states
+                if row.get("capacity_order") == 0 and isinstance(row.get("route_id"), str)
+            ]
+            try:
+                HealthCache(default_cache_path()).request_rescreen(
+                    free_routes, now=datetime.now(timezone.utc)
+                )
+                rescreen = "queued"
+            except Exception as exc:
+                rescreen = f"persistence_error:{type(exc).__name__}"
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_subscription_fallback",
+                details={
+                    "fallback": "subscription",
+                    "reason": "free attempts failed" if index else "no free route qualifies",
+                    "rescreen": rescreen,
+                    "free_routes": free_routes,
+                },
+            )
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
         for local_field in _RELAY_LOCAL_FIELDS:
@@ -2498,6 +2529,28 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 )
             },
             headers=_evidence_headers(evidence),
+        )
+
+    if (
+        isinstance(result, BufferedUpstreamResponse)
+        and retryable_response_status(
+            result.status_code, compatibility_applied=False, body=_last_error_body
+        )
+        and "subscription_fallback_policy" in decision.safety_flags
+        and not any(
+            row.get("capacity_order") == 1 and row.get("admitted") is True
+            for row in decision.candidate_states
+        )
+    ):
+        result = replace(
+            result,
+            body=json.dumps(
+                {
+                    "error": {
+                        "message": "free attempts failed; no capable subscription route meets task proof/admission"
+                    }
+                }
+            ).encode(),
         )
 
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"
