@@ -1,6 +1,10 @@
 # ADR-036: Goal-to-receipt orchestration with capacity-aware, same-node recovery
 
-- **Status:** Accepted: implemented and merged to `main` via #590 (`4617445`)
+- **Status:** Accepted: implemented and merged to `main` via #590 (`4617445`).
+  Superseded in part by BOD-342 (2026-10-21): the capable-free-first
+  economics ordering below is replaced by price-free selection (strongest
+  proven-capable route first); see the amendment note in the eligibility
+  ladder section and [operator-standards.md](../guides/operator-standards.md).
 - **Date:** 2026-09-24
 - **Related:** ADR-0001 (eligibility before ranking), ADR-015/017 (receipts), ADR-023 (governed
   supervision, superseded in scope by this ADR for the orchestration runtime), ADR-031 (Prime
@@ -41,9 +45,19 @@ harness. OmniRoute is only transport and inventory.
    role or session adequacy. Provider preferences and current load may spread concurrent
    nodes only after these gates and economics. There is no static fallback chain.
 
-   **Policy amendment (2026-10-12):** this replaces the original subscription-first
+   **Policy amendment (2026-10-12):** this replaced the original subscription-first
    order with the operator's capable-free-first policy confirmed on 2026-09-29 and
    2026-10-10. See [operating standards](../guides/operator-standards.md).
+
+   **Policy amendment (2026-10-21, BOD-342, supersedes the 2026-10-12 amendment
+   above):** Verdict's own selection is now price-free. The strongest
+   proven-capable route is selected first; there is no default free-first or
+   cheaper-first ordering, and no economic admission gate. Explicit caller
+   filters (`--capacity`, `spend_policy`) are still honored, and the default
+   `spend_policy` is `paid_allowed`. The long-term goal of "cheapest model
+   proven capable of completing the ask" is deferred until capability proof
+   (`identify --screen`), accepted-work outcomes per task kind (BOD-304) and a
+   real cost signal exist. See [operating standards](../guides/operator-standards.md).
 3. **DAG runtime.** Ready nodes run at the same time, up to `max_parallel`. Each attempt
    runs in its own git worktree, based on its validated dependencies. Lifecycle:
    `PLANNED -> ADMITTED -> DISPATCHED -> RUNNING -> TERMINAL_SUCCESS/TERMINAL_FAILURE ->

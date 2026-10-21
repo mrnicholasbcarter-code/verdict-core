@@ -1,6 +1,12 @@
 # Agentic evidence and background census
 
 ## Why
+
+> **Superseded in part by BOD-342 (2026-10-21):** Verdict's selection is now
+> price-free (strongest proven-capable route first); admission no longer
+> defaults to free-first. The agentic qualification evidence this change adds
+> is still needed for any route, free or paid, and is unaffected.
+
 Free-first admission requires exact-route agentic qualification evidence.
 The existing health cache and controller session ledger already carry evidence.
 
