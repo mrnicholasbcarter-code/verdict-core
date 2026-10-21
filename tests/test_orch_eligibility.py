@@ -285,13 +285,12 @@ class TestTaskEligible:
         assert v.failed_stage is EligibilityStage.TASK_ELIGIBLE
         assert v.reason == "insufficient_context"
 
-    def test_frontier_restricted_unless_worthy(self, tmp_path: Path) -> None:
-        # Metered frontier: kept off non-frontier-worthy work.
+    def test_metered_frontier_allowed_for_ordinary_work(self, tmp_path: Path) -> None:
         rows = [row("cx/gpt-6-sol", owned_by="codex")]
-        ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
+        ladder, probe = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
         v = ladder.evaluate(REQ, now=NOW)[0]
-        assert v.failed_stage is EligibilityStage.TASK_ELIGIBLE
-        assert v.reason == "frontier_restricted"
+        assert v.failed_stage is None and v.rank == 0
+        assert probe.calls == []
         worthy = TaskRequirements(frontier_worthy=True)
         assert ladder.evaluate(worthy, now=NOW)[0].failed_stage is None
 
@@ -310,11 +309,11 @@ class TestTaskEligible:
         chosen, _ = ladder.select(REQ, now=NOW)
         assert chosen is not None and chosen.route_id == "kr/claude-haiku-4.5"
 
-    def test_frontier_guard_uses_tier_not_name_list(self, tmp_path: Path) -> None:
-        # A frontier model whose name is on no list is still guarded by tier.
+    def test_declared_frontier_tier_does_not_trigger_spend_guard(self, tmp_path: Path) -> None:
         rows = [{**row("cx/new-frontier", owned_by="codex"), "capability_tier": 0}]
         ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
-        assert ladder.evaluate(REQ, now=NOW)[0].reason == "frontier_restricted"
+        verdict = ladder.evaluate(REQ, now=NOW)[0]
+        assert verdict.failed_stage is None and verdict.rank == 0
 
     def test_exclude_families_for_reviewer_independence(self, tmp_path: Path) -> None:
         rows = [

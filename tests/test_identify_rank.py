@@ -489,3 +489,65 @@ def test_explain_does_not_claim_rank_win_when_equal_rating_scheduler_selects_lat
     explanation = explain_selection(verdicts)
     assert any("not rank order" in reason for reason in explanation["selected_because"])
     assert not any("tiebroken by route_id" in reason for reason in explanation["selected_because"])
+
+
+@pytest.mark.parametrize(
+    "pricing,tier,capacity",
+    [
+        ({"input": 3.0, "output": 15.0}, 0, CapacityClass.METERED),
+        ({}, 0, CapacityClass.UNKNOWN),
+        ({}, 1, CapacityClass.UNKNOWN),
+    ],
+)
+@pytest.mark.parametrize("confirmation_ok", [True, False])
+def test_ordinary_selection_ignores_economic_class_but_requires_confirmation(
+    tmp_path: Path,
+    pricing: dict[str, float],
+    tier: int,
+    capacity: CapacityClass,
+    confirmation_ok: bool,
+) -> None:
+    from verdict.admission import RuntimeEvidence, admit
+
+    rows = [
+        _ladder_row("cc/weak", pricing={}, tier=1),
+        _ladder_row("op/strong", pricing=pricing, tier=tier),
+    ]
+    conns = [_conn("cc", auth="oauth"), _conn("op", auth="apikey")]
+    meta = _snapshot(
+        _record("acme/weak", "cc/weak", aa_coding=_score(20.0)),
+        _record("acme/strong", "op/strong", aa_coding=_score(70.0)),
+    )
+    admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+    calls: list[str] = []
+
+    def probe(route: str) -> HealthResult:
+        calls.append(route)
+        ok = route == "cc/weak" or confirmation_ok
+        return HealthResult(ok, "ok" if ok else "authentication")
+
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        probe,
+        tmp_path / "state.json",
+        admitted=admitted,
+        metadata=meta,
+        allow_unknown_capacity=False,
+    )
+    req = TaskRequirements(frontier_worthy=False, max_capability_tier=1)
+    evaluated = {v.route_id: v for v in ladder.evaluate(req, now=NOW)}
+    assert evaluated["op/strong"].capacity_class is capacity
+    assert evaluated["op/strong"].rank == 0
+    assert calls == []
+    assert not ladder.admitted.launchable("op/strong")
+
+    selected, verdicts = ladder.select(req, now=NOW)
+    assert calls == (["op/strong"] if confirmation_ok else ["op/strong", "cc/weak"])
+    assert selected is not None
+    assert selected.route_id == ("op/strong" if confirmation_ok else "cc/weak")
+    assert ladder.admitted.launchable(selected.route_id)
+    if not confirmation_ok:
+        assert "op/strong" not in ladder.admitted
+        rejected = next(v for v in verdicts if v.route_id == "op/strong")
+        assert rejected.reason == "authentication" and rejected.failed_stage is not None

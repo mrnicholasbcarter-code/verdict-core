@@ -254,7 +254,7 @@ class TestAgenticGate:
 
 
 class TestUnknownOptIn:
-    def test_unknown_blocked_by_default_for_workers(self, tmp_path: Path) -> None:
+    def test_unknown_economic_class_allowed_without_opt_in(self, tmp_path: Path) -> None:
         """UNKNOWN capacity: auth=apikey with no pricing -> UNKNOWN class."""
         rows = [_row("unk/model-a", owned_by="unknown_provider", pricing=None)]
         # Remove pricing from row to get UNKNOWN capacity
@@ -263,7 +263,9 @@ class TestUnknownOptIn:
         ladder, _ = _make(tmp_path, rows, conns, allow_unknown=False)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["unk/model-a"].reason == "unknown_capacity_not_opted_in"
+        assert by_id["unk/model-a"].capacity_class is CapacityClass.UNKNOWN
+        assert by_id["unk/model-a"].failed_stage is None
+        assert by_id["unk/model-a"].rank == 0
 
     def test_unknown_allowed_with_opt_in(self, tmp_path: Path) -> None:
         rows = [_row("unk/model-a", owned_by="unknown_provider", pricing=None)]

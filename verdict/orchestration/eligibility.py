@@ -50,8 +50,6 @@ if TYPE_CHECKING:
     from verdict.orchestration.session_evidence import SessionLedger, SessionStats
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
-# Capacity that costs nothing extra per call (already paid for or free).
-_PREPAID_CAPACITY = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
 # Ranks an unknown-capability route after every known one (tiers span 0..3).
 _UNKNOWN_SLACK = 4
 _EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-xhigh", "-max", "-ultra")
@@ -807,26 +805,9 @@ class EligibilityLadder:
         if backend_pool(route_id) in aliased_pools_for(req.exclude_routes):
             return "excluded_family"
         lowered = route_id.lower()
-        # Spend guard: frontier capability (classifier tier 0, or a declared
-        # tier 0) is kept off non-frontier-worthy work only when it would cost
-        # per call. Subscription/free frontier capacity is already paid for, so
-        # it stays eligible and ranks by its rating like any other route.
-        if (
-            not req.frontier_worthy
-            and _capability_tier(row, route_id) == 0
-            and capacity not in _PREPAID_CAPACITY
-        ):
-            return "frontier_restricted"
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:
                 return "effort_duplicate"
-        # UNKNOWN capacity gate: never for implementation unless opted in.
-        if (
-            capacity == CapacityClass.UNKNOWN
-            and not req.frontier_worthy
-            and not getattr(self, "_allow_unknown", False)
-        ):
-            return "unknown_capacity_not_opted_in"
         # Agentic gate: a FREE route qualifies as an implementation worker
         # only when a FRESH AGENTIC probe PASS is in the health cache.
         # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
