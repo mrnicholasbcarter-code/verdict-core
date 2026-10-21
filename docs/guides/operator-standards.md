@@ -29,7 +29,13 @@ owns enforced invariants. Follow the [release workflow](../../CONTRIBUTING.md) a
 - **One story owns one worktree; one integration authority.** Parallel implementation uses disjoint file/authority ownership and dependency-ready contracts. Serialize integration and heavy gates; never alter the checkout under a running exact-head gate. Source changes invalidate prior review/proof. Attribute each result to the SHA actually tested, preserving failed runs separately from later successes.
   Source: operator decisions and observed lessons, 2026-10-10.
 
-## Use qualified capacity, free first
+## Use qualified capacity, price-free
+
+**Superseded in part by BOD-342 (2026-10-21):** Verdict's own selection is
+price-free (strongest proven-capable route first); there is no default
+free-first or cheaper-first ordering, and no economic admission gate. The
+"free first" framing below describes the superseded 2026-10-10 policy and is
+kept for history; current behavior follows BOD-342.
 
 - **Free-first means accepted work, not free calls.** Prefer a healthy, sufficiently qualified free route. Use included subscription capacity when no suitable free equivalent exists or the role needs it; optimize accepted/merged work, retries and review cost. Unknown quality is guarded exploration.
   Source: operator decisions and observed lessons, 2026-10-10.
@@ -75,8 +81,11 @@ owns enforced invariants. Follow the [release workflow](../../CONTRIBUTING.md) a
 ## Decision records and evidence boundaries
 
 - [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) records the
-  capable-free-first operator amendment (2026-09-29 and 2026-10-10). Health probes
-  are not role/session qualification.
+  capable-free-first operator amendment (2026-09-29 and 2026-10-10), itself
+  superseded in part by the BOD-342 price-free selection decision
+  (2026-10-21): strongest proven-capable route first, no default free-first
+  ordering, no economic admission gate. Health probes are not role/session
+  qualification.
 - [ADR-033](../adr/ADR-033-shared-memory-provider.md) and
   [ADR-034](../adr/ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md)
   supersede only the conflicting memory authority in
