@@ -850,3 +850,52 @@ def test_run_forever_survives_an_on_cycle_error(tmp_path: Path) -> None:
     prober.run_forever()
     assert len(cycles) == 2
     assert [type(e) for e in errors] == [BrokenPipeError]
+
+
+@pytest.mark.parametrize("confirmed_outage", [False, True])
+def test_daemon_agentic_auth_failure_keeps_existing_outage_buffer(tmp_path, confirmed_outage):
+    from verdict.prove_at_rest import AgenticFakeFile
+
+    cache = HealthCache(tmp_path / "health.json")
+    prober = Prober(
+        cache,
+        lambda: (),
+        _dead_chat,
+        clock=lambda: NOW,
+        monotonic=lambda: 0.0,
+        gateway_auth_check=(lambda timeout: ProbeExchange(http_status=401, ok=False))
+        if confirmed_outage
+        else None,
+    )
+    prober._request_cap = 10
+    stats = CycleStats()
+    prober._record_agentic(
+        _free("p/auth"), [ProbeExchange(http_status=401, ok=False)], AgenticFakeFile(), stats
+    )
+    assert cache.entry("p/auth") is None
+    assert stats.auth_outage is confirmed_outage
+    assert bool(prober._auth_fail_buffer) is not confirmed_outage
+
+
+@pytest.mark.parametrize("minutes", [0, 5])
+def test_daemon_auth_buffer_respects_newer_evidence_and_same_time_negative(tmp_path, minutes):
+    from verdict.prove_at_rest import AgenticFakeFile
+
+    cache = HealthCache(tmp_path / "health.json")
+    prober = Prober(cache, lambda: (), _dead_chat, clock=lambda: NOW)
+    stats = CycleStats()
+    prober._record_agentic(
+        _free("p/auth"), [ProbeExchange(http_status=401, ok=False)], AgenticFakeFile(), stats
+    )
+    later = NOW + timedelta(minutes=minutes)
+    cache.record(
+        "p/auth", ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True), later
+    )
+    prober._record_agentic(
+        _free("q/other"), [ProbeExchange(http_status=500, ok=False)], AgenticFakeFile(), stats
+    )
+    entry = cache.entry("p/auth")
+    assert entry.agentic_ok is (minutes > 0)
+    assert entry.category == ("ok" if minutes else "authentication")
+    assert entry.checked_at == later
+    assert not prober._auth_fail_buffer

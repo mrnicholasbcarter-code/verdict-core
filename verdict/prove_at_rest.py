@@ -1216,6 +1216,9 @@ class Prober:
     def _flush_auth_fail_buffer(self, stats: CycleStats) -> None:
         """Write every buffered auth-outage-window negative as a real failure."""
         for buffered_id, buffered_result, buffered_now in self._auth_fail_buffer:
+            previous = self.cache.entry(buffered_id)
+            if previous is not None and previous.checked_at > buffered_now:
+                continue
             self.cache.record(buffered_id, buffered_result, buffered_now)
             stats.probed += 1
             stats.negative += 1
@@ -1687,11 +1690,7 @@ class Prober:
         Partial conversations never become capability evidence.
         """
         observed = self.clock()
-        outcome: dict[str, Any] = {
-            "result": "skipped_cooldown",
-            "turns_sent": 0,
-            "latency_ms": None,
-        }
+        outcome: dict[str, Any] = {"result": "skipped_bucket", "turns_sent": 0, "latency_ms": None}
         if self.monotonic() >= deadline:
             outcome["result"] = "skipped_deadline"
             return outcome
@@ -1730,13 +1729,17 @@ class Prober:
             ):
                 superseded = True
                 return
-            self._record_agentic(route, exchanges, fake_file, stats, observed_at=observed)
+            self._record_agentic(
+                route, exchanges, fake_file, stats, observed_at=observed, buffer_auth=False
+            )
 
         self.cache.merge_and_save(record, monotonic=self.monotonic)
         if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
             outcome["result"] = "rate_limited"
         elif superseded:
             outcome["result"] = "skipped_newer_evidence"
+        elif exchanges[-1].http_status in (401, 403):
+            outcome["result"] = "auth_failed"
         elif stats.agentic_passed:
             outcome["result"] = "pass"
         else:
@@ -1756,6 +1759,7 @@ class Prober:
         stats: CycleStats,
         *,
         observed_at: datetime | None = None,
+        buffer_auth: bool = True,
     ) -> None:
         now = observed_at if observed_at is not None else self.clock()
         last = exchanges[-1]
@@ -1798,7 +1802,7 @@ class Prober:
         )
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
-        if self._buffer_auth_failure(route, result, now, stats):
+        if buffer_auth and self._buffer_auth_failure(route, result, now, stats):
             # Auth buffer may later flush as a real pool-cooling negative.
             # If this result is already a pool-cooling category and not
             # route-scoped, revoke half-open now so a sibling cannot start.

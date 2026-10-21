@@ -245,7 +245,9 @@ def test_current_negative_and_cooldown_are_skipped(tmp_path):
     cache.record(
         "alias/strong", ProbeResult(category="upstream", chat_ok=False, tool_ok=False), NOW
     )
-    cache.zero_bucket("q", NOW + timedelta(minutes=5))
+    cache.record(
+        "q/other", ProbeResult(category="authentication", chat_ok=False, tool_ok=False), NOW
+    )
     cache.save()
     calls = []
     report = screen(tmp_path, calls, cache=cache)
@@ -320,3 +322,101 @@ def test_partial_deadline_counts_sent_turn_but_writes_no_proof(tmp_path):
     assert report["passed"] == 0
     assert report["stopped_reason"] == "wall_cap"
     assert HealthCache(tmp_path / "health.json").entry("alias/strong") is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_screen_auth_failure_cannot_flush_over_newer_positive(tmp_path, status):
+    calls = []
+    good = passing(calls)
+    path = tmp_path / "health.json"
+    newer = NOW + timedelta(minutes=5)
+
+    def send(route, payload, timeout):
+        if route == "alias/strong":
+            calls.append((route, payload))
+            return ProbeExchange(http_status=status, ok=False)
+        if route == "q/model":
+            other = HealthCache(path)
+            other.record(
+                "alias/strong",
+                ProbeResult(
+                    category="ok",
+                    chat_ok=True,
+                    tool_ok=True,
+                    probe_class="agentic",
+                    agentic_ok=True,
+                    identity="verified",
+                ),
+                newer,
+            )
+            other.save()
+        return good(route, payload, timeout)
+
+    report = screen(tmp_path, calls, transport=send, max_per_provider=5, max_routes=5)
+    entry = HealthCache(path).entry("alias/strong")
+    assert entry.agentic_ok and entry.checked_at == newer
+    assert report["routes"][0]["result"] == "auth_failed"
+    assert next(r for r in report["routes"] if r["route_id"] == "q/model")["result"] == "pass"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_every_screen_route_fails_auth_and_report_matches_cache(tmp_path, status):
+    calls = []
+
+    def send(route, payload, timeout):
+        calls.append((route, payload))
+        return ProbeExchange(http_status=status, ok=False)
+
+    report = screen(tmp_path, calls, transport=send, max_per_provider=5, max_routes=5)
+    cache = HealthCache(tmp_path / "health.json")
+    attempted = [row for row in report["routes"] if row["turns_sent"]]
+    assert attempted
+    assert report["passed"] == 0
+    assert report["model_requests_sent"] == len(calls) == len(attempted)
+    for row in report["routes"]:
+        entry = cache.entry(row["route_id"])
+        if row["turns_sent"]:
+            assert row["result"] == "auth_failed"
+            assert entry.category == ("authentication" if status == 401 else "permission")
+            assert entry.checked_at == NOW
+            assert not entry.agentic_ok and entry.http_status == status
+        else:
+            assert row["result"].startswith("skipped_")
+            assert entry is None
+
+
+def test_empty_bucket_is_not_reported_as_cooldown(tmp_path):
+    cache = HealthCache(tmp_path / "health.json")
+    assert cache.reserve_bucket("q", NOW, amount=10) is not None
+    calls = []
+    report = screen(tmp_path, calls, cache=cache, providers=("q",))
+    assert calls == []
+    assert report["routes"][0]["result"] == "skipped_bucket"
+
+
+@pytest.mark.parametrize(
+    "status,detail,scope,cooled",
+    [
+        (401, "bad credentials", None, True),
+        (403, "account access denied", None, True),
+        (403, "model alias/strong is not permitted", "route", False),
+    ],
+)
+def test_screen_auth_keeps_existing_failure_scope_and_pool_cooldown(
+    tmp_path, status, detail, scope, cooled
+):
+    from verdict.prove_at_rest import _cooled_pools
+
+    cache = HealthCache(tmp_path / "health.json")
+    calls = []
+
+    def send(route, payload, timeout):
+        calls.append((route, payload))
+        return ProbeExchange(http_status=status, ok=False, detail=detail)
+
+    report = screen(tmp_path, calls, cache=cache, transport=send, max_routes=1)
+    assert report["routes"][0]["result"] == "auth_failed"
+    entry = HealthCache(tmp_path / "health.json").entry("alias/strong")
+    assert entry.failure_scope == scope
+    assert entry.pool == "alias"
+    assert ("alias" in _cooled_pools(cache, NOW)) is cooled

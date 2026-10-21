@@ -263,3 +263,17 @@ def test_reviewer_exclusion_still_excludes_alias_siblings(
     )
     assert result.route is None
     assert "excluded_family" in result.reasons
+
+
+def test_live_implementation_without_requires_keeps_default_tools(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    live_pool[1]["capabilities"] = {"tool_calling": False}
+    monkeypatch.setattr(
+        "sys.argv", ["verdict", "choose", "--task-class", "implementation", "--json"]
+    )
+    cli.main()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"]["route_id"] == "free/weak"

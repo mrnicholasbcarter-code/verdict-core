@@ -118,6 +118,7 @@ def _fake_cli(eligibility: dict[str, Any], *, choose_exit: int = 2):
         if name == "choose":
             # main's choose CLI: --task-class is required; there is no --role.
             assert "--task-class" in args and "--role" not in args, args
+            assert args[args.index("--capacity") + 1] == "free,subscription"
             return (
                 choose_exit,
                 "",

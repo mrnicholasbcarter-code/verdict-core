@@ -21,6 +21,7 @@ from verdict.orchestration.credential_pools import canonical_route, pool_of
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     HealthCache,
+    HealthCacheLockTimeoutError,
     agentic_capability,
     default_cache_path,
 )
@@ -369,6 +370,8 @@ def cmd_identify(
             if all_excluded
             else identify_report()
         )
+    except HealthCacheLockTimeoutError as exc:
+        raise SystemExit(f"health_cache_{exc.reason}: {exc}") from exc
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if output_json:

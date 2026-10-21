@@ -225,3 +225,22 @@ def test_native_passive_all_excluded_flag(monkeypatch, capsys, all_excluded):
     assert len(report["excluded_routes"]) == (202 if all_excluded else 100)
     assert report["excluded_routes_total"] == 202
     assert report["excluded_routes_truncated"] is not all_excluded
+
+
+@pytest.mark.parametrize("error", ["lock", "value"])
+def test_identify_expected_errors_exit_cleanly(monkeypatch, error):
+    from verdict import cli, identify
+    from verdict.orchestration.health_cache import HealthCacheLockTimeoutError
+
+    def fail(**kwargs):
+        if error == "lock":
+            raise HealthCacheLockTimeoutError("cache lock wait expired")
+        raise ValueError("screen_caps_required: positive caps required")
+
+    monkeypatch.setattr(identify, "identify_report", fail)
+    monkeypatch.setattr("sys.argv", ["verdict", "identify", "--passive", "--json"])
+    with pytest.raises(
+        SystemExit, match="lock_timeout" if error == "lock" else "screen_caps_required"
+    ) as exc:
+        cli.main()
+    assert exc.value.code != 0
