@@ -1,7 +1,7 @@
-"""Setup's warm-cache step reports the real timer state (BOD-411).
+"""Setup installs only identify maintenance after explicit consent.
 
 Setup must not claim "Service installer: not available yet" when
-``verdict prove-at-rest install-service`` has existed since #802: it calls
+``verdict identify install-service`` has existed since #802: it calls
 the installer and reports the same timer state doctor checks.
 """
 
@@ -12,7 +12,7 @@ import io
 import pytest
 from rich.console import Console
 
-import verdict.prove_at_rest_service as prove_at_rest_service
+import verdict.identify_service as identify_service
 from verdict.home_setup_render import _warm_cache
 from verdict.terminal_ui import TerminalUI
 
@@ -32,7 +32,7 @@ def test_warm_cache_choosing_on_calls_install_service_and_reports_real_state(
         install_calls.append(kwargs)
         return {"changed": True}
 
-    monkeypatch.setattr(prove_at_rest_service, "manage_service", fake_manage_service)
+    monkeypatch.setattr(identify_service, "manage_service", fake_manage_service)
 
     states = iter(
         [
@@ -40,7 +40,7 @@ def test_warm_cache_choosing_on_calls_install_service_and_reports_real_state(
             {"state": "active", "installed": True, "failed": False, "active": True},
         ]
     )
-    monkeypatch.setattr(prove_at_rest_service, "timer_state", lambda unit: next(states))
+    monkeypatch.setattr(identify_service, "timer_state", lambda unit: next(states))
 
     answers = iter(["on", "y"])
     notes: list[str] = []
@@ -56,13 +56,13 @@ def test_warm_cache_choosing_off_leaves_timer_untouched(
     ui: TerminalUI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        prove_at_rest_service,
+        identify_service,
         "timer_state",
         lambda unit: {"state": "active", "installed": True, "failed": False, "active": True},
     )
     install_calls = []
     monkeypatch.setattr(
-        prove_at_rest_service, "manage_service", lambda **kwargs: install_calls.append(kwargs)
+        identify_service, "manage_service", lambda **kwargs: install_calls.append(kwargs)
     )
 
     notes: list[str] = []
@@ -85,11 +85,11 @@ def test_declined_metadata_timer_opt_in_does_not_read_or_install_state(
         metadata_service, "manage_service", lambda **_kwargs: calls.append("install")
     )
     monkeypatch.setattr(
-        prove_at_rest_service,
+        identify_service,
         "timer_state",
         lambda unit: {"state": "inactive", "installed": False, "failed": False, "active": False},
     )
-    monkeypatch.setattr(prove_at_rest_service, "manage_service", lambda **_kwargs: {})
+    monkeypatch.setattr(identify_service, "manage_service", lambda **_kwargs: {})
 
     notes: list[str] = []
     _warm_cache(ui, iter(["off", "y", "off", "y"]).__next__, "http://localhost:20128", notes)

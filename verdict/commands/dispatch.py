@@ -574,9 +574,29 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             dry_run=getattr(args, "dry_run", False),
         )
     elif args.command == "identify":
+        if args.service_command:
+            if args.passive or args.screen or args.save_report:
+                raise SystemExit("service commands cannot be combined with report modes")
+            from verdict.identify_service import manage_service
+
+            print(
+                json.dumps(
+                    manage_service(
+                        dry_run=args.dry_run,
+                        uninstall=args.uninstall or args.service_command == "uninstall-service",
+                    ),
+                    indent=2,
+                )
+            )
+            return
+        if not (args.passive or args.screen):
+            raise SystemExit(2)
+        if args.save_report and not args.passive:
+            raise SystemExit("--save-report requires --passive")
         from verdict.identify import cmd_identify
 
         cmd_identify(
+            save_report=args.save_report,
             output_json=args.output_json,
             all_excluded=args.all_excluded,
             screen=args.screen,

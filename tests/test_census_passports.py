@@ -1004,20 +1004,19 @@ def test_census_install_updates_runtime_and_reports_last_result(tmp_path, monkey
     assert status["last_result"] == {"updated": 4, "probed": 6}
 
 
-def test_doctor_census_section_shows_version_and_last_result():
+def test_doctor_census_section_marks_retired_runtime_without_install_advice():
     from verdict.doctor_diagnostics import census_runtime_section
 
-    row = census_runtime_section(
-        {"version": "0.5.0+abc123", "last_result": {"updated": 4, "probed": 6}}
-    )
-    assert row[0] == "Census runtime"
-    assert row[1] == "ok"
-    assert "0.5.0+abc123" in row[2]
-    assert "updated=4" in row[2]
-    assert "probed=6" in row[2]
-    missing = census_runtime_section({"version": None, "last_result": None})
-    assert missing[1] == "warn"
-    assert "not installed" in missing[2]
+    for status in (
+        {"version": "0.5.0+abc123", "last_result": {"updated": 4, "probed": 6}},
+        {"version": None, "last_result": None},
+    ):
+        row = census_runtime_section(status)
+        assert row[0] == "Census runtime"
+        assert row[1] == "note"
+        assert "retired" in row[2]
+        assert "identify" in row[2]
+        assert "--install" not in row[2]
 
 
 def test_census_command_records_last_result_for_doctor(tmp_path, monkeypatch, capsys):
@@ -1156,15 +1155,19 @@ def test_load_census_cooldowns_tolerates_payload_shapes():
         assert load_census_cooldowns("http://gw", transport=transport) == expected
 
 
-def test_doctor_census_section_warns_when_last_result_is_stale():
+def test_doctor_census_section_is_retired_regardless_of_old_result_age():
     from verdict.doctor_diagnostics import census_runtime_section
 
-    fresh = {"finished_at": datetime.now(timezone.utc).isoformat(), "updated": 4}
-    assert census_runtime_section({"version": "v", "last_result": fresh})[1] == "ok"
-    stale = {"finished_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}
-    row = census_runtime_section({"version": "v", "last_result": stale})
-    assert row[1] == "warn"
-    assert "stale" in row[2]
+    for finished_at in (
+        datetime.now(timezone.utc),
+        datetime.now(timezone.utc) - timedelta(hours=2),
+    ):
+        row = census_runtime_section(
+            {"version": "v", "last_result": {"finished_at": finished_at.isoformat()}}
+        )
+        assert row[1] == "note"
+        assert "retired" in row[2]
+        assert "verdict-census.timer" not in row[2]
 
 
 def test_census_skips_routes_with_unexpired_negative_health(tmp_path):

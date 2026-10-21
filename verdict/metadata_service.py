@@ -106,7 +106,7 @@ def _show(
                 "--user",
                 "show",
                 "-p",
-                "LoadState,ActiveState,SubState,LastTriggerUSec,Result,ExecMainStatus,ExecMainExitTimestamp",
+                "LoadState,ActiveState,SubState,LastTriggerUSec,Result,ExecMainStatus,ExecMainExitTimestamp,NextElapseUSecRealtime,NextElapseUSecMonotonic",
                 unit,
             ]
         )
