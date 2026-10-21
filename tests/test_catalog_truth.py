@@ -448,16 +448,17 @@ class TestNotFreeOverride:
 # -----------------------------------------------------------------------
 
 
-class TestSelectionOrderUnchanged:
-    """The _CAPACITY_ORDER mapping must be unchanged (Story 3 holds this)."""
+class TestSelectionOrderIsPriceFree:
+    """Capacity class is display-only; it never enters the rank key."""
 
-    def test_capacity_order_is_free_first_for_every_role(self) -> None:
-        # BOD-334: planners and workers share one free-first order after the
-        # capability/admission gates (the planner keeps a tier-2 floor).
-        assert _CAPACITY_ORDER[CapacityClass.FREE] == 0
-        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 1
-        assert _CAPACITY_ORDER[CapacityClass.METERED] == 2
-        assert _CAPACITY_ORDER[CapacityClass.UNKNOWN] == 3
+    def test_capacity_order_is_not_a_rank_key(self) -> None:
+        ladder = _make_ladder()
+        req = TaskRequirements(required_capabilities=frozenset({"tools"}))
+        _assessments, candidates = ladder._assess_all(req, NOW)
+        for a in candidates:
+            key = ladder._rank_key(a)
+            assert ladder._rank_components(a)["capacity_order"] == _CAPACITY_ORDER[a.capacity]
+            assert key[0] == ladder._rank_components(a)["rating_rank"]
 
 
 # -----------------------------------------------------------------------
