@@ -196,3 +196,32 @@ def test_native_screen_cli_calls_existing_conversation_with_filters(monkeypatch,
     assert report["mode"] == "screen" and report["model_requests_sent"] == 3
     assert report["passed"] == 1
     assert HealthCache(tmp_path / "health.json").entry("q/model").agentic_ok
+
+
+@pytest.mark.parametrize("all_excluded", [False, True])
+def test_native_passive_all_excluded_flag(monkeypatch, capsys, all_excluded):
+    from verdict import cli, identify
+    from verdict.omniroute_evidence import parse_omniroute_evidence
+
+    data = payloads()
+    data["v1_models"]["data"].extend(
+        {"id": f"alpha/unobserved-{i}", "owned_by": "alpha"} for i in range(200)
+    )
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://127.0.0.1:20128", None)
+    )
+    monkeypatch.setattr(
+        identify,
+        "fetch_omniroute_evidence",
+        lambda *a, **kw: parse_omniroute_evidence(**data, now=NOW),
+    )
+    monkeypatch.setattr(identify, "load_store", metadata)
+    args = ["verdict", "identify", "--passive", "--json"]
+    if all_excluded:
+        args.append("--all-excluded")
+    monkeypatch.setattr("sys.argv", args)
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["excluded_routes"]) == (202 if all_excluded else 100)
+    assert report["excluded_routes_total"] == 202
+    assert report["excluded_routes_truncated"] is not all_excluded

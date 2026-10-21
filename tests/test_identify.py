@@ -75,7 +75,7 @@ def test_passive_report_preserves_rating_provenance_and_uncertainty():
     report = identify_models(snapshot, metadata=metadata())
     assert report["model_calls"] == 0
     assert report["inventory_complete"] is False
-    assert report["inventory_coverage"] == "unknown"
+    assert report["inventory_coverage"] == "catalog_only"
     assert report["traffic_scope"] == "mixed_or_unknown"
     assert report["traffic_route_alias_count"] == 5
     assert report["independent_proof_count"] is None
@@ -94,7 +94,8 @@ def test_passive_report_preserves_rating_provenance_and_uncertainty():
     assert rows[-1]["rating_unknown_reason"] == "missing_or_stale_task_rating"
     assert rows[-1]["last_request_at"] is None
     assert report["excluded_routes"] == [
-        {"route_id": "beta/cooled", "reason": "provider_unavailable"}
+        {"route_id": "a/not-entitled", "reason": "traffic_last_status_error:403"},
+        {"route_id": "beta/cooled", "reason": "provider_unavailable"},
     ]
     connection = report["connections"][0]
     assert connection["usable"] is True
@@ -129,3 +130,73 @@ def test_source_errors_and_cooldowns_do_not_become_availability():
     } == {"a/best", "alias/best"}
     for route in snapshot.cooled_models:
         assert route not in {r["route_id"] for r in report["available_routes"]}
+
+
+def test_inventory_errors_and_unobserved_routes_are_accounted_for():
+    from verdict.identify import identify_models
+
+    data = payloads()
+    for status in (429, 401):
+        data["v1_models"]["data"].append(
+            {"id": f"alpha/error-{status}", "owned_by": "alpha", "root": f"error-{status}"}
+        )
+        data["health_matrix"]["providers"][0]["accounts"][0]["models"].append(
+            {
+                "model": f"error-{status}",
+                "status": "error",
+                "requests": 8,
+                "successes": 2,
+                "lastStatus": status,
+            }
+        )
+    data["v1_models"]["data"].append({"id": "alpha/unobserved", "owned_by": "alpha"})
+    snapshot = parse_omniroute_evidence(**data, now=NOW)
+    report = identify_models(snapshot, metadata=metadata())
+    excluded = {r["route_id"]: r["reason"] for r in report["excluded_routes"]}
+    assert excluded["alpha/error-429"] == "traffic_last_status_error:429"
+    assert excluded["alpha/error-401"] == "traffic_last_status_error:401"
+    assert excluded["alpha/unobserved"] == "no_traffic_evidence"
+    available = {r["route_id"] for r in report["available_routes"]}
+    assert available == {"a/best", "alias/best", "free/weak", "alpha/unknown"}
+    assert set(excluded) | available == {r["id"] for r in data["v1_models"]["data"]}
+    assert report["inventory_complete"] is False
+    assert report["inventory_coverage"] == "catalog_only"
+
+
+def test_excluded_output_is_capped_with_exact_counts_and_traffic_first():
+    from verdict.identify import identify_models
+
+    data = payloads()
+    data["v1_models"]["data"].extend(
+        {"id": f"a/unobserved-{i:04}", "owned_by": "alpha"} for i in range(200)
+    )
+    snapshot = parse_omniroute_evidence(**data, now=NOW)
+    report = identify_models(snapshot, metadata=None)
+    assert len(report["excluded_routes"]) == 100
+    assert report["excluded_routes_total"] == 202
+    assert report["excluded_routes_truncated"] is True
+    assert report["excluded_routes_limit"] == 100
+    assert report["excluded_routes_order"] == "traffic_first_then_route_id"
+    assert report["excluded_routes_by_reason"] == {
+        "traffic_last_status_error:403": 1,
+        "provider_unavailable": 1,
+        "no_traffic_evidence": 200,
+    }
+    assert [r["route_id"] for r in report["excluded_routes"][:2]] == [
+        "a/not-entitled",
+        "beta/cooled",
+    ]
+    complete = identify_models(snapshot, metadata=None, all_excluded=True)
+    assert len(complete["excluded_routes"]) == 202
+    assert complete["excluded_routes_truncated"] is False
+    assert complete["excluded_routes_by_reason"] == report["excluded_routes_by_reason"]
+
+
+def test_missing_catalog_does_not_claim_catalog_coverage():
+    from verdict.identify import identify_models
+
+    data = payloads()
+    data["v1_models"] = None
+    report = identify_models(parse_omniroute_evidence(**data, now=NOW), metadata=None)
+    assert report["inventory_coverage"] == "unknown"
+    assert report["inventory_complete"] is False

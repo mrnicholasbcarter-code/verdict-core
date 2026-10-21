@@ -33,6 +33,8 @@ from verdict.prove_at_rest import (
     live_agentic_transport,
 )
 
+_EXCLUDED_ROUTES_LIMIT = 100
+
 _SOURCES = {
     "providers": "/api/providers",
     "resilience": "/api/resilience/connections",
@@ -52,8 +54,9 @@ def identify_models(
     *,
     metadata: MetadataSnapshot | None,
     identity_map: IdentityMap | None = None,
+    all_excluded: bool = False,
 ) -> dict[str, Any]:
-    """Report only exact mapped traffic routes; full supply is not exposed by A1."""
+    """Partition the observed catalog; availability still requires healthy mapped traffic."""
     available: list[str] = []
     excluded: list[dict[str, str]] = []
     for route, traffic in sorted(evidence.proven_by_traffic.items()):
@@ -66,6 +69,28 @@ def identify_models(
             available.append(route)
         else:
             excluded.append({"route_id": route, "reason": reason})
+    for route in sorted(evidence.inventory_route_ids - evidence.proven_by_traffic.keys()):
+        observed_traffic = evidence.traffic_by_route.get(route)
+        if (
+            observed_traffic is not None
+            and observed_traffic.last_status is not None
+            and observed_traffic.last_status >= 400
+        ):
+            reason = f"traffic_last_status_error:{observed_traffic.last_status}"
+        elif observed_traffic is not None and observed_traffic.status not in {"healthy", "degraded"}:
+            reason = f"traffic_last_status_error:{observed_traffic.status}"
+        elif (
+            observed_traffic is not None and observed_traffic.provider not in evidence.usable_providers
+        ):
+            reason = "provider_unavailable"
+        elif route in evidence.cooled_models:
+            reason = "model_cooling_down"
+        else:
+            reason = "no_traffic_evidence"
+        excluded.append({"route_id": route, "reason": reason})
+    observed_routes = evidence.proven_by_traffic.keys() | evidence.traffic_by_route.keys()
+    excluded.sort(key=lambda row: (row["route_id"] not in observed_routes, row["route_id"]))
+    excluded_counts = dict(sorted(Counter(row["reason"] for row in excluded).items()))
     rated = rank_models(
         available, metadata=metadata, identity_map=identity_map, now=evidence.fetched_at
     )
@@ -106,8 +131,15 @@ def identify_models(
         "fetched_at": _timestamp(evidence.fetched_at),
         "task_family": "code_edit",
         "inventory_complete": False,
-        "inventory_coverage": "unknown",
-        "inventory_unknown_reason": "full_inventory_not_exposed_by_evidence_reader",
+        "inventory_coverage": "unknown"
+        if "v1_models" in evidence.source_errors
+        else "catalog_only",
+        "inventory_unknown_reason": (
+            "catalog_source_unavailable"
+            if "v1_models" in evidence.source_errors
+            else "catalog_is_not_full_entitled_inventory"
+        ),
+        "inventory_route_count": len(evidence.inventory_route_ids),
         "traffic_scope": "mixed_or_unknown",
         "traffic_proof_strength": "historical_chat_only",
         "traffic_route_ids": sorted(evidence.proven_by_traffic),
@@ -129,7 +161,12 @@ def identify_models(
             for name, path in _SOURCES.items()
         ],
         "available_routes": routes,
-        "excluded_routes": excluded,
+        "excluded_routes": excluded if all_excluded else excluded[:_EXCLUDED_ROUTES_LIMIT],
+        "excluded_routes_total": len(excluded),
+        "excluded_routes_by_reason": excluded_counts,
+        "excluded_routes_limit": None if all_excluded else _EXCLUDED_ROUTES_LIMIT,
+        "excluded_routes_order": "traffic_first_then_route_id",
+        "excluded_routes_truncated": not all_excluded and len(excluded) > _EXCLUDED_ROUTES_LIMIT,
     }
 
 
@@ -145,12 +182,15 @@ def screen_models(
     identity_map: IdentityMap | None = None,
     providers: Sequence[str] = (),
     capacities: Sequence[str] = (),
+    all_excluded: bool = False,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Screen passive survivors strongest-first, with explicit consent and route caps."""
     _screen_options(allow_live_probe, max_per_provider, max_routes)
-    report = identify_models(evidence, metadata=metadata, identity_map=identity_map)
+    report = identify_models(
+        evidence, metadata=metadata, identity_map=identity_map, all_excluded=all_excluded
+    )
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
     prober = Prober(
@@ -256,6 +296,7 @@ def identify_report(
     max_routes: int | None = None,
     providers: Sequence[str] = (),
     capacities: Sequence[str] = (),
+    all_excluded: bool = False,
 ) -> dict[str, Any]:
     """Read the six passive OmniRoute sources and local metadata into one report."""
     if screen:
@@ -287,9 +328,12 @@ def identify_report(
             max_routes=max_routes,
             providers=providers,
             capacities=capacities,
+            all_excluded=all_excluded,
         )
     else:
-        report = identify_models(evidence, metadata=metadata, identity_map=identity_map)
+        report = identify_models(
+            evidence, metadata=metadata, identity_map=identity_map, all_excluded=all_excluded
+        )
     report.update(metadata_error=metadata_error, identity_map_error=mapping_error)
     return report
 
@@ -303,6 +347,7 @@ def cmd_identify(
     max_routes: int | None = None,
     providers: Sequence[str] = (),
     capacities: Sequence[str] = (),
+    all_excluded: bool = False,
 ) -> None:
     try:
         report = (
@@ -313,8 +358,11 @@ def cmd_identify(
                 max_routes=max_routes,
                 providers=providers,
                 capacities=capacities,
+                all_excluded=all_excluded,
             )
             if screen
+            else identify_report(all_excluded=True)
+            if all_excluded
             else identify_report()
         )
     except ValueError as exc:
@@ -331,5 +379,12 @@ def cmd_identify(
             f"Passive identify: {report['usable_connection_count']} usable connections; "
             f"{len(report['available_routes'])} available mapped traffic routes."
         )
-        print("Inventory coverage unknown; traffic scope mixed_or_unknown; historical chat only.")
+        print(
+            f"Inventory coverage {report['inventory_coverage']}; "
+            "traffic scope mixed_or_unknown; historical chat only."
+        )
+        print(
+            f"Excluded {report['excluded_routes_total']} routes: "
+            f"{json.dumps(report['excluded_routes_by_reason'], sort_keys=True)}."
+        )
         print(f"Source errors: {', '.join(report['source_errors']) or 'none'}; model calls: 0.")

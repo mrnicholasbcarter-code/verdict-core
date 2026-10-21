@@ -578,6 +578,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 
         cmd_identify(
             output_json=args.output_json,
+            all_excluded=args.all_excluded,
             screen=args.screen,
             allow_live_probe=args.allow_live_probe,
             max_per_provider=args.max_per_provider,

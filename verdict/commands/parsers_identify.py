@@ -21,4 +21,9 @@ def register(subparsers: Any) -> None:
         choices=["free", "subscription", "metered", "unknown"],
         dest="capacities",
     )
+    parser.add_argument(
+        "--all-excluded",
+        action="store_true",
+        help="Include every excluded route (default: first 100, traffic first)",
+    )
     parser.add_argument("--json", dest="output_json", action="store_true")
