@@ -1038,10 +1038,7 @@ async def test_planner_reselection_follows_rating_not_capacity_class(tmp_path, m
     # Price excluded: the stronger subscription route is tried first; free
     # capacity class does not jump ahead. Reselection then leaves the pool.
     started = [(r["route_id"], r["capacity_class"]) for r in rows if r["type"] == "plan_started"]
-    assert started == [
-        ("cc/claude-sonnet-5", "subscription"),
-        ("gl/glm-5", "free"),
-    ]
+    assert started == [("cc/claude-sonnet-5", "subscription"), ("gl/glm-5", "free")]
 
 
 @pytest.mark.parametrize("cut", [0, 1, 5, 9, 13, 20, 31])

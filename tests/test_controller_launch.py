@@ -1240,6 +1240,7 @@ def test_production_factory_does_not_mark_paid_admitted_routes_free() -> None:
         bundle.hooks.seed_offers(_mission(), NOW)
     assert exc.value.reason_code == "no_eligible_route"
 
+
 def test_expired_authorized_passport_still_seeds_offer() -> None:
     """Operational expiry must not remove a previously authorized passport."""
     from verdict.controller_selection import build_evidence_backed_seed_offers
