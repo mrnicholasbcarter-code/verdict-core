@@ -42,13 +42,20 @@ def test_setup_dry_run_preserves_existing_config(monkeypatch, tmp_path):
 
     from rich.console import Console
 
-    from verdict import acceptance_service, census_passports_service, prove_at_rest_service
+    from verdict import (
+        acceptance_service,
+        census_passports_service,
+        identify_service,
+        prove_at_rest_service,
+    )
 
     install_prove = prove_at_rest_service.manage_service
     from verdict.census_passports_service import package_build
     from verdict.home_setup_render import _warm_cache
     from verdict.terminal_ui import TerminalUI
 
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "state"))
     units = tmp_path / "units"
     units.mkdir()
@@ -72,7 +79,7 @@ def test_setup_dry_run_preserves_existing_config(monkeypatch, tmp_path):
 
     # 2. Declining the setup step keeps the existing unit and state untouched.
     monkeypatch.setattr(
-        prove_at_rest_service,
+        identify_service,
         "timer_state",
         lambda unit: {"state": "active", "installed": True, "failed": False, "active": True},
     )
@@ -84,18 +91,18 @@ def test_setup_dry_run_preserves_existing_config(monkeypatch, tmp_path):
 
     # 2b. Confirming the step reports the unit plan and where the old unit was saved.
     monkeypatch.setattr(
-        prove_at_rest_service,
+        identify_service,
         "manage_service",
         lambda **_kwargs: {
             "changed": True,
-            "plan": {prove_at_rest_service.SERVICE: "replace"},
+            "plan": {identify_service.SERVICE: "replace"},
             "rollback": str(tmp_path / "state" / "service-rollback" / "t"),
         },
     )
     confirmed: list[str] = []
     _warm_cache(ui, iter(["on", "y", "off", "n"]).__next__, "http://gw", confirmed)
     assert any("service-rollback" in note for note in confirmed)
-    assert f"{prove_at_rest_service.SERVICE} replace" in ui.console.file.getvalue()
+    assert f"{identify_service.SERVICE} replace" in ui.console.file.getvalue()
 
     # 3. The approved install saves the replaced unit before writing the new one.
     applied = acceptance_service.manage_service(unit_dir=units, run=calls.append)

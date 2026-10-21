@@ -35,7 +35,7 @@ def isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No doctor test reads the host's real systemd user units (BOD-411 review).
 
     CI runners have neither unit installed, so without this every test that
@@ -45,6 +45,20 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     ``verdict.prove_at_rest_service.timer_state`` again, explicitly.
     """
     monkeypatch.setattr(_prove_at_rest_service, "timer_state", _fake_timer_state_active)
+    import verdict.identify_service as identify_service
+
+    monkeypatch.setattr(identify_service, "timer_state", _fake_timer_state_active)
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    identify_service.save_report(
+        {
+            "mode": "passive",
+            "model_calls": 0,
+            "source_errors": [],
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -2809,6 +2823,18 @@ def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
     monkeypatch.setattr(preflight, "discover_sources", discover)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    from datetime import datetime, timezone
+
+    from verdict.identify_service import save_report
+
+    save_report(
+        {
+            "mode": "passive",
+            "model_calls": 0,
+            "source_errors": [],
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     for name in (
         "VERDICT_RUFLO_ROOT",
         "VERDICT_RUVECTOR_ROOT",

@@ -54,17 +54,16 @@ def test_health_cache_row_fails_when_file_missing() -> None:
     assert "does not exist" in row["detail"]
 
 
-def test_health_cache_row_fails_when_newest_entry_older_than_2x_probe_interval(
+def test_health_cache_row_accepts_usable_evidence_without_legacy_probe_cadence(
     _isolated_health_cache: Path,
 ) -> None:
-    # Probe interval is 300s; 2x is 600s. 601s old must fail.
+    # Usable evidence is not expired merely because the retired 300s loop is off.
     _record_one_route(_isolated_health_cache, checked_at=NOW - timedelta(seconds=601))
 
     row = dd.health_cache_row(now=NOW)
 
-    assert row["status"] == "failed"
-    assert "601" in row["detail"]
-    assert "probe interval" in row["detail"]
+    assert row["status"] == "ok"
+    assert "fresh" in row["detail"]
 
 
 def test_health_cache_row_ok_when_newest_entry_within_2x_probe_interval(
@@ -75,6 +74,26 @@ def test_health_cache_row_ok_when_newest_entry_within_2x_probe_interval(
     row = dd.health_cache_row(now=NOW)
 
     assert row["status"] == "ok"
+
+
+def test_health_cache_row_fails_after_evidence_lifetime_and_grace(
+    _isolated_health_cache: Path,
+) -> None:
+    from verdict.orchestration.health_cache import USABLE_SECONDS
+
+    _record_one_route(
+        _isolated_health_cache, checked_at=NOW - timedelta(seconds=USABLE_SECONDS + 1)
+    )
+    row = dd.health_cache_row(now=NOW)
+    assert row["status"] == "failed"
+    assert "no fresh or stale route" in row["detail"]
+
+
+def test_health_cache_row_fails_when_empty(_isolated_health_cache: Path) -> None:
+    HealthCache(_isolated_health_cache).save()
+    row = dd.health_cache_row(now=NOW)
+    assert row["status"] == "failed"
+    assert "no fresh or stale route" in row["detail"]
 
 
 def test_health_cache_row_fails_when_fresh_plus_stale_is_zero(_isolated_health_cache: Path) -> None:
@@ -98,15 +117,15 @@ def test_health_cache_row_fails_when_fresh_plus_stale_is_zero(_isolated_health_c
 # ---------------------------------------------------------------------------
 
 
-def test_installed_service_rows_fails_when_prove_at_rest_timer_missing(
+def test_installed_service_rows_fails_when_identify_timer_missing(
     _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from verdict.prove_at_rest_service import TIMER as PROVE_AT_REST_TIMER
+    from verdict.identify_service import TIMER as IDENTIFY_TIMER
 
     _record_one_route(_isolated_health_cache, checked_at=NOW)
 
     def fake_timer_state(unit: str) -> dict[str, object]:
-        if unit == PROVE_AT_REST_TIMER:
+        if unit == IDENTIFY_TIMER:
             return {"installed": False, "failed": False, "active": False, "state": "missing"}
         return {"installed": True, "failed": False, "active": True, "state": "active"}
 
@@ -115,11 +134,11 @@ def test_installed_service_rows_fails_when_prove_at_rest_timer_missing(
 
     monkeypatch.setattr(pars, "timer_state", fake_timer_state)
 
-    rows = dd.installed_service_rows(now=NOW)
+    rows = dd.installed_service_rows(now=NOW, timer_state=fake_timer_state)
 
-    prove_row = next(r for r in rows if r["label"] == "Prove-at-rest timer")
+    prove_row = next(r for r in rows if r["label"] == "Identify timer")
     assert prove_row["status"] == "failed"
-    assert PROVE_AT_REST_TIMER in prove_row["detail"]
+    assert IDENTIFY_TIMER in prove_row["detail"]
 
 
 def test_installed_service_rows_reports_metadata_timer_never_completed(
@@ -216,8 +235,22 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
 
     monkeypatch.setattr(pars, "timer_state", fake_timer)
     monkeypatch.setattr(metadata_service, "timer_state", fake_timer)
+    import json
 
-    rows = dd.installed_service_rows(now=NOW)
+    from verdict.identify_service import latest_report_path
+
+    latest_report_path().write_text(
+        json.dumps(
+            {
+                "mode": "passive",
+                "model_calls": 0,
+                "source_errors": [],
+                "fetched_at": NOW.isoformat(),
+            }
+        )
+    )
+
+    rows = dd.installed_service_rows(now=NOW, timer_state=fake_timer)
 
     assert all(r["status"] == "ok" for r in rows)
 
