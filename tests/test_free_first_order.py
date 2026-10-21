@@ -1,9 +1,9 @@
 """Tests for free-first worker order with agentic-probe qualification.
 
 Covers AC1-AC7 of free-first Story 3:
-1. Implementation-worker order: FREE > SUBSCRIPTION > METERED; UNKNOWN opt-in.
+1. Capacity class never orders ranking (price excluded); UNKNOWN opt-in.
 2. Agentic gate: FREE route + agentic PASS -> implementation; single-call only -> chat.
-3. All roles rank sufficient free capacity first; worker agentic gates stay unchanged.
+3. Worker agentic gates stay unchanged.
 4. Determinism: same inputs -> same choice; max 8 probes; read-only cache.
 5. Hard gates keep priority.
 6. Receipts/events: capacity_class, probe_class, checked_at, freshness.
@@ -19,11 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.contracts import CapacityClass, ProbeClass, TaskRequirements
-from verdict.orchestration.eligibility import (
-    _CAPACITY_ORDER,
-    _WORKER_CAPACITY_ORDER,
-    EligibilityLadder,
-)
+from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_OK,
@@ -156,20 +152,7 @@ def _build_cache(tmp_path: Path, entries: list[HealthEntry]) -> HealthCache:
 
 
 class TestCapacityOrdering:
-    def test_worker_capacity_order(self) -> None:
-        """Free-first order for workers."""
-        assert _WORKER_CAPACITY_ORDER[CapacityClass.FREE] == 0
-        assert _WORKER_CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 1
-        assert _WORKER_CAPACITY_ORDER[CapacityClass.METERED] == 2
-        assert _WORKER_CAPACITY_ORDER[CapacityClass.UNKNOWN] == 3
-
-    def test_planning_capacity_order(self) -> None:
-        """Free-first order for planning/review after sufficiency gates."""
-        assert _CAPACITY_ORDER[CapacityClass.FREE] == 0
-        assert _CAPACITY_ORDER[CapacityClass.SUBSCRIPTION] == 1
-        assert _CAPACITY_ORDER[CapacityClass.METERED] == 2
-
-    def test_free_ranks_first_for_worker_task(self, tmp_path: Path) -> None:
+    def test_capacity_class_does_not_rank_worker_task(self, tmp_path: Path) -> None:
         rows = [
             _row("op/model-a", owned_by="openrouter"),
             _row("gl/model-b", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -186,10 +169,11 @@ class TestCapacityOrdering:
         ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        assert ranked[0].route_id == "gl/model-b"
-        assert ranked[0].capacity_class == CapacityClass.FREE
+        # Price-free: the FREE route is eligible (agentic proof) but not first by class.
+        assert [v.route_id for v in ranked] == ["cc/model-c", "gl/model-b", "op/model-a"]
+        assert ranked[1].capacity_class == CapacityClass.FREE
 
-    def test_free_ranks_first_for_frontier_task(self, tmp_path: Path) -> None:
+    def test_capacity_class_does_not_rank_frontier_task(self, tmp_path: Path) -> None:
         rows = [
             _row("op/model-a", owned_by="openrouter"),
             _row("gl/model-b", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -203,8 +187,7 @@ class TestCapacityOrdering:
         ladder, _ = _make(tmp_path, rows, conns)
         verdicts = ladder.evaluate(FRONTIER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        assert ranked[0].route_id == "gl/model-b"
-        assert ranked[0].capacity_class == CapacityClass.FREE
+        assert [v.route_id for v in ranked] == ["cc/model-c", "gl/model-b", "op/model-a"]
 
 
 # ---- AC2: Agentic gate -----

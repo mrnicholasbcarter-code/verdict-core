@@ -22,14 +22,17 @@ from typing import Any
 
 from verdict.orchestration.contracts import EligibilityStage, RouteVerdict
 
-# The seven ordered components of EligibilityLadder._rank_key. Kept in this
-# module (rather than imported) so consumers can not accidentally depend on a
-# private ladder attribute; a mismatch is caught by the unit test that sorts
-# candidates on these exact keys and compares to the real selector.
+# The ordered components of EligibilityLadder._rank_key, as exposed in
+# rank_components. Kept in this module (rather than imported) so consumers can
+# not accidentally depend on a private ladder attribute; a mismatch is caught by
+# the unit test that sorts candidates on these exact keys and compares to the
+# real selector. Price and capacity class are display-only, never a reason.
 _RANK_COMPONENT_ORDER: tuple[str, ...] = (
-    "capacity_order",
+    "rating_basis",
+    "rating",
+    "declared_tier",
     "slack",
-    "price",
+    "quota_rank",
     "provider_pref",
     "load",
     "fit",
@@ -85,7 +88,10 @@ def _runner_up(verdicts: Sequence[RouteVerdict], *, exclude: str) -> RouteVerdic
     ranked = [
         v
         for v in verdicts
-        if v.route_id != exclude and v.rank is not None and v.rank_components is not None
+        if v.route_id != exclude
+        and v.failed_stage is None
+        and v.rank is not None
+        and v.rank_components is not None
     ]
     if not ranked:
         return None
@@ -93,32 +99,18 @@ def _runner_up(verdicts: Sequence[RouteVerdict], *, exclude: str) -> RouteVerdic
     return ranked[0]
 
 
-def _format_capacity_order(value: Any) -> str:
-    """Return a short human name for a capacity_order integer.
-
-    Derived from ``eligibility._CAPACITY_ORDER`` (free-first for every role),
-    so the label can never drift from the ranking. Falls back to the raw
-    integer if it does not match.
-    """
-    from verdict.orchestration.eligibility import _CAPACITY_ORDER
-
-    mapping = {order: capacity.value for capacity, order in _CAPACITY_ORDER.items()}
-    if isinstance(value, int) and value in mapping:
-        return mapping[value]
-    return str(value)
-
-
 def _describe(component: str, chosen: Any, other: Any) -> str:
     """One line comparing one rank component. Never invents a delta."""
-    if component == "capacity_order":
-        return (
-            f"cheaper capacity class than runner-up: "
-            f"{_format_capacity_order(chosen)} vs {_format_capacity_order(other)}"
-        )
+    if component == "rating_basis":
+        return f"stronger rating evidence than runner-up: {chosen} vs {other}"
+    if component == "rating":
+        return f"higher task rating than runner-up: {chosen} vs {other}"
+    if component == "declared_tier":
+        return f"stronger declared capability tier than runner-up: {chosen} vs {other}"
     if component == "slack":
         return f"less capability slack than runner-up (closer to task floor): {chosen} vs {other}"
-    if component == "price":
-        return f"lower price than runner-up: {chosen} vs {other}"
+    if component == "quota_rank":
+        return f"more measured quota left than runner-up: bucket {chosen} vs {other}"
     if component == "provider_pref":
         return f"preferred provider before runner-up: {chosen} vs {other}"
     if component == "load":
@@ -148,14 +140,19 @@ def _selected_because(selected: RouteVerdict, runner_up: RouteVerdict | None) ->
     other_components = runner_up.rank_components
     if other_components is None:
         return []
+    if selected.rank is not None and runner_up.rank is not None and selected.rank > runner_up.rank:
+        return [
+            "selection follows confirmation scheduling, not rank order: "
+            f"selected rank {selected.rank}, available rank {runner_up.rank}"
+        ]
     reasons: list[str] = []
     decided = False
     for key in _RANK_COMPONENT_ORDER:
         left = selected.rank_components.get(key)
         right = other_components.get(key)
         if left is None or right is None:
-            if key == "price" and left is None and right is None:
-                reasons.append("price unknown for both")
+            if left is None and right is None:
+                reasons.append(f"{key} unknown for both")
             else:
                 reasons.append(f"{key} unknown on one side: {left} vs {right}")
             continue
