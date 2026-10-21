@@ -247,16 +247,46 @@ def _persist_confirm_observations(
 
 
 def record_dispatch_observation(
-    route_id: str, *, healthy: bool, observed_at: datetime, passport_store_path: Path | None = None
+    route_id: str,
+    *,
+    healthy: bool,
+    observed_at: datetime,
+    passport_store_path: Path | None = None,
+    health_cache_path: Path | None = None,
+    failure_category: str = "upstream",
+    retry_after_seconds: float | None = None,
 ) -> None:
     """Refresh permit proof from a real confirm, screen or completed dispatch.
 
     This is liveness/authorization evidence only, never tool or task-quality
     credit. Callers supply the call's start time so concurrent negatives win.
     """
-    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.orchestration.health_cache import HealthCache, ProbeResult, default_cache_path
 
-    latest = HealthCache(default_cache_path()).entry(route_id)
+    cache = HealthCache(health_cache_path or default_cache_path())
+    if not healthy:
+
+        def record_negative(locked: HealthCache) -> None:
+            previous = locked.entry(route_id)
+            if previous is not None and (
+                previous.checked_at > observed_at
+                or (previous.checked_at == observed_at and not previous.healthy)
+            ):
+                return
+            locked.record(
+                route_id,
+                ProbeResult(
+                    category=failure_category,
+                    chat_ok=False,
+                    tool_ok=False,
+                    retry_after_seconds=retry_after_seconds,
+                    failure_scope="route",
+                ),
+                observed_at,
+            )
+
+        cache.merge_and_save(record_negative)
+    latest = cache.entry(route_id)
     if (
         healthy
         and latest is not None
@@ -630,16 +660,6 @@ def gate_admit_prove_confirm(
         bytes_left -= result.diagnostics.response_bytes
         successes += sum(_confirm_ok(item) for item in result.observations)
     by_id = {item.model_id: item for item in observations}
-    _persist_confirm_observations(
-        {
-            identity: observation
-            for identity, observation in by_id.items()
-            if observation.status != "skipped"
-        },
-        passport_store_path=passport_store_path,
-        passports_were_explicit=passports is not None,
-        now=current,
-    )
     for identity_id in shortlist:
         observation = by_id.get(identity_id)
         if observation is None:
@@ -662,11 +682,12 @@ def gate_admit_prove_confirm(
             if (
                 latest is not None
                 and not latest.healthy
-                and latest.checked_at >= observation.observed_at
+                and (latest.checked_at >= observation.observed_at or latest.until > current)
             ):
                 observation = replace(
                     observation, availability_state="denied", error="newer_negative"
                 )
+                by_id[identity_id] = observation
         confirm = _confirm_from_observation(observation)
         confirm_rows.append(confirm)
         if confirm.confirmed:
@@ -691,6 +712,16 @@ def gate_admit_prove_confirm(
                 NamedDrop(identity_id, REASON_PASSPORT_STALE, "passport was not refreshed")
             )
 
+    _persist_confirm_observations(
+        {
+            identity: observation
+            for identity, observation in by_id.items()
+            if observation.status != "skipped"
+        },
+        passport_store_path=passport_store_path,
+        passports_were_explicit=passports is not None,
+        now=current,
+    )
     return _finalize(
         receipt,
         admitted=tuple(sorted(confirmed_ids)),

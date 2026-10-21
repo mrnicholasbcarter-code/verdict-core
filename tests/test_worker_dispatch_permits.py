@@ -228,6 +228,7 @@ async def test_worker_failure_after_permit_stays_maybe_sent_and_retry_gets_new_p
             attempt_id=first.attempt_id,
             authorization_digest="x",
             expected_epoch=first.epoch,
+            qualified_at=_now(),
             proof_deadline=_now() + timedelta(seconds=30),
             now=_now(),
         )
@@ -336,6 +337,7 @@ async def test_confirm_after_negative_backoff_mints_new_epoch_not_old_epoch(tmp_
             attempt_id="old-epoch",
             authorization_digest="old",
             expected_epoch=0,
+            qualified_at=_now(),
             proof_deadline=_now() + timedelta(seconds=30),
             now=_now(),
         )

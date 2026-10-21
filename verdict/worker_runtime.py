@@ -594,7 +594,11 @@ class WorkerController:
                 except Exception as exc:
                     health = self.failure(exc)
                 record_dispatch_observation(
-                    candidate.route_id, healthy=health.healthy, observed_at=probe_started
+                    candidate.route_id,
+                    healthy=health.healthy,
+                    observed_at=probe_started,
+                    failure_category=health.category,
+                    retry_after_seconds=health.retry_after_seconds,
                 )
                 if self.gateway_origin is not None:
                     self.confirmation = passport_confirmation([candidate.route_id], now=self.now())
@@ -682,6 +686,7 @@ class WorkerController:
                     attempt_id=f"{self.operation_id}-a{self._permit_serial}",
                     authorization_digest=proof.authorization_digest,
                     expected_epoch=proof.epoch,
+                    qualified_at=proof.qualified_at,
                     proof_deadline=min(
                         proof.expires_at,
                         proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),

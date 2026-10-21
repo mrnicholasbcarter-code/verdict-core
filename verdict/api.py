@@ -2255,6 +2255,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             attempt_id=attempt_id,
             authorization_digest=proof.authorization_digest,
             expected_epoch=proof.epoch,
+            qualified_at=proof.qualified_at,
             proof_deadline=min(
                 proof.expires_at,
                 proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),

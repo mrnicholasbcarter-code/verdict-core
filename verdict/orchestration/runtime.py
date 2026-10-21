@@ -1661,6 +1661,7 @@ class DagRuntime:
                 attempt_id=attempt_id,
                 authorization_digest=proof.authorization_digest,
                 expected_epoch=proof.epoch,
+                qualified_at=proof.qualified_at,
                 proof_deadline=deadline,
                 now=self.now(),
             )

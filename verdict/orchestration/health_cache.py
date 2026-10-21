@@ -323,6 +323,8 @@ class HealthEntry:
     # after a later failure overwrites ``checked_at``. It is never invented
     # from inventory or a lower-trust hint.
     last_success_at: datetime | None = None
+    # Retained across recovery so a pre-failure proof cannot authorize later.
+    last_failure_at: datetime | None = None
     # ``failure_scope`` records the canonical blast radius of a failure
     # ("route" | "provider" | "pool" | "account") so a sibling-row reader can
     # tell a route-local diagnostic failure from a provider-scoped blocker.
@@ -351,6 +353,8 @@ class HealthEntry:
             _aware(self.agentic_checked_at, "agentic_checked_at")
         if self.last_success_at is not None:
             _aware(self.last_success_at, "last_success_at")
+        if self.last_failure_at is not None:
+            _aware(self.last_failure_at, "last_failure_at")
 
     def state_at(self, now: datetime) -> str:
         return classify_state(
@@ -392,6 +396,8 @@ class HealthEntry:
             payload["agentic_checked_at"] = format_datetime(self.agentic_checked_at)
         if self.last_success_at is not None:
             payload["last_success_at"] = format_datetime(self.last_success_at)
+        if self.last_failure_at is not None:
+            payload["last_failure_at"] = format_datetime(self.last_failure_at)
         if self.failure_scope is not None:
             payload["failure_scope"] = self.failure_scope
         if self.feedback_source is not None:
@@ -448,6 +454,11 @@ class HealthEntry:
             last_success_at=(
                 parse_datetime(value["last_success_at"], "last_success_at")
                 if value.get("last_success_at")
+                else None
+            ),
+            last_failure_at=(
+                parse_datetime(value["last_failure_at"], "last_failure_at")
+                if value.get("last_failure_at")
                 else None
             ),
             failure_scope=(
@@ -1506,6 +1517,11 @@ class HealthCache:
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
         previous = self._routes.get(route)
+        previous_failure_at = (
+            previous.last_failure_at or (previous.checked_at if not previous.healthy else None)
+            if previous is not None
+            else None
+        )
         # Preserve the best probe_class: an existing agentic pass is kept even
         # when a subsequent single_call probe runs (agentic is rarer).
         probe_class = result.probe_class
@@ -1609,6 +1625,9 @@ class HealthCache:
             )
         entry = replace(
             entry,
+            last_failure_at=(max(current, previous_failure_at) if previous_failure_at else current)
+            if not result.healthy
+            else previous_failure_at,
             write_revision=previous.write_revision if previous else 0,
             agentic_source=previous.agentic_source if previous else None,
             agentic_child_id=previous.agentic_child_id if previous else None,
@@ -1655,9 +1674,15 @@ class HealthCache:
         if not isinstance(route, str) or not route.strip():
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
+        previous = self._routes.get(route)
         entry = HealthEntry(
             route_id=route,
             category=CATEGORY_OK,
+            last_failure_at=(
+                previous.last_failure_at or (previous.checked_at if not previous.healthy else None)
+                if previous is not None
+                else None
+            ),
             checked_at=current,
             until=usable_until(current),
             consecutive_failures=0,
@@ -1945,6 +1970,7 @@ class HealthCache:
         authorization_digest: str,
         expected_epoch: int,
         proof_deadline: datetime,
+        qualified_at: datetime,
         now: datetime,
         deadline: float | None = None,
     ) -> DispatchPermit | None:
@@ -1958,7 +1984,10 @@ class HealthCache:
         older or fabricated evidence), when the attempt was already used
         (duplicates and late fenced writers), and when the proof is expired or
         stamped beyond the maximum proof validity (future observation
-        timestamps never authorize). A minted permit is the only authorization
+        timestamps never authorize). Active exact-route negatives and proofs
+        qualified at or before the last route failure deny under the same lock,
+        including after recovery. Positive-only observations do not revoke.
+        A minted permit is the only authorization
         to dispatch; retries need a new attempt id and a new permit.
         """
         if not isinstance(scope, DispatchScope):
@@ -1977,6 +2006,9 @@ class HealthCache:
             raise HealthCacheError("expected_epoch must be a non-negative integer")
         current = _aware(now, "now")
         due = _aware(proof_deadline, "proof_deadline")
+        qualified = _aware(qualified_at, "qualified_at")
+        if qualified > current or qualified >= due:
+            return None
         if current >= due:
             return None  # basic proof expires at its deadline, equality included
         if due > current + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS):
@@ -1985,6 +2017,15 @@ class HealthCache:
 
         def _mutate(cache: HealthCache) -> None:
             nonlocal permit
+            entry = cache.entry(route_id)
+            if entry is not None:
+                last_failure = entry.last_failure_at or (
+                    entry.checked_at if not entry.healthy else None
+                )
+                if not entry.healthy and entry.until > current:
+                    return  # active exact-route negative, regardless of proof timestamp
+                if last_failure is not None and qualified <= last_failure:
+                    return  # recovery never resurrects proof captured before the failure
             record = cache._dispatch_scopes.get(scope.to_key()) or _DispatchScopeState()
             if expected_epoch != record.epoch:
                 return  # superseded or fabricated epoch: stale/future proof

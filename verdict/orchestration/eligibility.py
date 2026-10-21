@@ -1217,7 +1217,6 @@ class EligibilityLadder:
     ) -> None:
         from verdict.admit_prove_confirm import record_dispatch_observation
 
-        record_dispatch_observation(route_id, healthy=result.healthy, observed_at=now)
         # Reclassify catalog-stale errors: OmniRoute returns bad_request with
         # a specific message for ids not in the live catalog.
         category = result.category
@@ -1227,6 +1226,15 @@ class EligibilityLadder:
             and is_catalog_stale_error(result.error_message)
         ):
             category = "catalog_stale"
+        cache = getattr(self, "_health_cache", None)
+        record_dispatch_observation(
+            route_id,
+            healthy=result.healthy,
+            observed_at=now,
+            failure_category=category,
+            retry_after_seconds=result.retry_after_seconds,
+            health_cache_path=cache.path if cache is not None else None,
+        )
         with self._persist_lock:
             self._state["health"][route_id] = {
                 "healthy": result.healthy,
