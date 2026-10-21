@@ -278,6 +278,56 @@ def _action_certify(**kwargs: Any) -> ActionResult:
     return ActionResult(data=report.to_dict())
 
 
+def _action_choose_live(**kwargs: Any) -> ActionResult:
+    """Choose from live gateway evidence using the production ladder."""
+    from verdict.credentials_store import resolve_gateway_binding
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.orchestration.contracts import OrchestrationError, TaskRequirements
+    from verdict.orchestration.selection import select_route_for_task
+
+    task_class: str = kwargs["task_class"]
+    requires = frozenset(p.strip() for p in kwargs.get("requires", "").split(",") if p.strip())
+    capacity = tuple(p.strip() for p in kwargs.get("capacity", "").split(",") if p.strip())
+    model: str | None = kwargs.get("model")
+    payload: dict[str, Any] = {"task_class": task_class, "selected": None}
+    try:
+        gateway = normalize_omniroute_origin(resolve_gateway_binding()[0])
+        requirements = TaskRequirements(
+            required_capabilities=requires - {"code"},
+            coding="code" in requires or task_class == "implementation",
+            reasoning="reasoning" in requires,
+            frontier_worthy=task_class
+            in {"architecture", "orchestration", "hard-debug", "final-review"},
+        )
+        selection = select_route_for_task(
+            requirements, gateway=gateway, capacity=capacity, explicit_model=model
+        )
+    except (OrchestrationError, ValueError) as exc:
+        reason = (
+            "gateway_discovery_failed"
+            if isinstance(exc, OrchestrationError)
+            else "invalid_selection_request"
+        )
+        payload.update(reason=reason, reasons=[str(exc)])
+        return ActionResult(data=payload, ok=False, exit_code=1)
+    payload.update(selection.explanation)
+    payload.update(
+        gateway=gateway,
+        reasons=list(selection.reasons),
+        selected_because="selected because " + "; ".join(selection.reasons),
+        provenance=selection.provenance,
+    )
+    if selection.route is None:
+        payload["reason"] = "explicit_model_ineligible" if model else "no_eligible_route"
+        return ActionResult(data=payload, ok=False, exit_code=1)
+    payload["selected"] = selection.route.to_dict() | {
+        "gateway": gateway,
+        "model": selection.route.route_id,
+        "resource_pool": selection.route.capacity_class.value,
+    }
+    return ActionResult(data=payload)
+
+
 def _action_choose(**kwargs: Any) -> ActionResult:
     """Select an eligible execution target for Prime dispatch.
 
@@ -291,6 +341,12 @@ def _action_choose(**kwargs: Any) -> ActionResult:
     requires = tuple(part.strip() for part in requires_raw.split(",") if part.strip())
     model: str | None = kwargs.get("model")
     candidates_json: str | None = kwargs.get("candidates_json")
+    if not candidates_json:
+        return _action_choose_live(**kwargs)
+    if kwargs.get("capacity"):
+        return ActionResult(
+            data={"selected": None, "reason": "capacity_requires_live_mode"}, ok=False, exit_code=1
+        )
 
     try:
         candidates_tuple = load_candidates_json(candidates_json) if candidates_json else ()
