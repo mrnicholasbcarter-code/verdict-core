@@ -542,3 +542,35 @@ def test_failed_route_is_not_redispatched_until_negative_expires(monkeypatch):
     assert bind(other, other_scope, negative.checked_at) is not None
     assert bind(route, proof.scope, negative.until - timedelta(microseconds=1)) is None
     assert bind(route, proof.scope, negative.until + timedelta(microseconds=1)) is not None
+
+
+def test_payment_402_records_metered_and_blocks_redispatch(monkeypatch, tmp_path):
+    sent = []
+
+    async def transport(request):
+        sent.append(request)
+        return httpx.Response(402, json={"error": {"message": "insufficient credit"}})
+
+    prepared = _prepare(monkeypatch, transport, alternatives=False)
+    with TestClient(api.app) as client:
+        first = client.post(
+            "/v1/chat/completions",
+            json=_request_body(),
+            headers={"idempotency-key": "payment-first"},
+        )
+        assert first.status_code == 402
+        route = _attempted_route(prepared)
+        entry = HealthCache(default_cache_path()).entry(route)
+        assert entry is not None
+        assert entry.category == "payment_required"
+        assert entry.capacity_evidence == "billing_402_metered"
+        assert entry.failure_scope == "route"
+        assert entry.until - entry.checked_at >= timedelta(hours=6)
+        assert HealthCache(default_cache_path()).entry(_other_route(prepared)) is None
+        first_model = json.loads(sent[0].content)["model"]
+        client.post(
+            "/v1/chat/completions",
+            json=_request_body(),
+            headers={"idempotency-key": "payment-second"},
+        )
+        assert all(json.loads(request.content)["model"] != first_model for request in sent[1:])

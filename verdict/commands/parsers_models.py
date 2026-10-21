@@ -34,9 +34,15 @@ def register(subparsers: Any) -> None:
     )
     choose_p.add_argument(
         "--task-class",
-        required=True,
+        default="general",
         dest="task_class",
         help="Task class (implementation, architecture, ...)",
+    )
+    choose_p.add_argument("--task", default="", help="Task text for task-fit rating")
+    choose_p.add_argument(
+        "--no-confirm",
+        action="store_true",
+        help="Inspect only; never sends model confirmations; may return no route when no cached proof is fresh",
     )
     choose_p.add_argument(
         "--requires", default="", help="Comma-separated required capabilities (example: tools,code)"

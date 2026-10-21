@@ -409,3 +409,20 @@ def test_streaming_gate_admits_true_rejects_false_and_unknown() -> None:
     assert reasons["p/unknown"] == "required_unknown"
     true_row = next(item for item in gated.capability_matches if item["model"] == "p/true")
     assert true_row["provenance"]["streaming"]["source"] == SOURCE_MODELS_DEV
+
+
+def test_ordinary_and_worthy_keep_distinct_proof_bar_ranking():
+    snapshot = _live_snapshot()
+    passports = {route: _passport(route) for route in (PROVEN_FREE, PAID_TOOLS, FRONTIER)}
+    service = _service(snapshot, passports=passports)
+    ordinary = asyncio.run(service.route("summarize this paragraph", criticality="low"))
+    worthy = asyncio.run(
+        service.route(
+            "Design a distributed authentication architecture and security threat model",
+            criticality="high",
+        )
+    )
+    assert ordinary.task_class == ORDINARY
+    assert ordinary.model == PROVEN_FREE
+    assert worthy.task_class == WORTHY
+    assert worthy.model == FRONTIER

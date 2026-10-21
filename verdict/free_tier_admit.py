@@ -110,6 +110,9 @@ class ProviderConnection:
     is_active: bool
     test_status: str | None = None
     name: str | None = None
+    auth_type: str = ""
+    plan_label: str = ""
+    import_free_only: bool = False
 
 
 def _provider_connection_usable(connection: ProviderConnection) -> bool:
@@ -1072,7 +1075,7 @@ def parse_provider_connections(payload: object) -> tuple[ProviderConnection, ...
     elif isinstance(payload, list):
         rows = payload
     out: list[ProviderConnection] = []
-    seen: set[tuple[str, bool, str | None]] = set()
+    seen: set[tuple[str, bool, str | None, str, str, bool]] = set()
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -1081,13 +1084,38 @@ def parse_provider_connections(payload: object) -> tuple[ProviderConnection, ...
             continue
         name = row.get("name")
         test_status = row.get("testStatus") or row.get("test_status")
+        specific = row.get("providerSpecificData")
+        specific = specific if isinstance(specific, Mapping) else {}
+        plan_label = " / ".join(
+            dict.fromkeys(
+                str(specific[field])
+                for field in (
+                    "plan",
+                    "subscriptionTier",
+                    "tier",
+                    "organizationType",
+                    "organizationRateLimitTier",
+                )
+                if isinstance(specific.get(field), str) and specific.get(field)
+            )
+        )
         conn = ProviderConnection(
             provider=provider.strip(),
             is_active=row.get("isActive") is True,
             test_status=str(test_status) if isinstance(test_status, str) else None,
             name=str(name) if isinstance(name, str) else None,
+            auth_type=str(row.get("authType") or ""),
+            plan_label=plan_label,
+            import_free_only=specific.get("importFreeModelsOnly") is True,
         )
-        key = (conn.provider, conn.is_active, conn.test_status)
+        key = (
+            conn.provider,
+            conn.is_active,
+            conn.test_status,
+            conn.auth_type,
+            conn.plan_label,
+            conn.import_free_only,
+        )
         if key in seen:
             continue
         seen.add(key)

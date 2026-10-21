@@ -23,6 +23,7 @@ from typing import Any
 
 from verdict.availability import is_opaque_route_id
 from verdict.capability_gate import TaskRequirements, derive_requirements
+from verdict.capacity import CAPACITY_ORDER, CapacityClass
 from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.records import (
     DROP_MAP_TARGET_MISSING,
@@ -34,7 +35,7 @@ from verdict.metadata.records import (
     resolve_required_name,
 )
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id, model_id_leaf
-from verdict.task_profile import TaskProfile
+from verdict.task_profile import TaskProfile, infer_task_family
 
 # ── Drop / health / probe constants ─────────────────────────────────────────
 
@@ -321,6 +322,7 @@ class ShortlistEntry:
     score_features: dict[str, float]
     inclusion_reason: str
     aliases: tuple[str, ...] = ()
+    capacity_order: int = 3
     # Cold-start soft prior attribution (selected metric only; not P(success)).
     eval_prior_metric: str | None = None
     eval_prior_value: float | None = None
@@ -339,6 +341,7 @@ class ShortlistEntry:
             "score_features": dict(self.score_features),
             "inclusion_reason": self.inclusion_reason,
             "aliases": list(self.aliases),
+            "capacity_order": self.capacity_order,
             "eval_prior_metric": self.eval_prior_metric,
             "eval_prior_value": self.eval_prior_value,
             "eval_prior_provenance": (
@@ -408,6 +411,7 @@ class _Survivor:
     # demoted survivor stays qualified and a pool member, _portfolio_shortlist
     # only sorts it after non-demoted survivors.
     demoted: bool = False
+    capacity_order: int = 3
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -572,6 +576,7 @@ def build_candidate_pool(
     identity_map: IdentityMap | None = None,
     health: Mapping[str, RouteHealth] | None = None,
     evidence: Mapping[str, RouteEvidence] | None = None,
+    capacity: Mapping[str, CapacityClass] | None = None,
     policy_allowed: Collection[str] | None = None,
     outcomes: Sequence[OutcomeObservation] | None = None,
     as_of: datetime | None = None,
@@ -680,6 +685,9 @@ def build_candidate_pool(
                 family_key=_family_key(meta_id, route_id),
                 provider=_provider(route_id, record),
                 aliases=tuple(record.omniroute_ids),
+                capacity_order=CAPACITY_ORDER.get(
+                    (capacity or {}).get(route_id, CapacityClass.UNKNOWN), 3
+                ),
             )
         )
 
@@ -1080,9 +1088,9 @@ def _portfolio_shortlist(
     # ``by_meta`` removes only proven aliases that resolve to the same Core
     # identity. Do not collapse same-leaf IDs across providers: provider
     # diversity must remain available to the portfolio pass. Membership
-    # selection below (top-k and provider-diversity fallback) is score-only —
-    # BOD-438 demotion must never change which routes are admitted.
-    ranked = sorted(by_meta.values(), key=lambda s: (-s.score, s.route_id))
+    # selection below is capacity-first, then score within each tier.
+    # BOD-438 demotion still never changes shortlist membership.
+    ranked = sorted(by_meta.values(), key=lambda s: (s.capacity_order, -s.score, s.route_id))
 
     selected: list[_Survivor] = []
     seen_providers: set[str] = set()
@@ -1098,7 +1106,11 @@ def _portfolio_shortlist(
     if len(selected) >= top_k and len(seen_providers) == 1 and len(ranked) > 1:
         primary_provider = selected[0].provider
         fallback = next((s for s in ranked if s.provider != primary_provider), None)
-        if fallback is not None and fallback not in selected:
+        if (
+            fallback is not None
+            and fallback not in selected
+            and fallback.capacity_order <= selected[-1].capacity_order
+        ):
             # Replace the lowest-scoring duplicate-provider slot.
             selected[-1] = fallback
 
@@ -1116,18 +1128,19 @@ def _portfolio_shortlist(
                             if (
                                 selected[idx].provider in providers_in
                                 and selected[idx] is not survivor
+                                and survivor.capacity_order <= selected[idx].capacity_order
                             ):
                                 selected[idx] = survivor
                                 break
                     break
         # Re-sort after possible swap.
-        selected = sorted(selected, key=lambda s: (-s.score, s.route_id))[:top_k]
+        selected = sorted(selected, key=lambda s: (s.capacity_order, -s.score, s.route_id))[:top_k]
 
     # BOD-438: order-only task-specific demotion. Membership (``selected``) is
     # already final above; this only reorders the admitted set so a demoted
-    # route (score<.4, observed unique n>=3) sorts after every non-demoted
-    # route, with a stable fuse/ID order inside each group.
-    selected = sorted(selected, key=lambda s: (s.demoted, -s.score, s.route_id))
+    # route (score<.4, observed unique n>=3) sorts after non-demoted routes
+    # within its capacity tier, with stable fuse/ID order inside each group.
+    selected = sorted(selected, key=lambda s: (s.capacity_order, s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []
     for survivor in selected:
@@ -1147,6 +1160,7 @@ def _portfolio_shortlist(
                 score_features=dict(survivor.features),
                 inclusion_reason=reason,
                 aliases=aliases,
+                capacity_order=survivor.capacity_order,
                 eval_prior_metric=survivor.eval_prior_metric,
                 eval_prior_value=survivor.eval_prior_value,
                 eval_prior_provenance=(
@@ -1175,21 +1189,7 @@ def _optional_str(value: Any) -> str | None:
     return None
 
 
-def _infer_family(task: str, language: str | None) -> str:
-    lowered = task.lower()
-    if any(tok in lowered for tok in ("refactor", "edit", "implement", "fix", "bug")):
-        base = "code_edit"
-    elif any(tok in lowered for tok in ("review", "audit")):
-        base = "code_review"
-    elif any(tok in lowered for tok in ("plan", "design", "architect")):
-        base = "planning"
-    elif any(tok in lowered for tok in ("summar", "explain", "docs")):
-        base = "docs"
-    else:
-        base = "general"
-    if language:
-        return f"{base}:{language}"
-    return base
+_infer_family = infer_task_family
 
 
 def _infer_reasoning(task: str) -> str:

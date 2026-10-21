@@ -114,6 +114,23 @@ class TaskProfile:
         }
 
 
+def infer_task_family(task: str, language: str | None) -> str:
+    lowered = task.lower()
+    if any(tok in lowered for tok in ("refactor", "edit", "implement", "fix", "bug")):
+        base = "code_edit"
+    elif any(tok in lowered for tok in ("review", "audit")):
+        base = "code_review"
+    elif any(tok in lowered for tok in ("plan", "design", "architect")):
+        base = "planning"
+    elif any(tok in lowered for tok in ("summar", "explain", "docs")):
+        base = "docs"
+    else:
+        base = "general"
+    if language:
+        return f"{base}:{language}"
+    return base
+
+
 def profile_task(
     task: str, *, context: Mapping[str, Any] | None = None, requirements: Any | None = None
 ) -> TaskProfile:
@@ -138,7 +155,7 @@ def profile_task(
     family = (
         family_raw.strip().lower()
         if isinstance(family_raw, str) and family_raw.strip()
-        else "general"
+        else infer_task_family(task, None)
     )
     preview = re.sub(r"\s+", " ", task.strip())[:120]
     canonical = {

@@ -2298,7 +2298,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     source_revision=None,
                     observed_at=datetime.now(timezone.utc),
                 )
-            if result.status_code >= 500:
+            if result.status_code == 402 or result.status_code >= 500:
                 # A general upstream 5xx is route-scoped availability evidence;
                 # it must also narrow the shared health cache, not just the ledger.
                 record_failure_feedback(
