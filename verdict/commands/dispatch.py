@@ -573,6 +573,10 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             ledger=getattr(args, "ledger", None),
             dry_run=getattr(args, "dry_run", False),
         )
+    elif args.command == "identify":
+        from verdict.identify import cmd_identify
+
+        cmd_identify(output_json=args.output_json)
     elif args.command == "census":
         from verdict.census_passports import cmd_census
 

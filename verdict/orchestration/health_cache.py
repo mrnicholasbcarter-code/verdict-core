@@ -13,7 +13,7 @@ A route with no entry, or a negative whose ``until`` has elapsed, is
 
 TTL policy (pure functions in ``ttl_for`` / ``next_backoff_seconds``)
 ----------------------------------------------------------------------
-- healthy evidence: configurable fresh lifetime, 6 h by default (bounded to 60 s..48 h), then 30 min stale grace;
+- healthy evidence: configurable fresh lifetime, 6 h by default (bounded to 60 s..48 h), then 20 min stale grace;
 - dispatch permits: independently capped at 10 min;
 - 429: ``Retry-After`` when given, otherwise 60 s;
 - 5xx / timeout: 60 s, doubling on each consecutive failure, capped at 15 min;

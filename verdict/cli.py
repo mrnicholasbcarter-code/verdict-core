@@ -3305,6 +3305,7 @@ def main() -> None:
         parsers_config,
         parsers_credentials,
         parsers_harness,
+        parsers_identify,
         parsers_models,
         parsers_openspec,
         parsers_outcome,
@@ -3328,6 +3329,7 @@ def main() -> None:
     # reachability scanner's attribute-chain tracer resolves these registrars.
     parsers_autodev.register(subparsers)
     parsers_census.register(subparsers)
+    parsers_identify.register(subparsers)
     parsers_outcome.register(subparsers)
 
     from verdict.commands.dispatch import dispatch
