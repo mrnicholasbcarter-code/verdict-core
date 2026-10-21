@@ -9,7 +9,15 @@ labelled synthetic, is opt-in, and is never presented as measured cost.
 """
 
 import json
+import sys
 from pathlib import Path
+
+if sys.version_info < (3, 11):
+    print(
+        "The dashboard needs Python 3.11 or newer (streamlit 1.66 and pillow 13 require it); core Verdict works on 3.10.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 import pandas as pd
 import plotly.express as px

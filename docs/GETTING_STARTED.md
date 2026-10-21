@@ -13,7 +13,7 @@ pipx install verdict-core
 # Or with server extras (`verdict serve` needs FastAPI + uvicorn)
 pipx install 'verdict-core[server]'
 
-# Or with dashboard extras (`verdict ui` needs Streamlit + Plotly + pandas)
+# Or with dashboard extras (Python 3.11+; core Verdict supports 3.10)
 pipx install 'verdict-core[dashboard]'
 
 # Or everything `verdict serve` / `verdict ui` need

@@ -495,8 +495,7 @@ def test_step_security_bandit_missing():
 
 
 def test_step_security_pip_audit_command_carries_exception_ignore_flags():
-    """step_security's real pip-audit command includes --ignore-vuln flags sourced
-    from config/security_exceptions.json (BOD-342 Option B), not a second hardcoded list."""
+    """step_security forwards flags from the single-source exception builder."""
     import json
     from pathlib import Path
     from unittest.mock import patch
@@ -523,13 +522,51 @@ def test_step_security_pip_audit_command_carries_exception_ignore_flags():
             )(),
         ),
         patch("certify_release.run_command", side_effect=capture_and_write),
+        patch(
+            "certify_release.build_pip_audit_ignore_flags",
+            return_value=["--ignore-vuln", "CVE-2099-00001", "--ignore-vuln", "CVE-2099-00002"],
+        ),
     ):
         certify_release.step_security(repo_path, venv_bin)
 
     pip_audit_cmd = next(cmd for cmd in captured_commands if "pip-audit" in str(cmd[0]))
     assert "--ignore-vuln" in pip_audit_cmd
-    assert "CVE-2026-112895" in pip_audit_cmd  # one of the 9 real pillow exceptions
-    assert pip_audit_cmd.count("--ignore-vuln") == 9  # exactly the scoped pillow IDs, no more
+    assert "CVE-2099-00001" in pip_audit_cmd
+    assert "CVE-2099-00002" in pip_audit_cmd
+    assert pip_audit_cmd.count("--ignore-vuln") == 2
+
+
+def test_step_security_forwards_exactly_real_exception_ids():
+    """The real config, including an empty list, defines certifier ignore flags."""
+    from datetime import date
+
+    from security_exceptions import active_ignore_ids, load_exceptions
+
+    captured_commands = []
+
+    def capture_and_write(cmd, **kwargs):
+        captured_commands.append(cmd)
+        return fake_run_writing('{"results": []}', '{"dependencies": []}')(cmd, **kwargs)
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("certify_release.Path.exists", return_value=True),
+        patch(
+            "certify_release.tempfile.TemporaryDirectory",
+            return_value=type(
+                "MockTempDir", (), {"__enter__": lambda s: tmpdir, "__exit__": lambda s, *a: None}
+            )(),
+        ),
+        patch("certify_release.run_command", side_effect=capture_and_write),
+    ):
+        result = certify_release.step_security(Path("/fake/repo"), Path("/fake/venv/bin"))
+
+    pip_audit_cmd = next(cmd for cmd in captured_commands if "pip-audit" in str(cmd[0]))
+    received_ids = [
+        pip_audit_cmd[i + 1] for i, arg in enumerate(pip_audit_cmd) if arg == "--ignore-vuln"
+    ]
+    assert received_ids == active_ignore_ids(load_exceptions(), today=date.today())
+    assert result.status == "PASS"
 
 
 def test_step_security_unlisted_pillow_vulnerability_still_fails():
