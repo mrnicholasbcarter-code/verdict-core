@@ -603,7 +603,7 @@ def test_confirm_gate_bounds_refresh_probes_when_passports_are_stale(monkeypatch
 def test_expired_health_cache_bounds_sparse_passport_refresh(tmp_path, monkeypatch) -> None:
     from dataclasses import replace
 
-    from verdict.orchestration.health_cache import HealthCache, ProbeResult
+    from verdict.orchestration.health_cache import USABLE_SECONDS, HealthCache, ProbeResult
 
     ids = tuple(f"opencode/model-{i}" for i in range(6))
     base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
@@ -640,7 +640,7 @@ def test_expired_health_cache_bounds_sparse_passport_refresh(tmp_path, monkeypat
         base,
         health_cache_path=path,
         confirm_transport=transport,
-        now=NOW + timedelta(hours=1),
+        now=NOW + timedelta(seconds=USABLE_SECONDS + 1),
         live=True,
         consented=True,
         max_confirm_candidates=2,
