@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "note": "Explicit OmniRoute inventory id \u2192 models.dev id. Unlisted OmniRoute ids are unmapped (named drop for BOD-100). Do not fuzzy-match or substitute a related model.",
+  "note": "Explicit OmniRoute inventory id → models.dev id. Unlisted OmniRoute ids are unmapped (named drop for BOD-100). Do not fuzzy-match or substitute a related model.",
   "entries": [
     {
       "omniroute_id": "groq/llama-3.3-70b-versatile",
@@ -85,6 +85,26 @@
     {
       "omniroute_id": "openrouter/poolside/laguna-xs-2.1:free",
       "models_dev_id": "poolside/laguna-xs-2.1:free"
+    },
+    {
+      "omniroute_id": "cc/claude-opus-5-5",
+      "models_dev_id": "anthropic/claude-opus-5.5",
+      "source": "BOD-345 identify gap 1 (verified 2026-10-21): same model, two catalog spellings. models.dev models.json lists anthropic/claude-opus-5-5 (dash, no AA scores); the OpenRouter Artificial Analysis mirror row id is anthropic/claude-opus-5.5 (dot, canonical_slug anthropic/claude-opus-5.5-20260921) and Core's store holds its ratings on that record. Read-only check of ~/.verdict/model-metadata.json confirmed both ids exist."
+    },
+    {
+      "omniroute_id": "claude/claude-opus-5-5",
+      "models_dev_id": "anthropic/claude-opus-5.5",
+      "source": "BOD-345 identify gap 1 (verified 2026-10-21): same model as cc/claude-opus-5-5 under a second OmniRoute provider alias; joins the same OpenRouter AA mirror record anthropic/claude-opus-5.5 that holds the ratings."
+    },
+    {
+      "omniroute_id": "cc/claude-fable-5-1",
+      "models_dev_id": "anthropic/claude-fable-5.1",
+      "source": "BOD-345 identify gap 1 (verified 2026-10-21): models.dev models.json lists anthropic/claude-fable-5-1 (dash, no AA scores); the OpenRouter Artificial Analysis mirror row id is anthropic/claude-fable-5.1 (dot, canonical_slug anthropic/claude-fable-5.1-20260831, coding_index 81.6) and Core's store holds its ratings on that record."
+    },
+    {
+      "omniroute_id": "cc/claude-sonnet-5-5",
+      "models_dev_id": "anthropic/claude-sonnet-5.5",
+      "source": "BOD-345 identify gap 1 (verified 2026-10-21): models.dev models.json lists anthropic/claude-sonnet-5-5 (dash, no AA scores); the OpenRouter Artificial Analysis mirror row id is anthropic/claude-sonnet-5.5 (dot, canonical_slug anthropic/claude-sonnet-5.5-20260928) and Core's store holds its intelligence rating on that record (no coding_index published yet)."
     }
   ]
 }
