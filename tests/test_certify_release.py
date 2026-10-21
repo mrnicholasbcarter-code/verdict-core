@@ -538,6 +538,8 @@ def test_step_security_pip_audit_command_carries_exception_ignore_flags():
 
 def test_step_security_forwards_exactly_real_exception_ids():
     """The real config, including an empty list, defines certifier ignore flags."""
+    from datetime import date
+
     from security_exceptions import active_ignore_ids, load_exceptions
 
     captured_commands = []
@@ -563,7 +565,7 @@ def test_step_security_forwards_exactly_real_exception_ids():
     received_ids = [
         pip_audit_cmd[i + 1] for i, arg in enumerate(pip_audit_cmd) if arg == "--ignore-vuln"
     ]
-    assert received_ids == active_ignore_ids(load_exceptions())
+    assert received_ids == active_ignore_ids(load_exceptions(), today=date.today())
     assert result.status == "PASS"
 
 
