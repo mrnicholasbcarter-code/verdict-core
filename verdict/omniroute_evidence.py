@@ -9,9 +9,9 @@ from __future__ import annotations
 import json
 import math
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -348,30 +348,6 @@ def parse_omniroute_evidence(
     )
 
 
-def _request_json(
-    base_url: str,
-    path: str,
-    api_key: str | None,
-    timeout: float,
-    body: dict[str, Any] | None = None,
-) -> Any:
-    """Unbounded JSON request used only by the explicit opt-in test-batch POST.
-
-    The six passive evidence GETs use ``_request_json_bounded`` instead; this
-    helper is intentionally left as-is for ``run_test_batch``.
-    """
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    data = None
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-        data = json.dumps(body).encode()
-    request = Request(base_url.rstrip("/") + path, data=data, headers=headers)
-    with open_no_redirect(request, timeout=timeout) as response:
-        return json.loads(response.read())
-
-
 def _read_chunks_bounded(response: Any, *, budget: _DecodedBudget, deadline: float) -> bytes:
     """Read a response body in fixed chunks, never past the byte budget or deadline.
 
@@ -473,44 +449,3 @@ def fetch_omniroute_evidence(
             # Exception bodies and URLs can echo credentials. Retain only source names.
             payloads[name] = None
     return parse_omniroute_evidence(**payloads, now=datetime.now(timezone.utc))
-
-
-def stale_connections(evidence: OmniRouteEvidence, *, max_age: timedelta) -> tuple[str, ...]:
-    """Connections with missing or old test timestamps, relative to this snapshot."""
-    return tuple(
-        c.connection_id
-        for c in evidence.connections
-        if c.last_tested is None or evidence.fetched_at - c.last_tested > max_age
-    )
-
-
-def run_test_batch(
-    base_url: str, *, api_key: str | None, connection_ids: Sequence[str], timeout: float = 60.0
-) -> Mapping[str, ConnectionHealth]:
-    """Explicit opt-in connection tests; re-read availability rather than trusting a pass.
-
-    OmniRoute may use a minimal completion when upstream auth has no models API.
-    This helper is never invoked by the passive fetch operation.
-    """
-    if not connection_ids:
-        return MappingProxyType({})
-    key = api_key if api_key is not None else resolve_api_key()
-    result = _request_json(
-        base_url,
-        "/api/providers/test-batch",
-        key,
-        timeout,
-        {"mode": "selected", "connectionIds": list(connection_ids)},
-    )
-    rows = _rows(result.get("results")) if isinstance(result, dict) else []
-    tests = {row.get("connectionId"): row for row in rows}
-    snapshot = fetch_omniroute_evidence(base_url, api_key=key, timeout=timeout)
-    selected: dict[str, ConnectionHealth] = {}
-    for connection in snapshot.connections:
-        if connection.connection_id not in connection_ids:
-            continue
-        test = tests.get(connection.connection_id)
-        if test is None or test.get("valid") is not True:
-            connection = replace(connection, usable=False, reason="batch_test_not_passed")
-        selected[connection.connection_id] = connection
-    return MappingProxyType(selected)

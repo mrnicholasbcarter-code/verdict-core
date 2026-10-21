@@ -2209,7 +2209,7 @@ def cmd_plan(output_json: bool = False) -> None:
 
 
 def _render_choose_summary(data: dict[str, Any]) -> str:
-    """Mirror ``verdict.chooser.human_summary`` for a decision returned as a dict."""
+    """Render a chooser decision dict as a short human-readable summary."""
     lines: list[str] = []
     selected = data.get("selected")
     if selected is None:

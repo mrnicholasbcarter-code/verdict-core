@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from verdict.omniroute_evidence import parse_omniroute_evidence, stale_connections
+from verdict.omniroute_evidence import parse_omniroute_evidence
 
 NOW = datetime(2026, 10, 20, 13, tzinfo=timezone.utc)
 
@@ -51,13 +51,6 @@ def test_missing_availability_source_fails_closed(sources, source):
     evidence = parse_omniroute_evidence(**sources, now=NOW)
     assert source in evidence.source_errors
     assert not evidence.usable_providers
-
-
-def test_stale_connections_use_snapshot_time(sources):
-    sources["providers"]["connections"][1]["lastTested"] = None
-    evidence = parse_omniroute_evidence(**sources, now=NOW)
-    assert stale_connections(evidence, max_age=timedelta(hours=2)) == ("cool",)
-    assert stale_connections(evidence, max_age=timedelta(minutes=30)) == ("ok", "cool", "empty")
 
 
 @pytest.mark.parametrize("state", ["OPEN", "HALF_OPEN"])
@@ -228,28 +221,6 @@ def test_fetch_is_get_only_and_retains_source_failure(sources, monkeypatch):
     assert evidence.source_errors == ("health_matrix",)
     assert not evidence.proven_by_traffic
     assert "resolved-secret" not in repr(evidence)
-
-
-def test_batch_is_explicit_selected_and_does_not_trust_local_pass(sources, monkeypatch):
-    from io import BytesIO
-
-    from verdict import omniroute_evidence as module
-
-    posts = []
-    snapshot = parse_omniroute_evidence(**sources, now=NOW)
-
-    def transport(request, *, timeout):
-        assert request.get_method() == "POST"
-        assert request.full_url == "http://gateway/api/providers/test-batch"
-        posts.append(json.loads(request.data))
-        return BytesIO(json.dumps({"results": [{"connectionId": "cool", "valid": True}]}).encode())
-
-    monkeypatch.setattr(module, "open_no_redirect", transport)
-    monkeypatch.setattr(module, "fetch_omniroute_evidence", lambda *args, **kwargs: snapshot)
-    result = module.run_test_batch("http://gateway", api_key="secret", connection_ids=["cool"])
-    assert posts == [{"mode": "selected", "connectionIds": ["cool"]}]
-    assert not result["cool"].usable
-    assert module.run_test_batch("http://gateway", api_key="secret", connection_ids=[]) == {}
 
 
 @pytest.mark.parametrize(

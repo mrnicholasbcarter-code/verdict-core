@@ -58,7 +58,6 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
         return Response(data[paths[url.path]])
 
     monkeypatch.setattr(omniroute_evidence, "open_no_redirect", get_only)
-    monkeypatch.setattr(omniroute_evidence, "run_test_batch", forbidden)
     monkeypatch.setattr(HealthCache, "record", forbidden)
     monkeypatch.setattr(HealthCache, "merge_and_save", forbidden)
     monkeypatch.setattr(store, "save_store", forbidden)

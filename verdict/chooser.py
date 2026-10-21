@@ -526,32 +526,6 @@ def apply_best_of_admitted(
     )
 
 
-def human_summary(receipt: ChooseReceipt) -> str:
-    lines: list[str] = []
-    if receipt.selected is None:
-        lines.append(f"no eligible target ({receipt.reason})")
-    else:
-        selected = receipt.selected
-        lines.append(
-            f"selected {selected['gateway']}/{selected['provider']}/"
-            f"{selected['resource_pool']}/{selected['model']}"
-        )
-        lines.append(receipt.selected_because)
-    if receipt.ranked_fallbacks:
-        top = receipt.ranked_fallbacks[0]
-        lines.append(
-            "top fallback: "
-            f"{top['gateway']}/{top['provider']}/{top['resource_pool']}/{top['model']}"
-        )
-    if receipt.exclusions:
-        reasons = ", ".join(
-            f"{item.get('model', '?')} ({item.get('reason', 'excluded')})"
-            for item in receipt.exclusions[:3]
-        )
-        lines.append(f"excluded: {reasons}")
-    return "\n".join(lines)
-
-
 def evidence_from_mapping(raw: Mapping[str, Any]) -> CandidateEvidence:
     """Build CandidateEvidence from a JSON fixture mapping."""
 
