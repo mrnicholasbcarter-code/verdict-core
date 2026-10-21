@@ -926,7 +926,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 | `hook` | Manage lifecycle hooks for Claude Code / Codex |
 | `memory` | Local-first unified memory management |
 | `serve` | FastAPI microservice |
-| `ui` | Streamlit analytics dashboard |
+| `ui` | Streamlit analytics dashboard (Python 3.11+; core Verdict supports 3.10) |
 
 ## Documentation
 
