@@ -280,8 +280,13 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
     from verdict.prove_at_rest import ProbeExchange
 
     adapter = fixture["adapter"]
-    adapter.inventory_rows = [row(rid, capacity_class=capacity) for rid in IDS]
-    adapter.connections = [conn("cc", auth="api_key", plan="")]
+    adapter.inventory_rows = [
+        row(rid, pricing={"input": 1.0} if capacity == "metered" else {}) for rid in IDS
+    ]
+    adapter.connections = [conn("cc", auth="apikey", plan="")]
+    if capacity == "unknown":
+        # D7: connected missing-price is now assumed-free and uses prepaid refresh.
+        fixture["config"] = RefreshConfig(auto_refresh=True)
     adapter.paths.health_cache.unlink()
     calls = []
 
@@ -291,7 +296,7 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
             http_status=200,
             ok=True,
             chat_exact=True,
-            tool_called=False,
+            tool_called=phase == "tool",
             reported_model=rid,
             latency_ms=1,
         )
@@ -303,7 +308,14 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
         return consent
 
     result = consume(fixture, read_line=answer, transport=transport, preview_only=True)
-    if consent == "y":
+    if capacity == "unknown":
+        assert sorted(calls) == sorted((rid, phase) for rid in IDS for phase in ("chat", "tool"))
+        assert result.ok, result.data
+        assert all(
+            item["status"] == "VERIFIED" and item["coding_ok"] for item in result.data["rows"]
+        )
+        assert prompts == []  # no unknown-cost consent prompt for assumed-free
+    elif consent == "y":
         # "y" to the plan, then "y" to the one costly group (its default is no).
         assert sorted(calls) == sorted((rid, "chat") for rid in IDS)
         assert result.ok, result.data
@@ -314,7 +326,8 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
         assert not calls
         assert not result.ok
         assert len(prompts) == 1
-    assert "f = free only" in prompts[0]
+    if capacity != "unknown":
+        assert "f = free only" in prompts[0]
     assert fixture["paths"].settings.read_bytes() == fixture["old"]
 
 
@@ -414,7 +427,7 @@ def test_stale_manual_plan_changed_during_consent_has_zero_calls(fixture: dict[s
 
     adapter = fixture["adapter"]
     adapter.inventory_rows = [row(rid, capacity_class="metered") for rid in IDS]
-    adapter.connections = [conn("cc", auth="api_key", plan="")]
+    adapter.connections = [conn("cc", auth="apikey", plan="")]
     adapter.paths.health_cache.unlink()
     calls = []
 

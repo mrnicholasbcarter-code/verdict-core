@@ -49,15 +49,19 @@ harness. OmniRoute is only transport and inventory.
    order with the operator's capable-free-first policy confirmed on 2026-09-29 and
    2026-10-10. See [operating standards](../guides/operator-standards.md).
 
-   **Policy amendment (2026-10-21, BOD-342, supersedes the 2026-10-12 amendment
-   above):** Verdict's own selection is now price-free. The strongest
-   proven-capable route is selected first; there is no default free-first or
-   cheaper-first ordering, and no economic admission gate. Explicit caller
-   filters (`--capacity`, `spend_policy`) are still honored, and the default
-   `spend_policy` is `paid_allowed`. The long-term goal of "cheapest model
-   proven capable of completing the ask" is deferred until capability proof
-   (`identify --screen`), accepted-work outcomes per task kind (BOD-304) and a
-   real cost signal exist. See [operating standards](../guides/operator-standards.md).
+   **Policy amendment (2026-10-21, BOD-342 D6/D7, supersedes the earlier
+   same-day price-free phase):** the orchestration ladder selects the cheapest
+   qualified capacity tier (free, subscription, metered, unknown), then the
+   strongest rating within that tier. Explicit capacity/spend filters still
+   apply. A fresh tool screen is probation for low-risk free work, not proven
+   coding ability. Medium/high/review qualification is unchanged. Missing
+   pricing is assumed free unless specific paid/subscription evidence exists;
+   this never bypasses entitlement or tool proof. OpenRouter non-free-set
+   routes and the Anthropic API-key connection remain metered. Missing
+   connections remain unknown and fail entitlement. Real confirms, screens
+   and successful dispatches refresh exact-route passport proof; scoped,
+   epoch-fenced single-use permits retain their 600-second maximum. Serve and
+   request-shortlist ordering is a separate follow-up, not claimed here.
 3. **DAG runtime.** Ready nodes run at the same time, up to `max_parallel`. Each attempt
    runs in its own git worktree, based on its validated dependencies. Lifecycle:
    `PLANNED -> ADMITTED -> DISPATCHED -> RUNNING -> TERMINAL_SUCCESS/TERMINAL_FAILURE ->

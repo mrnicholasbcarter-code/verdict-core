@@ -378,10 +378,10 @@ class TestCapacityAndRanking:
         assert verdicts["cc/claude-sonnet-5"].capacity_class is CapacityClass.SUBSCRIPTION
         assert verdicts["gl/glm-5"].capacity_class is CapacityClass.FREE
         assert verdicts["op/qwen3-coder"].capacity_class is CapacityClass.METERED
-        assert verdicts["mm/minimax-m2"].capacity_class is CapacityClass.UNKNOWN
+        assert verdicts["mm/minimax-m2"].capacity_class is CapacityClass.FREE
 
     def test_free_route_needs_agentic_proof_and_ranks_without_price(self, tmp_path: Path) -> None:
-        """Implementation workers: capacity class never orders ranking.
+        """Implementation workers: cheapest qualified capacity tier orders ranking.
 
         A health cache with a fresh agentic PASS is required for the FREE
         route to be implementation-eligible. Without it, FREE routes are
@@ -417,14 +417,14 @@ class TestCapacityAndRanking:
         ladder, _ = make_ladder(tmp_path, rows, connections, health_cache=cache)
         verdicts = ladder.evaluate(REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        # Price-free: capacity class never orders ranking. Without ratings the
+        # D6: capacity tier orders qualified routes. Without ratings the
         # equal-tier routes tie-break on provider preference (claude); the
         # unknown-tier route ranks last.
-        assert [v.route_id for v in ranked] == ["cc/claude-sonnet-5", "gl/glm-5", "op/qwen3-coder"]
+        assert [v.route_id for v in ranked] == ["gl/glm-5", "cc/claude-sonnet-5", "op/qwen3-coder"]
         assert {v.route_id: v.capacity_class for v in ranked}["gl/glm-5"] is CapacityClass.FREE
 
     def test_frontier_worthy_ranks_without_price(self, tmp_path: Path) -> None:
-        """Planning/controller/review: capacity class never orders ranking."""
+        """Planning/controller/review: capacity order follows unchanged capability gates."""
         rows = [
             row("op/qwen3-coder", owned_by="openrouter"),
             row("gl/glm-5", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -439,8 +439,8 @@ class TestCapacityAndRanking:
         frontier_req = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
         verdicts = ladder.evaluate(frontier_req, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        # Price-free for frontier work too: capacity class never orders ranking.
-        assert [v.route_id for v in ranked] == ["cc/claude-sonnet-5", "gl/glm-5", "op/qwen3-coder"]
+        # D6 applies to frontier ranking too; the capability floor still gates.
+        assert [v.route_id for v in ranked] == ["gl/glm-5", "cc/claude-sonnet-5", "op/qwen3-coder"]
 
     def test_prefer_providers_is_configurable(self, tmp_path: Path) -> None:
         # Preference orders routes of equal capability; declare both tiers.
@@ -862,10 +862,8 @@ def test_pool_exclusion_drops_aliases_not_other_backend(tmp_path):
     assert verdicts[routes[3]].failed_stage is None
 
 
-@pytest.mark.parametrize(
-    "free_tier, expected", [(2, "cc/claude-sonnet-5"), (3, "cc/claude-sonnet-5")]
-)
-def test_planner_respects_capability_floor_without_free_first(tmp_path, free_tier, expected):
+@pytest.mark.parametrize("free_tier, expected", [(2, "gl/glm-5"), (3, "cc/claude-sonnet-5")])
+def test_planner_respects_capability_floor_before_cheapest_tier(tmp_path, free_tier, expected):
     ladder, _ = make_ladder(
         tmp_path,
         [

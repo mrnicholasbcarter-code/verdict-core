@@ -1,7 +1,7 @@
 """Capability ranking without price (identification correction S-A2).
 
 Routes rank strongest first from rating evidence in Core's metadata store;
-capacity class and price never order selection.
+capacity tier orders qualified routes; ratings order each tier.
 """
 
 from __future__ import annotations
@@ -274,7 +274,7 @@ class TestIntelligenceFallbackRanking:
 
 
 class TestLadderRanksByCapabilityNotPrice:
-    def test_stronger_paid_route_beats_weaker_free_route(self, tmp_path: Path) -> None:
+    def test_qualified_free_route_beats_stronger_paid_route(self, tmp_path: Path) -> None:
         rows = [
             _ladder_row("gl/model-free", pricing={"input": 0.0, "output": 0.0}),
             _ladder_row("op/model-paid", pricing={"input": 3.0, "output": 15.0}),
@@ -286,9 +286,9 @@ class TestLadderRanksByCapabilityNotPrice:
         )
         ladder = _ladder(tmp_path, rows, conns, meta)
         assert ladder.capacity_class("gl/model-free") is CapacityClass.FREE
-        assert _ranked(ladder, REQ) == ["op/model-paid", "gl/model-free"]
+        assert _ranked(ladder, REQ) == ["gl/model-free", "op/model-paid"]
 
-    def test_unscored_free_route_ranks_after_scored_subscription(self, tmp_path: Path) -> None:
+    def test_unscored_free_route_ranks_before_scored_subscription(self, tmp_path: Path) -> None:
         rows = [
             _ladder_row("gl/model-free", pricing={"input": 0.0, "output": 0.0}),
             _ladder_row("cc/model-sub", pricing={"input": 3.0, "output": 15.0}),
@@ -296,8 +296,8 @@ class TestLadderRanksByCapabilityNotPrice:
         conns = [_conn("gl", auth="apikey", free=True), _conn("cc", auth="oauth")]
         meta = _snapshot(_record("acme/sub", "cc/model-sub", aa_coding=_score(20.0)))
         assert _ranked(_ladder(tmp_path, rows, conns, meta), REQ) == [
-            "cc/model-sub",
             "gl/model-free",
+            "cc/model-sub",
         ]
 
     def test_high_score_tier0_beats_lower_score_tier1_despite_larger_slack(
@@ -420,7 +420,7 @@ def test_stale_window_matches_metadata_doctor() -> None:
 
 
 class TestActualSelectionRatingOrder:
-    def test_stronger_route_confirms_before_weaker_cached_route(
+    def test_free_route_confirms_before_stronger_metered_route(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from verdict.orchestration.explain import explain_selection
@@ -453,12 +453,12 @@ class TestActualSelectionRatingOrder:
             health_cache=cache,
         )
         selected, verdicts = ladder.select(REQ, now=NOW)
-        assert selected is not None and selected.route_id == "op/strong"
+        assert selected is not None and selected.route_id == "gl/weak"
         assert selected.rank == 0
-        assert calls == ["op/strong"]
+        assert calls == ["gl/weak"]
         reasons = explain_selection(verdicts)["selected_because"]
-        assert any("higher task rating" in reason for reason in reasons)
-        assert not any("price" in reason or "capacity" in reason for reason in reasons)
+        assert any("cheaper qualified capacity" in reason for reason in reasons)
+        assert not any("higher task rating" in reason for reason in reasons)
 
     def test_ladder_orders_fallback_between_coding_score_and_unknown(self, tmp_path: Path) -> None:
         rows = [
@@ -466,7 +466,7 @@ class TestActualSelectionRatingOrder:
             _ladder_row("p/weak", pricing={}),
             _ladder_row("p/none", pricing={}),
         ]
-        conns = [_conn("cc", auth="oauth"), _conn("p", auth="apikey")]
+        conns = [_conn("cc", auth="oauth"), _conn("p", auth="oauth")]
         meta = _snapshot(
             _record("acme/opus", "cc/opus", aa_intelligence=_score(57.6)),
             _record("acme/weak", "p/weak", aa_coding=_score(5.0)),
@@ -498,7 +498,7 @@ class TestActualSelectionRatingOrder:
         )
         ladder = EligibilityLadder(
             rows,
-            [_conn("cc", auth="oauth"), _conn("p", auth="apikey")],
+            [_conn("cc", auth="oauth"), _conn("p", auth="oauth")],
             lambda _route: HealthResult(True, "ok"),
             tmp_path / "state.json",
         )
@@ -633,12 +633,12 @@ def test_explain_does_not_claim_rank_win_when_equal_rating_scheduler_selects_lat
     "pricing,tier,capacity",
     [
         ({"input": 3.0, "output": 15.0}, 0, CapacityClass.METERED),
-        ({}, 0, CapacityClass.UNKNOWN),
-        ({}, 1, CapacityClass.UNKNOWN),
+        ({}, 0, CapacityClass.FREE),
+        ({}, 1, CapacityClass.FREE),
     ],
 )
 @pytest.mark.parametrize("confirmation_ok", [True, False])
-def test_ordinary_selection_ignores_economic_class_but_requires_confirmation(
+def test_ordinary_selection_prefers_cheaper_qualified_tier_and_requires_confirmation(
     tmp_path: Path,
     pricing: dict[str, float],
     tier: int,
@@ -673,19 +673,38 @@ def test_ordinary_selection_ignores_economic_class_but_requires_confirmation(
         metadata=meta,
         allow_unknown_capacity=False,
     )
+    from verdict.orchestration.health_cache import HealthCache, ProbeResult
+
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(
+        "op/strong",
+        ProbeResult(
+            category="ok", chat_ok=True, tool_ok=True, agentic_ok=True, probe_class="agentic"
+        ),
+        NOW,
+    )
+    cache.save()
+    ladder._health_cache = cache
     req = TaskRequirements(frontier_worthy=False, max_capability_tier=1)
     evaluated = {v.route_id: v for v in ladder.evaluate(req, now=NOW)}
     assert evaluated["op/strong"].capacity_class is capacity
-    assert evaluated["op/strong"].rank == 0
+    assert evaluated["op/strong"].rank == (0 if capacity is CapacityClass.FREE else 1)
     assert calls == []
     assert not ladder.admitted.launchable("op/strong")
 
     selected, verdicts = ladder.select(req, now=NOW)
-    assert calls == (["op/strong"] if confirmation_ok else ["op/strong", "cc/weak"])
+    free_wins = capacity is CapacityClass.FREE and confirmation_ok
+    assert calls == (
+        ["op/strong"]
+        if free_wins
+        else ["op/strong", "cc/weak"]
+        if capacity is CapacityClass.FREE
+        else ["cc/weak"]
+    )
     assert selected is not None
-    assert selected.route_id == ("op/strong" if confirmation_ok else "cc/weak")
+    assert selected.route_id == ("op/strong" if free_wins else "cc/weak")
     assert ladder.admitted.launchable(selected.route_id)
-    if not confirmation_ok:
+    if not confirmation_ok and capacity is CapacityClass.FREE:
         assert "op/strong" not in ladder.admitted
         rejected = next(v for v in verdicts if v.route_id == "op/strong")
         assert rejected.reason == "authentication" and rejected.failed_stage is not None

@@ -364,6 +364,7 @@ async def test_dag_failure_after_permit_revokes_on_auth_and_retries_with_new_per
             attempt_id=_id(repo.parent / "run1"),
             authorization_digest="x",
             expected_epoch=1,
+            qualified_at=NOW,
             proof_deadline=NOW + timedelta(seconds=60),
             now=NOW,
         )

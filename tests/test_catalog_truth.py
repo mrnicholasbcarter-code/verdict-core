@@ -218,15 +218,15 @@ class TestCapacityClassification:
                 f"{v.route_id} should be METERED, got {v.capacity_class}"
             )
 
-    def test_apikey_no_pricing_is_unknown(self) -> None:
-        """command-code has apikey but no pricing → UNKNOWN."""
+    def test_apikey_no_pricing_is_assumed_free(self) -> None:
+        """D7: command-code has no specific paid evidence → assumed FREE."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         cmd = [v for v in verdicts if v.route_id == "command-code/gpt-5.3-codex"]
         for v in cmd:
-            assert v.capacity_class == CapacityClass.UNKNOWN, (
-                f"{v.route_id} should be UNKNOWN, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.FREE, (
+                f"{v.route_id} should be FREE, got {v.capacity_class}"
             )
 
     def test_import_free_models_only_is_free(self) -> None:
@@ -449,16 +449,16 @@ class TestNotFreeOverride:
 
 
 class TestSelectionOrderIsPriceFree:
-    """Capacity class is display-only; it never enters the rank key."""
+    """D6: capacity class is the first qualified-route rank key."""
 
-    def test_capacity_order_is_not_a_rank_key(self) -> None:
+    def test_capacity_order_is_first_rank_key(self) -> None:
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         _assessments, candidates = ladder._assess_all(req, NOW)
         for a in candidates:
             key = ladder._rank_key(a)
             assert ladder._rank_components(a)["capacity_order"] == _CAPACITY_ORDER[a.capacity]
-            assert key[0] == ladder._rank_components(a)["rating_rank"]
+            assert key[0] == ladder._rank_components(a)["capacity_order"]
 
 
 # -----------------------------------------------------------------------
@@ -587,340 +587,344 @@ def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, s
     )
     # BOD-418: openrouter/ FREE requires public 0/0 membership; import_free_only
     # alone no longer classifies these routes FREE.
-    out["openrouter/auto"] = (CapacityClass.FREE, CapacityClass.METERED, "apikey_positive_pricing")
+    out["openrouter/auto"] = (
+        CapacityClass.FREE,
+        CapacityClass.METERED,
+        "openrouter_not_in_public_free_set",
+    )
     out["openrouter/baai/bge-m3"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/black-forest-labs/flux.2-flex"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/black-forest-labs/flux.2-max"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/black-forest-labs/flux.2-pro"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/cohere/rerank-4-fast"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/cohere/rerank-4-pro"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/cohere/rerank-v3.5"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/deepgram/nova-3"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/deepseek/deepseek-v4-flash-0731:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/deepseek/deepseek-v4-flash-0731:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/deepseek/deepseek-v4-flash-0731:free-low"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/deepseek/deepseek-v4-flash-0731:free-xhigh"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/chirp-3"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/gemini-3-pro-image-preview"] = (
         CapacityClass.FREE,
         CapacityClass.METERED,
-        "apikey_positive_pricing",
+        "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/gemini-3.1-flash-image-preview"] = (
         CapacityClass.FREE,
         CapacityClass.METERED,
-        "apikey_positive_pricing",
+        "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/gemini-embedding-001"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/gemini-embedding-2"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/google/gemini-embedding-2-preview"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/inclusionai/ling-3.0-flash-fin:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/inclusionai/ling-3.0-flash-vl:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/microsoft/mai-transcribe-1.5"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/mistralai/mistral-embed-2312"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/mistralai/voxtral-mini-transcribe"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-mini:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-mini:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-mini:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-mini:free-none"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-pro:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-pro:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-pro:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nex-agi/nex-n2.5-pro:free-none"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nvidia/nemotron-3-super-120b-a12b:free-low"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nvidia/nemotron-3-super-120b-a12b:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/nvidia/parakeet-tdt-0.6b-v3"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/gpt-4o-mini-transcribe"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/gpt-4o-transcribe"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/gpt-5-image-mini"] = (
         CapacityClass.FREE,
         CapacityClass.METERED,
-        "apikey_positive_pricing",
+        "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/gpt-5.4-image-2"] = (
         CapacityClass.FREE,
         CapacityClass.METERED,
-        "apikey_positive_pricing",
+        "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/text-embedding-3-large"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/text-embedding-3-small"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/whisper-1"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/whisper-large-v3"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openai/whisper-large-v3-turbo"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/openrouter/free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3-asr-flash-2026-02-10"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3-embedding-4b"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3-embedding-8b"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3.8-27b:free-low"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3.8-27b:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/qwen/qwen3.8-27b:free-xhigh"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-low"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-minimal"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-none"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling-small:free-xhigh"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-low"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-medium"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-minimal"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-none"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/thinkingmachines/inkling:free-xhigh"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/z-ai/glm-5.2:free"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/z-ai/glm-5.2:free-high"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     out["openrouter/z-ai/glm-5.2:free-xhigh"] = (
         CapacityClass.FREE,
-        CapacityClass.UNKNOWN,
+        CapacityClass.METERED,
         "openrouter_not_in_public_free_set",
     )
     return out
@@ -992,6 +996,24 @@ class TestRankingParityAgainstOriginMain:
         assert set(old_verdicts) == set(new_verdicts)
 
         expected = _expected_class_changes()
+        # D7 deliberately reclassifies every connected legacy UNKNOWN route.
+        # Derive this set from the legacy fixture and account facts, never the
+        # new classifier's output. No-connection UNKNOWN remains unchanged.
+        for rid, previous in old_verdicts.items():
+            connection = old._connection_for(previous.provider)
+            if previous.capacity_class is CapacityClass.UNKNOWN and connection is not None:
+                if str(connection.get("provider", "")).lower() == "anthropic":
+                    expected[rid] = (
+                        CapacityClass.UNKNOWN,
+                        CapacityClass.METERED,
+                        "anthropic_apikey",
+                    )
+                elif rid not in expected:
+                    expected[rid] = (
+                        CapacityClass.UNKNOWN,
+                        CapacityClass.FREE,
+                        "assumed_free_no_paid_evidence",
+                    )
         observed: dict[str, tuple[CapacityClass, CapacityClass]] = {}
         for rid, nv in new_verdicts.items():
             ov = old_verdicts[rid]

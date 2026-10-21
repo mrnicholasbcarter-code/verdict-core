@@ -639,9 +639,9 @@ def test_capacity_class_matches_the_ladder() -> None:
             CapacityClass.METERED,
         ),
         ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
-        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
+        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.FREE),
         # Bool pricing values must NOT be treated as prices (True == 1 in Python).
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.FREE),
     ]
     for conn, row, expected_class in shared_shapes:
         via_standalone = capacity_class_of(conn, row)
@@ -1427,6 +1427,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-1",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=_at(60),
             now=NOW,
         )
@@ -1440,6 +1441,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
         attempt_id="attempt-1",
         authorization_digest="auth-digest",
         expected_epoch=1,
+        qualified_at=NOW,
         proof_deadline=_at(60),
         now=NOW,
     )
@@ -1470,6 +1472,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-1",
             authorization_digest="auth-digest",
             expected_epoch=2,
+            qualified_at=NOW,
             proof_deadline=_at(61),
             now=later,
         )
@@ -1492,6 +1495,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-2",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=_at(61),
             now=later,
         )
@@ -1504,6 +1508,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-3",
             authorization_digest="auth-digest",
             expected_epoch=1,
+            qualified_at=NOW,
             proof_deadline=_at(61),
             now=later,
         )
@@ -1517,6 +1522,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
         attempt_id="attempt-4",
         authorization_digest="auth-digest",
         expected_epoch=2,
+        qualified_at=NOW,
         proof_deadline=_at(61),
         now=later,
     )
@@ -1529,6 +1535,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-4",
             authorization_digest="auth-digest",
             expected_epoch=2,
+            qualified_at=NOW,
             proof_deadline=_at(61),
             now=later,
         )
@@ -1549,6 +1556,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
         attempt_id="attempt-5",
         authorization_digest="auth-digest",
         expected_epoch=0,
+        qualified_at=NOW,
         proof_deadline=_at(61),
         now=later,
     )
@@ -1563,6 +1571,7 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
             attempt_id="attempt-6",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=later + timedelta(seconds=EVIDENCE_FRESH_SECONDS + 1),
             now=later,
         )

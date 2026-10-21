@@ -263,7 +263,7 @@ class TestAC6SecretLeak:
                 "providerSpecificData.plan",
             ),
             ({"plan_label": "free user@secret.example.com"}, "apikey", "plan_label"),
-            ({}, "user@secret.example.com", "no_pricing_data:auth=other"),
+            ({}, "user@secret.example.com", "apikey_positive_pricing"),
         ],
     )
     async def test_no_email_or_token_in_event_or_render(

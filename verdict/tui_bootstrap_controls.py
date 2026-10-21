@@ -140,6 +140,7 @@ def _refresh_selected(
                 provider=row["provider"],
                 status=row["status"],
                 capacity_class=row.get("capacity_class") or "unknown",
+                capacity_evidence=row.get("capacity_evidence"),
                 refreshable=bool(row.get("refreshable")),
                 refresh_reason=row.get("refresh_reason"),
             )
@@ -178,6 +179,7 @@ def _refresh_selected(
                     provider=row["provider"],
                     status=row["status"],
                     capacity_class=row.get("capacity_class") or "unknown",
+                    capacity_evidence=row.get("capacity_evidence"),
                     refreshable=bool(row.get("refreshable")),
                     refresh_reason=row.get("refresh_reason"),
                 )

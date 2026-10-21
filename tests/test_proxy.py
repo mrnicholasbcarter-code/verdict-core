@@ -1147,8 +1147,33 @@ def test_responses_truncated_stream_is_not_recorded_as_success(monkeypatch) -> N
     assert evidence["outcome_event"]["details"]["error_class"] == "malformed_stream"
 
 
-def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(monkeypatch) -> None:
-    transport = ResponsesTransport(statuses=[503, 503, 200, 503])
+@pytest.mark.parametrize(
+    "payload,headers,statuses,expected_status,expected_models",
+    [
+        ({"input": "preserve all fields"}, {}, [503], 503, ["selected-model"]),
+        (
+            {"input": "preserve all fields"},
+            {"idempotency-key": "idem"},
+            [503, 200],
+            200,
+            ["selected-model", "backup-model"],
+        ),
+        (
+            {"input": "preserve all fields", "tools": [{"type": "function", "name": "write"}]},
+            {"idempotency-key": "tool-idem"},
+            [503],
+            503,
+            ["selected-model"],
+        ),
+    ],
+    ids=["no-key", "idempotency-key", "tools"],
+)
+def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(
+    monkeypatch, payload, headers, statuses, expected_status, expected_models
+) -> None:
+    # Each case gets conftest's fresh HOME: a real 503 negative must not leak
+    # from a different scenario into the next scenario's admission.
+    transport = ResponsesTransport(statuses=statuses)
     _configure_test_app(monkeypatch, transport)
 
     class Alternatives(FixedIntelligence):
@@ -1167,27 +1192,10 @@ def test_pre_byte_fallback_requires_idempotency_and_is_never_used_for_tools(monk
 
     monkeypatch.setattr(api, "_build_intelligence", lambda: Alternatives())
     with TestClient(api.app) as client:
-        no_key = client.post("/v1/responses", json={"input": "preserve all fields"})
-        with_key = client.post(
-            "/v1/responses",
-            json={"input": "preserve all fields"},
-            headers={"idempotency-key": "idem"},
-        )
-        tool = client.post(
-            "/v1/responses",
-            json={"input": "preserve all fields", "tools": [{"type": "function", "name": "write"}]},
-            headers={"idempotency-key": "tool-idem"},
-        )
+        response = client.post("/v1/responses", json=payload, headers=headers)
 
-    assert no_key.status_code == 503
-    assert with_key.status_code == 200
-    assert tool.status_code == 503
-    assert [item["body"]["model"] for item in transport.requests] == [
-        "selected-model",
-        "selected-model",
-        "backup-model",
-        "selected-model",
-    ]
+    assert response.status_code == expected_status
+    assert [item["body"]["model"] for item in transport.requests] == expected_models
 
 
 def test_proxy_rejects_oversized_and_malformed_payloads(monkeypatch) -> None:

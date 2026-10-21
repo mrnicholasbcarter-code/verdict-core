@@ -73,8 +73,8 @@ def test_capacity_is_canonical_narrowing_before_probe(tmp_path, monkeypatch, cap
     assert probes == []
     assert selector.admitted is not None
     if capacity:
-        assert selector.admitted.ids == {"free/model", "sub/model"}
-        for route in ("paid/model", "unknown/model"):
+        assert selector.admitted.ids == {"free/model", "sub/model", "unknown/model"}
+        for route in ("paid/model",):
             assert selector.admitted.first_failure(route).reason == "outside_capacity_filter"
             assert not selector.admitted.launchable(route)
     else:

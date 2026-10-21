@@ -1741,6 +1741,9 @@ class Prober:
         elif exchanges[-1].http_status in (401, 403):
             outcome["result"] = "auth_failed"
         elif stats.agentic_passed:
+            from verdict.admit_prove_confirm import record_dispatch_observation
+
+            record_dispatch_observation(route.route_id, healthy=True, observed_at=observed)
             outcome["result"] = "pass"
         else:
             entry = self.cache.entry(route.route_id)

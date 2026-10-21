@@ -17,7 +17,9 @@ from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
 from verdict.metadata.store import MetadataSnapshot, load_store
 from verdict.omniroute_evidence import OmniRouteEvidence, fetch_omniroute_evidence
+from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import canonical_route, pool_of
+from verdict.orchestration.eligibility import _CAPACITY_ORDER
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     HealthCache,
@@ -191,13 +193,18 @@ def screen_models(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """Screen passive survivors strongest-first, with explicit consent and route caps."""
+    """Screen cheapest tier first, then strongest, with explicit consent and route caps."""
     _screen_options(allow_live_probe, max_per_provider, max_routes)
     report = identify_models(
         evidence, metadata=metadata, identity_map=identity_map, all_excluded=all_excluded
     )
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
+    rated.sort(
+        key=lambda rating: _CAPACITY_ORDER.get(
+            CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")), 3
+        )
+    )
     prober = Prober(
         cache=cache,
         routes_loader=lambda: (),
@@ -224,6 +231,7 @@ def screen_models(
             **asdict(rating),
             "provider": provider,
             "capacity": capacity,
+            "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
             "turns_sent": 0,
             "latency_ms": None,
         }
@@ -251,7 +259,13 @@ def screen_models(
             else:
                 row.update(
                     prober.screen_route(
-                        AdmittedRoute(route_id, provider, capacity, pool=pool_of(route_id)),
+                        AdmittedRoute(
+                            route_id,
+                            provider,
+                            capacity,
+                            pool=pool_of(route_id),
+                            capacity_evidence=evidence.route_capacity_evidence.get(route_id),
+                        ),
                         deadline=deadline,
                     )
                 )

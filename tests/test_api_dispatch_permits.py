@@ -154,7 +154,8 @@ def test_dispatch_permit_gates_every_send_and_spawn(
                     "fix code", criticality="low", context=ctx, request_id=request_id
                 )
                 if case == "newer_revocation_passport":
-                    assert decision.admission_proofs[primary.route_id].epoch == 1
+                    # A positive during active scoped backoff cannot reauthorize.
+                    assert primary.route_id not in decision.admission_proofs
             elif case != "missing":
                 assert len(decision.admission_proofs) == 2
                 primary = next(
@@ -253,7 +254,7 @@ def test_dispatch_permit_gates_every_send_and_spawn(
                 json=request_body,
                 headers={"idempotency-key": "permit-test"},
             )
-    if case in {"positive", "alternative", "newer_revocation_passport"}:
+    if case in {"positive", "alternative"}:
         assert response.status_code == 200
         assert len(requests) == 1
         if case == "alternative":
@@ -267,6 +268,7 @@ def test_dispatch_permit_gates_every_send_and_spawn(
         "wrong_origin",
         "replayed_old_passport",
         "equal_revocation_passport",
+        "newer_revocation_passport",
         "foreign_provider",
         "foreign_profile",
     }:

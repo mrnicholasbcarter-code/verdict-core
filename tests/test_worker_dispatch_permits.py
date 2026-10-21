@@ -147,19 +147,21 @@ async def test_worker_and_orchestration_handoffs_require_permits(tmp_path: Path)
     assert cache.dispatch_attempt_state(attempt_id) == PERMIT_STATE_MAYBE_SENT
 
 
-async def test_worker_no_fresh_passport_spawns_nothing(tmp_path: Path) -> None:
+async def test_worker_stale_passport_and_failed_confirm_spawns_nothing(tmp_path: Path) -> None:
     adapter = SpyAdapter()
     stale = _passport(ROUTE, qualified=_now() - timedelta(hours=1))
     controller = _controller(tmp_path, adapter, {ROUTE: stale})
+    controller.probe = lambda _: HealthResult(False, "authentication")
     outcome = await controller.run(PROMPT)
     assert outcome.state == "FAIL_CLOSED"
     assert adapter.spawns == []
-    assert [e["classification"] for e in _events(controller, "exclusion")] == ["no_fresh_passport"]
+    assert [e["classification"] for e in _events(controller, "exclusion")] == ["authentication"]
 
 
-async def test_worker_without_any_passport_spawns_nothing(tmp_path: Path) -> None:
+async def test_worker_without_passport_and_failed_confirm_spawns_nothing(tmp_path: Path) -> None:
     adapter = SpyAdapter()
     controller = _controller(tmp_path, adapter, {})
+    controller.probe = lambda _: HealthResult(False, "authentication")
     assert (await controller.run(PROMPT)).state == "FAIL_CLOSED"
     assert adapter.spawns == []
 
@@ -226,6 +228,7 @@ async def test_worker_failure_after_permit_stays_maybe_sent_and_retry_gets_new_p
             attempt_id=first.attempt_id,
             authorization_digest="x",
             expected_epoch=first.epoch,
+            qualified_at=_now(),
             proof_deadline=_now() + timedelta(seconds=30),
             now=_now(),
         )
@@ -279,4 +282,64 @@ def test_worker_profile_digest_depends_on_work_not_secrets() -> None:
     assert worker_profile_digest(task, "a") != worker_profile_digest(task, "b")
     assert worker_profile_digest(task, "a") == worker_profile_digest(
         replace(task, excluded_route_ids=frozenset({"x"})), "a"
+    )
+
+
+async def test_worker_stale_passport_successful_confirm_mints_current_permit(tmp_path):
+    adapter = SpyAdapter()
+    stale = _passport(ROUTE, qualified=_now() - timedelta(hours=1))
+    controller = _controller(tmp_path, adapter, {ROUTE: stale})
+    assert (await controller.run(PROMPT)).state == "SUCCESS"
+    assert adapter.spawns == [f"omniroute/{ROUTE}"]
+    permit = HealthCache(default_cache_path()).permit_for_attempt(f"{controller.operation_id}-a1")
+    assert permit is not None
+    assert (
+        HealthCache(default_cache_path()).dispatch_attempt_state(permit.attempt_id)
+        == PERMIT_STATE_MAYBE_SENT
+    )
+
+
+async def test_confirm_after_negative_backoff_mints_new_epoch_not_old_epoch(tmp_path):
+    from verdict.orchestration.health_cache import ProbeResult
+
+    cache = HealthCache(default_cache_path())
+    earlier = _now() - timedelta(seconds=61)
+    cache.record(ROUTE, ProbeResult(category="timeout", chat_ok=False, tool_ok=False), earlier)
+    cache.save()
+    epoch = cache.record_revocation(
+        _scope(ROUTE),
+        route_id=ROUTE,
+        event_id="old-negative",
+        source_revision=None,
+        observed_at=earlier,
+    )
+    assert cache.entry(ROUTE).until < _now()
+    adapter = SpyAdapter()
+    controller = _controller(
+        tmp_path, adapter, {ROUTE: _passport(ROUTE, qualified=earlier - timedelta(seconds=1))}
+    )
+    assert (await controller.run(PROMPT)).state == "SUCCESS"
+    permit = HealthCache(default_cache_path()).permit_for_attempt(f"{controller.operation_id}-a1")
+    assert permit is not None and permit.epoch == epoch == 1
+    # A later attested screen also leaves the recovered scope usable; the
+    # old revocation must not spring back as a fresh authentication backoff.
+    healthy = HealthCache(default_cache_path())
+    healthy.record(ROUTE, ProbeResult(category="ok", chat_ok=True, tool_ok=True), _now())
+    healthy.save()
+    again = _controller(
+        tmp_path / "again", SpyAdapter(), {ROUTE: _passport(ROUTE, qualified=_now())}
+    )
+    assert (await again.run(PROMPT)).state == "SUCCESS"
+    assert (
+        cache.commit_dispatch(
+            _scope(ROUTE),
+            route_id=ROUTE,
+            attempt_id="old-epoch",
+            authorization_digest="old",
+            expected_epoch=0,
+            qualified_at=_now(),
+            proof_deadline=_now() + timedelta(seconds=30),
+            now=_now(),
+        )
+        is None
     )

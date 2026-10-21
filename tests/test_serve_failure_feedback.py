@@ -477,3 +477,68 @@ def test_helper_lock_and_persistence_errors_propagate(
     monkeypatch.setattr(HealthCache, "merge_and_save", boom)
     with pytest.raises(HealthCacheLockTimeoutError):
         relay_failure_feedback(cache, route_id="cc/model-a", status_code=503, now=NOW)
+
+
+def test_failed_route_is_not_redispatched_until_negative_expires(monkeypatch):
+    from verdict.admit_prove_confirm import passport_confirmation
+    from verdict.relay import admission_proof
+
+    requests = []
+
+    async def transport(request):
+        requests.append(json.loads(request.content)["model"])
+        return httpx.Response(503, json={"error": {"message": "temporary failure"}})
+
+    prepared = _prepare(monkeypatch, transport, alternatives=False)
+    with TestClient(api.app) as client:
+        first = client.post("/v1/chat/completions", json=_request_body())
+        second = client.post(
+            "/v1/chat/completions", json=_request_body(), headers={"idempotency-key": "new-request"}
+        )
+    assert first.status_code == second.status_code == 503
+    assert requests == [_attempted_route(prepared).split("/", 1)[-1]]  # no second dispatch
+
+    proof = next(
+        p for p in prepared[0].admission_proofs.values() if p.route_id == _attempted_route(prepared)
+    )
+    route = proof.route_id
+    cache = HealthCache(default_cache_path())
+    negative = cache.entry(route)
+    assert negative is not None and not negative.healthy
+    other = _other_route(prepared)
+    passports = {rid: live._passport(rid, latency_ms=1.0) for rid in (route, other)}
+
+    def bind(rid, scope, now):
+        # A new positive observation can renew proof, but cannot bypass an
+        # active negative. Expiry alone never revives an older passport.
+        current_passport = replace(passports[rid], qualified_at=now, last_verified_timestamp=now)
+        confirmation = passport_confirmation([rid], now=now, passports={rid: current_passport})
+        return admission_proof(
+            confirmation,
+            route_id=rid,
+            scope=scope,
+            authorization_digest=confirmation["receipt_id"],
+            provider=proof.provider,
+            model=rid,
+            now=now,
+        )
+
+    # The real exact-route negative does not disable another route. A scoped
+    # revocation on a different profile does not become a global auth backoff.
+    other_scope = api.dispatch_scope(
+        gateway_origin=proof.scope.gateway_origin,
+        provider=proof.provider,
+        model=other,
+        route_id=other,
+        profile_digest=proof.scope.profile_digest,
+    )
+    cache.record_revocation(
+        replace(other_scope, profile_digest="unrelated-profile"),
+        route_id=other,
+        event_id="unrelated-scope",
+        source_revision=None,
+        observed_at=negative.checked_at,
+    )
+    assert bind(other, other_scope, negative.checked_at) is not None
+    assert bind(route, proof.scope, negative.until - timedelta(microseconds=1)) is None
+    assert bind(route, proof.scope, negative.until + timedelta(microseconds=1)) is not None

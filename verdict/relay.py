@@ -87,6 +87,30 @@ def dispatch_scope(
     )
 
 
+def revocation_is_active(
+    cache: HealthCache, scope: DispatchScope, route_id: str, now: datetime
+) -> bool:
+    """A confirm cannot lift a scoped negative before its existing backoff ends.
+
+    Some revocations (identity/auth fences) carry no route health row. They
+    use the existing authentication backoff, not a new proof lifetime.
+    """
+    from datetime import timedelta
+
+    from verdict.orchestration.health_cache import CATEGORY_AUTH, negative_seconds
+
+    revoked_at = cache.latest_revocation_at(scope)
+    if revoked_at is None:
+        return False
+    entry = cache.entry(route_id)
+    if entry is not None and entry.checked_at >= revoked_at:
+        if entry.healthy and entry.checked_at > revoked_at:
+            return False  # validated screen/confirm recovery, not the old proof
+        if not entry.healthy:
+            return entry.until > now
+    return revoked_at + timedelta(seconds=negative_seconds(CATEGORY_AUTH)) > now
+
+
 def admission_proof(
     confirmation: dict[str, Any] | None,
     *,
@@ -121,6 +145,11 @@ def admission_proof(
             return None
         cache = HealthCache(default_cache_path())
         latest_revocation = cache.latest_revocation_at(scope)
+        negative = cache.entry(route_id)
+        if negative is not None and not negative.healthy and negative.until > now:
+            return None
+        if revocation_is_active(cache, scope, route_id, now):
+            return None
         if latest_revocation is not None and qualified_at <= latest_revocation:
             return None  # passport predates the latest scoped revocation
         epoch = cache.revocation_epoch(scope)

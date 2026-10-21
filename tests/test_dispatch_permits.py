@@ -46,6 +46,7 @@ def _commit(
         attempt_id=attempt_id,
         authorization_digest="auth-digest",
         expected_epoch=expected_epoch,
+        qualified_at=NOW,
         proof_deadline=_at(60) if now is None else now + timedelta(seconds=60),
         now=NOW if now is None else now,
     )
@@ -132,6 +133,7 @@ def test_proof_expiry_window_never_authorizes_stale_or_future_proofs(tmp_path: P
             attempt_id="expired",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=NOW,
             now=NOW,
         )
@@ -146,6 +148,7 @@ def test_proof_expiry_window_never_authorizes_stale_or_future_proofs(tmp_path: P
             attempt_id="future",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=_at(PERMIT_PROOF_MAX_VALIDITY_SECONDS + 1),
             now=NOW,
         )
@@ -159,6 +162,7 @@ def test_proof_expiry_window_never_authorizes_stale_or_future_proofs(tmp_path: P
             attempt_id="edge",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=_at(PERMIT_PROOF_MAX_VALIDITY_SECONDS),
             now=NOW,
         )
@@ -176,6 +180,7 @@ def test_permit_rejects_proof_older_than_eleven_minutes(tmp_path: Path) -> None:
             attempt_id="aged-proof",
             authorization_digest="auth-digest",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=NOW + timedelta(seconds=60),
             now=NOW - timedelta(minutes=11),
         )
@@ -199,6 +204,7 @@ def test_scope_and_permit_inputs_are_validated(tmp_path: Path) -> None:
             attempt_id="a1",
             authorization_digest="d",
             expected_epoch=0,
+            qualified_at=NOW,
             proof_deadline=naive,
             now=NOW,
         )
@@ -209,6 +215,7 @@ def test_scope_and_permit_inputs_are_validated(tmp_path: Path) -> None:
             attempt_id="a1",
             authorization_digest="d",
             expected_epoch=-1,
+            qualified_at=NOW,
             proof_deadline=_at(60),
             now=NOW,
         )

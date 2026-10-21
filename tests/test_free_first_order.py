@@ -1,10 +1,10 @@
 """Tests for free-first worker order with agentic-probe qualification.
 
 Covers AC1-AC7 of free-first Story 3:
-1. Capacity class never orders ranking (price excluded); UNKNOWN opt-in.
+1. Cheapest qualified capacity tier orders ranking; missing connection remains UNKNOWN.
 2. Agentic gate: FREE route + agentic PASS -> implementation; single-call only -> chat.
 3. Worker agentic gates stay unchanged.
-4. Determinism: same inputs -> same choice; max 8 probes; read-only cache.
+4. Determinism: same inputs -> same choice; max 8 probes; bounded confirmation.
 5. Hard gates keep priority.
 6. Receipts/events: capacity_class, probe_class, checked_at, freshness.
 7. Stale-vs-fresh, UNKNOWN opt-in off/on, cache-missing fallback.
@@ -152,7 +152,7 @@ def _build_cache(tmp_path: Path, entries: list[HealthEntry]) -> HealthCache:
 
 
 class TestCapacityOrdering:
-    def test_capacity_class_does_not_rank_worker_task(self, tmp_path: Path) -> None:
+    def test_cheapest_capacity_class_ranks_worker_task(self, tmp_path: Path) -> None:
         rows = [
             _row("op/model-a", owned_by="openrouter"),
             _row("gl/model-b", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -169,11 +169,11 @@ class TestCapacityOrdering:
         ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        # Price-free: the FREE route is eligible (agentic proof) but not first by class.
-        assert [v.route_id for v in ranked] == ["cc/model-c", "gl/model-b", "op/model-a"]
-        assert ranked[1].capacity_class == CapacityClass.FREE
+        # D6: qualified FREE precedes subscription and metered.
+        assert [v.route_id for v in ranked] == ["gl/model-b", "cc/model-c", "op/model-a"]
+        assert ranked[0].capacity_class == CapacityClass.FREE
 
-    def test_capacity_class_does_not_rank_frontier_task(self, tmp_path: Path) -> None:
+    def test_cheapest_capacity_class_ranks_frontier_task(self, tmp_path: Path) -> None:
         rows = [
             _row("op/model-a", owned_by="openrouter"),
             _row("gl/model-b", owned_by="glm", pricing={"input": 0.0, "output": 0.0}),
@@ -187,7 +187,7 @@ class TestCapacityOrdering:
         ladder, _ = _make(tmp_path, rows, conns)
         verdicts = ladder.evaluate(FRONTIER_REQ, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
-        assert [v.route_id for v in ranked] == ["cc/model-c", "gl/model-b", "op/model-a"]
+        assert [v.route_id for v in ranked] == ["gl/model-b", "cc/model-c", "op/model-a"]
 
 
 # ---- AC2: Agentic gate -----
@@ -255,17 +255,17 @@ class TestAgenticGate:
 
 class TestUnknownOptIn:
     def test_unknown_economic_class_allowed_without_opt_in(self, tmp_path: Path) -> None:
-        """UNKNOWN capacity: auth=apikey with no pricing -> UNKNOWN class."""
+        """D7: auth=apikey with no pricing -> assumed FREE, still needs tool proof."""
         rows = [_row("unk/model-a", owned_by="unknown_provider", pricing=None)]
-        # Remove pricing from row to get UNKNOWN capacity
+        # Remove pricing to exercise D7 assumed-free classification
         rows[0].pop("pricing", None)
         conns = [_conn("unknown_provider", auth="apikey", plan="")]
         ladder, _ = _make(tmp_path, rows, conns, allow_unknown=False)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["unk/model-a"].capacity_class is CapacityClass.UNKNOWN
-        assert by_id["unk/model-a"].failed_stage is None
-        assert by_id["unk/model-a"].rank == 0
+        assert by_id["unk/model-a"].capacity_class is CapacityClass.FREE
+        assert by_id["unk/model-a"].reason == "no_health_cache"
+        assert by_id["unk/model-a"].rank is None
 
     def test_unknown_allowed_with_opt_in(self, tmp_path: Path) -> None:
         rows = [_row("unk/model-a", owned_by="unknown_provider", pricing=None)]
@@ -274,7 +274,8 @@ class TestUnknownOptIn:
         ladder, _ = _make(tmp_path, rows, conns, allow_unknown=True)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["unk/model-a"].rank is not None
+        assert by_id["unk/model-a"].rank is None
+        assert by_id["unk/model-a"].reason == "no_health_cache"
 
     def test_unknown_allowed_for_frontier(self, tmp_path: Path) -> None:
         """Frontier-worthy tasks always allow UNKNOWN."""
