@@ -2238,6 +2238,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "free_routes": free_routes,
                 },
             )
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 2:
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_metered_fallback",
+                details={
+                    "fallback": "metered",
+                    "reason": "free and capable subscription attempts unavailable or failed",
+                },
+            )
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
         for local_field in _RELAY_LOCAL_FIELDS:
@@ -2529,28 +2538,6 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 )
             },
             headers=_evidence_headers(evidence),
-        )
-
-    if (
-        isinstance(result, BufferedUpstreamResponse)
-        and retryable_response_status(
-            result.status_code, compatibility_applied=False, body=_last_error_body
-        )
-        and "subscription_fallback_policy" in decision.safety_flags
-        and not any(
-            row.get("capacity_order") == 1 and row.get("admitted") is True
-            for row in decision.candidate_states
-        )
-    ):
-        result = replace(
-            result,
-            body=json.dumps(
-                {
-                    "error": {
-                        "message": "free attempts failed; no capable subscription route meets task proof/admission"
-                    }
-                }
-            ).encode(),
         )
 
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"

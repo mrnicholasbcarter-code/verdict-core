@@ -138,11 +138,9 @@ def test_billing_override_changes_both_selection_surfaces(monkeypatch, tmp_path)
     prepared = service._prepare_execution_path_request(
         "fix code", "low", _context(request), request
     )
-    assert live.STRONG not in {row.route_id for row in prepared.pool_receipt.shortlist}
-    assert any(
-        row.route_id == live.STRONG and row.reason == "metered_fallback_disallowed"
-        for row in prepared.pool_receipt.hard_drops
-    )
+    last = prepared.pool_receipt.shortlist[-1]
+    assert last.route_id == live.STRONG
+    assert last.capacity_order == 2
 
 
 def test_profile_obvious_coding_text_uses_coding_metric():

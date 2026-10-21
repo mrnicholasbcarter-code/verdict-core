@@ -689,9 +689,7 @@ class TestDynamicAssignment:
             row("cx/gpt-5.4", owned_by="codex", pricing={"input": 5.0, "output": 15.0}),
             row("cx/gpt-5.4-alt", owned_by="codex", pricing={"input": 1.0, "output": 3.0}),
         ]
-        ladder, _ = make_ladder(
-            tmp_path, rows, [conn("codex", auth="apikey", plan="pay")], allow_metered=True
-        )
+        ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
         chosen, _ = ladder.select(TaskRequirements(), now=NOW)
         # Price is excluded: equal routes fall through to the route_id tie-break.
         assert chosen is not None and chosen.route_id == "cx/gpt-5.4"

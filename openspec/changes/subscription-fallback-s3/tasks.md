@@ -1,7 +1,7 @@
 ## Local implementation and evidence
-- [x] Write regression tests before implementation. Main: four failures (quota order, missing quota snapshot field, missing reserved slot, metered selected). Screen queue regression: missing request_rescreen fails.
-- [x] Implement qualified subscription order, bounded last-attempt fallback, explicit fail-closed and persisted screen hints.
-- [ ] Run every affected reference test file and record raw count.
-- [ ] Run one full suite under 4G/1800s with four workers/loadfile.
-- [ ] Run ruff once, strict mypy, reachability with zero NEW, OpenSpec strict validation and diff check.
+- [x] Write regression tests before implementation. Initial main regressions and queue regression fail; corrected rule is token consumption (not remaining quota) and paid last resort.
+- [x] Implement qualified subscription token order, bounded free -> subscription -> metered fallback, original fail-closed authority and persisted screen hints. No budget/TTL/timer/endpoint changes; proposed minimum3 unique accepted samples.
+- [x] Run affected reference test files, then corrected focused281 passed in51.82s. All five nonquota full-suite failures pass unchanged after parent corrected paid-last rule and accepted error-layer diagnosis. Only existing assertion migrations are approved token-order/explain contracts.
+- [x] Run authorized confirming full suite under4G/1800s,4workers/loadfile: 10631 passed, 31 skipped, 24 xfailed, 40 warnings in 264.47s (0:04:24). First full result remains recorded:6 failed,10623 passed,31 skipped,24 xfailed; parent authorized one correcting run after fixing the brief.
+- [x] Static checks: ruff330 files clean; strict mypy325 source files clean; reachability2352 public symbols/0 NEW and13 orphans/0 NEW; strict OpenSpec validation valid; diff check clean.
 - [ ] Parent merged-main installed-host acceptance (not claimed by PR).
