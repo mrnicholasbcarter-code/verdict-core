@@ -23,6 +23,12 @@ def launch_dashboard() -> int:
 
     Returns the streamlit process exit code. Used by ``verdict ui``.
     """
+    if sys.version_info < (3, 11):
+        print(
+            "The dashboard needs Python 3.11 or newer (streamlit 1.66 and pillow 13 require it); core Verdict works on 3.10.",
+            file=sys.stderr,
+        )
+        return 1
     spec = importlib.util.find_spec("verdict.dashboard")
     if spec is None or spec.origin is None:
         return 1

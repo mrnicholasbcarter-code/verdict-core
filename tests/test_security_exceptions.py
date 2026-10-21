@@ -41,14 +41,20 @@ ACTIVE_ENTRY = {
 }
 
 
-def test_real_exceptions_file_matches_locked_pillow_version() -> None:
-    """The checked-in exception file only exempts the pillow version actually locked."""
-    exceptions = sx.load_exceptions()
-    assert exceptions, "config/security_exceptions.json must list at least one exception"
-    locked = sx.locked_version("pillow")
-    for exc in exceptions:
-        if exc.package == "pillow":
-            assert exc.version == locked
+def test_fixed_pillow_has_no_security_exceptions() -> None:
+    """Every locked Pillow is fixed and no longer needs an advisory exception."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    root = Path(__file__).parent.parent
+    with (root / "uv.lock").open("rb") as lock_file:
+        packages = tomllib.load(lock_file)["package"]
+    pillow_versions = [p["version"] for p in packages if p["name"] == "pillow"]
+    assert pillow_versions
+    assert all(int(version.split(".")[0]) >= 13 for version in pillow_versions)
+    assert not any(exc.package == "pillow" for exc in sx.load_exceptions())
 
 
 def test_unlisted_vulnerability_is_never_ignored(tmp_path: Path) -> None:
