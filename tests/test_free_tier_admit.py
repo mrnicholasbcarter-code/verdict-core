@@ -1297,9 +1297,11 @@ def test_subscription_with_higher_coding_score_wins_after_fresh_confirmation() -
     assert decision.admit_receipt["confirm"] == []
 
 
-@pytest.mark.parametrize("policy", ["free_only", "free_preferred", "frontier_required"])
+@pytest.mark.parametrize("policy", [None, "paid_allowed", "free_preferred"])
 @pytest.mark.parametrize("task_class", ["ordinary", "worthy"])
-def test_legacy_economic_labels_do_not_filter_qualified_routes(policy, task_class) -> None:
+def test_default_and_non_filtering_policies_do_not_filter_qualified_routes(
+    policy, task_class
+) -> None:
     from verdict.free_tier_admit import expand_admit_for_worthiness
 
     snapshot = _snapshot(
@@ -1313,6 +1315,7 @@ def test_legacy_economic_labels_do_not_filter_qualified_routes(policy, task_clas
     )
     assert receipt.admitted == ("subscription/strong-code",)
     assert receipt.exclusions == ()
+    assert receipt.spend_policy == (policy or "paid_allowed")
 
 
 @pytest.mark.parametrize("active,proven", [(True, True), (True, False), (False, True)])

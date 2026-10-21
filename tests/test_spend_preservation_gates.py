@@ -191,12 +191,14 @@ def test_worthy_selects_frontier_not_free() -> None:
     assert decision.admit_receipt["task_class"] == WORTHY
     assert decision.admit_receipt["class_reasons"]
     named = {item["reason"] for item in decision.admit_receipt["exclusions"]}
-    assert "worthy_excludes_free_for_cost" in named
+    # Task class is recorded but never excludes free routes for cost.
+    assert "worthy_excludes_free_for_cost" not in named
+    assert set(decision.admit_receipt["free_admitted"]) == {FREE_NO_TOOLS, PROVEN_FREE}
     assert "chooser_ranked_admitted" in decision.safety_flags
     assert decision.degraded_mode is False
 
 
-def test_ordinary_prefers_free_when_available() -> None:
+def test_ordinary_default_is_price_free_and_explicit_free_preferred_prefers_free() -> None:
     snapshot = _live_snapshot()
     passports = {
         PROVEN_FREE: _passport(PROVEN_FREE),
@@ -206,11 +208,23 @@ def test_ordinary_prefers_free_when_available() -> None:
     svc = _service(snapshot, passports=passports)
     decision = asyncio.run(svc.route("summarize this paragraph", criticality="low"))
     assert decision.task_class == ORDINARY
-    assert decision.model == PROVEN_FREE
-    assert "free-first among admitted" in (decision.admit_receipt or {}).get("selected_because", "")
+    # Default: every passport-proven admitted route competes; price is no gate.
+    receipt = decision.admit_receipt or {}
+    assert receipt["spend_policy"] == "paid_allowed"
+    assert {PROVEN_FREE, PAID_TOOLS, FRONTIER} <= set(receipt["admitted"])
+    assert decision.model == receipt["admitted"][0]
+    explicit = asyncio.run(
+        svc.route(
+            "summarize this paragraph",
+            criticality="low",
+            context={"spend_policy": "free_preferred"},
+        )
+    )
+    assert explicit.model == PROVEN_FREE
+    assert (explicit.admit_receipt or {})["spend_policy"] == "free_preferred"
 
 
-def test_tools_required_drops_non_tool_free_and_selects_paid() -> None:
+def test_tools_required_drops_non_tool_free_route() -> None:
     snapshot = _live_snapshot()
     passports = {
         FREE_NO_TOOLS: _passport(FREE_NO_TOOLS),
@@ -225,15 +239,15 @@ def test_tools_required_drops_non_tool_free_and_selects_paid() -> None:
             context={"tools_required": True, "task": "call tools to implement this"},
         )
     )
-    assert decision.model == PAID_TOOLS
+    # Both tool-capable routes compete on capability; price does not pick between them.
+    assert decision.model in {PAID_TOOLS, FRONTIER}
     assert decision.model != FREE_NO_TOOLS
     receipt = decision.admit_receipt or {}
     named = {item["reason"] for item in receipt.get("exclusions", [])}
     assert "capability_mismatch" in named or "required_unknown" in named
     assert receipt.get("requirements")
     assert receipt.get("capability_matches")
-    because = receipt.get("selected_because") or ""
-    assert "lesser-paid fallback" in because or "paid" in because
+    assert FREE_NO_TOOLS not in receipt["admitted"]
 
 
 def test_unknown_required_cap_is_named_drop() -> None:
@@ -261,7 +275,7 @@ def test_free_empty_paid_fallback() -> None:
     assert decision.model in {PAID_TOOLS, FRONTIER}
     assert decision.model != FREE_NO_TOOLS
     because = (decision.admit_receipt or {}).get("selected_because") or ""
-    assert "lesser-paid fallback" in because
+    assert "named drops were not re-admitted" in because
     assert decision.task_class == ORDINARY
 
 

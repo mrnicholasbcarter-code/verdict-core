@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from verdict.free_tier_admit import (
     REASON_CREDENTIAL_MISSING,
-    REASON_NOT_FREE_TIER,
     REASON_OPAQUE_ROUTE_DISALLOWED,
     REASON_PAID_MODEL_NOT_ALLOWED,
     REASON_PRICE_UNKNOWN,
@@ -47,13 +46,17 @@ def test_b_inactive_provider_is_rejected():
 
 
 def test_c_free_suffix_without_free_metadata_is_not_free():
+    # Price excluded from admission: the active route competes, but a ``:free``
+    # name is never free evidence.
     s = snap(
         catalog=[CatalogIdentity("p/m:free", "p", True, 1.0, 1.0)],
         connections=[ProviderConnection("p", True, "active")],
     )
     r = admit_free_tier_active(s)
-    assert r.admitted == ()
-    assert why_not_model(r, "p/m:free")[0]["reason"] == REASON_NOT_FREE_TIER
+    assert r.admitted == ("p/m:free",)
+    assert r.free_admitted == ()
+    assert r.paid_admitted == ("p/m:free",)
+    assert not why_not_model(r, "p/m:free")
 
 
 def test_d_authoritative_free_connected_model_is_accepted():
@@ -113,8 +116,12 @@ def test_unknown_price_never_competes_as_paid():
         class_reasons=(),
         spend_policy=SPEND_FREE_PREFERRED,
     )
-    assert "p/unknown" not in r.admitted
-    assert why_not_model(r, "p/unknown")[0]["reason"] == REASON_PRICE_UNKNOWN
+    # Unknown price is not a membership gate; it is never counted as free and an
+    # explicit free_preferred policy still chooses the free identity.
+    assert r.admitted == ("p/free", "p/unknown")
+    assert r.free_admitted == ("p/free",)
+    assert r.chosen == "p/free"
+    assert not any(x.reason == REASON_PRICE_UNKNOWN for x in r.exclusions)
 
 
 def test_l_opaque_route_is_rejected():
@@ -130,13 +137,21 @@ def test_l_opaque_route_is_rejected():
 
 def test_m_ranking_input_cannot_include_a_drop():
     s = snap(
-        catalog=[CatalogIdentity("p/good", "p"), CatalogIdentity("p/bad:free", "p")],
+        catalog=[
+            CatalogIdentity("p/good", "p"),
+            CatalogIdentity("p/bad:free", "p"),
+            CatalogIdentity("q/down", "q"),
+        ],
         free=[FreeTierModel("good", "p")],
-        connections=[ProviderConnection("p", True, "active")],
+        connections=[ProviderConnection("p", True, "active"), ProviderConnection("q", False)],
     )
     r = admit_free_tier_active(s)
-    assert r.admitted == ("p/good",)
-    assert "p/bad:free" not in r.admitted
+    dropped = {x.model_id for x in r.exclusions}
+    assert dropped == {"q/down"}
+    assert not dropped & set(r.admitted)
+    assert r.admitted == ("p/bad:free", "p/good")
+    # A ``:free`` name never becomes free membership.
+    assert r.free_admitted == ("p/good",)
 
 
 def test_n_zero_eligible_has_structured_evidence():
