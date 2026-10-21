@@ -14,6 +14,13 @@ Planner and worker retry exclusions SHALL use the same pool identity.
 
 ### Requirement: Sufficient free-first planning
 
+> **Superseded in part by BOD-342 (2026-10-21):** the operator's price-free
+> selection decision removes default free-first/cheaper-first ordering.
+> Planning now ranks the strongest proven-capable route first; a free route
+> is selected only when it is also the strongest admitted route or an
+> explicit caller filter (`--capacity`, `spend_policy`) asks for it. The
+> scenarios below describe the superseded behavior and are kept for history.
+
 Planning SHALL rank admitted sufficient free routes before subscription routes.
 The planner SHALL require capability tier 2 or better and record the selected floor.
 
