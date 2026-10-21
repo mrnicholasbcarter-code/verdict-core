@@ -205,6 +205,17 @@ def screen_models(
             CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")), 3
         )
     )
+    cache.reload()
+    requested = cache.rescreen_requests()
+    # Hints only reorder free routes; consent, cooldowns and every cap remain.
+    rated.sort(
+        key=lambda rating: (
+            _CAPACITY_ORDER.get(
+                CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")), 3
+            ),
+            rating.route_id not in requested,
+        )
+    )
     prober = Prober(
         cache=cache,
         routes_loader=lambda: (),
@@ -233,6 +244,7 @@ def screen_models(
             "capacity": capacity,
             "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
             "turns_sent": 0,
+            "rescreen_requested": route_id in requested,
             "latency_ms": None,
         }
         now = clock()
@@ -270,6 +282,8 @@ def screen_models(
                     )
                 )
                 if row["turns_sent"]:
+                    if route_id in requested:
+                        cache.complete_rescreen(route_id)
                     checked += 1
                     counts[provider] += 1
                 requests += row["turns_sent"]

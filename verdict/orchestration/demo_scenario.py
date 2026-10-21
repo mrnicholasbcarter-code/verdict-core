@@ -273,6 +273,7 @@ def run_flagship_scenario(
         _HealthyProbe(),
         workspace_root / "ladder-state.json",
         allow_unknown_capacity=True,
+        allow_metered=True,  # Offline scripted fixture; no provider spend.
     )
     executor = FaultInjectingExecutor(
         # Keyed by node, not route: both ready nodes may select ROUTE_A

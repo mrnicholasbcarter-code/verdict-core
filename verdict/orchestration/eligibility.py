@@ -265,6 +265,7 @@ class EligibilityLadder:
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
+        allow_metered: bool = False,
         openrouter_free_set: OpenRouterFreeSet | None = None,
         metadata: Any = _DEFAULT_METADATA,
         identity_map: IdentityMap | None = None,
@@ -312,6 +313,7 @@ class EligibilityLadder:
         # confirmation always still runs regardless of the hook.
         self._refresh_hook = refresh_hook
         self._min_quota_percent = min_quota_percent
+        self._allow_metered = allow_metered
         # BOD-418: public OpenRouter 0/0 pricing set. When present, openrouter-
         # family FREE membership requires membership in this set.
         self.openrouter_free_set = openrouter_free_set
@@ -849,6 +851,7 @@ class EligibilityLadder:
             "slack": getattr(a, "slack", 0),
             "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
             "quota_percent": quota if isinstance(quota, (int, float)) else None,
+            "expected_tokens": getattr(self, "_token_usage", {}).get(a.route_id),
             "provider_pref": pref,
             "load": load_value,
             "fit": getattr(a, "fit", 0),
@@ -873,24 +876,32 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[int, int, float, int, int, int, int, int, int, str]:
+    ) -> tuple[int, int, float, int, float, int, int, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
         Cheapest qualified tier first, then a fresh task score (higher first) beats a fresh
         intelligence fallback, which beats a declared tier, which beats
         unknown. Coding scores and intelligence fallbacks are different
         metrics and are never compared directly. Capability slack, measured
-        quota, provider preference, load and fit only break ties. Price is
-        excluded.
+        quota, provider preference, load and fit only break ties for free routes.
+        Qualified subscriptions sort by observed expected tokens per accepted task
+        before rating; unknown usage follows measured usage. Price is excluded.
         """
         c = self._rank_components(a)
+        req = getattr(self, "_current_requirements", None)
+        subscription = a.capacity == CapacityClass.SUBSCRIPTION and not (
+            req is not None and req.frontier_worthy
+        )
+        tokens = c["expected_tokens"]
         return (
             c["capacity_order"],
+            int(tokens is None) if subscription else 0,
+            float(tokens or 0) if subscription else 0.0,
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
-            c["quota_rank"],
+            0 if subscription else c["quota_rank"],
             c["provider_pref"],
             c["load"],
             -c["fit"],  # negate: stronger routes (higher fit) should rank lower
@@ -917,6 +928,7 @@ class EligibilityLadder:
             "slack": components["slack"],
             "quota_rank": components["quota_rank"],
             "quota_percent": components.get("quota_percent"),
+            "expected_tokens": components.get("expected_tokens"),
             "provider_pref": components["provider_pref"],
             "load": components["load"],
             "fit": components["fit"],  # stays positive
@@ -930,6 +942,9 @@ class EligibilityLadder:
             "session_passes": components.get("session_passes"),
             "session_fails": components.get("session_fails"),
         }
+        if "fallback" in components:
+            display["fallback"] = components["fallback"]
+            display["fallback_reason"] = components["fallback_reason"]
         if "session_evidence_error" in components:
             display["session_evidence_error"] = components["session_evidence_error"]
         return display
@@ -942,6 +957,19 @@ class EligibilityLadder:
             cache.reload()
         self._current_requirements = requirements
         self._current_now = now
+        from verdict.candidate_pool import expected_token_usage
+        from verdict.outcome_shadow import (
+            load_verified_outcome_observations,
+            resolve_outcome_shadow_roots,
+        )
+
+        family = "code_edit" if requirements.coding else "general"
+        self._token_usage = {}
+        with contextlib.suppress(Exception):
+            history = load_verified_outcome_observations(
+                resolve_outcome_shadow_roots(None), task_family=family, as_of=now
+            )
+            self._token_usage = expected_token_usage(history.observations, task_family=family)
         self._session_evidence_error = None
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
@@ -1045,6 +1073,14 @@ class EligibilityLadder:
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         probe_order = self._probe_order(candidates)
         for a in probe_order:
+            if (
+                a.capacity == CapacityClass.METERED
+                and not requirements.frontier_worthy
+                and not getattr(self, "_allow_metered", False)
+            ):
+                a.failed_stage = EligibilityStage.TASK_ELIGIBLE
+                a.reason = "metered_fallback_disallowed"
+                continue
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
             if a.provider in blocked:
@@ -1112,6 +1148,24 @@ class EligibilityLadder:
         # BOD-277: same rank_components map the pre-probe evaluate() builds.
         # Only candidates (routes that reached ranking) have components.
         components = {a.route_id: self._rank_components(a) for a in candidates}
+        if (
+            chosen is not None
+            and chosen.capacity == CapacityClass.SUBSCRIPTION
+            and not requirements.frontier_worthy
+        ):
+            cache = getattr(self, "_health_cache", None)
+            if cache is not None and self._max_probes > 0:
+                with contextlib.suppress(Exception):
+                    cache.request_rescreen(
+                        [a.route_id for a in assessments if a.capacity == CapacityClass.FREE],
+                        now=now,
+                    )
+            components[chosen.route_id]["fallback"] = "subscription"
+            components[chosen.route_id]["fallback_reason"] = (
+                "free attempts failed"
+                if any(a.capacity == CapacityClass.FREE for a in candidates)
+                else "no free route qualifies"
+            )
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
         for a in assessments:
@@ -1200,7 +1254,7 @@ class EligibilityLadder:
         return sorted(
             order,
             key=lambda a: (
-                _CAPACITY_ORDER.get(a.capacity, 3),
+                *self._rank_key(a)[:3],
                 *(rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)),
             ),
         )

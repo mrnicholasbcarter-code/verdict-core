@@ -530,6 +530,23 @@ class IntelligenceService:
             require_execution_path_authority=self.require_execution_path_authority,
         )
         if ep is not None:
+            if ep.selected_strategy == "blocked":
+                request = (
+                    context.get("execution_path_request") if isinstance(context, dict) else None
+                )
+                pool_receipt = getattr(request, "pool_receipt", None)
+                if pool_receipt is not None and (
+                    any(row.capacity_order != 3 for row in pool_receipt.shortlist)
+                    or any(
+                        row.reason == "metered_fallback_disallowed"
+                        for row in pool_receipt.hard_drops
+                    )
+                ):
+                    drops = ", ".join(sorted({row.reason for row in pool_receipt.hard_drops}))
+                    raise ExecutionPathError(
+                        "no qualified free or capable subscription route; "
+                        f"task proof/admission failed: {drops or 'no confirmed candidate'}"
+                    )
             require_serve_path_decision(ep, surface="intelligence.route")
             identity = selected_route_dispatch_identity(ep)
             payload = ep.to_dict()
@@ -567,7 +584,17 @@ class IntelligenceService:
                     else None
                 )
                 if profile_digest:
-                    for offer in ep_request.offers:
+                    positions = (
+                        {
+                            row.route_id: index
+                            for index, row in enumerate(ep_request.pool_receipt.shortlist)
+                        }
+                        if ep_request.pool_receipt is not None
+                        else {}
+                    )
+                    for offer in sorted(
+                        ep_request.offers, key=lambda o: positions.get(o.route.route_id, 0)
+                    ):
                         route = offer.route
                         scope = dispatch_scope(
                             gateway_origin=gateway_origin,
@@ -590,6 +617,46 @@ class IntelligenceService:
             alternatives = [
                 proof.model for proof in proofs.values() if proof.model != identity["model"]
             ]
+            capacities = {}
+            if isinstance(ep_request, ExecutionPathRequest) and ep_request.pool_receipt is not None:
+                capacities = {
+                    row.route_id: row.capacity_order for row in ep_request.pool_receipt.shortlist
+                }
+            candidate_states = [
+                {
+                    "model_id": proof.model,
+                    "route_id": route_id,
+                    "admitted": True,
+                    "capacity_order": capacities.get(route_id),
+                }
+                for route_id, proof in proofs.items()
+            ]
+            if isinstance(ep_request, ExecutionPathRequest) and ep_request.pool_receipt is not None:
+                snapshot, _, _, _ = self._load_admit_snapshot()
+                if snapshot is not None:
+                    dropped = [row.route_id for row in ep_request.pool_receipt.hard_drops]
+                    dropped_capacity = self._route_capacity(snapshot, dropped)
+                    candidate_states.extend(
+                        {
+                            "model_id": route_id,
+                            "route_id": route_id,
+                            "admitted": False,
+                            "capacity_order": 0,
+                        }
+                        for route_id in dropped
+                        if dropped_capacity.get(route_id) == CapacityClass.FREE
+                    )
+            selected_capacity = capacities.get(identity.get("route_id", ""))
+            if selected_capacity == 1:
+                safety.extend(
+                    ["fallback: subscription", "fallback_reason: no free route qualifies"]
+                )
+            if (
+                capacities
+                and 2 not in capacities.values()
+                and any(value in (0, 1) for value in capacities.values())
+            ):
+                safety.append("subscription_fallback_policy")
             dec = RoutingDecision(
                 model=str(identity["model"]),
                 provider=str(identity.get("provider") or "unknown"),
@@ -602,7 +669,7 @@ class IntelligenceService:
                 safety_flags=safety,
                 admission_proofs=proofs,
                 alternatives=alternatives,
-                candidate_states=[{"model_id": model, "admitted": True} for model in alternatives],
+                candidate_states=candidate_states,
             )
             if self.log_path:
                 log_decision(self.log_path, task_str, 2, dec, self.log_full_task)
@@ -1067,6 +1134,7 @@ class IntelligenceService:
             evidence=evidence,
             policy_allowed=policy_allowed,
             capacity=capacity,
+            allow_metered=profile.spend_policy == "frontier_required",
             outcomes=outcomes,
             as_of=as_of,
             top_k=self.candidate_top_k,
