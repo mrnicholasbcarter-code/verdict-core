@@ -281,3 +281,29 @@ def test_repeated_and_comma_capacity_filters_both_work(monkeypatch, capsys):
     )
     cli.main()
     assert calls[0]["capacities"] == ["free", "subscription"]
+
+
+@pytest.mark.parametrize(
+    "realtime,expected",
+    [
+        ("", "unknown"),
+        ("n/a", "unknown"),
+        ("Wed 2026-10-21 15:00:00 UTC", "Wed 2026-10-21 15:00:00 UTC"),
+    ],
+)
+def test_timer_next_run_never_treats_monotonic_duration_as_calendar(
+    monkeypatch, realtime, expected
+):
+    from verdict import identify_service
+
+    monkeypatch.setattr(
+        identify_service,
+        "_show",
+        lambda *_: {
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "NextElapseUSecRealtime": realtime,
+            "NextElapseUSecMonotonic": "3w 1d 16h 20min 31.9s",
+        },
+    )
+    assert identify_service.timer_state()["next_run"] == expected

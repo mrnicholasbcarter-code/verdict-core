@@ -961,7 +961,7 @@ def _systemctl_show_props(
                 "--user",
                 "show",
                 "-p",
-                "LoadState,WorkingDirectory,ExecStart,Environment",
+                "LoadState,ActiveState,UnitFileState,WorkingDirectory,ExecStart,Environment",
                 unit,
             ]
         )
@@ -1162,10 +1162,10 @@ def installed_runtime_rows(
     A unit fails when its ExecStart interpreter's own install or the package
     it imports from its WorkingDirectory is not the reviewed build (default:
     the package this doctor runs from), or when its state scope differs from
-    ``state_home``. Qualification units share one coordinator lock and cycle
-    ledger only on the reviewed build with the same state scope; otherwise
-    they are independent loops and the owner row is a warning. Units that are
-    not loaded are skipped, so a CI runner gets no rows.
+    ``state_home``. Retired qualification units are notes while their timers
+    are disabled and inactive; enabled or active retired timers fail regardless
+    of build provenance. Units that are not loaded are skipped, so a CI runner
+    gets no rows.
     """
     from verdict.census_passports_service import package_build
     from verdict.paths import verdict_home
@@ -1177,12 +1177,40 @@ def installed_runtime_rows(
     reviewed_build = package_build(reviewed)
     rows: list[dict[str, str]] = []
     qualifiers: list[str] = []
-    independent: list[str] = []
     for unit in _RUNTIME_UNITS:
         props = unit_props(unit)
+        label = f"Runtime {unit.removeprefix('verdict-').removesuffix('.service')}"
+        if unit in _QUALIFIER_UNITS:
+            timer = unit.removesuffix(".service") + ".timer"
+            timer_props = unit_props(timer)
+            enabled = timer_props.get("UnitFileState", "").startswith("enabled")
+            active = timer_props.get("ActiveState", "inactive") in {
+                "active",
+                "activating",
+                "reloading",
+            }
+            if enabled or active:
+                qualifiers.append(timer)
+                rows.append(
+                    {
+                        "label": label,
+                        "unit": unit,
+                        "status": "failed",
+                        "detail": f"{timer}: retired timer is enabled or active; disable --now {timer}",
+                    }
+                )
+            elif props.get("LoadState") == "loaded" or timer_props.get("LoadState") == "loaded":
+                rows.append(
+                    {
+                        "label": label,
+                        "unit": unit,
+                        "status": "note",
+                        "detail": f"{unit}: retired; disabled (timer inactive)",
+                    }
+                )
+            continue
         if props.get("LoadState", "not-found") != "loaded":
             continue
-        label = f"Runtime {unit.removeprefix('verdict-').removesuffix('.service')}"
         cwd = props.get("WorkingDirectory", "")
         interpreter = _parse_execstart_interpreter(props.get("ExecStart", ""))
         imported = configured = None
@@ -1200,9 +1228,6 @@ def installed_runtime_rows(
                     f" (interpreter {interpreter}, cwd {cwd or 'unset'})",
                 }
             )
-            if unit in _QUALIFIER_UNITS:
-                qualifiers.append(unit)
-                independent.append(unit)
             continue
         environment = _unit_environment(props.get("Environment", ""))
         unit_scope = verdict_home({"HOME": str(user_home), **environment})
@@ -1232,10 +1257,6 @@ def installed_runtime_rows(
             and Path(unit_cache).expanduser().resolve() != (scope / "health-cache.json").resolve()
         ):
             problems.append(f"health cache {unit_cache}, not {scope / 'health-cache.json'}")
-        if unit in _QUALIFIER_UNITS:
-            qualifiers.append(unit)
-            if problems:
-                independent.append(unit)
         facts = f"package {package}, build {build}, gateway {gateway}, state {unit_scope}"
         rows.append(
             {
@@ -1250,22 +1271,13 @@ def installed_runtime_rows(
                 ),
             }
         )
-    if independent and len(qualifiers) > 1:
+    if qualifiers:
         rows.append(
             {
                 "label": "Qualification owner",
-                "status": "warning",
-                "detail": "independent qualification loops "
-                + ", ".join(qualifiers)
-                + f"; off the shared coordinator: {', '.join(independent)}",
-            }
-        )
-    elif qualifiers:
-        rows.append(
-            {
-                "label": "Qualification owner",
-                "status": "ok",
-                "detail": f"reviewed build and state scope {scope}: " + ", ".join(qualifiers),
+                "status": "failed",
+                "detail": "retired qualification timers enabled or active: "
+                + ", ".join(qualifiers),
             }
         )
     return rows
