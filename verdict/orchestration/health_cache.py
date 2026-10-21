@@ -109,7 +109,7 @@ def _evidence_fresh_seconds() -> float:
 EVIDENCE_FRESH_SECONDS = _evidence_fresh_seconds()
 # Backward-compatible public name; it means healthy-evidence freshness only.
 FRESH_SECONDS = EVIDENCE_FRESH_SECONDS
-USABLE_STALE_GRACE_SECONDS = 1800.0
+USABLE_STALE_GRACE_SECONDS = 1200.0
 USABLE_SECONDS = EVIDENCE_FRESH_SECONDS + USABLE_STALE_GRACE_SECONDS
 PERMIT_PROOF_MAX_VALIDITY_SECONDS = 600.0
 

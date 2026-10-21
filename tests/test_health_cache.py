@@ -59,7 +59,7 @@ def _at(seconds: float) -> datetime:
 
 def test_healthy_windows() -> None:
     assert EVIDENCE_FRESH_SECONDS == 6 * 60 * 60
-    assert USABLE_SECONDS == EVIDENCE_FRESH_SECONDS + 1800
+    assert USABLE_SECONDS == EVIDENCE_FRESH_SECONDS + 1200
     assert (
         classify_state(
             healthy=True, checked_at=NOW, until=_at(USABLE_SECONDS), now=_at(2 * 60 * 60)
@@ -72,6 +72,16 @@ def test_healthy_windows() -> None:
         )
         == STATE_STALE
     )
+
+
+@pytest.mark.parametrize("after_fresh, expected", [(1199, STATE_STALE), (1200, STATE_UNPROBED)])
+def test_healthy_evidence_retains_only_twenty_minutes_of_stale_grace(
+    tmp_path: Path, after_fresh: int, expected: str
+) -> None:
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record("p/m", ProbeResult(category=CATEGORY_OK, chat_ok=True, tool_ok=True), NOW)
+
+    assert cache.lookup("p/m", _at(EVIDENCE_FRESH_SECONDS + after_fresh)).state == expected
 
 
 def test_evidence_freshness_override_is_honoured_and_bounded(monkeypatch) -> None:
