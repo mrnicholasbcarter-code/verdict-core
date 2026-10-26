@@ -1540,6 +1540,29 @@ class HealthCache:
             # Carry forward the *original* agentic timestamp, NOT the
             # current single-call timestamp.
             agentic_checked_at = previous.agentic_checked_at
+        preserve_agentic = (
+            previous is not None
+            and previous.agentic_ok
+            and previous.agentic_checked_at is not None
+            and previous.agentic_checked_at < current
+            and not result.chat_ok
+            and not result.tool_ok
+            and result.category
+            in {
+                CATEGORY_TIMEOUT,
+                CATEGORY_UPSTREAM,
+                CATEGORY_RATE_LIMITED,
+                CATEGORY_AUTH,
+                CATEGORY_PAYMENT,
+                CATEGORY_PERMISSION,
+            }
+        )
+        if preserve_agentic and previous is not None:
+            # No answer does not revoke an older proof; conflicting same-time
+            # evidence still fails closed, as in the cache's merge policy.
+            probe_class = previous.probe_class
+            agentic_ok = previous.agentic_ok
+            agentic_checked_at = previous.agentic_checked_at
         if result.healthy:
             entry = HealthEntry(
                 route_id=route,
@@ -1604,7 +1627,7 @@ class HealthCache:
                 healthy=False,
                 identity=result.identity,
                 probe_class=probe_class,
-                agentic_ok=False,  # failure resets agentic qualification
+                agentic_ok=agentic_ok if preserve_agentic else False,
                 agentic_checked_at=(
                     agentic_checked_at
                     if agentic_checked_at is not None
