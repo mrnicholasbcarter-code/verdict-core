@@ -389,3 +389,109 @@ def test_prove_at_rest_unit_working_directory_is_unquoted(tmp_path) -> None:
     repo = str(Path(service.__file__).resolve().parent.parent)
     assert f"WorkingDirectory={service._escape_path(repo)}\n" in unit
     assert 'WorkingDirectory="' not in unit
+
+
+@pytest.mark.parametrize("probe_class", ["single_call", "agentic"])
+@pytest.mark.parametrize(
+    "category",
+    ["timeout", "rate_limited", "upstream", "authentication", "payment_required", "permission"],
+)
+def test_availability_failure_preserves_agentic_proof_not_liveness(tmp_path, category, probe_class):
+    from verdict.orchestration.health_cache import AGENTIC_PROBE_TTL_SECONDS, agentic_capability
+
+    route = "kc/model:free"
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(route, ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True), NOW)
+    failed_at = NOW + timedelta(seconds=10)
+    cache.record(route, ProbeResult(category, False, False, probe_class=probe_class), failed_at)
+    cache.save()
+    cache = HealthCache(cache.path)
+    entry = cache.entry(route)
+    assert entry.agentic_ok
+    assert entry.agentic_checked_at == NOW
+    assert agentic_capability(entry, failed_at)["qualified"]
+    assert not entry.healthy and cache.lookup(route, failed_at).state == "negative"
+    assert entry.last_failure_at == failed_at
+    assert not cache.healthy_routes(failed_at)
+    # Backoff expiry is not a fresh health observation or a new capability proof.
+    assert cache.lookup(route, entry.until).state == "unprobed"
+    assert not cache.lookup(route, entry.until).healthy
+    recovered_at = entry.until + timedelta(seconds=1)
+    cache.record(route, ProbeResult("ok", True, True), recovered_at)
+    cache.save()
+    entry = HealthCache(cache.path).entry(route)
+    assert entry.healthy and entry.agentic_checked_at == NOW
+    assert entry.last_failure_at == failed_at
+    assert agentic_capability(entry, NOW + timedelta(seconds=AGENTIC_PROBE_TTL_SECONDS))[
+        "qualified"
+    ]
+    assert not agentic_capability(entry, NOW + timedelta(seconds=AGENTIC_PROBE_TTL_SECONDS + 1))[
+        "qualified"
+    ]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=False),
+        ProbeResult("tool_invalid", True, False, probe_class="agentic"),
+        ProbeResult("tool_invalid", True, False),
+        ProbeResult("model_mismatch", False, False),
+        ProbeResult("timeout", True, False, probe_class="agentic"),
+        ProbeResult("unknown", False, False),
+        ProbeResult("malformed", False, False, probe_class="agentic"),
+    ],
+)
+def test_capability_failure_revokes_probe_proof_durably(tmp_path, result):
+    from verdict.orchestration.health_cache import agentic_capability
+
+    route = "kc/model:free"
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(route, ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True), NOW)
+    cache.record(route, result, NOW + timedelta(seconds=1))
+    assert not agentic_capability(cache.entry(route), NOW + timedelta(seconds=1))["qualified"]
+    cache.record(route, ProbeResult("ok", True, True), NOW + timedelta(seconds=2))
+    cache.save()
+    assert not agentic_capability(HealthCache(cache.path).entry(route), NOW + timedelta(seconds=2))[
+        "qualified"
+    ]
+
+
+@pytest.mark.parametrize("prior_age", [None, 86401])
+def test_availability_failure_never_grants_or_renews_missing_or_expired_proof(tmp_path, prior_age):
+    from verdict.orchestration.health_cache import agentic_capability
+
+    route = "kc/model:free"
+    cache = HealthCache(tmp_path / "health.json")
+    if prior_age is not None:
+        cache.record(
+            route,
+            ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True),
+            NOW - timedelta(seconds=prior_age),
+        )
+    cache.record(route, ProbeResult("timeout", False, False, probe_class="agentic"), NOW)
+    cache.save()
+    entry = HealthCache(cache.path).entry(route)
+    assert not agentic_capability(entry, NOW)["qualified"]
+    if prior_age is not None:
+        assert entry.agentic_checked_at == NOW - timedelta(seconds=prior_age)
+
+
+@pytest.mark.parametrize("proof_offset", [0, 1])
+def test_availability_failure_does_not_preserve_same_time_or_future_proof(tmp_path, proof_offset):
+    from verdict.orchestration.health_cache import agentic_capability
+
+    route = "kc/model:free"
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(
+        route,
+        ProbeResult("ok", True, True, probe_class="agentic", agentic_ok=True),
+        NOW + timedelta(seconds=proof_offset),
+    )
+    cache.record(route, ProbeResult("timeout", False, False), NOW)
+    cache.save()
+    entry = HealthCache(cache.path).entry(route)
+    assert not entry.agentic_ok
+    assert not agentic_capability(entry, NOW + timedelta(seconds=2))["qualified"]
+    assert entry.last_failure_at == NOW
+    assert not entry.healthy

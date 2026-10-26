@@ -1577,3 +1577,32 @@ def test_revocation_linearizes_at_dispatch_permit_and_survives_restart(tmp_path:
         )
         is None
     )
+
+
+def test_merge_availability_failure_preserves_capability_and_other_route(tmp_path: Path) -> None:
+    from verdict.orchestration.health_cache import agentic_capability
+
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
+    peer = HealthCache(path)
+    passed = ProbeResult(CATEGORY_OK, True, True, probe_class="agentic", agentic_ok=True)
+    cache.record("free/model", passed, NOW)
+    cache.record("free/sibling", passed, NOW)
+    cache.save()
+    sibling = HealthCache(path).entry("free/sibling")
+    # The peer predates both positives; merge must reload the authoritative proof.
+    peer.merge_and_save(
+        lambda current: current.record(
+            "free/model", ProbeResult(CATEGORY_TIMEOUT, False, False), _at(10)
+        )
+    )
+    reopened = HealthCache(path)
+    entry = reopened.entry("free/model")
+    assert entry is not None
+    assert agentic_capability(entry, _at(10))["qualified"]
+    assert entry.agentic_checked_at == NOW
+    assert not reopened.lookup("free/model", _at(10)).healthy
+    assert entry.last_failure_at == _at(10)
+    assert entry.until == _at(10 + TRANSIENT_BASE_SECONDS)
+    assert entry.consecutive_failures == 1
+    assert reopened.entry("free/sibling") == sibling
