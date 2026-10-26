@@ -5,6 +5,7 @@ Creates a temporary venv and tests the full stack.
 Run: python scripts/quickstart.py
 """
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,29 @@ def run(cmd, cwd=None, check=True, env=None):
         print(f"stderr: {result.stderr}")
         sys.exit(1)
     return result
+
+
+def _route_probe_succeeded(result) -> bool:
+    """A route probe passes only for HTTP 200 and a non-denied decision object.
+
+    The body contract is ``RoutingDecision`` as returned by ``/v1/route``:
+    a JSON object with a non-empty ``decision`` string. ``denied`` is a
+    failure even when a caller prints status 200. Any other status, a
+    non-zero child, or JSON that is not that object is a failure.
+    """
+    if result.returncode != 0:
+        return False
+    lines = result.stdout.splitlines()
+    if not lines or lines[0].strip() != "200":
+        return False
+    try:
+        body = json.loads("\n".join(lines[1:]))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(body, dict):
+        return False
+    decision = body.get("decision")
+    return isinstance(decision, str) and bool(decision) and decision != "denied"
 
 
 def main():
@@ -54,7 +78,6 @@ def main():
 
         if result.returncode == 0:
             print("✅ Flagship demo completed successfully!")
-            import json
 
             # The demo emits one entry per scenario, each with its own verdict.
             try:
@@ -104,7 +127,13 @@ print(resp.status_code)
 import json
 print(json.dumps(resp.json(), indent=2))
 """
-        test_result = run(f'{python} -c "{test_script}"', cwd=repo_root)
+        test_result = run(f'{python} -c "{test_script}"', cwd=repo_root, check=False)
+        if not _route_probe_succeeded(test_result):
+            status_line = test_result.stdout.split(chr(10))[0] if test_result.stdout else ""
+            print(
+                f"❌ Route test failed (status {status_line or 'missing'}, exit {test_result.returncode})"
+            )
+            sys.exit(1)
         print(f"✅ Route test status: {test_result.stdout.split(chr(10))[0]}")
 
         # Step 4: Verify CLI works
