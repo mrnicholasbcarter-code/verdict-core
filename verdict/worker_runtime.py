@@ -124,7 +124,11 @@ def configured_runtime_sources(
     """Use every documented availability source that current credentials permit."""
     sources = {"health"}
     if management_token and management_token.strip():
-        sources.update({"rate_limits", "model_cooldowns"})
+        # Connections is a live read of current gateway state. Health alone carries
+        # the gateway's cached stamp, which reads stale against the 30 s TTL and
+        # voids every row before the pre-probe pool is built. Same authenticated
+        # condition as subagent_models.py and api.py.
+        sources.update({"connections", "rate_limits", "model_cooldowns"})
         if usage_api_key_id and usage_api_key_id.strip():
             sources.update({"budget", "token_limits"})
     return frozenset(sources)

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import httpx
 
 from verdict import worker_runtime
 from verdict.availability import (
+    AvailabilityReport,
     CandidateRequirements,
     OmniRouteAvailabilityAdapter,
     StaticOmniRouteTransport,
 )
+from verdict.omniroute import OmniRouteHTTPTransport
 from verdict.subagent_selection import WorkerTask
 
 NOW = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
@@ -136,11 +140,13 @@ def test_runtime_source_selection_uses_every_documented_source_credentials_allow
     assert callable(factory)
     assert factory(management_token=None, usage_api_key_id=None) == frozenset({"health"})
     assert factory(management_token="mgmt", usage_api_key_id=None) == frozenset(
-        {"health", "rate_limits", "model_cooldowns"}
+        {"health", "connections", "rate_limits", "model_cooldowns"}
     )
     assert factory(management_token="mgmt", usage_api_key_id="key-1") == frozenset(
-        {"health", "rate_limits", "model_cooldowns", "budget", "token_limits"}
+        {"health", "connections", "rate_limits", "model_cooldowns", "budget", "token_limits"}
     )
+    # Blank credentials are not credentials: the authenticated sources stay off.
+    assert factory(management_token="  ", usage_api_key_id="key-1") == frozenset({"health"})
 
 
 def test_worker_runtime_intersects_canonical_availability_before_ranking() -> None:
@@ -226,3 +232,98 @@ def test_unknown_health_enters_preprobe_pool_under_protected_worker_requirements
         task, rows, ["omniroute/kr/unknown"], report, require_usage_evidence=True
     )
     assert strict == ()
+
+
+def _worker_availability_report(
+    *, management_token: str | None, health_age_seconds: int = 519
+) -> tuple[list[dict[str, object]], AvailabilityReport]:
+    """Evaluate admission through the real HTTP transport the worker builds.
+
+    The gateway serves a cached health stamp ``health_age_seconds`` old, while
+    the connections read is live. Sources come from ``configured_runtime_sources``
+    exactly as ``cli_run`` passes them to the transport.
+    """
+    rows = _catalog("nara/laguna", "broken/model", "cool/model")["data"]
+    assert isinstance(rows, list)
+    stale_stamp = (NOW - timedelta(seconds=health_age_seconds)).isoformat()
+    bodies: dict[str, object] = {
+        "/v1/models": {"data": rows},
+        "/api/monitoring/health": {
+            "status": "healthy",
+            "timestamp": stale_stamp,
+            "providerHealth": {
+                "nara": {"state": "CLOSED"},
+                "broken": {"state": "CLOSED"},
+                "cool": {"state": "CLOSED"},
+            },
+        },
+        "/api/resilience/connections": {
+            "connections": [
+                {"provider": "nara", "isActive": True, "isCoolingDown": False, "breaker": None},
+                {
+                    "provider": "broken",
+                    "isActive": True,
+                    "isCoolingDown": False,
+                    "breaker": {"state": "OPEN"},
+                },
+                {
+                    "provider": "cool",
+                    "isActive": True,
+                    "isCoolingDown": True,
+                    "cooldownRemainingMs": 60_000,
+                    "breaker": None,
+                },
+            ]
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=bodies.get(request.url.path, {}))
+
+    transport = OmniRouteHTTPTransport(
+        "http://127.0.0.1:20128/v1",
+        management_token=management_token,
+        runtime_sources=worker_runtime.configured_runtime_sources(
+            management_token=management_token, usage_api_key_id=None
+        ),
+        allow_private_hosts={"127.0.0.1"},
+        transport=httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    report = OmniRouteAvailabilityAdapter(transport).evaluate(
+        worker_runtime._worker_requirements(WorkerTask()), now=NOW
+    )
+    return rows, report
+
+
+def test_stale_health_with_fresh_connections_admits_healthy_worker_routes() -> None:
+    """Worker runtime must read connections so a cached health stamp is not authority.
+
+    The gateway's health ``timestamp`` was 519 s old against the default 30 s
+    TTL; with health as the only source every row went stale, the pre-probe
+    pool was empty and dispatch raised. A live connections read refutes that
+    stale evidence for the providers it speaks for, while actual negatives
+    (open breaker, cooldown) stay excluded.
+    """
+    rows, report = _worker_availability_report(management_token="mgmt-test-token")
+    task = WorkerTask(allowed_route_prefixes=frozenset({"nara/", "broken/", "cool/"}))
+    selectors = [f"omniroute/{row['id']}" for row in rows]
+
+    candidates = worker_runtime.admitted_worker_candidates(
+        task, rows, selectors, report, require_usage_evidence=False
+    )
+
+    assert [candidate.route_id for candidate in candidates] == ["nara/laguna"]
+
+
+def test_stale_health_without_management_token_stays_unadmitted() -> None:
+    """No credential, no connections source: stale health is never re-admitted."""
+    rows, report = _worker_availability_report(management_token=None)
+    task = WorkerTask(allowed_route_prefixes=frozenset({"nara/", "broken/", "cool/"}))
+    selectors = [f"omniroute/{row['id']}" for row in rows]
+
+    candidates = worker_runtime.admitted_worker_candidates(
+        task, rows, selectors, report, require_usage_evidence=False
+    )
+
+    assert candidates == ()
