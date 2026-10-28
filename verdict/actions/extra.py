@@ -301,6 +301,15 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
     }
     try:
         gateway = normalize_omniroute_origin(resolve_gateway_binding()[0])
+        task_category = (
+            "coding"
+            if task_class == "implementation"
+            else "debugging"
+            if task_class == "hard-debug"
+            else "review"
+            if task_class in {"architecture", "orchestration", "final-review"}
+            else "general"
+        )
         requirements = TaskRequirements(
             required_capabilities=(
                 requires - {"code"} if requires else TaskRequirements().required_capabilities
@@ -311,6 +320,7 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
             reasoning="reasoning" in requires,
             frontier_worthy=task_class
             in {"architecture", "orchestration", "hard-debug", "final-review"},
+            task_category=task_category,
         )
         selection = select_route_for_task(
             requirements,

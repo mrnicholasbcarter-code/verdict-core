@@ -38,6 +38,19 @@ def route_prefix(route_id: str) -> str:
     return route_id.split("/", 1)[0].lower() if "/" in route_id else route_id.lower()
 
 
+def _is_omniroute_gateway(gateway: str) -> bool:
+    """Check if gateway is an OmniRoute gateway (not a generic OpenAI-compatible one).
+
+    Only OmniRoute gateways serve /api/free-provider-rankings. Generic gateways
+    should be skipped with a named omission rather than probed.
+    """
+    gateway_lower = gateway.lower()
+    # OmniRoute is always localhost-based; the rankings endpoint is OmniRoute-only.
+    return (
+        "omniroute" in gateway_lower or "localhost" in gateway_lower or "127.0.0.1" in gateway_lower
+    )
+
+
 def prime_visibility_report(live_rows: Any, *, prime_home: Path | None = None) -> dict[str, Any]:
     """Compare live concrete gateway models with Prime's registry. Never writes."""
     from verdict.harness_prime import resolve_paths
@@ -153,6 +166,7 @@ def build_selector(
     openrouter_free_set: Any = _OPENROUTER_FREE_SET_OMITTED,
     now: datetime | None = None,
     no_confirm: bool = False,
+    task_category: str = "general",
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -176,6 +190,7 @@ def build_selector(
         default_runtime_evidence,
     )
     from verdict.omniroute_health import load_omniroute_health
+    from verdict.omniroute_rankings import OmniRouteRankings
     from verdict.openrouter_free_set import OpenRouterFreeSet, load_openrouter_free_set
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
@@ -310,6 +325,34 @@ def build_selector(
     else:
         harness_visible = prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
 
+    # BOD-417: optional OmniRoute advisory rankings as task-aware tie-break among
+    # already-admitted routes. Rankings are provider-level; map provider+topModel
+    # to route_id and rank by score within the requested task category. Never
+    # mix Arena (0.4-0.98) with AA coding (0-100); unknown stays 999 (baseline).
+    # Only query OmniRoute gateways - generic OpenAI-compatible gateways are
+    # skipped with a named omission.
+    rankings: dict[str, int] = {}
+    rankings_omission: str | None = None
+    rankings_category: str | None = None
+    if task_category and task_category != "general":
+        rankings_category = task_category
+        if not _is_omniroute_gateway(gateway):
+            rankings_omission = "generic_gateway"
+        else:
+            try:
+                rankings_client = OmniRouteRankings(gateway, key)
+                result = rankings_client.fetch(task_category)
+                if result.rows:
+                    scored = sorted(result.rows, key=lambda r: r.score, reverse=True)
+                    rankings = {
+                        f"{row.id}/{row.top_model_id}": rank + 1 for rank, row in enumerate(scored)
+                    }
+                elif result.omission:
+                    rankings_omission = result.omission
+            except Exception:
+                # Rankings are advisory; failure preserves baseline ordering.
+                rankings_omission = "unavailable"
+                rankings = {}
     return EligibilityLadder(
         rows,
         connections,
@@ -325,6 +368,9 @@ def build_selector(
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         openrouter_free_set=openrouter_free_set,
         max_probes_per_select=0 if no_confirm else 8,
+        rankings=rankings or None,
+        rankings_omission=rankings_omission,
+        rankings_category=rankings_category,
     )
 
 

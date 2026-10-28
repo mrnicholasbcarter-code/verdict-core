@@ -12,6 +12,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from packaging.version import Version
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import security_exceptions as sx
 
@@ -55,6 +57,22 @@ def test_fixed_pillow_has_no_security_exceptions() -> None:
     assert pillow_versions
     assert all(int(version.split(".")[0]) >= 13 for version in pillow_versions)
     assert not any(exc.package == "pillow" for exc in sx.load_exceptions())
+
+
+def test_all_locked_dnspython_versions_are_fixed() -> None:
+    """Audit every Python resolution, including versions absent from this environment."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    root = Path(__file__).parent.parent
+    with (root / "uv.lock").open("rb") as lock_file:
+        packages = tomllib.load(lock_file)["package"]
+    dns_versions = [p["version"] for p in packages if p["name"] == "dnspython"]
+    assert dns_versions
+    assert all(Version(version) >= Version("2.9.0") for version in dns_versions)
+    assert not any(exc.package == "dnspython" for exc in sx.load_exceptions())
 
 
 def test_unlisted_vulnerability_is_never_ignored(tmp_path: Path) -> None:

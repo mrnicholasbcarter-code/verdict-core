@@ -32,6 +32,9 @@ def select_route_for_task(
 
     Capacity filters narrow admission; D6 tier-first ordering applies afterward. This
     call can send a model confirmation through the ladder for unproven routes.
+
+    ``requirements.task_category`` feeds the optional OmniRoute advisory rankings
+    as a task-aware tie-break among already-admitted routes.
     """
     now = now or datetime.now(timezone.utc)
     selector = build_selector(
@@ -45,6 +48,7 @@ def select_route_for_task(
         visibility_executor="direct-gateway",
         no_confirm=no_confirm,
         now=now,
+        task_category=requirements.task_category,
     )
     route, verdicts = selector.select(requirements, now=now)
     explanation = explain_selection(verdicts)
