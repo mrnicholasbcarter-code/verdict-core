@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import threading
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
     from verdict.metadata.mapping import IdentityMap
     from verdict.metadata.store import MetadataSnapshot
     from verdict.orchestration.session_evidence import SessionLedger, SessionStats
+
+_LOG = logging.getLogger(__name__)
 
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 # Ranks an unknown-capability route after every known one (tiers span 0..3).
@@ -886,10 +889,7 @@ class EligibilityLadder:
         before rating; unknown usage follows measured usage. Price is excluded.
         """
         c = self._rank_components(a)
-        req = getattr(self, "_current_requirements", None)
-        subscription = a.capacity == CapacityClass.SUBSCRIPTION and not (
-            req is not None and req.frontier_worthy
-        )
+        subscription = a.capacity == CapacityClass.SUBSCRIPTION
         tokens = c["expected_tokens"]
         return (
             c["capacity_order"],
@@ -950,10 +950,14 @@ class EligibilityLadder:
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        """Assess nonopaque routes and rank selectable routes below worker capacity.
+
+        Refresh health and task-family token estimates before assessing routes.
+        Missing or unreadable verified history leaves token usage unknown.
+        """
         cache = getattr(self, "_health_cache", None)
         if cache is not None and cache.path.exists():
             cache.reload()
-        self._current_requirements = requirements
         self._current_now = now
         from verdict.candidate_pool import expected_token_usage
         from verdict.outcome_shadow import (
@@ -961,13 +965,15 @@ class EligibilityLadder:
             resolve_outcome_shadow_roots,
         )
 
-        family = "code_edit" if requirements.coding else "general"
+        family = requirements.task_family or ("code_edit" if requirements.coding else "general")
         self._token_usage = {}
-        with contextlib.suppress(Exception):
+        try:
             history = load_verified_outcome_observations(
                 resolve_outcome_shadow_roots(None), task_family=family, as_of=now
             )
             self._token_usage = expected_token_usage(history.observations, task_family=family)
+        except Exception as exc:
+            _LOG.warning("Subscription usage history unavailable: %s", exc)
         self._session_evidence_error = None
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):
@@ -1023,6 +1029,12 @@ class EligibilityLadder:
     def select(
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        """Return a selected route, if any, and verdicts for all assessed routes.
+
+        Apply bounded refresh and confirmation probes before selection, honoring
+        admission and cooldowns. Subscription fallback records its reason and
+        queues free-route rescreen hints when probing is enabled.
+        """
         assessments, candidates = self._assess_all(requirements, now)
         # BOD-292 selection-before-dispatch: give the bounded refresh coordinator
         # the candidate ids so it can refresh needed non-fresh prepaid evidence

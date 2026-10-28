@@ -426,6 +426,8 @@ class TaskRequirements:
     # hard-dropped before ranking. Among sufficient routes the least-capable
     # (cheapest sufficient) wins; extra capability is never a ranking bonus.
     max_capability_tier: int = 3
+    # Goal-derived family for usage history, independent of role capability gates.
+    task_family: str | None = None
 
     @classmethod
     def for_node(cls, node: WorkNode, **overrides: Any) -> TaskRequirements:

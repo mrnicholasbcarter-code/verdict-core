@@ -2301,6 +2301,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 attempt=attempt,
                 event_type=f"{event_prefix}_subscription_fallback",
                 details={
+                    "attempt": index,
                     "fallback": "subscription",
                     "reason": "free attempts failed" if index else "no free route qualifies",
                     "rescreen": rescreen,
@@ -2312,6 +2313,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 attempt=attempt,
                 event_type=f"{event_prefix}_metered_fallback",
                 details={
+                    "attempt": index,
                     "fallback": "metered",
                     "reason": "free and capable subscription attempts unavailable or failed",
                 },

@@ -14,6 +14,7 @@ from verdict.subagent_selection import HealthResult
 
 
 def _usage(route, total, n=3, family="code_edit"):
+    """Build distinct accepted attempt observations with a fixed token total."""
     from verdict.candidate_pool import OutcomeObservation
 
     return tuple(
@@ -30,19 +31,29 @@ def _usage(route, total, n=3, family="code_edit"):
 
 
 def _history(monkeypatch, observations):
+    """Supply synthetic verified history to the ladder and serving service."""
     from types import SimpleNamespace
 
-    monkeypatch.setattr(
-        "verdict.outcome_shadow.load_verified_outcome_observations",
-        lambda *a, **k: SimpleNamespace(observations=observations, omissions=()),
-    )
+    families = []
+
+    def load(*args, **kwargs):
+        """Record the requested task family and return synthetic verified observations."""
+        families.append(kwargs["task_family"])
+        return SimpleNamespace(observations=observations, omissions=())
+
+    monkeypatch.setattr("verdict.outcome_shadow.load_verified_outcome_observations", load)
     monkeypatch.setattr(
         "verdict.intelligence.load_verified_outcome_observations",
         lambda *a, **k: SimpleNamespace(observations=observations, omissions=()),
     )
+    return families
 
 
-def test_subscription_token_usage_precedes_rating_and_unknown(tmp_path, monkeypatch):
+@pytest.mark.parametrize("frontier_worthy", [False, True])
+def test_subscription_token_usage_precedes_rating_and_unknown(
+    tmp_path, monkeypatch, frontier_worthy
+):
+    """Prefer lower measured subscription usage while excluding incapable routes."""
     ids = ("a/strong", "b/capable", "c/unknown", "d/incapable")
     rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
     rows[-1]["capability_tier"] = 3
@@ -56,11 +67,100 @@ def test_subscription_token_usage_precedes_rating_and_unknown(tmp_path, monkeypa
         health_cache=HealthCache(tmp_path / "health.json"),
         metadata=_snapshot(_record("a/strong", ids[0], aa_coding=_score(99))),
     )
-    selected, _ = ladder.select(TaskRequirements(max_capability_tier=2), now=NOW)
+    selected, _ = ladder.select(
+        TaskRequirements(max_capability_tier=2, frontier_worthy=frontier_worthy), now=NOW
+    )
     assert selected is not None and selected.route_id == ids[1]
 
 
+@pytest.mark.parametrize(
+    "goal, family", [("investigate findings", "general"), ("fix code", "code_edit")]
+)
+async def test_planner_subscription_usage_uses_goal_family(tmp_path, monkeypatch, goal, family):
+    """Rank planning subscriptions using token history for the goal task family."""
+    from verdict.orchestration.contracts import NodeKind, WorkerTerminal, WorkGraph, WorkNode
+    from verdict.orchestration.receipt import EventLog
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    ids = ("a/strong", "b/capable")
+    other_family = "code_edit" if family == "general" else "general"
+    families = _history(
+        monkeypatch,
+        _usage(ids[0], 10000, family=family)
+        + _usage(ids[1], 1000, family=family)
+        + _usage(ids[0], 100, family=other_family)
+        + _usage(ids[1], 20000, family=other_family),
+    )
+    rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
+    for row in rows:
+        row["capabilities"]["reasoning"] = True
+    selector = EligibilityLadder(
+        rows,
+        [_conn(r.split("/")[0], auth="oauth") for r in ids],
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / "state.json",
+        metadata=_snapshot(_record("a/strong", ids[0], aa_coding=_score(99))),
+    )
+
+    async def plan(self, goal, **kwargs):
+        """Return a synthetic research plan without invoking an external model."""
+        return WorkGraph(
+            goal, (WorkNode("r", "research", kind=NodeKind.RESEARCH),)
+        ), WorkerTerminal(ok=True)
+
+    monkeypatch.setattr("verdict.orchestration.planner.FrontierPlanner.plan", plan)
+    events = EventLog(tmp_path / "events.jsonl")
+    await plan_with_failover(
+        goal,
+        repo=tmp_path,
+        selector=selector,
+        executor=None,
+        classifier=FailureIntelligence(),
+        events=events,
+        now=lambda: NOW,
+    )
+    event = next(e for e in events.read() if e.type == "plan_started")
+    assert event.data["route_id"] == ids[1]
+    assert families == [family]
+
+
+@pytest.mark.parametrize(
+    "failing_function",
+    [
+        "verdict.outcome_shadow.load_verified_outcome_observations",
+        "verdict.candidate_pool.expected_token_usage",
+    ],
+)
+def test_ladder_history_failure_logs_and_resets_usage(
+    tmp_path, monkeypatch, caplog, failing_function
+):
+    """Clear prior token estimates and log a warning when usage history fails."""
+    ids = ("a/strong", "b/capable")
+    _history(monkeypatch, _usage(ids[0], 10000) + _usage(ids[1], 1000))
+    selector = EligibilityLadder(
+        [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids],
+        [_conn(r.split("/")[0], auth="oauth") for r in ids],
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / "state.json",
+        metadata=_snapshot(_record("a/strong", ids[0], aa_coding=_score(99))),
+    )
+    selected, _ = selector.select(TaskRequirements(), now=NOW)
+    assert selected.route_id == ids[1]
+
+    def fail(*args, **kwargs):
+        """Simulate an unavailable usage history store or token estimator."""
+        raise OSError("history store unavailable")
+
+    monkeypatch.setattr(failing_function, fail)
+    selected, verdicts = selector.select(TaskRequirements(), now=NOW)
+    assert selected.route_id == ids[0]
+    assert all(v.rank_components["expected_tokens"] is None for v in verdicts)
+    assert "history store unavailable" in caplog.text
+
+
 def test_serve_subscription_tokens_before_rating(monkeypatch):
+    """Rank serving candidates by subscription tokens and preserve tool exclusions."""
     service = _service()
     _history(
         monkeypatch,
@@ -75,6 +175,7 @@ def test_serve_subscription_tokens_before_rating(monkeypatch):
 
 
 def test_free_candidates_fill_shortlist_before_subscription():
+    """Fill the shortlist with free routes when enough qualify."""
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -94,6 +195,7 @@ def test_free_candidates_fill_shortlist_before_subscription():
 
 
 def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
+    """Allow a capable metered route when no cheaper capacity class qualifies."""
     ladder = EligibilityLadder(
         [_ladder_row("paid/model", pricing={"input": 1})],
         [_conn("paid", auth="apikey")],
@@ -106,6 +208,7 @@ def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
 
 
 def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
+    """Fall back after two free failures, recording the reason and rescreen hints."""
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
@@ -130,6 +233,7 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
     original = api._finish_evidence
 
     def capture(evidence, outcome, key):
+        """Capture fallback evidence while preserving normal evidence finalization."""
         events.append(outcome.to_dict())
         return original(evidence, outcome, key)
 
@@ -156,6 +260,7 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
     assert any(
         row.get("details", {}).get("fallback") == "subscription"
         and row["details"]["reason"] == "free attempts failed"
+        and row["details"]["attempt"] == 2
         for row in events
     )
     from verdict.orchestration.health_cache import HealthCache, default_cache_path
@@ -165,6 +270,7 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
 
 
 def test_capability_rejection_steps_up_not_same_route(monkeypatch):
+    """Retry unsupported tools on a different admitted route within the request."""
     from fastapi.testclient import TestClient
 
     from tests.test_api_relay_context_length import ContextLengthTransport, TwoModelIntelligence
@@ -189,6 +295,7 @@ def test_capability_rejection_steps_up_not_same_route(monkeypatch):
 
 
 def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
+    """Prioritize a queued free route within screen caps and consume its hint."""
     from tests.test_identify_screen import NOW as SCREEN_NOW
     from tests.test_identify_screen import passing, ratings, snapshot
     from verdict.identify import screen_models
@@ -216,6 +323,7 @@ def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
 
 
 def test_token_metric_requires_three_unique_accepted_same_family_samples():
+    """Omit token estimates for sparse, unaccepted, or mismatched task history."""
     from verdict.candidate_pool import expected_token_usage
 
     a = "a/model"
@@ -233,6 +341,7 @@ def test_token_metric_requires_three_unique_accepted_same_family_samples():
 
 
 def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
+    """Serve a capable metered route when the alternative lacks required tools."""
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
@@ -258,6 +367,15 @@ def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
     )
     request = live._request(live.STRONG, live.NO_TOOLS)
     transport = ContextLengthTransport([])
+    events = []
+    original = api._finish_evidence
+
+    def capture(evidence, outcome, key):
+        """Capture metered fallback evidence while preserving normal finalization."""
+        events.append(outcome.to_dict())
+        return original(evidence, outcome, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", capture)
     monkeypatch.setattr(api, "_build_intelligence", lambda: service)
     monkeypatch.setattr(api, "_authority_context", lambda payload, task: _context(request))
     monkeypatch.setattr(
@@ -271,9 +389,14 @@ def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
         )
     assert response.status_code == 200, response.text
     assert [row["body"]["model"] for row in transport.requests] == [live.STRONG.split("/")[1]]
+    assert any(
+        row.get("details", {}).get("fallback") == "metered" and row["details"]["attempt"] == 0
+        for row in events
+    )
 
 
 def test_known_subscription_tokens_always_before_unknown(monkeypatch):
+    """Rank a measured subscription ahead of one with unknown token usage."""
     service = _service()
     _history(monkeypatch, _usage(live.STRONG, 10000, family="coding"))
     request = live._request(live.STRONG, live.NEW)
@@ -284,6 +407,7 @@ def test_known_subscription_tokens_always_before_unknown(monkeypatch):
 
 
 def test_subscription_token_tie_uses_rating(monkeypatch):
+    """Use rating to break ties between equal subscription token estimates."""
     service = _service()
     _history(
         monkeypatch,
@@ -297,6 +421,7 @@ def test_subscription_token_tie_uses_rating(monkeypatch):
 
 
 def test_capable_metered_pool_and_ladder_remain_allowed(tmp_path):
+    """Keep capable metered routes eligible in both the pool and ladder."""
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -319,6 +444,7 @@ def test_capable_metered_pool_and_ladder_remain_allowed(tmp_path):
 
 
 def test_active_payment_negative_still_blocks_metered(tmp_path):
+    """Reject metered fallback when cached evidence reports payment required."""
     from verdict.orchestration.health_cache import ProbeResult
 
     cache = HealthCache(tmp_path / "health.json")
@@ -342,6 +468,7 @@ def test_active_payment_negative_still_blocks_metered(tmp_path):
 
 
 def test_usage_is_recomputed_from_verified_run_not_ledger_label(tmp_path, monkeypatch):
+    """Extract checked token totals from verified events and reject tampered events."""
     import json
     from datetime import datetime, timezone
 
@@ -390,6 +517,7 @@ def test_usage_is_recomputed_from_verified_run_not_ledger_label(tmp_path, monkey
 
 
 def test_relay_three_tiers_stay_within_three_attempts():
+    """Reserve subscription and metered fallback within three total relay attempts."""
     from verdict.models import RoutingDecision
     from verdict.proxy import UpstreamProxy
     from verdict.relay import build_attempts
