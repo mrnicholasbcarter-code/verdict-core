@@ -384,6 +384,7 @@ async def plan_with_failover(
     cooled down with any parsed reset time, and the NEXT eligible frontier model
     is selected dynamically. Nothing waits on the exhausted model.
     """
+    from verdict.candidate_pool import fingerprint_task
     from verdict.orchestration.planner import PlanningExecutorError
 
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
@@ -419,6 +420,7 @@ async def plan_with_failover(
                 # Provider that raises must never break planning
                 pass
 
+    task_family = fingerprint_task(goal).task_family
     tried: set[str] = set()
     tried_pools: set[str] = set()
     last = ""
@@ -432,6 +434,7 @@ async def plan_with_failover(
             exclude_routes=frozenset(tried),
             exclude_pools=frozenset(tried_pools),
             max_capability_tier=2,
+            task_family=task_family,
         )
         choice, considered = selector.select(requirements, now=now())
         if choice is None:

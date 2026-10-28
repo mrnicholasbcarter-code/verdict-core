@@ -243,6 +243,16 @@ def retryable_response_status(
     """
     if status_code in {400, 413} and is_context_length_error(body):
         return True
+    if status_code in {400, 404, 422} and any(
+        marker in body.lower()
+        for marker in (
+            "tool_not_supported",
+            "tools_not_supported",
+            "unsupported_tool",
+            "does not support tools",
+        )
+    ):
+        return True
     if compatibility_applied and status_code in {400, 404, 422}:
         return False
     return retryable_transport_status(status_code)
@@ -373,6 +383,11 @@ def response_actual_route_status(response: Any) -> str:
 def build_attempts(
     proxy: Any, decision: RoutingDecision, *, protocol: str, admitted: AdmittedSet | None = None
 ) -> tuple[RelayAttempt, ...]:
+    """Build distinct relay candidates from the selected model and admitted alternatives.
+
+    When subscription fallback policy applies, reserve subscription and metered
+    candidates after free routes within the existing three-attempt budget.
+    """
     models: list[str] = [decision.model]
     admitted_alternatives = {
         str(record.get("model_id"))
@@ -393,6 +408,19 @@ def build_attempts(
     )
     if admitted is not None and decision.model not in admitted:
         return ()
+    if "subscription_fallback_policy" in decision.safety_flags:
+        capacities = {
+            row.get("model_id"): row.get("capacity_order") for row in decision.candidate_states
+        }
+        models = [model for model in models if capacities.get(model) in (0, 1, 2)]
+        free = [model for model in models if capacities.get(model) == 0]
+        subscription = [model for model in models if capacities.get(model) == 1]
+        metered = [model for model in models if capacities.get(model) == 2]
+        # All tiers share the same attempt budget; never displace an eligible free route.
+        if "free_supply_unknown" in decision.safety_flags:
+            models = list(dict.fromkeys(free))[:3]
+        else:
+            models = list(dict.fromkeys([*free, *subscription, *metered]))[:3]
     attempts: list[RelayAttempt] = []
     seen: set[str] = set()
     for model in models:

@@ -258,6 +258,7 @@ class TestBehaviourParityAcrossFixtures:
         return (chosen.route_id if chosen is not None else None, [v.route_id for v in ordered])
 
     def test_selection_identical_for_representative_fixture(self, tmp_path: Path) -> None:
+        """Keep selection deterministic and expose ordered ranking and fallback details."""
         # A fixture that exercises capacity class, price, provider preference,
         # load, fit and route_id tiebreak simultaneously.
         rows = [
@@ -290,6 +291,7 @@ class TestBehaviourParityAcrossFixtures:
                 "slack",
                 "quota_rank",
                 "quota_percent",
+                "expected_tokens",
                 "provider_pref",
                 "load",
                 "fit",
@@ -302,7 +304,11 @@ class TestBehaviourParityAcrossFixtures:
                 "session_score",
                 "session_passes",
                 "session_fails",
-            ]
+            ] + (
+                ["fallback", "fallback_reason"]
+                if v.reason == "selected" and v.capacity_class == CapacityClass.SUBSCRIPTION
+                else []
+            )
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:
         # Mirrors ``TestSelect::test_select_skips_unhealthy_and_picks_next``
@@ -721,11 +727,13 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
         c = ladder._rank_components(a)
         assert ladder._rank_key(a) == (
             c["capacity_order"],
+            int(c["expected_tokens"] is None) if a.capacity == CapacityClass.SUBSCRIPTION else 0,
+            float(c["expected_tokens"] or 0) if a.capacity == CapacityClass.SUBSCRIPTION else 0.0,
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
-            c["quota_rank"],
+            0 if a.capacity == CapacityClass.SUBSCRIPTION else c["quota_rank"],
             c["provider_pref"],
             c["load"],
             -c["fit"],

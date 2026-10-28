@@ -251,8 +251,10 @@ class OutcomeObservation:
     # attempt toward observed_n/weighted_n. None observations are never
     # deduplicated against each other.
     observation_id: str | None = None
+    total_tokens: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize attempt identity, checker credit, and observed token usage."""
         return {
             "route_id": self.route_id,
             "task_family": self.task_family,
@@ -261,6 +263,7 @@ class OutcomeObservation:
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "quality_credit": self.quality_credit,
             "observation_id": self.observation_id,
+            "total_tokens": self.total_tokens,
         }
 
 
@@ -299,6 +302,7 @@ class ProbeRecord:
     level: str
     passed: bool
     detail: str | None = None
+    qualified: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -308,6 +312,8 @@ class ProbeRecord:
         }
         if self.detail:
             payload["detail"] = self.detail
+        if self.qualified is not None:
+            payload["qualified"] = self.qualified
         return payload
 
 
@@ -323,6 +329,7 @@ class ShortlistEntry:
     inclusion_reason: str
     aliases: tuple[str, ...] = ()
     capacity_order: int = 3
+    expected_tokens: float | None = None
     # Cold-start soft prior attribution (selected metric only; not P(success)).
     eval_prior_metric: str | None = None
     eval_prior_value: float | None = None
@@ -331,6 +338,7 @@ class ShortlistEntry:
     eval_prior_kind: str = "absent"
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize shortlist ranking, token estimates, and evaluation provenance."""
         return {
             "route_id": self.route_id,
             "metadata_id": self.metadata_id,
@@ -342,6 +350,7 @@ class ShortlistEntry:
             "inclusion_reason": self.inclusion_reason,
             "aliases": list(self.aliases),
             "capacity_order": self.capacity_order,
+            "expected_tokens": self.expected_tokens,
             "eval_prior_metric": self.eval_prior_metric,
             "eval_prior_value": self.eval_prior_value,
             "eval_prior_provenance": (
@@ -367,12 +376,16 @@ class CandidatePoolReceipt:
     requirements: tuple[str, ...] = ()
     eligible_count: int = 0
     confirmation: dict[str, Any] | None = None
+    possible_free_routes: tuple[str, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_fingerprint": self.task_fingerprint.to_dict(),
             "discovered_count": self.discovered_count,
             "eligible_count": self.eligible_count,
+            "possible_free_routes": (
+                None if self.possible_free_routes is None else list(self.possible_free_routes)
+            ),
             "requirements": list(self.requirements),
             "hard_drops": [d.to_dict() for d in self.hard_drops],
             "probes": [p.to_dict() for p in self.probes],
@@ -412,6 +425,7 @@ class _Survivor:
     # only sorts it after non-demoted survivors.
     demoted: bool = False
     capacity_order: int = 3
+    expected_tokens: float | None = None
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -565,6 +579,36 @@ def build_live_probe_receipt(
     )
 
 
+MIN_TOKEN_USAGE_SAMPLES = 3  # Proposed minimum for a task-family median.
+
+
+def expected_token_usage(
+    observations: Sequence[OutcomeObservation], *, task_family: str
+) -> dict[str, float]:
+    """Median observed tokens for accepted checked attempts in the same family.
+
+    Three distinct attempts is the proposed minimum sample, not a forecast from
+    model names or quota headroom. Callers supply validated checker observations.
+    """
+    from statistics import median
+
+    samples: dict[str, dict[str, int]] = {}
+    for row in observations:
+        if (
+            row.task_family == task_family
+            and row.quality_credit == 1.0
+            and row.observation_id
+            and row.total_tokens is not None
+            and row.total_tokens > 0
+        ):
+            samples.setdefault(row.route_id, {})[row.observation_id] = row.total_tokens
+    return {
+        route: float(median(values.values()))
+        for route, values in samples.items()
+        if len(values) >= MIN_TOKEN_USAGE_SAMPLES
+    }
+
+
 def build_candidate_pool(
     advertised: Sequence[str],
     *,
@@ -623,6 +667,7 @@ def build_candidate_pool(
     budget = probe_budget or ProbeBudget()
 
     hard_drops: list[HardDrop] = []
+    token_usage = expected_token_usage(outcome_list, task_family=task_fingerprint.task_family)
     survivors: list[_Survivor] = []
     uncertainty: list[str] = []
     # Track metadata-id → advertised aliases for dedupe.
@@ -685,6 +730,7 @@ def build_candidate_pool(
                 family_key=_family_key(meta_id, route_id),
                 provider=_provider(route_id, record),
                 aliases=tuple(record.omniroute_ids),
+                expected_tokens=token_usage.get(route_id),
                 capacity_order=CAPACITY_ORDER.get(
                     (capacity or {}).get(route_id, CapacityClass.UNKNOWN), 3
                 ),
@@ -746,6 +792,7 @@ def build_candidate_pool(
         }
     )
     shortlist_digest = _digest([e.to_dict() for e in shortlist])
+    failed_probe_ids = {probe.route_id for probe in probes if probe.qualified is False}
 
     return CandidatePoolReceipt(
         task_fingerprint=task_fingerprint,
@@ -759,6 +806,13 @@ def build_candidate_pool(
         requirements=requirements.names
         + (() if requirements.min_context is None else (f"context>={requirements.min_context}",)),
         eligible_count=len(eligible),
+        possible_free_routes=tuple(
+            s.route_id
+            for s in survivors
+            if s.route_id not in failed_probe_ids
+            and s.capacity_order
+            in (CAPACITY_ORDER[CapacityClass.FREE], CAPACITY_ORDER[CapacityClass.UNKNOWN])
+        ),
     )
 
 
@@ -1023,7 +1077,8 @@ def _run_probe_ladder(
             result = dict(probe_fn(survivor.route_id, level))
             remaining -= 1
             ok = bool(result.get("ok", False))
-            qualified = result.get("qualified")
+            explicit_qualification = result.get("qualified")
+            qualified = explicit_qualification
             if qualified is None:
                 qualified = ok
             passed = bool(qualified) and ok
@@ -1034,6 +1089,9 @@ def _run_probe_ladder(
                     level=level,
                     passed=passed,
                     detail=str(detail) if detail is not None else None,
+                    qualified=(
+                        explicit_qualification if isinstance(explicit_qualification, bool) else None
+                    ),
                 )
             )
             last_level = level
@@ -1077,12 +1135,29 @@ def _probe_passed(survivor: _Survivor, probes: Sequence[ProbeRecord]) -> bool:
 def _portfolio_shortlist(
     eligible: Sequence[_Survivor], *, alias_groups: Mapping[str, Sequence[str]], top_k: int
 ) -> list[ShortlistEntry]:
+    """Collapse aliases and build a bounded portfolio with capacity fallback slots.
+
+    Preserve the primary route while reserving subscription and metered routes
+    when space permits. Apply task-history demotion only to the resulting order.
+    """
+
+    def rank(s: _Survivor) -> tuple[int, bool, float, float, str]:
+        """Sort by capacity, subscription token usage, score, and stable route ID."""
+        subscription = s.capacity_order == CAPACITY_ORDER[CapacityClass.SUBSCRIPTION]
+        return (
+            s.capacity_order,
+            subscription and s.expected_tokens is None,
+            float(s.expected_tokens or 0) if subscription else 0.0,
+            -s.score,
+            s.route_id,
+        )
+
     # Collapse aliases that share the same metadata identity — keep best score.
     by_meta: dict[str, _Survivor] = {}
     for survivor in eligible:
         meta_id = survivor.record.id
         current = by_meta.get(meta_id)
-        if current is None or survivor.score > current.score:
+        if current is None or rank(survivor) < rank(current):
             by_meta[meta_id] = survivor
 
     # ``by_meta`` removes only proven aliases that resolve to the same Core
@@ -1090,7 +1165,7 @@ def _portfolio_shortlist(
     # diversity must remain available to the portfolio pass. Membership
     # selection below is capacity-first, then score within each tier.
     # BOD-438 demotion still never changes shortlist membership.
-    ranked = sorted(by_meta.values(), key=lambda s: (s.capacity_order, -s.score, s.route_id))
+    ranked = sorted(by_meta.values(), key=rank)
 
     selected: list[_Survivor] = []
     seen_providers: set[str] = set()
@@ -1134,13 +1209,13 @@ def _portfolio_shortlist(
                                 break
                     break
         # Re-sort after possible swap.
-        selected = sorted(selected, key=lambda s: (s.capacity_order, -s.score, s.route_id))[:top_k]
+        selected = sorted(selected, key=rank)[:top_k]
 
     # BOD-438: order-only task-specific demotion. Membership (``selected``) is
     # already final above; this only reorders the admitted set so a demoted
     # route (score<.4, observed unique n>=3) sorts after non-demoted routes
     # within its capacity tier, with stable fuse/ID order inside each group.
-    selected = sorted(selected, key=lambda s: (s.capacity_order, s.demoted, -s.score, s.route_id))
+    selected = sorted(selected, key=lambda s: (*rank(s)[:3], s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []
     for survivor in selected:
@@ -1161,6 +1236,7 @@ def _portfolio_shortlist(
                 inclusion_reason=reason,
                 aliases=aliases,
                 capacity_order=survivor.capacity_order,
+                expected_tokens=survivor.expected_tokens,
                 eval_prior_metric=survivor.eval_prior_metric,
                 eval_prior_value=survivor.eval_prior_value,
                 eval_prior_provenance=(

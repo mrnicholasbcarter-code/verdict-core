@@ -48,7 +48,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1137,6 +1137,7 @@ class HealthCache:
         bucket_window_seconds: float = DEFAULT_BUCKET_WINDOW_SECONDS,
         bucket_overrides: Mapping[str, int] | None = None,
     ) -> None:
+        """Validate default bucket bounds and load persisted health and scheduling state."""
         self.path = Path(path).expanduser()
         if bucket_capacity < 1 or bucket_window_seconds <= 0:
             raise HealthCacheError("default bucket bounds are invalid")
@@ -1144,6 +1145,7 @@ class HealthCache:
         self.bucket_window_seconds = bucket_window_seconds
         self.bucket_overrides = dict(bucket_overrides or {})
         self._routes: dict[str, HealthEntry] = {}
+        self._rescreen_requests: dict[str, str] = {}
         self._buckets: dict[str, TokenBucket] = {}
         self._cursor: dict[str, Any] = {}
         # BOD-292: optional scoped-availability blockers, keyed by scope string.
@@ -1212,10 +1214,12 @@ class HealthCache:
         )
 
     def _load(self) -> None:
+        """Load validated cache state or initialize empty state when the file is absent."""
         # Reject links/FIFOs before any read can dereference or block.
         _private_cache_mode(self.path)
         if not self.path.exists():
             self._routes = {}
+            self._rescreen_requests = {}
             self._buckets = {}
             self._cursor = {}
             self._cooldowns = {}
@@ -1234,6 +1238,16 @@ class HealthCache:
         if not isinstance(routes, Mapping) or not isinstance(buckets, Mapping):
             raise HealthCacheError("routes and buckets must be objects")
         self._routes = {key: HealthEntry.from_dict(value) for key, value in routes.items()}
+        requests = payload.get("rescreen_requests", {})
+        self._rescreen_requests = (
+            {
+                str(route): str(at)
+                for route, at in requests.items()
+                if isinstance(route, str) and isinstance(at, str)
+            }
+            if isinstance(requests, Mapping)
+            else {}
+        )
         migrating = {_legacy_pool_key(key) for key in buckets if _legacy_pool_key(key) != key}
         for key, value in buckets.items():
             if not isinstance(value, Mapping):
@@ -1282,12 +1296,15 @@ class HealthCache:
         self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
+        """Serialize cache state, omitting empty optional sections for compatibility."""
         snapshot: dict[str, Any] = {
             "schema_version": HEALTH_CACHE_SCHEMA_VERSION,
             "routes": {key: entry.to_dict() for key, entry in sorted(self._routes.items())},
             "buckets": {key: bucket.to_dict() for key, bucket in sorted(self._buckets.items())},
             "cursor": self._cursor,
         }
+        if self._rescreen_requests:
+            snapshot["rescreen_requests"] = dict(self._rescreen_requests)
         # Additive: only emit ``cooldowns`` when non-empty so existing readers
         # and byte-for-byte goldens for cooldown-free caches stay unchanged.
         if self._cooldowns:
@@ -1466,6 +1483,31 @@ class HealthCache:
         return dict(self._routes)
 
     # -- write API ---------------------------------------------------------
+
+    def rescreen_requests(self) -> set[str]:
+        """Scheduling hints only; never health, proof or dispatch permission."""
+        return set(self._rescreen_requests)
+
+    def request_rescreen(self, routes: Sequence[str], *, now: datetime) -> None:
+        """Queue exact free identities for the already-consented screen job."""
+        if not routes:
+            return
+        stamp = format_datetime(now)
+
+        def mutate(cache: HealthCache) -> None:
+            """Merge timestamped hints into the freshly loaded cache under its lock."""
+            cache._rescreen_requests.update({route: stamp for route in routes})
+
+        self.merge_and_save(mutate)
+
+    def complete_rescreen(self, route: str) -> None:
+        """Consume a hint only after the existing screen actually sent a turn."""
+
+        def mutate(cache: HealthCache) -> None:
+            """Remove the completed route's hint from the freshly loaded cache."""
+            cache._rescreen_requests.pop(route, None)
+
+        self.merge_and_save(mutate)
 
     def record_agentic_evidence(
         self, route: str, *, passed: bool, at: datetime, source: str, child_id: str | None = None
