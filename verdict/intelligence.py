@@ -283,6 +283,51 @@ def _omission_reason_counts(omissions: Sequence[str]) -> dict[str, int]:
     return counts
 
 
+def _confirmed_unavailable_routes(confirmation: dict[str, Any] | None) -> frozenset[str]:
+    """Accept only current, explicit negative passport observations as unavailable."""
+    from verdict.orchestration.health_cache import PERMIT_PROOF_MAX_VALIDITY_SECONDS
+
+    rows = confirmation.get("passport") if confirmation is not None else None
+    if not isinstance(rows, list):
+        return frozenset()
+    now = datetime.now(timezone.utc)
+    unavailable: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or (
+            row.get("auth_state") != "unauthorized" and row.get("availability_state") != "denied"
+        ):
+            continue
+        route_id = row.get("identity_id")
+        qualified_at = row.get("qualified_at")
+        observed_at = row.get("observed_at")
+        expires_at = row.get("expires_at")
+        if (
+            not isinstance(route_id, str)
+            or not isinstance(qualified_at, str)
+            or not isinstance(observed_at, str)
+            or not isinstance(expires_at, str)
+        ):
+            continue
+        try:
+            qualified, observed, expires = (
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+                for value in (qualified_at, observed_at, expires_at)
+            )
+            if any(
+                value.tzinfo is None or value.utcoffset() is None
+                for value in (qualified, observed, expires)
+            ):
+                continue
+            if not (qualified <= observed <= now < expires):
+                continue
+            if (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS:
+                continue
+        except (ValueError, TypeError, OverflowError):
+            continue
+        unavailable.add(route_id)
+    return frozenset(unavailable)
+
+
 def _chosen_route_proof(
     receipt: FreeTierAdmitReceipt, chosen: str, provider: str, context: dict[str, Any]
 ) -> dict[str, AdmissionProof]:
@@ -629,8 +674,15 @@ class IntelligenceService:
                         for route_id in dropped
                         if dropped_capacity.get(route_id) == CapacityClass.FREE
                     )
+            if isinstance(ep_request, ExecutionPathRequest) and ep_request.pool_receipt is not None:
+                possible_free = ep_request.pool_receipt.possible_free_routes
+                unavailable = _confirmed_unavailable_routes(ep_request.pool_receipt.confirmation)
+                if possible_free is None or any(
+                    route not in proofs and route not in unavailable for route in possible_free
+                ):
+                    safety.append("free_supply_unknown")
             selected_capacity = capacities.get(identity.get("route_id", ""))
-            if selected_capacity == 1:
+            if selected_capacity == 1 and "free_supply_unknown" not in safety:
                 safety.extend(
                     ["fallback: subscription", "fallback_reason: no free route qualifies"]
                 )

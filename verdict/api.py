@@ -2043,6 +2043,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             return _proxy_error(503, f"live admission unavailable: {type(exc).__name__}")
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
+        if "free_supply_unknown" in decision.safety_flags:
+            return _proxy_error(503, "free supply unknown; higher-tier fallback denied")
         return _proxy_error(503, "no executable route was selected")
     attempted_routes = [item.route.to_dict() for item in attempts]
     route_evidence, evidence_key = _start_evidence(
@@ -2215,6 +2217,65 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             ),
             None,
         )
+        forwarded = dict(payload)
+        # Verdict-local controls must never be forwarded to an upstream provider.
+        for local_field in _RELAY_LOCAL_FIELDS:
+            forwarded.pop(local_field, None)
+        forwarded["model"] = attempt.model
+        # cheap-path pack: the hydrated pack the receipt describes is what the upstream
+        # receives. Injection is recorded per attempt and never claimed when
+        # the pack is empty/failed or the task did not survive compilation.
+        forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
+        # Exactly one proof may name this attempt's model; the primary must also
+        # carry the provider route() selected. Ambiguity is a denial, not a choice.
+        matches = [
+            proof
+            for route_id, proof in decision.admission_proofs.items()
+            if proof.model == attempt.model and proof.route_id == route_id
+        ]
+        proof = matches[0] if len(matches) == 1 else None
+        if proof is None or (
+            attempt.model == decision.model
+            and (
+                proof.provider != decision.provider
+                or (selected_route_id is not None and proof.route_id != selected_route_id)
+            )
+        ):
+            dispatch_denial = "dispatch denied: missing route-bound admission proof"
+            break
+        if relay_profile_digest is None:
+            dispatch_denial = "dispatch denied: task profile unavailable at relay"
+            break
+        expected_scope = dispatch_scope(
+            gateway_origin=proxy_instance.base_url,
+            provider=proof.provider,
+            model=attempt.model,
+            route_id=proof.route_id,
+            profile_digest=relay_profile_digest,
+        )
+        now = datetime.now(timezone.utc)
+        attempt_id = _dispatch_attempt_id()
+        if proof.scope != expected_scope or proof.qualified_at > now:
+            dispatch_denial = "dispatch denied: proof scope or observation mismatch"
+            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
+            break
+        permit = HealthCache(default_cache_path()).commit_dispatch(
+            expected_scope,
+            route_id=proof.route_id,
+            attempt_id=attempt_id,
+            authorization_digest=proof.authorization_digest,
+            expected_epoch=proof.epoch,
+            qualified_at=proof.qualified_at,
+            proof_deadline=min(
+                proof.expires_at,
+                proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
+            ),
+            now=now,
+        )
+        if permit is None:
+            dispatch_denial = "dispatch denied: permit commit rejected proof"
+            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
+            break
         if "subscription_fallback_policy" in decision.safety_flags and capacity == 1:
             free_routes = [
                 str(row["route_id"])
@@ -2247,65 +2308,6 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "reason": "free and capable subscription attempts unavailable or failed",
                 },
             )
-        forwarded = dict(payload)
-        # Verdict-local controls must never be forwarded to an upstream provider.
-        for local_field in _RELAY_LOCAL_FIELDS:
-            forwarded.pop(local_field, None)
-        forwarded["model"] = attempt.model
-        # cheap-path pack: the hydrated pack the receipt describes is what the upstream
-        # receives. Injection is recorded per attempt and never claimed when
-        # the pack is empty/failed or the task did not survive compilation.
-        forwarded, injection = _inject_decision_pack(forwarded, decision, surface=surface)
-        # Exactly one proof may name this attempt's model; the primary must also
-        # carry the provider route() selected. Ambiguity is a denial, not a choice.
-        matches = [
-            proof
-            for route_id, proof in decision.admission_proofs.items()
-            if proof.model == attempt.model and proof.route_id == route_id
-        ]
-        proof = matches[0] if len(matches) == 1 else None
-        if proof is None or (
-            attempt.model == decision.model
-            and (
-                proof.provider != decision.provider
-                or (selected_route_id is not None and proof.route_id != selected_route_id)
-            )
-        ):
-            dispatch_denial = "dispatch denied: missing route-bound admission proof"
-            continue
-        if relay_profile_digest is None:
-            dispatch_denial = "dispatch denied: task profile unavailable at relay"
-            continue
-        expected_scope = dispatch_scope(
-            gateway_origin=proxy_instance.base_url,
-            provider=proof.provider,
-            model=attempt.model,
-            route_id=proof.route_id,
-            profile_digest=relay_profile_digest,
-        )
-        now = datetime.now(timezone.utc)
-        attempt_id = _dispatch_attempt_id()
-        if proof.scope != expected_scope or proof.qualified_at > now:
-            dispatch_denial = "dispatch denied: proof scope or observation mismatch"
-            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
-            continue
-        permit = HealthCache(default_cache_path()).commit_dispatch(
-            expected_scope,
-            route_id=proof.route_id,
-            attempt_id=attempt_id,
-            authorization_digest=proof.authorization_digest,
-            expected_epoch=proof.epoch,
-            qualified_at=proof.qualified_at,
-            proof_deadline=min(
-                proof.expires_at,
-                proof.qualified_at + timedelta(seconds=PERMIT_PROOF_MAX_VALIDITY_SECONDS),
-            ),
-            now=now,
-        )
-        if permit is None:
-            dispatch_denial = "dispatch denied: permit commit rejected proof"
-            ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
-            continue
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
@@ -2540,6 +2542,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             headers=_evidence_headers(evidence),
         )
 
+    budget_exhausted = (
+        "subscription_fallback_policy" in decision.safety_flags
+        and len(attempts_used) == 3
+        and result.status_code >= 400
+        and retryable_response_status(
+            result.status_code,
+            compatibility_applied=result.compatibility_rule_version is not None,
+            body=_last_error_body,
+        )
+    )
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"
     decision_record = replace(decision, transport_outcome=transport_outcome)
     response_outcome = "success" if result.status_code < 400 else "error"
@@ -2582,6 +2594,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 fallbacks=attempts_used[1:],
                 details={
                     "attempted_routes": attempts_used,
+                    **(
+                        {"termination_reason": "budget_exhausted"}
+                        if budget_exhausted
+                        else {"termination_reason": "free_supply_unknown"}
+                        if result.status_code >= 400
+                        and "free_supply_unknown" in decision.safety_flags
+                        else {}
+                    ),
                     "compatibility_rule_version": result.compatibility_rule_version,
                     **(
                         {"health_cache_feedback": health_cache_feedback}
