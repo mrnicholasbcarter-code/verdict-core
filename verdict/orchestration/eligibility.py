@@ -268,6 +268,9 @@ class EligibilityLadder:
         openrouter_free_set: OpenRouterFreeSet | None = None,
         metadata: Any = _DEFAULT_METADATA,
         identity_map: IdentityMap | None = None,
+        rankings: Mapping[str, int] | None = None,
+        rankings_omission: str | None = None,
+        rankings_category: str | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -321,6 +324,9 @@ class EligibilityLadder:
         # a snapshot (or None for no ratings). Loaded once, on first ranking.
         self._metadata_arg = metadata
         self._identity_map = identity_map
+        self._rankings = rankings
+        self._rankings_omission = rankings_omission
+        self._rankings_category = rankings_category
         self._rating_evidence_cache: tuple[MetadataSnapshot | None, IdentityMap | None] | None = (
             None
         )
@@ -865,6 +871,9 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
+            "advisory_rank": (getattr(self, "_rankings", None) or {}).get(a.route_id, 999),
+            "advisory_category": getattr(self, "_rankings_category", None),
+            "advisory_omission": getattr(self, "_rankings_omission", None),
         }
         error = getattr(self, "_session_evidence_error", None)
         if error is not None:
@@ -873,7 +882,7 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[int, int, float, int, int, int, int, int, int, str]:
+    ) -> tuple[int, int, float, int, int, int, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
         Cheapest qualified tier first, then a fresh task score (higher first) beats a fresh
@@ -890,6 +899,7 @@ class EligibilityLadder:
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
+            c["advisory_rank"],
             c["quota_rank"],
             c["provider_pref"],
             c["load"],
@@ -915,6 +925,9 @@ class EligibilityLadder:
             "rating_source": components["rating_source"],
             "rating_as_of": components["rating_as_of"],
             "slack": components["slack"],
+            "advisory_rank": components["advisory_rank"],
+            "advisory_category": components.get("advisory_category"),
+            "advisory_omission": components.get("advisory_omission"),
             "quota_rank": components["quota_rank"],
             "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],

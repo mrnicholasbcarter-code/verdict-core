@@ -72,6 +72,7 @@ def _ladder(
         probe=_Probe(),
         state_path=tmp_path / "elig.json",
         load=load,
+        rankings={},
     )
 
 
@@ -288,6 +289,9 @@ class TestBehaviourParityAcrossFixtures:
                 "rating_source",
                 "rating_as_of",
                 "slack",
+                "advisory_rank",
+                "advisory_category",
+                "advisory_omission",
                 "quota_rank",
                 "quota_percent",
                 "provider_pref",
@@ -710,6 +714,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
         max_probes_per_select=0,
         max_per_route=10,
         load=lambda rid: load_map.get(rid, 0),
+        rankings={},
     )
     # Synthetic ids carry no classifier tier, so accept any tier (unknown ranks last).
     requirements = TaskRequirements(
@@ -725,6 +730,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
+            c["advisory_rank"],
             c["quota_rank"],
             c["provider_pref"],
             c["load"],
@@ -742,6 +748,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
         max_probes_per_select=0,
         max_per_route=10,
         load=lambda rid: load_map.get(rid, 0),
+        rankings={},
     )
     _, cheap_candidates = cheap._assess_all(requirements, NOW)
     assert [a.route_id for a in cheap_candidates] == [a.route_id for a in candidates]
@@ -754,3 +761,63 @@ def test_capacity_class_is_first_selection_reason() -> None:
     assert _RANK_COMPONENT_ORDER[0] == "capacity_order"
     assert "price" not in _RANK_COMPONENT_ORDER
     assert _RANK_COMPONENT_ORDER[1:4] == ("rating_basis", "rating", "declared_tier")
+
+
+def test_advisory_rankings_reorder_equal_admitted_routes(tmp_path: Path) -> None:
+    """AC1: advisory rankings break ties among already-admitted, otherwise-equal routes.
+
+    Two routes identical except id. Without rankings the route_id tie-break picks
+    model-a; with advisory rankings favoring model-b, model-b wins. Rankings only
+    reorder admitted routes - they never change admission.
+    """
+    rows = [_row("p/model-a"), _row("p/model-b")]
+    conns = [_conn("p")]
+    req = TaskRequirements(
+        max_capability_tier=3, min_context_tokens=16_000, required_capabilities=frozenset()
+    )
+    base = EligibilityLadder(
+        inventory_rows=rows,
+        connections=conns,
+        probe=_Probe(),
+        state_path=tmp_path / "base.json",
+        rankings={},
+    )
+    base_chosen, _ = base.select(req, now=NOW)
+    assert base_chosen is not None and base_chosen.route_id == "p/model-a"
+
+    ranked = EligibilityLadder(
+        inventory_rows=rows,
+        connections=conns,
+        probe=_Probe(),
+        state_path=tmp_path / "ranked.json",
+        rankings={"p/model-b": 1, "p/model-a": 2},
+    )
+    ranked_chosen, _ = ranked.select(req, now=NOW)
+    assert ranked_chosen is not None and ranked_chosen.route_id == "p/model-b"
+
+
+def test_excluded_top_ranked_route_cannot_win(tmp_path: Path) -> None:
+    """AC3: a top advisory-ranked route excluded by admission cannot be selected.
+
+    p/top is ranked #1 by the advisory but is unhealthy, so it fails the HEALTHY
+    admission stage. The lower-ranked but admitted p/ok route is selected instead.
+    """
+    rows = [_row("p/top"), _row("p/ok")]
+    conns = [_conn("p")]
+    req = TaskRequirements(
+        max_capability_tier=3, min_context_tokens=16_000, required_capabilities=frozenset()
+    )
+    probe = _Probe(
+        {"p/top": HealthResult(healthy=False, category="rate_limited", retry_after_seconds=42.0)}
+    )
+    ladder = EligibilityLadder(
+        inventory_rows=rows,
+        connections=conns,
+        probe=probe,
+        state_path=tmp_path / "excl.json",
+        rankings={"p/top": 1, "p/ok": 2},
+    )
+    chosen, verdicts = ladder.select(req, now=NOW)
+    assert chosen is not None and chosen.route_id == "p/ok"
+    top = next(v for v in verdicts if v.route_id == "p/top")
+    assert top.failed_stage is EligibilityStage.HEALTHY
