@@ -383,6 +383,11 @@ def response_actual_route_status(response: Any) -> str:
 def build_attempts(
     proxy: Any, decision: RoutingDecision, *, protocol: str, admitted: AdmittedSet | None = None
 ) -> tuple[RelayAttempt, ...]:
+    """Build distinct relay candidates from the selected model and admitted alternatives.
+
+    When subscription fallback policy applies, reserve subscription and metered
+    candidates after free routes within the existing three-attempt budget.
+    """
     models: list[str] = [decision.model]
     admitted_alternatives = {
         str(record.get("model_id"))

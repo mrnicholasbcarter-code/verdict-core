@@ -14,6 +14,7 @@ from verdict.subagent_selection import HealthResult
 
 
 def _usage(route, total, n=3, family="code_edit"):
+    """Build distinct accepted attempt observations with a fixed token total."""
     from verdict.candidate_pool import OutcomeObservation
 
     return tuple(
@@ -30,11 +31,13 @@ def _usage(route, total, n=3, family="code_edit"):
 
 
 def _history(monkeypatch, observations):
+    """Supply synthetic verified history to the ladder and serving service."""
     from types import SimpleNamespace
 
     families = []
 
     def load(*args, **kwargs):
+        """Record the requested task family and return synthetic verified observations."""
         families.append(kwargs["task_family"])
         return SimpleNamespace(observations=observations, omissions=())
 
@@ -50,6 +53,7 @@ def _history(monkeypatch, observations):
 def test_subscription_token_usage_precedes_rating_and_unknown(
     tmp_path, monkeypatch, frontier_worthy
 ):
+    """Prefer lower measured subscription usage while excluding incapable routes."""
     ids = ("a/strong", "b/capable", "c/unknown", "d/incapable")
     rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
     rows[-1]["capability_tier"] = 3
@@ -73,6 +77,7 @@ def test_subscription_token_usage_precedes_rating_and_unknown(
     "goal, family", [("investigate findings", "general"), ("fix code", "code_edit")]
 )
 async def test_planner_subscription_usage_uses_goal_family(tmp_path, monkeypatch, goal, family):
+    """Rank planning subscriptions using token history for the goal task family."""
     from verdict.orchestration.contracts import NodeKind, WorkerTerminal, WorkGraph, WorkNode
     from verdict.orchestration.receipt import EventLog
     from verdict.orchestration.recovery import FailureIntelligence
@@ -99,6 +104,7 @@ async def test_planner_subscription_usage_uses_goal_family(tmp_path, monkeypatch
     )
 
     async def plan(self, goal, **kwargs):
+        """Return a synthetic research plan without invoking an external model."""
         return WorkGraph(
             goal, (WorkNode("r", "research", kind=NodeKind.RESEARCH),)
         ), WorkerTerminal(ok=True)
@@ -129,6 +135,7 @@ async def test_planner_subscription_usage_uses_goal_family(tmp_path, monkeypatch
 def test_ladder_history_failure_logs_and_resets_usage(
     tmp_path, monkeypatch, caplog, failing_function
 ):
+    """Clear prior token estimates and log a warning when usage history fails."""
     ids = ("a/strong", "b/capable")
     _history(monkeypatch, _usage(ids[0], 10000) + _usage(ids[1], 1000))
     selector = EligibilityLadder(
@@ -142,6 +149,7 @@ def test_ladder_history_failure_logs_and_resets_usage(
     assert selected.route_id == ids[1]
 
     def fail(*args, **kwargs):
+        """Simulate an unavailable usage history store or token estimator."""
         raise OSError("history store unavailable")
 
     monkeypatch.setattr(failing_function, fail)
@@ -152,6 +160,7 @@ def test_ladder_history_failure_logs_and_resets_usage(
 
 
 def test_serve_subscription_tokens_before_rating(monkeypatch):
+    """Rank serving candidates by subscription tokens and preserve tool exclusions."""
     service = _service()
     _history(
         monkeypatch,
@@ -166,6 +175,7 @@ def test_serve_subscription_tokens_before_rating(monkeypatch):
 
 
 def test_subscription_reserved_inside_full_free_shortlist():
+    """Reserve a subscription fallback within a shortlist filled by free routes."""
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -185,6 +195,7 @@ def test_subscription_reserved_inside_full_free_shortlist():
 
 
 def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
+    """Allow a capable metered route when no cheaper capacity class qualifies."""
     ladder = EligibilityLadder(
         [_ladder_row("paid/model", pricing={"input": 1})],
         [_conn("paid", auth="apikey")],
@@ -197,6 +208,7 @@ def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
 
 
 def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
+    """Fall back after two free failures, recording the reason and rescreen hints."""
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
@@ -221,6 +233,7 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
     original = api._finish_evidence
 
     def capture(evidence, outcome, key):
+        """Capture fallback evidence while preserving normal evidence finalization."""
         events.append(outcome.to_dict())
         return original(evidence, outcome, key)
 
@@ -257,6 +270,7 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
 
 
 def test_capability_rejection_steps_up_not_same_route(monkeypatch):
+    """Retry unsupported tools on a different admitted route within the request."""
     from fastapi.testclient import TestClient
 
     from tests.test_api_relay_context_length import ContextLengthTransport, TwoModelIntelligence
@@ -281,6 +295,7 @@ def test_capability_rejection_steps_up_not_same_route(monkeypatch):
 
 
 def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
+    """Prioritize a queued free route within screen caps and consume its hint."""
     from tests.test_identify_screen import NOW as SCREEN_NOW
     from tests.test_identify_screen import passing, ratings, snapshot
     from verdict.identify import screen_models
@@ -308,6 +323,7 @@ def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
 
 
 def test_token_metric_requires_three_unique_accepted_same_family_samples():
+    """Omit token estimates for sparse, unaccepted, or mismatched task history."""
     from verdict.candidate_pool import expected_token_usage
 
     a = "a/model"
@@ -325,6 +341,7 @@ def test_token_metric_requires_three_unique_accepted_same_family_samples():
 
 
 def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
+    """Serve a capable metered route when the alternative lacks required tools."""
     from datetime import datetime, timezone
 
     from fastapi.testclient import TestClient
@@ -354,6 +371,7 @@ def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
     original = api._finish_evidence
 
     def capture(evidence, outcome, key):
+        """Capture metered fallback evidence while preserving normal finalization."""
         events.append(outcome.to_dict())
         return original(evidence, outcome, key)
 
@@ -378,6 +396,7 @@ def test_no_capable_subscription_uses_capable_paid_last_resort(monkeypatch):
 
 
 def test_known_subscription_tokens_always_before_unknown(monkeypatch):
+    """Rank a measured subscription ahead of one with unknown token usage."""
     service = _service()
     _history(monkeypatch, _usage(live.STRONG, 10000, family="coding"))
     request = live._request(live.STRONG, live.NEW)
@@ -388,6 +407,7 @@ def test_known_subscription_tokens_always_before_unknown(monkeypatch):
 
 
 def test_subscription_token_tie_uses_rating(monkeypatch):
+    """Use rating to break ties between equal subscription token estimates."""
     service = _service()
     _history(
         monkeypatch,
@@ -401,6 +421,7 @@ def test_subscription_token_tie_uses_rating(monkeypatch):
 
 
 def test_capable_metered_pool_and_ladder_remain_allowed(tmp_path):
+    """Keep capable metered routes eligible in both the pool and ladder."""
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -423,6 +444,7 @@ def test_capable_metered_pool_and_ladder_remain_allowed(tmp_path):
 
 
 def test_active_payment_negative_still_blocks_metered(tmp_path):
+    """Reject metered fallback when cached evidence reports payment required."""
     from verdict.orchestration.health_cache import ProbeResult
 
     cache = HealthCache(tmp_path / "health.json")
@@ -446,6 +468,7 @@ def test_active_payment_negative_still_blocks_metered(tmp_path):
 
 
 def test_usage_is_recomputed_from_verified_run_not_ledger_label(tmp_path, monkeypatch):
+    """Extract checked token totals from verified events and reject tampered events."""
     import json
     from datetime import datetime, timezone
 
@@ -494,6 +517,7 @@ def test_usage_is_recomputed_from_verified_run_not_ledger_label(tmp_path, monkey
 
 
 def test_relay_three_tiers_stay_within_three_attempts():
+    """Reserve subscription and metered fallback within three total relay attempts."""
     from verdict.models import RoutingDecision
     from verdict.proxy import UpstreamProxy
     from verdict.relay import build_attempts

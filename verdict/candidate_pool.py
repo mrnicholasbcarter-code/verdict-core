@@ -254,6 +254,7 @@ class OutcomeObservation:
     total_tokens: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize attempt identity, checker credit, and observed token usage."""
         return {
             "route_id": self.route_id,
             "task_family": self.task_family,
@@ -334,6 +335,7 @@ class ShortlistEntry:
     eval_prior_kind: str = "absent"
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize shortlist ranking, token estimates, and evaluation provenance."""
         return {
             "route_id": self.route_id,
             "metadata_id": self.metadata_id,
@@ -1114,7 +1116,14 @@ def _probe_passed(survivor: _Survivor, probes: Sequence[ProbeRecord]) -> bool:
 def _portfolio_shortlist(
     eligible: Sequence[_Survivor], *, alias_groups: Mapping[str, Sequence[str]], top_k: int
 ) -> list[ShortlistEntry]:
+    """Collapse aliases and build a bounded portfolio with capacity fallback slots.
+
+    Preserve the primary route while reserving subscription and metered routes
+    when space permits. Apply task-history demotion only to the resulting order.
+    """
+
     def rank(s: _Survivor) -> tuple[int, bool, float, float, str]:
+        """Sort by capacity, subscription token usage, score, and stable route ID."""
         subscription = s.capacity_order == CAPACITY_ORDER[CapacityClass.SUBSCRIPTION]
         return (
             s.capacity_order,

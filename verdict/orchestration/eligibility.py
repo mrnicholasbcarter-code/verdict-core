@@ -950,6 +950,11 @@ class EligibilityLadder:
     def _assess_all(
         self, requirements: TaskRequirements, now: datetime
     ) -> tuple[list[_Assessment], list[_Assessment]]:
+        """Assess nonopaque routes and rank selectable routes below worker capacity.
+
+        Refresh health and task-family token estimates before assessing routes.
+        Missing or unreadable verified history leaves token usage unknown.
+        """
         cache = getattr(self, "_health_cache", None)
         if cache is not None and cache.path.exists():
             cache.reload()
@@ -1024,6 +1029,12 @@ class EligibilityLadder:
     def select(
         self, requirements: TaskRequirements, *, now: datetime
     ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        """Return a selected route, if any, and verdicts for all assessed routes.
+
+        Apply bounded refresh and confirmation probes before selection, honoring
+        admission and cooldowns. Subscription fallback records its reason and
+        queues free-route rescreen hints when probing is enabled.
+        """
         assessments, candidates = self._assess_all(requirements, now)
         # BOD-292 selection-before-dispatch: give the bounded refresh coordinator
         # the candidate ids so it can refresh needed non-fresh prepaid evidence
