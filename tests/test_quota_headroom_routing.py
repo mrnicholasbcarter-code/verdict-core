@@ -46,6 +46,7 @@ def test_near_exhausted_account_is_not_selected(tmp_path: Path) -> None:
 
 
 def test_subscription_unknown_usage_keeps_order_not_remaining_quota(tmp_path: Path) -> None:
+    """Use provider preference when both subscriptions lack measured token usage."""
     ladder, _ = make_ladder(
         tmp_path,
         _rows(),
@@ -60,6 +61,7 @@ def test_subscription_unknown_usage_keeps_order_not_remaining_quota(tmp_path: Pa
 def test_subscription_lower_token_usage_wins_with_three_validated_rows(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
+    """Prefer lower validated token usage over quota headroom and provider preference."""
     from types import SimpleNamespace
 
     from verdict.candidate_pool import OutcomeObservation

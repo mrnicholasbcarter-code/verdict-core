@@ -258,6 +258,7 @@ class TestBehaviourParityAcrossFixtures:
         return (chosen.route_id if chosen is not None else None, [v.route_id for v in ordered])
 
     def test_selection_identical_for_representative_fixture(self, tmp_path: Path) -> None:
+        """Keep selection deterministic and expose ordered ranking and fallback details."""
         # A fixture that exercises capacity class, price, provider preference,
         # load, fit and route_id tiebreak simultaneously.
         rows = [

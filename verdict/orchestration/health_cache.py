@@ -1137,6 +1137,7 @@ class HealthCache:
         bucket_window_seconds: float = DEFAULT_BUCKET_WINDOW_SECONDS,
         bucket_overrides: Mapping[str, int] | None = None,
     ) -> None:
+        """Validate default bucket bounds and load persisted health and scheduling state."""
         self.path = Path(path).expanduser()
         if bucket_capacity < 1 or bucket_window_seconds <= 0:
             raise HealthCacheError("default bucket bounds are invalid")
@@ -1213,6 +1214,7 @@ class HealthCache:
         )
 
     def _load(self) -> None:
+        """Load validated cache state or initialize empty state when the file is absent."""
         # Reject links/FIFOs before any read can dereference or block.
         _private_cache_mode(self.path)
         if not self.path.exists():
@@ -1294,6 +1296,7 @@ class HealthCache:
         self._disk_snapshot = self._snapshot()
 
     def _snapshot(self) -> dict[str, Any]:
+        """Serialize cache state, omitting empty optional sections for compatibility."""
         snapshot: dict[str, Any] = {
             "schema_version": HEALTH_CACHE_SCHEMA_VERSION,
             "routes": {key: entry.to_dict() for key, entry in sorted(self._routes.items())},
@@ -1492,6 +1495,7 @@ class HealthCache:
         stamp = format_datetime(now)
 
         def mutate(cache: HealthCache) -> None:
+            """Merge timestamped hints into the freshly loaded cache under its lock."""
             cache._rescreen_requests.update({route: stamp for route in routes})
 
         self.merge_and_save(mutate)
@@ -1500,6 +1504,7 @@ class HealthCache:
         """Consume a hint only after the existing screen actually sent a turn."""
 
         def mutate(cache: HealthCache) -> None:
+            """Remove the completed route's hint from the freshly loaded cache."""
             cache._rescreen_requests.pop(route, None)
 
         self.merge_and_save(mutate)
