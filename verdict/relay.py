@@ -411,13 +411,11 @@ def build_attempts(
         free = [model for model in models if capacities.get(model) == 0]
         subscription = [model for model in models if capacities.get(model) == 1]
         metered = [model for model in models if capacities.get(model) == 2]
-        # Fallback tiers consume the same three-attempt budget, never extend it.
-        reserved = [*subscription[:1], *metered[:1]]
-        models = (
-            [*free[: 3 - len(reserved)], *reserved]
-            if free
-            else [*subscription[: 2 if metered else 3], *metered[:1]]
-        )
+        # All tiers share the same attempt budget; never displace an eligible free route.
+        if "free_supply_unknown" in decision.safety_flags:
+            models = list(dict.fromkeys(free))[:3]
+        else:
+            models = list(dict.fromkeys([*free, *subscription, *metered]))[:3]
     attempts: list[RelayAttempt] = []
     seen: set[str] = set()
     for model in models:

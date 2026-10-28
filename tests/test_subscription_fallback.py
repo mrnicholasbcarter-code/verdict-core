@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from tests import test_live_candidate_shortlist as live
 from tests.test_identify_rank import NOW, _conn, _ladder_row, _record, _score, _snapshot
 from tests.test_serve_capacity_order import _context, _service
@@ -72,7 +74,7 @@ def test_serve_subscription_tokens_before_rating(monkeypatch):
     assert live.NO_TOOLS in prepared.hard_excluded_ids
 
 
-def test_subscription_reserved_inside_full_free_shortlist():
+def test_free_candidates_fill_shortlist_before_subscription():
     from verdict.candidate_pool import build_candidate_pool
     from verdict.capacity import CapacityClass
 
@@ -88,7 +90,7 @@ def test_subscription_reserved_inside_full_free_shortlist():
             live.NEW: CapacityClass.FREE,
         },
     )
-    assert [r.route_id for r in pool.shortlist] == [live.NEW, live.STRONG]
+    assert [r.route_id for r in pool.shortlist] == [live.NEW, live.FAST]
 
 
 def test_paid_is_last_resort_when_no_free_or_subscription_qualifies(tmp_path):
@@ -407,4 +409,372 @@ def test_relay_three_tiers_stay_within_three_attempts():
     )
     proxy = UpstreamProxy("http://upstream.test/v1")
     attempts = build_attempts(proxy, decision, protocol="openai.chat.completions")
-    assert [attempt.model for attempt in attempts] == [ids[0], ids[2], ids[3]]
+    assert [attempt.model for attempt in attempts] == [ids[0], ids[1], ids[2]]
+
+
+def test_real_preparation_fences_outside_shortlist_free_proof(monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(live, "NOW", datetime.now(timezone.utc))
+    service = _service()
+    service.candidate_top_k = 1
+    service.admit_snapshot = replace(
+        service.admit_snapshot,
+        connections=tuple(
+            replace(c, auth_type="apikey" if c.provider in ("speed", "newco") else "oauth")
+            for c in service.admit_snapshot.connections
+        ),
+    )
+    request = live._request(live.STRONG, live.FAST, live.NEW)
+    context = _context(request)
+    decision = asyncio.run(service.route("fix code", criticality="low", context=context))
+    assert "free_supply_unknown" in decision.safety_flags
+    assert decision.model in {live.NEW.split("/")[1], live.FAST.split("/")[1]}
+
+
+def test_real_pool_marks_omitted_free_routes_as_possible():
+    from verdict.candidate_pool import build_candidate_pool
+    from verdict.capacity import CapacityClass
+
+    pool = build_candidate_pool(
+        (live.STRONG, live.FAST, live.NEW),
+        task="fix code",
+        metadata=live._metadata(),
+        top_k=1,
+        capacity={
+            live.STRONG: CapacityClass.SUBSCRIPTION,
+            live.FAST: CapacityClass.FREE,
+            live.NEW: CapacityClass.FREE,
+        },
+    )
+    assert set(pool.possible_free_routes) == {live.FAST, live.NEW}
+    assert len(pool.shortlist) == 1
+
+
+def test_failed_free_qualification_is_not_possible_free_supply():
+    from verdict.candidate_pool import (
+        HEALTH_OK,
+        PROBE_SMALL_QUAL,
+        ProbeBudget,
+        RouteHealth,
+        build_candidate_pool,
+    )
+    from verdict.capacity import CapacityClass
+
+    ids = (live.FAST, live.STRONG)
+    pool = build_candidate_pool(
+        ids,
+        task="fix code",
+        metadata=live._metadata(),
+        top_k=2,
+        capacity={live.FAST: CapacityClass.FREE, live.STRONG: CapacityClass.SUBSCRIPTION},
+        health={route: RouteHealth(state=HEALTH_OK) for route in ids},
+        probe_budget=ProbeBudget(max_probes=2, max_level=PROBE_SMALL_QUAL),
+        probe_fn=lambda route, _level: {"ok": route != live.FAST, "qualified": route != live.FAST},
+        require_min_qualification=True,
+    )
+    assert any(probe.route_id == live.FAST and not probe.passed for probe in pool.probes)
+    assert [row.route_id for row in pool.shortlist] == [live.STRONG]
+    assert pool.possible_free_routes == ()
+
+
+def test_free_probe_without_qualification_keeps_supply_unknown():
+    from verdict.candidate_pool import (
+        HEALTH_OK,
+        PROBE_SMALL_QUAL,
+        ProbeBudget,
+        RouteHealth,
+        build_candidate_pool,
+    )
+    from verdict.capacity import CapacityClass
+
+    ids = (live.FAST, live.STRONG)
+    pool = build_candidate_pool(
+        ids,
+        task="fix code",
+        metadata=live._metadata(),
+        top_k=2,
+        capacity={live.FAST: CapacityClass.FREE, live.STRONG: CapacityClass.SUBSCRIPTION},
+        health={route: RouteHealth(state=HEALTH_OK) for route in ids},
+        probe_budget=ProbeBudget(max_probes=2, max_level=PROBE_SMALL_QUAL),
+        probe_fn=lambda route, _level: (
+            {"ok": False, "detail": "probe unavailable"}
+            if route == live.FAST
+            else {"ok": True, "qualified": True}
+        ),
+        require_min_qualification=True,
+    )
+    assert [row.route_id for row in pool.shortlist] == [live.STRONG]
+    assert pool.possible_free_routes == (live.FAST,)
+
+
+def test_relay_allows_subscription_when_free_passport_is_denied(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from verdict import api
+    from verdict.proxy import UpstreamProxy
+
+    monkeypatch.setattr(live, "NOW", datetime.now(timezone.utc))
+    service = _service()
+    service.passports[live.FAST] = replace(
+        service.passports[live.FAST], availability_state="denied"
+    )
+    request = live._request(live.STRONG, live.FAST)
+    transport = ContextLengthTransport([])
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+    monkeypatch.setattr(api, "_build_intelligence", lambda: service)
+    monkeypatch.setattr(api, "_authority_context", lambda payload, task: _context(request))
+    monkeypatch.setattr(
+        api, "_build_proxy", lambda: UpstreamProxy("http://upstream.test/v1", transport=transport)
+    )
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "denied-free"},
+        )
+    assert response.status_code == 200, response.text
+    assert [row["body"]["model"] for row in transport.requests] == [live.STRONG.split("/")[1]]
+
+
+@pytest.mark.parametrize("stale_verification", [False, True])
+def test_relay_denies_subscription_when_free_denial_is_stale(
+    monkeypatch, tmp_path, stale_verification
+):
+    from datetime import datetime, timedelta, timezone
+
+    from fastapi.testclient import TestClient
+
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from verdict import api
+    from verdict.proxy import UpstreamProxy
+
+    monkeypatch.setattr(live, "NOW", datetime.now(timezone.utc))
+    service = _service()
+    passport = (
+        replace(service.passports[live.FAST], last_verified_timestamp=live.NOW - timedelta(hours=1))
+        if stale_verification
+        else live._passport(live.FAST, latency_ms=1, stale=True)
+    )
+    service.passports[live.FAST] = replace(passport, availability_state="denied")
+    request = live._request(live.STRONG, live.FAST)
+    transport = ContextLengthTransport([])
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+    monkeypatch.setattr(api, "_build_intelligence", lambda: service)
+    monkeypatch.setattr(api, "_authority_context", lambda payload, task: _context(request))
+    monkeypatch.setattr(
+        api, "_build_proxy", lambda: UpstreamProxy("http://upstream.test/v1", transport=transport)
+    )
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "stale-denied-free"},
+        )
+    assert response.status_code == 503
+    assert transport.requests == []
+
+
+def test_relay_does_not_escalate_when_free_supply_is_unknown():
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+    from verdict.relay import build_attempts
+
+    decision = RoutingDecision(
+        model="free/a",
+        provider="free",
+        tier=2,
+        reason="fixture",
+        alternatives=["sub/a"],
+        safety_flags=["subscription_fallback_policy", "free_supply_unknown"],
+        candidate_states=[
+            {"model_id": "free/a", "admitted": True, "capacity_order": 0},
+            {"model_id": "sub/a", "admitted": True, "capacity_order": 1},
+        ],
+    )
+    attempts = build_attempts(
+        UpstreamProxy("http://upstream.test/v1"), decision, protocol="openai.chat.completions"
+    )
+    assert [attempt.model for attempt in attempts] == ["free/a"]
+
+
+def test_relay_three_free_routes_consume_budget_before_higher_tiers():
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+    from verdict.relay import build_attempts
+
+    ids = ("free/a", "free/b", "free/c", "sub/a", "paid/a")
+    decision = RoutingDecision(
+        model=ids[0],
+        provider="free",
+        tier=2,
+        reason="fixture",
+        alternatives=list(ids[1:]),
+        safety_flags=["subscription_fallback_policy"],
+        candidate_states=[
+            {"model_id": model, "admitted": True, "capacity_order": tier}
+            for model, tier in zip(ids, (0, 0, 0, 1, 2), strict=True)
+        ],
+    )
+    attempts = build_attempts(
+        UpstreamProxy("http://upstream.test/v1"), decision, protocol="openai.chat.completions"
+    )
+    assert [attempt.model for attempt in attempts] == list(ids[:3])
+
+
+def test_relay_duplicate_models_do_not_consume_attempt_slots():
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+    from verdict.relay import build_attempts
+
+    ids = ("free/a", "free/b", "sub/a")
+    decision = RoutingDecision(
+        model=ids[0],
+        provider="free",
+        tier=2,
+        reason="fixture",
+        alternatives=[ids[0], ids[1], ids[1], ids[2]],
+        safety_flags=["subscription_fallback_policy"],
+        candidate_states=[
+            {"model_id": model, "admitted": True, "capacity_order": tier}
+            for model, tier in zip(ids, (0, 0, 1), strict=True)
+        ],
+    )
+    attempts = build_attempts(
+        UpstreamProxy("http://upstream.test/v1"), decision, protocol="openai.chat.completions"
+    )
+    assert [attempt.model for attempt in attempts] == list(ids)
+
+
+def test_relay_does_not_escalate_after_free_proof_denial(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from tests.relay_proof_helpers import with_relay_proofs
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from tests.test_proxy import FixedIntelligence
+    from verdict import api
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+
+    ids = ("free-a", "free-b", "sub-a")
+
+    class Intelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=[ids[2]],
+                    candidate_states=[{"model_id": ids[2], "admitted": True}],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=list(ids[1:]),
+                safety_flags=["subscription_fallback_policy"],
+                candidate_states=[
+                    {"model_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(ids, (0, 0, 1), strict=True)
+                ],
+            )
+
+    transport = ContextLengthTransport([(503, '{"error":"unavailable"}')])
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+    monkeypatch.setattr(api, "_build_intelligence", lambda: Intelligence())
+    monkeypatch.setattr(
+        api, "_build_proxy", lambda: UpstreamProxy("http://upstream.test/v1", transport=transport)
+    )
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "proof-denied"},
+        )
+    assert response.status_code == 503
+    assert [row["body"]["model"] for row in transport.requests] == [ids[0]]
+
+
+def test_relay_three_free_failures_report_budget_exhaustion(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from tests.relay_proof_helpers import with_relay_proofs
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from tests.test_proxy import FixedIntelligence
+    from verdict import api
+    from verdict.models import RoutingDecision
+    from verdict.proxy import UpstreamProxy
+
+    ids = ("free-a", "free-b", "free-c", "sub-a", "paid-a")
+
+    class Intelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=list(ids[1:3]),
+                    safety_flags=["subscription_fallback_policy"],
+                    candidate_states=[
+                        {
+                            "model_id": model,
+                            "route_id": model,
+                            "admitted": True,
+                            "capacity_order": 0,
+                        }
+                        for model in ids[:3]
+                    ],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=list(ids[1:]),
+                candidate_states=[
+                    {"model_id": model, "route_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(ids, (0, 0, 0, 1, 2), strict=True)
+                ],
+            )
+
+    transport = ContextLengthTransport([(503, '{"error":"unavailable"}')] * 3)
+    events = []
+    original = api._finish_evidence
+
+    def capture(evidence, outcome, key):
+        events.append(outcome.to_dict())
+        return original(evidence, outcome, key)
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+    monkeypatch.setattr(api, "_finish_evidence", capture)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: Intelligence())
+    monkeypatch.setattr(
+        api, "_build_proxy", lambda: UpstreamProxy("http://upstream.test/v1", transport=transport)
+    )
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "free-budget"},
+        )
+    assert response.status_code == 503
+    assert [row["body"]["model"] for row in transport.requests] == list(ids[:3])
+    terminal = events[-1]["details"]
+    assert terminal["termination_reason"] == "budget_exhausted"
+    assert [row["model"] for row in terminal["attempted_routes"]] == list(ids[:3])
+    assert not any(row.get("details", {}).get("fallback") for row in events)

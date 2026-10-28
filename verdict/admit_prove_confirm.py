@@ -53,6 +53,7 @@ class PassportEvidence:
     reason: str | None = None
     expires_at: str | None = None
     qualified_at: str | None = None
+    observed_at: str | None = None
     auth_state: str | None = None
     availability_state: str | None = None
 
@@ -64,6 +65,8 @@ class PassportEvidence:
             payload["expires_at"] = self.expires_at
         if self.qualified_at is not None:
             payload["qualified_at"] = self.qualified_at
+        if self.observed_at is not None:
+            payload["observed_at"] = self.observed_at
         if self.auth_state is not None:
             payload["auth_state"] = self.auth_state
         if self.availability_state is not None:
@@ -155,6 +158,7 @@ def _passport_evidence(
         reason=reason,
         expires_at=_format_datetime(passport.expires_at),
         qualified_at=_format_datetime(passport.qualified_at),
+        observed_at=_format_datetime(passport.last_verified_timestamp),
         auth_state=passport.auth_state,
         availability_state=passport.availability_state,
     )
@@ -539,6 +543,7 @@ def gate_admit_prove_confirm(
             reason=REASON_PASSPORT_STALE,
             expires_at=evidence.expires_at,
             qualified_at=evidence.qualified_at,
+            observed_at=evidence.observed_at,
             auth_state=evidence.auth_state,
             availability_state=evidence.availability_state,
         )

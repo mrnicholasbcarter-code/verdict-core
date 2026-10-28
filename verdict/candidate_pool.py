@@ -301,6 +301,7 @@ class ProbeRecord:
     level: str
     passed: bool
     detail: str | None = None
+    qualified: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -310,6 +311,8 @@ class ProbeRecord:
         }
         if self.detail:
             payload["detail"] = self.detail
+        if self.qualified is not None:
+            payload["qualified"] = self.qualified
         return payload
 
 
@@ -371,12 +374,16 @@ class CandidatePoolReceipt:
     requirements: tuple[str, ...] = ()
     eligible_count: int = 0
     confirmation: dict[str, Any] | None = None
+    possible_free_routes: tuple[str, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_fingerprint": self.task_fingerprint.to_dict(),
             "discovered_count": self.discovered_count,
             "eligible_count": self.eligible_count,
+            "possible_free_routes": (
+                None if self.possible_free_routes is None else list(self.possible_free_routes)
+            ),
             "requirements": list(self.requirements),
             "hard_drops": [d.to_dict() for d in self.hard_drops],
             "probes": [p.to_dict() for p in self.probes],
@@ -783,6 +790,7 @@ def build_candidate_pool(
         }
     )
     shortlist_digest = _digest([e.to_dict() for e in shortlist])
+    failed_probe_ids = {probe.route_id for probe in probes if probe.qualified is False}
 
     return CandidatePoolReceipt(
         task_fingerprint=task_fingerprint,
@@ -796,6 +804,13 @@ def build_candidate_pool(
         requirements=requirements.names
         + (() if requirements.min_context is None else (f"context>={requirements.min_context}",)),
         eligible_count=len(eligible),
+        possible_free_routes=tuple(
+            s.route_id
+            for s in survivors
+            if s.route_id not in failed_probe_ids
+            and s.capacity_order
+            in (CAPACITY_ORDER[CapacityClass.FREE], CAPACITY_ORDER[CapacityClass.UNKNOWN])
+        ),
     )
 
 
@@ -1060,7 +1075,8 @@ def _run_probe_ladder(
             result = dict(probe_fn(survivor.route_id, level))
             remaining -= 1
             ok = bool(result.get("ok", False))
-            qualified = result.get("qualified")
+            explicit_qualification = result.get("qualified")
+            qualified = explicit_qualification
             if qualified is None:
                 qualified = ok
             passed = bool(qualified) and ok
@@ -1071,6 +1087,9 @@ def _run_probe_ladder(
                     level=level,
                     passed=passed,
                     detail=str(detail) if detail is not None else None,
+                    qualified=(
+                        explicit_qualification if isinstance(explicit_qualification, bool) else None
+                    ),
                 )
             )
             last_level = level
@@ -1187,25 +1206,6 @@ def _portfolio_shortlist(
     # already final above; this only reorders the admitted set so a demoted
     # route (score<.4, observed unique n>=3) sorts after non-demoted routes
     # within its capacity tier, with stable fuse/ID order inside each group.
-    # Reserve fallback tiers inside Top-k, retaining the cheapest primary.
-    reserved = {selected[0].route_id} if selected else set()
-    for capacity in (1, 2):
-        fallback = next((s for s in ranked if s.capacity_order == capacity), None)
-        if fallback is None or fallback in selected:
-            if fallback is not None:
-                reserved.add(fallback.route_id)
-            continue
-        slot = next(
-            (
-                index
-                for index in range(len(selected) - 1, 0, -1)
-                if selected[index].route_id not in reserved
-            ),
-            None,
-        )
-        if slot is not None:
-            selected[slot] = fallback
-            reserved.add(fallback.route_id)
     selected = sorted(selected, key=lambda s: (*rank(s)[:3], s.demoted, -s.score, s.route_id))
 
     entries: list[ShortlistEntry] = []
