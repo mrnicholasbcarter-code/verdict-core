@@ -2242,10 +2242,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
         ):
             dispatch_denial = "dispatch denied: missing route-bound admission proof"
-            break
+            if attempts_used:
+                break
+            continue
         if relay_profile_digest is None:
             dispatch_denial = "dispatch denied: task profile unavailable at relay"
-            break
+            if attempts_used:
+                break
+            continue
         expected_scope = dispatch_scope(
             gateway_origin=proxy_instance.base_url,
             provider=proof.provider,
@@ -2258,7 +2262,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         if proof.scope != expected_scope or proof.qualified_at > now:
             dispatch_denial = "dispatch denied: proof scope or observation mismatch"
             ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
-            break
+            if attempts_used:
+                break
+            continue
         permit = HealthCache(default_cache_path()).commit_dispatch(
             expected_scope,
             route_id=proof.route_id,
@@ -2275,7 +2281,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         if permit is None:
             dispatch_denial = "dispatch denied: permit commit rejected proof"
             ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
-            break
+            if attempts_used:
+                break
+            continue
         if "subscription_fallback_policy" in decision.safety_flags and capacity == 1:
             free_routes = [
                 str(row["route_id"])
