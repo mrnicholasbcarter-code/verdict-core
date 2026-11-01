@@ -32,7 +32,7 @@
     "@types/node": "^22.0.0",
     "@bodanglin/verdict-contracts": "^0.5.0",
     "typescript": "~5.6.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=18"
