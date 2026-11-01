@@ -23,6 +23,12 @@ Ordinary requests SHALL prefer qualified free routes and SHALL fall back to qual
 - **WHEN** three eligible free routes fail within the existing three-attempt budget
 - **THEN** no higher-tier route is sent and the receipt records budget exhaustion, not free-supply exhaustion
 
+#### Scenario: Real usage on the operator's live gateway falls back free then subscription then metered
+- **WHEN** merged main is installed and an ordinary `POST /v1/chat/completions` request is sent through `verdict serve` to the operator's live OmniRoute gateway, every qualified free route returns a retryable failure, and a capable subscription route has fresh admission proof
+- **THEN** the relay sends the subscription route in the same request without a client retry, the response comes from that route, and the recorded route evidence names each attempted free route and a `subscription_fallback` event with its reason and queued free-route rescreen hints
+- **WHEN** the same request also finds no capable subscription route available and a capable metered route without an active payment-required negative remains within the attempt budget
+- **THEN** the metered route is attempted last and the route evidence records a `metered_fallback` event with its reason; with no such route, dispatch fails closed with a named reason and no fabricated success
+
 #### Scenario: No capable subscription
 - **WHEN** no free, subscription or metered route meets this task's existing gates
 - **THEN** dispatch fails closed with a named reason and sends nothing
