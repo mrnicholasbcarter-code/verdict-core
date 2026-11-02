@@ -1137,8 +1137,8 @@ def _portfolio_shortlist(
 ) -> list[ShortlistEntry]:
     """Collapse aliases and build a bounded portfolio with capacity fallback slots.
 
-    Preserve the primary route while reserving subscription and metered routes
-    when space permits. Apply task-history demotion only to the resulting order.
+    Rank free routes first, then subscription, then metered, so fallback slots
+    never displace free supply. Apply task-history demotion only to the resulting order.
     """
 
     def rank(s: _Survivor) -> tuple[int, bool, float, float, str]:
