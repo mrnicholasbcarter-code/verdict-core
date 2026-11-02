@@ -2043,6 +2043,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             return _proxy_error(503, f"live admission unavailable: {type(exc).__name__}")
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
+        if "free_supply_unknown" in decision.safety_flags:
+            return _proxy_error(503, "free supply unknown; higher-tier fallback denied")
         return _proxy_error(503, "no executable route was selected")
     attempted_routes = [item.route.to_dict() for item in attempts]
     route_evidence, evidence_key = _start_evidence(
@@ -2207,6 +2209,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 break
         else:
             edge = None
+        capacity = next(
+            (
+                row.get("capacity_order")
+                for row in decision.candidate_states
+                if row.get("model_id") == attempt.model
+            ),
+            None,
+        )
         forwarded = dict(payload)
         # Verdict-local controls must never be forwarded to an upstream provider.
         for local_field in _RELAY_LOCAL_FIELDS:
@@ -2232,9 +2242,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
         ):
             dispatch_denial = "dispatch denied: missing route-bound admission proof"
+            if attempts_used:
+                break
             continue
         if relay_profile_digest is None:
             dispatch_denial = "dispatch denied: task profile unavailable at relay"
+            if attempts_used:
+                break
             continue
         expected_scope = dispatch_scope(
             gateway_origin=proxy_instance.base_url,
@@ -2248,6 +2262,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         if proof.scope != expected_scope or proof.qualified_at > now:
             dispatch_denial = "dispatch denied: proof scope or observation mismatch"
             ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
+            if attempts_used:
+                break
             continue
         permit = HealthCache(default_cache_path()).commit_dispatch(
             expected_scope,
@@ -2265,7 +2281,43 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         if permit is None:
             dispatch_denial = "dispatch denied: permit commit rejected proof"
             ledger(attempt_id, attempt.model, forwarded, outcome="abandoned", failure_class="other")
+            if attempts_used:
+                break
             continue
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 1:
+            free_routes = [
+                str(row["route_id"])
+                for row in decision.candidate_states
+                if row.get("capacity_order") == 0 and isinstance(row.get("route_id"), str)
+            ]
+            try:
+                HealthCache(default_cache_path()).request_rescreen(
+                    free_routes, now=datetime.now(timezone.utc)
+                )
+                rescreen = "queued"
+            except Exception as exc:
+                rescreen = f"persistence_error:{type(exc).__name__}"
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_subscription_fallback",
+                details={
+                    "attempt": index,
+                    "fallback": "subscription",
+                    "reason": "free attempts failed" if index else "no free route qualifies",
+                    "rescreen": rescreen,
+                    "free_routes": free_routes,
+                },
+            )
+        if "subscription_fallback_policy" in decision.safety_flags and capacity == 2:
+            record_attempt_event(
+                attempt=attempt,
+                event_type=f"{event_prefix}_metered_fallback",
+                details={
+                    "attempt": index,
+                    "fallback": "metered",
+                    "reason": "free and capable subscription attempts unavailable or failed",
+                },
+            )
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
@@ -2500,6 +2552,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             headers=_evidence_headers(evidence),
         )
 
+    budget_exhausted = (
+        "subscription_fallback_policy" in decision.safety_flags
+        and len(attempts_used) == 3
+        and result.status_code >= 400
+        and retryable_response_status(
+            result.status_code,
+            compatibility_applied=result.compatibility_rule_version is not None,
+            body=_last_error_body,
+        )
+    )
     transport_outcome = "success" if result.status_code < 400 else "upstream_error"
     decision_record = replace(decision, transport_outcome=transport_outcome)
     response_outcome = "success" if result.status_code < 400 else "error"
@@ -2542,6 +2604,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 fallbacks=attempts_used[1:],
                 details={
                     "attempted_routes": attempts_used,
+                    **(
+                        {"termination_reason": "budget_exhausted"}
+                        if budget_exhausted
+                        else {"termination_reason": "free_supply_unknown"}
+                        if result.status_code >= 400
+                        and "free_supply_unknown" in decision.safety_flags
+                        else {}
+                    ),
                     "compatibility_rule_version": result.compatibility_rule_version,
                     **(
                         {"health_cache_feedback": health_cache_feedback}
