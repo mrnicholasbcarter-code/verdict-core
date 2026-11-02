@@ -1,0 +1,11 @@
+{
+  "created_at": 1793584254.1013546,
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "model": "cc/claude-haiku-5-5",
+    "provider": "openai-compatible"
+  },
+  "session_id": "harness-9bba0dac",
+  "updated_at": 1793584254.1161633
+}

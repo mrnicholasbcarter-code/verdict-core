@@ -5,6 +5,11 @@ description: Use when a Verdict issue is dependency-READY and immediately before
 
 # Hydrate context
 
+Preserve exact governing source text, URL and revision alongside AC mappings.
+Retain 29 operational gates and A01–A30 as separate obligations, not a compressed
+surface checklist or the 29-issue inventory. Record unresolved operator choices
+without selecting policy. Mandatory ai-memory failure is BLOCKED, not an omission.
+
 Read `docs/guides/prime-workflow.md`. Produce the version-1 packet described there.
 HYDRATED means this packet is current and complete, not merely that documents were read.
 

@@ -1,0 +1,56 @@
+{
+  "ended_at": 1793507292.427927,
+  "events": [
+    {
+      "data": {
+        "flavor": "coding",
+        "harness": "verdict-core",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "runtime": "deepagents"
+      },
+      "event_id": "evt_52b390d598ec47f0bb971c804fcd0349",
+      "harness_id": "verdict-core",
+      "parent_event_id": null,
+      "protocol_version": "1.0",
+      "run_id": "run_01M6ANTV31S1GT65AJ35DRNZRP",
+      "sequence": 1,
+      "session_id": "harness-9810e850",
+      "timestamp": 1793507290.2100039,
+      "type": "run_start"
+    },
+    {
+      "data": {
+        "error": "Error code: 401 - {'error': {'code': 'AUTH_002', 'message': 'Invalid API key', 'correlation_id': '0948ce6e-00f0-43cf-992a-6d0d0a6cd01c'}}",
+        "error_type": "OpenAIAuthenticationError",
+        "status": "failed"
+      },
+      "event_id": "evt_dec802e947f44c31a31c0bd7dad4793f",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_52b390d598ec47f0bb971c804fcd0349",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6ANTV31S1GT65AJ35DRNZRP",
+      "sequence": 2,
+      "session_id": "harness-9810e850",
+      "timestamp": 1793507292.4270175,
+      "type": "run_end"
+    }
+  ],
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "error": "Error code: 401 - {'error': {'code': 'AUTH_002', 'message': 'Invalid API key', 'correlation_id': '0948ce6e-00f0-43cf-992a-6d0d0a6cd01c'}}",
+    "error_type": "OpenAIAuthenticationError",
+    "prompt_persistence": "preview"
+  },
+  "model": "gpt-4o-mini",
+  "parent_run_id": "",
+  "prompt_preview": "Review the codebase structure, identify key components, and suggest a minimal safe improvement with justification.",
+  "provider": "openai",
+  "root_run_id": "",
+  "run_id": "run_01M6ANTV31S1GT65AJ35DRNZRP",
+  "runtime": "deepagents",
+  "session_id": "harness-9810e850",
+  "started_at": 1793507290.209826,
+  "status": "failed"
+}

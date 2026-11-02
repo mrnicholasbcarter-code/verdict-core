@@ -5,6 +5,13 @@ description: Use when Verdict proof is complete and work needs review, PR/CI tra
 
 # Verdict finish
 
+Current user authorization overrides automatic push/merge instructions below.
+With no commit/push authorization, preserve local edits and report blocked gates;
+do not create a commit merely to satisfy proof binding. Independent review needs
+verified different-family executed identity, not `auto/*` aliases. Do not archive
+OpenSpec or mark Done until all seven installed-main DoD parts and evidence
+validation pass, including freshness/scheduled coverage and independent parent replay.
+
 Read `docs/guides/prime-workflow.md`. All transitions bind the exact source; source changes
 invalidate proof/review/CI and require revalidation. Never trust a stale checkpoint's DONE.
 

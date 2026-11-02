@@ -1,0 +1,40 @@
+{
+  "session_id": "59401539-415f-414b-a067-aaece01085dd",
+  "created_at": "2026-10-18T22:05:25.956094",
+  "updated_at": "2026-10-18T22:05:33.603383",
+  "provider": "openai-compatible",
+  "model": "cx/gpt-6.1-sol",
+  "message_count": 2,
+  "total_tokens": 0,
+  "parent_session_id": null,
+  "title": "",
+  "harness_id": "plan",
+  "harness_source": "profile",
+  "harness_path": "",
+  "harness_digest": "",
+  "tool_contract_version": "workbench-v1",
+  "harness_transitions": [
+    {
+      "timestamp": "2026-10-18T22:05:25.956094",
+      "from_harness": "",
+      "to_harness": "plan",
+      "provider": "openai-compatible",
+      "model": "cx/gpt-6.1-sol",
+      "continuity": "new-session"
+    }
+  ],
+  "harness_session": false,
+  "backend_session_path": "",
+  "harness_display_name": "",
+  "working_directory": "",
+  "runtime": "",
+  "backend_session_id": "",
+  "backend_native_session_id": "",
+  "backend_forked_from_id": "",
+  "backend_home": "",
+  "billing_requested": "agent-managed",
+  "backend_usage": {},
+  "backend_resume_ready": false,
+  "archived": false,
+  "context_compaction": {}
+}

@@ -1,0 +1,4 @@
+# Stable cross-harness identity for this repository and its git worktrees.
+workspace = "verdict"
+project = "verdict-core"
+project_strategy = "repo-root"

@@ -5,6 +5,12 @@ description: Use when a Verdict worker returns implementation evidence or before
 
 # Verdict proof
 
+Resource-limited or focused runs are partial checks, never release completion.
+Keep all 29 operational gates and distinct A01–A30 source obligations mapped to
+observed evidence. Require resolved actual reviewer identity from a genuinely
+different model family; `auto/*`, another session or another alias is not identity.
+Seven-part installed-main DoD and parent replay remain mandatory.
+
 Read `docs/guides/prime-workflow.md` and the hydrated proof requirements. Parent-run
 verification is authoritative over the worker's narrative or exit code alone.
 

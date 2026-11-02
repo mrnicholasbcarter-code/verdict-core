@@ -211,6 +211,26 @@ def validate_packet(packet: dict[str, Any]) -> None:
     )
 
 
+def validate_packet_currency(packet: dict[str, Any], *, now: datetime | None = None) -> None:
+    """Packet timestamps must parse and not be in the future; spec/plan/tasks
+    must name non-empty files. A stale packet cannot authorize dispatch, resume,
+    replacement, or review.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    for key in ("issue_updated_at", "available_at"):
+        value = packet.get(key)
+        require(isinstance(value, str) and value, f"packet missing {key}")
+        try:
+            stamped = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"packet {key} is not a timestamp") from None
+        if stamped.tzinfo is None:
+            stamped = stamped.replace(tzinfo=datetime.timezone.utc)
+        require(stamped <= now, f"packet {key} is in the future")
+    for key in ("spec", "plan", "tasks"):
+        require(isinstance(packet.get(key), str) and packet[key], f"packet {key} must name a file")
+
+
 def validate_packet_proof(packet: dict[str, Any], proof: dict[str, Any]) -> None:
     require(proof.get("issue") == packet.get("issue"), "proof issue mismatch")
     require(
@@ -370,6 +390,7 @@ def check_bundle(
     review = json.loads(review_path.read_text())
     packet = json.loads((proof_path.parent / "packet.json").read_text())
     validate_packet(packet)
+    validate_packet_currency(packet)
     require(Path(packet["worktree"]).resolve() == repo.resolve(), "packet worktree mismatch")
     validate_proof(proof, head)
     validate_packet_proof(packet, proof)

@@ -1,0 +1,288 @@
+{
+  "ended_at": 1793584363.1634095,
+  "events": [
+    {
+      "data": {
+        "flavor": "coding",
+        "harness": "verdict-core",
+        "model": "claude-opus-5-5",
+        "provider": "cc",
+        "runtime": "builtin"
+      },
+      "event_id": "evt_1e32ad37226241248c61bc5ce6b947c3",
+      "harness_id": "verdict-core",
+      "parent_event_id": null,
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 1,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584329.5644596,
+      "type": "run_start"
+    },
+    {
+      "data": {
+        "catalog_version": 5,
+        "measurement": "gateway payload UTF-8 bytes",
+        "message_count": 2,
+        "messages_bytes": 23287,
+        "model": "claude-opus-5-5",
+        "provider": "cc",
+        "provider_input_tokens": null,
+        "system_content_bytes": 23033,
+        "tool_count": 146,
+        "tool_schema_bytes": 158211,
+        "tool_schema_sha256": "c10dc21301e8cf7b3e94744aa83750ae82a71cc96fa39aa9d4babe4dc247c43a"
+      },
+      "event_id": "evt_005a70b54b15428d9fd3788a2bc8c347",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_1e32ad37226241248c61bc5ce6b947c3",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 2,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.3631208,
+      "type": "model.payload"
+    },
+    {
+      "data": {
+        "mcp_tools": 141,
+        "runtime": "builtin"
+      },
+      "event_id": "evt_5dbcf533420845ed8331da80a0267901",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_005a70b54b15428d9fd3788a2bc8c347",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 3,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2861588,
+      "type": "model_request"
+    },
+    {
+      "data": {
+        "tool_count": 141
+      },
+      "event_id": "evt_9982f58a94ae4056a69e9c44e890e984",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_5dbcf533420845ed8331da80a0267901",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 4,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.286187,
+      "type": "mcp_list_tools"
+    },
+    {
+      "data": {
+        "error": "MCP server 'ai-memory' did not connect"
+      },
+      "event_id": "evt_b6a19d8d08a84570922784bec7734ce0",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_9982f58a94ae4056a69e9c44e890e984",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 5,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2861948,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'aws-mcp' did not connect"
+      },
+      "event_id": "evt_231b9d990187434d8f09012c090f1974",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_b6a19d8d08a84570922784bec7734ce0",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 6,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2862,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'context7' did not connect"
+      },
+      "event_id": "evt_292eadc4925c4c0f9dafa680d91cf02b",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_231b9d990187434d8f09012c090f1974",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 7,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2862048,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'linear' did not connect"
+      },
+      "event_id": "evt_73345ad4a2f94635922b2dd8585ec3f7",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_292eadc4925c4c0f9dafa680d91cf02b",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 8,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2862096,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'omniroute' did not connect"
+      },
+      "event_id": "evt_a62a05b2bbd14fd5b9d41ed58a822e5a",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_73345ad4a2f94635922b2dd8585ec3f7",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 9,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2862139,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "session_id": "harness-82cdf6ca"
+      },
+      "event_id": "evt_8075696dbe09493c815a55f0b55b518a",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_a62a05b2bbd14fd5b9d41ed58a822e5a",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 10,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2878325,
+      "type": "harness.session.start"
+    },
+    {
+      "data": {
+        "length": 22
+      },
+      "event_id": "evt_cc6643922ec947c5b7b03f67c1d39dd2",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_8075696dbe09493c815a55f0b55b518a",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 11,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2878923,
+      "type": "harness.prompt.submit"
+    },
+    {
+      "data": {
+        "text": "Processing request..."
+      },
+      "event_id": "evt_7bd0158a38c74531bc2007f144e597bc",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_cc6643922ec947c5b7b03f67c1d39dd2",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 12,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.2928102,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "text": "Calling model cc/claude-opus-5-5... (iteration 1)"
+      },
+      "event_id": "evt_914165b36fd545bbbc3cc53ea897a1f7",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_7bd0158a38c74531bc2007f144e597bc",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 13,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584337.3588252,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "iterations": 1,
+        "stopped_reason": "error",
+        "tool_calls_made": 0
+      },
+      "event_id": "evt_ea79bb50a4e44ab3b019f1367492ba2c",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_914165b36fd545bbbc3cc53ea897a1f7",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 14,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584361.5697002,
+      "type": "harness.stop"
+    },
+    {
+      "data": {
+        "iterations": 1,
+        "rubric_result": null,
+        "stopped_reason": "error",
+        "tool_calls_made": 0
+      },
+      "event_id": "evt_1164f2c3c62b4f76b9e7a5f73e6c7783",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_ea79bb50a4e44ab3b019f1367492ba2c",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 15,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584361.5718253,
+      "type": "model_result"
+    },
+    {
+      "data": {
+        "backend": "builtin",
+        "cost_currency": null,
+        "cost_usd": null,
+        "iterations": 1,
+        "latency_ms": 33583,
+        "runtime": "builtin",
+        "status": "failed",
+        "stopped_reason": "error",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tool_calls_made": 0,
+        "total_tokens": null,
+        "typed_output": false
+      },
+      "event_id": "evt_143a5974d2a442d3ab95e50c541f8e6f",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_1164f2c3c62b4f76b9e7a5f73e6c7783",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+      "sequence": 16,
+      "session_id": "harness-82cdf6ca",
+      "timestamp": 1793584363.161747,
+      "type": "run_end"
+    }
+  ],
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "cost_currency": null,
+    "cost_usd": null,
+    "harness_digest": "sha256:535f67abb94143c08a8b12a782a1c721c88ff0b49deba2a0ba276b2e7a33c5bc",
+    "harness_source": "file",
+    "iterations": 1,
+    "latency_ms": 33583,
+    "prompt_persistence": "preview",
+    "stopped_reason": "error",
+    "tokens_in": null,
+    "tokens_out": null,
+    "tool_calls_made": 0,
+    "total_tokens": null,
+    "typed_output": false
+  },
+  "model": "claude-opus-5-5",
+  "parent_run_id": "",
+  "prompt_preview": "Reply with exactly: ok",
+  "provider": "cc",
+  "root_run_id": "",
+  "run_id": "run_01M6CZ9WTVBSGGRFFHWRHFK88X",
+  "runtime": "builtin",
+  "session_id": "harness-82cdf6ca",
+  "started_at": 1793584329.563838,
+  "status": "failed"
+}

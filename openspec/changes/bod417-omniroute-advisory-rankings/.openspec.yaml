@@ -1,0 +1,15 @@
+schema: verdict-change-v1
+id: bod417-omniroute-advisory-rankings
+title: "OmniRoute Advisory Rankings Integration into Verdict Selection"
+description: |
+  Integrate OmniRoute free-provider rankings (coding, debugging, review categories) as optional
+  advisory signals into the existing Verdict dynamic selection ladder. Rankings act only after
+  hard admission gates (capability, availability, quota, authority). Missing/stale/malformed
+  rankings fall back to identical baseline order with named omission in receipt. No new router,
+  cache, database, or probe subsystem.
+author: "verdict-autodev"
+created_at: "2026-10-27T18:00:00Z"
+status: draft
+skip_specs: false
+capabilities:
+  - evidence-based-model-chooser

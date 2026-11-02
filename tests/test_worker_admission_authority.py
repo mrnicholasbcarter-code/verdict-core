@@ -136,10 +136,10 @@ def test_runtime_source_selection_uses_every_documented_source_credentials_allow
     assert callable(factory)
     assert factory(management_token=None, usage_api_key_id=None) == frozenset({"health"})
     assert factory(management_token="mgmt", usage_api_key_id=None) == frozenset(
-        {"health", "rate_limits", "model_cooldowns"}
+        {"health", "rate_limits", "model_cooldowns", "connections"}
     )
     assert factory(management_token="mgmt", usage_api_key_id="key-1") == frozenset(
-        {"health", "rate_limits", "model_cooldowns", "budget", "token_limits"}
+        {"health", "rate_limits", "model_cooldowns", "budget", "token_limits", "connections"}
     )
 
 

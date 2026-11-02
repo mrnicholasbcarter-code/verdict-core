@@ -1,0 +1,58 @@
+{
+  "ended_at": 1793584259.2185547,
+  "events": [
+    {
+      "data": {
+        "flavor": "coding",
+        "harness": "verdict-core",
+        "model": "claude-opus-5-5",
+        "provider": "cc",
+        "runtime": "deepagents"
+      },
+      "event_id": "evt_a5ffca2e10f843c19f304fdd377ba208",
+      "harness_id": "verdict-core",
+      "parent_event_id": null,
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ7QAS65GBPNYRMAG77J59",
+      "sequence": 1,
+      "session_id": "harness-11a42512",
+      "timestamp": 1793584258.3938944,
+      "type": "run_start"
+    },
+    {
+      "data": {
+        "error": "Unable to infer model provider for model='cc:claude-opus-5-5'. Please specify 'model_provider' directly.\n\nSupported providers: anthropic, anthropic_bedrock, azure_ai, azure_openai, baseten, bedrock, bedrock_converse, bedrock_mantle_anthropic, bedrock_mantle_openai, cohere, deepseek, fireworks, google_anthropic_vertex, google_genai, google_vertexai, groq, huggingface, ibm, langsmith, litellm, meta, mistralai, nvidia, ollama, openai, openrouter, perplexity, together, upstage, xai\n\nFor help with specific providers, see: https://docs.langchain.com/oss/python/integrations/providers",
+        "error_type": "ValueError",
+        "status": "failed"
+      },
+      "event_id": "evt_317dc971c05749d9beaa8d5781c3d646",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_a5ffca2e10f843c19f304fdd377ba208",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZ7QAS65GBPNYRMAG77J59",
+      "sequence": 2,
+      "session_id": "harness-11a42512",
+      "timestamp": 1793584259.2177148,
+      "type": "run_end"
+    }
+  ],
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "error": "Unable to infer model provider for model='cc:claude-opus-5-5'. Please specify 'model_provider' directly.\n\nSupported providers: anthropic, anthropic_bedrock, azure_ai, azure_openai, baseten, bedrock, bedrock_converse, bedrock_mantle_anthropic, bedrock_mantle_openai, cohere, deepseek, fireworks, google_anthropic_vertex, google_genai, google_vertexai, groq, huggingface, ibm, langsmith, litellm, meta, mistralai, nvidia, ollama, openai, openrouter, perplexity, together, upstage, xai\n\nFor help with specific providers, see: https://docs.langchain.com/oss/python/integrations/providers",
+    "error_type": "ValueError",
+    "harness_digest": "sha256:2012cdfdcc39812f796ba3c6bf742a169089455cf451e3664540a3555c31bac3",
+    "harness_source": "file",
+    "prompt_persistence": "preview"
+  },
+  "model": "claude-opus-5-5",
+  "parent_run_id": "",
+  "prompt_preview": "Reply with exactly: ok",
+  "provider": "cc",
+  "root_run_id": "",
+  "run_id": "run_01M6CZ7QAS65GBPNYRMAG77J59",
+  "runtime": "deepagents",
+  "session_id": "harness-11a42512",
+  "started_at": 1793584258.3936765,
+  "status": "failed"
+}

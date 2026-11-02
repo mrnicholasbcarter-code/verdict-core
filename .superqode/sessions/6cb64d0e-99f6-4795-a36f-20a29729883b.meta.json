@@ -1,0 +1,40 @@
+{
+  "session_id": "6cb64d0e-99f6-4795-a36f-20a29729883b",
+  "created_at": "2026-11-02T01:51:12.293916",
+  "updated_at": "2026-11-02T01:51:15.225959",
+  "provider": "openai-compatible",
+  "model": "cc/claude-haiku-5-5",
+  "message_count": 2,
+  "total_tokens": 0,
+  "parent_session_id": null,
+  "title": "",
+  "harness_id": "core",
+  "harness_source": "built-in",
+  "harness_path": "",
+  "harness_digest": "sha256:bba2665ab319a71db526dc4592281caee5a8fae699860b4f7e046d963cb7694e",
+  "tool_contract_version": "core-tools-v1",
+  "harness_transitions": [
+    {
+      "timestamp": "2026-11-02T01:51:12.293916",
+      "from_harness": "",
+      "to_harness": "core",
+      "provider": "openai-compatible",
+      "model": "cc/claude-haiku-5-5",
+      "continuity": "new-session"
+    }
+  ],
+  "harness_session": false,
+  "backend_session_path": "",
+  "harness_display_name": "",
+  "working_directory": "",
+  "runtime": "",
+  "backend_session_id": "",
+  "backend_native_session_id": "",
+  "backend_forked_from_id": "",
+  "backend_home": "",
+  "billing_requested": "agent-managed",
+  "backend_usage": {},
+  "backend_resume_ready": false,
+  "archived": false,
+  "context_compaction": {}
+}

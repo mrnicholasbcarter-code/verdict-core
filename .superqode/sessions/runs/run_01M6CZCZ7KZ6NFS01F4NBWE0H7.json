@@ -1,0 +1,316 @@
+{
+  "ended_at": 1793584439.7696786,
+  "events": [
+    {
+      "data": {
+        "flavor": "coding",
+        "harness": "verdict-core",
+        "model": "cc/claude-haiku-5-5",
+        "provider": "openai-compatible",
+        "runtime": "builtin"
+      },
+      "event_id": "evt_e6718660b824499e8ef9ca591a9e4be5",
+      "harness_id": "verdict-core",
+      "parent_event_id": null,
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 1,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584430.3241506,
+      "type": "run_start"
+    },
+    {
+      "data": {
+        "catalog_version": 5,
+        "measurement": "gateway payload UTF-8 bytes",
+        "message_count": 2,
+        "messages_bytes": 23306,
+        "model": "cc/claude-haiku-5-5",
+        "provider": "openai-compatible",
+        "provider_input_tokens": null,
+        "system_content_bytes": 23052,
+        "tool_count": 146,
+        "tool_schema_bytes": 158211,
+        "tool_schema_sha256": "c10dc21301e8cf7b3e94744aa83750ae82a71cc96fa39aa9d4babe4dc247c43a"
+      },
+      "event_id": "evt_c05e0378e95c4b18be977b3f6efc7935",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_e6718660b824499e8ef9ca591a9e4be5",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 2,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.8774347,
+      "type": "model.payload"
+    },
+    {
+      "data": {
+        "mcp_tools": 141,
+        "runtime": "builtin"
+      },
+      "event_id": "evt_17ad0f98ce204d6db4a238504d97ae46",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_c05e0378e95c4b18be977b3f6efc7935",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 3,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7703543,
+      "type": "model_request"
+    },
+    {
+      "data": {
+        "tool_count": 141
+      },
+      "event_id": "evt_cef1a5dbdfc6439c9714434eb8eddad7",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_17ad0f98ce204d6db4a238504d97ae46",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 4,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7703836,
+      "type": "mcp_list_tools"
+    },
+    {
+      "data": {
+        "error": "MCP server 'ai-memory' did not connect"
+      },
+      "event_id": "evt_50f96fb79b4a46b1b3548114ef74c775",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_cef1a5dbdfc6439c9714434eb8eddad7",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 5,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7703915,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'aws-mcp' did not connect"
+      },
+      "event_id": "evt_c7c2211d994f4902acb85c0434927942",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_50f96fb79b4a46b1b3548114ef74c775",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 6,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7703967,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'context7' did not connect"
+      },
+      "event_id": "evt_25f36efdcea1472d96ffef54fd44ef31",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_c7c2211d994f4902acb85c0434927942",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 7,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7704015,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'linear' did not connect"
+      },
+      "event_id": "evt_58d78506c55246b8aa95acb9fc941a17",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_25f36efdcea1472d96ffef54fd44ef31",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 8,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7704062,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "error": "MCP server 'omniroute' did not connect"
+      },
+      "event_id": "evt_682eb8a090b942c3b5fac9110c757a1e",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_58d78506c55246b8aa95acb9fc941a17",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 9,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7704103,
+      "type": "mcp_error"
+    },
+    {
+      "data": {
+        "session_id": "harness-fc37081c"
+      },
+      "event_id": "evt_1369bef254574ecca214909d7f433175",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_682eb8a090b942c3b5fac9110c757a1e",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 10,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7721133,
+      "type": "harness.session.start"
+    },
+    {
+      "data": {
+        "length": 22
+      },
+      "event_id": "evt_0d9dc06b890941bd87eee6593a0be040",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_1369bef254574ecca214909d7f433175",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 11,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7721748,
+      "type": "harness.prompt.submit"
+    },
+    {
+      "data": {
+        "text": "Processing request..."
+      },
+      "event_id": "evt_0f963a524db947948aaef03b9a9d7c10",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_0d9dc06b890941bd87eee6593a0be040",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 12,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.7765071,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "text": "Calling model openai-compatible/cc/claude-haiku-5-5... (iteration 1)"
+      },
+      "event_id": "evt_c0e30f35eec544db8eea9103f830715f",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_0f963a524db947948aaef03b9a9d7c10",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 13,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584435.8450453,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "text": "Received response (90 tokens)"
+      },
+      "event_id": "evt_46c7a1ef034147cd9d715552ec0329e1",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_c0e30f35eec544db8eea9103f830715f",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 14,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584438.963857,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "text": "Response complete"
+      },
+      "event_id": "evt_f878f8b9a8644f89bb4f7c6fd7e1af6b",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_46c7a1ef034147cd9d715552ec0329e1",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 15,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584438.9639003,
+      "type": "thinking"
+    },
+    {
+      "data": {
+        "iterations": 1,
+        "stopped_reason": "complete",
+        "tool_calls_made": 0
+      },
+      "event_id": "evt_ac1f418fd1ef493cac53b2d9aa27ce01",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_f878f8b9a8644f89bb4f7c6fd7e1af6b",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 16,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584438.9668248,
+      "type": "harness.stop"
+    },
+    {
+      "data": {
+        "iterations": 1,
+        "rubric_result": null,
+        "stopped_reason": "complete",
+        "tool_calls_made": 0
+      },
+      "event_id": "evt_81d39580a0244f2e8094cd4998115beb",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_ac1f418fd1ef493cac53b2d9aa27ce01",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 17,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584438.96793,
+      "type": "model_result"
+    },
+    {
+      "data": {
+        "backend": "builtin",
+        "cost_currency": "USD",
+        "cost_usd": 0.0,
+        "iterations": 1,
+        "latency_ms": 9421,
+        "runtime": "builtin",
+        "status": "succeeded",
+        "stopped_reason": "complete",
+        "tokens_in": 86,
+        "tokens_out": 4,
+        "tool_calls_made": 0,
+        "total_tokens": 90,
+        "typed_output": false
+      },
+      "event_id": "evt_5c3d8fa23ee24f25bfc18d25b635d2eb",
+      "harness_id": "verdict-core",
+      "parent_event_id": "evt_81d39580a0244f2e8094cd4998115beb",
+      "protocol_version": "1.0",
+      "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+      "sequence": 18,
+      "session_id": "harness-fc37081c",
+      "timestamp": 1793584439.7677746,
+      "type": "run_end"
+    }
+  ],
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "cost_currency": "USD",
+    "cost_usd": 0.0,
+    "harness_digest": "sha256:535f67abb94143c08a8b12a782a1c721c88ff0b49deba2a0ba276b2e7a33c5bc",
+    "harness_source": "file",
+    "iterations": 1,
+    "latency_ms": 9421,
+    "prompt_persistence": "preview",
+    "stopped_reason": "complete",
+    "tokens_in": 86,
+    "tokens_out": 4,
+    "tool_calls_made": 0,
+    "total_tokens": 90,
+    "typed_output": false
+  },
+  "model": "cc/claude-haiku-5-5",
+  "parent_run_id": "",
+  "prompt_preview": "Reply with exactly: ok",
+  "provider": "openai-compatible",
+  "root_run_id": "",
+  "run_id": "run_01M6CZCZ7KZ6NFS01F4NBWE0H7",
+  "runtime": "builtin",
+  "session_id": "harness-fc37081c",
+  "started_at": 1793584430.3239014,
+  "status": "succeeded"
+}

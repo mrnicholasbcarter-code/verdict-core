@@ -5,6 +5,11 @@ description: Use when starting or resuming Verdict autonomous development, recov
 
 # Verdict resume
 
+Claude parent: apply the guide's current operator-harness section before legacy
+Prime instructions. Reconstruct BOD-431/BOD-439/BOD-342 authority and exact retained
+sources before selecting work. A stale mission is not current authority. Mandatory
+memory connection failure blocks new dependent dispatch, not running work.
+
 Read `docs/guides/prime-workflow.md` from the repository root first. Its contracts,
 authority rules, budgets and failure handling apply to all five workflow skills.
 

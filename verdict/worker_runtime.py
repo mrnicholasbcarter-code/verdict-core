@@ -124,7 +124,7 @@ def configured_runtime_sources(
     """Use every documented availability source that current credentials permit."""
     sources = {"health"}
     if management_token and management_token.strip():
-        sources.update({"rate_limits", "model_cooldowns"})
+        sources.update({"rate_limits", "model_cooldowns", "connections"})
         if usage_api_key_id and usage_api_key_id.strip():
             sources.update({"budget", "token_limits"})
     return frozenset(sources)

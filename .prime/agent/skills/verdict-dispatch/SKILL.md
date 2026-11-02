@@ -5,6 +5,13 @@ description: Use when a hydrated Verdict issue is ready for an explicitly select
 
 # Verdict dispatch
 
+Claude is parent, not a Prime-supervised process. Prime bridge/runtime contracts
+below remain Prime-specific; do not fabricate Claude session support. Reconcile
+current governing scope against historical worker allowlists before dispatch;
+conflicting scope is BLOCKED pending authority, not permission to widen admission.
+One canonical owner per ticket/worktree. No new dependent work while mandatory
+memory is unauthorized. Current user permission controls commits, pushes and probes.
+
 Read `docs/guides/prime-workflow.md` and the current packet. Recheck Linear revision,
 dependency readiness, source/worktree ownership and live target immediately before dispatch.
 

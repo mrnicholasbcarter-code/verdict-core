@@ -1,0 +1,11 @@
+{
+  "created_at": 1793584258.3804996,
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "model": "claude-opus-5-5",
+    "provider": "cc"
+  },
+  "session_id": "harness-11a42512",
+  "updated_at": 1793584258.3932316
+}

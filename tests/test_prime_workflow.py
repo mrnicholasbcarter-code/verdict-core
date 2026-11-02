@@ -167,6 +167,22 @@ def test_packet_rejects_unknown_dependency_and_auto_target():
         m.validate_packet({"schema_version": 1, "model": "auto/best-coding"})
 
 
+def test_packet_currency_rejects_future_timestamps(tmp_path):
+    m = module()
+    p = packet(tmp_path / "wt")
+    p["issue_updated_at"] = "2099-01-01T00:00:00Z"
+    with pytest.raises(ValueError):
+        m.validate_packet_currency(p)
+
+
+def test_packet_currency_rejects_bare_timestamps(tmp_path):
+    m = module()
+    p = packet(tmp_path / "wt")
+    p["available_at"] = "not-a-timestamp"
+    with pytest.raises(ValueError):
+        m.validate_packet_currency(p)
+
+
 def test_proof_must_cover_original_packet_criteria():
     m = module()
     assert hasattr(m, "validate_packet_proof"), "packet-bound proof validation missing"

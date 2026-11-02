@@ -1,0 +1,11 @@
+{
+  "created_at": 1793507290.2040014,
+  "flavor": "coding",
+  "harness": "verdict-core",
+  "metadata": {
+    "model": "gpt-4o-mini",
+    "provider": "openai"
+  },
+  "session_id": "harness-9810e850",
+  "updated_at": 1793507290.209531
+}
