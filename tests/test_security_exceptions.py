@@ -75,6 +75,31 @@ def test_all_locked_dnspython_versions_are_fixed() -> None:
     assert not any(exc.package == "dnspython" for exc in sx.load_exceptions())
 
 
+FIXED_FLOORS = {
+    "authlib": "1.9.1",  # GHSA-6v38-4h7w-rj9h, GHSA-c73q-w75p-j82v
+    "dnspython": "2.9.0",  # GHSA-45c3-73f7-pv4m
+    "filelock": "4.2.1",  # GHSA-69hj-f68j-2879, GHSA-8mx5-7m5m-r77g
+    "joserfc": "1.7.6",  # GHSA-9pg5-8c7x-5hfx, GHSA-jpxq-7h8p-2q76
+    "msgpack": "1.2.4",  # GHSA-j586-36cw-2gc2
+}
+
+
+def test_every_locked_resolution_meets_security_floors() -> None:
+    """No resolution in uv.lock (any Python marker) may carry a known-vulnerable version."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    root = Path(__file__).parent.parent
+    with (root / "uv.lock").open("rb") as lock_file:
+        packages = tomllib.load(lock_file)["package"]
+    for name, floor in FIXED_FLOORS.items():
+        versions = [p["version"] for p in packages if p["name"] == name]
+        assert all(Version(v) >= Version(floor) for v in versions), (name, versions)
+        assert not any(exc.package == name for exc in sx.load_exceptions())
+
+
 def test_unlisted_vulnerability_is_never_ignored(tmp_path: Path) -> None:
     """An unlisted pillow CVE is not in the active ignore list; certify_release's
     security step would still see and fail on it."""
