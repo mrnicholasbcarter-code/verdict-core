@@ -23,6 +23,7 @@ def select_route_for_task(
     requirements: TaskRequirements,
     *,
     gateway: str,
+    gateway_kind: str | None = None,
     capacity: tuple[str, ...] = (),
     explicit_model: str | None = None,
     now: datetime | None = None,
@@ -49,6 +50,7 @@ def select_route_for_task(
         no_confirm=no_confirm,
         now=now,
         task_category=requirements.task_category,
+        gateway_kind=gateway_kind,
     )
     route, verdicts = selector.select(requirements, now=now)
     explanation = explain_selection(verdicts)

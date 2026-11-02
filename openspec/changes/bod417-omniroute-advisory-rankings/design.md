@@ -55,3 +55,18 @@ ADR-0001 (control-plane invariants): hard eligibility precedes advisory ranking;
 ## Open Questions
 
 None.
+
+## Explicit gateway identity and honest observation freshness
+
+Rankings requests require `gateway_kind="omniroute"` on the shared selector or
+explicit `VERDICT_GATEWAY_KIND=omniroute` configuration. The environment setting
+also enables the existing `verdict choose` CLI; a URL alone does not identify
+a gateway product. Missing or other kinds produce `generic_gateway` without a
+management request, including for localhost and names containing omniroute.
+
+The inspected OmniRoute endpoint returns `rankings` without an authoritative
+ranking timestamp. Receipts therefore retain `source_observed_at: null`, the
+actual reliability/usage fields, and a distinct local `received_at`. Usage
+`lastRequestAt` is not a ranking observation time. Local observations have a
+bounded 24-hour lifetime; stale/future observations revert to baseline order
+with a named omission. This local lifetime does not establish source freshness.

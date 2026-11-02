@@ -271,6 +271,8 @@ class EligibilityLadder:
         rankings: Mapping[str, int] | None = None,
         rankings_omission: str | None = None,
         rankings_category: str | None = None,
+        rankings_provenance: Mapping[str, Mapping[str, Any]] | None = None,
+        rankings_received_at: str | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -327,6 +329,8 @@ class EligibilityLadder:
         self._rankings = rankings
         self._rankings_omission = rankings_omission
         self._rankings_category = rankings_category
+        self._rankings_provenance = rankings_provenance or {}
+        self._rankings_received_at = rankings_received_at
         self._rating_evidence_cache: tuple[MetadataSnapshot | None, IdentityMap | None] | None = (
             None
         )
@@ -874,6 +878,7 @@ class EligibilityLadder:
             "advisory_rank": (getattr(self, "_rankings", None) or {}).get(a.route_id, 999),
             "advisory_category": getattr(self, "_rankings_category", None),
             "advisory_omission": getattr(self, "_rankings_omission", None),
+            "advisory_provenance": getattr(self, "_rankings_provenance", {}).get(a.route_id),
         }
         error = getattr(self, "_session_evidence_error", None)
         if error is not None:
@@ -928,6 +933,7 @@ class EligibilityLadder:
             "advisory_rank": components["advisory_rank"],
             "advisory_category": components.get("advisory_category"),
             "advisory_omission": components.get("advisory_omission"),
+            "advisory_provenance": components.get("advisory_provenance"),
             "quota_rank": components["quota_rank"],
             "quota_percent": components.get("quota_percent"),
             "provider_pref": components["provider_pref"],
@@ -955,6 +961,13 @@ class EligibilityLadder:
             cache.reload()
         self._current_requirements = requirements
         self._current_now = now
+        received_at = getattr(self, "_rankings_received_at", None)
+        if received_at is not None:
+            from verdict.omniroute_rankings import RankingsResult
+
+            if not RankingsResult((), received_at=received_at).is_fresh(now):
+                self._rankings = None
+                self._rankings_omission = "stale"
         self._session_evidence_error = None
         assessments: list[_Assessment] = []
         for route_id in sorted(self._rows):

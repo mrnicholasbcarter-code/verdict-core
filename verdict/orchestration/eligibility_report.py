@@ -38,19 +38,6 @@ def route_prefix(route_id: str) -> str:
     return route_id.split("/", 1)[0].lower() if "/" in route_id else route_id.lower()
 
 
-def _is_omniroute_gateway(gateway: str) -> bool:
-    """Check if gateway is an OmniRoute gateway (not a generic OpenAI-compatible one).
-
-    Only OmniRoute gateways serve /api/free-provider-rankings. Generic gateways
-    should be skipped with a named omission rather than probed.
-    """
-    gateway_lower = gateway.lower()
-    # OmniRoute is always localhost-based; the rankings endpoint is OmniRoute-only.
-    return (
-        "omniroute" in gateway_lower or "localhost" in gateway_lower or "127.0.0.1" in gateway_lower
-    )
-
-
 def prime_visibility_report(live_rows: Any, *, prime_home: Path | None = None) -> dict[str, Any]:
     """Compare live concrete gateway models with Prime's registry. Never writes."""
     from verdict.harness_prime import resolve_paths
@@ -167,6 +154,7 @@ def build_selector(
     now: datetime | None = None,
     no_confirm: bool = False,
     task_category: str = "general",
+    gateway_kind: str | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -334,25 +322,39 @@ def build_selector(
     rankings: dict[str, int] = {}
     rankings_omission: str | None = None
     rankings_category: str | None = None
+    rankings_provenance: dict[str, dict[str, Any]] = {}
+    rankings_received_at: str | None = None
     if task_category and task_category != "general":
         rankings_category = task_category
-        if not _is_omniroute_gateway(gateway):
-            rankings_omission = "generic_gateway"
-        else:
-            try:
-                rankings_client = OmniRouteRankings(gateway, key)
-                result = rankings_client.fetch(task_category)
-                if result.rows:
-                    scored = sorted(result.rows, key=lambda r: r.score, reverse=True)
-                    rankings = {
-                        f"{row.id}/{row.top_model_id}": rank + 1 for rank, row in enumerate(scored)
+        try:
+            rankings_client = OmniRouteRankings(
+                gateway, key, gateway_kind=gateway_kind, clock=lambda: now
+            )
+            result = rankings_client.fetch(task_category)
+            rankings_received_at = result.received_at
+            if result.rows and result.is_fresh(now):
+                scored = sorted(result.rows, key=lambda r: r.score, reverse=True)
+                rankings = {
+                    f"{row.id}/{row.top_model_id}": rank + 1 for rank, row in enumerate(scored)
+                }
+                rankings_provenance = {
+                    f"{row.id}/{row.top_model_id}": {
+                        "source": result.source,
+                        "received_at": result.received_at,
+                        "source_observed_at": result.source_observed_at,
+                        "reliability": row.reliability_context,
+                        "usage": row.usage_context,
                     }
-                elif result.omission:
-                    rankings_omission = result.omission
-            except Exception:
-                # Rankings are advisory; failure preserves baseline ordering.
-                rankings_omission = "unavailable"
-                rankings = {}
+                    for row in scored
+                }
+            elif result.rows:
+                rankings_omission = "stale"
+            else:
+                rankings_omission = result.omission
+        except Exception:
+            # Optional advice never changes admission or baseline order on failure.
+            rankings_omission = "unavailable"
+            rankings = {}
     return EligibilityLadder(
         rows,
         connections,
@@ -371,6 +373,8 @@ def build_selector(
         rankings=rankings or None,
         rankings_omission=rankings_omission,
         rankings_category=rankings_category,
+        rankings_provenance=rankings_provenance,
+        rankings_received_at=rankings_received_at,
     )
 
 

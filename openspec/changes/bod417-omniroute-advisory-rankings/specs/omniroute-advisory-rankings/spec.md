@@ -65,11 +65,15 @@ Verdict SHALL propagate coding/debugging/review task category from `verdict choo
 - **THEN** it defaults to coding/general category and existing behavior is unchanged
 
 ### Requirement: Receipt/provenance exposure
-Verdict SHALL expose ranking category, source, observed timestamp, reliability/usage context, and omission reason in existing rank components/explanations without fabricating benchmark dates.
+Verdict SHALL expose ranking category, source, local receipt timestamp, source-observed timestamp when provided (otherwise null), reliability/usage context, and omission reason in existing rank components/explanations without fabricating benchmark dates. The current OmniRoute endpoint does not provide a ranking observation timestamp; local receipt freshness SHALL NOT be represented as proof of source freshness.
 
 #### Scenario: Receipt exposes provenance
 - **WHEN** rankings advisory is applied
-- **THEN** the receipt shows category, source, observed timestamp, reliability context, and any omission reason
+- **THEN** the receipt shows category, source, local receipt timestamp, source-observed timestamp or explicit null, reliability/usage context, and any omission reason
+
+#### Scenario: Local observation is stale
+- **WHEN** a fetched advisory observation is reused after its bounded 24-hour local lifetime or its local receipt timestamp is in the future
+- **THEN** the entire ordering equals the baseline without advisory ranks and the omission is `stale`; no source observation date is fabricated
 
 #### Scenario: Unknown is not zero-filled
 - **WHEN** a ranking score is unavailable

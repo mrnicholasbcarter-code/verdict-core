@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import urllib.error
 
+import pytest
+
 from verdict.omniroute_rankings import OmniRouteRankings
+
+
+@pytest.fixture(autouse=True)
+def _explicit_omniroute_configuration(monkeypatch):
+    monkeypatch.setenv("VERDICT_GATEWAY_KIND", "omniroute")
 
 
 def _fetcher(payload):
@@ -78,7 +85,9 @@ def test_http_404_returns_named_omission() -> None:
 def test_generic_gateway_is_skipped_without_probing() -> None:
     """Generic OpenAI-compatible gateways must not be probed for the OmniRoute-only endpoint."""
     fetch = _fetcher({"rankings": []})
-    client = OmniRouteRankings("http://generic-gateway.example/v1", "secret", fetch_json=fetch)
+    client = OmniRouteRankings(
+        "http://generic-gateway.example/v1", "secret", fetch_json=fetch, gateway_kind="generic"
+    )
     result = client.fetch("coding")
     assert result.rows == ()
     assert result.omission == "generic_gateway"

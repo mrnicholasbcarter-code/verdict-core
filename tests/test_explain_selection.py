@@ -292,6 +292,7 @@ class TestBehaviourParityAcrossFixtures:
                 "advisory_rank",
                 "advisory_category",
                 "advisory_omission",
+                "advisory_provenance",
                 "quota_rank",
                 "quota_percent",
                 "provider_pref",

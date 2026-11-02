@@ -324,6 +324,7 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
         )
         selection = select_route_for_task(
             requirements,
+            gateway_kind=kwargs.get("gateway_kind"),
             gateway=gateway,
             capacity=capacity,
             explicit_model=model,
