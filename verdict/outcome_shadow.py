@@ -556,6 +556,7 @@ class CheckedAttempt:
     quality_credit: float
     checked_at: datetime
     checker_digest: str
+    total_tokens: int | None = None
 
 
 def load_checked_attempts(
@@ -579,10 +580,12 @@ def load_checked_attempts(
         return (), ({"run": str(run_dir), "reason": "receipt_unreadable"},)
     run_id = str(receipt.get("run_id") or "")
     digest = str(receipt.get("events_digest") or "")
+    verified_records = run_attempt_records(run_dir, receipt)
+    terminals = {
+        (r.node_id, r.attempt_id): r for r in verified_records if r.record_kind == "terminal"
+    }
     expected = {
-        (r.node_id, r.attempt_id): r
-        for r in run_attempt_records(run_dir, receipt)
-        if r.record_kind == "checker_result"
+        (r.node_id, r.attempt_id): r for r in verified_records if r.record_kind == "checker_result"
     }
     joined: dict[tuple[str | None, str | None], CheckedAttempt] = {}
     rejected: list[dict[str, str]] = []
@@ -617,6 +620,17 @@ def load_checked_attempts(
             rejected.append({"source": source, "reason": reason or "invalid"})
             continue
         assert want.quality_credit is not None
+        terminal = terminals.get((want.node_id, want.attempt_id))
+        tokens = (
+            terminal.tokens_in + terminal.tokens_out
+            if terminal is not None
+            and terminal.tokens_in is not None
+            and terminal.tokens_out is not None
+            and terminal.tokens_in >= 0
+            and terminal.tokens_out >= 0
+            and terminal.tokens_in + terminal.tokens_out > 0
+            else None
+        )
         joined[key] = CheckedAttempt(
             run_id=run_id,
             node_id=want.node_id or "",
@@ -626,6 +640,7 @@ def load_checked_attempts(
             quality_credit=want.quality_credit,
             checked_at=checked_at,
             checker_digest=digest,
+            total_tokens=tokens,
         )
     return tuple(joined.values()), tuple(rejected)
 
@@ -706,6 +721,7 @@ def load_verified_outcome_observations(
                     observed_at=checked.checked_at,
                     quality_credit=checked.quality_credit,
                     observation_id=f"{checked.run_id}:{checked.node_id}:{checked.attempt_id}",
+                    total_tokens=checked.total_tokens,
                 )
             )
     return VerifiedOutcomeHistory(

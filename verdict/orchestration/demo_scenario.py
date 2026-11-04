@@ -32,6 +32,7 @@ from verdict.orchestration.recovery import FailureIntelligence
 from verdict.orchestration.review import OcrRun, OpenCodeReviewer
 from verdict.orchestration.run import run_golden_path
 from verdict.orchestration.runtime import RuntimePolicy
+from verdict.outcome_shadow import ENV_ROOTS as OUTCOME_SHADOW_ENV
 from verdict.subagent_selection import HealthResult
 
 FLAGSHIP_GOAL = "flagship failover test"
@@ -287,8 +288,11 @@ def run_flagship_scenario(
         runner=_PassingOcrRunner(),
     )
 
-    old_key = os.environ.get(_OFFLINE_OCR_ENV)
-    os.environ[_OFFLINE_OCR_ENV] = "offline-scripted-no-network"
+    # Scripted scenario: fixed OCR key, and no learned outcome history (an empty
+    # roots value disables it) so host or prior-run state cannot reorder routes.
+    scenario_env = {_OFFLINE_OCR_ENV: "offline-scripted-no-network", OUTCOME_SHADOW_ENV: ""}
+    saved_env = {key: os.environ.get(key) for key in scenario_env}
+    os.environ.update(scenario_env)
     try:
         result = asyncio.run(
             _run_serial_selection(
@@ -310,10 +314,11 @@ def run_flagship_scenario(
             )
         )
     finally:
-        if old_key is None:
-            os.environ.pop(_OFFLINE_OCR_ENV, None)
-        else:
-            os.environ[_OFFLINE_OCR_ENV] = old_key
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     if result.outcome != RunOutcome.COMPLETE.value:
         raise RuntimeError(f"offline flagship did not COMPLETE: {result.outcome} — {result.reason}")

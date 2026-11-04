@@ -26,6 +26,7 @@ production object the run loop mutated).
 from __future__ import annotations
 
 import itertools
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -335,3 +336,26 @@ class TestDeterminism:
             sel_a = [e["route_id"] for e in _events_of(ra.events, "selection", nid)]
             sel_b = [e["route_id"] for e in _events_of(rb.events, "selection", nid)]
             assert sel_a == sel_b, f"selected routes differ for {nid}: {sel_a} vs {sel_b}"
+
+    def test_host_outcome_history_cannot_change_scenario(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from verdict.outcome_shadow import ENV_ROOTS
+
+        host_roots = str(tmp_path / "host-shadow")
+        monkeypatch.setenv(ENV_ROOTS, host_roots)
+        seen: list[str | None] = []
+        import verdict.outcome_shadow as shadow
+
+        real = shadow.resolve_outcome_shadow_roots
+
+        def spy(*args: Any, **kwargs: Any) -> Any:
+            seen.append(os.environ.get(ENV_ROOTS))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(shadow, "resolve_outcome_shadow_roots", spy)
+        (tmp_path / "run").mkdir()
+        _run_scenario(tmp_path / "run", monkeypatch=monkeypatch)
+
+        assert seen and set(seen) == {""}, "scenario must disable learned outcome history"
+        assert os.environ.get(ENV_ROOTS) == host_roots, "scenario must restore caller env"
