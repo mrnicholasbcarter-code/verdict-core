@@ -361,7 +361,9 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
         )
         return
     except Exception as exc:  # bad URL, transport, protocol or unparseable body: never OK
-        unverified(getattr(exc, "reason", exc))
+        # Category only: exception text can echo the Authorization header (and the key).
+        inner = getattr(exc, "reason", exc)
+        unverified(type(inner if isinstance(inner, BaseException) else exc).__name__)
         return
     if status != 200:
         unverified(f"unexpected HTTP {status}")
