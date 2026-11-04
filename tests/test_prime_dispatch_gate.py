@@ -213,11 +213,17 @@ def _is_launch(node: ast.AST) -> bool:
     return False
 
 
+def _is_gate_statement(stmt: ast.stmt) -> bool:
+    value = stmt.value if isinstance(stmt, (ast.Expr, ast.Assign, ast.AnnAssign)) else None
+    return value is not None and _is_gate_call(value)
+
+
 def _launch_sites(source: str) -> list[tuple[str, int, bool]]:
     """(enclosing function, launch line, gated) for every launch in ``source``.
 
-    Gated means a ``validate_dispatch`` call executes earlier in the same function body.
-    Docstrings and comments are not calls, so mentioning the gate never satisfies it.
+    Gated means an unconditional top-level statement of the innermost enclosing function,
+    before the launch, is a ``validate_dispatch`` call (bare or assigned). A gate inside an
+    ``if``, ``try``, loop or nested function does not count; nor do comments or docstrings.
     """
     tree = ast.parse(source)
     scopes = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -239,9 +245,7 @@ def _launch_sites(source: str) -> list[tuple[str, int, bool]]:
             sites.append(("<module>", line, False))
             continue
         scope = max(enclosing, key=lambda s: s.lineno)
-        gated = any(
-            _is_gate_call(n) and n.lineno < line for stmt in scope.body for n in ast.walk(stmt)
-        )
+        gated = any(_is_gate_statement(stmt) and stmt.end_lineno < line for stmt in scope.body)
         sites.append((scope.name, line, gated))
     return sites
 
@@ -256,6 +260,10 @@ def test_launch_detector_flags_ungated_argv_fstring_and_in_process_launches() ->
         "def c():\n    return WorkerController(task)\n"
         "def d(bash, wf):\n    bash('python -m verdict.worker_runtime x')\n"
         "    wf['validate_dispatch'](p)\n"
+        "def f(bash, wf):\n    if False:\n        wf['validate_dispatch'](p)\n"
+        "    bash('python -m verdict.worker_runtime x')\n"
+        "def g(bash, wf):\n    def never():\n        wf['validate_dispatch'](p)\n"
+        "    bash('python -m verdict.worker_runtime x')\n"
     )
     assert sorted((name, gated) for name, _line, gated in _launch_sites(bad)) == [
         ("<module>", False),
@@ -263,6 +271,8 @@ def test_launch_detector_flags_ungated_argv_fstring_and_in_process_launches() ->
         ("b", False),
         ("c", False),
         ("d", False),
+        ("f", False),
+        ("g", False),
     ]
     good = (
         "def e(bash, wf):\n    wf['validate_dispatch'](p)\n    bash('-m verdict.worker_runtime')\n"
