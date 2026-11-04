@@ -64,8 +64,20 @@ def test_env_key_or_refused_key_is_an_issue(monkeypatch: pytest.MonkeyPatch, cod
 
 def test_non_200_success_status_is_never_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     diag, _ = _run(monkeypatch, {"apiKey": {"id": "k1", "name": "verdict"}}, status=203)
-    assert len(diag.issues) == 1
+    assert len(diag.warnings) == 1 and "HTTP 203" in diag.warnings[0]
     assert ("Gateway key", "ok") not in [row[:2] for row in diag.sections]
+
+
+def test_garbage_response_warns_and_never_crashes_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Garbage(_Response):
+        def read(self, *_: object) -> Any:
+            return object()  # a test double or broken proxy, not bytes
+
+    monkeypatch.setattr(dd, "_read_omniroute_token", lambda: "k")
+    monkeypatch.setattr(dd, "open_no_redirect", lambda request, *, timeout: _Garbage(b""))
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_gateway_key(diag, "http://127.0.0.1:20128")
+    assert diag.issues == [] and len(diag.warnings) == 1
 
 
 def test_status_without_key_metadata_is_an_issue(monkeypatch: pytest.MonkeyPatch) -> None:
