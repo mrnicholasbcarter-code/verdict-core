@@ -88,6 +88,8 @@ def test_worker_commits_on_top_of_base_stay_current(current) -> None:
         ("stale_lease", "lease is stale"),
         ("released_lease", "lease is not active"),
         ("other_attempt", "does not match the hydrated packet attempt"),
+        ("lease_worktree", "another worktree or branch"),
+        ("lease_branch", "another worktree or branch"),
     ],
 )
 def test_invalid_or_stale_packet_is_refused(current, tmp_path, breakage, message) -> None:
@@ -119,6 +121,10 @@ def _break(p: dict[str, Any], repo: Path, state: Path, tmp_path: Path, breakage:
         lease["status"] = "RELEASED"
     elif breakage == "other_attempt":
         lease["dispatch_id"] = "attempt-2"
+    elif breakage == "lease_worktree":
+        lease["worktree"] = str(tmp_path / "other-worktree")
+    elif breakage == "lease_branch":
+        lease["branch"] = "other"
     lease_file.write_text(json.dumps(lease))
 
 

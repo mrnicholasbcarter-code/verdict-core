@@ -8,7 +8,8 @@ The Prime runtime bridge MUST call `validate_dispatch` from the controller check
 #### Scenario: Current packet is dispatched with its identity bound
 - **WHEN** the packet validates, its worktree is the dispatched repo on the packet branch,
   `base_sha` is an ancestor of HEAD, the supplied Linear `updatedAt` equals the packet's,
-  and the issue lease is active, unstale and matches the packet attempt and generation
+  and the issue lease is active, unstale and matches the packet attempt, generation,
+  worktree and branch
 - **THEN** exactly one worker launch happens and `config.json` records the packet path,
   `attempt_id` and `lease_generation`
 - **TEST** `tests/test_prime_dispatch_gate.py::test_bridge_launches_current_packet_and_binds_its_identity`,
@@ -17,7 +18,7 @@ The Prime runtime bridge MUST call `validate_dispatch` from the controller check
 #### Scenario: Stale or invalid packet is refused
 - **WHEN** the packet is invalid, names another worktree, the Linear revision changed, the
   branch differs, `base_sha` is not an ancestor of HEAD, or the lease is missing, released,
-  stale, for another attempt or of another generation
+  stale, for another attempt, of another generation, or held for another worktree or branch
 - **THEN** dispatch raises `ValueError` naming the reason, no worker is launched and no
   worker-run directory is created
 - **TEST** `tests/test_prime_dispatch_gate.py::test_invalid_or_stale_packet_is_refused`,
