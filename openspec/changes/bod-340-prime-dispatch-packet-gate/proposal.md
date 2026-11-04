@@ -13,7 +13,8 @@ A guide alone is not enforcement (MASTER finish-line plan section 7; BOD-340 res
   state)`: runs `validate_packet`, then refuses when the packet worktree is not `repo`, the
   Linear `updatedAt` read just before dispatch differs from the packet's, the packet branch
   is not checked out, `base_sha` is not an ancestor of HEAD, or the issue lease is absent,
-  inactive, stale, for another attempt or of another generation (`require_lease_for_pr`).
+  inactive, stale, for another attempt or generation (`require_lease_for_pr`), or held for
+  another worktree or branch.
 - The bridge requires `packet` and `issue_updated_at`, runs the controller checkout's
   `validate_dispatch` before creating a worker-run directory or launching any process, and
   binds `packet`, `attempt_id` and `lease_generation` into the worker `config.json`.
