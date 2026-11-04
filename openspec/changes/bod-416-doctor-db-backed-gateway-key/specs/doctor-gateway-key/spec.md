@@ -11,11 +11,12 @@ answers 200 with key metadata (`apiKey.id`).
 - **TEST** `tests/test_doctor_gateway_key.py::test_db_backed_key_is_ok`
 
 #### Scenario: Gateway env key or refused key
-- **WHEN** `me/status` answers 401 or 403, or 200 without key metadata
+- **WHEN** `me/status` answers 401 or 403, any other non-200 success status, or 200
+  without key metadata
 - **THEN** doctor reports an issue naming `OMNIROUTE_API_KEY` in the gateway environment
   as the likely cause and the remedy
 - **TEST** `tests/test_doctor_gateway_key.py::test_env_key_or_refused_key_is_an_issue`,
-  `::test_status_without_key_metadata_is_an_issue`
+  `::test_status_without_key_metadata_is_an_issue`, `::test_non_200_success_status_is_never_ok`
 
 #### Scenario: Key cannot be verified
 - **WHEN** the request times out or the transport fails

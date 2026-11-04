@@ -13,6 +13,8 @@ import verdict.doctor_diagnostics as dd
 
 
 class _Response(io.BytesIO):
+    status = 200
+
     def __enter__(self) -> _Response:
         return self
 
@@ -20,14 +22,19 @@ class _Response(io.BytesIO):
         self.close()
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, outcome: Any, token: str | None = "k") -> tuple:
+def _run(
+    monkeypatch: pytest.MonkeyPatch, outcome: Any, token: str | None = "k", status: int = 200
+) -> tuple:
     seen: list[str] = []
 
     def opener(request: Any, *, timeout: float) -> _Response:
         seen.append(request.full_url)
+        assert request.get_header("Authorization") == f"Bearer {token}"
         if isinstance(outcome, Exception):
             raise outcome
-        return _Response(json.dumps(outcome).encode())
+        response = _Response(json.dumps(outcome).encode())
+        response.status = status
+        return response
 
     monkeypatch.setattr(dd, "_read_omniroute_token", lambda: token)
     monkeypatch.setattr(dd, "open_no_redirect", opener)
@@ -53,6 +60,12 @@ def test_env_key_or_refused_key_is_an_issue(monkeypatch: pytest.MonkeyPatch, cod
     assert len(diag.issues) == 1
     assert f"HTTP {code}" in diag.issues[0] and "OMNIROUTE_API_KEY" in diag.issues[0]
     assert diag.sections[0][:2] == ("Gateway key", "failed")
+
+
+def test_non_200_success_status_is_never_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    diag, _ = _run(monkeypatch, {"apiKey": {"id": "k1", "name": "verdict"}}, status=203)
+    assert len(diag.issues) == 1
+    assert ("Gateway key", "ok") not in [row[:2] for row in diag.sections]
 
 
 def test_status_without_key_metadata_is_an_issue(monkeypatch: pytest.MonkeyPatch) -> None:

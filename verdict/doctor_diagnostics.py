@@ -342,7 +342,8 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
     try:
         # me/status aggregates account quotas and has been observed taking ~27 s.
         with open_no_redirect(request, timeout=30) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            if response.status == 200:
+                body = json.loads(response.read().decode("utf-8"))
     except ValueError:
         pass  # unparseable 200: reported below as missing key metadata
     except HTTPError as exc:
