@@ -90,13 +90,24 @@ def test_gateway_without_per_key_status_adds_nothing(monkeypatch: pytest.MonkeyP
     assert diag.issues == [] and diag.sections == [] and diag.warnings == []
 
 
-@pytest.mark.parametrize("outcome", [URLError("down"), TimeoutError("timed out")])
+@pytest.mark.parametrize(
+    "outcome", [URLError("down"), TimeoutError("timed out"), _http(429), _http(500)]
+)
 def test_unverified_key_is_a_warning_never_ok(
     monkeypatch: pytest.MonkeyPatch, outcome: Exception
 ) -> None:
     diag, _ = _run(monkeypatch, outcome)
     assert diag.issues == [] and len(diag.warnings) == 1
     assert diag.sections[0][:2] == ("Gateway key", "warn")
+
+
+def test_malformed_gateway_url_warns_and_never_crashes_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dd, "_read_omniroute_token", lambda: "k")
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_gateway_key(diag, "not a url")
+    assert diag.issues == [] and len(diag.warnings) == 1
 
 
 def test_no_resolved_key_makes_no_request(monkeypatch: pytest.MonkeyPatch) -> None:

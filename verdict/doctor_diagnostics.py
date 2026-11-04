@@ -327,27 +327,32 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
     warning: the key is unverified, never assumed good.
     """
     import urllib.request
-    from urllib.error import HTTPError, URLError
+    from urllib.error import HTTPError
 
     from verdict.free_tier_admit import normalize_omniroute_origin
+
+    def unverified(reason: object) -> None:
+        diag.sections.append(("Gateway key", "warn", f"not verified: {reason}"))
+        diag.warnings.append(f"Could not verify Verdict's OmniRoute key: {reason}")
 
     token = _read_omniroute_token()
     if not token:
         return
-    request = urllib.request.Request(
-        normalize_omniroute_origin(gateway_url) + "/api/v1/me/status",
-        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-    )
     try:
+        request = urllib.request.Request(
+            normalize_omniroute_origin(gateway_url) + "/api/v1/me/status",
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+        )
         # me/status aggregates account quotas and has been observed taking ~27 s.
         with open_no_redirect(request, timeout=30) as response:
             status = response.status
             raw = response.read()
-        if status != 200:
-            raise URLError(f"unexpected HTTP {status}")
-        body = json.loads(raw.decode("utf-8"))
+        body = json.loads(raw.decode("utf-8")) if status == 200 else None
     except HTTPError as exc:
         if exc.code == 404:
+            return
+        if exc.code not in (401, 403):  # outage or rate limit says nothing about the key
+            unverified(f"HTTP {exc.code}")
             return
         diag.sections.append(("Gateway key", "failed", f"/api/v1/me/status HTTP {exc.code}"))
         diag.issues.append(
@@ -355,12 +360,11 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
             + _ENV_KEY_REMEDY
         )
         return
-    except ValueError:
-        body = None  # unparseable 200: reported below as missing key metadata
-    except Exception as exc:  # transport or protocol failure: unverified, never OK
-        reason = getattr(exc, "reason", exc)
-        diag.sections.append(("Gateway key", "warn", f"not verified: {reason}"))
-        diag.warnings.append(f"Could not verify Verdict's OmniRoute key: {reason}")
+    except Exception as exc:  # bad URL, transport, protocol or unparseable body: never OK
+        unverified(getattr(exc, "reason", exc))
+        return
+    if status != 200:
+        unverified(f"unexpected HTTP {status}")
         return
     key = body.get("apiKey") if isinstance(body, dict) else None
     if isinstance(key, dict) and key.get("id"):
