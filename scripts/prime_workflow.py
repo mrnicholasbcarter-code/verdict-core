@@ -393,8 +393,11 @@ def validate_dispatch(
         lease["generation"] == packet["lease"]["generation"],
         "packet lease generation superseded; rehydrate",
     )
+    held = lease.get("worktree")
     require(
-        Path(str(lease.get("worktree", ""))).resolve() == repo.resolve()
+        isinstance(held, str)
+        and Path(held).is_absolute()
+        and Path(held).resolve() == repo.resolve()
         and lease.get("branch") == packet["branch"],
         "lease is held for another worktree or branch",
     )
