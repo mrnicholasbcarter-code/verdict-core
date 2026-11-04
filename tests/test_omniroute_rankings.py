@@ -146,6 +146,15 @@ def test_partly_malformed_rankings_are_rejected_whole() -> None:
     assert result.omission == "malformed"
 
 
+def test_oversized_integer_score_is_malformed_not_an_exception() -> None:
+    payload = {"rankings": [{"id": "p", "topModel": {"modelId": "m", "score": 10**400}}]}
+    result = OmniRouteRankings(
+        "http://127.0.0.1:20128", "secret", fetch_json=_fetcher(payload)
+    ).fetch("coding")
+    assert result.rows == ()
+    assert result.omission == "malformed"
+
+
 def test_transport_error_returns_named_omission() -> None:
     def fetch(url, api_key, timeout):
         raise urllib.error.URLError("timeout")

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -161,6 +162,7 @@ class OmniRouteRankings:
                 and model
                 and isinstance(score, (int, float))
                 and not isinstance(score, bool)
+                and abs(score) <= sys.float_info.max
                 and math.isfinite(float(score))
             ):
                 return RankingsResult((), "malformed")
