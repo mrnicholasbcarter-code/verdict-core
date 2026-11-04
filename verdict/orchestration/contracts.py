@@ -418,6 +418,7 @@ class TaskRequirements:
     coding: bool = True
     reasoning: bool = False
     frontier_worthy: bool = False
+    task_category: str = "general"  # coding | debugging | review | documentation | general; feeds OmniRoute advisory rankings
     exclude_routes: frozenset[str] = frozenset()  # e.g. implementer ids for an independent reviewer
     exclude_families: frozenset[str] = frozenset()  # e.g. {"claude"} to force a different family
     exclude_pools: frozenset[str] = frozenset()  # failed credential pools, not model families

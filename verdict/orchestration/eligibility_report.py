@@ -153,6 +153,8 @@ def build_selector(
     openrouter_free_set: Any = _OPENROUTER_FREE_SET_OMITTED,
     now: datetime | None = None,
     no_confirm: bool = False,
+    task_category: str = "general",
+    gateway_kind: str | None = None,
 ) -> Any:
     """Admitted eligibility ladder over the live gateway.
 
@@ -176,6 +178,7 @@ def build_selector(
         default_runtime_evidence,
     )
     from verdict.omniroute_health import load_omniroute_health
+    from verdict.omniroute_rankings import OmniRouteRankings
     from verdict.openrouter_free_set import OpenRouterFreeSet, load_openrouter_free_set
     from verdict.orchestration.eligibility import EligibilityLadder
     from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
@@ -310,6 +313,49 @@ def build_selector(
     else:
         harness_visible = prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
 
+    # BOD-417: optional OmniRoute advisory rankings as task-aware tie-break among
+    # already-admitted routes. Rankings are provider-level; map provider+topModel
+    # to route_id and rank by score within the requested task category. Never
+    # mix Arena (0.4-0.98) with AA coding (0-100). An unranked route has rank None
+    # and sorts after ranked ties.
+    # Only query OmniRoute gateways - generic OpenAI-compatible gateways are
+    # skipped with a named omission.
+    rankings: dict[str, int] = {}
+    rankings_omission: str | None = None
+    rankings_category: str | None = None
+    rankings_provenance: dict[str, dict[str, Any]] = {}
+    rankings_received_at: str | None = None
+    if task_category and task_category != "general":
+        rankings_category = task_category
+        try:
+            rankings_client = OmniRouteRankings(
+                gateway, key, gateway_kind=gateway_kind, clock=lambda: now
+            )
+            result = rankings_client.fetch(task_category)
+            rankings_received_at = result.received_at
+            if result.rows and result.is_fresh(now):
+                scored = sorted(result.rows, key=lambda r: r.score, reverse=True)
+                rankings = {
+                    f"{row.id}/{row.top_model_id}": rank + 1 for rank, row in enumerate(scored)
+                }
+                rankings_provenance = {
+                    f"{row.id}/{row.top_model_id}": {
+                        "source": result.source,
+                        "received_at": result.received_at,
+                        "source_observed_at": result.source_observed_at,
+                        "reliability": row.reliability_context,
+                        "usage": row.usage_context,
+                    }
+                    for row in scored
+                }
+            elif result.rows:
+                rankings_omission = "stale"
+            else:
+                rankings_omission = result.omission or "no_entry"
+        except Exception:
+            # Optional advice never changes admission or baseline order on failure.
+            rankings_omission = "unavailable"
+            rankings = {}
     return EligibilityLadder(
         rows,
         connections,
@@ -325,6 +371,11 @@ def build_selector(
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         openrouter_free_set=openrouter_free_set,
         max_probes_per_select=0 if no_confirm else 8,
+        rankings=rankings or None,
+        rankings_omission=rankings_omission,
+        rankings_category=rankings_category,
+        rankings_provenance=rankings_provenance,
+        rankings_received_at=rankings_received_at,
     )
 
 

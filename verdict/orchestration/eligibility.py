@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -271,6 +272,11 @@ class EligibilityLadder:
         openrouter_free_set: OpenRouterFreeSet | None = None,
         metadata: Any = _DEFAULT_METADATA,
         identity_map: IdentityMap | None = None,
+        rankings: Mapping[str, int] | None = None,
+        rankings_omission: str | None = None,
+        rankings_category: str | None = None,
+        rankings_provenance: Mapping[str, Mapping[str, Any]] | None = None,
+        rankings_received_at: str | None = None,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -324,6 +330,11 @@ class EligibilityLadder:
         # a snapshot (or None for no ratings). Loaded once, on first ranking.
         self._metadata_arg = metadata
         self._identity_map = identity_map
+        self._rankings = rankings
+        self._rankings_omission = rankings_omission
+        self._rankings_category = rankings_category
+        self._rankings_provenance = rankings_provenance or {}
+        self._rankings_received_at = rankings_received_at
         self._rating_evidence_cache: tuple[MetadataSnapshot | None, IdentityMap | None] | None = (
             None
         )
@@ -834,6 +845,14 @@ class EligibilityLadder:
         cache_freshness: str | None = None
         rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
         session = self._session_summary(a.route_id, rc_now)
+        # Advisory ranks apply only to the category they were fetched for; an
+        # admitted route with no entry has an unknown (None) rank and a named omission.
+        rankings: dict[str, int] = getattr(self, "_rankings", None) or {}
+        advisory_omission = getattr(self, "_rankings_omission", None)
+        if not getattr(self, "_rankings_apply", True):
+            rankings, advisory_omission = {}, "category_mismatch"
+        elif advisory_omission is None and rankings and a.route_id not in rankings:
+            advisory_omission = "no_entry"
         if cache is not None:
             lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
@@ -869,6 +888,10 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
+            "advisory_rank": rankings.get(a.route_id),
+            "advisory_category": getattr(self, "_rankings_category", None),
+            "advisory_omission": advisory_omission,
+            "advisory_provenance": getattr(self, "_rankings_provenance", {}).get(a.route_id),
         }
         error = getattr(self, "_session_evidence_error", None)
         if error is not None:
@@ -877,7 +900,7 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[int, int, float, int, float, int, int, int, int, int, int, str]:
+    ) -> tuple[int, int, float, int, float, int, int, int, int, int, int, int, str]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
         Cheapest qualified tier first, then a fresh task score (higher first) beats a fresh
@@ -899,6 +922,7 @@ class EligibilityLadder:
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
+            sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
             0 if subscription else c["quota_rank"],
             c["provider_pref"],
             c["load"],
@@ -924,6 +948,10 @@ class EligibilityLadder:
             "rating_source": components["rating_source"],
             "rating_as_of": components["rating_as_of"],
             "slack": components["slack"],
+            "advisory_rank": components["advisory_rank"],
+            "advisory_category": components.get("advisory_category"),
+            "advisory_omission": components.get("advisory_omission"),
+            "advisory_provenance": components.get("advisory_provenance"),
             "quota_rank": components["quota_rank"],
             "quota_percent": components.get("quota_percent"),
             "expected_tokens": components.get("expected_tokens"),
@@ -959,6 +987,15 @@ class EligibilityLadder:
         if cache is not None and cache.path.exists():
             cache.reload()
         self._current_now = now
+        received_at = getattr(self, "_rankings_received_at", None)
+        if received_at is not None:
+            from verdict.omniroute_rankings import RankingsResult
+
+            if not RankingsResult((), received_at=received_at).is_fresh(now):
+                self._rankings = None
+                self._rankings_omission = "stale"
+        ranked_for = getattr(self, "_rankings_category", None)
+        self._rankings_apply = ranked_for is None or ranked_for == requirements.task_category
         from verdict.candidate_pool import expected_token_usage
         from verdict.outcome_shadow import (
             load_verified_outcome_observations,
