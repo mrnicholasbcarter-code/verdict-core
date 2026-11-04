@@ -40,7 +40,9 @@ Verdict SHALL NOT default a missing, stale, malformed, 404, timeout, or unmatche
 
 #### Scenario: Missing ranking yields named omission
 - **WHEN** the OmniRoute rankings endpoint returns no entry for an admitted route
-- **THEN** the route retains baseline ordering and the omission reason is recorded in the receipt
+- **THEN** its ranking score stays unknown and the omission `no_entry` is recorded in the receipt
+- **AND** at the advisory tie-break it sorts after ranked peers that tie on every earlier key, while unranked routes keep their baseline order relative to each other
+- **AND** when no admitted route has an entry, the whole ordering equals the baseline
 
 #### Scenario: Stale/malformed/404/timeout yields baseline order
 - **WHEN** the rankings response is missing, stale, malformed, HTTP 404, or times out

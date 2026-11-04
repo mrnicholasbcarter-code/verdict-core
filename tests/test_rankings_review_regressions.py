@@ -138,9 +138,9 @@ def test_unranked_admitted_route_records_named_omission(tmp_path):
     assert components["p/model-c"]["advisory_omission"] is None
     assert components["p/model-a"]["advisory_omission"] == "no_entry"
     assert components["p/model-a"]["advisory_rank"] == 999
-    # Advisory only reorders: the admitted membership equals the unranked baseline.
+    # Advisory only reorders: the ranked tie goes first, unranked routes keep baseline order.
     baseline_order, _ = _order(_ranked_ladder(tmp_path, "base"), req)
-    assert sorted(order) == sorted(baseline_order)
+    assert order == ["p/model-c"] + [r for r in baseline_order if r != "p/model-c"]
 
 
 def test_rankings_for_another_category_leave_baseline_order(tmp_path):
