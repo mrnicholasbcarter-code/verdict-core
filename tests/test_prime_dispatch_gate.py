@@ -90,10 +90,15 @@ def test_worker_commits_on_top_of_base_stay_current(current) -> None:
         ("other_attempt", "does not match the hydrated packet attempt"),
         ("lease_worktree", "another worktree or branch"),
         ("lease_branch", "another worktree or branch"),
+        ("lease_no_worktree", "another worktree or branch"),
+        ("lease_relative_worktree", "another worktree or branch"),
     ],
 )
-def test_invalid_or_stale_packet_is_refused(current, tmp_path, breakage, message) -> None:
+def test_invalid_or_stale_packet_is_refused(
+    current, tmp_path, monkeypatch, breakage, message
+) -> None:
     m, p, repo, state = current
+    monkeypatch.chdir(repo)  # worst case: an empty or relative lease path must not match cwd
     _break(p, repo, state, tmp_path, breakage)
     updated_at = "2026-09-14T00:00:00Z" if breakage == "issue_revision" else UPDATED_AT
     if breakage == "no_lease":
@@ -125,6 +130,10 @@ def _break(p: dict[str, Any], repo: Path, state: Path, tmp_path: Path, breakage:
         lease["worktree"] = str(tmp_path / "other-worktree")
     elif breakage == "lease_branch":
         lease["branch"] = "other"
+    elif breakage == "lease_no_worktree":
+        lease["worktree"] = ""
+    elif breakage == "lease_relative_worktree":
+        lease["worktree"] = "."
     lease_file.write_text(json.dumps(lease))
 
 
