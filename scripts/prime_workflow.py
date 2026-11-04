@@ -361,6 +361,49 @@ def default_state_dir(repo: Path) -> Path:
     return Path(common) / "verdict-prime"
 
 
+def validate_dispatch(
+    packet: dict[str, Any], repo: Path, *, issue_updated_at: str, state: Path
+) -> dict[str, Any]:
+    """Dispatch gate: refuse an invalid or stale packet before any worker starts.
+
+    ``issue_updated_at`` is the Linear revision the dispatcher read immediately before
+    dispatch; a mismatch means the packet is a stale snapshot and must be rehydrated.
+    Returns the current lease that fences this attempt.
+    """
+    validate_packet(packet)
+    require(Path(packet["worktree"]).resolve() == repo.resolve(), "packet worktree mismatch")
+    require(
+        packet["issue_updated_at"] == issue_updated_at,
+        "stale packet: Linear issue changed since hydration; rehydrate",
+    )
+    require(
+        git(repo, "branch", "--show-current") == packet["branch"],
+        "packet branch is not checked out in the worktree",
+    )
+    require(
+        subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", packet["base_sha"], "HEAD"],
+            capture_output=True,
+        ).returncode
+        == 0,
+        "stale packet: base_sha is not an ancestor of the worktree HEAD; rehydrate",
+    )
+    lease = require_lease_for_pr(state, packet)
+    require(
+        lease["generation"] == packet["lease"]["generation"],
+        "packet lease generation superseded; rehydrate",
+    )
+    held = lease.get("worktree")
+    require(
+        isinstance(held, str)
+        and Path(held).is_absolute()
+        and Path(held).resolve() == repo.resolve()
+        and lease.get("branch") == packet["branch"],
+        "lease is held for another worktree or branch",
+    )
+    return lease
+
+
 def check_bundle(
     repo: Path, proof_path: Path, review_path: Path
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:

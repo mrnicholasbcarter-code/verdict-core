@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import runpy
 import shlex
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+WORKFLOW_SCRIPT = Path(__file__).resolve().parents[5] / "scripts" / "prime_workflow.py"
 DEFAULT_ALLOWED_ROUTE_PREFIXES = ("cc/", "kr/")
 LEGACY_CONTROLLER_MODELS = frozenset({"cx/gpt-5.6-sol", "cx/gpt-6-astra"})
 
@@ -61,6 +63,8 @@ class PrimeWorkerOperation:
         prompt: str,
         *,
         controller_model: str,
+        packet: str,
+        issue_updated_at: str,
         task: dict[str, Any] | None = None,
         budget: dict[str, Any] | None = None,
         allowed_route_prefixes: tuple[str, ...] = DEFAULT_ALLOWED_ROUTE_PREFIXES,
@@ -81,6 +85,15 @@ class PrimeWorkerOperation:
         common_file = git_path / "commondir"
         if common_file.exists():
             git_path = (git_path / common_file.read_text().strip()).resolve()
+        # Dispatch gate: the controller's own validator, not the worker branch's copy.
+        workflow = runpy.run_path(str(WORKFLOW_SCRIPT))
+        packet_data = json.loads(Path(packet).read_text())
+        lease = workflow["validate_dispatch"](
+            packet_data,
+            self.repo,
+            issue_updated_at=issue_updated_at,
+            state=git_path / "verdict-prime",
+        )
         self.directory = git_path / "verdict-prime" / "worker-runs" / uuid.uuid4().hex
         self.directory.mkdir(parents=True)
         write_json(
@@ -90,6 +103,9 @@ class PrimeWorkerOperation:
                 "controller_model": self.controller_model,
                 "task": task_config,
                 "budget": budget or {},
+                "packet": str(Path(packet).resolve()),
+                "attempt_id": packet_data["attempt_id"],
+                "lease_generation": lease["generation"],
             },
         )
         self.handle = bash(

@@ -1284,6 +1284,12 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "verdict.acceptance_state.doctor_check", lambda **_: ({"state": "green"}, [], [])
     )
 
+    # The gateway answers me/status for a DB-backed key (tests/test_doctor_gateway_key.py).
+    monkeypatch.setattr(
+        "verdict.doctor_diagnostics._doctor_gateway_key",
+        lambda diag, _url: diag.sections.append(("Gateway key", "ok", "DB-backed key test")),
+    )
+
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
