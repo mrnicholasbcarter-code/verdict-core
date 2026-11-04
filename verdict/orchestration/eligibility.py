@@ -844,6 +844,14 @@ class EligibilityLadder:
         cache_freshness: str | None = None
         rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
         session = self._session_summary(a.route_id, rc_now)
+        # Advisory ranks apply only to the category they were fetched for; an
+        # admitted route with no entry keeps baseline order and a named omission.
+        rankings: dict[str, int] = getattr(self, "_rankings", None) or {}
+        advisory_omission = getattr(self, "_rankings_omission", None)
+        if rankings and not getattr(self, "_rankings_apply", True):
+            rankings, advisory_omission = {}, "category_mismatch"
+        elif advisory_omission is None and rankings and a.route_id not in rankings:
+            advisory_omission = "no_entry"
         if cache is not None:
             lookup = cache.lookup(a.route_id, rc_now)
             if lookup.entry is not None:
@@ -879,9 +887,9 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
-            "advisory_rank": (getattr(self, "_rankings", None) or {}).get(a.route_id, 999),
+            "advisory_rank": rankings.get(a.route_id, 999),
             "advisory_category": getattr(self, "_rankings_category", None),
-            "advisory_omission": getattr(self, "_rankings_omission", None),
+            "advisory_omission": advisory_omission,
             "advisory_provenance": getattr(self, "_rankings_provenance", {}).get(a.route_id),
         }
         error = getattr(self, "_session_evidence_error", None)
@@ -985,6 +993,8 @@ class EligibilityLadder:
             if not RankingsResult((), received_at=received_at).is_fresh(now):
                 self._rankings = None
                 self._rankings_omission = "stale"
+        ranked_for = getattr(self, "_rankings_category", None)
+        self._rankings_apply = ranked_for is None or ranked_for == requirements.task_category
         from verdict.candidate_pool import expected_token_usage
         from verdict.outcome_shadow import (
             load_verified_outcome_observations,

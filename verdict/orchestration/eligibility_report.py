@@ -350,7 +350,7 @@ def build_selector(
             elif result.rows:
                 rankings_omission = "stale"
             else:
-                rankings_omission = result.omission
+                rankings_omission = result.omission or "empty"
         except Exception:
             # Optional advice never changes admission or baseline order on failure.
             rankings_omission = "unavailable"

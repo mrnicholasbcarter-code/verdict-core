@@ -64,6 +64,10 @@ Verdict SHALL propagate coding/debugging/review task category from `verdict choo
 - **WHEN** a non-coding caller invokes selection
 - **THEN** it defaults to coding/general category and existing behavior is unchanged
 
+#### Scenario: Rankings for another category are not applied
+- **WHEN** a selector holding rankings for one category selects for a different task category
+- **THEN** the ordering equals the baseline and the omission is `category_mismatch`
+
 ### Requirement: Receipt/provenance exposure
 Verdict SHALL expose ranking category, source, local receipt timestamp, source-observed timestamp when provided (otherwise null), reliability/usage context, and omission reason in existing rank components/explanations without fabricating benchmark dates. The current OmniRoute endpoint does not provide a ranking observation timestamp; local receipt freshness SHALL NOT be represented as proof of source freshness.
 

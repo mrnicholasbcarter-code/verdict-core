@@ -73,12 +73,11 @@ def _default_fetch_json(url: str, api_key: str | None, timeout: float) -> Any:
 
 
 def _reliability(rel: Any) -> float | None:
-    """Provider-aggregate reliability as advisory context. Unknown stays None, never zero."""
-    if isinstance(rel, Mapping):
-        state = rel.get("state")
-        if state == "healthy":
-            return 1.0
-        return None
+    """Numeric reliability only when the source sends a number. Unknown stays None, never zero.
+
+    A categorical state such as ``healthy`` is kept in ``reliability_context``; it is
+    never converted into a hand-authored score.
+    """
     if isinstance(rel, (int, float)) and not isinstance(rel, bool):
         return float(rel)
     return None

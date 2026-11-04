@@ -107,3 +107,59 @@ def test_ranking_provenance_reaches_selected_route(tmp_path):
     )
     assert selected is not None
     assert selected.rank_components["advisory_provenance"] == provenance
+
+
+def _ranked_ladder(tmp_path, name, **kwargs):
+    rows = [_row("p/model-a"), _row("p/model-b"), _row("p/model-c")]
+    return EligibilityLadder(rows, [_conn("p")], _Probe(), tmp_path / f"{name}.json", **kwargs)
+
+
+def _order(ladder, req):
+    _, candidates = ladder._assess_all(req, NOW)
+    return [a.route_id for a in sorted(candidates, key=ladder._rank_key)], candidates
+
+
+def test_unranked_admitted_route_records_named_omission(tmp_path):
+    req = TaskRequirements(
+        max_capability_tier=3,
+        min_context_tokens=16_000,
+        required_capabilities=frozenset(),
+        task_category="coding",
+    )
+    ladder = _ranked_ladder(
+        tmp_path,
+        "partial",
+        rankings={"p/model-c": 1},
+        rankings_category="coding",
+        rankings_received_at=NOW.isoformat(),
+    )
+    order, candidates = _order(ladder, req)
+    components = {a.route_id: ladder._rank_components(a) for a in candidates}
+    assert components["p/model-c"]["advisory_omission"] is None
+    assert components["p/model-a"]["advisory_omission"] == "no_entry"
+    assert components["p/model-a"]["advisory_rank"] == 999
+    # Advisory only reorders: the admitted membership equals the unranked baseline.
+    baseline_order, _ = _order(_ranked_ladder(tmp_path, "base"), req)
+    assert sorted(order) == sorted(baseline_order)
+
+
+def test_rankings_for_another_category_leave_baseline_order(tmp_path):
+    req = TaskRequirements(
+        max_capability_tier=3,
+        min_context_tokens=16_000,
+        required_capabilities=frozenset(),
+        task_category="review",
+    )
+    baseline_order, _ = _order(_ranked_ladder(tmp_path, "base"), req)
+    ladder = _ranked_ladder(
+        tmp_path,
+        "coding",
+        rankings={"p/model-c": 1, "p/model-b": 2, "p/model-a": 3},
+        rankings_category="coding",
+        rankings_received_at=NOW.isoformat(),
+    )
+    order, candidates = _order(ladder, req)
+    assert order == baseline_order
+    components = ladder._rank_components(candidates[0])
+    assert components["advisory_omission"] == "category_mismatch"
+    assert components["advisory_rank"] == 999

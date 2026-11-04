@@ -54,7 +54,9 @@ def test_rankings_parses_actual_api_shape() -> None:
     assert rows[0].id == "agy"
     assert rows[0].top_model_id == "gemini-3.8-flash-high"
     assert rows[0].score == 0.91
-    assert rows[0].reliability == 1.0
+    # Categorical state is preserved as source context, never converted to a score.
+    assert rows[0].reliability is None
+    assert rows[0].reliability_context["state"] == "healthy"
     # The real query string is used against the OmniRoute management endpoint.
     assert fetch.calls[0].startswith("http://127.0.0.1:20128/api/free-provider-rankings?")
     assert "category=coding" in fetch.calls[0]
