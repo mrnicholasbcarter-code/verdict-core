@@ -17,4 +17,4 @@
 - [x] 2.4 Propagate coding/debugging/review category through `_action_choose_live` → selection contracts
 - [x] 2.5 Keep `_rank_components`, `_rank_key`, `_probe_order` consistent; preserve admission and generic-gateway fallback
 - [x] 2.6 Run focused static + unit + neighbor suites (RED → GREEN); strict mypy/ruff once
-- [x] 2.7 Parent runs real `verdict choose` for implementation/debugging/review; exact-head OCR; PR/CI/merge/main replay
+- [ ] 2.7 Parent runs real `verdict choose` for implementation/debugging/review; exact-head OCR; PR/CI/merge/main replay
