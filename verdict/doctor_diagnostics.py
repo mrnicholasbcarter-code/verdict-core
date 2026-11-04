@@ -338,14 +338,14 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
         normalize_omniroute_origin(gateway_url) + "/api/v1/me/status",
         headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
     )
-    body: Any = None
     try:
         # me/status aggregates account quotas and has been observed taking ~27 s.
         with open_no_redirect(request, timeout=30) as response:
-            if response.status == 200:
-                body = json.loads(response.read().decode("utf-8"))
-    except ValueError:
-        pass  # unparseable 200: reported below as missing key metadata
+            status = response.status
+            raw = response.read()
+        if status != 200:
+            raise URLError(f"unexpected HTTP {status}")
+        body = json.loads(raw.decode("utf-8"))
     except HTTPError as exc:
         if exc.code == 404:
             return
@@ -355,7 +355,9 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
             + _ENV_KEY_REMEDY
         )
         return
-    except (URLError, OSError) as exc:
+    except ValueError:
+        body = None  # unparseable 200: reported below as missing key metadata
+    except Exception as exc:  # transport or protocol failure: unverified, never OK
         reason = getattr(exc, "reason", exc)
         diag.sections.append(("Gateway key", "warn", f"not verified: {reason}"))
         diag.warnings.append(f"Could not verify Verdict's OmniRoute key: {reason}")

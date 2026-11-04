@@ -11,17 +11,18 @@ answers 200 with key metadata (`apiKey.id`).
 - **TEST** `tests/test_doctor_gateway_key.py::test_db_backed_key_is_ok`
 
 #### Scenario: Gateway env key or refused key
-- **WHEN** `me/status` answers 401 or 403, any other non-200 success status, or 200
-  without key metadata
+- **WHEN** `me/status` answers 401 or 403, or 200 without key metadata
 - **THEN** doctor reports an issue naming `OMNIROUTE_API_KEY` in the gateway environment
   as the likely cause and the remedy
 - **TEST** `tests/test_doctor_gateway_key.py::test_env_key_or_refused_key_is_an_issue`,
-  `::test_status_without_key_metadata_is_an_issue`, `::test_non_200_success_status_is_never_ok`
+  `::test_status_without_key_metadata_is_an_issue`
 
 #### Scenario: Key cannot be verified
-- **WHEN** the request times out or the transport fails
-- **THEN** doctor adds a warning and never an OK row
-- **TEST** `tests/test_doctor_gateway_key.py::test_unverified_key_is_a_warning_never_ok`
+- **WHEN** the request times out, the transport or protocol fails, or the gateway answers
+  a non-200 success status
+- **THEN** doctor adds a warning, never an OK row, and the rest of doctor still runs
+- **TEST** `tests/test_doctor_gateway_key.py::test_unverified_key_is_a_warning_never_ok`,
+  `::test_non_200_success_status_is_never_ok`, `::test_garbage_response_warns_and_never_crashes_doctor`
 
 #### Scenario: Not applicable
 - **WHEN** no key is resolved, or the gateway answers 404
