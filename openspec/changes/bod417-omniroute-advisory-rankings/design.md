@@ -59,9 +59,11 @@ None.
 ## Explicit gateway identity and honest observation freshness
 
 Rankings requests require `gateway_kind="omniroute"` on the shared selector or
-explicit `VERDICT_GATEWAY_KIND=omniroute` configuration. The environment setting
-also enables the existing `verdict choose` CLI; a URL alone does not identify
-a gateway product. Missing or other kinds produce `generic_gateway` without a
+explicit configuration: `VERDICT_GATEWAY_KIND=omniroute`, else `gateway_kind:
+omniroute` in `verdict.yaml`, which a fresh `verdict setup` writes when the
+gateway it saves identifies as OmniRoute. Either setting also enables the
+existing `verdict choose` CLI; a URL alone does not identify a gateway product.
+`verdict doctor` reports the effective kind and whether rankings are active. Missing or other kinds produce `generic_gateway` without a
 management request, including for localhost and names containing omniroute.
 
 The inspected OmniRoute endpoint returns `rankings` without an authoritative

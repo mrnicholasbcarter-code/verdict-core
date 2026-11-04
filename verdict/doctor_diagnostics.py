@@ -274,6 +274,36 @@ def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Gateway remediation", "note", outcome.diagnostic.remediation))
 
 
+def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
+    """Report the effective gateway kind and whether OmniRoute advisory rankings are active.
+
+    Report only, never an issue: rankings are advisory and baseline order still holds
+    without them. Uses the same gateway binding as the eligibility ladder.
+    """
+    from verdict.credentials_store import resolve_gateway_binding
+    from verdict.omniroute_rankings import OmniRouteRankings, resolve_gateway_kind
+
+    kind, source = resolve_gateway_kind()
+    label = f"gateway_kind={kind or 'unset'} ({source})"
+    if kind != "omniroute":
+        diag.sections.append(
+            (
+                "Advisory rankings",
+                "note",
+                f"inactive: {label}; set gateway_kind: omniroute in verdict.yaml to enable",
+            )
+        )
+        return
+    gateway, key = resolve_gateway_binding()
+    result = OmniRouteRankings(gateway, key, timeout=5.0).fetch("coding")
+    if result.rows:
+        detail = f"active: {label}; {len(result.rows)} ranked providers (coding)"
+        diag.sections.append(("Advisory rankings", "ok", detail))
+    else:
+        detail = f"inactive: {label}; rankings omitted ({result.omission or 'no rows'})"
+        diag.sections.append(("Advisory rankings", "warn", detail))
+
+
 def census_runtime_section() -> tuple[str, str, str]:
     """The legacy census is retired; never recommend reinstalling it."""
     return (
@@ -562,6 +592,7 @@ def _collect_doctor_diagnostics(
 
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
+    _doctor_advisory_rankings(diag)
 
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")

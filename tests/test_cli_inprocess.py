@@ -928,10 +928,13 @@ def test_cmd_setup_auto_and_sync_mock(
     assert cfg["providers"]["ollama"]["base_url"] == "http://localhost:11434/v1"
 
 
+@pytest.mark.parametrize(
+    ("identity", "port", "kind"), [("omniroute", 20128, "omniroute"), ("9router", 20129, None)]
+)
 def test_cmd_setup_wires_detected_gateway_into_config_and_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity: str, port: int, kind: str | None
 ) -> None:
-    """T009/T010: a healthy detected gateway is written to config and env."""
+    """T009/T010: a healthy detected gateway is written to config; only OmniRoute sets gateway_kind."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
@@ -957,11 +960,11 @@ def test_cmd_setup_wires_detected_gateway_into_config_and_env(
         lambda ports=None: [
             GatewayCandidate(
                 host="127.0.0.1",
-                port=20128,
-                url="http://127.0.0.1:20128",
+                port=port,
+                url=f"http://127.0.0.1:{port}",
                 health_ok=True,
-                identity="omniroute",
-                display_name="OmniRoute",
+                identity=identity,
+                display_name=identity,
             )
         ],
     )
@@ -982,7 +985,8 @@ def test_cmd_setup_wires_detected_gateway_into_config_and_env(
     config_path = tmp_path / ".config" / "verdict" / "verdict.yaml"
     assert config_path.exists()
     saved = yaml.safe_load(config_path.read_text())
-    assert saved["gateway_url"] == "http://127.0.0.1:20128"
+    assert saved["gateway_url"] == f"http://127.0.0.1:{port}"
+    assert saved.get("gateway_kind") == kind
 
 
 def test_cmd_setup_prompts_on_malformed_existing_config(
@@ -1303,6 +1307,9 @@ def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
     assert report["status"] == "ok"
     assert report["issues"] == []
     assert report["warnings"] == []
+    [rankings] = [s for s in report["sections"] if s["label"] == "Advisory rankings"]
+    assert rankings["state"] == "note"
+    assert rankings["detail"].startswith("inactive: gateway_kind=unset")
 
 
 def test_cli_doctor_json_missing_mcp_config_warns_but_exits_zero(

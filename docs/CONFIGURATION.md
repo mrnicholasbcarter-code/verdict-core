@@ -8,7 +8,7 @@
 
 | Surface | Path | Owns |
 |---|---|---|
-| Routing / setup YAML | `~/.config/verdict/verdict.yaml` (or `$XDG_CONFIG_HOME/verdict/verdict.yaml`) | `primary_model`, `providers` written by `verdict setup` / detect |
+| Routing / setup YAML | `~/.config/verdict/verdict.yaml` (or `$XDG_CONFIG_HOME/verdict/verdict.yaml`) | `primary_model`, `providers`, `gateway_url`, `gateway_kind` written by `verdict setup` / detect |
 | Context hydration TOML | `.verdict/config.toml` or `~/.verdict/config.toml` | Narrow `[context]` settings for pack hydration only |
 | Process environment | shell / service env | Overrides for gateway, API, intelligence, receipts, guidance |
 
@@ -25,6 +25,8 @@ Written by `verdict setup` and provider detection:
 ```yaml
 primary_model: anthropic/claude-opus-5
 providers: {}
+gateway_url: http://127.0.0.1:20128
+gateway_kind: omniroute   # only when setup detected OmniRoute
 ```
 
 Notes:
@@ -34,6 +36,52 @@ Notes:
 - Live low-criticality `verdict route` admits a concrete **free-tier ∩ active**
   identity and fails closed with a named receipt when the intersection is empty.
   See [`guides/free-tier-admit-smoke.md`](guides/free-tier-admit-smoke.md).
+
+### OmniRoute advisory rankings (`gateway_kind`)
+
+`gateway_kind` tells Verdict which kind of gateway `gateway_url` points at. Only
+`omniroute` changes behaviour: it lets the eligibility ladder fetch OmniRoute's
+free-provider rankings (`/api/free-provider-rankings`, an OmniRoute management
+endpoint) for `coding`, `debugging` and `review` selections, such as
+`verdict choose`.
+
+- **Read from:** `VERDICT_GATEWAY_KIND` when set and non-empty, else
+  `gateway_kind` in `verdict.yaml`. The value is trimmed and case-insensitive.
+  There is no `LLMGATE_` alias.
+- **Default:** unset. Verdict then treats the gateway as a generic
+  OpenAI-compatible gateway: it sends no rankings request and records the
+  omission `generic_gateway`. `VERDICT_GATEWAY_KIND=generic` forces this even
+  when the config file says `omniroute`.
+- **Setup:** a fresh `verdict setup` writes `gateway_kind: omniroute` when the
+  gateway it detects and saves as `gateway_url` identifies as OmniRoute. Setup
+  leaves an existing `verdict.yaml` untouched, so on an existing install add the
+  line yourself.
+- **Doctor:** `verdict doctor` prints an `Advisory rankings` line with the
+  effective value and its source. It reads `active` only when the kind is
+  `omniroute` and a bounded `coding` rankings fetch returned ranked rows;
+  otherwise it reads `inactive` with the reason. This line is never an issue
+  and does not change the exit code.
+
+Rankings are **advisory only**. They reorder candidates that already passed hard
+admission (authentication, entitlement, capability, quota, capacity,
+availability, authority and risk). They never admit, exclude or entitle a
+route, so a top-ranked route that admission excluded still cannot be selected.
+
+How rankings order candidates:
+
+- A score applies only to the exact `provider/model` route OmniRoute names (or
+  a trusted canonical alias). It never transfers to other models of the same
+  provider.
+- Ranked routes get rank 1, 2, … by descending OmniRoute score. The rank is a
+  tie-break: it sorts after capacity tier, subscription token usage, task
+  rating, declared tier and capability slack, and before quota, provider
+  preference, load and fit.
+- **Tie-break:** when two admitted routes tie on every earlier key, a ranked
+  route goes ahead of an unranked one. Unranked routes keep their baseline order
+  relative to each other.
+- A missing, 404, timed-out, malformed or stale (older than 24 hours) response
+  leaves the whole order at baseline and records a named omission. A missing
+  score stays unknown; it is never treated as zero.
 
 ---
 
@@ -335,6 +383,7 @@ missing, invalid, or future source timestamps remain explicit failures.
 |----------|---------|
 | `OMNIROUTE_BASE_URL` | Base URL of the local gateway (inventory/execute/health) |
 | `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
+| `VERDICT_GATEWAY_KIND` | Gateway kind; `omniroute` enables advisory rankings. Overrides `gateway_kind` in `verdict.yaml`. See [OmniRoute advisory rankings](#omniroute-advisory-rankings-gateway_kind) |
 | `VERDICT_OMNIROUTE_API_KEY` | Gateway key for `verdict orchestrate` and the OCR reviewer; usually the same value as `OMNIROUTE_API_KEY` |
 | `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane access token (`oma_…`, Settings → Access Tokens). A `read` scope is enough for Verdict. An `sk-` inference key does not work here |
 | `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Comma-separated exact private-host allowlist, not a boolean; merged with the API upstream allowlist and loopback defaults |
