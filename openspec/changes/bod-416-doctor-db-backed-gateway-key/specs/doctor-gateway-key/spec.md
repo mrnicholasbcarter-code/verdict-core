@@ -20,10 +20,12 @@ answers 200 with key metadata (`apiKey.id`).
 #### Scenario: Key cannot be verified
 - **WHEN** the request times out, the URL is malformed, the transport or protocol fails, the
   body is unparseable, or the gateway answers 429, 5xx or a non-200 success status
-- **THEN** doctor adds a warning, never an OK row, and the rest of doctor still runs
+- **THEN** doctor adds a warning naming only the failure category (never exception text,
+  which can echo the key), never an OK row, and the rest of doctor still runs
 - **TEST** `tests/test_doctor_gateway_key.py::test_unverified_key_is_a_warning_never_ok`,
   `::test_non_200_success_status_is_never_ok`, `::test_garbage_response_warns_and_never_crashes_doctor`,
-  `::test_malformed_gateway_url_warns_and_never_crashes_doctor`
+  `::test_malformed_gateway_url_warns_and_never_crashes_doctor`,
+  `::test_key_never_appears_in_doctor_output`
 
 #### Scenario: Not applicable
 - **WHEN** no key is resolved, or the gateway answers 404

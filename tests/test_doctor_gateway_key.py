@@ -110,6 +110,15 @@ def test_malformed_gateway_url_warns_and_never_crashes_doctor(
     assert diag.issues == [] and len(diag.warnings) == 1
 
 
+def test_key_never_appears_in_doctor_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "sk-secret\r\nX-Injected: 1"
+    monkeypatch.setattr(dd, "_read_omniroute_token", lambda: secret)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_gateway_key(diag, "http://127.0.0.1:9")  # real opener: header is rejected
+    text = repr((diag.sections, diag.issues, diag.warnings))
+    assert len(diag.warnings) == 1 and "sk-secret" not in text
+
+
 def test_no_resolved_key_makes_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
     diag, seen = _run(monkeypatch, {"apiKey": {"id": "k1"}}, token=None)
     assert seen == [] and diag.issues == []
