@@ -143,12 +143,13 @@ class OmniRouteRankings:
         if not isinstance(raw, list):
             return RankingsResult((), "malformed")
         rows: list[RankingRow] = []
+        # Any invalid row rejects the whole response: a partial subset never reorders.
         for item in raw:
             if not isinstance(item, Mapping):
-                continue
+                return RankingsResult((), "malformed")
             top = item.get("topModel")
             if not isinstance(top, Mapping):
-                continue
+                return RankingsResult((), "malformed")
             provider_id = item.get("id")
             model = top.get("modelId")
             # Score lives inside topModel in the real API.
@@ -162,7 +163,7 @@ class OmniRouteRankings:
                 and not isinstance(score, bool)
                 and math.isfinite(float(score))
             ):
-                continue
+                return RankingsResult((), "malformed")
             reliability = item.get("reliability")
             context = dict(reliability) if isinstance(reliability, Mapping) else None
             usage = context.get("usage") if context is not None else None

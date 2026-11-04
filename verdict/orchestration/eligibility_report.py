@@ -316,7 +316,8 @@ def build_selector(
     # BOD-417: optional OmniRoute advisory rankings as task-aware tie-break among
     # already-admitted routes. Rankings are provider-level; map provider+topModel
     # to route_id and rank by score within the requested task category. Never
-    # mix Arena (0.4-0.98) with AA coding (0-100); unknown stays 999 (baseline).
+    # mix Arena (0.4-0.98) with AA coding (0-100). An unranked route has rank None
+    # and sorts after ranked ties.
     # Only query OmniRoute gateways - generic OpenAI-compatible gateways are
     # skipped with a named omission.
     rankings: dict[str, int] = {}
@@ -350,7 +351,7 @@ def build_selector(
             elif result.rows:
                 rankings_omission = "stale"
             else:
-                rankings_omission = result.omission or "empty"
+                rankings_omission = result.omission or "no_entry"
         except Exception:
             # Optional advice never changes admission or baseline order on failure.
             rankings_omission = "unavailable"

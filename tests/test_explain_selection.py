@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -739,7 +740,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
-            c["advisory_rank"],
+            sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
             0 if a.capacity == CapacityClass.SUBSCRIPTION else c["quota_rank"],
             c["provider_pref"],
             c["load"],

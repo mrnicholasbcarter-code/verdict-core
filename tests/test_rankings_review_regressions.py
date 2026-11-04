@@ -137,7 +137,7 @@ def test_unranked_admitted_route_records_named_omission(tmp_path):
     components = {a.route_id: ladder._rank_components(a) for a in candidates}
     assert components["p/model-c"]["advisory_omission"] is None
     assert components["p/model-a"]["advisory_omission"] == "no_entry"
-    assert components["p/model-a"]["advisory_rank"] == 999
+    assert components["p/model-a"]["advisory_rank"] is None
     # Advisory only reorders: the ranked tie goes first, unranked routes keep baseline order.
     baseline_order, _ = _order(_ranked_ladder(tmp_path, "base"), req)
     assert order == ["p/model-c"] + [r for r in baseline_order if r != "p/model-c"]
@@ -162,4 +162,18 @@ def test_rankings_for_another_category_leave_baseline_order(tmp_path):
     assert order == baseline_order
     components = ladder._rank_components(candidates[0])
     assert components["advisory_omission"] == "category_mismatch"
-    assert components["advisory_rank"] == 999
+    assert components["advisory_rank"] is None
+
+
+def test_failed_rankings_for_another_category_report_category_mismatch(tmp_path):
+    req = TaskRequirements(
+        max_capability_tier=3,
+        min_context_tokens=16_000,
+        required_capabilities=frozenset(),
+        task_category="review",
+    )
+    ladder = _ranked_ladder(
+        tmp_path, "failed", rankings_omission="unavailable", rankings_category="coding"
+    )
+    _, candidates = _order(ladder, req)
+    assert ladder._rank_components(candidates[0])["advisory_omission"] == "category_mismatch"

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -845,10 +846,10 @@ class EligibilityLadder:
         rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
         session = self._session_summary(a.route_id, rc_now)
         # Advisory ranks apply only to the category they were fetched for; an
-        # admitted route with no entry keeps baseline order and a named omission.
+        # admitted route with no entry has an unknown (None) rank and a named omission.
         rankings: dict[str, int] = getattr(self, "_rankings", None) or {}
         advisory_omission = getattr(self, "_rankings_omission", None)
-        if rankings and not getattr(self, "_rankings_apply", True):
+        if not getattr(self, "_rankings_apply", True):
             rankings, advisory_omission = {}, "category_mismatch"
         elif advisory_omission is None and rankings and a.route_id not in rankings:
             advisory_omission = "no_entry"
@@ -887,7 +888,7 @@ class EligibilityLadder:
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
-            "advisory_rank": rankings.get(a.route_id, 999),
+            "advisory_rank": rankings.get(a.route_id),
             "advisory_category": getattr(self, "_rankings_category", None),
             "advisory_omission": advisory_omission,
             "advisory_provenance": getattr(self, "_rankings_provenance", {}).get(a.route_id),
@@ -921,7 +922,7 @@ class EligibilityLadder:
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
             c["slack"],
-            c["advisory_rank"],
+            sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
             0 if subscription else c["quota_rank"],
             c["provider_pref"],
             c["load"],
