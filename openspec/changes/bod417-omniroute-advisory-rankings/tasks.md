@@ -7,9 +7,9 @@
 - [x] 1.3 Write `design.md` with advisory-overlay decision, exact matching, metric separation, bounded fetch, category plumbing
 - [x] 1.4 Write `tasks.md` with test-first verification for each increment
 - [x] 1.5 Validate `openspec validate bod417-omniroute-advisory-rankings --strict` passes
-- [x] 1.6 Validate `python3 scripts/validate_openspec_change.py bod417-omniroute-advisory-rankings` passes
+- [x] 1.6 Validate `python3 scripts/check_openspec_tasks.py --base origin/main` passes
 
-## 2. Implementation (next packet; not part of this change)
+## 2. Implementation
 
 - [x] 2.1 Add tracked RED tests for `rankings[]` API shape, exact match, mismatch, alias, metric separation, excluded-top regression, fallback (fail before production edit)
 - [x] 2.2 Implement optional OmniRoute rankings fetch/parse in `verdict/omniroute_rankings.py` (bounded, existing transport/credential resolver)
@@ -17,4 +17,8 @@
 - [x] 2.4 Propagate coding/debugging/review category through `_action_choose_live` → selection contracts
 - [x] 2.5 Keep `_rank_components`, `_rank_key`, `_probe_order` consistent; preserve admission and generic-gateway fallback
 - [x] 2.6 Run focused static + unit + neighbor suites (RED → GREEN); strict mypy/ruff once
-- [ ] 2.7 Parent runs real `verdict choose` for implementation/debugging/review; exact-head OCR; PR/CI/merge/main replay
+- [x] 2.7 Independent `ocr` review (`cx/gpt-6.1-sol`) of the merged-main head; its findings fixed with regression tests and re-reviewed with 0 findings
+
+Post-merge parent acceptance is not a ticked task: the parent runs real `verdict choose`
+for implementation/debugging/review with `VERDICT_GATEWAY_KIND=omniroute` from merged
+main and records the raw output in the DoD evidence file before this change is archived.
