@@ -37,15 +37,22 @@ dependency readiness, source/worktree ownership and live target immediately befo
    operation = dispatch["start"](
        rlm,
        bash,
-       "/home/nick/dev/verdict-core",
+       packet["worktree"],
        worker_prompt,
        controller_model="cc/claude-fable-5-1",  # exact active controller for this session
+       packet=packet_path,  # the hydrated packet.json for this attempt
+       issue_updated_at=linear_issue["updatedAt"],  # read from Linear just now
        task={"required_capabilities": ["tools"], "coding": True},
        budget={"total_seconds": 900, "attempt_seconds": 180},
    )
    print(operation.directory, operation.handle.pid)
    ```
 
+   The bridge refuses before any worker starts unless `validate_dispatch` from
+   `scripts/prime_workflow.py` passes: the packet validates, `repo` is its worktree on its
+   branch, `base_sha` is an ancestor of HEAD, `issue_updated_at` equals the packet's (else
+   rehydrate), and the issue's lease is active, unstale and matches the packet attempt and
+   generation. A `ValueError` from `start` is a refusal: rehydrate or re-lease, never retry as-is.
    Replace `controller_model` with the exact controller used to start the current Prime session.
    The bridge injects the active controller exclusion and `cc/*`/`kr/*` worker boundary into the
    durable task config and enforces the same boundary again at spawn time.
