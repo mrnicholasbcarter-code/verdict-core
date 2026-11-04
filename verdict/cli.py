@@ -377,6 +377,9 @@ def cmd_setup(
         if healthy_gateways:
             selected_gateway = healthy_gateways[0]
             config["gateway_url"] = selected_gateway.url
+            if selected_gateway.identity == "omniroute":
+                # Enables OmniRoute advisory rankings (docs/CONFIGURATION.md).
+                config["gateway_kind"] = "omniroute"
             # Persist discovery in Verdict config only. Setup must not mutate
             # the hosting process environment; doing so leaks routing authority
             # into later in-process callers and test/application lifecycles.

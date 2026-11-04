@@ -20,6 +20,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
+import yaml
+
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.http_safety import open_no_redirect
 
@@ -73,6 +75,28 @@ def _default_fetch_json(url: str, api_key: str | None, timeout: float) -> Any:
         return json.loads(response.read(64 * 1024 * 1024))
 
 
+def resolve_gateway_kind() -> tuple[str, str]:
+    """Effective gateway kind and its source.
+
+    ``VERDICT_GATEWAY_KIND`` wins when set and non-empty, then ``gateway_kind`` in
+    ``verdict.yaml`` (written by ``verdict setup`` for a detected OmniRoute), else
+    ``""``. Only ``omniroute`` enables advisory rankings.
+    """
+    env = (os.getenv("VERDICT_GATEWAY_KIND") or "").strip()
+    if env:
+        return env.casefold(), "env VERDICT_GATEWAY_KIND"
+    from verdict.setup_config import config_path
+
+    try:
+        config = yaml.safe_load(config_path().read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        config = {}
+    value = config.get("gateway_kind") if isinstance(config, dict) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip().casefold(), "verdict.yaml gateway_kind"
+    return "", "default"
+
+
 def _reliability(rel: Any) -> float | None:
     """Numeric reliability only when the source sends a number. Unknown stays None, never zero.
 
@@ -102,7 +126,7 @@ class OmniRouteRankings:
         self._fetch_json = fetch_json or _default_fetch_json
         self.timeout = timeout
         self.gateway_kind = (
-            (gateway_kind if gateway_kind is not None else os.getenv("VERDICT_GATEWAY_KIND", ""))
+            (gateway_kind if gateway_kind is not None else resolve_gateway_kind()[0])
             .strip()
             .casefold()
         )

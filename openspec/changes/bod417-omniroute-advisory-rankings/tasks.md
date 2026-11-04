@@ -19,6 +19,14 @@
 - [x] 2.6 Run focused static + unit + neighbor suites (RED → GREEN); strict mypy/ruff once
 - [x] 2.7 Independent `ocr` review (`cx/gpt-6.1-sol`) of the merged-main head; its findings fixed with regression tests and re-reviewed with 0 findings
 
+## 3. Setup, doctor and docs
+
+- [x] 3.1 Read `gateway_kind` from `verdict.yaml` after `VERDICT_GATEWAY_KIND` (`resolve_gateway_kind` in `verdict/omniroute_rankings.py`)
+- [x] 3.2 Fresh `verdict setup` writes `gateway_kind: omniroute` for a detected OmniRoute gateway only
+- [x] 3.3 `verdict doctor` reports the effective kind, its source and whether advisory rankings are active (report only, no issue)
+- [x] 3.4 Document the setting, default, tie-break and advisory-only boundary in `docs/CONFIGURATION.md`
+- [x] 3.5 Tests: `tests/test_gateway_kind_config.py`, setup and doctor cases in `tests/test_cli_inprocess.py`
+
 Post-merge parent acceptance is not a ticked task: the parent runs real `verdict choose`
 for implementation/debugging/review with `VERDICT_GATEWAY_KIND=omniroute` from merged
 main and records the raw output in the DoD evidence file before this change is archived.

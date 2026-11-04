@@ -55,6 +55,21 @@ Verdict SHALL NOT query the OmniRoute-only rankings management endpoint on a gen
 - **WHEN** selection runs against a generic OpenAI-compatible gateway
 - **THEN** no rankings request is sent and the receipt records a `generic_gateway` omission with baseline ordering
 
+### Requirement: Gateway kind is configured by setup and reported by doctor
+Verdict SHALL read the gateway kind from `VERDICT_GATEWAY_KIND` when set and non-empty, else from `gateway_kind` in `verdict.yaml`, else treat it as unset. A fresh `verdict setup` SHALL write `gateway_kind: omniroute` only when the gateway it saves identifies as OmniRoute. `verdict doctor` SHALL report the effective kind, its source, and whether advisory rankings are active, without adding an issue.
+
+#### Scenario: Setup records a detected OmniRoute gateway
+- **WHEN** a fresh `verdict setup` saves a healthy detected gateway that identifies as OmniRoute
+- **THEN** `verdict.yaml` contains `gateway_kind: omniroute`, and a gateway with any other identity gets no `gateway_kind`
+
+#### Scenario: Environment overrides the config file
+- **WHEN** `verdict.yaml` has `gateway_kind: omniroute` and `VERDICT_GATEWAY_KIND=generic` is exported
+- **THEN** the effective kind is `generic` and no rankings request is sent
+
+#### Scenario: Doctor shows whether rankings are active
+- **WHEN** `verdict doctor` runs
+- **THEN** it prints an `Advisory rankings` line with the effective kind and source, `active` only when the kind is `omniroute` and a bounded rankings fetch returned rows, otherwise `inactive` with the reason, and the exit code is unchanged
+
 ### Requirement: Task-aware category flow
 Verdict SHALL propagate coding/debugging/review task category from `verdict choose` into the shared selector with backwards-compatible default for other callers.
 
