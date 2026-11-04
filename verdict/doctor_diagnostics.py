@@ -310,6 +310,64 @@ def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Advisory rankings", "warn", detail))
 
 
+_ENV_KEY_REMEDY = (
+    "Verdict needs a DB-backed OmniRoute API key. If this key is also set as "
+    "OMNIROUTE_API_KEY in the gateway's own environment (for example ~/.omniroute/.env), "
+    "OmniRoute treats it as its env key and refuses per-key status; remove it there and "
+    "restart the gateway."
+)
+
+
+def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
+    """Verdict's resolved key must be DB-backed: ``/api/v1/me/status`` answers 200 with metadata.
+
+    A key equal to the gateway's own ``OMNIROUTE_API_KEY`` becomes OmniRoute's synthetic env
+    key (manage scope, no per-key policy) and ``me/status`` rejects it, so discovery fails
+    closed. 404 means the gateway has no per-key status. A timeout or transport error is a
+    warning: the key is unverified, never assumed good.
+    """
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    from verdict.free_tier_admit import normalize_omniroute_origin
+
+    token = _read_omniroute_token()
+    if not token:
+        return
+    request = urllib.request.Request(
+        normalize_omniroute_origin(gateway_url) + "/api/v1/me/status",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    body: Any = None
+    try:
+        # me/status aggregates account quotas and has been observed taking ~27 s.
+        with open_no_redirect(request, timeout=30) as response:
+            if response.status == 200:
+                body = json.loads(response.read().decode("utf-8"))
+    except ValueError:
+        pass  # unparseable 200: reported below as missing key metadata
+    except HTTPError as exc:
+        if exc.code == 404:
+            return
+        diag.sections.append(("Gateway key", "failed", f"/api/v1/me/status HTTP {exc.code}"))
+        diag.issues.append(
+            f"OmniRoute refused Verdict's key at /api/v1/me/status (HTTP {exc.code}). "
+            + _ENV_KEY_REMEDY
+        )
+        return
+    except (URLError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        diag.sections.append(("Gateway key", "warn", f"not verified: {reason}"))
+        diag.warnings.append(f"Could not verify Verdict's OmniRoute key: {reason}")
+        return
+    key = body.get("apiKey") if isinstance(body, dict) else None
+    if isinstance(key, dict) and key.get("id"):
+        diag.sections.append(("Gateway key", "ok", f"DB-backed key {key.get('name') or 'unnamed'}"))
+        return
+    diag.sections.append(("Gateway key", "failed", "me/status returned no key metadata"))
+    diag.issues.append("OmniRoute /api/v1/me/status returned no key metadata. " + _ENV_KEY_REMEDY)
+
+
 def census_runtime_section() -> tuple[str, str, str]:
     """The legacy census is retired; never recommend reinstalling it."""
     return (
@@ -599,6 +657,9 @@ def _collect_doctor_diagnostics(
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
     _doctor_advisory_rankings(diag)
+    # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
+    if gateway_url:
+        _doctor_gateway_key(diag, gateway_url)
 
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")
