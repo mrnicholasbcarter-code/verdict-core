@@ -56,11 +56,14 @@ endpoint) for `coding`, `debugging` and `review` selections, such as
   gateway it detects and saves as `gateway_url` identifies as OmniRoute. Setup
   leaves an existing `verdict.yaml` untouched, so on an existing install add the
   line yourself.
+- **Gateway queried:** the same binding `verdict choose` uses:
+  `OMNIROUTE_BASE_URL`, else the built-in `http://127.0.0.1:20128`. It does not
+  read `gateway_url` from `verdict.yaml`.
 - **Doctor:** `verdict doctor` prints an `Advisory rankings` line with the
-  effective value and its source. It reads `active` only when the kind is
-  `omniroute` and a bounded `coding` rankings fetch returned ranked rows;
-  otherwise it reads `inactive` with the reason. This line is never an issue
-  and does not change the exit code.
+  effective value, its source and the gateway it queried. It reads `active`
+  only when the kind is `omniroute` and a bounded `coding` rankings fetch
+  returned ranked rows; otherwise it reads `inactive` with the reason. This line
+  is never an issue and does not change the exit code.
 
 Rankings are **advisory only**. They reorder candidates that already passed hard
 admission (authentication, entitlement, capability, quota, capacity,

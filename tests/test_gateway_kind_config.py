@@ -19,6 +19,7 @@ _PAYLOAD = {"rankings": [{"id": "cx", "topModel": {"modelId": "gpt-6.1-sol", "sc
 def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("VERDICT_GATEWAY_KIND", raising=False)
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
     path = tmp_path / "verdict" / "verdict.yaml"
     path.parent.mkdir(parents=True)
     return path
@@ -76,7 +77,8 @@ def test_doctor_reports_active_with_ranked_rows(
     [(_, state, detail)] = _sections(monkeypatch, lambda *a: _PAYLOAD)
     assert state == "ok"
     assert detail == (
-        "active: gateway_kind=omniroute (verdict.yaml gateway_kind); 1 ranked providers (coding)"
+        "active: gateway_kind=omniroute (verdict.yaml gateway_kind); "
+        "1 ranked providers (coding) at http://127.0.0.1:20128"
     )
 
 
@@ -90,4 +92,4 @@ def test_doctor_reports_omission_when_endpoint_fails(
 
     [(_, state, detail)] = _sections(monkeypatch, unreachable)
     assert state == "warn"
-    assert detail.endswith("rankings omitted (unavailable)")
+    assert detail.endswith("rankings omitted (unavailable) at http://127.0.0.1:20128")

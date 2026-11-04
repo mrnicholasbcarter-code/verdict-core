@@ -294,13 +294,19 @@ def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
             )
         )
         return
+    # Same binding as `verdict choose` (env OMNIROUTE_BASE_URL, else the built-in
+    # local gateway), so doctor reports what selection will query. Name it.
     gateway, key = resolve_gateway_binding()
-    result = OmniRouteRankings(gateway, key, timeout=5.0).fetch("coding")
+    client = OmniRouteRankings(gateway, key, timeout=5.0)
+    result = client.fetch("coding")
     if result.rows:
-        detail = f"active: {label}; {len(result.rows)} ranked providers (coding)"
+        detail = (
+            f"active: {label}; {len(result.rows)} ranked providers (coding) at {client.gateway}"
+        )
         diag.sections.append(("Advisory rankings", "ok", detail))
     else:
-        detail = f"inactive: {label}; rankings omitted ({result.omission or 'no rows'})"
+        omission = result.omission or "no rows"
+        detail = f"inactive: {label}; rankings omitted ({omission}) at {client.gateway}"
         diag.sections.append(("Advisory rankings", "warn", detail))
 
 
