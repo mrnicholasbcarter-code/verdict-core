@@ -32,14 +32,18 @@ field MUST be used when the environment has none. The transport MUST read the
   `::test_startup_diagnostic_treats_a_blank_environment_token_as_absent`
 
 ### Requirement: Management-token provenance is recorded, not inferred
-`CredentialsStore.load_into_env` MUST record each name it copies into the process
-environment, keyed to a digest of the copied value and never the value itself.
+Each `CredentialsStore.load_into_env` call MUST reset its injection record before
+recording. It MUST then record each name it copies into the process environment,
+keyed to a digest of the copied value and never the value itself. A name the latest
+call did not inject MUST NOT stay in the record.
 `credentials_store.resolve_management_token_source` MUST return the same token as
 `resolve_management_token`. Its source MUST be `credential_store` when the token came
-from the store field, or when the environment value is the one `load_into_env`
-injected and has not changed since. Its source MUST be `environment` for every other
-non-blank exported value, including one equal to the stored value. Provenance MUST NOT
-be derived from comparing the exported value with the stored value.
+from the store field, or when this process copied the value from the store in its
+latest load and the value is unchanged. Its source MUST be `environment` for every
+other non-blank exported value, including one exported before the load that equals the
+stored value. Provenance MUST NOT be derived from comparing the exported value with the
+stored value. Limitation: an identical value exported later in the same process cannot
+be told apart from that copy, and it is reported as `credential_store`.
 
 #### Scenario: Exported value equal to the stored value
 - **WHEN** the environment exports a management token equal to the credential-store field
@@ -56,6 +60,18 @@ be derived from comparing the exported value with the stored value.
 - **TEST** `tests/test_credentials_store.py::test_management_token_source_records_real_provenance`,
   `tests/test_doctor_management_token.py::test_store_value_copied_into_the_environment_is_still_the_credential_store`,
   `tests/test_cli_inprocess.py::test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the_value`
+
+#### Scenario: Repeated loads keep only the latest record
+- **WHEN** `load_into_env` runs again and does not re-inject a name it injected before
+- **THEN** that name is dropped from the record, and its environment value reads as
+  `environment`
+- **TEST** `tests/test_credentials_store.py::test_repeated_load_into_env_records_only_the_latest_load`
+
+#### Scenario: Identical in-process re-export is indistinguishable (limitation)
+- **WHEN** the process deletes the injected value and exports the identical value again
+- **THEN** the source is reported as `credential_store`. This is a documented limitation,
+  not a guarantee.
+- **TEST** `tests/test_credentials_store.py::test_limitation_identical_value_reexported_in_process_reads_as_credential_store`
 
 ### Requirement: Doctor validates the resolved management token
 `verdict doctor` MUST report a "Management token" row from the same resolver. When no

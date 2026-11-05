@@ -122,7 +122,10 @@ class CredentialsStore:
         Exported env vars always win over stored values. Each name it sets is
         recorded (with a digest of the value, never the value) so provenance
         stays "credential store" for this process; see :func:`injected_from_store`.
+        The record covers the latest call only: it is reset first (even if the
+        load then fails), so a name this call does not inject is dropped.
         """
+        _STORE_INJECTED.clear()
         stored = self.load()
         for key, value in stored.items():
             if key not in os.environ:

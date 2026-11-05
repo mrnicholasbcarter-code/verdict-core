@@ -68,6 +68,43 @@ def test_management_token_source_records_real_provenance(monkeypatch, store):
     assert module.resolve_management_token_source() is None
 
 
+def test_repeated_load_into_env_records_only_the_latest_load(monkeypatch, store):
+    """BOD-219 review: each load resets the record; a name not re-injected is dropped."""
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setattr(module, "CredentialsStore", lambda: store)
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN", raising=False)
+    monkeypatch.delenv("UNRELATED_SENTINEL", raising=False)
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", "first-sentinel")
+    store.load_into_env()
+    assert module.injected_from_store("OMNIROUTE_MANAGEMENT_TOKEN")
+    # The store no longer holds the token; the next load does not re-inject it.
+    store.unset("OMNIROUTE_MANAGEMENT_TOKEN")
+    store.set("UNRELATED_SENTINEL", "x")
+    store.load_into_env()
+    assert not module.injected_from_store("OMNIROUTE_MANAGEMENT_TOKEN")
+    assert set(module._STORE_INJECTED) == {"UNRELATED_SENTINEL"}
+    assert module.resolve_management_token_source() == ("first-sentinel", "environment")
+
+
+def test_limitation_identical_value_reexported_in_process_reads_as_credential_store(
+    monkeypatch, store
+):
+    """Documented limitation, not a goal: an in-process re-export of the exact value
+    the latest load copied in cannot be told apart from that copy."""
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setattr(module, "CredentialsStore", lambda: store)
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN", raising=False)
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", "same-sentinel")
+    store.load_into_env()
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "same-sentinel")
+    assert module.resolve_management_token_source() == ("same-sentinel", "credential_store")
+
+
 def test_store_creates_secure_directory(store: CredentialsStore) -> None:
     """Store creates config directory with 0700 permissions."""
     store.set("TEST_KEY", "test_value")
