@@ -388,7 +388,7 @@ missing, invalid, or future source timestamps remain explicit failures.
 | `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
 | `VERDICT_GATEWAY_KIND` | Gateway kind; `omniroute` enables advisory rankings. Overrides `gateway_kind` in `verdict.yaml`. See [OmniRoute advisory rankings](#omniroute-advisory-rankings-gateway_kind) |
 | `VERDICT_OMNIROUTE_API_KEY` | Gateway key for `verdict orchestrate` and the OCR reviewer; usually the same value as `OMNIROUTE_API_KEY` |
-| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane access token (`oma_…`, Settings → Access Tokens). A `read` scope is enough for Verdict. An `sk-` inference key does not work here |
+| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane credential: an access token (`oma_…`, Settings → Access Tokens; a `read` scope is enough for Verdict) or an `sk-` API key that has the `manage` scope. A plain inference key without `manage` is rejected. `verdict doctor` checks the token against OmniRoute and names its source |
 | `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Comma-separated exact private-host allowlist, not a boolean; merged with the API upstream allowlist and loopback defaults |
 | `OMNIROUTE_USAGE_API_KEY_ID` | Id (not secret) of the inference key whose usage/budget Verdict reads; from `/api/keys` |
 | `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
