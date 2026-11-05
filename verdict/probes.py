@@ -21,7 +21,12 @@ from datetime import datetime, timedelta, timezone
 from threading import Event
 from typing import Any, Protocol
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import (
+    omniroute_evidence_headers,
+    omniroute_response_anomalies,
+    open_no_redirect,
+    untrusted_response_reason,
+)
 
 PROBE_PROMPT = "Return exactly: OK"
 PROBE_DIAGNOSTICS_VERSION = "1"
@@ -625,6 +630,25 @@ class ProbeRunner:
                 latency_ms=latency_ms,
                 response_bytes=response_bytes,
             )
+        untrusted = untrusted_response_reason(_response_anomalies(response))
+        if untrusted is not None:
+            # A cached or other-model answer is not proof of this model. It is
+            # not a model failure either, so it never counts toward quarantine.
+            state.last_state = "degraded"
+            state.next_probe_at = now_mono + self.policy.cooldown_seconds
+            return ProbeObservation(
+                model_id=model_id,
+                availability_state="degraded",
+                status="failed",
+                observed_at=observed_at,
+                latency_ms=round(latency_ms, 3),
+                http_status=status_code,
+                error_class=untrusted,
+                error=f"untrusted OmniRoute response: {untrusted}",
+                consecutive_failures=state.consecutive_failures,
+                next_probe_at=_datetime_from_mono(state.next_probe_at, observed_at, now_mono),
+                response_bytes=response_bytes,
+            )
         if not usage_available:
             state.last_state = "degraded"
             state.next_probe_at = now_mono + self.policy.cooldown_seconds
@@ -789,6 +813,16 @@ def _response_parts(
     )
 
 
+def _response_anomalies(response: Any) -> tuple[str, ...]:
+    """OmniRoute anomalies named by the transport, or read from response headers."""
+    if isinstance(response, Mapping):
+        named = response.get("omniroute_anomalies")
+        if isinstance(named, (list, tuple)):
+            return tuple(str(item) for item in named)
+        return omniroute_response_anomalies(response.get("headers"))
+    return omniroute_response_anomalies(getattr(response, "headers", None))
+
+
 def _int_or_none(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
@@ -903,7 +937,9 @@ def openai_probe_transport(
     ``api_key`` is supplied explicitly and never logged.  This helper does not
     read environment variables, making credential flow auditable at the caller.
     ``session_id`` is sent as ``X-Session-Id`` when provided.
-    ``extra_headers`` are sent as given on every request.
+    ``extra_headers`` are sent on every request, then the OmniRoute evidence
+    opt-outs and a fresh ``X-Request-Id`` (BOD-219), which extra headers cannot
+    weaken. The result names any OmniRoute anomaly in ``omniroute_anomalies``.
     """
     if max_response_bytes < 1:
         raise ValueError("max_response_bytes must be positive")
@@ -919,6 +955,7 @@ def openai_probe_transport(
             headers["X-Session-Id"] = session_id
         if extra_headers:
             headers.update(extra_headers)
+        headers.update(omniroute_evidence_headers())
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(dict(payload), separators=(",", ":")).encode("utf-8"),
@@ -930,6 +967,12 @@ def openai_probe_transport(
             if len(raw) > max_response_bytes:
                 raise ProbeResponseTooLargeError("response exceeds the configured byte limit")
             body = json.loads(raw) if raw else {}
-            return {"status_code": response.status, "body": body}
+            return {
+                "status_code": response.status,
+                "body": body,
+                "omniroute_anomalies": omniroute_response_anomalies(
+                    getattr(response, "headers", None)
+                ),
+            }
 
     return transport
