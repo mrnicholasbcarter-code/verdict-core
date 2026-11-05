@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from verdict.capability_passports import RouteIdentity
+from verdict.http_safety import omniroute_evidence_headers
 from verdict.responses_compatibility import adapt_responses_payload
 from verdict.security import host_is_allowed, pin_upstream_url, validate_upstream_url
 
@@ -235,6 +236,9 @@ class UpstreamProxy:
             headers={
                 "content-type": "application/json",
                 **({"idempotency-key": idempotency_key} if idempotency_key else {}),
+                # BOD-219: relayed answers are recorded as evidence, so no OmniRoute
+                # cache replay, compression or memory injection; one id per attempt.
+                **omniroute_evidence_headers(),
             },
             json_payload=payload,
         )

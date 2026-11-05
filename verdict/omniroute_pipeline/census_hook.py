@@ -142,6 +142,11 @@ def needle_prober(base_url: str, api_key: str | None) -> Callable[[str, int], Pr
 
     import httpx
 
+    from verdict.http_safety import (
+        omniroute_evidence_headers,
+        omniroute_response_anomalies,
+        untrusted_response_reason,
+    )
     from verdict.omniroute_pipeline.probes import (
         BUDGET_FALLBACK_HEADER,
         judge_needle,
@@ -156,14 +161,19 @@ def needle_prober(base_url: str, api_key: str | None) -> Callable[[str, int], Pr
     def probe(route: str, size_tokens: int) -> ProbeOutcome:
         needle = secrets.token_hex(4)
         try:
+            # Compression would rewrite the haystack; a fresh request id per needle.
             response = httpx.post(
                 endpoint,
                 json=needle_payload(route, size_tokens, needle),
-                headers=headers,
+                headers={**headers, **omniroute_evidence_headers()},
                 timeout=300.0,
             )
             body: object = response.json()
         except (httpx.HTTPError, ValueError):
+            return ProbeOutcome.FAIL
+        anomalies = omniroute_response_anomalies(getattr(response, "headers", None))
+        if untrusted_response_reason(anomalies) is not None:
+            # Another model's (or a replayed) answer never proves this route's context.
             return ProbeOutcome.FAIL
         return judge_needle(response.status_code, body, needle)
 

@@ -31,6 +31,7 @@ from typing import Any, ClassVar
 
 import httpx
 
+from verdict.http_safety import omniroute_evidence_headers
 from verdict.orchestration.contracts import (
     AttemptUsage,
     WorkerExecutor,
@@ -914,9 +915,14 @@ class DirectGatewayExecutor:
         self.timeout_connect = timeout_connect
 
     def _headers(self) -> dict[str, str]:
+        """Per-request headers, with the OmniRoute evidence opt-outs (BOD-219).
+
+        Built once per HTTP request, so each request gets its own ``X-Request-Id``.
+        """
         headers: dict[str, str] = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
+        headers.update(omniroute_evidence_headers())
         return headers
 
     @staticmethod

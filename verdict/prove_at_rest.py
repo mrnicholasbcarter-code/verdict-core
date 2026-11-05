@@ -63,7 +63,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import (
+    UNTRUSTED_RESPONSE_REASONS,
+    omniroute_evidence_headers,
+    omniroute_response_anomalies,
+    open_no_redirect,
+    untrusted_response_reason,
+)
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
     key_limit_on_non_free_is_route_scoped,
@@ -1711,6 +1717,12 @@ class Prober:
         if not finished or not exchanges:
             outcome["result"] = "skipped_deadline"
             return outcome
+        # Decide before any persistence (BOD-219): a cached or other-model turn
+        # proves nothing, so it never enters the cache-write path below.
+        untrusted = _untrusted_turn(exchanges)
+        if untrusted is not None:
+            outcome["result"] = untrusted
+            return outcome
         stats = CycleStats()
         superseded = False
 
@@ -1764,6 +1776,10 @@ class Prober:
         observed_at: datetime | None = None,
         buffer_auth: bool = True,
     ) -> None:
+        if _untrusted_turn(exchanges) is not None:
+            # Decided before any cache mutation (BOD-219): a cached or other-model
+            # turn proves nothing about this route, so nothing is written.
+            return
         now = observed_at if observed_at is not None else self.clock()
         last = exchanges[-1]
         self._note_rate_limit(route, last, now)
@@ -2090,6 +2106,36 @@ def _error_detail(body: str) -> str:
     return re.sub(r"https?://\S+", "<url>", message)[:300]
 
 
+def _untrusted_turn(exchanges: Sequence[ProbeExchange]) -> str | None:
+    """The ``omniroute_*`` reason of the first cached or other-model turn, else None."""
+    for exchange in exchanges:
+        if exchange.error_category in UNTRUSTED_RESPONSE_REASONS:
+            return exchange.error_category
+    return None
+
+
+def _untrusted_exchange(
+    response: Any, latency_ms: float, reported_model: str
+) -> ProbeExchange | None:
+    """A failed exchange when OmniRoute says the reply was cached or another model's.
+
+    The named category (``omniroute_cache_hit`` / ``omniroute_emergency_fallback``)
+    is a no-write category: the probe proves nothing and writes no health.
+    """
+    reason = untrusted_response_reason(
+        omniroute_response_anomalies(getattr(response, "headers", None))
+    )
+    if reason is None:
+        return None
+    return ProbeExchange(
+        http_status=response.status,
+        ok=False,
+        latency_ms=latency_ms,
+        error_category=reason,
+        reported_model=reported_model,
+    )
+
+
 def live_agentic_transport(
     base_url: str, *, api_key: str | None
 ) -> Callable[[str, dict[str, Any], float], ProbeExchange]:
@@ -2106,6 +2152,7 @@ def live_agentic_transport(
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(omniroute_evidence_headers())
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -2119,6 +2166,9 @@ def live_agentic_transport(
                 elapsed = (time.monotonic() - started) * 1000.0
                 parsed = json.loads(raw) if raw else {}
                 body = parsed if isinstance(parsed, Mapping) else {}
+                untrusted = _untrusted_exchange(response, elapsed, str(body.get("model") or ""))
+                if untrusted is not None:
+                    return untrusted
                 return ProbeExchange(
                     http_status=response.status,
                     ok=200 <= response.status < 300,
@@ -2208,8 +2258,10 @@ def live_transport(
     """OpenAI-compatible transport. Built only for a consented live daemon.
 
     ``extra_headers`` is the census-only option for per-request probe headers
-    (X-OmniRoute-Budget-Fallback: strict); prove-at-rest callers never pass it,
-    so their request shape and policy are unchanged.
+    (X-OmniRoute-Budget-Fallback: strict); prove-at-rest callers never pass it.
+    Every request also sends the OmniRoute evidence opt-outs and a fresh
+    ``X-Request-Id`` (BOD-219); a cached or emergency-fallback reply comes back
+    as a failed exchange with a no-write category, never as proof.
     """
     endpoint = base_url.rstrip("/")
     if endpoint.endswith("/v1"):
@@ -2223,6 +2275,7 @@ def live_transport(
             headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             headers.update(extra_headers)
+        headers.update(omniroute_evidence_headers())
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -2235,6 +2288,10 @@ def live_transport(
                 raw = response.read(1_048_576)
                 elapsed = (time.monotonic() - started) * 1000.0
                 parsed = json.loads(raw) if raw else {}
+                reported = str(parsed.get("model") or "") if isinstance(parsed, Mapping) else ""
+                untrusted = _untrusted_exchange(response, elapsed, reported)
+                if untrusted is not None:
+                    return untrusted
                 return _exchange_from_body(
                     response.status,
                     parsed if isinstance(parsed, Mapping) else {},
@@ -2265,8 +2322,12 @@ def live_transport(
 
 # A failed probe whose category is one of these must NOT write route health:
 # the request/infra was rejected before the model was ever contacted, so the
-# route and provider stay as they were (no poison).
-NO_HEALTH_WRITE_CATEGORIES = frozenset({CONTEXT_LENGTH_CATEGORY, "gateway_busy"})
+# route and provider stay as they were (no poison). A reply OmniRoute served
+# from its cache or from another model (BOD-219) proves nothing about the
+# route either way: no proof is written and prior proof ages out by its TTL.
+NO_HEALTH_WRITE_CATEGORIES = frozenset(
+    {CONTEXT_LENGTH_CATEGORY, "gateway_busy", *UNTRUSTED_RESPONSE_REASONS}
+)
 
 # Why a full probe produced no health write.
 NOWRITE_PARTIAL = "partial_not_tested"  # chat passed but tool never dispatched
@@ -2281,13 +2342,16 @@ def _no_write_category(exchange: ProbeExchange) -> str | None:
 
     Context-length overflow and gateway-local admission sheds are request or
     infrastructure problems, not route/provider health, so they never poison
-    the cache.
+    the cache. An OmniRoute cache hit or emergency fallback keeps its own
+    ``omniroute_*`` reason: the reply is not evidence, positive or negative.
     """
     named = (exchange.error_category or "").strip().lower()
     if named in {CONTEXT_LENGTH_CATEGORY, "context_length", "context_length_exceeded"}:
         return CONTEXT_LENGTH_CATEGORY
     if named in {"gateway_busy", "chat_admission_busy", "admission_busy"}:
         return "gateway_busy"
+    if named in UNTRUSTED_RESPONSE_REASONS:
+        return named
     return None
 
 

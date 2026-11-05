@@ -19,7 +19,12 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import (
+    omniroute_evidence_headers,
+    omniroute_response_anomalies,
+    open_no_redirect,
+    untrusted_response_reason,
+)
 
 if TYPE_CHECKING:
     from verdict.admission import AdmittedSet
@@ -681,9 +686,16 @@ def openai_health_probe(
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(omniroute_evidence_headers())
         request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
         try:
             with opener(request, timeout=timeout_seconds) as response:
+                # A cached or other-model reply is not proof that this route is healthy.
+                untrusted = untrusted_response_reason(
+                    omniroute_response_anomalies(getattr(response, "headers", None))
+                )
+                if untrusted is not None:
+                    return HealthResult(False, untrusted, response.status)
                 raw = response.read(65_537)
                 if len(raw) > 65_536:
                     return HealthResult(False, "malformed_response", response.status)
