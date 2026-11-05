@@ -23,6 +23,25 @@ def store(temp_config_dir: Path) -> CredentialsStore:
     return CredentialsStore(config_dir=temp_config_dir)
 
 
+def test_management_resolver_precedence_and_named_field(monkeypatch, store):
+    from verdict import credentials_store as module
+
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", " stored-sentinel ")
+    store.set("OMNIROUTE_API_KEY", "not-management")
+    monkeypatch.setattr(module, "CredentialsStore", lambda: store)
+    assert (
+        module.resolve_management_token({"OMNIROUTE_MANAGEMENT_TOKEN": " env-sentinel "})
+        == "env-sentinel"
+    )
+    assert (
+        module.resolve_management_token({"OMNIROUTE_MANAGEMENT_TOKEN": "  "}) == "stored-sentinel"
+    )
+    store.unset("OMNIROUTE_MANAGEMENT_TOKEN")
+    assert module.resolve_management_token({}) is None
+    store.store_path.chmod(0o644)
+    assert module.resolve_management_token({}) is None
+
+
 def test_store_creates_secure_directory(store: CredentialsStore) -> None:
     """Store creates config directory with 0700 permissions."""
     store.set("TEST_KEY", "test_value")

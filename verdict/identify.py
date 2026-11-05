@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
-from verdict.credentials_store import resolve_gateway_binding
+from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.identify_rank import rank_models
 from verdict.metadata.mapping import IdentityMap, load_identity_map
@@ -335,7 +335,11 @@ def identify_report(
     if screen:
         _screen_options(allow_live_probe, max_per_provider, max_routes)
     base_url, key = resolve_gateway_binding()
-    evidence = fetch_omniroute_evidence(normalize_omniroute_origin(base_url), api_key=key)
+    evidence = fetch_omniroute_evidence(
+        normalize_omniroute_origin(base_url),
+        api_key=key,
+        management_token=resolve_management_token(),
+    )
     metadata_error = None
     try:
         metadata = load_store()
