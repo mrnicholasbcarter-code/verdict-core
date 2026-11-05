@@ -315,29 +315,64 @@ raise SystemExit(3)
 
 
 def test_total_deadline_fails_closed(tmp_path: Path) -> None:
-    """The wall-clock deadline stops a controller that is still making progress."""
+    """The absolute deadline fails closed even while progress stays continuous."""
     run_dir = tmp_path / "run-deadline"
-    script = write_controller(
-        tmp_path,
-        "forever.py",
-        """
-while True:
-    emit("heartbeat", note="working")
-    time.sleep(0.02)
-""",
-    )
+    run_dir.mkdir(parents=True)
+    ticks = {"now": 0.0}
+    spawned: list[list[str]] = []
+
+    class FakeProcess:
+        pid = None
+        returncode = None
+
+        def __init__(self) -> None:
+            self._done: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+        def wait(self) -> Awaitable[int]:
+            return self._done
+
+        def terminate(self) -> None:
+            self.returncode = -signal.SIGTERM
+            if not self._done.done():
+                self._done.set_result(self.returncode)
+
+    async def spawner(
+        argv: list[str], *, log_path: Path, env: Mapping[str, str] | None
+    ) -> FakeProcess:
+        spawned.append(argv)
+        (run_dir / "progress.json").write_text(
+            json.dumps({"seq": 0, "last_progress_at": "2024-01-01T00:00:00Z"})
+        )
+        return FakeProcess()
+
+    async def sleep(delay: float) -> None:
+        ticks["now"] += delay
+        if ticks["now"] > 1.0:
+            raise AssertionError("deadline was not checked")
+        progress = json.loads((run_dir / "progress.json").read_text())
+        progress["seq"] += 1
+        progress["last_progress_at"] = f"tick-{progress['seq']}"
+        (run_dir / "progress.json").write_text(json.dumps(progress))
+
     supervisor = ControllerSupervisor(
-        lambda gen: argv_for(script, run_dir),
+        lambda gen: ["fake", f"gen{gen}"],
         run_dir,
+        stall_seconds=0.4,
+        poll_seconds=0.1,
         max_restarts=5,
         total_deadline_seconds=0.5,
-        **FAST,
+        clock=lambda: ticks["now"],
+        sleep=sleep,
+        spawner=spawner,
+        kill_grace_seconds=0.1,
     )
-    outcome = run_supervisor(supervisor)
+    outcome = asyncio.run(supervisor.run())
     assert outcome.state == "BLOCKED"
     assert "deadline" in outcome.reason
     assert outcome.generations[-1]["state"] == "DEADLINE"
     assert "FAILED_CLOSED" in states(run_dir)
+    assert json.loads((run_dir / "progress.json").read_text())["seq"] >= 4
+    assert spawned == [["fake", "gen0"]]
 
 
 # ------------------------------------------------------------------ kill semantics
