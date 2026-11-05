@@ -156,15 +156,36 @@ def main():
             print(f"stderr: {result.stderr}")
             sys.exit(1)
 
-        # Step 3: Run a simple API route test
-        print("\n🔀 Testing /v1/route endpoint...")
-        test_script = "import runpy; runpy.run_path('scripts/quickstart.py')['_run_route_probe']()"
         probe_env = os.environ.copy()
         # API startup requires an explicit receipts backend. This in-process
         # observation uses only temporary state, never the operator's store.
         probe_env["HOME"] = tmpdir
         probe_env["VERDICT_HOME"] = str(Path(tmpdir) / "verdict")
         probe_env["VERDICT_RECEIPTS_DB"] = str(Path(tmpdir) / "probe-receipts.db")
+
+        # Step 3: Live execution-path admission needs the public Core metadata
+        # catalog (models.dev + LiteLLM). Fetch it into the probe's own
+        # temporary state; never copy the operator's store or evidence.
+        print("\n📚 Fetching the public Core metadata catalog for the route probe...")
+        store = Path(probe_env["VERDICT_HOME"]) / "model-metadata.json"
+        metadata_result = run(
+            f"{shlex.quote(str(python))} -m verdict metadata refresh"
+            f" --store {shlex.quote(str(store))} --json",
+            cwd=repo_root,
+            check=False,
+            env=probe_env,
+        )
+        if metadata_result.returncode != 0:
+            print(
+                "❌ Core metadata refresh failed "
+                f"(exit {metadata_result.returncode}); the route probe cannot be admitted"
+            )
+            sys.exit(1)
+        print("✅ Core metadata catalog ready")
+
+        # Step 4: Run a simple API route test
+        print("\n🔀 Testing /v1/route endpoint...")
+        test_script = "import runpy; runpy.run_path('scripts/quickstart.py')['_run_route_probe']()"
         test_result = run(
             f"{shlex.quote(str(python))} -c {shlex.quote(test_script)}",
             cwd=repo_root,
@@ -179,12 +200,12 @@ def main():
             sys.exit(1)
         print(f"✅ Route test status: {test_result.stdout.split(chr(10))[0]}")
 
-        # Step 4: Verify CLI works
+        # Step 5: Verify CLI works
         print("\n💻 Testing CLI...")
         run(f"{python} -m verdict --help", cwd=repo_root)
         print("✅ CLI help works")
 
-        # Step 5: Run a subset of tests
+        # Step 6: Run a subset of tests
         print("\n🧪 Running core test suite...")
         test_result = run(
             f"{python} -m pytest tests/test_contracts.py tests/test_models.py -q --tb=short",
