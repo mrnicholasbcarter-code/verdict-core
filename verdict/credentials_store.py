@@ -21,6 +21,7 @@ from pathlib import Path
 GATEWAY_KEY_ENV_NAMES = ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY")
 #: Owner-only key file next to the credential store (written by the operator).
 GATEWAY_KEY_FILENAME = "omniroute-api-key"
+MANAGEMENT_TOKEN_ENV_NAME = "OMNIROUTE_MANAGEMENT_TOKEN"
 
 
 class CredentialsStore:
@@ -281,6 +282,20 @@ def resolve_api_key() -> str | None:
     """The gateway key for this process; never logged, never persisted by Verdict."""
     found = resolve_gateway_key()
     return found[0] if found else None
+
+
+def resolve_management_token(environ: Mapping[str, str] | None = None) -> str | None:
+    """Resolve only the explicitly named management token from env or secure store."""
+    source = os.environ if environ is None else environ
+    value = (source.get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip()
+    if value:
+        return value
+    try:
+        stored = CredentialsStore().load()
+    except (PermissionError, OSError):
+        return None
+    value = (stored.get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip()
+    return value or None
 
 
 def get_credential_source(env_name: str, store: CredentialsStore | None = None) -> tuple[str, str]:

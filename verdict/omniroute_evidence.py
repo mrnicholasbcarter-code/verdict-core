@@ -444,6 +444,7 @@ def fetch_omniroute_evidence(
     base_url: str,
     *,
     api_key: str | None,
+    management_token: str | None = None,
     timeout: float = 30.0,
     health_range: str = "7d",
     aggregate_deadline_seconds: float = _AGGREGATE_DEADLINE_SECONDS,
@@ -457,7 +458,8 @@ def fetch_omniroute_evidence(
     source exceeding any bound is recorded as a source error, never served
     partial.
     """
-    key = api_key if api_key is not None else resolve_api_key()
+    inference_key = api_key if api_key is not None else resolve_api_key()
+    management_key = management_token.strip() if management_token is not None else None
     paths = {
         "providers": "/api/providers",
         "resilience": "/api/resilience/connections",
@@ -471,11 +473,18 @@ def fetch_omniroute_evidence(
     payloads: dict[str, Any] = {}
     for name, path in paths.items():
         try:
+            if name == "v1_models" and not inference_key:
+                payloads[name] = None
+                continue
+            if name != "v1_models" and not management_key and not inference_key:
+                payloads[name] = None
+                continue
+            credential = inference_key if name == "v1_models" else (management_key or inference_key)
             payloads[name] = _request_json_bounded(
                 base_url,
                 name,
                 path,
-                key,
+                credential,
                 timeout,
                 budget=budget,
                 deadline=deadline,

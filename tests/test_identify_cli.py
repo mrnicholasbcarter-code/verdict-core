@@ -139,6 +139,59 @@ def test_missing_metadata_stays_unknown_and_human_output_is_bounded(monkeypatch,
     assert len(capsys.readouterr().out.splitlines()) <= 5
 
 
+def test_identify_passes_management_token_only_to_passive_fetch(monkeypatch, caplog):
+    from verdict import identify
+    from verdict.omniroute_evidence import parse_omniroute_evidence
+
+    seen = []
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://gateway/v1", "inference-sentinel")
+    )
+    monkeypatch.setattr(identify, "resolve_management_token", lambda: "management-sentinel")
+
+    def fetch(*args, **kwargs):
+        seen.append(kwargs)
+        return parse_omniroute_evidence(**payloads(), now=NOW)
+
+    monkeypatch.setattr(identify, "fetch_omniroute_evidence", fetch)
+    report = identify.identify_report()
+    assert seen == [{"api_key": "inference-sentinel", "management_token": "management-sentinel"}]
+    assert "management-sentinel" not in json.dumps(report)
+    assert "inference-sentinel" not in json.dumps(report)
+    from verdict.identify_service import latest_report_path, save_report
+
+    save_report(report)
+    saved = latest_report_path().read_text()
+    assert "management-sentinel" not in saved + caplog.text
+    assert "inference-sentinel" not in saved + caplog.text
+
+
+def test_identify_screen_transport_receives_only_inference_key(monkeypatch):
+    from verdict import identify
+    from verdict.omniroute_evidence import parse_omniroute_evidence
+
+    seen = []
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://gateway/v1", "inference-sentinel")
+    )
+    monkeypatch.setattr(identify, "resolve_management_token", lambda: "management-sentinel")
+    monkeypatch.setattr(
+        identify,
+        "fetch_omniroute_evidence",
+        lambda *args, **kwargs: parse_omniroute_evidence(**payloads(), now=NOW),
+    )
+
+    def transport(base_url, *, api_key):
+        seen.append((base_url, api_key))
+        return object()
+
+    monkeypatch.setattr(identify, "live_agentic_transport", transport)
+    monkeypatch.setattr(identify, "screen_models", lambda *args, **kwargs: {})
+    identify.identify_report(screen=True, allow_live_probe=True, max_per_provider=1, max_routes=1)
+    assert seen == [("http://gateway/v1", "inference-sentinel")]
+    assert "management-sentinel" not in repr(seen)
+
+
 def test_identify_action_returns_the_cli_domain_report(monkeypatch):
     from verdict import identify
     from verdict.actions.registry import run_action
