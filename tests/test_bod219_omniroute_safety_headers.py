@@ -13,7 +13,7 @@ import asyncio
 import io
 import json
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,6 @@ from typing import Any
 import httpx
 import pytest
 
-from tests.test_prove_at_rest_agentic_budget import _dead_chat
 from verdict.http_safety import (
     OMNIROUTE_EVIDENCE_HEADERS,
     omniroute_evidence_headers,
@@ -141,6 +140,56 @@ def test_response_anomalies_read_urllib_and_httpx_header_types() -> None:
     message["X-OmniRoute-Cache"] = "HIT"
     assert omniroute_response_anomalies(message) == ("cache_hit",)
     assert omniroute_response_anomalies(httpx.Headers(FALLBACK)) == ("emergency_fallback",)
+
+
+def test_a_clean_omniroute_3_8_53_reply_has_no_anomaly() -> None:
+    """The exact values OmniRoute 3.8.53 sends on an upstream (non-cached) reply."""
+    clean = {
+        "X-OmniRoute-Cache": "MISS",
+        "X-OmniRoute-Cache-Hit": "false",
+        "X-OmniRoute-Compression": "off; source=request-header",
+    }
+    assert omniroute_response_anomalies(clean) == ()
+    assert omniroute_response_anomalies({"X-OmniRoute-Compression": "off"}) == ()
+
+
+_UNKNOWN_VALUES = ("no", "0", "", "  ", "garbage", "none", "disabled", "off", "true")
+
+
+@pytest.mark.parametrize("value", (*_UNKNOWN_VALUES, "BYPASS", "miss", "HIT", "hit"))
+def test_cache_marker_is_safe_only_when_exactly_miss(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Cache": value}) == ("cache_hit",)
+
+
+@pytest.mark.parametrize("value", (*_UNKNOWN_VALUES, "TRUE", "False"))
+def test_cache_hit_flag_is_safe_only_when_exactly_false(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Cache-Hit": value}) == ("cache_hit",)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("no", "0", "", "garbage", "none", "disabled", "false", "OFF", "offline; source=x", "lite"),
+)
+def test_compression_marker_is_safe_only_when_its_mode_is_off(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Compression": value}) == ("compressed",)
+
+
+@pytest.mark.parametrize(
+    "value", (*_UNKNOWN_VALUES, "False", "FALSE", "from=glm/glm-5; to=free/model")
+)
+def test_emergency_fallback_marker_is_safe_only_when_exactly_false(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Emergency-Fallback": value}) == (
+        "emergency_fallback",
+    )
+
+
+def test_a_repeated_marker_is_unsafe_when_any_value_is_unsafe() -> None:
+    message = Message()
+    message["X-OmniRoute-Cache"] = "MISS"
+    message["X-OmniRoute-Cache"] = "HIT"
+    assert omniroute_response_anomalies(message) == ("cache_hit",)
+    repeated = httpx.Headers([("x-omniroute-cache", "MISS"), ("x-omniroute-cache", "HIT")])
+    assert omniroute_response_anomalies(repeated) == ("cache_hit",)
 
 
 def test_only_cache_hit_and_emergency_fallback_void_proof() -> None:
@@ -331,26 +380,185 @@ def test_prove_at_rest_agentic_transport_sends_headers_and_flags_cache_hit(
     assert exchange.error_category == "omniroute_cache_hit"
 
 
-def test_prove_at_rest_agentic_cached_turn_writes_no_capability(tmp_path: Path) -> None:
-    from tests.test_prove_at_rest_agentic_budget import _free
-    from verdict.orchestration.health_cache import HealthCache
-    from verdict.prove_at_rest import CycleStats, ProbeExchange, Prober
+def _no_chat(route_id: str, phase: str, timeout: float) -> Any:
+    raise AssertionError("the agentic phase must not use the chat/tool transport")
 
-    cache = HealthCache(tmp_path / "cache.json")
+
+def _agentic_gateway(
+    monkeypatch: pytest.MonkeyPatch, sent: list[Any], *, marked_turn: int | None
+) -> None:
+    """A stub gateway that does the read/edit/read task through the REAL agentic
+    transport; turn ``marked_turn`` (1-based) carries the emergency-fallback marker."""
+    from tests.test_prove_at_rest_agentic_budget import _turn
+
+    def fake_open(request: Any, *, timeout: float) -> _UrllibResponse:
+        del timeout
+        payload = json.loads(request.data)
+        sent.append(payload)
+        body = _turn(payload["model"], payload).response_body
+        assert body is not None
+        return _UrllibResponse(body, FALLBACK if len(sent) == marked_turn else None)
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", fake_open)
+
+
+@pytest.mark.parametrize("marked_turn", [None, 3])
+def test_prove_at_rest_agentic_fallback_turn_writes_no_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marked_turn: int | None
+) -> None:
+    """Turns 1-2 are good; turn 3 is answered by the emergency fallback.
+
+    ``marked_turn=None`` is the control: the same path does write a passing
+    agentic capability, so the fallback case is not passing by accident.
+    """
+    from verdict.orchestration.health_cache import HealthCache
+    from verdict.prove_at_rest import AdmittedRoute, CycleStats, Prober, live_agentic_transport
+
+    sent: list[Any] = []
+    _agentic_gateway(monkeypatch, sent, marked_turn=marked_turn)
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
     prober = Prober(
         cache,
-        lambda: [_free("p/cached")],
-        _dead_chat,
-        agentic_transport=lambda rid, payload, timeout: ProbeExchange(
-            http_status=200, ok=False, error_category="omniroute_emergency_fallback"
-        ),
+        lambda: [AdmittedRoute("p/m", "p", "free")],
+        _no_chat,
+        agentic_transport=live_agentic_transport("http://gw", api_key="k"),
         clock=lambda: NOW,
     )
     stats = CycleStats()
     prober.run_agentic_probes(stats)
-    assert cache.entry("p/cached") is None
+    assert len(sent) == 3  # every turn, the marked one included, really ran
+    on_disk = HealthCache(path).entry("p/m")
+    if marked_turn is None:
+        assert on_disk is not None and on_disk.agentic_ok
+        assert stats.agentic_passed == 1
+        return
+    assert cache.entry("p/m") is None
+    assert on_disk is None
     assert stats.agentic_probed == 0
     assert stats.agentic_passed == 0
+
+
+def test_identify_screen_decides_before_it_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``screen_route`` must not enter the cache-write path for a fallback turn."""
+    from verdict.orchestration.health_cache import HealthCache
+    from verdict.prove_at_rest import AdmittedRoute, Prober, live_agentic_transport
+
+    sent: list[Any] = []
+    _agentic_gateway(monkeypatch, sent, marked_turn=3)
+    path = tmp_path / "health.json"
+    cache = HealthCache(path)
+    writes: list[str] = []
+    real_merge = cache.merge_and_save
+
+    def spy(mutate: Any, **kwargs: Any) -> None:
+        writes.append(mutate.__qualname__)
+        real_merge(mutate, **kwargs)
+
+    monkeypatch.setattr(cache, "merge_and_save", spy)
+    prober = Prober(
+        cache,
+        lambda: [],
+        _no_chat,
+        agentic_transport=live_agentic_transport("http://gw", api_key="k"),
+        clock=lambda: NOW,
+    )
+    outcome = prober.screen_route(AdmittedRoute("p/m", "p", "free"), deadline=1e12)
+    assert outcome["turns_sent"] == 3
+    assert outcome["result"] == "omniroute_emergency_fallback"
+    assert any("reserve_bucket" in name for name in writes)  # the spy saw the budget write
+    assert not any("screen_route" in name for name in writes), writes
+    assert HealthCache(path).entry("p/m") is None
+
+
+def _probe_gateway(
+    monkeypatch: pytest.MonkeyPatch, sent: list[Any], marker: Mapping[str, str] | None
+) -> None:
+    """A stub gateway answering the chat probe with OK and the tool probe with the call."""
+    from verdict.prove_at_rest import TOOL_NAME
+
+    def fake_open(request: Any, *, timeout: float) -> _UrllibResponse:
+        del timeout
+        payload = json.loads(request.data)
+        sent.append(payload)
+        if payload.get("tools"):
+            call = {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": TOOL_NAME, "arguments": "{}"},
+            }
+            body = {"model": "m", "choices": [{"message": {"content": None, "tool_calls": [call]}}]}
+        else:
+            body = _chat_body()
+        return _UrllibResponse(body, marker)
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", fake_open)
+
+
+@pytest.mark.parametrize("marker", [None, CACHE_HIT, FALLBACK])
+def test_prove_at_rest_cycle_never_refreshes_proof_from_a_cached_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: Mapping[str, str] | None
+) -> None:
+    """Real daemon cycle (``Prober.run_once`` -> RefreshCoordinator -> probe_full).
+
+    The route holds earlier, still-usable proof that is due for refresh (a
+    FRESH entry is never re-probed). A clean reply (control) refreshes it; a
+    cached or fallback reply leaves the stored entry exactly as it was.
+    """
+    from verdict.orchestration.health_cache import (
+        EVIDENCE_FRESH_SECONDS,
+        STATE_STALE,
+        HealthCache,
+        ProbeResult,
+    )
+    from verdict.prove_at_rest import AdmittedRoute, Prober, live_transport
+
+    path = tmp_path / "health.json"
+    seeded = HealthCache(path)
+    proved_at = NOW - timedelta(seconds=EVIDENCE_FRESH_SECONDS + 60)
+    seeded.record("p/m", ProbeResult("ok", True, True, identity="verified"), proved_at)
+    seeded.save()
+    before = HealthCache(path).entry("p/m")
+    assert before is not None and before.state_at(NOW) == STATE_STALE
+
+    sent: list[Any] = []
+    _probe_gateway(monkeypatch, sent, marker)
+    Prober(
+        HealthCache(path),
+        lambda: [AdmittedRoute("p/m", "p", "free")],
+        live_transport("http://gw", api_key="k"),
+        clock=lambda: NOW,
+    ).run_once()
+    after = HealthCache(path).entry("p/m")
+    assert sent, "the cycle must really probe the route"
+    assert after is not None
+    if marker is None:
+        assert after.checked_at == NOW  # control: a clean reply does refresh
+        return
+    assert len(sent) == 1  # the chat phase stopped; no tool request
+    assert after.to_dict() == before.to_dict()
+
+
+@pytest.mark.parametrize("marker", [CACHE_HIT, FALLBACK])
+def test_prove_at_rest_cycle_writes_nothing_for_an_unproven_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: Mapping[str, str]
+) -> None:
+    from verdict.orchestration.health_cache import HealthCache
+    from verdict.prove_at_rest import AdmittedRoute, Prober, live_transport
+
+    path = tmp_path / "health.json"
+    sent: list[Any] = []
+    _probe_gateway(monkeypatch, sent, marker)
+    Prober(
+        HealthCache(path),
+        lambda: [AdmittedRoute("p/m", "p", "free")],
+        live_transport("http://gw", api_key="k"),
+        clock=lambda: NOW,
+    ).run_once()
+    assert len(sent) == 1
+    assert HealthCache(path).entry("p/m") is None
 
 
 # ------------------------------------------------------------ acceptance check

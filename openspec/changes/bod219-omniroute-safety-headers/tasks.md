@@ -9,6 +9,13 @@
 - [x] 1.5 Run the focused and neighbouring suites, `ruff check`, `ruff format --check` and `mypy verdict --strict`.
 - [x] 1.6 Validate this change with `openspec validate bod219-omniroute-safety-headers --strict`.
 
+## 2. Review fixes (cross-family review of `e05a2786`)
+
+- [x] 2.1 Add red tests: marker values other than the exact safe value (`no`, `0`, empty, unknown text, `BYPASS`, wrong case) and repeated markers are anomalies; the identify screen does not enter the cache-write path for a fallback turn (38 failed on `e05a2786`).
+- [x] 2.2 Match markers fail-closed against the exact OmniRoute 3.8.53 safe values, with the package source lines cited in `verdict/http_safety.py`.
+- [x] 2.3 Decide on an untrusted turn before any persistence in `screen_route` and at the top of `_record_agentic`.
+- [x] 2.4 Add real-path integration tests with a real `HealthCache`: a daemon cycle with a cached or fallback chat reply leaves earlier usable proof unchanged and writes nothing for an unproven route; an agentic run that reaches a fallback third turn writes no capability. Each has a clean-reply control, and the marked cases fail against `main` call sites.
+
 Not done here, and not ticked: live verification on the operator's OmniRoute
 gateway, independent review, and the follow-ups listed in `proposal.md`
 (relay anomaly recording in `verdict/api.py` and the uncovered request paths).

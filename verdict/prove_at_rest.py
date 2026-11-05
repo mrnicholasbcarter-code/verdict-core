@@ -1717,6 +1717,12 @@ class Prober:
         if not finished or not exchanges:
             outcome["result"] = "skipped_deadline"
             return outcome
+        # Decide before any persistence (BOD-219): a cached or other-model turn
+        # proves nothing, so it never enters the cache-write path below.
+        untrusted = _untrusted_turn(exchanges)
+        if untrusted is not None:
+            outcome["result"] = untrusted
+            return outcome
         stats = CycleStats()
         superseded = False
 
@@ -1740,11 +1746,8 @@ class Prober:
             )
 
         self.cache.merge_and_save(record, monotonic=self.monotonic)
-        untrusted = _untrusted_turn(exchanges)
         if category_for(exchanges[-1]) == CATEGORY_RATE_LIMITED:
             outcome["result"] = "rate_limited"
-        elif untrusted is not None:
-            outcome["result"] = untrusted
         elif superseded:
             outcome["result"] = "skipped_newer_evidence"
         elif exchanges[-1].http_status in (401, 403):
@@ -1773,14 +1776,15 @@ class Prober:
         observed_at: datetime | None = None,
         buffer_auth: bool = True,
     ) -> None:
+        if _untrusted_turn(exchanges) is not None:
+            # Decided before any cache mutation (BOD-219): a cached or other-model
+            # turn proves nothing about this route, so nothing is written.
+            return
         now = observed_at if observed_at is not None else self.clock()
         last = exchanges[-1]
         self._note_rate_limit(route, last, now)
         if category_for(last) == CATEGORY_RATE_LIMITED:
             # A 429 says nothing about capability: not tested, retried after the bucket reopens.
-            return
-        if _untrusted_turn(exchanges) is not None:
-            # A cached or other-model turn proves nothing about this route (BOD-219).
             return
         passed = score_agentic_probe(exchanges) and fake_file.content == AGENTIC_PROBE_EXPECTED
         # A failed HTTP turn keeps its transport category (catalog_stale,

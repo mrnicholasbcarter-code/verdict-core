@@ -26,7 +26,9 @@ change only the patch executor and autodev sent the no-cache header.
 - One shared helper in `verdict/http_safety.py`:
   `omniroute_evidence_headers()` returns the three opt-outs plus a fresh
   `X-Request-Id`; `omniroute_response_anomalies()` names `cache_hit`,
-  `compressed` and `emergency_fallback` from response headers;
+  `compressed` and `emergency_fallback` from response headers, failing closed:
+  a marker is safe only when absent or carrying the exact value OmniRoute
+  3.8.53 sends when nothing happened (`MISS`, `false`, mode `off`, `false`);
   `untrusted_response_reason()` maps a cache hit or emergency fallback to a
   named reason (`omniroute_cache_hit`, `omniroute_emergency_fallback`).
 - The headers go on every Verdict-owned inference request in the probe and
@@ -42,7 +44,7 @@ change only the patch executor and autodev sent the no-cache header.
   - prove-at-rest chat, tool and liveness probes return a no-write outcome with
     the named reason, so no health is written and prior proof ages out.
   - agentic probes write no capability entry; the identify screen reports the
-    named reason.
+    named reason. Both decide before any cache write.
   - the acceptance tool check fails the route with the named reason.
   - the eligibility health probe is unhealthy with the named category.
   - the census needle probe fails.
@@ -72,7 +74,9 @@ change only the patch executor and autodev sent the no-cache header.
 
 KNOWN: the header names, opt-out values and cache, compression and memory
 behaviour come from the OmniRoute 3.8.53 source reading recorded in BOD-219
-(2026-11-05). KNOWN: the tests use stub transports only. NOT AVAILABLE: a live
+(2026-11-05). KNOWN: the safe marker values come from the installed
+OmniRoute 3.8.53 package source (file and line cited in
+`verdict/http_safety.py`). KNOWN: the tests use stub transports only. NOT AVAILABLE: a live
 run against OmniRoute that shows the opt-outs are honoured and no `HIT` marker
 is returned. That needs a live check on the operator's gateway.
 
