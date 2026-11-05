@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from scripts import check_dev_readiness as readiness
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,11 +76,21 @@ def test_archived_changes_are_not_checked(repo: Path) -> None:
 
 
 def test_repository_changes_validate_strictly() -> None:
-    """The pinned CLI is the CI authority; locally it runs when installed."""
-    if shutil.which("openspec") is None:
+    """The CLI version ci.yml pins is the authority; locally it runs when installed.
+
+    ``OPENSPEC_BIN``, else the ``openspec`` on PATH, must report that pin; any
+    other version fails with the repair. With no CLI installed the test skips:
+    the CI unit-test job has none, and the CI lint job runs the pinned
+    validation itself. Nothing is downloaded.
+    """
+    try:
+        command = readiness.pinned_openspec_command(ROOT)
+    except readiness.PinnedCliUnavailableError as exc:
+        pytest.fail(str(exc), pytrace=False)
+    if command is None:
         pytest.skip("openspec CLI not installed")
     result = subprocess.run(
-        ["openspec", "validate", "--all", "--strict", "--no-interactive"],
+        [*command, "validate", "--all", "--strict", "--no-interactive"],
         cwd=ROOT,
         capture_output=True,
         text=True,
