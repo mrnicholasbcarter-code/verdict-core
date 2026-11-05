@@ -192,6 +192,121 @@ def test_a_repeated_marker_is_unsafe_when_any_value_is_unsafe() -> None:
     assert omniroute_response_anomalies(repeated) == ("cache_hit",)
 
 
+# RFC 9110 section 5.5: leading/trailing OWS (SP / HTAB only) is not part of a
+# field value; compression is a ";"-delimited list whose members are trimmed.
+_MARKERS = {
+    "X-OmniRoute-Cache": ("MISS", "cache_hit"),
+    "X-OmniRoute-Cache-Hit": ("false", "cache_hit"),
+    "X-OmniRoute-Emergency-Fallback": ("false", "emergency_fallback"),
+}
+
+
+@pytest.mark.parametrize("header", sorted(_MARKERS))
+@pytest.mark.parametrize("pad", [(" ", " "), ("\t", ""), ("", "\t"), (" \t ", "\t ")])
+def test_optional_whitespace_around_a_safe_value_is_trimmed(
+    header: str, pad: tuple[str, str]
+) -> None:
+    safe, _anomaly = _MARKERS[header]
+    assert omniroute_response_anomalies({header: f"{pad[0]}{safe}{pad[1]}"}) == ()
+
+
+@pytest.mark.parametrize("value", ["off ; source=x", "\toff\t;source=x", " off ", "off;"])
+def test_compression_mode_is_the_trimmed_first_parameter(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Compression": value}) == ()
+
+
+@pytest.mark.parametrize("header", sorted(_MARKERS))
+@pytest.mark.parametrize(
+    "mangle",
+    [
+        pytest.param(lambda safe: safe[:2] + " " + safe[2:], id="inner-space"),  # "MI SS"
+        pytest.param(lambda safe: f"{safe},HIT", id="list"),
+        pytest.param(lambda safe: f"{safe}, true", id="list-ows"),
+        pytest.param(lambda safe: f"{safe}\r\n", id="trailing-crlf"),
+        pytest.param(lambda safe: f"{safe}\r\n HIT", id="obs-fold"),  # as http.client gives it
+        pytest.param(lambda safe: f"{safe}\n", id="trailing-lf"),
+        pytest.param(lambda safe: f"{safe}\r", id="trailing-cr"),
+        pytest.param(lambda safe: f"\x0b{safe}", id="leading-vt"),
+        pytest.param(lambda safe: f"{safe}\x0b", id="trailing-vt"),
+        pytest.param(lambda safe: f"{safe}\x0c", id="trailing-ff"),
+        pytest.param(lambda safe: f"{safe}\x00", id="trailing-nul"),
+        pytest.param(lambda safe: f"{safe}\x1f", id="trailing-us"),
+        pytest.param(lambda safe: f"{safe}\x7f", id="trailing-del"),
+        pytest.param(lambda safe: f"\x85{safe}", id="leading-nel"),  # Python space, not OWS
+        pytest.param(lambda safe: f"\xa0{safe}", id="leading-nbsp"),  # Python space, not OWS
+    ],
+)
+def test_anything_but_ows_around_a_safe_value_is_an_anomaly(header: str, mangle: Any) -> None:
+    safe, anomaly = _MARKERS[header]
+    assert omniroute_response_anomalies({header: mangle(safe)}) == (anomaly,)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "of f; source=x",
+        "off,lite",
+        "off\x0b; source=x",
+        "\x0boff",
+        "off; source=x\r\n",
+        "off; source=\x00x",
+        "\xa0off",
+    ],
+)
+def test_compression_with_a_mangled_mode_or_a_control_character_is_an_anomaly(value: str) -> None:
+    assert omniroute_response_anomalies({"X-OmniRoute-Compression": value}) == ("compressed",)
+
+
+def test_control_characters_reach_the_urllib_parser_and_are_flagged() -> None:
+    """urllib (``http.client``) delivers obs-fold CRLF, VT and NUL inside values."""
+    import http.client
+
+    raw = (
+        b"X-OmniRoute-Cache: MISS\r\n HIT\r\n"
+        b"X-OmniRoute-Cache-Hit: false\x0b\r\n"
+        b"X-OmniRoute-Emergency-Fallback: false\x00\r\n"
+        b"X-OmniRoute-Compression: off\x0c; source=request-header\r\n\r\n"
+    )
+    message = http.client.parse_headers(io.BytesIO(raw))
+    assert message["X-OmniRoute-Cache"] == "MISS\r\n HIT"
+    assert message["X-OmniRoute-Cache-Hit"] == "false\x0b"
+    assert omniroute_response_anomalies(message) == (
+        "cache_hit",
+        "compressed",
+        "emergency_fallback",
+    )
+    clean = http.client.parse_headers(
+        io.BytesIO(b"X-OmniRoute-Cache:  MISS \r\nX-OmniRoute-Cache-Hit:\tfalse\r\n\r\n")
+    )
+    assert omniroute_response_anomalies(clean) == ()
+
+
+@pytest.mark.parametrize("value", [b"MISS\x0b", b"MI\x00SS", b"MISS\rX"])
+def test_the_httpx_wire_parser_rejects_control_characters_first(value: bytes) -> None:
+    """httpx's h11 parser refuses VT, NUL and bare CR before our check runs."""
+    h11 = pytest.importorskip("h11")
+    connection = h11.Connection(h11.CLIENT)
+    connection.send(h11.Request(method="GET", target="/", headers=[("Host", "gw")]))
+    connection.receive_data(
+        b"HTTP/1.1 200 OK\r\nX-OmniRoute-Cache: " + value + b"\r\nContent-Length: 0\r\n\r\n"
+    )
+    with pytest.raises(h11.RemoteProtocolError):
+        connection.next_event()
+
+
+def test_the_httpx_wire_parser_folds_obs_fold_and_it_is_flagged() -> None:
+    h11 = pytest.importorskip("h11")
+    connection = h11.Connection(h11.CLIENT)
+    connection.send(h11.Request(method="GET", target="/", headers=[("Host", "gw")]))
+    connection.receive_data(
+        b"HTTP/1.1 200 OK\r\nX-OmniRoute-Cache: MISS\r\n HIT\r\nContent-Length: 0\r\n\r\n"
+    )
+    event = connection.next_event()
+    headers = httpx.Headers([(key.decode(), value.decode()) for key, value in event.headers])
+    assert headers["x-omniroute-cache"] == "MISS HIT"
+    assert omniroute_response_anomalies(headers) == ("cache_hit",)
+
+
 def test_only_cache_hit_and_emergency_fallback_void_proof() -> None:
     assert untrusted_response_reason(()) is None
     assert untrusted_response_reason(("compressed",)) is None

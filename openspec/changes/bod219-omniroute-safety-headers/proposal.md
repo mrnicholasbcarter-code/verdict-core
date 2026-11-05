@@ -28,7 +28,11 @@ change only the patch executor and autodev sent the no-cache header.
   `X-Request-Id`; `omniroute_response_anomalies()` names `cache_hit`,
   `compressed` and `emergency_fallback` from response headers, failing closed:
   a marker is safe only when absent or carrying the exact value OmniRoute
-  3.8.53 sends when nothing happened (`MISS`, `false`, mode `off`, `false`);
+  3.8.53 sends when nothing happened (`MISS`, `false`, mode `off`, `false`),
+  after removing leading and trailing optional whitespace (SP and HTAB only,
+  RFC 9110 §5.5). For compression the value is split at the first `;` and the
+  mode is that first member, trimmed the same way. A value holding a control
+  character is never safe;
   `untrusted_response_reason()` maps a cache hit or emergency fallback to a
   named reason (`omniroute_cache_hit`, `omniroute_emergency_fallback`).
 - The headers go on every Verdict-owned inference request in the probe and
