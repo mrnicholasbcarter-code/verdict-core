@@ -54,6 +54,18 @@ the coordinator authorized it in the review), `tests/test_serve_management_token
   `run_action("doctor")` (JSON) and `cli.cmd_doctor()` (TerminalUI and
   `doctor_presentation` repair hints). 6 cases pass. These assertions found no leak,
   so there was no red phase.
+- [x] 3.4 Round-2 review. `load_into_env` now clears the record at the start of each
+  call, so the record covers the latest load only and a name that is not re-injected is
+  dropped. Red first:
+  `tests/test_credentials_store.py::test_repeated_load_into_env_records_only_the_latest_load`
+  failed (1 failed, 51 passed across `tests/test_doctor_management_token.py`,
+  `tests/test_credentials_store.py` and `tests/test_serve_management_token.py`). After:
+  52 passed (doctor 23, credentials store 23, serve 6). The narrowed meaning is
+  documented: `credential_store` means this process copied the value from the store in
+  its latest load and the value is unchanged. An identical value exported later in the
+  same process cannot be distinguished and is reported as `credential_store`.
+  `test_limitation_identical_value_reexported_in_process_reads_as_credential_store`
+  pins that behaviour. It passed on first run because it documents existing behaviour.
 
 ## 4. Verification (offline, fixtures only)
 - [x] 4.1 Related suites: `tests/test_doctor*.py`, `tests/test_api*.py`, the new
