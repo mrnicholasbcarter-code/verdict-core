@@ -11,6 +11,8 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - exercised only on the 3.10 CI lane
     import tomli as tomllib
 
+import yaml
+
 from verdict.fixture_paths import FIXTURE_ROOTS, resolve_fixture_path, resolve_fixture_workspace
 
 REPO = Path(__file__).resolve().parent.parent
@@ -63,6 +65,28 @@ def test_all_extra_is_a_superset_of_server_and_dashboard() -> None:
     assert names(extras["server"]) | names(extras["dashboard"]) <= names(extras["all"])
     versions = config["project"]["classifiers"]
     assert "Programming Language :: Python :: 3.13" in versions
+
+
+def test_proof_contract_python_module_gates_are_dev_dependencies() -> None:
+    """`python -m <module>` proof gates must run from a `[dev]` install (BOD-219).
+
+    The `build` gate failed on a freshly synced host because `build` was not in
+    the dev extra. Every current gate's module shares its distribution's name.
+    """
+    contract = yaml.safe_load((REPO / "proof" / "contract.yaml").read_text(encoding="utf-8"))
+    modules = {
+        gate["command"][2].lower()
+        for gate in contract["gates"]
+        if list(gate["command"][:2]) == ["python", "-m"]
+    }
+    assert "build" in modules, "the proof contract no longer runs `python -m build`"
+    config = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = {
+        re.split(r"[<>=!~\[ ;]", item, maxsplit=1)[0].lower()
+        for item in config["project"]["optional-dependencies"]["dev"]
+    }
+    missing = sorted(modules - dev)
+    assert not missing, f"add {missing} to [project.optional-dependencies].dev and uv.lock"
 
 
 def test_dashboard_never_labels_hardcoded_prices_as_actual_cost() -> None:

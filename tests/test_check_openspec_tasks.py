@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from scripts import check_dev_readiness as readiness
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,16 +75,33 @@ def test_archived_changes_are_not_checked(repo: Path) -> None:
     assert _main(repo) == 0
 
 
-def test_repository_changes_validate_strictly() -> None:
-    """The pinned CLI is the CI authority; locally it runs when installed."""
-    if shutil.which("openspec") is None:
-        pytest.skip("openspec CLI not installed")
+def test_repository_changes_validate_strictly(tmp_path: Path) -> None:
+    """The CLI version ci.yml pins is the authority; locally it runs when installed.
+
+    ``OPENSPEC_BIN``, else the ``openspec`` on PATH, must report that pin. Any
+    other version fails with the repair, so a drifted local CLI can never pass
+    or skip this test.
+
+    With no CLI installed at all the test skips. That is the behaviour CI has
+    always relied on, not a weakening: the CI unit-test job installs no
+    OpenSpec CLI, and the required CI ``lint`` job runs the pinned
+    ``npx --yes @fission-ai/openspec@<pin> validate --all --strict`` itself, so
+    strict validation still gates every pull request.
+
+    Nothing is downloaded; the CLI runs with an isolated HOME.
+    """
+    try:
+        command = readiness.pinned_openspec_command(ROOT)
+    except readiness.PinnedCliUnavailableError as exc:
+        pytest.fail(str(exc), pytrace=False)
+    if command is None:
+        pytest.skip("openspec CLI not installed; the CI lint job runs the pinned validation")
     result = subprocess.run(
-        ["openspec", "validate", "--all", "--strict", "--no-interactive"],
+        [*command, "validate", "--all", "--strict", "--no-interactive"],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"]},
+        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"], "HOME": str(tmp_path)},
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr

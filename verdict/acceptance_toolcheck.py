@@ -20,7 +20,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
-from verdict.http_safety import open_no_redirect
+from verdict.http_safety import (
+    omniroute_evidence_headers,
+    omniroute_response_anomalies,
+    open_no_redirect,
+    untrusted_response_reason,
+)
 
 #: Replies that say the account or pool is blocked, not that the route is wrong.
 ACCOUNT_LEVEL_STATUS = frozenset({401, 402, 403, 429})
@@ -73,16 +78,36 @@ class ToolCheck:
     detail: str
 
 
+class UntrustedReplyError(Exception):
+    """OmniRoute served the reply from its cache or from another model (BOD-219)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def gateway_post(base_url: str, api_key: str | None, *, timeout: float = 90) -> Post:
+    """POST to the gateway with the OmniRoute evidence opt-outs on every request.
+
+    A reply OmniRoute marks as a cache hit or emergency fallback raises
+    :class:`UntrustedReplyError`: it is not evidence of the route under test.
+    """
+
     def post(path: str, body: dict[str, Any]) -> tuple[int, Any]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(omniroute_evidence_headers())
         request = urllib.request.Request(
             base_url.rstrip("/") + path, data=json.dumps(body).encode(), headers=headers
         )
         try:
             with open_no_redirect(request, timeout=timeout) as response:
+                reason = untrusted_response_reason(
+                    omniroute_response_anomalies(getattr(response, "headers", None))
+                )
+                if reason is not None:
+                    raise UntrustedReplyError(reason)
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as exc:
             return exc.code, None
@@ -113,7 +138,10 @@ def check_route(route: str, post: Post) -> ToolCheck:
     }
     try:
         for turn in (1, 2):
-            status, reply = post("/v1/chat/completions", {**body, "messages": messages})
+            try:
+                status, reply = post("/v1/chat/completions", {**body, "messages": messages})
+            except UntrustedReplyError as exc:
+                return ToolCheck(route, "fail", f"turn{turn}: {exc.reason}")
             if status in ACCOUNT_LEVEL_STATUS:
                 return ToolCheck(route, "account", f"turn{turn}: HTTP {status}")
             if status != 200:

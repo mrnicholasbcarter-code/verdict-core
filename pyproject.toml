@@ -93,6 +93,8 @@ dev = [
     # tests parse pyproject.toml; tomllib is stdlib only from 3.11
     "tomli>=2.0; python_version < '3.11'",
     "bandit>=1.9.4,<2.0",
+    # PyPA build frontend for the proof contract's `build` gate (python -m build --wheel).
+    "build>=1.6.1",
     # pip-audit pulls in filelock; its fixes (GHSA-69hj-f68j-2879, GHSA-8mx5-7m5m-r77g)
     # need filelock>=4.2.1, which requires Python 3.11. The audit runs on 3.13 in CI.
     "pip-audit>=2.10.1,<3.0; python_version >= '3.11'",
