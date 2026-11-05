@@ -17,6 +17,59 @@ NOW = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
 NOTE = "verdict acceptance probe 7"
 
 
+def test_source_sha_uses_installed_direct_url_full_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package = tmp_path / "site-packages" / "verdict"
+    dist = package.parent / "verdict_core-0.5.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "direct_url.json").write_text(json.dumps({"vcs_info": {"commit_id": "a" * 40}}))
+    monkeypatch.setattr(acceptance, "__file__", str(package / "acceptance.py"))
+    assert acceptance._source_sha() == "a" * 40
+
+
+def test_source_sha_is_unknown_for_non_git_installed_package(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package = tmp_path / "site-packages" / "verdict"
+    package.mkdir(parents=True)
+    dist = package.parent / "verdict_core-0.5.0.dist-info"
+    dist.mkdir()
+    monkeypatch.setattr(acceptance, "__file__", str(package / "acceptance.py"))
+    assert acceptance._source_sha() is None
+
+
+def test_source_sha_ignores_malformed_direct_url_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package = tmp_path / "site-packages" / "verdict"
+    dist = package.parent / "verdict_core-0.5.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "direct_url.json").write_text(json.dumps({"vcs_info": "malformed"}))
+    monkeypatch.setattr(acceptance, "__file__", str(package / "acceptance.py"))
+    assert acceptance._source_sha() is None
+
+
+def test_package_build_preserves_legacy_stamp_string_by_default(tmp_path: Path) -> None:
+    from verdict.census_passports_service import package_build
+
+    package = tmp_path / "repo" / "verdict"
+    package.mkdir(parents=True)
+    (package.parent / "verdict-build.json").write_text(json.dumps({"build": "legacy-build"}))
+    assert package_build(package) == "legacy-build"
+    assert package_build(package, full_sha=True) == "unrecorded"
+
+
+def test_source_sha_preserves_legacy_stamp_only_as_unknown_in_exact_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package = tmp_path / "site-packages" / "verdict"
+    package.mkdir(parents=True)
+    (package.parent / "verdict-build.json").write_text(json.dumps({"build": "git abc123"}))
+    monkeypatch.setattr(acceptance, "__file__", str(package / "acceptance.py"))
+    assert acceptance._source_sha() is None
+
+
 def _verdict(route: str, *, eligible: bool, proven: bool = True) -> dict[str, Any]:
     return {
         "route_id": route,

@@ -180,32 +180,51 @@ def _git_head(checkout: Path) -> str | None:
 BUILD_STAMP = "verdict-build.json"
 
 
-def package_build(package: Path) -> str:
+def package_build(package: Path, *, full_sha: bool = False) -> str:
     """Recorded build of a ``verdict`` package: the git commit it was built from.
 
     An installed distribution records it in ``direct_url.json``, a checkout in
     its git HEAD and a census runtime copy in its ``verdict-build.json`` stamp.
-    A package with none of these is ``unrecorded``.
+    A package with none of these is ``unrecorded``.  The default compact form is
+    retained for existing doctor output; ``full_sha`` is for exact provenance.
     """
     root = package.parent
+    commit: str | None = None
+    installed = False
     for dist in sorted(root.glob("verdict_core-*.dist-info")):
+        installed = True
         try:
             payload = json.loads((dist / "direct_url.json").read_text())
         except (OSError, ValueError):
             continue
-        commit = payload.get("vcs_info", {}).get("commit_id") if isinstance(payload, dict) else None
-        if isinstance(commit, str) and commit:
-            return f"git {commit[:12]}"
-    try:
-        stamp = json.loads((root / BUILD_STAMP).read_text())
-    except (OSError, ValueError):
-        stamp = None
-    if isinstance(stamp, dict) and isinstance(stamp.get("build"), str):
-        return str(stamp["build"])
-    try:
-        commit = _git_head(root)
-    except OSError:
-        commit = None
+        vcs_info = payload.get("vcs_info") if isinstance(payload, dict) else None
+        candidate = vcs_info.get("commit_id") if isinstance(vcs_info, dict) else None
+        if isinstance(candidate, str) and candidate:
+            commit = candidate
+            break
+    if commit is None and installed:
+        return "unrecorded"
+    if commit is None:
+        try:
+            stamp = json.loads((root / BUILD_STAMP).read_text())
+        except (OSError, ValueError):
+            stamp = None
+        if isinstance(stamp, dict) and isinstance(stamp.get("build"), str):
+            recorded = str(stamp["build"])
+            if not full_sha:
+                return recorded
+            if recorded.startswith("git ") and re.fullmatch(r"[0-9a-fA-F]{40}", recorded[4:]):
+                return recorded
+            return "unrecorded"
+    if commit is None:
+        try:
+            commit = _git_head(root)
+        except OSError:
+            commit = None
+    if full_sha:
+        return (
+            f"git {commit}" if commit and re.fullmatch(r"[0-9a-fA-F]{40}", commit) else "unrecorded"
+        )
     return f"git {commit[:12]}" if commit else "unrecorded"
 
 
