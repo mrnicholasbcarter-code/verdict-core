@@ -16,9 +16,20 @@ Reports, and never changes:
 
 The workflows are the single source of truth for both pins: this script and
 ``tests/test_check_openspec_tasks.py`` read them, and nothing else restates them.
-Nothing is downloaded, and probes run with credential variables removed from
-their environment. Every problem prints the exact repair. Exit 0 when ready,
-1 on any problem.
+Every problem prints the exact repair. Exit 0 when ready, 1 on any problem.
+
+Limits, by design:
+
+* The pre-push check is static. It finds a non-comment line whose command is
+  vgate, but it cannot prove the hook reaches vgate (a vgate line inside
+  ``if false; then ... fi`` still passes). vgate itself is the enforcement
+  point; this check is a readiness hint and reports "(static check)".
+* Probe sanitising covers environment variables only. Credential names (KEY,
+  TOKEN, SECRET, PASSWORD, CREDENTIAL), ``OPENAI_``/``ANTHROPIC_``/``OMNIROUTE_``,
+  ``NPM_CONFIG_*`` and ``NETRC`` are dropped, but credential files reachable
+  through HOME, XDG directories, ``~/.npmrc`` or ``~/.netrc`` are not hidden.
+  The probes are local commands only (``--version``, ``git rev-parse``,
+  ``python -m build --version``); nothing is downloaded.
 
 Usage:
     .venv/bin/python scripts/check_dev_readiness.py [--root PATH] [--vgate PATH]
@@ -51,9 +62,17 @@ OCR_ASSET_URL = (
 SYNC_COMMAND = "uv sync --frozen --extra dev --extra server --extra dashboard"
 PROBE_TIMEOUT_SECONDS = 60
 _VERSION = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
-# Probes never see credentials: names with these parts or prefixes are dropped.
+# Probes never see credential variables: names with these parts or prefixes,
+# or these exact names, are dropped (compared upper-case). Files are not hidden.
 _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
-_SECRET_NAME_PREFIXES = ("OPENAI_", "ANTHROPIC_", "OMNIROUTE_")
+_SECRET_NAME_PREFIXES = ("OPENAI_", "ANTHROPIC_", "OMNIROUTE_", "NPM_CONFIG_")
+_SECRET_NAMES = frozenset({"NETRC"})
+_HELP_EPILOG = (
+    "The pre-push check is static: it finds a non-comment line that executes vgate but "
+    "cannot prove the hook reaches vgate; vgate itself is the enforcement point. Probe "
+    "sanitising covers environment variables only, not credential files under HOME; probes "
+    "run local commands and download nothing."
+)
 
 
 class PinnedCliUnavailableError(RuntimeError):
@@ -100,13 +119,18 @@ def ocr_pin(root: Path = ROOT) -> tuple[str, str]:
 
 def _is_secret_name(name: str) -> bool:
     upper = name.upper()
-    return any(part in upper for part in _SECRET_NAME_PARTS) or upper.startswith(
-        _SECRET_NAME_PREFIXES
+    return (
+        upper in _SECRET_NAMES
+        or upper.startswith(_SECRET_NAME_PREFIXES)
+        or any(part in upper for part in _SECRET_NAME_PARTS)
     )
 
 
 def probe_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return the probe environment: credential variables dropped, OpenSpec telemetry off."""
+    """Return the probe environment: credential variables dropped, OpenSpec telemetry off.
+
+    Environment variables only: credential files under HOME stay reachable.
+    """
     source = os.environ if environ is None else environ
     env = {name: value for name, value in source.items() if not _is_secret_name(name)}
     env["OPENSPEC_TELEMETRY"] = "0"
@@ -227,7 +251,10 @@ def _executes_vgate(text: str, vgate: Path) -> bool:
 
 
 def check_pre_push(root: Path, vgate: Path) -> Finding:
-    """The pre-push hook must exist, be executable and execute vgate."""
+    """The pre-push hook must exist, be executable and execute vgate.
+
+    A static check: it cannot prove the hook reaches vgate at run time.
+    """
     hooks = _hooks_dir(root)
     if hooks is None:
         return Finding(
@@ -266,7 +293,7 @@ def check_pre_push(root: Path, vgate: Path) -> Finding:
             f"{hook} is not executable; git ignores it and pushes skip vgate silently",
             f"chmod +x {quoted}",
         )
-    return Finding("pre-push hook", True, f"{hook} runs {vgate}")
+    return Finding("pre-push hook", True, f"{hook} invokes {vgate} (static check)")
 
 
 def check_openspec(root: Path) -> Finding:
@@ -362,7 +389,7 @@ def run_checks(root: Path, vgate: Path, python: str) -> list[Finding]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0], epilog=_HELP_EPILOG)
     parser.add_argument("--root", type=Path, default=ROOT, help="verdict-core checkout")
     parser.add_argument(
         "--vgate", type=Path, default=None, help="push gate script (default: ~/bin/vgate)"
