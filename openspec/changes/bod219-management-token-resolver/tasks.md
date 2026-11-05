@@ -49,6 +49,11 @@ the coordinator authorized it in the review), `tests/test_serve_management_token
   a real connection. Under the guard it raised `LiveNetworkAttempted` for
   `('127.0.0.1', 20128)`. The exported CR/LF token is now refused by the real opener
   with `ValueError` before any socket is opened.
+- [x] 3.3 Text no-leak: `test_token_value_never_appears_in_doctor_text_or_json` covers
+  the absent, ok, warning, unreachable, 401 and 403 outcomes. Each runs through
+  `run_action("doctor")` (JSON) and `cli.cmd_doctor()` (TerminalUI and
+  `doctor_presentation` repair hints). 6 cases pass. These assertions found no leak,
+  so there was no red phase.
 - [x] 3.4 Round-2 review. `load_into_env` now clears the record at the start of each
   call, so the record covers the latest load only and a name that is not re-injected is
   dropped. Red first:
@@ -61,11 +66,6 @@ the coordinator authorized it in the review), `tests/test_serve_management_token
   same process cannot be distinguished and is reported as `credential_store`.
   `test_limitation_identical_value_reexported_in_process_reads_as_credential_store`
   pins that behaviour. It passed on first run because it documents existing behaviour.
-- [x] 3.3 Text no-leak: `test_token_value_never_appears_in_doctor_text_or_json` covers
-  the absent, ok, warning, unreachable, 401 and 403 outcomes. Each runs through
-  `run_action("doctor")` (JSON) and `cli.cmd_doctor()` (TerminalUI and
-  `doctor_presentation` repair hints). 6 cases pass. These assertions found no leak,
-  so there was no red phase.
 
 ## 4. Verification (offline, fixtures only)
 - [x] 4.1 Related suites: `tests/test_doctor*.py`, `tests/test_api*.py`, the new
