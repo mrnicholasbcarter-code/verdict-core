@@ -282,6 +282,84 @@ def test_both_credentials_missing_never_accesses_network(monkeypatch):
     assert not evidence.inventory_route_ids
 
 
+@pytest.mark.parametrize("management_token", [None, "   "])
+def test_absent_management_token_uses_legacy_api_key_for_management_reads(
+    sources, monkeypatch, management_token
+):
+    from io import BytesIO
+
+    from verdict import omniroute_evidence as module
+
+    seen = []
+
+    def transport(request, *, timeout):
+        path = request.full_url.removeprefix("http://gateway")
+        seen.append((path, request.get_method(), request.get_header("Authorization")))
+        name = {
+            "/api/providers": "providers",
+            "/api/resilience/connections": "resilience",
+            "/api/usage/provider-limits": "limits",
+            "/api/resilience/model-cooldowns": "cooldowns",
+            "/api/providers/health-matrix?range=7d": "health_matrix",
+            "/v1/models": "v1_models",
+        }[path]
+        return BytesIO(json.dumps(sources[name]).encode())
+
+    monkeypatch.setattr(module, "resolve_api_key", lambda: None)
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/", api_key="legacy-sentinel", management_token=management_token, timeout=7
+    )
+    # Legacy fallback only when the management token is absent: all six bounded
+    # GETs carry the inference key, nothing is POSTed, and no source fails.
+    assert len(seen) == len({path for path, _, _ in seen}) == 6
+    assert all(method == "GET" for _, method, _ in seen)
+    assert all(auth == "Bearer legacy-sentinel" for _, _, auth in seen)
+    assert not evidence.source_errors
+    assert "legacy-sentinel" not in repr(evidence)
+
+
+def test_forbidden_inference_catalog_is_unknown_and_never_cross_retries(sources, monkeypatch):
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    from verdict import omniroute_evidence as module
+
+    seen = []
+
+    def transport(request, *, timeout):
+        path = request.full_url.removeprefix("http://gateway")
+        seen.append((path, request.get_header("Authorization")))
+        if path == "/v1/models":
+            raise HTTPError(request.full_url, 403, "inference-sentinel", {}, None)
+        name = {
+            "/api/providers": "providers",
+            "/api/resilience/connections": "resilience",
+            "/api/usage/provider-limits": "limits",
+            "/api/resilience/model-cooldowns": "cooldowns",
+            "/api/providers/health-matrix?range=7d": "health_matrix",
+        }[path]
+        return BytesIO(json.dumps(sources[name]).encode())
+
+    monkeypatch.setattr(module, "resolve_api_key", lambda: None)
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/",
+        api_key="inference-sentinel",
+        management_token="management-sentinel",
+        timeout=7,
+    )
+    # A deny-all catalog is an honest unknown: one attempt with the inference
+    # key only, no retry with the management token, no invented routes.
+    assert [auth for path, auth in seen if path == "/v1/models"] == ["Bearer inference-sentinel"]
+    assert len(seen) == 6
+    assert "v1_models" in evidence.source_errors
+    assert not evidence.inventory_route_ids
+    assert not evidence.proven_by_traffic
+    assert "inference-sentinel" not in repr(evidence)
+    assert "management-sentinel" not in repr(evidence)
+
+
 def test_fetch_is_get_only_and_retains_source_failure(sources, monkeypatch):
     from io import BytesIO
     from urllib.error import HTTPError
