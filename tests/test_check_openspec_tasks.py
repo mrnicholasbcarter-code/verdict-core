@@ -11,6 +11,8 @@ from types import ModuleType
 
 import pytest
 
+from scripts import check_dev_readiness as readiness
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -75,15 +77,25 @@ def test_archived_changes_are_not_checked(repo: Path) -> None:
 
 
 def test_repository_changes_validate_strictly() -> None:
-    """The pinned CLI is the CI authority; locally it runs when installed."""
+    """The CLI version ci.yml pins is the authority; locally it runs when installed.
+
+    A PATH ``openspec`` at another version is not trusted: the pinned package
+    runs through ``npx`` instead, and the test fails (never skips) when the
+    pinned CLI cannot run.
+    """
     if shutil.which("openspec") is None:
         pytest.skip("openspec CLI not installed")
+    try:
+        command = readiness.pinned_openspec_command(ROOT)
+    except readiness.PinnedCliUnavailableError as exc:
+        pytest.fail(str(exc))
     result = subprocess.run(
-        ["openspec", "validate", "--all", "--strict", "--no-interactive"],
+        [*command, "validate", "--all", "--strict", "--no-interactive"],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"]},
+        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"], "HOME": os.environ["HOME"]},
         check=False,
+        timeout=readiness.NPX_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr

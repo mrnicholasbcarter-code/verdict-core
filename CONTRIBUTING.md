@@ -10,6 +10,12 @@ cd verdict-core
 uv sync --extra dev --extra server --extra dashboard
 ```
 
+Then run `.venv/bin/python scripts/check_dev_readiness.py`. It changes nothing
+and exits 1, with the exact repair, when `vgate` or the `pre-push` hook that
+runs it is missing or not executable, `python -m build` cannot run, or the
+local `openspec` / `ocr` version differs from the pin in
+`.github/workflows/ci.yml` / `certify-rehearsal.yml`.
+
 Read [the autonomous-development contract](docs/guides/autonomous-development.md)
 for documentation/RAG preflight, Code Review Graph review, ticket ownership,
 OmniRoute worker routing, and PR/CI lifecycle requirements.
