@@ -229,11 +229,17 @@ def _gateway_probe_for(bootstrap: Any) -> Any:
     from verdict.gateway_lifecycle import authenticated_gateway_probe
     from verdict.provider_bootstrap import load_credential_store_env
 
+    def _gateway_root(url: str) -> str:
+        # Provider bindings carry the OpenAI-compatible base (``.../v1``); the
+        # gateway URL is the bare origin. Compare the same root for both.
+        root = url.rstrip("/")
+        return root[: -len("/v1")] if root.endswith("/v1") else root
+
+    gateway_root = _gateway_root(bootstrap.gateway_url or "")
     names = [
         binding.api_key_env
         for binding in bootstrap.providers.values()
-        if getattr(binding, "api_key_env", None)
-        and binding.base_url.rstrip("/") == (bootstrap.gateway_url or "").rstrip("/")
+        if getattr(binding, "api_key_env", None) and _gateway_root(binding.base_url) == gateway_root
     ]
     api_key: str | None = None
     store: dict[str, str] | None = None

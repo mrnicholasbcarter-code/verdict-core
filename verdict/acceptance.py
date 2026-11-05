@@ -560,18 +560,12 @@ def _run_lock(directory: Path) -> Iterator[None]:
 
 
 def _source_sha() -> str | None:
-    root = Path(__file__).resolve().parent.parent
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return done.stdout.strip() or None if done.returncode == 0 else None
+    """Return the installed package's exact build SHA, when recorded."""
+    from verdict.census_passports_service import package_build
+
+    package = Path(__file__).resolve().parent
+    build = package_build(package, full_sha=True)
+    return build[4:] if build.startswith("git ") else None
 
 
 def _guarded(name: str, run: Callable[[], Check]) -> Check:

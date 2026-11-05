@@ -6,6 +6,8 @@ Run: python scripts/quickstart.py
 """
 
 import json
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -44,6 +46,56 @@ def _route_probe_succeeded(result) -> bool:
         return False
     decision = body.get("decision")
     return isinstance(decision, str) and bool(decision) and decision != "denied"
+
+
+def _run_route_probe():
+    """Probe with an operator-supplied RouteRequest, never invented candidates.
+
+    VERDICT_QUICKSTART_ROUTE_REQUEST names a JSON file containing ``task`` and
+    ``execution_path_request``. The API validates it under its configured
+    authority policy; a local response is not live admission proof.
+    LLMGATE_AUTH_TOKEN is read by both the server and caller;
+    no token is generated and anonymous mode is never enabled here.
+    """
+    request_path = os.getenv("VERDICT_QUICKSTART_ROUTE_REQUEST")
+    try:
+        payload = json.loads(Path(request_path).read_text()) if request_path else None
+    except (OSError, ValueError):
+        payload = None
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("task"), str)
+        or not payload["task"].strip()
+        or not isinstance(payload.get("execution_path_request"), dict)
+    ):
+        print(
+            "Route probe requires VERDICT_QUICKSTART_ROUTE_REQUEST to name a JSON "
+            "RouteRequest with task and execution_path_request. "
+            "Supply real offers; quickstart does not create admission evidence."
+        )
+        sys.exit(1)
+
+    from fastapi.testclient import TestClient
+
+    from verdict.api import app
+
+    token = os.getenv("LLMGATE_AUTH_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # https://fastapi.tiangolo.com/advanced/testing-events/
+    # Startup security checks and intelligence initialization must actually run.
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/route", json=payload, headers=headers)
+    except Exception:
+        # Startup/validation exceptions may contain operator-owned input. Keep
+        # the child failure secret-safe; never dump payloads or credentials.
+        print("Route probe startup or request failed; check server configuration.")
+        sys.exit(1)
+    print(response.status_code)
+    if response.status_code == 200:
+        print(json.dumps(response.json()))
+    else:
+        print(json.dumps({"error": "route probe rejected; check auth, schema and authority"}))
 
 
 def main():
@@ -106,28 +158,19 @@ def main():
 
         # Step 3: Run a simple API route test
         print("\n🔀 Testing /v1/route endpoint...")
-        test_script = """
-from verdict.api import app
-from fastapi.testclient import TestClient
-
-client = TestClient(app)
-resp = client.post('/v1/route', json={
-    'objective': 'test',
-    'task_type': 'chat',
-    'effort': 'low',
-    'reasoning': 'low',
-    'required_capabilities': [],
-    'tools': [],
-    'privacy': 'public',
-    'risk': 'low',
-    'production_impact': False,
-    'verification': {'checks': []}
-})
-print(resp.status_code)
-import json
-print(json.dumps(resp.json(), indent=2))
-"""
-        test_result = run(f'{python} -c "{test_script}"', cwd=repo_root, check=False)
+        test_script = "import runpy; runpy.run_path('scripts/quickstart.py')['_run_route_probe']()"
+        probe_env = os.environ.copy()
+        # API startup requires an explicit receipts backend. This in-process
+        # observation uses only temporary state, never the operator's store.
+        probe_env["HOME"] = tmpdir
+        probe_env["VERDICT_HOME"] = str(Path(tmpdir) / "verdict")
+        probe_env["VERDICT_RECEIPTS_DB"] = str(Path(tmpdir) / "probe-receipts.db")
+        test_result = run(
+            f"{shlex.quote(str(python))} -c {shlex.quote(test_script)}",
+            cwd=repo_root,
+            check=False,
+            env=probe_env,
+        )
         if not _route_probe_succeeded(test_result):
             status_line = test_result.stdout.split(chr(10))[0] if test_result.stdout else ""
             print(
