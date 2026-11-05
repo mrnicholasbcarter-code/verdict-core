@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -79,23 +78,23 @@ def test_archived_changes_are_not_checked(repo: Path) -> None:
 def test_repository_changes_validate_strictly() -> None:
     """The CLI version ci.yml pins is the authority; locally it runs when installed.
 
-    A PATH ``openspec`` at another version is not trusted: the pinned package
-    runs through ``npx`` instead, and the test fails (never skips) when the
-    pinned CLI cannot run.
+    ``OPENSPEC_BIN``, else the ``openspec`` on PATH, must report that pin; any
+    other version fails with the repair. With no CLI installed the test skips:
+    the CI unit-test job has none, and the CI lint job runs the pinned
+    validation itself. Nothing is downloaded.
     """
-    if shutil.which("openspec") is None:
-        pytest.skip("openspec CLI not installed")
     try:
         command = readiness.pinned_openspec_command(ROOT)
     except readiness.PinnedCliUnavailableError as exc:
-        pytest.fail(str(exc))
+        pytest.fail(str(exc), pytrace=False)
+    if command is None:
+        pytest.skip("openspec CLI not installed")
     result = subprocess.run(
         [*command, "validate", "--all", "--strict", "--no-interactive"],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"], "HOME": os.environ["HOME"]},
+        env={"OPENSPEC_TELEMETRY": "0", "PATH": os.environ["PATH"]},
         check=False,
-        timeout=readiness.NPX_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr

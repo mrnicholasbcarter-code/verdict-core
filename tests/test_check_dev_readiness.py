@@ -20,7 +20,6 @@ from scripts import check_dev_readiness as readiness
 ROOT = Path(__file__).resolve().parents[1]
 PIN = "1.13.2"
 OCR_PIN = "v1.12.9"
-OCR_SHA = "ab" * 32
 CI_YML = f"""\
 jobs:
   lint:
@@ -28,13 +27,12 @@ jobs:
       - name: openspec validate --all --strict (pinned {PIN})
         run: npx --yes @fission-ai/openspec@{PIN} validate --all --strict --no-interactive
 """
-REHEARSAL_YML = f"""\
-jobs:
-  rehearse:
-    env:
-      OCR_VERSION: {OCR_PIN}
-      OCR_SHA256: {OCR_SHA}
-"""
+
+
+def _rehearsal_yml(sha256: str) -> str:
+    return (
+        f"jobs:\n  rehearse:\n    env:\n      OCR_VERSION: {OCR_PIN}\n      OCR_SHA256: {sha256}\n"
+    )
 
 
 def _write_exe(path: Path, body: str) -> Path:
@@ -42,6 +40,10 @@ def _write_exe(path: Path, body: str) -> Path:
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -66,21 +68,25 @@ class Host:
         (self.bin / "git").symlink_to(git)
         monkeypatch.setenv("HOME", str(self.home))
         monkeypatch.setenv("PATH", str(self.bin))
+        monkeypatch.delenv(readiness.OPENSPEC_BIN_ENV, raising=False)
+
+        self.vgate = _write_exe(self.home / "bin" / "vgate", "exit 0\n")
+        self.openspec = _write_exe(self.bin / "openspec", f"echo {PIN}\n")
+        self.ocr = _write_exe(
+            self.bin / "ocr", f"echo 'open-code-review {OCR_PIN} (bccbc15) linux/amd64'\n"
+        )
+        self.ocr_sha = _sha256(self.ocr)
 
         self.root.mkdir()
         _git(self.root, "init", "-q", "-b", "main")
         workflows = self.root / ".github" / "workflows"
         workflows.mkdir(parents=True)
         (workflows / "ci.yml").write_text(CI_YML, encoding="utf-8")
-        (workflows / "certify-rehearsal.yml").write_text(REHEARSAL_YML, encoding="utf-8")
-
-        self.vgate = _write_exe(self.home / "bin" / "vgate", "exit 0\n")
+        (workflows / "certify-rehearsal.yml").write_text(
+            _rehearsal_yml(self.ocr_sha), encoding="utf-8"
+        )
         self.hook = _write_exe(
             self.root / ".git" / "hooks" / "pre-push", f'exec {self.vgate} --hook "$@"\n'
-        )
-        self.openspec = _write_exe(self.bin / "openspec", f"echo {PIN}\n")
-        self.ocr = _write_exe(
-            self.bin / "ocr", f"echo 'open-code-review {OCR_PIN} (bccbc15) linux/amd64'\n"
         )
         self.python = _write_exe(
             tmp_path / "py" / "python",
@@ -169,6 +175,41 @@ def test_pre_push_hook_that_skips_vgate_fails(
     assert f"does not run {host.vgate}" in out
 
 
+@pytest.mark.parametrize(
+    "line",
+    ['# exec {vgate} --hook "$@"', "exit 0  # gate: {vgate}", "echo {vgate}", "  #   {vgate}"],
+    ids=["comment-line", "trailing-comment", "argument-not-command", "indented-comment"],
+)
+def test_pre_push_hook_that_only_mentions_vgate_fails(
+    host: Host, capsys: pytest.CaptureFixture[str], line: str
+) -> None:
+    host.hook.write_text(f"#!/bin/sh\n{line.format(vgate=host.vgate)}\n", encoding="utf-8")
+    code, out = host.run(capsys)
+    assert code == 1
+    assert f"does not run {host.vgate}" in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'exec {vgate} --hook "$@"',
+        '{vgate} --hook "$@"',
+        'exec "$HOME/bin/vgate" --hook "$@"',
+        'exec "${{HOME}}/bin/vgate" --hook "$@"',
+        'exec ~/bin/vgate --hook "$@"',
+        '{vgate} --hook "$@" || exit 1  # push gate',
+    ],
+    ids=["exec-absolute", "absolute", "exec-HOME", "exec-HOME-braced", "exec-tilde", "or-exit"],
+)
+def test_pre_push_hook_that_executes_vgate_passes(
+    host: Host, capsys: pytest.CaptureFixture[str], line: str
+) -> None:
+    body = f"# Verdict push gate\n{line.format(vgate=host.vgate)}\n"
+    host.hook.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
+    code, out = host.run(capsys)
+    assert code == 0, out
+
+
 def test_hook_found_through_a_linked_worktree(
     host: Host, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
@@ -218,7 +259,7 @@ def test_missing_ocr_fails_with_pinned_download(
     assert code == 1
     assert "ocr" in _failures(out)[0]
     assert f"releases/download/{OCR_PIN}/opencodereview-linux-amd64" in out
-    assert OCR_SHA in out
+    assert host.ocr_sha in out
     assert str(host.home / ".local" / "bin" / "ocr") in out
 
 
@@ -229,6 +270,20 @@ def test_ocr_version_drift_fails_and_repairs_in_place(
     code, out = host.run(capsys)
     assert code == 1
     assert "v1.13.0" in out and OCR_PIN in out
+    assert f"mv {host.ocr}.download {host.ocr}" in out
+
+
+def test_ocr_with_pinned_version_but_other_digest_fails(
+    host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The version string is not identity: the binary must be the pinned release."""
+    _write_exe(host.ocr, f"echo 'open-code-review {OCR_PIN} (bccbc15) linux/amd64'  # rebuilt\n")
+    actual = _sha256(host.ocr)
+    assert actual != host.ocr_sha
+    code, out = host.run(capsys)
+    assert code == 1
+    assert [line.split()[1] for line in _failures(out)] == ["ocr"]
+    assert f"sha256 {actual}" in out and host.ocr_sha in out
     assert f"mv {host.ocr}.download {host.ocr}" in out
 
 
@@ -280,64 +335,153 @@ def test_openspec_pin_must_be_unambiguous(tmp_path: Path) -> None:
         readiness.openspec_pin(tmp_path)
 
 
-def test_every_executable_openspec_pin_matches_ci() -> None:
-    """Workflows, scripts and product code run the version the lint job pins."""
-    pin = readiness.openspec_pin(ROOT)
+_PIN_TREES = (".github", "scripts", "verdict")
+_SKIPPED_PARTS = {"openspec_vendor", "node_modules", "__pycache__"}
+
+
+def _pin_drift(root: Path, pin: str) -> dict[str, str]:
+    """Map each text file under .github/, scripts/ and verdict/ to a non-CI OpenSpec pin."""
     pattern = re.compile(r"@fission-ai/openspec@(\d+\.\d+\.\d+)")
-    sources = [
-        *(ROOT / ".github" / "workflows").glob("*.yml"),
-        *(ROOT / "scripts").rglob("*.py"),
-        *(ROOT / "scripts").rglob("*.sh"),
-        *(path for path in (ROOT / "verdict").rglob("*.py") if "openspec_vendor" not in path.parts),
-    ]
-    drift = {
-        str(path.relative_to(ROOT)): found
-        for path in sources
-        for found in pattern.findall(path.read_text(encoding="utf-8"))
-        if found != pin
-    }
+    drift: dict[str, str] = {}
+    for tree in _PIN_TREES:
+        for path in (root / tree).rglob("*"):
+            if not path.is_file() or _SKIPPED_PARTS & set(path.parts):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for found in pattern.findall(text):
+                if found != pin:
+                    drift[path.relative_to(root).as_posix()] = found
+    return drift
+
+
+def test_every_openspec_pin_matches_ci() -> None:
+    """Every text file under .github/, scripts/ and verdict/ names the CI pin.
+
+    That covers workflow ``*.yml`` and ``*.yaml``, scripts in any language and
+    product code. Vendored code, ``node_modules`` and caches are skipped; docs
+    and test fixtures are prose, not runners, and are out of scope.
+    """
+    pin = readiness.openspec_pin(ROOT)
+    drift = _pin_drift(ROOT, pin)
     assert drift == {}, f"OpenSpec pins differ from ci.yml ({pin}): {drift}"
+
+
+def test_pin_scan_covers_yaml_workflows_and_every_script_language(tmp_path: Path) -> None:
+    stale = "npx --yes @fission-ai/openspec@1.16.0 validate\n"
+    for relative in (
+        ".github/workflows/drill.yaml",
+        ".github/workflows/lint.yml",
+        "scripts/check.mjs",
+        "scripts/tool.sh",
+        "verdict/lifecycle.py",
+        "verdict/openspec_vendor/vendored.py",
+        "docs/LIFECYCLE.md",
+    ):
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / relative).write_text(stale, encoding="utf-8")
+    assert _pin_drift(tmp_path, PIN) == {
+        ".github/workflows/drill.yaml": "1.16.0",
+        ".github/workflows/lint.yml": "1.16.0",
+        "scripts/check.mjs": "1.16.0",
+        "scripts/tool.sh": "1.16.0",
+        "verdict/lifecycle.py": "1.16.0",
+    }
 
 
 # --- pinned_openspec_command: what the strict-validation test runs ------------
 
 
-def _fake_npx(host: Host, reports: str) -> Path:
-    return _write_exe(
-        host.bin / "npx",
-        f'[ "$*" = "--yes @fission-ai/openspec@{PIN} --version" ] && echo {reports} && exit 0\n'
-        "exit 3\n",
-    )
+def _npx_trap(host: Host, tmp_path: Path) -> Path:
+    marker = tmp_path / "npx-was-called"
+    _write_exe(host.bin / "npx", f"touch {marker}; exit 1\n")
+    return marker
 
 
 def test_pinned_command_uses_path_cli_when_it_matches(host: Host) -> None:
     assert readiness.pinned_openspec_command(host.root) == [str(host.openspec)]
 
 
-def test_pinned_command_falls_back_to_npx_on_version_drift(host: Host) -> None:
-    _write_exe(host.openspec, "echo 1.16.0\n")
-    npx = _fake_npx(host, PIN)
-    command = readiness.pinned_openspec_command(host.root)
-    assert command == [str(npx), "--yes", f"@fission-ai/openspec@{PIN}"]
+def test_pinned_command_is_none_without_any_cli(host: Host) -> None:
+    host.openspec.unlink()
+    assert readiness.pinned_openspec_command(host.root) is None
 
 
-def test_pinned_command_fails_clearly_without_npx(host: Host) -> None:
+def test_pinned_command_fails_on_version_drift_and_never_downloads(
+    host: Host, tmp_path: Path
+) -> None:
     _write_exe(host.openspec, "echo 1.16.0\n")
+    marker = _npx_trap(host, tmp_path)
     with pytest.raises(readiness.PinnedCliUnavailableError) as caught:
         readiness.pinned_openspec_command(host.root)
     message = str(caught.value)
-    assert "1.16.0" in message and PIN in message and "npx" in message
+    assert "1.16.0" in message and PIN in message
+    assert f"npm install -g @fission-ai/openspec@{PIN}" in message
+    assert f"{readiness.OPENSPEC_BIN_ENV}=" in message
+    assert not marker.exists(), "the pinned-CLI lookup must never run npx"
 
 
-def test_pinned_command_fails_when_npx_cannot_run_the_pin(host: Host) -> None:
+def test_openspec_bin_override_wins_over_path(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _write_exe(host.openspec, "echo 1.16.0\n")
-    _fake_npx(host, "9.9.9")
-    with pytest.raises(readiness.PinnedCliUnavailableError, match=PIN):
+    pinned = _write_exe(tmp_path / "pinned" / "openspec", f"echo {PIN}\n")
+    monkeypatch.setenv(readiness.OPENSPEC_BIN_ENV, str(pinned))
+    assert readiness.pinned_openspec_command(host.root) == [str(pinned)]
+
+
+@pytest.mark.parametrize("reports", ["1.16.0", None], ids=["wrong-version", "missing-binary"])
+def test_openspec_bin_override_that_is_not_the_pin_fails(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports: str | None
+) -> None:
+    """An explicit override is never silently replaced by the PATH binary."""
+    override = tmp_path / "other" / "openspec"
+    if reports is not None:
+        _write_exe(override, f"echo {reports}\n")
+    monkeypatch.setenv(readiness.OPENSPEC_BIN_ENV, str(override))
+    with pytest.raises(readiness.PinnedCliUnavailableError) as caught:
         readiness.pinned_openspec_command(host.root)
+    assert f"{readiness.OPENSPEC_BIN_ENV}={override}" in str(caught.value)
 
 
-def test_version_probes_run_with_telemetry_off(host: Host, tmp_path: Path) -> None:
+def test_readiness_check_honours_openspec_bin(
+    host: Host, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host.openspec.unlink()
+    pinned = _write_exe(tmp_path / "pinned" / "openspec", f"echo {PIN}\n")
+    monkeypatch.setenv(readiness.OPENSPEC_BIN_ENV, str(pinned))
+    code, out = host.run(capsys)
+    assert code == 0, out
+    assert str(pinned) in out
+
+
+SECRET_NAMES = (
+    "VERDICT_OMNIROUTE_API_KEY",
+    "GITHUB_TOKEN",
+    "npm_config__authToken",
+    "AWS_SECRET_ACCESS_KEY",
+    "PGPASSWORD",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "OMNIROUTE_URL",
+)
+
+
+def test_probes_drop_credentials_from_the_environment(
+    host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in SECRET_NAMES:
+        monkeypatch.setenv(name, "must-not-leak")
+    monkeypatch.setenv("VERDICT_PLAIN", "1")
     seen = tmp_path / "env.txt"
-    _write_exe(host.openspec, f'echo "$OPENSPEC_TELEMETRY" > {seen}; echo {PIN}\n')
+    _write_exe(host.openspec, f"export -p > {seen}; echo {PIN}\n")
     readiness.pinned_openspec_command(host.root)
-    assert seen.read_text(encoding="utf-8").strip() == "0"
+    exported = seen.read_text(encoding="utf-8")
+    names = set(re.findall(r"^export (\w+)", exported, re.MULTILINE))
+    assert names.isdisjoint(SECRET_NAMES), sorted(names & set(SECRET_NAMES))
+    assert "must-not-leak" not in exported
+    assert {"PATH", "HOME", "VERDICT_PLAIN", "OPENSPEC_TELEMETRY"} <= names
+    assert re.search(r"^export OPENSPEC_TELEMETRY=['\"]?0['\"]?$", exported, re.MULTILINE)

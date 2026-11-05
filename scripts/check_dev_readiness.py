@@ -5,17 +5,20 @@ Reports, and never changes:
 
 * ``vgate``, the operator push gate, exists and is executable;
 * the ``pre-push`` hook (found with ``git rev-parse --git-path hooks``, so a
-  linked worktree reports the shared hook) exists, is executable and runs vgate;
-* the ``openspec`` on PATH reports the version the CI ``lint`` job pins in
-  ``.github/workflows/ci.yml``;
+  linked worktree reports the shared hook) exists, is executable and has a
+  non-comment line that executes vgate;
+* ``$OPENSPEC_BIN``, else the ``openspec`` on PATH, reports the version the CI
+  ``lint`` job pins in ``.github/workflows/ci.yml``;
 * the PyPA ``build`` frontend that the proof contract's ``build`` gate runs
   (``python -m build --wheel``) works in the project interpreter;
-* ``ocr`` (open-code-review) on PATH reports the version
-  ``.github/workflows/certify-rehearsal.yml`` pins.
+* ``ocr`` (open-code-review) on PATH reports the version, and has the SHA-256,
+  that ``.github/workflows/certify-rehearsal.yml`` pins.
 
 The workflows are the single source of truth for both pins: this script and
 ``tests/test_check_openspec_tasks.py`` read them, and nothing else restates them.
-Every problem prints the exact repair. Exit 0 when ready, 1 on any problem.
+Nothing is downloaded, and probes run with credential variables removed from
+their environment. Every problem prints the exact repair. Exit 0 when ready,
+1 on any problem.
 
 Usage:
     .venv/bin/python scripts/check_dev_readiness.py [--root PATH] [--vgate PATH]
@@ -25,13 +28,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,18 +43,26 @@ ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ".github/workflows/ci.yml"
 REHEARSAL_WORKFLOW = ".github/workflows/certify-rehearsal.yml"
 OPENSPEC_PACKAGE = "@fission-ai/openspec"
+OPENSPEC_BIN_ENV = "OPENSPEC_BIN"
 OCR_ASSET_URL = (
     "https://github.com/alibaba/open-code-review/releases/download/"
     "{version}/opencodereview-linux-amd64"
 )
 SYNC_COMMAND = "uv sync --frozen --extra dev --extra server --extra dashboard"
 PROBE_TIMEOUT_SECONDS = 60
-NPX_TIMEOUT_SECONDS = 600
 _VERSION = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
+# Probes never see credentials: names with these parts or prefixes are dropped.
+_SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+_SECRET_NAME_PREFIXES = ("OPENAI_", "ANTHROPIC_", "OMNIROUTE_")
 
 
 class PinnedCliUnavailableError(RuntimeError):
-    """The OpenSpec CLI version CI pins cannot run on this host."""
+    """The local OpenSpec CLI does not report the version CI pins."""
+
+    def __init__(self, detail: str, repair: str) -> None:
+        super().__init__(f"{detail}. Repair: {repair}")
+        self.detail = detail
+        self.repair = repair
 
 
 @dataclass(frozen=True)
@@ -86,17 +98,31 @@ def ocr_pin(root: Path = ROOT) -> tuple[str, str]:
     return version.group(1), digest.group(1)
 
 
+def _is_secret_name(name: str) -> bool:
+    upper = name.upper()
+    return any(part in upper for part in _SECRET_NAME_PARTS) or upper.startswith(
+        _SECRET_NAME_PREFIXES
+    )
+
+
+def probe_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the probe environment: credential variables dropped, OpenSpec telemetry off."""
+    source = os.environ if environ is None else environ
+    env = {name: value for name, value in source.items() if not _is_secret_name(name)}
+    env["OPENSPEC_TELEMETRY"] = "0"
+    return env
+
+
 def _run(
     argv: Sequence[str], *, cwd: Path | None = None, timeout: float = PROBE_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str] | None:
-    env = {**os.environ, "OPENSPEC_TELEMETRY": "0"}
     try:
         return subprocess.run(
             list(argv),
             cwd=cwd,
             capture_output=True,
             text=True,
-            env=env,
+            env=probe_env(),
             timeout=timeout,
             check=False,
         )
@@ -104,45 +130,46 @@ def _run(
         return None
 
 
-def _reported_version(argv: Sequence[str], *, timeout: float = PROBE_TIMEOUT_SECONDS) -> str | None:
+def _reported_version(argv: Sequence[str]) -> str | None:
     """Return the first ``X.Y.Z`` that ``argv`` prints, or None if it fails."""
-    result = _run(argv, timeout=timeout)
+    result = _run(argv)
     if result is None or result.returncode != 0:
         return None
     match = _VERSION.search(f"{result.stdout}\n{result.stderr}")
     return match.group(1) if match else None
 
 
-def pinned_openspec_command(root: Path = ROOT) -> list[str]:
-    """Return the argv prefix that runs the OpenSpec CLI version CI pins.
+def _local_openspec() -> tuple[str | None, str]:
+    """Return the OpenSpec binary to use and how it was chosen.
 
-    The ``openspec`` on PATH is used when it reports the pin. Otherwise the
-    pinned package runs through ``npx --yes``, as the CI ``lint`` job does.
-    Raises PinnedCliUnavailableError, naming the repair, when neither reports the pin.
+    ``$OPENSPEC_BIN`` wins and is never replaced by the PATH binary.
+    """
+    override = os.environ.get(OPENSPEC_BIN_ENV)
+    if override:
+        return override, f"{OPENSPEC_BIN_ENV}={override}"
+    found = shutil.which("openspec")
+    return found, f"{found} (first openspec on PATH)"
+
+
+def pinned_openspec_command(root: Path = ROOT) -> list[str] | None:
+    """Return the argv prefix of a local OpenSpec CLI that reports the CI pin.
+
+    Uses ``$OPENSPEC_BIN``, else the ``openspec`` on PATH, and returns None when
+    neither exists. Raises PinnedCliUnavailableError, naming the repair, when the
+    chosen binary reports another version. Never downloads anything.
     """
     pin = openspec_pin(root)
-    local = shutil.which("openspec")
-    found = "no openspec on PATH"
-    if local is not None:
-        reported = _reported_version([local, "--version"])
-        if reported == pin:
-            return [local]
-        found = f"{local} reports {reported or 'no version'}"
-    package = f"{OPENSPEC_PACKAGE}@{pin}"
-    npx = shutil.which("npx")
-    if npx is None:
-        raise PinnedCliUnavailableError(
-            f"{CI_WORKFLOW} pins OpenSpec {pin}; {found} and npx is not on PATH. "
-            f"Repair: install Node.js 18+ (for npx) or run: npm install -g {package}"
-        )
-    reported = _reported_version([npx, "--yes", package, "--version"], timeout=NPX_TIMEOUT_SECONDS)
+    binary, source = _local_openspec()
+    if binary is None:
+        return None
+    reported = _reported_version([binary, "--version"])
     if reported != pin:
         raise PinnedCliUnavailableError(
-            f"{CI_WORKFLOW} pins OpenSpec {pin}; {found} and `npx --yes {package} --version` "
-            f"reported {reported or 'nothing'} (offline or npm registry unreachable?). "
-            f"Repair: npm install -g {package}"
+            f"{source} reports {reported or 'no version'}; {CI_WORKFLOW} pins OpenSpec {pin}",
+            f"npm install -g {OPENSPEC_PACKAGE}@{pin} and put it first on PATH, or set "
+            f"{OPENSPEC_BIN_ENV}=<path to an openspec that reports {pin}>",
         )
-    return [npx, "--yes", package]
+    return [binary]
 
 
 def check_vgate(vgate: Path) -> Finding:
@@ -179,8 +206,28 @@ def _vgate_spellings(vgate: Path) -> set[str]:
     return spellings | {f"{home}/{relative}" for home in ("$HOME", "${HOME}", "~")}
 
 
+def _executes_vgate(text: str, vgate: Path) -> bool:
+    """True when a non-comment hook line runs vgate as its command.
+
+    Accepts ``exec <vgate> ...`` and ``<vgate> ...`` with the absolute path or a
+    ``$HOME``/``${HOME}``/``~`` spelling. A comment, or vgate as an argument
+    (``echo <vgate>``), does not count.
+    """
+    spellings = _vgate_spellings(vgate)
+    for line in text.splitlines():
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if words[:1] == ["exec"]:
+            words = words[1:]
+        if words and words[0] in spellings:
+            return True
+    return False
+
+
 def check_pre_push(root: Path, vgate: Path) -> Finding:
-    """The pre-push hook must exist, be executable and run vgate."""
+    """The pre-push hook must exist, be executable and execute vgate."""
     hooks = _hooks_dir(root)
     if hooks is None:
         return Finding(
@@ -205,11 +252,11 @@ def check_pre_push(root: Path, vgate: Path) -> Finding:
         return Finding(
             "pre-push hook", False, f"{hook} is unreadable: {exc}", f"chmod u+r {quoted}"
         )
-    if not any(spelling in text for spelling in _vgate_spellings(vgate)):
+    if not _executes_vgate(text, vgate):
         return Finding(
             "pre-push hook",
             False,
-            f"{hook} does not run {vgate}",
+            f"{hook} does not run {vgate} (no non-comment line executes it)",
             f"{install}  (replaces the current hook)",
         )
     if not os.access(hook, os.X_OK):
@@ -223,24 +270,22 @@ def check_pre_push(root: Path, vgate: Path) -> Finding:
 
 
 def check_openspec(root: Path) -> Finding:
-    """The openspec on PATH must report the version ci.yml pins."""
+    """``$OPENSPEC_BIN``, else the openspec on PATH, must report the version ci.yml pins."""
     try:
         pin = openspec_pin(root)
+        command = pinned_openspec_command(root)
+    except PinnedCliUnavailableError as exc:
+        return Finding("openspec", False, exc.detail, exc.repair)
     except (OSError, ValueError) as exc:
         return Finding("openspec", False, str(exc), f"fix the OpenSpec pin in {CI_WORKFLOW}")
-    install = f"npm install -g {OPENSPEC_PACKAGE}@{pin}"
-    local = shutil.which("openspec")
-    if local is None:
-        return Finding("openspec", False, f"not on PATH; {CI_WORKFLOW} pins {pin}", install)
-    reported = _reported_version([local, "--version"])
-    if reported != pin:
+    if command is None:
         return Finding(
             "openspec",
             False,
-            f"{local} reports {reported or 'no version'}; {CI_WORKFLOW} pins {pin}",
-            f"{install}, then put it ahead of {local} on PATH (or remove {local})",
+            f"not on PATH and {OPENSPEC_BIN_ENV} is unset; {CI_WORKFLOW} pins {pin}",
+            f"npm install -g {OPENSPEC_PACKAGE}@{pin}",
         )
-    return Finding("openspec", True, f"{local} reports {pin} (pinned in {CI_WORKFLOW})")
+    return Finding("openspec", True, f"{command[0]} reports {pin} (pinned in {CI_WORKFLOW})")
 
 
 def check_build(root: Path, python: str) -> Finding:
@@ -258,8 +303,19 @@ def check_build(root: Path, python: str) -> Finding:
     return Finding("build", True, f"{python} -m build: {result.stdout.strip().splitlines()[0]}")
 
 
+def _sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def check_ocr(root: Path) -> Finding:
-    """The ocr on PATH must report the release certify-rehearsal.yml pins."""
+    """The ocr on PATH must be the release certify-rehearsal.yml pins: version and SHA-256."""
     try:
         version, digest = ocr_pin(root)
     except (OSError, ValueError) as exc:
@@ -282,7 +338,16 @@ def check_ocr(root: Path) -> Finding:
         return Finding(
             "ocr", False, f"{local} reports {shown}; {REHEARSAL_WORKFLOW} pins {version}", repair
         )
-    return Finding("ocr", True, f"{local} reports {version} (pinned in {REHEARSAL_WORKFLOW})")
+    actual = _sha256(Path(local))
+    if actual != digest:
+        return Finding(
+            "ocr",
+            False,
+            f"{local} reports {version} but has sha256 {actual or 'unreadable'}; "
+            f"{REHEARSAL_WORKFLOW} pins {digest} (the linux/amd64 release asset)",
+            repair,
+        )
+    return Finding("ocr", True, f"{local} is {version}, sha256 matches {REHEARSAL_WORKFLOW}")
 
 
 def run_checks(root: Path, vgate: Path, python: str) -> list[Finding]:

@@ -13,14 +13,20 @@ was not executable, so pushes would have skipped the gate with no warning.
   and `pyproject-hooks` only (lock revision 3 kept). A hygiene test requires
   every `python -m <module>` proof gate to be a dev dependency.
 - The OpenSpec pin in `.github/workflows/ci.yml` is the single source of truth.
-  The strict-validation test runs the PATH `openspec` only when it reports
-  that pin, otherwise `npx --yes @fission-ai/openspec@<pin>`, and fails (never
-  skips) when the pinned CLI cannot run. A test requires every OpenSpec pin in
-  workflows, scripts and `verdict/` to equal the CI pin. CI is unchanged.
-- New read-only `scripts/check_dev_readiness.py` reports `vgate` and the
-  `pre-push` hook, the local `openspec` version against the CI pin, `build`
-  in the project interpreter, and `ocr` against the version pinned in
-  `.github/workflows/certify-rehearsal.yml`. It exits 1 with an exact repair.
+  The strict-validation test runs `$OPENSPEC_BIN`, else the PATH `openspec`,
+  only when it reports that pin. Another version fails the test with the
+  repair (install the pin, or point `OPENSPEC_BIN` at a pinned binary). With no
+  CLI installed the test still skips, as before: the CI unit-test job has
+  none, and the CI `lint` job runs the pinned validation itself. Tests never
+  download a CLI. A test requires every OpenSpec pin in text files under
+  `.github/` (workflow `*.yml` and `*.yaml`), `scripts/` and `verdict/`
+  (vendored code excluded) to equal the CI pin. CI is unchanged.
+- New read-only `scripts/check_dev_readiness.py` reports `vgate`, a `pre-push`
+  hook with a non-comment line that executes it, the local `openspec` version
+  against the CI pin, `build` in the project interpreter, and `ocr` against
+  the version and SHA-256 pinned in `.github/workflows/certify-rehearsal.yml`.
+  Its probes run with credential variables removed from the environment. It
+  exits 1 with an exact repair.
 - CONTRIBUTING.md names the readiness check in Setup.
 
 ## Capabilities
