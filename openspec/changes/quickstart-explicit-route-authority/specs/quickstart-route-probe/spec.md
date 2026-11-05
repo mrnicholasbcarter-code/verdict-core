@@ -16,6 +16,18 @@ The probe SHALL read a JSON RouteRequest from VERDICT_QUICKSTART_ROUTE_REQUEST w
 - **WHEN** the request file is absent, unreadable, invalid JSON, or lacks task or execution_path_request
 - **THEN** the probe fails closed without inventing a candidate or exposing input contents
 
+### Requirement: The probe SHALL fetch the public Core metadata catalog into its own state
+
+Before the route probe, quickstart SHALL run `verdict metadata refresh --store <temporary VERDICT_HOME>/model-metadata.json`, because server-owned live execution-path admission requires the Core metadata catalog. It SHALL NOT copy the operator's metadata, health, passport or admission state into the probe. A failed refresh SHALL exit non-zero without running the route probe and without printing RESULT: PASS or QUICKSTART PASSED.
+
+#### Scenario: Catalog is fetched into the probe's temporary state first
+- **WHEN** quickstart reaches the route step
+- **THEN** it refreshes the Core metadata catalog into the probe's temporary VERDICT_HOME before probing
+
+#### Scenario: Catalog refresh fails
+- **WHEN** the metadata refresh exits non-zero
+- **THEN** quickstart fails without probing and without a success marker
+
 ### Requirement: The probe SHALL retain server authentication and startup checks
 
 The probe SHALL forward existing LLMGATE_AUTH_TOKEN bearer credentials without creating credentials or enabling anonymous access. It SHALL execute TestClient lifespan and use temporary HOME, VERDICT_HOME and receipts state.

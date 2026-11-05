@@ -120,6 +120,61 @@ def test_child_probe_failure_is_nonzero(quickstart, capsys) -> None:
     assert "RESULT: PASS" not in captured
 
 
+def _recording_main(monkeypatch, tmp_path, *, metadata_returncode: int):
+    """Run main() with every child recorded; only the route probe returns a selection."""
+    from contextlib import nullcontext
+
+    module = _load()
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def record(cmd, cwd=None, check=True, env=None):
+        calls.append((cmd, env))
+        if "-m verdict metadata refresh" in cmd:
+            return _completed("", returncode=metadata_returncode)
+        if " -c " in cmd:
+            return _completed(_route_output(200, {"decision": "selected", "model": "m"}))
+        return _completed("")
+
+    monkeypatch.setattr(module, "run", record)
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", lambda: nullcontext(str(tmp_path)))
+    try:
+        module.main()
+        code = None
+    except SystemExit as caught:
+        code = caught.code
+    return code, calls
+
+
+def test_core_metadata_is_fetched_into_probe_state_before_the_route_probe(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    code, calls = _recording_main(monkeypatch, tmp_path, metadata_returncode=0)
+    assert code is None
+    assert "RESULT: PASS" in capsys.readouterr().out
+    refresh = [i for i, (cmd, _) in enumerate(calls) if "-m verdict metadata refresh" in cmd]
+    probe = [i for i, (cmd, _) in enumerate(calls) if " -c " in cmd]
+    assert len(refresh) == 1 and len(probe) == 1
+    assert refresh[0] < probe[0]
+    cmd, env = calls[refresh[0]]
+    store = tmp_path / "verdict" / "model-metadata.json"
+    assert shlex.split(cmd)[-3:] == ["--store", str(store), "--json"]
+    # The public catalog lands in the probe's own temporary state, never the operator's.
+    assert env is not None
+    assert env["HOME"] == str(tmp_path)
+    assert env["VERDICT_HOME"] == str(tmp_path / "verdict")
+
+
+def test_failed_core_metadata_refresh_fails_closed_without_probing(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    code, calls = _recording_main(monkeypatch, tmp_path, metadata_returncode=1)
+    captured = capsys.readouterr().out
+    assert code not in (None, 0)
+    assert not any(" -c " in cmd for cmd, _ in calls)
+    assert "RESULT: PASS" not in captured
+    assert "QUICKSTART PASSED" not in captured
+
+
 @pytest.fixture
 def route_api(monkeypatch, tmp_path, no_gateway_network):
     """Real API/auth/admission/optimizer; only evidence inputs are fixtures.
