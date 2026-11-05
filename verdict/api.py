@@ -430,10 +430,13 @@ def _build_availability_cache() -> tuple[AvailabilityCache, EligibilityGate] | N
     normalized_url = (
         _normalize_omniroute_loopback(base_url) if is_omniroute_configured else base_url
     )
-    from verdict.credentials_store import resolve_api_key
+    from verdict.credentials_store import resolve_api_key, resolve_management_token
 
     api_key = resolve_api_key()
-    management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    # Environment first (blank ignored), then the same-named credential-store
+    # field, so an unattended unit with no exported token still reads
+    # connections (BOD-219, the BOD-345 resolver).
+    management_token = resolve_management_token()
     usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
     allow_private = _allowed_private_hosts() | {
         item.strip().lower()
@@ -563,6 +566,7 @@ def server_bootstrap_diagnostics(
     off there is no gateway I/O at all, so this function stays exactly as
     offline as it was before the lifecycle landed. Tests pass a fake.
     """
+    from verdict.credentials_store import resolve_management_token
     from verdict.provider_bootstrap import (
         BootstrapError,
         load_credential_store_env,
@@ -591,7 +595,8 @@ def server_bootstrap_diagnostics(
                 "fatal": False,
             }
         )
-    if not os.getenv("OMNIROUTE_MANAGEMENT_TOKEN", "").strip():
+    # The same resolver _build_availability_cache uses, so this names what serve reads.
+    if resolve_management_token() is None:
         report["diagnostics"].append(
             {
                 "code": "runtime_sources_health_only",

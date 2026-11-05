@@ -382,6 +382,140 @@ def _doctor_gateway_key(diag: DoctorDiagnostics, gateway_url: str) -> None:
     diag.issues.append("OmniRoute /api/v1/me/status returned no key metadata. " + _ENV_KEY_REMEDY)
 
 
+#: ``OmniRouteHTTPTransport``'s default per-request timeout, which serve's transport uses.
+_MANAGEMENT_PROBE_TIMEOUT_SECONDS = 5.0
+_MANAGEMENT_TOKEN_REPAIR = (
+    "verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin "
+    "(OmniRoute accepts an oma_ access token or a manage-scope API key)"
+)
+_SOURCE_PHRASE = {"environment": "the environment", "credential_store": "the credential store"}
+
+
+def _resolved_management_token() -> tuple[str, str] | None:
+    """The management token serve resolves and the name of its source.
+
+    The value comes only from ``credentials_store.resolve_management_token``
+    (environment first, blank ignored, then the same-named credential-store
+    field). It is used for the probe and never rendered. The CLI entry copies
+    stored values into the environment for unset names (``load_into_env``), so
+    a value equal to the stored field is attributed to the credential store;
+    only a different exported value is named ``environment``.
+    """
+    from verdict.credentials_store import (
+        MANAGEMENT_TOKEN_ENV_NAME,
+        CredentialsStore,
+        resolve_management_token,
+    )
+
+    token = resolve_management_token()
+    if token is None:
+        return None
+    try:
+        stored = (CredentialsStore().load().get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip()
+    except (PermissionError, OSError):
+        stored = ""
+    return token, "credential_store" if token == stored else "environment"
+
+
+def _doctor_management_token(diag: DoctorDiagnostics, gateway_url: str | None) -> None:
+    """Validate the management token ``verdict serve`` resolves with one read-only GET.
+
+    Serve reads OmniRoute's ``connections`` runtime source only with a management
+    token; without one it reads ``health`` only and providers outside OmniRoute's
+    monitored set read as unknown (info, not a failure). A token OmniRoute refuses
+    (401) or forbids (403) is an issue: serve's runtime read fails and every
+    candidate reads as unknown, so routing fails closed. A timeout, transport error
+    or other status is a warning: the token is unverified, never assumed good.
+    Rows name the token's source, never its value.
+    """
+    import urllib.request
+    from urllib.error import HTTPError
+
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.omniroute import _RUNTIME_SOURCE_PATHS, CATALOG_MAX_RESPONSE_BYTES
+
+    label = "Management token"
+    resolved = _resolved_management_token()
+    if resolved is None:
+        diag.sections.append(
+            (
+                label,
+                "note",
+                "absent; runtime sources: health only (providers outside OmniRoute's "
+                f"monitored set read as unknown). Set with: {_MANAGEMENT_TOKEN_REPAIR}",
+            )
+        )
+        return
+    token, source = resolved
+
+    def unverified(reason: str) -> None:
+        diag.sections.append((label, "warn", f"not verified: {reason} (source: {source})"))
+        diag.warnings.append(
+            f"Could not verify the OmniRoute management token from {_SOURCE_PHRASE[source]}: "
+            f"{reason}"
+        )
+
+    if not gateway_url:
+        unverified("no gateway URL configured")
+        return
+    # The management route serve's transport reads with this token.
+    path = _RUNTIME_SOURCE_PATHS["connections"]
+    try:
+        request = urllib.request.Request(
+            normalize_omniroute_origin(gateway_url) + path,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+        )
+        with open_no_redirect(request, timeout=_MANAGEMENT_PROBE_TIMEOUT_SECONDS) as response:
+            status = response.status
+            raw = response.read(CATALOG_MAX_RESPONSE_BYTES + 1)
+        if status != 200:
+            unverified(f"unexpected HTTP {status}")
+            return
+        if len(raw) > CATALOG_MAX_RESPONSE_BYTES:
+            unverified("response too large")
+            return
+        payload = json.loads(raw)
+    except HTTPError as exc:
+        if exc.code not in (401, 403):  # outage, rate limit or old gateway: says nothing
+            unverified(f"HTTP {exc.code}")
+            return
+        word, cause = (
+            ("rejected", "OmniRoute does not accept it")
+            if exc.code == 401
+            else ("forbidden", "it is not a management credential")
+        )
+        diag.sections.append(
+            (
+                label,
+                "failed",
+                f"OMNIROUTE_MANAGEMENT_TOKEN {word}: HTTP {exc.code} at {path} (source: {source})",
+            )
+        )
+        issue = (
+            f"OmniRoute {word} OMNIROUTE_MANAGEMENT_TOKEN from {_SOURCE_PHRASE[source]} "
+            f"(HTTP {exc.code} at {path}; {cause}). verdict serve's runtime read fails, every "
+            f"candidate reads as unknown and routing fails closed. Repair: {_MANAGEMENT_TOKEN_REPAIR}."
+        )
+        if source == "environment":
+            issue += (
+                " The exported OMNIROUTE_MANAGEMENT_TOKEN overrides the credential store: "
+                "update or unset it in the environment too."
+            )
+        diag.issues.append(issue)
+        return
+    except Exception as exc:  # bad URL, transport, protocol or unparseable body: never OK
+        # Category only: exception text can echo the Authorization header (and the token).
+        inner = getattr(exc, "reason", exc)
+        unverified(type(inner if isinstance(inner, BaseException) else exc).__name__)
+        return
+    if not isinstance(payload, (dict, list)):
+        unverified("response is not a JSON object or array")
+        return
+    diag.sections.append(
+        (label, "ok", f"valid (source: {source}); serve reads runtime sources health + connections")
+    )
+
+
 def census_runtime_section() -> tuple[str, str, str]:
     """The legacy census is retired; never recommend reinstalling it."""
     return (
@@ -674,6 +808,8 @@ def _collect_doctor_diagnostics(
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)
+    # 1d-iv. The management token serve resolves (environment, then the credential store).
+    _doctor_management_token(diag, gateway_url)
 
     # 1e. Env var format checks (T017)
     omniroute_base_url_env = os.getenv("OMNIROUTE_BASE_URL")

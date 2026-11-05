@@ -31,6 +31,10 @@ PROBLEM_STATES = frozenset(
 def repair_command(finding: str) -> str:
     """Return a safe, registered next-step command for a reported finding."""
     lowered = finding.lower()
+    if "OMNIROUTE_MANAGEMENT_TOKEN" in finding and any(
+        word in lowered for word in ("rejected", "forbidden")
+    ):
+        return "verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin"
     credential = re.search(r"\b([A-Z][A-Z0-9_]*(?:API_KEY|BASE_URL|AUTH_TOKEN))\b", finding)
     if credential and any(
         word in lowered

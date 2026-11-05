@@ -1364,6 +1364,54 @@ def test_cli_doctor_missing_required_credential_exits_one_both_modes(
     assert "Required credential OMNIROUTE_API_KEY is not set" in out
 
 
+def test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BOD-219: a stored management token OmniRoute refuses is a doctor failure.
+
+    The collector probes it once, names the source and the exact repair, and
+    neither the --json report nor the text output carries the token value.
+    """
+    import sys
+    from urllib.error import HTTPError
+
+    import verdict.doctor_diagnostics as dd
+    from verdict.credentials_store import CredentialsStore
+
+    secret = "oma_cli-doctor-management-sentinel"
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    CredentialsStore().set("OMNIROUTE_MANAGEMENT_TOKEN", secret)
+    seen: list[str] = []
+
+    def refuse(request: Any, *, timeout: float) -> Any:
+        seen.append(request.full_url)
+        raise HTTPError(request.full_url, 401, "x", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dd, "open_no_redirect", refuse)
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert seen == ["http://localhost:0/api/resilience/connections"]
+    [issue] = [i for i in report["issues"] if "OMNIROUTE_MANAGEMENT_TOKEN" in i]
+    assert "HTTP 401" in issue and "credential store" in issue
+    [row] = [s for s in report["sections"] if s["label"] == "Management token"]
+    assert row["state"] == "failed" and "source: credential_store" in row["detail"]
+    assert "cli-doctor-management-sentinel" not in out
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    text = capsys.readouterr().out
+    assert "Repair: verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin" in text
+    assert "cli-doctor-management-sentinel" not in text
+
+
 def test_cli_doctor_corrupt_config_exits_one_both_modes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
