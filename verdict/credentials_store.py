@@ -10,6 +10,7 @@ Stores credentials in $XDG_CONFIG_HOME/verdict/credentials.env with:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -22,6 +23,13 @@ GATEWAY_KEY_ENV_NAMES = ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY")
 #: Owner-only key file next to the credential store (written by the operator).
 GATEWAY_KEY_FILENAME = "omniroute-api-key"
 MANAGEMENT_TOKEN_ENV_NAME = "OMNIROUTE_MANAGEMENT_TOKEN"
+#: Names ``CredentialsStore.load_into_env`` copied into this process's environment,
+#: mapped to a SHA-256 digest of the copied value (never the value itself).
+_STORE_INJECTED: dict[str, str] = {}
+
+
+def _value_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class CredentialsStore:
@@ -111,12 +119,15 @@ class CredentialsStore:
     def load_into_env(self) -> None:
         """Load credentials into os.environ, only for unset names.
 
-        Exported env vars always win over stored values.
+        Exported env vars always win over stored values. Each name it sets is
+        recorded (with a digest of the value, never the value) so provenance
+        stays "credential store" for this process; see :func:`injected_from_store`.
         """
         stored = self.load()
         for key, value in stored.items():
             if key not in os.environ:
                 os.environ[key] = value
+                _STORE_INJECTED[key] = _value_digest(value)
 
     def set(self, env_name: str, value: str) -> None:
         """Set a credential in the store.
@@ -296,6 +307,36 @@ def resolve_management_token(environ: Mapping[str, str] | None = None) -> str | 
         return None
     value = (stored.get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip()
     return value or None
+
+
+def injected_from_store(name: str, environ: Mapping[str, str] | None = None) -> bool:
+    """True when ``name``'s environment value is the one ``load_into_env`` copied in.
+
+    A value the process set or overwrote itself after the copy is not injected.
+    """
+    source = os.environ if environ is None else environ
+    value = source.get(name)
+    return value is not None and _STORE_INJECTED.get(name) == _value_digest(value)
+
+
+def resolve_management_token_source(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, str] | None:
+    """The management token and its provenance: ``environment`` or ``credential_store``.
+
+    The token is exactly :func:`resolve_management_token`'s. Provenance is recorded,
+    never inferred from values: a non-blank environment value is ``environment``
+    unless ``load_into_env`` injected it from the store. An exported value equal to
+    the stored one is still ``environment`` (it overrides the store).
+    """
+    source = os.environ if environ is None else environ
+    token = resolve_management_token(source)
+    if token is None:
+        return None
+    exported = bool((source.get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip())
+    if exported and not injected_from_store(MANAGEMENT_TOKEN_ENV_NAME, source):
+        return token, "environment"
+    return token, "credential_store"
 
 
 def get_credential_source(env_name: str, store: CredentialsStore | None = None) -> tuple[str, str]:

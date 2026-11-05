@@ -42,6 +42,32 @@ def test_management_resolver_precedence_and_named_field(monkeypatch, store):
     assert module.resolve_management_token({}) is None
 
 
+def test_management_token_source_records_real_provenance(monkeypatch, store):
+    """BOD-219: provenance comes from what load_into_env injected, not value equality."""
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setattr(module, "CredentialsStore", lambda: store)
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN", raising=False)
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", "same-sentinel")
+    assert module.resolve_management_token_source() == ("same-sentinel", "credential_store")
+    # An explicit export equal to the stored value is still an export.
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "same-sentinel")
+    assert module.resolve_management_token_source() == ("same-sentinel", "environment")
+    # A value load_into_env copied from the store stays the store's.
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    store.load_into_env()
+    assert os.environ["OMNIROUTE_MANAGEMENT_TOKEN"] == "same-sentinel"
+    assert module.resolve_management_token_source() == ("same-sentinel", "credential_store")
+    # Overwriting the copied value in-process makes it an export again.
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "other-sentinel")
+    assert module.resolve_management_token_source() == ("other-sentinel", "environment")
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "  ")
+    assert module.resolve_management_token_source() == ("same-sentinel", "credential_store")
+    store.unset("OMNIROUTE_MANAGEMENT_TOKEN")
+    assert module.resolve_management_token_source() is None
+
+
 def test_store_creates_secure_directory(store: CredentialsStore) -> None:
     """Store creates config directory with 0700 permissions."""
     store.set("TEST_KEY", "test_value")
