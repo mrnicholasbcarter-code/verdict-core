@@ -394,27 +394,15 @@ _SOURCE_PHRASE = {"environment": "the environment", "credential_store": "the cre
 def _resolved_management_token() -> tuple[str, str] | None:
     """The management token serve resolves and the name of its source.
 
-    The value comes only from ``credentials_store.resolve_management_token``
-    (environment first, blank ignored, then the same-named credential-store
-    field). It is used for the probe and never rendered. The CLI entry copies
-    stored values into the environment for unset names (``load_into_env``), so
-    a value equal to the stored field is attributed to the credential store;
-    only a different exported value is named ``environment``.
+    The value is ``credentials_store.resolve_management_token``'s (environment
+    first, blank ignored, then the same-named credential-store field); it is
+    used for the probe and never rendered. The source is recorded provenance:
+    a value the CLI entry's ``load_into_env`` copied from the store is
+    ``credential_store``, any other non-blank export is ``environment``.
     """
-    from verdict.credentials_store import (
-        MANAGEMENT_TOKEN_ENV_NAME,
-        CredentialsStore,
-        resolve_management_token,
-    )
+    from verdict.credentials_store import resolve_management_token_source
 
-    token = resolve_management_token()
-    if token is None:
-        return None
-    try:
-        stored = (CredentialsStore().load().get(MANAGEMENT_TOKEN_ENV_NAME) or "").strip()
-    except (PermissionError, OSError):
-        stored = ""
-    return token, "credential_store" if token == stored else "environment"
+    return resolve_management_token_source()
 
 
 def _doctor_management_token(diag: DoctorDiagnostics, gateway_url: str | None) -> None:

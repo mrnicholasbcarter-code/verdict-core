@@ -1375,10 +1375,13 @@ def test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the
     import sys
     from urllib.error import HTTPError
 
+    import verdict.credentials_store as credentials_store
     import verdict.doctor_diagnostics as dd
     from verdict.credentials_store import CredentialsStore
 
     secret = "oma_cli-doctor-management-sentinel"
+    # cli.main's load_into_env records provenance; keep that record test-local.
+    monkeypatch.setattr(credentials_store, "_STORE_INJECTED", {})
     _doctor_healthy_fixture(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")

@@ -31,6 +31,32 @@ field MUST be used when the environment has none. The transport MUST read the
 - **TEST** `tests/test_serve_management_token.py::test_startup_diagnostic_reflects_a_store_token`,
   `::test_startup_diagnostic_treats_a_blank_environment_token_as_absent`
 
+### Requirement: Management-token provenance is recorded, not inferred
+`CredentialsStore.load_into_env` MUST record each name it copies into the process
+environment, keyed to a digest of the copied value and never the value itself.
+`credentials_store.resolve_management_token_source` MUST return the same token as
+`resolve_management_token`. Its source MUST be `credential_store` when the token came
+from the store field, or when the environment value is the one `load_into_env`
+injected and has not changed since. Its source MUST be `environment` for every other
+non-blank exported value, including one equal to the stored value. Provenance MUST NOT
+be derived from comparing the exported value with the stored value.
+
+#### Scenario: Exported value equal to the stored value
+- **WHEN** the environment exports a management token equal to the credential-store field
+- **THEN** the source is `environment`, and a rejected token's doctor issue says that the
+  export overrides the credential store
+- **TEST** `tests/test_credentials_store.py::test_management_token_source_records_real_provenance`,
+  `tests/test_doctor_management_token.py::test_exported_token_equal_to_the_stored_value_is_the_environment`
+
+#### Scenario: Value copied from the store by the CLI entry
+- **WHEN** `load_into_env` copied the stored token into the environment, and the process
+  has not changed it since
+- **THEN** the source is `credential_store`. If the process later overwrites the value,
+  the source is `environment`.
+- **TEST** `tests/test_credentials_store.py::test_management_token_source_records_real_provenance`,
+  `tests/test_doctor_management_token.py::test_store_value_copied_into_the_environment_is_still_the_credential_store`,
+  `tests/test_cli_inprocess.py::test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the_value`
+
 ### Requirement: Doctor validates the resolved management token
 `verdict doctor` MUST report a "Management token" row from the same resolver. When no
 token resolves, it MUST add an info row that says "runtime sources: health only" and
@@ -79,8 +105,13 @@ accepts an `oma_` access token or a manage-scope API key.
   `::test_unexpected_success_is_never_ok`, `::test_token_without_a_gateway_is_unverified_without_a_request`
 
 #### Scenario: Token value never rendered
-- **WHEN** doctor renders any management-token outcome as text or `--json`
-- **THEN** the token value does not appear, including when it carries header-injection bytes
+- **WHEN** doctor renders the absent, OK, warning, unreachable, 401 or 403 outcome as
+  `--json` or as text (`TerminalUI` rows, warnings, summary and `doctor_presentation`
+  repair hints)
+- **THEN** the token value does not appear in either form
+- **AND** an exported token that carries CR/LF is refused by the real
+  `open_no_redirect` before any socket is opened (under `no_gateway_network`), and
+  doctor reports only `ValueError`
 - **TEST** `tests/test_doctor_management_token.py::test_token_value_never_appears_in_doctor_text_or_json`,
-  `::test_header_injection_token_never_leaks_through_the_real_opener`,
+  `::test_header_injection_token_is_refused_by_the_real_opener_before_any_socket`,
   `tests/test_cli_inprocess.py::test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the_value`

@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
+import verdict.credentials_store as credentials_store
 import verdict.doctor_diagnostics as dd
 from verdict.credentials_store import CredentialsStore
 from verdict.doctor_presentation import repair_command
@@ -31,6 +32,12 @@ class _Response(io.BytesIO):
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+@pytest.fixture(autouse=True)
+def _offline(no_gateway_network: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here may open a socket; provenance starts empty for each test."""
+    monkeypatch.setattr(credentials_store, "_STORE_INJECTED", {}, raising=False)
 
 
 @pytest.fixture
@@ -119,6 +126,19 @@ def test_store_value_copied_into_the_environment_is_still_the_credential_store(
     assert state == "ok" and "source: credential_store" in detail
 
 
+def test_exported_token_equal_to_the_stored_value_is_the_environment(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance is what load_into_env injected, never value equality."""
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", SECRET)
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", SECRET)
+    diag, _ = _run(monkeypatch, _http(401))
+    [(_label, state, detail)] = diag.sections
+    assert state == "failed" and "source: environment" in detail
+    [issue] = diag.issues
+    assert "from the environment" in issue and "overrides the credential store" in issue
+
+
 @pytest.mark.parametrize(("code", "word"), [(401, "rejected"), (403, "forbidden")])
 def test_rejected_or_forbidden_token_is_a_failure_with_source_and_repair(
     store: CredentialsStore, monkeypatch: pytest.MonkeyPatch, code: int, word: str
@@ -191,26 +211,52 @@ def test_token_without_a_gateway_is_unverified_without_a_request(
     assert seen == [] and diag.issues == [] and len(diag.warnings) == 1
 
 
-def test_header_injection_token_never_leaks_through_the_real_opener(
-    store: CredentialsStore,
+def test_header_injection_token_is_refused_by_the_real_opener_before_any_socket(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    secret = "oma_secret\r\nX-Injected: 1"
-    store.set("OMNIROUTE_MANAGEMENT_TOKEN", secret)
+    """The real ``open_no_redirect`` runs; ``no_gateway_network`` makes any connect fail loudly.
+
+    The token is exported (the credential store's line format cannot carry CR/LF).
+    http.client validates header values before it connects, so the CR/LF token is
+    refused with ``ValueError`` (whose text would echo the value) and doctor reports
+    only the category.
+    """
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "oma_secret\r\nX-Injected: 1")
     diag = dd.DoctorDiagnostics()
-    dd._doctor_management_token(diag, "http://127.0.0.1:9")  # real opener rejects the header
-    assert len(diag.warnings) == 1
-    assert "oma_secret" not in _rendered(diag)
+    dd._doctor_management_token(diag, GATEWAY)
+    [warning] = diag.warnings
+    assert warning.endswith(": ValueError")
+    assert diag.sections == [
+        ("Management token", "warn", "not verified: ValueError (source: environment)")
+    ]
+    assert "oma_secret" not in _rendered(diag) and "X-Injected" not in _rendered(diag)
 
 
-@pytest.mark.parametrize(
-    "outcome", [{"connections": []}, _http(401), _http(403), _http(500), URLError("down")]
-)
+_OUTCOMES = {
+    "absent": None,
+    "ok": {"connections": []},
+    "warning": _http(500),
+    "unreachable": URLError("down"),
+    "401": _http(401),
+    "403": _http(403),
+}
+
+
+@pytest.mark.parametrize("case", list(_OUTCOMES))
 def test_token_value_never_appears_in_doctor_text_or_json(
-    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch, outcome: Any
+    store: CredentialsStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
 ) -> None:
+    from verdict import cli
     from verdict.actions.registry import run_action
 
-    store.set("OMNIROUTE_MANAGEMENT_TOKEN", SECRET)
+    outcome = _OUTCOMES[case]
+    if outcome is not None:
+        store.set("OMNIROUTE_MANAGEMENT_TOKEN", SECRET)
+    else:
+        store.set("UNRELATED", "x")  # a store exists but holds no management token
 
     def opener(request: Any, *, timeout: float) -> _Response:
         if isinstance(outcome, Exception):
@@ -224,8 +270,25 @@ def test_token_value_never_appears_in_doctor_text_or_json(
 
     monkeypatch.setattr(dd, "open_no_redirect", opener)
     monkeypatch.setattr(dd, "_collect_doctor_diagnostics", collect)
+    failing = case in {"401", "403"}
+    expected_state = {"absent": "note", "ok": "ok", "401": "failed", "403": "failed"}
+
     result = run_action("doctor", {"fix": False, "preflight_timeout": 1.0})
-    rendered = json.dumps(result.data, default=str)
-    assert any(s["label"] == "Management token" for s in result.data["sections"])
-    assert SECRET not in rendered and "doctor-management-sentinel" not in rendered
-    assert result.ok is (not isinstance(outcome, HTTPError) or outcome.code not in (401, 403))
+    as_json = json.dumps(result.data, default=str)
+    [row] = [s for s in result.data["sections"] if s["label"] == "Management token"]
+    assert row["state"] == expected_state.get(case, "warn")
+    assert result.ok is not failing
+    assert "doctor-management-sentinel" not in as_json
+
+    # TEXT: the same rows through TerminalUI.doctor_finding / doctor_summary and the
+    # doctor_presentation repair hints, exactly as `verdict doctor` prints them.
+    if failing:
+        with pytest.raises(SystemExit):
+            cli.cmd_doctor()
+    else:
+        cli.cmd_doctor()
+    text = capsys.readouterr().out
+    assert "Management token" in text
+    assert "doctor-management-sentinel" not in text
+    if failing:
+        assert f"Repair: {REPAIR}" in text

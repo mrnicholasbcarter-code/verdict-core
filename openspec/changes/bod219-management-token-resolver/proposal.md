@@ -33,7 +33,12 @@ exists, where it comes from, or whether OmniRoute accepts it.
     because serve's runtime read then fails and routing fails closed; any other
     status, timeout, transport error or body: a warning, never OK.
 - Every row names the token's source (`environment` or `credential_store`), never its
-  value. The repair is `verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin`, and
+  value. The source is recorded, not inferred from values.
+  `CredentialsStore.load_into_env` records each name it copies into the process
+  environment, with a SHA-256 digest of the value and never the value itself.
+  `credentials_store.resolve_management_token_source` returns `credential_store` for
+  a value that was copied in and not changed since, and `environment` for any other
+  non-blank export, even one equal to the stored value. The repair is `verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin`, and
   the row says that OmniRoute accepts an `oma_` access token or a manage-scope API key.
   For an exported token, the issue also says that the export overrides the store.
 - The text renderer's repair hint for a rejected or forbidden management token is that
@@ -49,8 +54,13 @@ exists, where it comes from, or whether OmniRoute accepts it.
 - `verdict/doctor_diagnostics.py` (`_resolved_management_token`,
   `_doctor_management_token`, one call in the collector).
 - `verdict/doctor_presentation.py` (`repair_command`, one branch).
-- BOD-345 passive identify is unchanged: `verdict/identify.py` and
-  `verdict/credentials_store.py` are not edited.
+- `verdict/credentials_store.py`: `load_into_env` records what it injects, and adds
+  `injected_from_store` and `resolve_management_token_source`.
+  `resolve_management_token` is unchanged, so BOD-345 passive identify is unchanged
+  and `verdict/identify.py` is not edited.
+- Not changed: `get_credential_source`, behind the doctor "Credentials" list and
+  `verdict credentials list`, still reports `env` for a value `load_into_env` copied
+  in. Changing it would change existing listing output.
 - Not in this slice: `verdict/subagent_models.py` and `verdict/worker_runtime.py` still
   read the environment variable directly. They are outside this slice's file scope.
 - ADR disposition: no new decision; this reuses the existing resolver.
