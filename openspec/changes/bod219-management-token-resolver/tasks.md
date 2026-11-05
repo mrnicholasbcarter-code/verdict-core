@@ -85,6 +85,10 @@ the coordinator authorized it in the review), `tests/test_serve_management_token
   `mypy verdict --strict` reports no issues in 326 source files.
   `scripts/check_reachability.py --ratchet-base origin/main` reports 0 new findings.
   `scripts/check_doc_links.py` passes.
-- [ ] 4.3 Live check on the operator host from merged main: `verdict doctor` shows the
-  Management token row, and the acceptance serve check reads connections without an
-  EnvironmentFile. Not done in this slice; it stays with BOD-219.
+
+Post-merge parent acceptance is not a ticked task: from installed merged main, the
+parent runs `verdict doctor` on the operator host and expects the Management token row,
+then confirms the hourly acceptance serve check reads connections without the
+`management-token.conf` EnvironmentFile drop-in. That evidence is recorded on BOD-219.
+This task list records local, offline verification only; it is not a merged-main,
+installed-host acceptance or Done claim.
