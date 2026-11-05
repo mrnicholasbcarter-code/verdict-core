@@ -208,6 +208,33 @@ def test_pre_push_hook_that_executes_vgate_passes(
     host.hook.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
     code, out = host.run(capsys)
     assert code == 0, out
+    assert f"invokes {host.vgate} (static check)" in out
+
+
+def test_pre_push_check_is_static_and_passes_a_dead_branch(
+    host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Documented limitation: the check reads lines, it does not run the hook.
+
+    A hook whose vgate line can never run still passes, labelled as a static
+    check. vgate itself is the enforcement point; this is a readiness hint.
+    """
+    host.hook.write_text(
+        f'#!/usr/bin/env bash\nif false; then\n  exec {host.vgate} --hook "$@"\nfi\n',
+        encoding="utf-8",
+    )
+    code, out = host.run(capsys)
+    assert code == 0, out
+    assert re.search(r"^ok\s+pre-push hook .*\(static check\)$", out, re.MULTILINE), out
+
+
+def test_help_states_the_static_hook_limitation(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        readiness.main(["--help"])
+    assert caught.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "static" in text and "cannot prove the hook reaches vgate" in text
+    assert "environment variables only" in text
 
 
 def test_hook_found_through_a_linked_worktree(
@@ -467,6 +494,10 @@ SECRET_NAMES = (
     "OPENAI_BASE_URL",
     "ANTHROPIC_MODEL",
     "OMNIROUTE_URL",
+    # npm/netrc settings can point a CLI at credential files or registries.
+    "npm_config_registry",
+    "NPM_CONFIG_USERCONFIG",
+    "NETRC",
 )
 
 
