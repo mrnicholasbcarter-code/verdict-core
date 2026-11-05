@@ -15,6 +15,7 @@
 - [x] 2.2 Match markers fail-closed against the exact OmniRoute 3.8.53 safe values, with the package source lines cited in `verdict/http_safety.py`.
 - [x] 2.3 Decide on an untrusted turn before any persistence in `screen_route` and at the top of `_record_agentic`.
 - [x] 2.4 Add real-path integration tests with a real `HealthCache`: a daemon cycle with a cached or fallback chat reply leaves earlier usable proof unchanged and writes nothing for an unproven route; an agentic run that reaches a fallback third turn writes no capability. Each has a clean-reply control, and the marked cases fail against `main` call sites.
+- [x] 2.5 Round-2 review: trim only RFC 9110 §5.5 optional whitespace (SP and HTAB) instead of `str.strip()`, reject values holding a control character, and pin the behaviour with tests (33 failed on `0d51cf82`; urllib's `http.client` delivers obs-fold CRLF, VT and NUL to the parser, and the httpx/h11 wire parser rejects VT, NUL and bare CR first).
 
 Not done here, and not ticked: live verification on the operator's OmniRoute
 gateway, independent review, and the follow-ups listed in `proposal.md`

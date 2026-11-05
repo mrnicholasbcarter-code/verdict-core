@@ -55,12 +55,28 @@ def omniroute_evidence_headers() -> dict[str, str]:
 #   src/shared/utils/compressionHeaderEcho.ts:53).
 # - X-OmniRoute-Emergency-Fallback: "from=<provider/model>; to=<provider/model>",
 #   only when the fallback served the reply (src/sse/handlers/emergencyFallbackHeader.ts:34).
+#
+# RFC 9110 section 5.5: leading and trailing OWS is not part of a field value,
+# and OWS is only SP and HTAB. So trim exactly " \t" (never str.strip(), which
+# also eats CR, LF, VT, FF, NEL, NBSP ...). A control character left anywhere in
+# the value (CR/LF from an obs-fold that http.client passes through, VT, NUL,
+# DEL) makes the value malformed, so the marker is unsafe.
+_OWS = " \t"
+
+
+def _has_control_character(value: str) -> bool:
+    return any((ord(char) < 0x20 and char != "\t") or ord(char) == 0x7F for char in value)
+
+
 def _marker_is_safe(values: list[str] | None, is_safe: Callable[[str], bool]) -> bool:
-    return values is None or all(is_safe(value.strip()) for value in values)
+    return values is None or all(
+        not _has_control_character(value) and is_safe(value.strip(_OWS)) for value in values
+    )
 
 
 def _compression_is_off(value: str) -> bool:
-    return value.split(";", 1)[0].strip() == "off"
+    # A ";"-delimited parameter list: the mode is the first member, OWS-trimmed.
+    return value.split(";", 1)[0].strip(_OWS) == "off"
 
 
 def omniroute_response_anomalies(headers: Any) -> tuple[str, ...]:
@@ -68,8 +84,9 @@ def omniroute_response_anomalies(headers: Any) -> tuple[str, ...]:
 
     ``headers`` is any object with ``items()`` (``dict``, ``httpx.Headers``,
     ``http.client.HTTPMessage``) or ``None``. Header names match
-    case-insensitively; values must be the exact safe value (see above), and a
-    repeated header is safe only when every value is. Returns a subset of
+    case-insensitively; a value must be the exact safe value after removing
+    leading and trailing OWS (RFC 9110 section 5.5, see above) and must hold no
+    control character, and a repeated header is safe only when every value is. Returns a subset of
     ``cache_hit``, ``compressed``, ``emergency_fallback`` in that order; an
     empty tuple means every marker was absent or safe.
     """

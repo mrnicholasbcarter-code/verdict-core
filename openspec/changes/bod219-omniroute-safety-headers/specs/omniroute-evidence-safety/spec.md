@@ -25,7 +25,7 @@ Every inference request that Verdict sends to an OmniRoute gateway through the p
 - **THEN** that request does not carry the opt-out headers
 
 ### Requirement: OmniRoute response anomalies SHALL be named and SHALL fail closed
-Verdict SHALL match OmniRoute marker header names case-insensitively. A marker SHALL be safe only when it is absent or carries the exact value OmniRoute 3.8.53 sends when nothing happened: `X-OmniRoute-Cache: MISS`, `X-OmniRoute-Cache-Hit: false`, an `X-OmniRoute-Compression` value whose mode (the text before the first `;`) is exactly `off`, and `X-OmniRoute-Emergency-Fallback: false`. Any other value, including empty, `no`, `0` and unknown text, SHALL be an anomaly: `cache_hit` for either cache marker, `compressed` for compression, `emergency_fallback` for the fallback marker. A repeated marker SHALL be safe only when every value is safe. A cache hit SHALL map to the reason `omniroute_cache_hit` and an emergency fallback to `omniroute_emergency_fallback`. A compressed reply alone SHALL have no such reason.
+Verdict SHALL match OmniRoute marker header names case-insensitively. A marker SHALL be safe only when it is absent or carries the exact value OmniRoute 3.8.53 sends when nothing happened, after removing leading and trailing optional whitespace (SP and HTAB only, RFC 9110 §5.5): `X-OmniRoute-Cache: MISS`, `X-OmniRoute-Cache-Hit: false`, and `X-OmniRoute-Emergency-Fallback: false`. `X-OmniRoute-Compression` is a `;`-delimited parameter list: it SHALL be safe only when its first member, with leading and trailing optional whitespace removed, is exactly `off`. A value that holds a control character (other than HTAB) SHALL NOT be safe. Any other value, including empty, `no`, `0`, a comma list, inner whitespace and unknown text, SHALL be an anomaly: `cache_hit` for either cache marker, `compressed` for compression, `emergency_fallback` for the fallback marker. A repeated marker SHALL be safe only when every value is safe. A cache hit SHALL map to the reason `omniroute_cache_hit` and an emergency fallback to `omniroute_emergency_fallback`. A compressed reply alone SHALL have no such reason.
 
 #### Scenario: Cached reply
 - **WHEN** a reply carries `X-OmniRoute-Cache: HIT`
@@ -38,6 +38,14 @@ Verdict SHALL match OmniRoute marker header names case-insensitively. A marker S
 
 #### Scenario: Unknown marker value
 - **WHEN** a reply carries `X-OmniRoute-Cache`, `X-OmniRoute-Cache-Hit` or `X-OmniRoute-Emergency-Fallback` with a value such as `no`, `0`, an empty value or arbitrary text
+- **THEN** the matching anomaly is named
+
+#### Scenario: Optional whitespace around a safe value
+- **WHEN** a reply carries `X-OmniRoute-Cache: " MISS "`, `X-OmniRoute-Cache-Hit` with a leading HTAB before `false`, or `X-OmniRoute-Compression: off ; source=x`
+- **THEN** no anomaly is named
+
+#### Scenario: Not optional whitespace
+- **WHEN** a marker value is `MI SS`, `fal se`, `of f; source=x`, `MISS,HIT`, or a safe value with a CR, LF, VT, NUL or other control character, or a non-OWS space such as NBSP, around or inside it
 - **THEN** the matching anomaly is named
 
 #### Scenario: Unknown compression mode
