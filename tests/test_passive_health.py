@@ -281,3 +281,14 @@ def test_register_webhook_command_needs_a_management_token(monkeypatch, capsys):
             "dry_run": True,
         }
     ]
+
+
+def test_webhook_event_by_route_id_refreshes_every_catalog_alias(cache):
+    data = payloads()
+    data["v1_models"]["data"].append({"id": "alias/best", "owned_by": "alpha", "root": "best"})
+    events = [Event("request.completed", SEEN + timedelta(minutes=5), "alpha", "a/best")]
+    report = refresh_health_from_traffic(evidence(data), cache, now=NOW, webhook_events=events)
+    stored = HealthCache(cache.path)
+    assert report["webhook_events_used"] == 2
+    for route in ("a/best", "alias/best"):
+        assert stored.entry(route).evidence_source == EVIDENCE_SOURCE_WEBHOOK

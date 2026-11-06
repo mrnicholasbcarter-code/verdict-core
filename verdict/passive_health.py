@@ -45,12 +45,16 @@ def _ok_status(status: int | None) -> bool:
 
 
 def _event_routes(evidence: OmniRouteEvidence, provider: str, model: str) -> set[str]:
-    if model in evidence.inventory_route_ids:
-        return {model}
-    return {
+    """The exact catalog id and every catalog alias of the same (provider, root)."""
+    exact = {model} if model in evidence.inventory_route_ids else set()
+    roots = {
+        model,
+        *(identity[1] for r, identity in evidence.route_identities.items() if r == model),
+    }
+    return exact | {
         route
         for route, identity in evidence.route_identities.items()
-        if identity == (provider, model)
+        if identity[0] == provider and identity[1] in roots
     }
 
 

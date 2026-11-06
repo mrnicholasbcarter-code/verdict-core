@@ -24,13 +24,17 @@ from typing import Any
 
 import httpx
 
+from verdict.orchestration.health_cache import PASSIVE_CLOCK_SKEW_SECONDS
 from verdict.paths import verdict_home
 
 RECEIVER_PATH = "/v1/omniroute/webhook"
 CONFIG_FILENAME = "omniroute-webhook.json"
 EVENTS_FILENAME = "omniroute-webhook-events.jsonl"
 MAX_EVENT_LINES = 5000
-MAX_FUTURE_SKEW = timedelta(seconds=300)
+# OmniRoute's request events are a few hundred bytes; the receiver is bearer-exempt.
+MAX_BODY_BYTES = 64 * 1024
+MAX_FIELD_CHARS = 256
+MAX_FUTURE_SKEW = timedelta(seconds=PASSIVE_CLOCK_SKEW_SECONDS)
 STORED_EVENTS = frozenset({"request.completed", "request.failed"})
 SUBSCRIBED_EVENTS = ("request.completed", "request.failed")
 DEFAULT_RECEIVER_URL = f"http://127.0.0.1:8000{RECEIVER_PATH}"
@@ -116,7 +120,9 @@ def verify_signature(raw_body: bytes, signature: str | None, secret: str) -> boo
 
 
 def _text(value: Any) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_FIELD_CHARS:
+        return None
+    return value.strip()
 
 
 def _latency(value: Any) -> float | None:
@@ -157,6 +163,8 @@ def accept_delivery(
     raw_body: bytes, headers: Mapping[str, str], *, now: datetime | None = None
 ) -> tuple[int, dict[str, Any]]:
     """Verify, parse and store one delivery; return ``(http_status, body)``."""
+    if len(raw_body) > MAX_BODY_BYTES:
+        return 413, {"accepted": False, "reason": "body_too_large"}
     now = now or datetime.now(timezone.utc)
     secret = _load_config().get("secret")
     lowered = {key.lower(): value for key, value in headers.items()}

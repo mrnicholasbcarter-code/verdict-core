@@ -421,6 +421,14 @@ Rules:
   grace. Older and future-dated traffic is skipped.
 - Newer evidence wins. Traffic never overwrites a newer entry, and it never
   shortens an unexpired negative.
+- Liveness is a scheduling hint, not admission evidence. A route it marks
+  healthy still passes the exact live confirmation before launch. It can move
+  a route earlier in the confirmation order and defer at-rest chat probes for
+  that route while the entry is usable; agentic screening is unaffected.
+- Only HTTP 402 and 5xx traffic becomes a route negative; authentication and
+  request errors stay out of the cache, the same rule the relay uses.
+- The webhook receiver is exempt from bearer auth because each delivery is
+  HMAC-signed. It rejects bodies over 64 KiB with 413.
 
 Webhook registration: `verdict identify register-webhook` registers Verdict's
 receiver (`POST /v1/omniroute/webhook` on `verdict serve`) with OmniRoute.

@@ -77,6 +77,7 @@ from verdict.intelligence import (
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
+from verdict.omniroute_webhook import MAX_BODY_BYTES as MAX_OMNIROUTE_WEBHOOK_BYTES
 from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
 from verdict.omniroute_webhook import accept_delivery as accept_omniroute_webhook
 from verdict.orchestration.health_cache import (
@@ -2813,7 +2814,19 @@ def _finish_evidence(
 @app.post(OMNIROUTE_WEBHOOK_PATH)
 async def omniroute_webhook(request: Request) -> Response:
     """Receive one HMAC-signed OmniRoute webhook delivery."""
-    raw_body = await request.body()
+    content_length = request.headers.get("content-length")
+    if content_length is not None and (
+        not content_length.isdigit() or int(content_length) > MAX_OMNIROUTE_WEBHOOK_BYTES
+    ):
+        return JSONResponse({"accepted": False, "reason": "body_too_large"}, status_code=413)
+    body_parts: list[bytes] = []
+    body_size = 0
+    async for chunk in request.stream():
+        body_size += len(chunk)
+        if body_size > MAX_OMNIROUTE_WEBHOOK_BYTES:
+            return JSONResponse({"accepted": False, "reason": "body_too_large"}, status_code=413)
+        body_parts.append(chunk)
+    raw_body = b"".join(body_parts)
     status_code, body = await asyncio.to_thread(
         accept_omniroute_webhook, raw_body, dict(request.headers)
     )

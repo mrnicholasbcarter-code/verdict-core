@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from verdict.admission import evidence_from_at_rest_health_cache
 from verdict.orchestration.health_cache import (
     CATEGORY_UPSTREAM,
     EVIDENCE_SOURCE_TRAFFIC,
@@ -141,3 +142,10 @@ def test_already_expired_failure_leaves_the_entry_untouched(tmp_path: Path) -> N
     )
     assert outcome == "skipped_expired"
     assert cache.entry(ROUTE) == before
+
+
+def test_passive_liveness_is_never_admission_evidence(tmp_path: Path) -> None:
+    cache = _cache(tmp_path)
+    cache.merge_and_save(lambda c: _traffic(c, NOW - timedelta(minutes=1)))
+    evidence = evidence_from_at_rest_health_cache(cache.path, now=NOW)
+    assert evidence.observations == ()

@@ -9,6 +9,16 @@ entries with `chat_ok` true and `tool_ok` false, tagged with `evidence_source`
 `omniroute_traffic` or `omniroute_webhook`. It SHALL make no model calls and no
 writes to OmniRoute. Passive traffic SHALL NOT grant tool or agentic proof.
 
+Passive liveness SHALL be a scheduling hint only: it SHALL NOT be admission
+evidence, and a route it marks healthy SHALL still pass the exact live
+confirmation before launch. Like any chat-only liveness entry, it MAY move a
+route ahead in the confirmation order and MAY defer at-rest chat probes for that
+route until the entry is no longer usable; it SHALL NOT defer agentic screening.
+
+#### Scenario: Passive liveness and admission
+- **WHEN** the cache holds a passive liveness entry for a route
+- **THEN** the admission adapter over the cache emits no positive observation for it
+
 #### Scenario: Recent traffic for a route
 - **WHEN** the health matrix reports a request for a route inside the usable window
 - **THEN** the cache holds a liveness entry whose `checked_at` is the OmniRoute `lastRequestAt`

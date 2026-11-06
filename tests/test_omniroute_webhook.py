@@ -121,7 +121,7 @@ def test_ping_is_accepted_but_not_stored_and_bad_json_is_400(_home: Path) -> Non
 
 def test_future_timestamp_is_rejected(_home: Path) -> None:
     _configure(_home)
-    raw, headers = _delivery(at=NOW + timedelta(seconds=301))
+    raw, headers = _delivery(at=NOW + timedelta(seconds=wh.PASSIVE_CLOCK_SKEW_SECONDS + 1))
 
     assert wh.accept_delivery(raw, headers, now=NOW)[1] == {
         "accepted": False,
@@ -255,3 +255,26 @@ def test_api_route_accepts_signed_delivery_without_bearer(
     assert response.json() == {"accepted": True, "reason": "stored"}
     assert unsigned.status_code == 401
     assert len(wh.read_events()) == 1
+
+
+def test_oversized_body_is_413_before_any_storage(
+    _home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "server-token")
+    _configure(_home)
+    raw, headers = _delivery(data={"provider": "openai", "model": "x" * wh.MAX_BODY_BYTES})
+
+    assert wh.accept_delivery(raw, headers, now=NOW)[0] == 413
+    with TestClient(api.app) as client:
+        response = client.post(wh.RECEIVER_PATH, content=raw, headers=headers)
+    assert response.status_code == 413
+    assert wh.read_events() == []
+
+
+def test_overlong_provider_or_model_is_not_attributed(_home: Path) -> None:
+    _configure(_home)
+    raw, headers = _delivery(data={"provider": "openai", "model": "m" * (wh.MAX_FIELD_CHARS + 1)})
+
+    assert wh.accept_delivery(raw, headers, now=NOW)[1]["accepted"] is True
+    [event] = wh.read_events()
+    assert (event.provider, event.model) == ("openai", None)
