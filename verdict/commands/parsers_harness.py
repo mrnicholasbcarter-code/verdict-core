@@ -220,6 +220,11 @@ def register(subparsers: Any) -> None:
     )
     sync_p.add_argument("--dry-run", action="store_true")
     sync_p.add_argument("--json", action="store_true")
+    install_p = harness_prime_sub.add_parser(
+        "install-service", help="Install or remove the 15-minute Prime registry sync timer"
+    )
+    install_p.add_argument("--dry-run", action="store_true", help="Render the units; write nothing")
+    install_p.add_argument("--uninstall", action="store_true", help="Disable and remove the units")
 
     prime_enable_p = harness_prime_sub.add_parser(
         "enable",

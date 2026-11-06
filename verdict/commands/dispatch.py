@@ -491,6 +491,14 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 force=getattr(args, "force", False),
                 wrapper=getattr(args, "wrapper", False),
             )
+        elif args.harness_target == "prime" and args.harness_prime_command == "install-service":
+            from verdict.actions.registry import run_action
+
+            result = run_action(
+                "harness.prime.install-service",
+                {"dry_run": args.dry_run, "uninstall": args.uninstall},
+            )
+            print(json.dumps(result.data, indent=2))
         elif args.harness_target == "prime" and args.harness_prime_command in {
             "select",
             "restore",
