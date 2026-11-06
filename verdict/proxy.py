@@ -16,8 +16,10 @@ import httpx
 
 from verdict.capability_passports import RouteIdentity
 from verdict.http_safety import omniroute_evidence_headers
+from verdict.relay import fatal_identity_mismatch
 from verdict.responses_compatibility import adapt_responses_payload
 from verdict.security import host_is_allowed, pin_upstream_url, validate_upstream_url
+from verdict.served_identity import ServedIdentity, check_served, served_identity_from_headers
 
 _HOP_BY_HOP_HEADERS = frozenset(
     {
@@ -138,13 +140,20 @@ class UpstreamProxy:
 
     @staticmethod
     def _actual_route(
-        response: httpx.Response, *, requested_model: str | None = None, protocol: str
+        response: httpx.Response,
+        *,
+        requested_model: str | None = None,
+        protocol: str,
+        read_body: bool = True,
     ) -> RouteIdentity | None:
-        """Decode an optional adapter-owned route attestation header.
+        """Decode the served route from adapter or OmniRoute headers, then the body.
 
-        Generic OpenAI providers do not expose this header.  In that case the
-        relay records the configured route but deliberately does not claim an
-        observed member route for opaque gateway aliases.
+        An ``x-verdict-actual-route`` adapter attestation wins. OmniRoute
+        identity headers come next and are checked against ``requested_model``:
+        only a verified, mismatched or opaque-member identity is returned, and
+        unknown or conflicting headers never fall back to the body model.
+        Generic OpenAI providers expose neither, so the body model is used when
+        ``read_body`` is set; opaque gateway aliases are never claimed.
         """
 
         raw = response.headers.get("x-verdict-actual-route")
@@ -155,6 +164,11 @@ class UpstreamProxy:
             except (TypeError, ValueError):
                 return None
         if requested_model is None or response.status_code >= 400:
+            return None
+        served = served_identity_from_headers(response.headers)
+        if served is not None:
+            return UpstreamProxy._served_route(requested_model, served, protocol)
+        if not read_body:
             return None
         try:
             value = response.json()
@@ -171,6 +185,32 @@ class UpstreamProxy:
             endpoint="provider-response-body",
             protocol=protocol,
             model_id=served_model,
+        )
+
+    @staticmethod
+    def _served_route(
+        requested_model: str, served: ServedIdentity, protocol: str
+    ) -> RouteIdentity | None:
+        check = check_served(requested_model, served)
+        model_id: str | None = None
+        if check.status == "verified":
+            model_id = requested_model
+        elif check.status == "opaque":
+            model_id = check.served_route
+        elif check.status == "mismatch" and check.served_route is not None:
+            model_id = check.served_route
+            if not fatal_identity_mismatch(requested_model, model_id):
+                # Same names, different decision: keep the attempt a mismatch.
+                model_id = f"{model_id} [{', '.join(check.reasons)}]"
+        if model_id is None or served.provider is None:
+            return None
+        return RouteIdentity(
+            gateway="omniroute",
+            provider=served.provider,
+            connection=served.connection_id or "unreported",
+            endpoint="omniroute-response-headers",
+            protocol=protocol,
+            model_id=model_id,
         )
 
     @staticmethod
@@ -265,9 +305,11 @@ class UpstreamProxy:
 
         response = await client.send(request, stream=True)
         response_headers = self._response_headers(response)
-        # Streaming response bodies are not buffered here, so only an adapter
-        # attestation header can provide actual-route identity.
-        actual_route = self._actual_route(response, requested_model=None, protocol=protocol)
+        # Streaming response bodies are not buffered here, so only response
+        # headers can provide actual-route identity.
+        actual_route = self._actual_route(
+            response, requested_model=requested_model, protocol=protocol, read_body=False
+        )
         if response.status_code >= 400:
             try:
                 buffered_body = await response.aread()

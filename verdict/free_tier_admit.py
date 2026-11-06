@@ -2149,6 +2149,14 @@ def execute_offload_chat(
         return "error", "invalid provider response: model must be a string"
     if fatal_identity_mismatch(model_id, served_model):
         return "error", f"identity mismatch: selected {model_id!r}, served {served_model!r}"
+    from verdict.served_identity import (  # lazy: breaks the verdict.admission cycle
+        check_served,
+        served_identity_from_headers,
+    )
+
+    check = check_served(model_id, served_identity_from_headers(response.headers))
+    if check.status == "mismatch":
+        return "error", f"identity mismatch: selected {model_id!r}, served {check.served_route!r}"
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
         return "error", "invalid provider response: missing choices"

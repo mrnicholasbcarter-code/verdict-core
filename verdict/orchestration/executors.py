@@ -51,6 +51,7 @@ from verdict.orchestration.prime_settings import (
     prepare_launch_agent_dir,
     prime_retry_policy_problems,
 )
+from verdict.served_identity import check_served, served_identity_from_headers
 
 __all__ = [
     "DirectGatewayExecutor",
@@ -866,6 +867,12 @@ def _focused_view(text: str, prompt: str, budget: int) -> str:
     return "".join(out)
 
 
+def _rebuilt_headers(resp: httpx.Response) -> list[tuple[str, str]]:
+    """Streamed response headers for a rebuilt body; body framing headers no longer apply."""
+    framing = {"content-length", "transfer-encoding", "content-encoding", "content-type"}
+    return [(key, value) for key, value in resp.headers.multi_items() if key.lower() not in framing]
+
+
 def _final_result_line(output: str) -> str:
     """The worker's last non-empty line, upper-cased (where RESULT: DONE/BLOCKED goes)."""
     lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
@@ -1516,67 +1523,42 @@ class DirectGatewayExecutor:
         # --- Legacy implement node: extract, validate, and apply the diff ---
         diff_text = self._extract_diff(terminal.output)
         if diff_text is None:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                output=terminal.output,
-                model=terminal.model,
-                error="diff_rejected: no unified diff found in model output",
-                duration_seconds=terminal.duration_seconds,
-                session_ref=terminal.session_ref,
-                usage=terminal.usage,
+            return replace(
+                terminal, ok=False, error="diff_rejected: no unified diff found in model output"
             )
 
         # Primary security gate: git-based path + operation validation
         security_error = await self._validate_diff_security(diff_text, owned_files, cwd)
         if security_error is not None:
-            return WorkerTerminal(
-                executor_kind="live",
+            return replace(
+                terminal,
                 ok=False,
-                output=terminal.output,
-                model=terminal.model,
                 error=security_error
                 if security_error.startswith("diff_rejected:")
                 else f"diff_rejected: {security_error}",
-                duration_seconds=terminal.duration_seconds,
-                session_ref=terminal.session_ref,
-                usage=terminal.usage,
             )
 
         # Defence in depth: regex-based path check
         path_error = self._validate_diff_paths(diff_text, owned_files)
         if path_error is not None:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                output=terminal.output,
-                model=terminal.model,
-                error=f"diff_rejected: {path_error}",
-                duration_seconds=terminal.duration_seconds,
-                session_ref=terminal.session_ref,
-                usage=terminal.usage,
-            )
+            return replace(terminal, ok=False, error=f"diff_rejected: {path_error}")
 
         # Apply the diff
         applied, apply_error = await self._apply_diff(diff_text, cwd)
         if not applied:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                output=terminal.output,
-                model=terminal.model,
-                error=f"diff_apply_failed: {apply_error}",
-                duration_seconds=terminal.duration_seconds,
-                session_ref=terminal.session_ref,
-                usage=terminal.usage,
-            )
+            return replace(terminal, ok=False, error=f"diff_apply_failed: {apply_error}")
 
         return terminal
 
     @staticmethod
     def _stream_failure(resp: httpx.Response, detail: str) -> httpx.Response:
         """A 502 response for a stream that failed after the gateway answered 200."""
-        return httpx.Response(502, text=f"stream_failed: {detail}", request=resp.request)
+        return httpx.Response(
+            502,
+            headers=_rebuilt_headers(resp),
+            text=f"stream_failed: {detail}",
+            request=resp.request,
+        )
 
     async def _post_streamed(
         self, client: httpx.AsyncClient, url: str, payload: dict[str, Any]
@@ -1631,11 +1613,12 @@ class DirectGatewayExecutor:
             ],
             "usage": usage,
         }
-        return httpx.Response(200, json=body, request=resp.request)
+        return httpx.Response(200, headers=_rebuilt_headers(resp), json=body, request=resp.request)
 
     @staticmethod
     def _interpret(resp: httpx.Response, *, route_id: str, duration: float) -> WorkerTerminal:
         """Map an OpenAI-compatible chat/completions response to WorkerTerminal."""
+        identity = served_identity_from_headers(resp.headers)
         if resp.status_code >= 400:
             error_text = _sanitize(resp.text, 400)
             retry_after: float | None = None
@@ -1651,7 +1634,12 @@ class DirectGatewayExecutor:
                 status_code=resp.status_code,
                 retry_after_seconds=retry_after,
                 duration_seconds=duration,
+                served_check=None
+                if identity is None
+                else check_served(route_id, identity).to_dict(),
             )
+        check = check_served(route_id, identity)
+        served_check = check.to_dict()
         try:
             body = resp.json()
         except (ValueError, TypeError):
@@ -1661,6 +1649,7 @@ class DirectGatewayExecutor:
                 model="",
                 error=f"malformed: {_sanitize(resp.text, 200)}",
                 duration_seconds=duration,
+                served_check=served_check,
             )
         choices = body.get("choices") or []
         if not choices:
@@ -1670,6 +1659,7 @@ class DirectGatewayExecutor:
                 model="",
                 error="empty_output",
                 duration_seconds=duration,
+                served_check=served_check,
             )
         choice = choices[0]
         message = choice.get("message", {})
@@ -1693,7 +1683,21 @@ class DirectGatewayExecutor:
                     turns=1,
                 )
 
-        reported_model = body.get("model", route_id)
+        reported_model = str(body.get("model") or "")
+
+        if check.status == "mismatch":
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                output=text,
+                model=check.served_route or reported_model,
+                stop_reason=stop_reason or "end_turn",
+                error="model_mismatch",
+                duration_seconds=duration,
+                session_ref=f"direct-gateway:{body.get('id', '')}",
+                usage=usage,
+                served_check=served_check,
+            )
 
         if stop_reason not in {"end_turn", "stop", ""}:
             return WorkerTerminal(
@@ -1703,6 +1707,7 @@ class DirectGatewayExecutor:
                 stop_reason=stop_reason,
                 error="no_final_answer",
                 duration_seconds=duration,
+                served_check=served_check,
                 usage=usage,
             )
 
@@ -1713,6 +1718,7 @@ class DirectGatewayExecutor:
                 model=reported_model,
                 error="empty_output",
                 duration_seconds=duration,
+                served_check=served_check,
                 usage=usage,
             )
 
@@ -1723,6 +1729,7 @@ class DirectGatewayExecutor:
             model=reported_model,
             stop_reason=stop_reason or "end_turn",
             duration_seconds=duration,
+            served_check=served_check,
             session_ref=f"direct-gateway:{body.get('id', '')}",
             usage=usage,
         )
