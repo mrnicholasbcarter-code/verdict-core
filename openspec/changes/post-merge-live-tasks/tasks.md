@@ -43,8 +43,11 @@ Owned files: `scripts/check_openspec_tasks.py`, `scripts/check_dod.py`
   `scripts/check_doc_links.py`: `doc links ok (460 files checked)`.
 
 ## 5. Review
-- [ ] 5.1 Cross-family review of the diff; every finding is fixed or declined
-  with a reason.
+- [x] 5.1 Cross-family review of the diff; every finding is fixed or declined
+  with a reason. Round 1 (`cx/gpt-5.6-luna-high`, full diff of `f124a195`
+  against `2ab6ed75` plus the operator decision): APPROVE, "no finding" in
+  correctness, security and fail-closed, tests, and spec/tasks. No later round
+  was needed.
 
 ## 6. Live checks and archive (pending; needs merged main)
 None of these can run before the merge. Nothing below has run.
