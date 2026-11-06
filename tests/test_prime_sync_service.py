@@ -185,6 +185,20 @@ def test_install_repeat_replace_and_uninstall_are_bounded(
     assert removed["files"] == {} and not (units / SERVICE).exists()
     assert not (units / TIMER).exists()
 
+    # A partial install disables only the unit that exists; nothing left is a no-op.
+    (units / TIMER).write_text("[Timer]\n")
+    calls.clear()
+    partial = manage_service(unit_dir=units, uninstall=True, run=calls.append)
+    assert partial["plan"] == {SERVICE: "absent", TIMER: "remove"}
+    assert calls == [
+        ["systemctl", "--user", "disable", "--now", TIMER],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert not (units / TIMER).exists()
+    calls.clear()
+    assert manage_service(unit_dir=units, uninstall=True, run=calls.append)["commands"] == []
+    assert calls == []
+
 
 def test_cli_dry_run_writes_nothing_and_the_action_is_a_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

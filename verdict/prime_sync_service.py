@@ -62,7 +62,9 @@ def manage_service(
     )
     changed = any(step in {"create", "replace", "remove"} for step in plan.values())
     if uninstall:
-        commands = [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]] if changed else []
+        # Disable only units whose file exists: systemctl fails on a missing unit file.
+        present = [name for name in (TIMER, SERVICE) if plan[name] == "remove"]
+        commands = [["systemctl", "--user", "disable", "--now", *present]] if present else []
     else:
         commands = [["systemctl", "--user", "enable", "--now", TIMER]]
         if plan[TIMER] == "replace":

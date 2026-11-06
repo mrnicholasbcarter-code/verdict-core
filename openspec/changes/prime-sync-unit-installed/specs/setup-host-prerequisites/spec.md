@@ -58,8 +58,8 @@ minutes after boot and then every 15 minutes, and MUST be persistent.
 `--dry-run` MUST write nothing and run no `systemctl`. Install MUST save a unit
 it replaces under the Verdict rollback directory, run `daemon-reload` only when
 a unit changes, run `enable --now verdict-prime-sync.timer`, and restart the
-timer when the timer unit was replaced. When either unit file exists,
-`--uninstall` MUST disable both units and remove them.
+timer when the timer unit was replaced. `--uninstall` MUST disable each unit
+whose file exists, remove both files, and do nothing when neither exists.
 
 #### Scenario: An installed wheel repairs and installs with no checkout
 - **WHEN** `verdict` is imported from the built wheel extracted into a bare `site-packages`
@@ -68,7 +68,7 @@ timer when the timer unit was replaced. When either unit file exists,
 
 #### Scenario: Install is bounded and reversible
 - **WHEN** the units are previewed, installed, installed again, replaced and uninstalled
-- **THEN** the preview writes nothing; the first install writes both units, reloads and enables the timer; a repeat only enables; a differing unit is replaced and its old copy saved; a replaced timer is also restarted; uninstall disables and removes both
+- **THEN** the preview writes nothing; the first install writes both units, reloads and enables the timer; a repeat only enables; a differing unit is replaced and its old copy saved; a replaced timer is also restarted; uninstall disables and removes both, a partial install disables only the unit that exists, and a repeat uninstall does nothing
 - **TEST** `tests/test_prime_sync_service.py::test_dry_run_renders_the_units_from_this_interpreter_and_package`,
   `::test_install_repeat_replace_and_uninstall_are_bounded`,
   `::test_cli_dry_run_writes_nothing_and_the_action_is_a_mutation`

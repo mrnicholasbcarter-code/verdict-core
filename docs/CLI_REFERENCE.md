@@ -393,7 +393,7 @@ unit changed. It prints the plan as JSON.
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print the rendered units and plan; write nothing, run no `systemctl` |
-| `--uninstall` | When either unit file exists, `disable --now` both units, then remove them |
+| `--uninstall` | `disable --now` each unit whose file exists, then remove both files |
 
 ---
 
