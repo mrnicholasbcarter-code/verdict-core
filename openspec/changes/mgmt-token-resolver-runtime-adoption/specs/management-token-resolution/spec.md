@@ -74,6 +74,12 @@ reported as `store`.
   `tests/test_cli_inprocess.py::test_cli_credentials_list_names_store_copies_and_exports_without_values`,
   `tests/test_credentials_store.py::test_get_credential_source_from_env`
 
+#### Scenario: A later load that does not copy the name drops the earlier copy
+- **WHEN** one load copied a stored value, the process then exports that name itself
+  with the same string, and a later load runs and does not copy the name
+- **THEN** the injection record no longer holds the name, and its source is `env`
+- **TEST** `tests/test_credentials_store.py::test_get_credential_source_drops_a_copy_the_next_load_does_not_repeat`
+
 #### Scenario: Value changed away and set back in process is indistinguishable (limitation)
 - **WHEN** the process changes the copied value and later sets it back to the exact
   copied string
