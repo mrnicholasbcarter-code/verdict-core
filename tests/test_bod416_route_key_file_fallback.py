@@ -199,14 +199,22 @@ def _stub_gateway(monkeypatch: pytest.MonkeyPatch, *, accepts: str) -> list[str 
     return seen
 
 
+@pytest.mark.parametrize("api_key_env", ["OMNIROUTE_API_KEY", "VERDICT_OMNIROUTE_API_KEY"])
 def test_route_catalog_discovery_sends_key_file_key_when_env_unset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    api_key_env: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CLI route gate's omniroute discovery authenticates with the key file."""
+    """The CLI route gate's omniroute discovery authenticates with the key file.
+
+    Covers both gateway key env names (``GATEWAY_KEY_ENV_NAMES``) a provider may declare.
+    """
     from verdict.actions.helpers import build_route_gate
     from verdict.discovery import fetch_models
 
-    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=_CONFIG_WITH_OMNIROUTE)
+    config_body = (
+        "providers:\n  omniroute:\n    base_url: http://127.0.0.1:20128/v1\n"
+        f"    api_key_env: {api_key_env}\n"
+    )
+    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=config_body)
     _write_key_file(config_dir, "file-key-fixture")
     seen = _stub_gateway(monkeypatch, accepts="file-key-fixture")
 

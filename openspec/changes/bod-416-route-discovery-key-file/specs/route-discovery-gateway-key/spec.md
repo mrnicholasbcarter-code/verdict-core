@@ -8,8 +8,8 @@ environment, `credentials.env`, the owner-only `omniroute-api-key` file, then Pr
 `auth.json`. Discovery MUST NOT send the gateway key to any other provider.
 
 #### Scenario: Key held only in the key file
-- **WHEN** `OMNIROUTE_API_KEY` is unset, `providers.omniroute` declares
-  `api_key_env: OMNIROUTE_API_KEY`, and the owner-only key file holds the key
+- **WHEN** `providers.omniroute` declares `api_key_env` as `OMNIROUTE_API_KEY` or
+  `VERDICT_OMNIROUTE_API_KEY`, that name is unset, and the owner-only key file holds the key
 - **THEN** the CLI route gate's discovery request carries `Authorization: Bearer <file key>`
   and returns the gateway catalog
 - **TEST** `tests/test_bod416_route_key_file_fallback.py::test_route_catalog_discovery_sends_key_file_key_when_env_unset`
