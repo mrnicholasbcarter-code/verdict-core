@@ -31,6 +31,12 @@ HYDRATED means this packet is current and complete, not merely that documents we
 6. Assemble `packet.json` with all guide fields and compact source excerpts/references. Select
    target through existing Verdict routing/chooser capability, using fresh availability and
    eligibility evidence; dispatch rechecks it. Never invent an alias or choose solely by cost.
-7. Run `validate_packet` from `scripts/prime_workflow.py`; atomically persist it and checkpoint HYDRATED. Dispatch must
-   reject a changed issue revision, base SHA, target availability or worktree ownership and
-   call this skill again. A previously read conversation is never the dispatch packet.
+7. Run `validate_packet` from `scripts/prime_workflow.py`; atomically persist it and checkpoint HYDRATED.
+   Worker dispatch evidence is separate: bind one `verdict.hydration/v1` packet per final graph node
+   with `verdict bind-hydration` (see `docs/guides/worker-context.md`). That command is the only
+   schema and validation policy; do not restate or reimplement it. Binding is structural only:
+   citation revisions and declared review families are the queen's own observations, and a
+   packet grants no route, admission or budget authority. Packet validation at dispatch rejects
+   only a changed repository base SHA or node contract (ownership included); recheck the issue
+   revision and target availability here and call this skill again when any of them changes.
+   A previously read conversation is never the dispatch packet.
