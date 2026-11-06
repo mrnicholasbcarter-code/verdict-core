@@ -522,8 +522,21 @@ def gate_admit_prove_confirm(
         eligible_ids = set(fresh_ids) | set(passive_fresh_ids) | set(refreshable)
     else:
         eligible_ids = set(fresh_ids) | set(passive_fresh_ids)
-    ordered_ids = [item for item in receipt.admitted if item in eligible_ids]
-    ordered = ordered_ids
+
+    # Spend the confirm budget on the likeliest-healthy routes first: passive
+    # health observed right now, then a refreshable stored passport, then the
+    # rest. Only the order changes; the eligible set is never widened.
+    def _confirm_priority(identity_id: str) -> int:
+        if identity_id in passive_canonical or canonical_route(identity_id) in passive_canonical:
+            return 0
+        passport = loaded.get(identity_id) or loaded.get(canonical_route(identity_id))
+        if passport is not None and _passport_can_refresh(passport):
+            return 1
+        return 2
+
+    ordered = sorted(
+        (item for item in receipt.admitted if item in eligible_ids), key=_confirm_priority
+    )
     shortlist = ordered[:max_confirm_candidates]
     deferred = ordered[max_confirm_candidates:]
     covered = set(shortlist) | set(deferred)
