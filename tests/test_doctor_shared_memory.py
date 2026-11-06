@@ -69,6 +69,18 @@ def _hermetic_service_code_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dd, "_systemctl_show_props", _no_tracked_unit_loaded)
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_host_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No doctor test reads this host's ocr, serve unit or Prime registry (BOD-219).
+
+    ``host_prerequisite_rows`` reads PATH, systemd user units, loopback
+    ``/health`` and ``~/.prime``. Its rows are covered with an injected host in
+    ``test_doctor_host_prerequisites.py``; here an empty list is a host whose
+    prerequisites are all present.
+    """
+    monkeypatch.setattr(dd, "host_prerequisite_rows", lambda: [])
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -78,6 +78,18 @@ def _hermetic_service_code_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dd, "_systemctl_show_props", _no_tracked_unit_loaded)
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_host_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No doctor test reads this host's ocr, serve unit or Prime registry (BOD-219).
+
+    ``host_prerequisite_rows`` reads PATH, systemd user units, loopback
+    ``/health`` and ``~/.prime``. Its rows are covered with an injected host in
+    ``test_doctor_host_prerequisites.py``; here an empty list is a host whose
+    prerequisites are all present.
+    """
+    monkeypatch.setattr(dd, "host_prerequisite_rows", lambda: [])
+
+
 def test_cmd_route_terse_uses_configured_primary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2929,3 +2941,37 @@ def test_doctor_real_local_preflight_without_removed_roots_or_fetch(
     assert report["documentation_preflight"]["status"] == "ready"
     assert report["documentation_preflight"]["sources"] == 1
     assert "authoritative documentation preflight did not pass" not in report["issues"]
+
+
+def test_cli_doctor_failed_host_prerequisite_names_its_repair_both_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BOD-219: a failed host-prerequisite row is an issue with its exact repair."""
+    import sys
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    detail = (
+        "not on PATH; .github/workflows/certify-rehearsal.yml pins v1.12.9; "
+        "repair: verdict setup --apply --allow host.ocr"
+    )
+    monkeypatch.setattr(
+        dd,
+        "host_prerequisite_rows",
+        lambda: [{"label": "Review tool (ocr)", "status": "failed", "detail": detail}],
+    )
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert detail in report["issues"]
+    [row] = [s for s in report["sections"] if s["label"] == "Review tool (ocr)"]
+    assert row["state"] == "failed"
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_doctor()
+    assert exc.value.code == 1
+    assert "Repair: verdict setup --apply --allow host.ocr" in capsys.readouterr().out

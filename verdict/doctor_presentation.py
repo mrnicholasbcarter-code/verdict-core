@@ -28,8 +28,15 @@ PROBLEM_STATES = frozenset(
 )
 
 
+#: A row that names its own repair (``...; repair: <command>``) gets exactly that command.
+_EXPLICIT_REPAIR = re.compile(r"\brepair: ((?:verdict|systemctl|journalctl|export) [^;]+)")
+
+
 def repair_command(finding: str) -> str:
     """Return a safe, registered next-step command for a reported finding."""
+    explicit = _EXPLICIT_REPAIR.search(finding)
+    if explicit:
+        return explicit.group(1).strip().rstrip(".")
     lowered = finding.lower()
     if "OMNIROUTE_MANAGEMENT_TOKEN" in finding and any(
         word in lowered for word in ("rejected", "forbidden")

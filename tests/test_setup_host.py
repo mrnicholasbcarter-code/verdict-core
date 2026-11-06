@@ -77,7 +77,7 @@ class FakeHost:
             which=self.which,
             ocr_version=lambda path: None,
             unit_state=self.unit_state,
-            unit_result=lambda unit: "success",
+            unit_result=lambda unit: None,
             systemctl=self.systemctl,
             fetch=self.fetch,
             metadata_refresh=self.refresh,

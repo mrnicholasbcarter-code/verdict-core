@@ -431,6 +431,105 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
     return {"status": "blocked", "note": f"unknown host prerequisite {provider_id!r}"}
 
 
+# --- doctor rows (read-only, same observations as setup) ----------------------------------
+
+
+def _row(label: str, status: str, detail: str) -> dict[str, str]:
+    return {"label": label, "status": status, "detail": detail}
+
+
+def _ocr_row(env: HostEnvironment) -> dict[str, str]:
+    label = "Review tool (ocr)"
+    try:
+        found = _inspect_ocr(env)
+    except (OSError, ValueError) as exc:
+        return _row(label, "warning", f"cannot verify ocr: {exc}")
+    if not found.ok:
+        return _row(label, "failed", f"{found.describe()}; repair: {setup_repair(OCR)}")
+    if found.path is not None and env.which("ocr") is None:
+        directory = found.path.parent
+        return _row(
+            label,
+            "failed",
+            f"{found.describe()}, but {directory} is not on PATH; "
+            f'repair: export PATH="{directory}:$PATH"',
+        )
+    return _row(label, "ok", found.describe())
+
+
+def _serve_rows(env: HostEnvironment) -> list[dict[str, str]]:
+    from verdict.serve_service import HEALTH_URL, SERVICE
+
+    label = "Verdict serve unit"
+    logs = f"logs: journalctl --user -u {SERVICE}"
+    state = str(env.unit_state(SERVICE).get("state", "unknown"))
+    if state == "missing":
+        return [_row(label, "failed", f"{SERVICE} is not installed; repair: {setup_repair(SERVE)}")]
+    if state != "active":
+        return [
+            _row(
+                label,
+                "failed",
+                f"{SERVICE} is {state}; repair: systemctl --user enable --now {SERVICE}; {logs}",
+            )
+        ]
+    if env.serve_health():
+        health = _row("Verdict serve health", "ok", f"{HEALTH_URL} answers")
+    else:
+        health = _row(
+            "Verdict serve health",
+            "failed",
+            f"{HEALTH_URL} did not answer; repair: systemctl --user restart {SERVICE}; {logs}",
+        )
+    return [_row(label, "ok", f"{SERVICE} is active"), health]
+
+
+def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
+    from verdict.harness_prime import omniroute_registry_state
+
+    label = "Prime registry"
+    registry = omniroute_registry_state(prime_home=env.prime_home)
+    path, state = registry["path"], registry["state"]
+    sync = "repair: verdict harness prime sync-models"
+    if state == "missing":
+        row = _row(label, "failed", f"{path} is missing; repair: {setup_repair(PRIME)}")
+    elif state == "unreadable":
+        row = _row(
+            label,
+            "failed",
+            f"{path} is unreadable ({registry.get('error')}); move it aside, then "
+            f"repair: {setup_repair(PRIME)}",
+        )
+    elif state == "no_provider":
+        row = _row(
+            label,
+            "failed",
+            f"{path} has no providers.omniroute entry; add one (baseUrl {env.gateway}/v1, "
+            f"api openai-completions, apiKey OMNIROUTE_API_KEY), then {sync}",
+        )
+    elif state == "no_models":
+        row = _row(label, "failed", f"{path} providers.omniroute has no models; {sync}")
+    else:
+        row = _row(label, "ok", f"{path}: providers.omniroute has {registry['models']} model(s)")
+    rows = [row]
+    result = env.unit_result(PRIME_SYNC_UNIT)
+    if result is not None:
+        detail = f"{PRIME_SYNC_UNIT} last result {result}"
+        if result != "success":
+            detail += f"; {sync}; logs: journalctl --user -u {PRIME_SYNC_UNIT}"
+        rows.append(_row("Prime-sync service", "ok" if result == "success" else "failed", detail))
+    return rows
+
+
+def doctor_rows(env: HostEnvironment) -> list[dict[str, str]]:
+    """``verdict doctor`` rows for ocr, the serve unit and the Prime registry.
+
+    The timers have rows in ``doctor_diagnostics.installed_service_rows``. Every
+    problem row ends with the exact repair command (``repair: ...``).
+    """
+    return [_ocr_row(env), *_serve_rows(env), *_prime_rows(env)]
+
+
 def bootstrap_options(env: HostEnvironment | None = None) -> dict[str, Any]:
     """``run_bootstrap`` keyword arguments that add the host prerequisites."""
     resolved = env or HostEnvironment.from_host()

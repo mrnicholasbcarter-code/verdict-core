@@ -950,6 +950,12 @@ def _collect_doctor_diagnostics(
         if row["status"] == "failed":
             issues_found.append(row["detail"])
 
+    sections.append(("Host prerequisites", "header", ""))
+    for row in host_prerequisite_rows():
+        sections.append((row["label"], row["status"], row["detail"]))
+        if row["status"] == "failed":
+            issues_found.append(row["detail"])
+
     return diag
 
 
@@ -1000,8 +1006,11 @@ def installed_service_rows(
                 f"result {state.get('result', 'unknown')}; next run {state.get('next_run', 'unknown')}"
             )
             if failed:
-                facts += "; run 'verdict identify install-service'"
+                facts += "; repair: verdict identify install-service"
+        elif failed:
+            facts += _prime_sync_timer_repair(str(state.get("state", "unknown")))
         rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
+    rows.append(_acceptance_timer_row(timer_state))
     rows.append(report_row(now=now))
 
     from verdict.metadata import default_store_path, load_store
@@ -1018,8 +1027,8 @@ def installed_service_rows(
             {
                 "label": "Metadata refresh timer",
                 "status": "warning",
-                "detail": f"{METADATA_TIMER} is not installed; explicit opt-in is available "
-                "through 'verdict metadata install-service' or 'verdict setup'.",
+                "detail": f"{METADATA_TIMER} is not installed; explicit opt-in (verdict setup "
+                "--apply installs it too); repair: verdict metadata install-service",
             }
         )
         rows.append(health_cache_row(now=now))
@@ -1093,6 +1102,14 @@ def installed_service_rows(
                 metadata_issues.append(f"source {source} is older than 12 hours")
     except (OSError, ValueError):
         metadata_issues.append(f"metadata snapshot missing or unreadable at {default_store_path()}")
+    if metadata_issues:
+        # Units first: a missing or stopped timer is reinstalled; anything else
+        # (a failed or stale refresh, a bad snapshot) is a refresh to re-run.
+        metadata_issues.append(
+            "repair: verdict metadata install-service"
+            if metadata_state.get("state") in {"missing", "inactive"}
+            else "repair: verdict metadata refresh"
+        )
     rows.append(
         {
             "label": "Metadata refresh timer",
@@ -1105,6 +1122,50 @@ def installed_service_rows(
 
     rows.append(health_cache_row(now=now))
     return rows
+
+
+def _prime_sync_timer_repair(state: str) -> str:
+    unit = "verdict-prime-sync.timer"
+    if state == "missing":
+        return (
+            "; copy deploy/systemd/verdict-prime-sync.{service,timer} to ~/.config/systemd/user "
+            f"(docs/guides/harnesses.md), then repair: systemctl --user enable --now {unit}"
+        )
+    if state == "inactive":
+        return f"; repair: systemctl --user enable --now {unit}"
+    return (
+        "; repair: verdict harness prime sync-models; "
+        "logs: journalctl --user -u verdict-prime-sync.service"
+    )
+
+
+def _acceptance_timer_row(timer_state: Callable[[str], dict[str, Any]]) -> dict[str, str]:
+    """The hourly acceptance timer is installed and active (BOD-219)."""
+    from verdict.acceptance_service import TIMER as ACCEPTANCE_TIMER
+
+    state = str(timer_state(ACCEPTANCE_TIMER).get("state", "unknown"))
+    if state == "active":
+        return {
+            "label": "Acceptance timer",
+            "status": "ok",
+            "detail": f"{ACCEPTANCE_TIMER} is active",
+        }
+    return {
+        "label": "Acceptance timer",
+        "status": "failed",
+        "detail": f"{ACCEPTANCE_TIMER} is {state}; repair: verdict acceptance install-service",
+    }
+
+
+def host_prerequisite_rows() -> list[dict[str, str]]:
+    """Doctor rows for ocr, the ``verdict serve`` unit and the Prime registry (BOD-219).
+
+    Reads this host (PATH, systemd user units, ``GET /health`` on loopback only
+    when the unit is active, ``~/.prime/agent/models.json``); never changes it.
+    """
+    from verdict.setup_host import HostEnvironment, doctor_rows
+
+    return doctor_rows(HostEnvironment.from_host())
 
 
 def _parse_systemd_time(value: str) -> datetime:
@@ -1339,6 +1400,7 @@ _RUNTIME_UNITS = (
     "verdict-acceptance.service",
     "verdict-prime-sync.service",
     "verdict-metadata-refresh.service",
+    "verdict-serve.service",
 )
 # Units that run their own route-qualification probe loop.
 _QUALIFIER_UNITS = ("verdict-prove-at-rest.service", "verdict-census.service")

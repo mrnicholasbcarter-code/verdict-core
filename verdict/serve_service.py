@@ -31,6 +31,7 @@ SERVICE = "verdict-serve.service"
 HOST = "127.0.0.1"
 PORT = 8000
 BASE_URL = f"http://{HOST}:{PORT}/v1"
+HEALTH_URL = f"http://{HOST}:{PORT}/health"
 TOKEN_ENV = "LLMGATE_AUTH_TOKEN"
 RECEIPTS_ENV = "VERDICT_RECEIPTS_DB"
 ENV_FILE_NAME = "serve.env"
