@@ -1,0 +1,59 @@
+{
+ "sha": "a1667f5c3a2aac84f415eb25f26a84d9bf81e271",
+ "truncated": false,
+ "tree": [
+  {
+   "path": "README.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "3e258e4ccc6cfdda5855ddc96debc87691aba075",
+   "size": 43
+  },
+  {
+   "path": "docs",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "0000000000000000000000000000000000000000"
+  },
+  {
+   "path": "docs/guide.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "ca38122154c1a2344f033322b7a250bbfc8b8134",
+   "size": 319
+  },
+  {
+   "path": "docs/i18n",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "0000000000000000000000000000000000000000"
+  },
+  {
+   "path": "docs/i18n/de/guide.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "18a0915dc6b4e3b389dc75f9eb4eef3bf39798fa",
+   "size": 102
+  },
+  {
+   "path": "docs/openapi.yaml",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "7f4dffeaabbf8de435cb401ce59518c9b8764247",
+   "size": 300
+  },
+  {
+   "path": "docs/reference",
+   "mode": "040000",
+   "type": "tree",
+   "sha": "0000000000000000000000000000000000000000"
+  },
+  {
+   "path": "docs/reference/api.md",
+   "mode": "100644",
+   "type": "blob",
+   "sha": "3940ef0d01192000575b67b5f2b7d396e66362d4",
+   "size": 134
+  }
+ ]
+}
