@@ -83,7 +83,7 @@ from verdict.orchestration.health_cache import (
     default_cache_path,
 )
 from verdict.orchestration.verified_models import public_model_entry
-from verdict.outcome_log import build_outcome_record, log_outcome
+from verdict.outcome_log import build_outcome_record, log_outcome, omniroute_anomaly_names
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
     build_attempts,
@@ -2626,6 +2626,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         else {}
                     ),
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    # Recorded, not enforced: names only, never header values.
+                    "omniroute_anomalies": omniroute_anomaly_names(result.headers),
                     **(
                         {"health_cache_feedback": health_cache_feedback}
                         if health_cache_feedback
@@ -2695,6 +2697,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     **details,
                     "attempted_routes": attempts_used,
                     "compatibility_rule_version": result.compatibility_rule_version,
+                    "omniroute_anomalies": omniroute_anomaly_names(result.headers),
                     **(
                         {"health_cache_feedback": health_cache_feedback}
                         if health_cache_feedback

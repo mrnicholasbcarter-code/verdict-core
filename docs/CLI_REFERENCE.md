@@ -523,7 +523,12 @@ log as a decision log.
 | `execution_id` | `X-OmniRoute-Request-Id` | `null` when absent |
 | `observed_cost_usd`, `cost_source` | `X-OmniRoute-Response-Cost` **only** | `null` when the header is absent — unmeasured, never `$0`; never estimated from a model name |
 | `observed_tokens_in/out/total`, `tokens_source` | `X-OmniRoute-Tokens-In/Out`, else body `usage` (`prompt_/completion_tokens` for Chat Completions, `input_/output_tokens` for Responses) | token counts never become a price |
-| `cache_hit` | `X-OmniRoute-Cache-Hit` | `null` when absent |
+| `cache_hit` | `X-OmniRoute-Cache-Hit` | `null` when absent; does not read `X-OmniRoute-Cache` |
+| `omniroute_anomalies` | `X-OmniRoute-Cache`, `-Cache-Hit`, `-Compression`, `-Emergency-Fallback` | names only (`cache_hit`, `compressed`, `emergency_fallback`), never header values; `[]` when every marker is absent or carries its safe value. Matching fails closed (see the `omniroute-evidence-safety` spec). Recorded, not enforced: the relay still returns the reply |
+
+The relay also writes `omniroute_anomalies` into the request's evidence
+outcome event (`outcome_event.details`, readable through
+`GET /v1/route/explain`) for the attempt whose reply the client received.
 
 Streamed responses contribute headers only (the body is not buffered), so
 their token counts come from headers or are `null`. Writing a receipt never

@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.http_safety import omniroute_response_anomalies
+
 OUTCOME_RECORD_KIND = "outcome"
 OUTCOME_SCHEMA_VERSION = 1
 
@@ -54,6 +56,29 @@ def outcome_log_path(decision_log_path: Path | str) -> Path:
 def _lower_headers(headers: HeaderItems) -> dict[str, str]:
     items = headers.items() if isinstance(headers, Mapping) else headers
     return {str(key).lower(): str(value) for key, value in items}
+
+
+class _HeaderPairs:
+    """Expose ``(name, value)`` pairs through ``items()``, keeping repeated headers."""
+
+    def __init__(self, pairs: list[tuple[str, str]]) -> None:
+        self._pairs = pairs
+
+    def items(self) -> list[tuple[str, str]]:
+        return self._pairs
+
+
+def omniroute_anomaly_names(headers: HeaderItems) -> list[str]:
+    """Name OmniRoute's response anomalies (``cache_hit``, ``compressed``, ``emergency_fallback``).
+
+    Uses the fail-closed matcher in :func:`verdict.http_safety.omniroute_response_anomalies`.
+    Only the fixed anomaly names are returned, never a header value, so the
+    result is safe to persist on a receipt. A repeated marker is kept, so it is
+    safe only when every value is.
+    """
+    items = headers.items() if isinstance(headers, Mapping) else headers
+    pairs = [(str(key), str(value)) for key, value in items]
+    return list(omniroute_response_anomalies(_HeaderPairs(pairs)))
 
 
 def _non_negative_float(value: object) -> float | None:
@@ -91,6 +116,8 @@ def _body_usage(body: bytes | None) -> Mapping[str, Any] | None:
 
 def observe_execution(*, headers: HeaderItems, body: bytes | None) -> dict[str, Any]:
     """Extract observed cost/usage/identity from an upstream response. Never estimates."""
+    if not isinstance(headers, Mapping):
+        headers = list(headers)  # read twice below; an iterator must not be consumed once
     lowered = _lower_headers(headers)
 
     cost = _non_negative_float(lowered.get(COST_HEADER))
@@ -136,6 +163,7 @@ def observe_execution(*, headers: HeaderItems, body: bytes | None) -> dict[str, 
         "observed_tokens_total": tokens_total,
         "tokens_source": tokens_source,
         "cache_hit": cache_hit,
+        "omniroute_anomalies": omniroute_anomaly_names(headers),
         "completed_with_source": "header" if completed_with else None,
         "completed_with_header": completed_with,
         "execution_id": execution_id,
@@ -307,5 +335,6 @@ __all__ = [
     "log_outcome",
     "measured_spend_for",
     "observe_execution",
+    "omniroute_anomaly_names",
     "outcome_log_path",
 ]
