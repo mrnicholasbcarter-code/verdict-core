@@ -258,8 +258,18 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     commit: str | None = None
     pending_probe_fields: dict[str, str] = {}
     pending_route = ""
+    hydration: dict[str, str] = {}
     for event in events:
         data = event.data
+        if event.type == "hydrate" and data.get("hydration_packet_digest"):
+            # Latest packet-bearing hydrate event wins; only the structural-status
+            # and digest fields are linked, never the packet body. A library run
+            # with no packet leaves its receipt unchanged.
+            hydration = {
+                key: str(value)
+                for key, value in data.items()
+                if key.startswith("hydration_") and isinstance(value, str)
+            }
         if event.type == "dispatch":
             current = _attempt_of(event, current + 1)
         elif event.type in {"terminal", "failure"}:
@@ -418,6 +428,8 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     }
     if commit:
         record["commit"] = commit
+    if hydration:
+        record["hydration"] = hydration
     return record
 
 

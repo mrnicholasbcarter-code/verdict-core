@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
@@ -180,6 +180,185 @@ async def test_selected_window_and_actual_pack_sources(repo, window):
         assert unit.source_uri in ex.prompts[0]
     assert row["omissions"]
     assert not selector.failures
+
+
+async def test_required_queen_packet_missing_does_not_launch_or_cool_provider(repo):
+    # Subclass expresses the desired policy before the runtime supports it, so
+    # red is a real launch violation rather than a constructor/import error.
+    @dataclass(frozen=True)
+    class RequiredHydrationPolicy(RuntimePolicy):
+        require_hydration_packet: bool = True
+
+    rt, ev, selector, ex, _ = make(repo, None)
+    rt.policy = RequiredHydrationPolicy(require_review=False, run_repo_gates=False)
+    result = await rt.run()
+    assert ex.prompts == [], "missing required queen evidence must prevent worker launch"
+    assert result.outcome is RunOutcome.BLOCKED
+    assert not selector.failures
+    failure = ev.of("failure")[0]
+    assert failure["category"] == "hydration_packet_rejected"
+    assert failure["action"] == "FAIL_CLOSED"
+
+
+def queen_packet(repo, node):
+    contract = node.to_dict()
+    contract.pop("hydration_packet", None)
+    digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    return {
+        "schema_version": "verdict.hydration/v1",
+        "repo_sha": sha,
+        "node_digest": digest,
+        "stop_conditions": ["Stop if an unowned file is needed"],
+        "blockers": [],
+        "sections": {
+            name: {
+                "status": "evidence",
+                "summary": "fixture settled criterion: preserve widget behavior",
+                "sources": [{"ref": "fixture:" + name, "revision": sha}],
+            }
+            for name in (
+                "linear",
+                "memory",
+                "code",
+                "instructions",
+                "specs",
+                "prs",
+                "design_review",
+            )
+        },
+        "design_review": {
+            "author_family": "fixture-author",
+            "reviewer_family": "fixture-reviewer",
+            "outcome": "approved",
+        },
+    }
+
+
+def attach_packet(rt, packet):
+    old = rt.nodes["widget"].node
+    node = replace(old, hydration_packet=json.dumps(packet))
+    rt.nodes["widget"].node = node
+    rt.graph = replace(rt.graph, nodes=(node,))
+
+
+def test_packet_survives_workgraph_round_trip(repo):
+    rt, _, _, _, _ = make(repo, None)
+    packet = queen_packet(repo, rt.nodes["widget"].node)
+    attach_packet(rt, packet)
+    restored = WorkGraph.from_dict(rt.graph.to_dict())
+    assert restored.nodes[0].hydration_packet == json.dumps(packet)
+
+
+async def test_valid_queen_packet_reaches_prompt_and_digest_event(repo):
+    rt, ev, selector, ex, _ = make(repo, None)
+    packet = queen_packet(repo, rt.nodes["widget"].node)
+    attach_packet(rt, packet)
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert "QUEEN_EVIDENCE" in ex.prompts[0], "validated evidence must reach the actual worker"
+    assert "fixture settled criterion" in ex.prompts[0]
+    row = ev.of("hydrate")[0]
+    expected = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    assert row["hydration_packet_digest"] == expected
+    assert row["hydration_repo_sha"] == packet["repo_sha"]
+    assert not selector.failures
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "sha",
+        "criteria",
+        "placeholder",
+        "missing",
+        "unavailable",
+        "review",
+        "blockers",
+        "secret",
+        "duplicate",
+        "citation",
+        "stops",
+    ],
+)
+async def test_invalid_queen_packet_never_launches(repo, defect):
+    rt, ev, selector, ex, _ = make(repo, None)
+    packet = queen_packet(repo, rt.nodes["widget"].node)
+    if defect == "sha":
+        packet["repo_sha"] = "0" * 40
+    elif defect == "criteria":
+        packet["node_digest"] = "sha256:" + "0" * 64
+    elif defect == "placeholder":
+        packet["sections"]["linear"]["summary"] = "_TODO_"
+    elif defect == "missing":
+        del packet["sections"]["code"]
+    elif defect == "unavailable":
+        packet["sections"]["linear"]["status"] = "unavailable"
+    elif defect == "review":
+        packet["design_review"]["reviewer_family"] = "fixture-author"
+    elif defect == "blockers":
+        packet["blockers"] = ["unresolved criterion conflict"]
+    elif defect == "secret":
+        packet["sections"]["memory"]["summary"] = "api_key = 'never-send-this-canary'"
+    elif defect == "citation":
+        packet["sections"]["code"]["sources"][0]["revision"] = ""
+    elif defect == "stops":
+        packet["stop_conditions"] = []
+    attach_packet(rt, packet)
+    if defect == "duplicate":
+        node = rt.nodes["widget"].node
+        raw = node.hydration_packet.replace(
+            '"blockers": []', '"blockers": ["conflict"], "blockers": []'
+        )
+        rt.nodes["widget"].node = replace(node, hydration_packet=raw)
+    result = await rt.run()
+    assert ex.prompts == [], "invalid supplied packet must block even in compatibility mode"
+    assert result.outcome is RunOutcome.BLOCKED
+    assert not selector.failures
+    assert ev.of("failure")[0]["category"] == "hydration_packet_rejected"
+
+
+def test_ownership_fixup_preserves_packet_and_requires_rehydration(repo):
+    from verdict.orchestration.hydration import HydrationPacketError, validate_hydration_packet
+    from verdict.orchestration.planner import ensure_verification_files_owned
+
+    rt, _, _, _, _ = make(repo, None)
+    node = replace(
+        rt.nodes["widget"].node,
+        verification_command=("python", "-m", "pytest", "tests/test_widget.py"),
+    )
+    packet = queen_packet(repo, node)
+    node = replace(node, hydration_packet=json.dumps(packet))
+    fixed = ensure_verification_files_owned([node])[0]
+    assert "tests/test_widget.py" in fixed.owned_files
+    assert fixed.hydration_packet == node.hydration_packet
+    with pytest.raises(HydrationPacketError, match="task contract changed"):
+        validate_hydration_packet(
+            fixed, repo_sha=packet["repo_sha"], required=True, max_bytes=60_000
+        )
+
+
+@pytest.mark.parametrize("status", [[], {}, 1, None])
+async def test_malformed_section_status_blocks_locally(repo, status):
+    rt, ev, selector, ex, _ = make(repo, None, require_hydration_packet=True)
+    packet = queen_packet(repo, rt.nodes["widget"].node)
+    packet["sections"]["code"]["status"] = status
+    attach_packet(rt, packet)
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert not ex.prompts
+    assert not selector.failures
+    assert ev.of("failure")[0]["category"] == "hydration_packet_rejected"
 
 
 async def test_tiny_window_does_not_launch_or_cool_provider(repo):

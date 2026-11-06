@@ -83,6 +83,7 @@ from verdict.orchestration.health_cache import (
     HealthCache,
     default_cache_path,
 )
+from verdict.orchestration.hydration import HydrationPacketError, validate_hydration_packet
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
 from verdict.orchestration.salvage import (
@@ -162,6 +163,8 @@ class RuntimePolicy:
     # BOD-433 authority mode: every worker send needs a minted dispatch permit.
     # Without a DispatchAuthority to prove routes, every send is denied.
     require_dispatch_permit: bool = False
+    # Queen evidence is a separate local input gate, never route admission.
+    require_hydration_packet: bool = False
 
 
 @dataclass(frozen=True)
@@ -1390,8 +1393,34 @@ class DagRuntime:
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
+                try:
+                    queen_text, queen_evidence = validate_hydration_packet(
+                        node,
+                        repo_sha=base,
+                        required=self.policy.require_hydration_packet,
+                        max_bytes=budget,
+                    )
+                except HydrationPacketError as exc:
+                    reason = f"hydration_packet_rejected: {exc}"
+                    self._record_failure(
+                        run,
+                        WorkerTerminal(ok=False, error=reason),
+                        failures,
+                        failure=FailureClassification(
+                            "hydration_packet_rejected", "FAIL_CLOSED", 0, "none", reason
+                        ),
+                    )
+                    run.reason = reason
+                    self._set(run, NodeState.BLOCKED, reason=reason)
+                    await self.git.remove_worktree(worktree)
+                    return True
+                suffix = queen_text + suffix
                 hydrated = self._prompt(node, worktree, budget, plan, suffix)
                 prompt = hydrated.text if isinstance(hydrated, WorkerPrompt) else hydrated
+                if queen_text and queen_text not in prompt:
+                    # Foreign callbacks must not drop required evidence. The full
+                    # prompt budget below rejects overflow rather than truncating.
+                    prompt += queen_text
                 evidence = (
                     hydrated.evidence()
                     if isinstance(hydrated, WorkerPrompt)
@@ -1445,6 +1474,7 @@ class DagRuntime:
                     estimated_fit=fits,
                     compression="not_performed",
                     **evidence,
+                    **queen_evidence,
                 )
                 if not fits:
                     # This is a local input failure, not admission or provider
