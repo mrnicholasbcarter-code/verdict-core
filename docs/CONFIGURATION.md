@@ -343,6 +343,24 @@ echo secret material:
 - API keys are referenced by environment-variable name (`api_key_env`), never by
   value. This holds for exported environment values and credential-store values
   alike.
+- A diagnostic line reads
+  `<code> [<class>] field=<field> [source=<source>] - <detail>; remediation: <remediation>`.
+  The field is followed by ` - `, never by
+  `:` or `=`, because the field can be a credential name (`credential_env_missing`
+  names `OMNIROUTE_API_KEY`). `NAME: word` is how a real key is written, so
+  `verdict.security.redact_text` redacts it, and `scripts/check_dod.py` refuses a
+  raw output that the redactor would change. The CLI notes, `verdict serve`
+  startup lines, `describe_bootstrap_failure`, `BootstrapError` messages and the
+  Prime supervisor's launch detail all use this format.
+- The line also passes its field, detail and remediation through `redact_text`
+  one part at a time, so an `sk-` key, a `Bearer` token or a `token=<value>` that
+  reaches a detail by mistake is printed as `[redacted]`. A value with no label
+  and no known prefix is not caught that way. The guarantee for those is that no
+  diagnostic is built from a credential value.
+  `tests/test_bootstrap_diagnostics_carry_no_credential_values.py` checks it with
+  fake values for the registered credential names and the gateway key names, in the
+  environment and in the credential store. Its docstring lists where each value goes
+  and which names it leaves unset on purpose.
 - A URL that carries `user:password@` userinfo is rendered as `***:***@host`
   everywhere: diagnostic details, `ProviderBinding.to_dict`,
   `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library
