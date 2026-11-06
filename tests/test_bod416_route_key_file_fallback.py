@@ -8,13 +8,23 @@ local credential store, then the owner-only ``omniroute-api-key`` key file,
 then Prime's ``auth.json``. A stale/absent env key must never be the end of the
 road when a key file is present, and a fresh env key must still win.
 
+The route's catalog discovery (``verdict.discovery.fetch_models``) is held to
+the same precedence: a provider that declares a gateway key env name gets the
+key-file key when that env name is unset, so a key-file-only route sees the
+same catalog (and makes the same decision) as one with the key exported.
+
 Every test uses a fake HOME/XDG_CONFIG_HOME and monkeypatched env. No real key
-is ever read or printed.
+is ever read or printed, and gateway requests are stubbed (no sockets).
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
+from email.message import Message
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -148,3 +158,139 @@ def test_cli_route_bootstrap_without_key_file_still_reports_missing_credential(
 
     codes = {note.code for note in result.notes()}
     assert "credential_env_missing" in codes
+
+
+# --- route catalog discovery (verdict.discovery.fetch_models) ----------------
+
+_CATALOG_MODEL = "groq/llama-3.3-70b-versatile"
+
+
+class _ModelsResponse:
+    """Minimal ``open_no_redirect`` response carrying a one-model catalog."""
+
+    def __enter__(self) -> _ModelsResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps({"object": "list", "data": [{"id": _CATALOG_MODEL}]}).encode()
+
+
+def _stub_gateway(monkeypatch: pytest.MonkeyPatch, *, accepts: str) -> list[str | None]:
+    """Stub discovery's transport: 200 only for ``Bearer <accepts>``, else 401.
+
+    Returns the Authorization header each discovery request carried.
+    """
+    import verdict.discovery
+
+    seen: list[str | None] = []
+
+    def open_fake(request: urllib.request.Request, timeout: float | None = None) -> Any:
+        header = request.get_header("Authorization")
+        seen.append(header)
+        if header != f"Bearer {accepts}":
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", Message(), None)
+        return _ModelsResponse()
+
+    monkeypatch.setattr(verdict.discovery, "_CACHE", {})
+    monkeypatch.setattr(verdict.discovery, "open_no_redirect", open_fake)
+    return seen
+
+
+@pytest.mark.parametrize("api_key_env", ["OMNIROUTE_API_KEY", "VERDICT_OMNIROUTE_API_KEY"])
+def test_route_catalog_discovery_sends_key_file_key_when_env_unset(
+    api_key_env: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI route gate's omniroute discovery authenticates with the key file.
+
+    Covers both gateway key env names (``GATEWAY_KEY_ENV_NAMES``) a provider may declare.
+    """
+    from verdict.actions.helpers import build_route_gate
+    from verdict.discovery import fetch_models
+
+    config_body = (
+        "providers:\n  omniroute:\n    base_url: http://127.0.0.1:20128/v1\n"
+        f"    api_key_env: {api_key_env}\n"
+    )
+    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=config_body)
+    _write_key_file(config_dir, "file-key-fixture")
+    seen = _stub_gateway(monkeypatch, accepts="file-key-fixture")
+
+    gate = build_route_gate()
+    models = fetch_models("omniroute", gate.providers["omniroute"])
+
+    assert seen == ["Bearer file-key-fixture"]
+    assert [m.id for m in models] == [_CATALOG_MODEL]
+
+
+def test_route_catalog_discovery_stale_env_key_still_wins_over_key_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC2 for discovery: an exported key is sent even when a key file exists."""
+    from verdict.actions.helpers import build_route_gate
+    from verdict.discovery import fetch_models
+
+    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=_CONFIG_WITH_OMNIROUTE)
+    _write_key_file(config_dir, "file-key-fixture")
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "stale-env-key")
+    seen = _stub_gateway(monkeypatch, accepts="file-key-fixture")
+
+    gate = build_route_gate()
+    models = fetch_models("omniroute", gate.providers["omniroute"])
+
+    assert seen == ["Bearer stale-env-key"]
+    assert models == []
+
+
+def test_catalog_discovery_never_sends_the_gateway_key_to_other_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a provider that declares a gateway key env name gets the key-file key."""
+    from verdict.discovery import fetch_models
+    from verdict.models import ProviderConfig
+
+    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=None)
+    _write_key_file(config_dir, "file-key-fixture")
+    monkeypatch.delenv("OTHER_PROVIDER_API_KEY", raising=False)
+    seen = _stub_gateway(monkeypatch, accepts="file-key-fixture")
+
+    fetch_models("public_ollama", ProviderConfig(base_url="http://127.0.0.1:11434/v1"))
+    fetch_models(
+        "other",
+        ProviderConfig(base_url="http://127.0.0.1:9/v1", api_key_env="OTHER_PROVIDER_API_KEY"),
+    )
+
+    assert seen == [None, None]
+
+
+@pytest.mark.parametrize("key_source", ["exported_env", "key_file_only"])
+def test_cli_route_decision_is_the_same_for_key_file_and_exported_key(
+    key_source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
+) -> None:
+    """With no admit snapshot, the route picks from the authenticated catalog either way.
+
+    Before the fix the key-file-only route got a 401 from discovery, saw an empty
+    catalog and fell back to the primary model, while the exported key saw the
+    catalog and routed to it.
+    """
+    from verdict.actions.helpers import build_route_gate
+    from verdict.free_tier_admit import LiveAdmitError
+
+    config_dir = _fake_config_home(tmp_path, monkeypatch, config_body=_CONFIG_WITH_OMNIROUTE)
+    _write_key_file(config_dir, "file-key-fixture")
+    if key_source == "exported_env":
+        monkeypatch.setenv("OMNIROUTE_API_KEY", "file-key-fixture")
+    monkeypatch.chdir(tmp_path)
+    seen = _stub_gateway(monkeypatch, accepts="file-key-fixture")
+
+    def no_snapshot(*args: object, **kwargs: object) -> Any:
+        raise LiveAdmitError("unreachable", "fixture gateway has no admit surfaces")
+
+    monkeypatch.setattr("verdict.intelligence.load_omniroute_admit_snapshot", no_snapshot)
+
+    decision = build_route_gate().route("hello", "medium")
+
+    assert seen == ["Bearer file-key-fixture"]
+    assert decision.model == _CATALOG_MODEL

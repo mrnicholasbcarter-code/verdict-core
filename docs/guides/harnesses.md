@@ -371,6 +371,14 @@ Restores the pre-enable backup byte-for-byte.
 
 ### Keeping the Prime model registry current
 
+When `~/.prime/agent/models.json` is missing, `verdict setup --apply` (action
+`host.prime-registry`) creates it with `providers.omniroute` (`baseUrl` is the
+gateway plus `/v1`, `api: openai-completions`, `apiKey` is the env var name
+`OMNIROUTE_API_KEY`), then runs `verdict harness prime sync-models` and
+`verdict harness prime enable`. An existing file is never replaced. `verdict
+doctor` reports a missing registry, one without `providers.omniroute` or
+without models, and a failing `verdict-prime-sync.service`.
+
 Verdict refreshes `~/.prime/agent/models.json` from the live OmniRoute catalog
 whenever it selects a model (worker runs, `verdict eligibility`,
 `verdict orchestrate`). To also refresh it between runs, install the user timer:

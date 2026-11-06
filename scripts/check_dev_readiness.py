@@ -16,6 +16,8 @@ Reports, and never changes:
 
 The workflows are the single source of truth for both pins: this script and
 ``tests/test_check_openspec_tasks.py`` read them, and nothing else restates them.
+The ocr pin and binary check are ``verdict.ocr_release``, shared with
+``verdict setup`` and ``verdict doctor``.
 Every problem prints the exact repair. Exit 0 when ready, 1 on any problem.
 
 Limits, by design:
@@ -39,7 +41,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import shlex
@@ -51,14 +52,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+# The ocr pin, its asset URL and the pinned-binary classification are shared with
+# `verdict setup` and `verdict doctor`; the module is stdlib-only and read-only.
+from verdict.ocr_release import (  # noqa: E402
+    OCR_ASSET_URL,
+    REHEARSAL_WORKFLOW,
+    inspect_ocr,
+    ocr_pin,
+)
+
 CI_WORKFLOW = ".github/workflows/ci.yml"
-REHEARSAL_WORKFLOW = ".github/workflows/certify-rehearsal.yml"
 OPENSPEC_PACKAGE = "@fission-ai/openspec"
 OPENSPEC_BIN_ENV = "OPENSPEC_BIN"
-OCR_ASSET_URL = (
-    "https://github.com/alibaba/open-code-review/releases/download/"
-    "{version}/opencodereview-linux-amd64"
-)
 SYNC_COMMAND = "uv sync --frozen --extra dev --extra server --extra dashboard"
 PROBE_TIMEOUT_SECONDS = 60
 _VERSION = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
@@ -105,16 +112,6 @@ def openspec_pin(root: Path = ROOT) -> str:
             f"{CI_WORKFLOW} must pin exactly one {OPENSPEC_PACKAGE} version, found {pins or 'none'}"
         )
     return pins[0]
-
-
-def ocr_pin(root: Path = ROOT) -> tuple[str, str]:
-    """Return the ``ocr`` release tag and binary SHA-256 the rehearsal workflow installs."""
-    text = (root / REHEARSAL_WORKFLOW).read_text(encoding="utf-8")
-    version = re.search(r"^\s*OCR_VERSION:\s*['\"]?(v\d+\.\d+\.\d+)['\"]?\s*$", text, re.MULTILINE)
-    digest = re.search(r"^\s*OCR_SHA256:\s*['\"]?([0-9a-f]{64})['\"]?\s*$", text, re.MULTILINE)
-    if version is None or digest is None:
-        raise ValueError(f"{REHEARSAL_WORKFLOW} must set OCR_VERSION and OCR_SHA256")
-    return version.group(1), digest.group(1)
 
 
 def _is_secret_name(name: str) -> bool:
@@ -330,19 +327,11 @@ def check_build(root: Path, python: str) -> Finding:
     return Finding("build", True, f"{python} -m build: {result.stdout.strip().splitlines()[0]}")
 
 
-def _sha256(path: Path) -> str | None:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    return digest.hexdigest()
-
-
 def check_ocr(root: Path) -> Finding:
-    """The ocr on PATH must be the release certify-rehearsal.yml pins: version and SHA-256."""
+    """The ocr on PATH must be the release certify-rehearsal.yml pins: version and SHA-256.
+
+    Classification is ``verdict.ocr_release.inspect_ocr``, which `verdict doctor` uses too.
+    """
     try:
         version, digest = ocr_pin(root)
     except (OSError, ValueError) as exc:
@@ -357,24 +346,13 @@ def check_ocr(root: Path) -> Finding:
         f" && printf '%s  %s\\n' {digest} {staged} | sha256sum --check --strict"
         f" && chmod +x {staged} && mv {staged} {shlex.quote(str(target))}"
     )
-    if local is None:
-        return Finding("ocr", False, f"not on PATH; {REHEARSAL_WORKFLOW} pins {version}", repair)
-    reported = _reported_version([local, "--version"])
-    if reported is None or f"v{reported}" != version:
-        shown = f"v{reported}" if reported else "no version"
-        return Finding(
-            "ocr", False, f"{local} reports {shown}; {REHEARSAL_WORKFLOW} pins {version}", repair
-        )
-    actual = _sha256(Path(local))
-    if actual != digest:
-        return Finding(
-            "ocr",
-            False,
-            f"{local} reports {version} but has sha256 {actual or 'unreadable'}; "
-            f"{REHEARSAL_WORKFLOW} pins {digest} (the linux/amd64 release asset)",
-            repair,
-        )
-    return Finding("ocr", True, f"{local} is {version}, sha256 matches {REHEARSAL_WORKFLOW}")
+    found = inspect_ocr(
+        Path(local) if local else None,
+        version=version,
+        digest=digest,
+        reported_version=lambda path: _reported_version([str(path), "--version"]),
+    )
+    return Finding("ocr", found.ok, found.describe(), "" if found.ok else repair)
 
 
 def run_checks(root: Path, vgate: Path, python: str) -> list[Finding]:
