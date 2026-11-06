@@ -307,3 +307,94 @@ def test_timer_next_run_never_treats_monotonic_duration_as_calendar(
         },
     )
     assert identify_service.timer_state()["next_run"] == expected
+
+
+def _write_ok_report(**extra):
+    from verdict.identify_service import latest_report_path
+
+    path = latest_report_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mode": "passive",
+                "model_calls": 0,
+                "fetched_at": NOW.isoformat(),
+                "source_errors": [],
+                **extra,
+            }
+        )
+    )
+    return path
+
+
+def _pools(eligible_free=2, eligible_total=5, fallback=7):
+    by_capacity = {"free": eligible_free, "subscription": 0, "metered": 0, "unknown": 0}
+    by_capacity["subscription"] = eligible_total - eligible_free
+    return {
+        "implementation": {
+            "task_family": "code_edit",
+            "eligible_count": eligible_total,
+            "fallback_count": fallback,
+            "eligible_by_capacity": by_capacity,
+        },
+        "dispatch_authorized": False,
+    }
+
+
+def test_doctor_report_row_summarizes_implementation_pool_and_supply():
+    from verdict.identify_service import report_row
+
+    path = _write_ok_report(
+        task_pools=_pools(), supply={"complete": False, "unknowns": ["a", "b", "c"]}
+    )
+    row = report_row(now=NOW)
+    assert row["status"] == "ok"
+    assert row["detail"] == (
+        f"{path} age 0s; source errors none; model calls 0"
+        "; implementation pool eligible 5 (free 2), fallback 7"
+        "; supply complete false, 3 unknowns"
+    )
+
+
+def test_doctor_report_row_keeps_old_text_without_pool_keys():
+    from verdict.identify_service import report_row
+
+    path = _write_ok_report(supply={"complete": False, "unknowns": []})
+    row = report_row(now=NOW)
+    assert row == {
+        "label": "Identify passive report",
+        "status": "ok",
+        "detail": f"{path} age 0s; source errors none; model calls 0",
+    }
+
+
+def test_doctor_report_row_pool_summary_never_changes_status():
+    from verdict.identify_service import report_row
+
+    _write_ok_report(task_pools={"implementation": None}, supply={"complete": "yes"})
+    row = report_row(now=NOW)
+    assert row["status"] == "ok"
+    assert row["detail"].endswith("; task pools unreadable")
+
+
+def test_doctor_report_row_with_source_errors_stays_failed_with_pools():
+    from verdict.identify_service import latest_report_path, report_row
+
+    path = latest_report_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mode": "passive",
+                "model_calls": 0,
+                "fetched_at": NOW.isoformat(),
+                "source_errors": ["candidates"],
+                "task_pools": _pools(),
+                "supply": {"complete": False, "unknowns": []},
+            }
+        )
+    )
+    row = report_row(now=NOW)
+    assert row["status"] == "failed"
+    assert "pool" not in row["detail"]

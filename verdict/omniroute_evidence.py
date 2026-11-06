@@ -1,5 +1,8 @@
-"""Read OmniRoute's passive connection and traffic evidence without model probes.
+"""Read OmniRoute's passive connection, traffic and live candidate evidence without model probes.
 
+Seven bounded GETs: five management reads under ``/api``, plus the inference
+catalog (``/v1/models``) and the live auto-combo candidate pool
+(``/v1/auto-combo/auto/candidates``), both read with the inference key.
 Traffic evidence records historical proof, not dispatch permission. Callers must
 also require a usable provider and respect ``cooled_models`` at dispatch time.
 """
@@ -21,7 +24,7 @@ from verdict.credentials_store import resolve_api_key
 from verdict.http_safety import open_no_redirect
 
 # BOD-345/S04 discovery bounds (same contract as verdict.free_tier_admit): a
-# 20s per-HTTP-read timeout, a 30s aggregate deadline shared across the six
+# 20s per-HTTP-read timeout, a 30s aggregate deadline shared across the seven
 # GETs, a 16 MiB cumulative decoded-byte budget and a 50,000 raw-row cap per
 # source. Any bound exceeded fails that source closed (``source_errors``),
 # never a partial or truncated payload treated as healthy. The per-read bound
@@ -40,7 +43,9 @@ _SOURCE_LIST_FIELD = {
     "cooldowns": "items",
     "health_matrix": "providers",
     "v1_models": "data",
+    "candidates": "candidates",
 }
+_INFERENCE_SOURCES = frozenset({"v1_models", "candidates"})
 
 
 class _BoundedReadError(Exception):
@@ -48,7 +53,7 @@ class _BoundedReadError(Exception):
 
 
 class _DecodedBudget:
-    """Cumulative decoded-byte budget shared across the six evidence GETs."""
+    """Cumulative decoded-byte budget shared across the seven evidence GETs."""
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
@@ -86,6 +91,21 @@ class TrafficEvidence:
 
 
 @dataclass(frozen=True)
+class LiveCandidate:
+    """One route in OmniRoute's live auto-combo candidate pool.
+
+    ``reachable`` is True only when at least one connection row for the route
+    is usable; ``blocked_reasons`` names why the other rows are not.
+    """
+
+    route_id: str
+    provider: str
+    connection_ids: tuple[str, ...]
+    reachable: bool
+    blocked_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OmniRouteEvidence:
     fetched_at: datetime
     connections: tuple[ConnectionHealth, ...]
@@ -98,6 +118,7 @@ class OmniRouteEvidence:
     inventory_route_ids: frozenset[str] = frozenset()
     traffic_by_route: Mapping[str, TrafficEvidence] = field(default_factory=dict)
     route_capacity_evidence: Mapping[str, str] = field(default_factory=dict)
+    live_candidates: Mapping[str, LiveCandidate] = field(default_factory=dict)
 
 
 def _date(value: Any) -> datetime | None:
@@ -217,6 +238,50 @@ def _connection_reason(
     return None
 
 
+def _candidate_row_reasons(row: dict[str, Any]) -> list[str]:
+    checks = [
+        (row.get("reachable") is True, "unreachable"),
+        (row.get("excluded") is False, "excluded"),
+        (row.get("breakerState") == "CLOSED", "breaker_not_closed"),
+        (row.get("connectionCooldown") is False, "connection_cooldown"),
+        (row.get("modelLocked") is False, "model_locked"),
+        (
+            "freeAccessExclusion" in row and row["freeAccessExclusion"] is None,
+            "free_access_excluded",
+        ),
+    ]
+    return [reason for ok, reason in checks if not ok]
+
+
+def _live_candidates(rows: list[Any]) -> dict[str, LiveCandidate]:
+    grouped: dict[str, tuple[str, set[str], bool, set[str]]] = {}
+    for row in _rows(rows):
+        route_id = row.get("modelStr")
+        if not isinstance(route_id, str):
+            route_id = row.get("model")
+        provider, connection_id = row.get("provider"), row.get("connectionId")
+        if not (
+            isinstance(route_id, str)
+            and route_id
+            and isinstance(provider, str)
+            and isinstance(connection_id, str)
+        ):
+            continue
+        reasons = _candidate_row_reasons(row)
+        first_provider, connection_ids, reachable, blocked = grouped.get(
+            route_id, (provider, set(), False, set())
+        )
+        connection_ids.add(connection_id)
+        blocked.update(reasons)
+        grouped[route_id] = (first_provider, connection_ids, reachable or not reasons, blocked)
+    return {
+        route_id: LiveCandidate(
+            route_id, provider, tuple(sorted(connection_ids)), reachable, tuple(sorted(blocked))
+        )
+        for route_id, (provider, connection_ids, reachable, blocked) in grouped.items()
+    }
+
+
 def parse_omniroute_evidence(
     *,
     providers: Any,
@@ -225,6 +290,7 @@ def parse_omniroute_evidence(
     cooldowns: Any,
     health_matrix: Any,
     v1_models: Any,
+    candidates: Any = None,
     now: datetime,
 ) -> OmniRouteEvidence:
     """Parse audited API shapes; missing source payloads never grant availability.
@@ -233,6 +299,7 @@ def parse_omniroute_evidence(
     Only fresh, reported, explicitly global blocking windows exclude connections.
     Model-scoped or unresolved windows remain the gateway's request-time concern.
     Catalog aliases are retained only when owned_by + root match exactly.
+    A live candidate is reachable only when one of its rows is usable.
     """
     sources = {
         "providers": (providers, "connections", list),
@@ -241,6 +308,7 @@ def parse_omniroute_evidence(
         "cooldowns": (cooldowns, "items", list),
         "health_matrix": (health_matrix, "providers", list),
         "v1_models": (v1_models, "data", list),
+        "candidates": (candidates, "candidates", list),
     }
     errors = tuple(
         name
@@ -381,6 +449,9 @@ def parse_omniroute_evidence(
         frozenset(inventory),
         MappingProxyType(traffic_by_route),
         MappingProxyType(capacity_rules),
+        MappingProxyType(
+            _live_candidates(candidates["candidates"]) if "candidates" not in errors else {}
+        ),
     )
 
 
@@ -451,7 +522,7 @@ def fetch_omniroute_evidence(
     decoded_byte_budget: int = _DECODED_BYTE_BUDGET,
     raw_row_limit: int = _RAW_ROW_LIMIT,
 ) -> OmniRouteEvidence:
-    """GET the six evidence sources, isolating failures by source name only.
+    """GET the seven evidence sources, isolating failures by source name only.
 
     Each read is bounded by the S04 discovery bounds (per-read timeout,
     aggregate deadline, cumulative decoded-byte budget, raw-row cap). A
@@ -467,19 +538,21 @@ def fetch_omniroute_evidence(
         "cooldowns": "/api/resilience/model-cooldowns",
         "health_matrix": "/api/providers/health-matrix?" + urlencode({"range": health_range}),
         "v1_models": "/v1/models",
+        "candidates": "/v1/auto-combo/auto/candidates",
     }
     budget = _DecodedBudget(max(1, decoded_byte_budget))
     deadline = time.monotonic() + aggregate_deadline_seconds
     payloads: dict[str, Any] = {}
     for name, path in paths.items():
         try:
-            if name == "v1_models" and not inference_key:
+            inference = name in _INFERENCE_SOURCES
+            if inference and not inference_key:
                 payloads[name] = None
                 continue
-            if name != "v1_models" and not management_key and not inference_key:
+            if not inference and not management_key and not inference_key:
                 payloads[name] = None
                 continue
-            credential = inference_key if name == "v1_models" else (management_key or inference_key)
+            credential = inference_key if inference else (management_key or inference_key)
             payloads[name] = _request_json_bounded(
                 base_url,
                 name,

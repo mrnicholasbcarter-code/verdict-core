@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
 from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
 from verdict.free_tier_admit import normalize_omniroute_origin
+from verdict.identify_pools import build_supply, build_task_pools
 from verdict.identify_rank import rank_models
 from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
@@ -23,7 +24,9 @@ from verdict.orchestration.eligibility import _CAPACITY_ORDER
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     HealthCache,
+    HealthCacheError,
     HealthCacheLockTimeoutError,
+    HealthEntry,
     agentic_capability,
     default_cache_path,
 )
@@ -45,6 +48,7 @@ _SOURCES = {
     "cooldowns": "/api/resilience/model-cooldowns",
     "health_matrix": "/api/providers/health-matrix?range=7d",
     "v1_models": "/v1/models",
+    "candidates": "/v1/auto-combo/auto/candidates",
 }
 
 
@@ -58,6 +62,7 @@ def identify_models(
     metadata: MetadataSnapshot | None,
     identity_map: IdentityMap | None = None,
     all_excluded: bool = False,
+    tool_proof: Mapping[str, HealthEntry] | None = None,
 ) -> dict[str, Any]:
     """Partition the observed catalog; availability still requires healthy mapped traffic."""
     available: list[str] = []
@@ -174,6 +179,10 @@ def identify_models(
         "excluded_routes_limit": None if all_excluded else _EXCLUDED_ROUTES_LIMIT,
         "excluded_routes_order": "traffic_first_then_route_id",
         "excluded_routes_truncated": not all_excluded and len(excluded) > _EXCLUDED_ROUTES_LIMIT,
+        "supply": build_supply(evidence, tool_proof, evidence.fetched_at),
+        "task_pools": build_task_pools(
+            evidence, metadata, identity_map, tool_proof, evidence.fetched_at
+        ),
     }
 
 
@@ -196,7 +205,11 @@ def screen_models(
     """Screen cheapest tier first, then strongest, with explicit consent and route caps."""
     _screen_options(allow_live_probe, max_per_provider, max_routes)
     report = identify_models(
-        evidence, metadata=metadata, identity_map=identity_map, all_excluded=all_excluded
+        evidence,
+        metadata=metadata,
+        identity_map=identity_map,
+        all_excluded=all_excluded,
+        tool_proof=cache.routes(),
     )
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
@@ -331,7 +344,7 @@ def identify_report(
     capacities: Sequence[str] = (),
     all_excluded: bool = False,
 ) -> dict[str, Any]:
-    """Read the six passive OmniRoute sources and local metadata into one report."""
+    """Read the seven passive OmniRoute sources and local metadata into one report."""
     if screen:
         _screen_options(allow_live_probe, max_per_provider, max_routes)
     base_url, key = resolve_gateway_binding()
@@ -352,6 +365,7 @@ def identify_report(
     except (OSError, ValueError, ModelMetadataError):
         identity_map = None
         mapping_error = "identity_map_unavailable"
+    tool_proof_error = None
     if screen:
         assert max_per_provider is not None and max_routes is not None
         report = screen_models(
@@ -368,10 +382,24 @@ def identify_report(
             all_excluded=all_excluded,
         )
     else:
+        tool_proof: Mapping[str, HealthEntry] | None
+        try:
+            tool_proof = HealthCache(default_cache_path()).routes()
+        except (HealthCacheError, OSError, ValueError):
+            tool_proof = None
+            tool_proof_error = "health_cache_unavailable"
         report = identify_models(
-            evidence, metadata=metadata, identity_map=identity_map, all_excluded=all_excluded
+            evidence,
+            metadata=metadata,
+            identity_map=identity_map,
+            all_excluded=all_excluded,
+            tool_proof=tool_proof,
         )
-    report.update(metadata_error=metadata_error, identity_map_error=mapping_error)
+    report.update(
+        metadata_error=metadata_error,
+        identity_map_error=mapping_error,
+        tool_proof_error=tool_proof_error,
+    )
     return report
 
 
@@ -432,3 +460,10 @@ def cmd_identify(
             f"{json.dumps(report['excluded_routes_by_reason'], sort_keys=True)}."
         )
         print(f"Source errors: {', '.join(report['source_errors']) or 'none'}; model calls: 0.")
+        pool, supply = report["task_pools"]["implementation"], report["supply"]
+        print(
+            f"Task pools: implementation eligible {pool['eligible_count']} "
+            f"(free {pool['eligible_by_capacity']['free']}) fallback {pool['fallback_count']}; "
+            f"supply complete: {str(supply['complete']).lower()} "
+            f"({len(supply['unknowns'])} unknowns)."
+        )

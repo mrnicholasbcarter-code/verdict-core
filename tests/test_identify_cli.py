@@ -1,4 +1,4 @@
-"""Native CLI wiring exercises the actual six-GET reader with no writes."""
+"""Native CLI wiring exercises the actual seven-GET reader with no writes."""
 
 import json
 from datetime import datetime
@@ -8,7 +8,7 @@ import pytest
 from test_identify import NOW, metadata, payloads
 
 
-def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, capsys):
+def test_native_passive_cli_seven_gets_no_inference_or_persistence(monkeypatch, capsys):
     from verdict import cli, identify, omniroute_evidence, prove_at_rest
     from verdict.credentials_store import resolve_gateway_binding
     from verdict.metadata import store
@@ -24,6 +24,7 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
         "/api/resilience/model-cooldowns": "cooldowns",
         "/api/providers/health-matrix": "health_matrix",
         "/v1/models": "v1_models",
+        "/v1/auto-combo/auto/candidates": "candidates",
     }
 
     def forbidden(*args, **kwargs):
@@ -87,9 +88,12 @@ def test_native_passive_cli_six_gets_no_inference_or_persistence(monkeypatch, ca
     raw = capsys.readouterr().out
     report = json.loads(raw)
     assert set(calls) == set(paths)
-    assert len(calls) == 6
+    assert len(calls) == 7
     assert report["model_calls"] == 0
     assert report["available_routes"][0]["route_id"] == "a/best"
+    assert report["supply"]["totals"]["live_candidates"] == 4
+    assert report["task_pools"]["dispatch_authorized"] is False
+    assert [r["route_id"] for r in report["task_pools"]["implementation"]["fallback"]] == ["a/best"]
     assert "secret-fixture-key" not in raw
     assert "accounts" not in raw
 
@@ -136,7 +140,9 @@ def test_missing_metadata_stays_unknown_and_human_output_is_bounded(monkeypatch,
     assert report["metadata_error"] == "metadata_unavailable"
     assert all(r["basis"] == "unknown" for r in report["available_routes"])
     identify.cmd_identify(output_json=False)
-    assert len(capsys.readouterr().out.splitlines()) <= 5
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) <= 5
+    assert lines[-1].startswith("Task pools: implementation eligible 0 (free 0) fallback 1;")
 
 
 def test_identify_passes_management_token_only_to_passive_fetch(monkeypatch, caplog):
