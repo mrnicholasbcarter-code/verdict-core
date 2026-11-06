@@ -285,6 +285,11 @@ def register(subparsers: Any) -> None:
     ref_status_p = ref_sub.add_parser("status", help="Synced tag, installed tag and last sync")
     ref_status_p.add_argument("--workspace", default="default", help="ai-memory workspace")
     ref_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    ref_install_p = ref_sub.add_parser(
+        "install-service", help="Install or remove the hourly reference-docs sync timer"
+    )
+    ref_install_p.add_argument("--dry-run", action="store_true", help="Show the plan only")
+    ref_install_p.add_argument("--uninstall", action="store_true", help="Remove the units")
 
     setup_p = memory_sub.add_parser(
         "setup", help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory"

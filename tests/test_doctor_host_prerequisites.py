@@ -244,3 +244,82 @@ def test_a_missing_prime_sync_timer_names_the_documented_install() -> None:
     assert repair_command(dd._prime_sync_timer_repair("failed")) == (
         "verdict harness prime sync-models"
     )
+
+
+def _ref_row(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "project": "default/ref-omniroute",
+        "tag": "v3.9.0",
+        "installed_tag": "v3.9.0",
+        "synced_at": "2026-10-16T11:00:00+00:00",
+        "pages": 12,
+        "ok": True,
+        "problems": [],
+    }
+    return {**row, **overrides}
+
+
+@pytest.mark.usefixtures("_isolated")
+@pytest.mark.parametrize(
+    ("state", "result", "repair"),
+    [
+        ("missing", "unknown", "verdict setup --apply --allow host.ref-docs-timer"),
+        ("inactive", "success", "systemctl --user enable --now verdict-ref-docs.timer"),
+        ("failed", "exit-code", "verdict memory ref-docs sync"),
+        ("active", "exit-code", "verdict memory ref-docs sync"),
+        ("active", "unknown", "verdict memory ref-docs sync"),
+    ],
+)
+def test_ref_docs_timer_row_names_its_repair(state: str, result: str, repair: str) -> None:
+    def timer_state(unit: str) -> dict[str, object]:
+        if unit == "verdict-ref-docs.timer":
+            return {"state": state, "result": result}
+        return _timer({})(unit)
+
+    rows = dd.installed_service_rows(timer_state=timer_state, ref_docs_status=lambda: [_ref_row()])
+    row = {r["label"]: r for r in rows}["Reference-docs timer"]
+    assert row["status"] == "failed"
+    assert f"verdict-ref-docs.timer is {state}; last result {result}" in row["detail"]
+    assert repair_command(row["detail"]) == repair
+
+
+@pytest.mark.usefixtures("_isolated")
+def test_ref_docs_rows_show_each_project_tag_and_last_sync() -> None:
+    def timer_state(unit: str) -> dict[str, object]:
+        return {"state": "active", "result": "success"} if "ref-docs" in unit else _timer({})(unit)
+
+    rows = {
+        r["label"]: r
+        for r in dd.installed_service_rows(
+            timer_state=timer_state, ref_docs_status=lambda: [_ref_row()]
+        )
+    }
+    assert rows["Reference-docs timer"]["status"] == "ok"
+    assert rows["Reference docs default/ref-omniroute"] == {
+        "label": "Reference docs default/ref-omniroute",
+        "status": "ok",
+        "detail": "tag v3.9.0 (installed v3.9.0), last sync 2026-10-16T11:00:00+00:00, 12 pages",
+    }
+
+    stale = _ref_row(
+        installed_tag="v3.10.0", ok=False, problems=["synced v3.9.0 but v3.10.0 is installed"]
+    )
+    row = {
+        r["label"]: r
+        for r in dd.installed_service_rows(timer_state=timer_state, ref_docs_status=lambda: [stale])
+    }["Reference docs default/ref-omniroute"]
+    assert row["status"] == "failed"
+    assert "synced v3.9.0 but v3.10.0 is installed" in row["detail"]
+    assert repair_command(row["detail"]) == "verdict memory ref-docs sync"
+
+
+@pytest.mark.usefixtures("_isolated")
+def test_unknown_ref_docs_state_is_never_healthy() -> None:
+    """Without injection: no manifest and systemd reports nothing loaded."""
+    rows = {r["label"]: r for r in dd.installed_service_rows(timer_state=_timer({}))}
+    timer = dd._ref_docs_timer_row(None)
+    assert timer["status"] == "failed"
+    assert "verdict-ref-docs.timer is missing; last result unknown" in timer["detail"]
+    row = rows["Reference docs default/ref-omniroute"]
+    assert row["status"] == "failed"
+    assert "installed version unknown" in row["detail"] and "never synced" in row["detail"]
