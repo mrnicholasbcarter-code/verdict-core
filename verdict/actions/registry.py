@@ -1351,6 +1351,9 @@ def _register_builtins() -> None:
         _action_memory_import,
         _action_memory_masterdocs,
         _action_memory_put,
+        _action_memory_ref_docs_install_service,
+        _action_memory_ref_docs_status,
+        _action_memory_ref_docs_sync,
         _action_memory_search,
         _action_memory_setup,
         _action_metadata_install_service,
@@ -1823,6 +1826,36 @@ def _register_builtins() -> None:
                 "Memory",
             ),
             _action_memory_setup,
+        ),
+        (
+            ActionSpec(
+                "memory.ref-docs.sync",
+                "memory",
+                "mutation",
+                "Sync upstream reference docs into ai-memory at the installed tag",
+                "Memory",
+            ),
+            _action_memory_ref_docs_sync,
+        ),
+        (
+            ActionSpec(
+                "memory.ref-docs.status",
+                "memory",
+                "read",
+                "Show each reference project's tag, installed tag and last sync",
+                "Memory",
+            ),
+            _action_memory_ref_docs_status,
+        ),
+        (
+            ActionSpec(
+                "memory.ref-docs.install-service",
+                "memory",
+                "mutation",
+                "Install the hourly reference-docs sync timer (--dry-run shows it)",
+                "Memory",
+            ),
+            _action_memory_ref_docs_install_service,
         ),
         # mcp family (per subcommand)
         (

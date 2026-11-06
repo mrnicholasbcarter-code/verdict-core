@@ -243,6 +243,13 @@ CREDENTIALS: tuple[CredentialSpec, ...] = (
         optional=True,
         live_check=None,
     ),
+    CredentialSpec(
+        env_name="AI_MEMORY_AUTH_TOKEN",
+        purpose="Local ai-memory server bearer token for the reference-docs sync",
+        features=("memory",),
+        optional=True,
+        live_check=None,
+    ),
     # Legacy names - being renamed to TYPESAFE_* by TYPESAFE credentials migration (parallel PR, not yet merged)
     CredentialSpec(
         env_name="OPENJEV_API_KEY",

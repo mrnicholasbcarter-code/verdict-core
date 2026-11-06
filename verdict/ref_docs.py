@@ -29,6 +29,8 @@ from typing import Any, Protocol
 import httpx
 import yaml
 
+from verdict import paths
+
 MAX_PAGE_BYTES = 3072
 MAX_TITLE_BYTES = 160
 # A section smaller than this (a heading stub or lead-in) joins the next one.
@@ -696,12 +698,8 @@ def installed_tag(source: Source, exec_start: Callable[[str], str] = _unit_exec_
     return resolve_installed_tag(installed_package_json(source, exec_start))
 
 
-def verdict_home() -> Path:
-    return Path(os.environ.get("VERDICT_HOME") or Path.home() / ".verdict")
-
-
 def manifest_path(source: Source, workspace: str = "default", home: Path | None = None) -> Path:
-    return (home or verdict_home()) / "ref-docs" / f"{workspace}--{source.project}.json"
+    return (home or paths.verdict_home()) / "ref-docs" / f"{workspace}--{source.project}.json"
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
