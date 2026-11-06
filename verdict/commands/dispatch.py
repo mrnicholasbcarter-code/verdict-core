@@ -583,8 +583,32 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "identify":
         if args.service_command:
-            if args.passive or args.screen or args.save_report:
+            if args.passive or args.screen or args.save_report or args.refresh_health_cache:
                 raise SystemExit("service commands cannot be combined with report modes")
+            if args.service_command == "register-webhook":
+                from verdict.credentials_store import (
+                    resolve_gateway_binding,
+                    resolve_management_token,
+                )
+                from verdict.free_tier_admit import normalize_omniroute_origin
+                from verdict.omniroute_webhook import DEFAULT_RECEIVER_URL, register_webhook
+
+                token = resolve_management_token()
+                if not token:
+                    raise SystemExit("register-webhook requires an OmniRoute management token")
+                print(
+                    json.dumps(
+                        register_webhook(
+                            origin=normalize_omniroute_origin(resolve_gateway_binding()[0]),
+                            management_token=token,
+                            url=args.webhook_url or DEFAULT_RECEIVER_URL,
+                            dry_run=args.dry_run,
+                        ),
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return
             from verdict.identify_service import manage_service
 
             print(
@@ -601,12 +625,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             raise SystemExit(2)
         if args.save_report and not args.passive:
             raise SystemExit("--save-report requires --passive")
+        if args.refresh_health_cache and not args.passive:
+            raise SystemExit("--refresh-health-cache requires --passive")
         from verdict.identify import cmd_identify
 
         cmd_identify(
             save_report=args.save_report,
             output_json=args.output_json,
             all_excluded=args.all_excluded,
+            refresh_health_cache=args.refresh_health_cache,
             screen=args.screen,
             allow_live_probe=args.allow_live_probe,
             max_per_provider=args.max_per_provider,

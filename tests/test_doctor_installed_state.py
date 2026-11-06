@@ -246,8 +246,25 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
                 "model_calls": 0,
                 "source_errors": [],
                 "fetched_at": NOW.isoformat(),
+                "health_refresh": {
+                    "refreshed_at": NOW.isoformat(),
+                    "recorded": 1,
+                    "newest_observed_at": NOW.isoformat(),
+                    "source_errors": [],
+                    "model_calls": 0,
+                    "gateway_writes": 0,
+                },
             }
         )
+    )
+    monkeypatch.setattr(
+        "verdict.omniroute_webhook.webhook_status",
+        lambda **_: {
+            "configured": True,
+            "url": "https://verdict.example/v1/omniroute/webhook",
+            "last_event_at": NOW.isoformat(),
+            "events_total": 1,
+        },
     )
 
     rows = dd.installed_service_rows(now=NOW, timer_state=fake_timer)

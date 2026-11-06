@@ -997,7 +997,9 @@ def installed_service_rows(
         facts = f"{unit} is {state.get('state', 'unknown')}"
         if unit in {TIMER, SCREEN_TIMER}:
             command = (
-                "identify --passive --json --save-report" if unit == TIMER else "identify --screen"
+                "identify --passive --json --save-report --refresh-health-cache"
+                if unit == TIMER
+                else "identify --screen"
             )
             facts += f"; command verdict {command}"
             facts += (
@@ -1012,6 +1014,7 @@ def installed_service_rows(
         rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
     rows.append(_acceptance_timer_row(timer_state))
     rows.append(report_row(now=now))
+    rows.append(omniroute_webhook_row(now=now))
 
     from verdict.metadata import default_store_path, load_store
     from verdict.metadata_service import TIMER as METADATA_TIMER
@@ -1193,38 +1196,110 @@ def health_cache_row(*, now: datetime | None = None) -> dict[str, str]:
     """
     from datetime import datetime, timezone
 
+    from verdict.identify_service import SERVICE, last_health_refresh
     from verdict.orchestration.health_cache import (
+        EVIDENCE_SOURCE_TRAFFIC,
+        EVIDENCE_SOURCE_WEBHOOK,
         STATE_FRESH,
         STATE_STALE,
         HealthCache,
         default_cache_path,
     )
 
+    now = now if now is not None else datetime.now(timezone.utc)
+    passive = (
+        f"passive source: {SERVICE} (OmniRoute health matrix) last refreshed "
+        f"{last_health_refresh(now=now)}; repair: systemctl --user start {SERVICE}"
+    )
     path = default_cache_path()
     if not path.exists():
         return {
             "label": "Health cache",
             "status": "failed",
-            "detail": f"{path} does not exist; screening has not produced evidence yet",
+            "detail": f"{path} does not exist; no screening or passive evidence yet; {passive}",
         }
     try:
         cache = HealthCache(path)
     except Exception as exc:
         return {"label": "Health cache", "status": "failed", "detail": f"unreadable: {exc}"}
-    now = now if now is not None else datetime.now(timezone.utc)
-    routes = cache.routes()
-    fresh = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_FRESH)
-    stale = sum(1 for entry in routes.values() if entry.state_at(now) == STATE_STALE)
-    if fresh + stale == 0:
+    usable = [
+        entry
+        for entry in cache.routes().values()
+        if entry.state_at(now) in {STATE_FRESH, STATE_STALE}
+    ]
+    if not usable:
         return {
             "label": "Health cache",
             "status": "failed",
-            "detail": f"{path} has no fresh or stale route; screening is not producing usable evidence",
+            "detail": f"{path} has no fresh or stale route; screening and passive traffic are "
+            f"not producing usable evidence; {passive}",
         }
+    fresh = sum(1 for entry in usable if entry.state_at(now) == STATE_FRESH)
+
+    def by_source(source: str | None) -> str:
+        entries = [entry for entry in usable if entry.evidence_source == source]
+        if not entries:
+            return "0"
+        newest = max(entry.checked_at for entry in entries)
+        return f"{len(entries)} (newest age {int((now - newest).total_seconds())}s)"
+
     return {
         "label": "Health cache",
         "status": "ok",
-        "detail": f"{fresh} fresh, {stale} stale route(s)",
+        "detail": f"{fresh} fresh, {len(usable) - fresh} stale route(s); "
+        f"passive traffic {by_source(EVIDENCE_SOURCE_TRAFFIC)}; "
+        f"webhook {by_source(EVIDENCE_SOURCE_WEBHOOK)}; probes {by_source(None)}",
+    }
+
+
+def omniroute_webhook_row(*, now: datetime | None = None) -> dict[str, str]:
+    """Additive webhook evidence: a missing or blocked registration is a warning only.
+
+    The OmniRoute health matrix is the required passive source; webhooks add
+    per-request events when OmniRoute can deliver them.
+    """
+    from verdict.omniroute_webhook import webhook_status
+    from verdict.orchestration.health_cache import USABLE_SECONDS
+
+    now = now if now is not None else datetime.now(timezone.utc)
+    status = webhook_status(now=now)
+    repair = "repair: verdict identify register-webhook"
+    if not status.get("configured"):
+        registration = status.get("registration") or {}
+        reason = (
+            ": ".join(
+                str(registration[key]) for key in ("status", "reason") if registration.get(key)
+            )
+            or "never attempted"
+        )
+        return {
+            "label": "OmniRoute webhook",
+            "status": "warning",
+            "detail": f"not registered ({reason}); health matrix remains the passive source; "
+            f"{repair}",
+        }
+    last_event = status.get("last_event_at")
+    if not last_event:
+        return {
+            "label": "OmniRoute webhook",
+            "status": "warning",
+            "detail": f"registered at {status.get('url')}; no event received yet; {repair}",
+        }
+    age = int(
+        (now - datetime.fromisoformat(str(last_event).replace("Z", "+00:00"))).total_seconds()
+    )
+    if not 0 <= age < USABLE_SECONDS:
+        return {
+            "label": "OmniRoute webhook",
+            "status": "warning",
+            "detail": f"registered at {status.get('url')}; last event age {age}s is outside "
+            f"the usable window; {repair}",
+        }
+    return {
+        "label": "OmniRoute webhook",
+        "status": "ok",
+        "detail": f"registered at {status.get('url')}; last event age {age}s; "
+        f"events {status.get('events_total', 0)}",
     }
 
 

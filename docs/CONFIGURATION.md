@@ -396,6 +396,51 @@ installed, inactive timers, failed or never-completed refreshes, and stale sourc
 ages fail the check. Completion or source evidence older than twelve hours fails;
 missing, invalid, or future source timestamps remain explicit failures.
 
+## Passive health refresh
+
+The passive identify unit (`verdict-identify.service`, every three hours) runs
+`verdict identify --passive --json --save-report --refresh-health-cache`. Besides
+saving `identify-latest.json`, it folds real OmniRoute traffic into
+`health-cache.json`. It makes no model calls and sends no writes to OmniRoute.
+
+Sources:
+
+- The OmniRoute health matrix (required). An entry's evidence age is the
+  route's OmniRoute `lastRequestAt`, not the time of the refresh.
+- Signed `request.completed` and `request.failed` webhook events, when a
+  webhook is registered. Webhooks only add evidence.
+
+Rules:
+
+- Traffic writes chat-only liveness: healthy, `chat_ok` true, `tool_ok` false.
+  It is never tool or agentic proof, and it never extends or replaces a
+  usable tool proof.
+- Entries carry `evidence_source` `omniroute_traffic` or `omniroute_webhook`.
+  Probe entries have none.
+- Freshness is the normal evidence lifetime: six hours plus a 1200-second
+  grace. Older and future-dated traffic is skipped.
+- Newer evidence wins. Traffic never overwrites a newer entry, and it never
+  shortens an unexpired negative.
+
+Webhook registration: `verdict identify register-webhook` registers Verdict's
+receiver (`POST /v1/omniroute/webhook` on `verdict serve`) with OmniRoute.
+OmniRoute refuses private or loopback webhook URLs unless its operator sets
+`OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS`; Verdict reports such a refusal (for
+example `blocked_private`) and never changes that setting.
+
+`verdict doctor` reports:
+
+- **Identify passive report**: fails when the saved report has no
+  `health_refresh`, or when the refresh has source errors, model calls or
+  gateway writes. The ok row shows the recorded count and newest evidence age.
+- **Health cache**: fails when no route is fresh or stale, and names the
+  passive source, when it last refreshed, and the repair
+  `systemctl --user start verdict-identify.service`. The ok row counts
+  passive traffic, webhook and probe entries with their newest ages.
+- **OmniRoute webhook**: ok when registered and an event arrived inside the
+  usable window; otherwise a warning (never a failure) with the registration
+  reason and the repair `verdict identify register-webhook`.
+
 ## Environment variable overrides
 
 ### Gateway / OmniRoute

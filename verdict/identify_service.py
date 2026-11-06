@@ -80,6 +80,19 @@ def _pool_summary(report: dict[str, Any]) -> str:
     )
 
 
+def _parse_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def last_health_refresh(*, now: datetime) -> str:
+    """Age of the saved passive report's health refresh, or ``never``."""
+    try:
+        refresh = json.loads(latest_report_path().read_text())["health_refresh"]
+        return f"{int((now - _parse_time(refresh['refreshed_at'])).total_seconds())}s ago"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return "never"
+
+
 def report_row(*, now: datetime | None = None) -> dict[str, str]:
     path = latest_report_path()
     checked_at = now or datetime.now(timezone.utc)
@@ -88,7 +101,7 @@ def report_row(*, now: datetime | None = None) -> dict[str, str]:
         report = json.loads(path.read_text())
         if not isinstance(report, dict):
             raise ValueError("report is not an object")
-        fetched = datetime.fromisoformat(report["fetched_at"].replace("Z", "+00:00"))
+        fetched = _parse_time(report["fetched_at"])
         age = (checked_at - fetched).total_seconds()
         if age < 0 or age >= 2 * PASSIVE_INTERVAL_SECONDS:
             detail = f"{path} is stale or future-dated (age {int(age)}s)"
@@ -96,11 +109,27 @@ def report_row(*, now: datetime | None = None) -> dict[str, str]:
             detail = f"{path} has source errors or unknown source status"
         elif report.get("mode") != "passive" or report.get("model_calls") != 0:
             detail = f"{path} is not a zero-call passive report"
+        elif not isinstance(refresh := report.get("health_refresh"), dict):
+            detail = (
+                f"{path}: passive report does not refresh the health cache; "
+                "repair: verdict identify install-service"
+            )
+        elif refresh.get("source_errors") != []:
+            detail = f"{path}: health refresh has source errors or unknown source status"
+        elif refresh.get("model_calls") != 0 or refresh.get("gateway_writes") != 0:
+            detail = f"{path}: health refresh is not zero-call and zero-write"
         else:
+            newest = refresh.get("newest_observed_at")
+            evidence = (
+                f"newest evidence age {int((checked_at - _parse_time(newest)).total_seconds())}s"
+                if newest
+                else "no evidence in the usable window"
+            )
             return {
                 "label": "Identify passive report",
                 "status": "ok",
-                "detail": f"{path} age {int(age)}s; source errors none; model calls 0"
+                "detail": f"{path} age {int(age)}s; source errors none; model calls 0; "
+                f"health refresh recorded {int(refresh.get('recorded', 0))}, {evidence}"
                 + _pool_summary(report),
             }
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
@@ -158,7 +187,7 @@ def manage_service(
     files = {
         SERVICE: "[Unit]\nDescription=Verdict passive identification\nAfter=network-online.target\n"
         + common
-        + f"ExecStart={prefix} --passive --json --save-report\nTimeoutStartSec=2min\n",
+        + f"ExecStart={prefix} --passive --json --save-report --refresh-health-cache\nTimeoutStartSec=2min\n",
         SCREEN_SERVICE: "[Unit]\nDescription=Verdict bounded missing-proof screening\nAfter=network-online.target\n"
         + common
         + f"ExecStart={prefix} --screen --allow-live-probe --capacity {SCREEN_CAPACITY} --max-per-provider {SCREEN_MAX_PER_PROVIDER} --max-routes {SCREEN_MAX_ROUTES} --json\nTimeoutStartSec=12min\n",

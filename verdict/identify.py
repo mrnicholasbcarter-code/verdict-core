@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
@@ -23,6 +23,7 @@ from verdict.orchestration.credential_pools import canonical_route, pool_of
 from verdict.orchestration.eligibility import _CAPACITY_ORDER
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
+    USABLE_SECONDS,
     HealthCache,
     HealthCacheError,
     HealthCacheLockTimeoutError,
@@ -30,6 +31,7 @@ from verdict.orchestration.health_cache import (
     agentic_capability,
     default_cache_path,
 )
+from verdict.passive_health import refresh_health_from_traffic
 from verdict.prove_at_rest import (
     DEFAULT_MAX_WALL_SECONDS,
     AdmittedRoute,
@@ -343,8 +345,13 @@ def identify_report(
     providers: Sequence[str] = (),
     capacities: Sequence[str] = (),
     all_excluded: bool = False,
+    refresh_health_cache: bool = False,
 ) -> dict[str, Any]:
-    """Read the seven passive OmniRoute sources and local metadata into one report."""
+    """Read the seven passive OmniRoute sources and local metadata into one report.
+
+    Only ``refresh_health_cache`` in passive mode writes, and only chat-only
+    liveness and availability negatives from observed traffic.
+    """
     if screen:
         _screen_options(allow_live_probe, max_per_provider, max_routes)
     base_url, key = resolve_gateway_binding()
@@ -395,6 +402,16 @@ def identify_report(
             all_excluded=all_excluded,
             tool_proof=tool_proof,
         )
+        if refresh_health_cache:
+            from verdict.omniroute_webhook import read_events
+
+            now = datetime.now(timezone.utc)
+            report["health_refresh"] = refresh_health_from_traffic(
+                evidence,
+                HealthCache(default_cache_path()),
+                now=now,
+                webhook_events=read_events(since=now - timedelta(seconds=USABLE_SECONDS)),
+            )
     report.update(
         metadata_error=metadata_error,
         identity_map_error=mapping_error,
@@ -414,6 +431,7 @@ def cmd_identify(
     providers: Sequence[str] = (),
     capacities: Sequence[str] = (),
     all_excluded: bool = False,
+    refresh_health_cache: bool = False,
 ) -> None:
     try:
         report = (
@@ -427,6 +445,8 @@ def cmd_identify(
                 all_excluded=all_excluded,
             )
             if screen
+            else identify_report(all_excluded=all_excluded, refresh_health_cache=True)
+            if refresh_health_cache
             else identify_report(all_excluded=True)
             if all_excluded
             else identify_report()
@@ -467,3 +487,10 @@ def cmd_identify(
             f"supply complete: {str(supply['complete']).lower()} "
             f"({len(supply['unknowns'])} unknowns)."
         )
+        refresh = report.get("health_refresh")
+        if refresh is not None:
+            print(
+                f"Health cache refresh: {refresh['recorded']} liveness, "
+                f"{refresh['recorded_failures']} negatives recorded from observed traffic; "
+                "tool proof granted: 0."
+            )

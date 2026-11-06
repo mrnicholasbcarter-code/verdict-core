@@ -77,6 +77,8 @@ from verdict.intelligence import (
 from verdict.model_passports import ModelPassport
 from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
+from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
+from verdict.omniroute_webhook import accept_delivery as accept_omniroute_webhook
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     HealthCache,
@@ -1026,8 +1028,12 @@ app = FastAPI(
 
 @app.middleware("http")
 async def caller_authentication(request: Request, call_next: Any) -> Response:
-    """Require server-owned bearer auth for every non-health API route."""
-    if request.url.path == "/health":
+    """Require server-owned bearer auth for every non-health API route.
+
+    The OmniRoute webhook receiver authenticates each delivery by its HMAC
+    signature instead, because OmniRoute cannot send Verdict's bearer token.
+    """
+    if request.url.path in {"/health", OMNIROUTE_WEBHOOK_PATH}:
         return cast(Response, await call_next(request))
     token = os.getenv("LLMGATE_AUTH_TOKEN")
     anonymous = os.getenv("LLMGATE_ALLOW_ANONYMOUS", "false").lower() in {"1", "true", "yes", "on"}
@@ -2802,6 +2808,16 @@ def _finish_evidence(
         if stored is not None:
             return stored
     return updated
+
+
+@app.post(OMNIROUTE_WEBHOOK_PATH)
+async def omniroute_webhook(request: Request) -> Response:
+    """Receive one HMAC-signed OmniRoute webhook delivery."""
+    raw_body = await request.body()
+    status_code, body = await asyncio.to_thread(
+        accept_omniroute_webhook, raw_body, dict(request.headers)
+    )
+    return JSONResponse(content=body, status_code=status_code)
 
 
 @app.post("/route")
