@@ -392,7 +392,7 @@ def test_resolve_default_providers_announces_the_builtin_set(
     err = capsys.readouterr().err
     assert "default_provider_fallback" in err
     # Rendered through BootstrapDiagnostic.describe(), not a hand-built string.
-    assert "[configuration] field=providers source=default:" in err
+    assert "[configuration] field=providers source=default - " in err
     assert "refused under profile 'production'" in err
 
 

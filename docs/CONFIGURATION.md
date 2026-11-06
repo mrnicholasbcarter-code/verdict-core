@@ -343,6 +343,24 @@ echo secret material:
 - API keys are referenced by environment-variable name (`api_key_env`), never by
   value. This holds for exported environment values and credential-store values
   alike.
+- A diagnostic line reads
+  `<code> [<class>] field=<field> [source=<source>] - <detail>; remediation: <remediation>`.
+  The field is followed by ` - `, never by
+  `:` or `=`, because the field can be a credential name (`credential_env_missing`
+  names `OMNIROUTE_API_KEY`). `NAME: word` is how a real key is written, so
+  `verdict.security.redact_text` redacts it, and `scripts/check_dod.py` refuses a
+  raw output that the redactor would change. The CLI notes, `verdict serve`
+  startup lines, `describe_bootstrap_failure`, `BootstrapError` messages and the
+  Prime supervisor's launch detail all use this format.
+- The line also passes its field, detail and remediation through `redact_text`
+  one part at a time, so an `sk-` key, a `Bearer` token or a `token=<value>` that
+  reaches a detail by mistake is printed as `[redacted]`. A value with no label
+  and no known prefix is not caught that way. The guarantee for those is that no
+  diagnostic is built from a credential value.
+  `tests/test_bootstrap_diagnostics_carry_no_credential_values.py` checks it with
+  fake values for the registered credential names and the gateway key names, in the
+  environment and in the credential store. Its docstring lists where each value goes
+  and which names it leaves unset on purpose.
 - A URL that carries `user:password@` userinfo is rendered as `***:***@host`
   everywhere: diagnostic details, `ProviderBinding.to_dict`,
   `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library
@@ -388,7 +406,7 @@ missing, invalid, or future source timestamps remain explicit failures.
 | `OMNIROUTE_API_KEY` | API key/token for the configured gateway |
 | `VERDICT_GATEWAY_KIND` | Gateway kind; `omniroute` enables advisory rankings. Overrides `gateway_kind` in `verdict.yaml`. See [OmniRoute advisory rankings](#omniroute-advisory-rankings-gateway_kind) |
 | `VERDICT_OMNIROUTE_API_KEY` | Gateway key for `verdict orchestrate` and the OCR reviewer; usually the same value as `OMNIROUTE_API_KEY` |
-| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane credential: an access token (`oma_…`, Settings → Access Tokens; a `read` scope is enough for Verdict) or an `sk-` API key that has the `manage` scope. A plain inference key without `manage` is rejected. `verdict doctor` checks the token against OmniRoute and names its source |
+| `OMNIROUTE_MANAGEMENT_TOKEN` | Management-plane credential: an access token (`oma_…`, Settings → Access Tokens; a `read` scope is enough for Verdict) or an `sk-` API key that has the `manage` scope. A plain inference key without `manage` is rejected. Serve, doctor, passive identify, subagent selection and the worker runtime read the environment first (a blank value is ignored), then the same-named field in the credential store. `verdict doctor` checks the token against OmniRoute and names its source |
 | `OMNIROUTE_ALLOW_PRIVATE_HOSTS` | Comma-separated exact private-host allowlist, not a boolean; merged with the API upstream allowlist and loopback defaults |
 | `OMNIROUTE_USAGE_API_KEY_ID` | Id (not secret) of the inference key whose usage/budget Verdict reads; from `/api/keys` |
 | `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
