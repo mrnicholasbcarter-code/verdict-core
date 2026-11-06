@@ -12,6 +12,7 @@ from scripts.sync_ref_docs import (
     Page,
     SyncReport,
     build_pages,
+    extract_entities,
     redact,
     resolve_installed_tag,
     select_paths,
@@ -214,3 +215,17 @@ def test_tag_follows_installed_package(tmp_path: Path) -> None:
     pkg = tmp_path / "package.json"
     pkg.write_text(json.dumps({"name": "omniroute", "version": "3.8.53"}))
     assert resolve_installed_tag(pkg) == "v3.8.53"
+
+
+def test_entities_name_endpoints_headers_and_env_vars() -> None:
+    text = "Call `GET /api/free-tier/summary` with `X-OmniRoute-Decision`; set `ARENA_ELO_SYNC_ENABLED`."
+    assert extract_entities(text) == (
+        "/api/free-tier/summary",
+        "x-omniroute-decision",
+        "arena_elo_sync_enabled",
+    )
+
+
+def test_table_padding_is_compacted() -> None:
+    _, chunks = split_markdown("# T\n\n## S\n\n| a      | b    |\n| ------ | ---- |\n", 500)
+    assert chunks[0].text.endswith("| a | b |\n| --- | --- |")
