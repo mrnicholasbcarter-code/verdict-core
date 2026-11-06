@@ -343,6 +343,14 @@ echo secret material:
 - API keys are referenced by environment-variable name (`api_key_env`), never by
   value. This holds for exported environment values and credential-store values
   alike.
+- A diagnostic line reads
+  `<code> [<class>] field=<field> [source=<source>] - <detail>; remediation: <remediation>`.
+  The field is followed by ` - `, never by
+  `:` or `=`, because the field can be a credential name (`credential_env_missing`
+  names `OMNIROUTE_API_KEY`). `NAME: word` is how a real key is written, so
+  `verdict.security.redact_text` redacts it, and `scripts/check_dod.py` refuses a
+  raw output that the redactor would change. The CLI notes, `verdict serve`
+  startup lines and `describe_bootstrap_failure` all use this format.
 - A URL that carries `user:password@` userinfo is rendered as `***:***@host`
   everywhere: diagnostic details, `ProviderBinding.to_dict`,
   `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library

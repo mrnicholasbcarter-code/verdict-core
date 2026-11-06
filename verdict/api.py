@@ -880,12 +880,20 @@ async def lifespan(app: FastAPI) -> Any:
             f"url={lifecycle.get('gateway_url')} ready={lifecycle.get('ready')}",
             file=sys.stderr,
         )
+    from verdict.provider_bootstrap import BootstrapDiagnostic
+
     for entry in server_bootstrap_report.get("diagnostics", []):
-        print(
-            f"verdict serve: {entry['code']} [{entry['class']}] field={entry['field']}: "
-            f"{entry['detail']}; remediation: {entry['remediation']}",
-            file=sys.stderr,
-        )
+        # Rendered by the one diagnostic formatter, so a credential name in the
+        # field position is never followed by ": ". The serve line has never
+        # carried the source, so it is left out.
+        line = BootstrapDiagnostic(
+            code=entry["code"],
+            diagnostic_class=entry["class"],
+            field=entry["field"],
+            detail=entry["detail"],
+            remediation=entry["remediation"],
+        ).describe()
+        print(f"verdict serve: {line}", file=sys.stderr)
     intelligence_instance = _build_intelligence()
     gate_instance = Gate(
         primary_model=intelligence_instance.primary_model,

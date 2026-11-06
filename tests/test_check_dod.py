@@ -180,6 +180,24 @@ def test_unredacted_secret_in_raw_output_fails(repo: tuple[Path, dict[str, Any]]
     assert any("unredacted credential" in e for e in _check(root, evidence))
 
 
+def test_verdicts_own_missing_credential_note_is_not_a_credential(
+    repo: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
+    """A gate log that holds Verdict's credential_env_missing note holds no secret."""
+    from verdict.provider_bootstrap import resolve_provider_bootstrap
+
+    root, evidence = repo
+    result = resolve_provider_bootstrap(
+        env={"OMNIROUTE_BASE_URL": "http://127.0.0.1:20128"}, config_path=tmp_path / "absent.yaml"
+    )
+    notes = "".join(f"verdict: {note.describe()}\n" for note in result.notes())
+    assert "credential_env_missing" in notes
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "confirm.txt", f"{notes}drill: orphan module FAILED as intended\n"
+    )
+    assert _check(root, evidence) == []
+
+
 def test_repo_tooling_story_must_not_change_product_code(repo: tuple[Path, dict[str, Any]]) -> None:
     root, evidence = repo
     (root / "verdict").mkdir()

@@ -121,10 +121,17 @@ class BootstrapDiagnostic:
     fatal: bool = True
 
     def describe(self) -> str:
-        """Render a deterministic single-line description."""
+        """Render a deterministic single-line description.
+
+        The field label is followed by `` - ``, never by ``:`` or ``=``. A field
+        can be a credential name (``credential_env_missing`` names
+        ``OMNIROUTE_API_KEY``), and ``NAME: word`` is how a real key is written,
+        so ``verdict.security.redact_text`` would rewrite the first word of the
+        detail and the DoD credential scan would refuse a log with no secret in it.
+        """
         origin = f" source={self.source}" if self.source is not None else ""
         return (
-            f"{self.code} [{self.diagnostic_class}] field={self.field}{origin}: "
+            f"{self.code} [{self.diagnostic_class}] field={self.field}{origin} - "
             f"{self.detail}; remediation: {self.remediation}"
         )
 
