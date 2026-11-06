@@ -26,11 +26,15 @@ names it copied, so the listing can name the real source.
   The `connections` source is enabled only when a token resolves. A group- or
   world-readable store is ignored, as the resolver already does, and the path reads
   `health` only.
-- `get_credential_source` reports `store`, not `env`, for an environment value that
-  `load_into_env` copied in and the process has not changed since. It uses the existing
-  injection record, never value equality. An export made before the load, even one equal
-  to the stored value, is still `env`. This changes listing output for a stored value
-  read through the CLI entry: it now reads `store`.
+- `get_credential_source` reports `store`, not `env`, when the current environment
+  value equals the value `load_into_env` copied from the store in its latest load. It
+  uses the existing injection record (a digest of each copy), never a comparison with
+  the store's contents. An export made before the load, even one equal to the stored
+  value, is still `env`. This changes listing output for a stored value read through
+  the CLI entry: it now reads `store`.
+- Limitation, as in #959: the record cannot observe changes after the load. A value
+  that the process changes away and then sets back to the exact copied string reads as
+  `store`. No mutation tracking is added.
 
 ## Capabilities
 ### New Capabilities

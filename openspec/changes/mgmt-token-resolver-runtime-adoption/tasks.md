@@ -2,9 +2,9 @@
 
 Owned files: `verdict/subagent_models.py`, `verdict/worker_runtime.py`,
 `verdict/credentials_store.py` (`get_credential_source` only),
-`tests/test_runtime_management_token.py`, one added test in
-`tests/test_credentials_store.py`, one added assertion in `tests/test_cli_inprocess.py`,
-one table row in `docs/CONFIGURATION.md`, and this change.
+`tests/test_runtime_management_token.py`, two added tests in
+`tests/test_credentials_store.py`, one added test and one added assertion in
+`tests/test_cli_inprocess.py`, one table row in `docs/CONFIGURATION.md`, and this change.
 
 Every pytest run below used an isolated home and the shared venv:
 `H=$(mktemp -d); env -u OMNIROUTE_API_KEY -u VERDICT_OMNIROUTE_API_KEY -u OMNIROUTE_MANAGEMENT_TOKEN HOME=$H VERDICT_HOME=$H/state VERDICT_RECEIPTS_DB=:memory: VERDICT_LIVE_SMOKE=0 PYTHONPATH=$PWD OPENSPEC_BIN=<pinned openspec 1.13.2> .venv/bin/python -m pytest -q -p no:cacheprovider <tests>`.
@@ -33,23 +33,46 @@ Every pytest run below used an isolated home and the shared venv:
   `tests/test_credentials_store.py` and that test, both with
   `assert 'env' == 'store'`.
 - [x] 2.2 `get_credential_source` returns `store` when `injected_from_store` says the
-  environment value is the one the latest load copied in. After: 25 passed.
+  current environment value equals the value the latest load copied in. After: 25
+  passed.
 
-## 3. Verification (offline, fixtures only)
-- [x] 3.1 Related suites: every test file that imports either module
-  (`git grep -l "subagent_models\|worker_runtime" tests/`, 12 files), the new file,
-  `test_serve_management_token`, `test_doctor_management_token`,
+## 3. Review fixes (cross-family review of `c0ff835a`)
+- [x] 3.1 Narrowed provenance claim. The requirement, the proposal and the
+  `get_credential_source` docstring now say `store` means "the current value equals the
+  value `load_into_env` copied from the store in its latest load". They no longer say
+  "the process has not changed it". The limitation is stated: a value changed away and
+  set back to the exact copied string in the same process reads as `store`. No mutation
+  tracking is added.
+  `tests/test_credentials_store.py::test_limitation_value_changed_away_and_back_in_process_lists_as_store`
+  pins that case. It passed on its first run on the branch (1 passed), because it
+  documents existing behaviour. There is no red phase. Against the `efaacf38`
+  `verdict/credentials_store.py` it fails (`assert 'env' == 'store'`), only because that
+  version never reports `store` for an environment value.
+- [x] 3.2 Listing path end to end:
+  `tests/test_cli_inprocess.py::test_cli_credentials_list_names_store_copies_and_exports_without_values`
+  runs `verdict credentials list --json` and text mode through `cli.main`. The store-only
+  `OMNIROUTE_MANAGEMENT_TOKEN`, which `cli.main` copies in, lists as `store`/`STORE`.
+  `GEMINI_API_KEY`, exported with a value equal to its stored one, lists as
+  `env`/`ENV`. Neither value appears in either output. Red against `efaacf38`
+  behaviour: with `verdict/credentials_store.py` temporarily restored from `efaacf38`
+  (`git show efaacf38:verdict/credentials_store.py`), this test and the 3.1 test failed:
+  2 failed, both `assert 'env' == 'store'`. With the branch's file restored: 2 passed.
+
+## 4. Verification (offline, fixtures only)
+- [x] 4.1 Related suites: every test file that imports either module
+  (`git grep -l "subagent_models\|worker_runtime" tests/`, 13 files including the new
+  one), `test_serve_management_token`, `test_doctor_management_token`,
   `test_credentials_store`, `test_credentials_masking`, `test_cli_inprocess`, and the
   `get_credential_source` callers' suites `test_actions_json_golden`,
   `test_actions_entrypoint_parity`, `test_actions_f2_parity`, `test_actions_parity`
-  and `test_actions_dispatch_b`: 23 files, 567 passed.
-- [x] 3.2 `ruff check .` and `ruff format --check .` pass.
+  and `test_actions_dispatch_b`: 23 files, 569 passed.
+- [x] 4.2 `ruff check .` and `ruff format --check .` pass.
   `mypy verdict --strict` reports no issues in 326 source files.
   `bandit -r verdict -ll -q` exits 0 with no issues.
   `scripts/check_reachability.py --ratchet-base origin/main` reports 0 new findings and
-  0 new orphan modules. `scripts/check_doc_links.py` passes (444 files).
+  0 new orphan modules. `scripts/check_doc_links.py` passes (447 files).
   `git diff --check` is clean.
-- [x] 3.3 `openspec validate mgmt-token-resolver-runtime-adoption --strict` with the
+- [x] 4.3 `openspec validate mgmt-token-resolver-runtime-adoption --strict` with the
   pinned OpenSpec 1.13.2 CLI: valid.
 
 Post-merge acceptance is not a ticked task. From installed merged main, on the operator

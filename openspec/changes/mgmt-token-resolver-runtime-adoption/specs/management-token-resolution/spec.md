@@ -45,23 +45,38 @@ otherwise.
 
 ### Requirement: Credential listings report recorded provenance
 The doctor "Credentials" list and `verdict credentials list` MUST report `store` for
-an environment value that the credential store's environment load copied in, when the
-process has not changed that value since. They MUST report `env` for every other
-non-blank environment value, including one exported before the load that equals the
-stored value. Provenance MUST come from the load's injection record and MUST NOT be
-derived from comparing the environment value with the stored value. The listing MUST
-NOT contain the value.
+a name whose current environment value equals the value that the credential store's
+environment load copied in for that name in its latest load. They MUST report `env`
+for every other non-blank environment value. That includes a value exported before the
+load that equals the stored value, because the load does not copy a name that is
+already set. Provenance MUST come from the load's injection record, which holds a
+digest of each copied value and never the value. It MUST NOT be derived from comparing
+the environment value with the credential store's contents. The listing MUST NOT
+contain the value. Limitation: the record cannot observe changes between the load and
+the listing. A value that the process changes away and then sets back to the exact
+copied string in the same process cannot be told apart from the copy, and it is
+reported as `store`.
 
 #### Scenario: Value copied from the store by the CLI entry
 - **WHEN** the CLI entry copied a stored credential into the environment, and doctor or
   `verdict credentials list` lists it
-- **THEN** its source is `store`, and the output does not contain the value
+- **THEN** its source is `store`, in `--json` and text output, and the output does not
+  contain the value
 - **TEST** `tests/test_credentials_store.py::test_get_credential_source_names_a_value_load_into_env_copied_as_the_store`,
+  `tests/test_cli_inprocess.py::test_cli_credentials_list_names_store_copies_and_exports_without_values`,
   `tests/test_cli_inprocess.py::test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the_value`
 
-#### Scenario: Value changed or exported by the process
-- **WHEN** the process overwrites the copied value, or exported a value before the load
-  (even one equal to the stored value)
-- **THEN** its source is `env`
+#### Scenario: Value that differs from the copy, or was exported before the load
+- **WHEN** the current value differs from the value the latest load copied, or the name
+  was exported before the load (even with a value equal to the stored one)
+- **THEN** its source is `env`, and the output does not contain the value
 - **TEST** `tests/test_credentials_store.py::test_get_credential_source_names_a_value_load_into_env_copied_as_the_store`,
+  `tests/test_cli_inprocess.py::test_cli_credentials_list_names_store_copies_and_exports_without_values`,
   `tests/test_credentials_store.py::test_get_credential_source_from_env`
+
+#### Scenario: Value changed away and set back in process is indistinguishable (limitation)
+- **WHEN** the process changes the copied value and later sets it back to the exact
+  copied string
+- **THEN** its source is reported as `store`. This is a documented limitation, not a
+  guarantee.
+- **TEST** `tests/test_credentials_store.py::test_limitation_value_changed_away_and_back_in_process_lists_as_store`
