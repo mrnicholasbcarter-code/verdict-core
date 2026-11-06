@@ -1125,11 +1125,20 @@ def installed_service_rows(
 
 
 def _prime_sync_timer_repair(state: str) -> str:
+    """The prime-sync timer has no Verdict installer: name the documented install.
+
+    Missing: copy the checkout's ``deploy/systemd`` units, reload and enable (the
+    steps in docs/guides/harnesses.md). Inactive: enable. Failed: re-run the sync.
+    """
+    from verdict.ocr_release import package_root
+
     unit = "verdict-prime-sync.timer"
     if state == "missing":
         return (
-            "; copy deploy/systemd/verdict-prime-sync.{service,timer} to ~/.config/systemd/user "
-            f"(docs/guides/harnesses.md), then repair: systemctl --user enable --now {unit}"
+            f"; repair: cp {package_root()}/deploy/systemd/verdict-prime-sync.{{service,timer}} "
+            f"~/.config/systemd/user/ && systemctl --user daemon-reload && "
+            f"systemctl --user enable --now {unit}; then check VERDICT_CHECKOUT and "
+            "WorkingDirectory (docs/guides/harnesses.md)"
         )
     if state == "inactive":
         return f"; repair: systemctl --user enable --now {unit}"

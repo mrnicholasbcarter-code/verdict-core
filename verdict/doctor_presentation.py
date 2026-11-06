@@ -29,7 +29,7 @@ PROBLEM_STATES = frozenset(
 
 
 #: A row that names its own repair (``...; repair: <command>``) gets exactly that command.
-_EXPLICIT_REPAIR = re.compile(r"\brepair: ((?:verdict|systemctl|journalctl|export) [^;]+)")
+_EXPLICIT_REPAIR = re.compile(r"\brepair: ((?:verdict|systemctl|journalctl|export|cp) [^;]+)")
 
 
 def repair_command(finding: str) -> str:

@@ -212,3 +212,34 @@ def test_explicit_repair_wins_over_keyword_guesses() -> None:
     finding += "repair: verdict setup --apply --allow host.prime-registry"
     assert repair_command(finding) == "verdict setup --apply --allow host.prime-registry"
     assert repair_command("Gateway unreachable") == "verdict detect"
+
+
+def test_a_health_probe_exception_is_a_failed_row(host: FakeHost) -> None:
+    host.active.add("verdict-serve.service")
+    host.serve_up = TimeoutError("probe hung")
+    row = _rows(host)["Verdict serve health"]
+    assert row["status"] == "failed" and "TimeoutError" in row["detail"]
+    assert repair_command(row["detail"]) == "systemctl --user restart verdict-serve.service"
+
+
+def test_a_missing_prime_sync_timer_names_the_documented_install() -> None:
+    from verdict.ocr_release import package_root
+
+    command = (
+        f"cp {package_root()}/deploy/systemd/verdict-prime-sync.{{service,timer}} "
+        "~/.config/systemd/user/ && systemctl --user daemon-reload && "
+        "systemctl --user enable --now verdict-prime-sync.timer"
+    )
+    assert dd._prime_sync_timer_repair("missing") == (
+        f"; repair: {command}; then check VERDICT_CHECKOUT and WorkingDirectory "
+        "(docs/guides/harnesses.md)"
+    )
+    assert repair_command("Prime-sync timer failed x" + dd._prime_sync_timer_repair("missing")) == (
+        command
+    )
+    assert dd._prime_sync_timer_repair("inactive") == (
+        "; repair: systemctl --user enable --now verdict-prime-sync.timer"
+    )
+    assert repair_command(dd._prime_sync_timer_repair("failed")) == (
+        "verdict harness prime sync-models"
+    )
