@@ -485,9 +485,10 @@ def sync(
     tags = ["upstream-reference", _slug(repo.rsplit("/", 1)[-1]), tag]
     wanted = select_paths(tree, only)
     for path in sorted(set(files) - set(wanted)):
-        old = files.pop(path)
+        old = files[path]
         for page_path in old["pages"]:
             store.delete(page_path)
+        del files[path]
         report.files.append(FileResult(path, "deleted", pages_deleted=len(old["pages"])))
         save_manifest(manifest)
     for path, sha in sorted(wanted.items()):
@@ -581,7 +582,9 @@ class DryRunStore:
 
 
 def _gh(args: list[str]) -> str:
-    done = subprocess.run(["gh", "api", *args], capture_output=True, text=True, check=True)
+    done = subprocess.run(
+        ["gh", "api", *args], capture_output=True, text=True, check=True, timeout=120
+    )
     return done.stdout
 
 

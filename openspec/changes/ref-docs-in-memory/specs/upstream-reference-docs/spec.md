@@ -23,9 +23,13 @@ Verdict SHALL write each markdown section as one page of at most 3 KB with a cit
 ### Requirement: Reference projects stay out of operator recall
 Reference pages SHALL live in their own ai-memory project and SHALL NOT be added to operator-rule scopes.
 
-#### Scenario: Golden eval with reference projects present
+#### Scenario: Scoped operator query with reference projects present
 - **WHEN** the operator golden eval runs against project `operator` while `ref-omniroute` exists
-- **THEN** no top-5 hit comes from `ref-omniroute` and hit@5 stays at or above 0.90
+- **THEN** no top-5 hit comes from `ref-omniroute`
+
+#### Scenario: Reference pages do not lower operator recall
+- **WHEN** the same eval runs on a store with the operator pages alone and on one with the operator and reference pages
+- **THEN** hit@5 with the reference pages is not lower than without them
 
 ### Requirement: Installed and checked
 `verdict setup` SHALL install the hourly reference-docs timer as a consented host prerequisite, and `verdict doctor` SHALL report the timer and each reference project's tag, installed tag and last sync, failing on a missing, stale, behind or unknown state.

@@ -116,6 +116,22 @@ def test_example_secrets_are_redacted() -> None:
     assert "a3ab3c080beaee3a" not in out
     assert "abcdefghijklmnop" not in out
     assert redact("Bearer $OMNIROUTE_API_KEY") == "Bearer $OMNIROUTE_API_KEY"
+    assert redact("Bearer <your-key-here-0123456789>") == "Bearer <your-key-here-0123456789>"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "ghp_" + "A" * 36,
+        "github_pat_" + "B" * 40,
+        "AIza" + "C" * 35,
+        "xoxb-" + "1234567890-abcdef",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sflKxwRJSMeKKF2QT4fwpM",
+        "oma_live_" + "D" * 24,
+    ],
+)
+def test_each_token_shape_is_redacted(secret: str) -> None:
+    assert secret[6:20] not in redact(f"token {secret} here")
 
 
 def test_openapi_becomes_one_group_per_tag() -> None:
@@ -191,7 +207,14 @@ def test_unchanged_blob_sha_writes_zero_pages_and_change_rewrites_only_that_file
     store.writes = 0
     again = _run(tree, blobs, store, manifest)
     assert store.writes == 0
-    assert again.totals() == {**again.totals(), "pages_written": 0, "files_unchanged": 2}
+    assert again.totals() == {
+        "files": 2,
+        "files_written": 0,
+        "files_unchanged": 2,
+        "files_deleted": 0,
+        "pages_written": 0,
+        "pages_deleted": 0,
+    }
 
     blobs["s3"] = "# A\n\n## One\n\nchanged\n"
     tree[0] = {"path": "docs/a.md", "type": "blob", "sha": "s3"}
@@ -214,6 +237,79 @@ def test_removed_file_deletes_its_pages() -> None:
     assert report.totals()["files_deleted"] == 1
     assert set(store.pages) == {"docs/b/part-001-only.md"}
     assert "docs/a.md" not in manifest["files"]
+
+
+class FlakyStore(FakeStore):
+    """Deletes one page, then fails, like a crash in the middle of a removal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_after: int | None = None
+
+    def delete(self, path: str) -> None:
+        if self.fail_after is not None and len(self.deletes) >= self.fail_after:
+            raise RuntimeError("crash")
+        super().delete(path)
+
+
+def test_a_removal_that_crashes_is_retried_in_full_on_the_next_run() -> None:
+    blobs = {"s1": "# A\n\n## One\n\nx\n\n## Two\n\ny\n", "s2": "# B\n\n## Only\n\nz\n"}
+    tree = [
+        {"path": "docs/a.md", "type": "blob", "sha": "s1"},
+        {"path": "docs/b.md", "type": "blob", "sha": "s2"},
+    ]
+    store = FlakyStore()
+    manifest: dict[str, Any] = {}
+    saved: list[dict[str, Any]] = []
+
+    def run() -> SyncReport:
+        return sync(
+            repo=REPO,
+            tag=TAG,
+            project="ref-tool",
+            tree=tree[1:],
+            fetch_blob=blobs.__getitem__,
+            store=store,
+            manifest=manifest,
+            save_manifest=lambda m: saved.append(json.loads(json.dumps(m))),
+        )
+
+    _run(tree, blobs, store, manifest)
+    store.fail_after = 1
+    with pytest.raises(RuntimeError):
+        run()
+    assert "docs/a.md" in manifest["files"]
+    store.fail_after = None
+    report = run()
+    assert report.totals()["files_deleted"] == 1
+    assert set(store.pages) == {"docs/b/part-001-only.md"}
+    assert "docs/a.md" not in saved[-1]["files"]
+
+
+def test_a_render_format_bump_rewrites_unchanged_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    tree = [{"path": "docs/a.md", "type": "blob", "sha": "s1"}]
+    blobs = {"s1": "# A\n\n## One\n\nx\n"}
+    store = FakeStore()
+    manifest: dict[str, Any] = {}
+    _run(tree, blobs, store, manifest)
+    monkeypatch.setattr(ref_docs, "FORMAT_VERSION", ref_docs.FORMAT_VERSION + 1)
+    assert _run(tree, blobs, store, manifest).totals()["files_written"] == 1
+
+
+def test_a_truncated_tree_is_refused_before_any_write(tmp_path: Path) -> None:
+    def gh(args: list[str]) -> str:
+        return json.dumps({"tree": [], "truncated": True})
+
+    with pytest.raises(ref_docs.RefDocsError, match="truncated"):
+        ref_docs.run_sync(
+            ref_docs.SOURCES["omniroute"],
+            tag="v1.0.0",
+            gh=gh,
+            token="t",
+            endpoint="http://127.0.0.1:9",
+            home=tmp_path,
+        )
+    assert not ref_docs.manifest_path(ref_docs.SOURCES["omniroute"], home=tmp_path).exists()
 
 
 def test_tag_follows_installed_package(tmp_path: Path) -> None:

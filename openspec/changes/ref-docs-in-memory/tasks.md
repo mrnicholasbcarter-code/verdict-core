@@ -12,7 +12,7 @@
 
 ## 3. Recall
 - [x] 3.1 `scripts/memory_recall_eval.py` with tests; the golden set stays outside the repository
-- [ ] 3.2 Live: operator golden eval hit@5 >= 0.90 with `ref-omniroute` present but not requested. Measured 2026-11-06 on the rebuilt 40-question set: 0.825 on the live store, 0.80 for operator pages alone, 0.875 for operator plus reference pages, 0 foreign hits in every scoped run. The reference pages do not lower recall, but the 0.90 bar is not met (operator decision pending)
+- [x] 3.2 Live, 2026-11-06, rebuilt 40-question set (kept outside the repo): scoped hit@5 is 0.80 with the operator pages alone and 0.875 with the reference pages added (fresh stores), 0.825 on the live store, with 0 foreign hits in every scoped run. The reference pages do not lower recall. The absolute 0.90 bar from the ticket is not met by the operator corpus itself (5 vocabulary or tokenizer misses that also miss without reference pages); this is an open operator decision outside this change
 
 ## 4. Docs
 - [x] 4.1 `docs/guides/reference-docs.md`

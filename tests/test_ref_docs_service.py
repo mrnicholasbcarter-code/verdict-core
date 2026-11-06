@@ -99,3 +99,8 @@ def test_cli_dry_run_prints_the_plan_and_writes_nothing(
     assert report["dry_run"] is True and set(report["files"]) == {SERVICE, TIMER}
     assert report["unit_dir"] == str(tmp_path / "systemd" / "user")
     assert not (tmp_path / "systemd").exists()
+
+
+def test_the_suite_never_lets_the_installer_reach_real_systemctl(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match="real systemctl"):
+        manage_service(unit_dir=tmp_path)

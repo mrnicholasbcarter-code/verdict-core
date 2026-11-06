@@ -11,7 +11,8 @@ version that actually runs. Today this covers OmniRoute (project `ref-omniroute`
   section (at most 3 KB) into the tool's project. `docs/openapi.yaml` becomes one page group per
   API tag. Every page ends with a citation: repo, tag, path, blob sha, part and url.
 - A manifest at `$VERDICT_HOME/ref-docs/<workspace>--<project>.json` stores each file's blob sha
-  and pages. A file is rewritten only when its sha changes; pages of removed files are deleted.
+  and pages. A file is rewritten only when its sha or the render format version
+  changes; pages of removed files are deleted.
   A run with no upstream change writes 0 pages.
 - `verdict-ref-docs.timer` runs the sync hourly at low priority. `verdict setup` installs it as
   host prerequisite `host.ref-docs-timer`; `verdict memory ref-docs install-service` does the
