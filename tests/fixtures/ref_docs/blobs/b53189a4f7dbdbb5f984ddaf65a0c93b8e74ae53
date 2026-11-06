@@ -1,0 +1,19 @@
+---
+title: Widget guide
+---
+# Widget guide
+
+Widget routes requests to upstream providers.
+
+## Install
+
+Run `npm install -g widget` and start the service.
+
+## Configure
+
+Set `WIDGET_API_KEY` in the environment. An example key looks like
+sk-FIXTUREONLY0123456789abcd and must never be committed.
+
+## Legacy mode
+
+Legacy mode is deprecated and will be removed.
