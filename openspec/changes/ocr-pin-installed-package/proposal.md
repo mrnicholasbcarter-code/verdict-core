@@ -66,17 +66,16 @@ either.
   `tests/test_wheel_contents.py`, `tests/test_certification_rehearsal_workflow.py`.
 - Docs: `docs/CLI_REFERENCE.md` (pin source; the unreadable-pin warning is gone).
 - The requirement being modified is added by the active change
-  `bod219-setup-host-prerequisites`, which must be archived first. Its scenario
-  anchor `tests/test_ocr_release.py::test_pin_is_read_from_the_real_rehearsal_workflow`
-  is replaced by `::test_pin_is_the_package_constants` in this delta.
+  `bod219-setup-host-prerequisites`, which must be archived first. This change
+  renames the test that requirement cites to
+  `tests/test_ocr_release.py::test_pin_is_the_package_constants`, and updates
+  the anchor in that change's spec delta. That delta's requirement text still
+  names the workflow as the source until this MODIFIED delta replaces it at
+  archive.
 - Not changed: `package_root()` still builds the doctor repair for a missing
   prime-sync timer (`cp <package_root>/deploy/systemd/...`). In an installed
   package that path does not exist either. That is a separate defect and is not
   fixed here.
-- Not claimed, and left for the DoD evidence after merge:
-  - Install merged main non-editable on the operator host and run
-    `verdict doctor`. The ocr row must be `ok`, or `failed` with the pinned
-    version, and never `cannot verify ocr`. With ocr missing, `verdict setup`
-    must plan `host.ocr`.
-  - Run `certify-rehearsal.yml` on main. It must install the reviewer from the
-    package pin, and `sha256sum --check --strict` must pass.
+- Pending: live acceptance on the operator host and a GitHub run of
+  `certify-rehearsal.yml` are unticked tasks 3.1 and 3.2 in `tasks.md`. Both
+  need merged main.

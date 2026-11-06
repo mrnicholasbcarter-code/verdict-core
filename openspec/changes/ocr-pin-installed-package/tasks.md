@@ -2,7 +2,9 @@
 
 Owned files: `verdict/ocr_release.py`, `verdict/setup_host.py`,
 `scripts/check_dev_readiness.py`, `.github/workflows/certify-rehearsal.yml`,
-`docs/CLI_REFERENCE.md`; `tests/test_ocr_release.py`, `tests/test_setup_host.py`,
+`docs/CLI_REFERENCE.md`, `CONTRIBUTING.md`, the test anchor in
+`openspec/changes/bod219-setup-host-prerequisites/specs/setup-host-prerequisites/spec.md`;
+`tests/test_ocr_release.py`, `tests/test_setup_host.py`,
 `tests/test_doctor_host_prerequisites.py`, `tests/test_check_dev_readiness.py`,
 `tests/test_wheel_contents.py`, `tests/test_certification_rehearsal_workflow.py`;
 this change.
@@ -47,5 +49,15 @@ this change.
   extracted wheel returned the pin from `<tmp>/site/verdict/ocr_release.py`. The
   build output was removed.
 
-Live acceptance is not a task here. It is listed under "Not claimed" in
-`proposal.md` and belongs in the story's DoD evidence file.
+## 3. Live acceptance (pending; needs merged main)
+AGENTS.md "Definition of done" part 1 requires both checks. Neither can run
+before merge: the first needs an installed build of merged main, and the
+`rehearse` job runs only when `github.ref == 'refs/heads/main'`. Nothing below
+has run.
+- [ ] 3.1 Install merged main non-editable on the operator host and run
+  `verdict doctor`. The ocr row must be `ok`, or `failed` with the pinned
+  version, and never `cannot verify ocr`. With ocr missing, `verdict setup`
+  must plan `host.ocr`. Record the date, SHA, command and raw output.
+- [ ] 3.2 Dispatch `certify-rehearsal.yml` on main. The new step must export the
+  package pin, and `sha256sum --check --strict` must pass in the reviewer
+  install step. Record the run URL.
