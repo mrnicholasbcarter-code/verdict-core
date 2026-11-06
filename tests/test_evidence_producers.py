@@ -24,6 +24,9 @@ import pytest
 SCRIPTS = Path("scripts")
 CONTRACTS_DIST = Path("contracts/dist")
 TS_SNAPSHOT = Path("tests/fixtures/ts_schemas_snapshot.json")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Trees that tests/test_prime_dispatch_gate.py rglob-reads (*.py) while other xdist workers run.
+SCANNED_TREES = ("verdict", "scripts", ".prime")
 
 # Integration tests that need a real node build are skipped in CI unless dist exists
 DIST_BUILT = CONTRACTS_DIST.exists() and (CONTRACTS_DIST / "index.js").exists()
@@ -38,6 +41,92 @@ def _load_snapshot() -> dict:
     """Load the committed TS schemas snapshot."""
     with TS_SNAPSHOT.open() as fh:
         return json.load(fh)
+
+
+def _scanned_python_files() -> set[str]:
+    """The *.py files the dispatch-gate scanner would list right now."""
+    return {str(p) for top in SCANNED_TREES for p in (REPO_ROOT / top).rglob("*.py")}
+
+
+# Executes argv[1] (mutant source) as __main__ of argv[2] (the real script path).
+_MUTANT_LAUNCHER = """\
+import os, sys, types
+mutant, script, *argv = sys.argv[1:]
+launcher = sys.modules["__main__"]  # keep the -c module alive while it is replaced
+main = types.ModuleType("__main__")
+main.__file__ = script
+sys.modules["__main__"] = main
+sys.argv = [script, *argv]
+sys.path[0] = os.path.dirname(script)
+with open(mutant, encoding="utf-8") as fh:
+    code = compile(fh.read(), mutant, "exec")
+exec(code, main.__dict__)
+"""
+
+
+def _run_mutant(
+    script: Path, source: str, tmp_path: Path, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Run ``source`` (a mutated copy of ``script``) like ``python <script> <args>``.
+
+    The producers find the repository from ``Path(__file__).parent.parent`` (for
+    ``sys.path`` and the TS snapshot), so the mutant keeps the real script's
+    ``__file__``, ``sys.path[0]`` and ``argv[0]`` and runs from the repo root, but
+    its source lives in ``tmp_path``: nothing is written into the repository.
+    """
+    mutant = tmp_path / "mutants" / script.name
+    mutant.parent.mkdir(parents=True, exist_ok=True)
+    mutant.write_text(source, encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, "-c", _MUTANT_LAUNCHER, str(mutant), str(REPO_ROOT / script), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+
+
+class TestMutantRunner:
+    """Mutation proofs must not write into the repository tree (PR #958 xdist race)."""
+
+    def test_mutant_is_never_stored_in_the_repository(self, tmp_path: Path) -> None:
+        """While a mutant runs, the dispatch-gate scanner's view of the tree is unchanged.
+
+        A mutant stored under scripts/ is listed by the scanner's rglob and can be
+        deleted before the scanner reads it: FileNotFoundError on another worker.
+        """
+        script = SCRIPTS / "produce_parity_evidence.py"
+        before = _scanned_python_files()
+        probe = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"root = Path({str(REPO_ROOT)!r})\n"
+            f"tops = {SCANNED_TREES!r}\n"
+            "print(json.dumps({\n"
+            "    'code': sys._getframe().f_code.co_filename,\n"
+            "    'file': __file__,\n"
+            "    'path0': sys.path[0],\n"
+            "    'name': __name__,\n"
+            "    'scanned': sorted(str(p) for t in tops for p in (root / t).rglob('*.py')),\n"
+            "}))\n"
+        )
+        r = _run_mutant(script, probe, tmp_path)
+        assert r.returncode == 0, r.stderr
+        seen = json.loads(r.stdout)
+        assert not Path(seen["code"]).resolve().is_relative_to(REPO_ROOT), seen["code"]
+        assert set(seen["scanned"]) - before == set()
+        # Same path resolution as the real script: Path(__file__).parent.parent is the repo.
+        assert seen["file"] == str(REPO_ROOT / script)
+        assert seen["path0"] == str(REPO_ROOT / SCRIPTS)
+        assert seen["name"] == "__main__"
+
+    def test_unmutated_producer_passes_through_the_runner(self, tmp_path: Path) -> None:
+        """Control: the runner alone does not make a producer fail, so mutants fail on merit."""
+        script = SCRIPTS / "produce_assignment_log_evidence.py"
+        ev = tmp_path / "evidence"
+        r = _run_mutant(script, script.read_text(), tmp_path, "--evidence-dir", str(ev))
+        assert r.returncode == 0, f"{r.stderr}\n{r.stdout}"
+        assert r.stdout.strip().splitlines()[-1] == "RESULT: PASS"
+        assert (ev / "assignment_log_sample.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -166,23 +255,12 @@ class TestG42ParityMatrix:
 
         ev = tmp_path / "evidence"
         ev.mkdir()
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, dir=SCRIPTS) as f:
-            f.write(patched)
-            tmp_script = Path(f.name)
-        try:
-            r = subprocess.run(
-                [sys.executable, str(tmp_script), "--evidence-dir", str(ev)],
-                capture_output=True,
-                text=True,
-                cwd=str(Path(__file__).parent.parent),
-            )
-            assert r.returncode == 1, (
-                f"Producer must exit 1 on mismatch, got {r.returncode}\n{r.stdout}"
-            )
-            out = r.stdout + r.stderr
-            assert "RESULT: FAIL" in out
-        finally:
-            tmp_script.unlink(missing_ok=True)
+        r = _run_mutant(script, patched, tmp_path, "--evidence-dir", str(ev))
+        assert r.returncode == 1, (
+            f"Producer must exit 1 on mismatch, got {r.returncode}\n{r.stdout}"
+        )
+        out = r.stdout + r.stderr
+        assert "RESULT: FAIL" in out
 
     def test_last_stdout_line_is_result(self, tmp_path: Path) -> None:
         """G4.2: last stdout line starts with RESULT: when run via subprocess (with dist)."""
@@ -435,7 +513,7 @@ def test_g61_last_line_result(tmp_path: Path) -> None:
     assert lines[-1] == "RESULT: PASS"
 
 
-def test_g61_fail_when_field_missing() -> None:
+def test_g61_fail_when_field_missing(tmp_path: Path) -> None:
     """G6.1 mutation proof: producer fails when a required field is absent from the log record."""
     script = SCRIPTS / "produce_assignment_log_evidence.py"
     original = script.read_text()
@@ -446,21 +524,8 @@ def test_g61_fail_when_field_missing() -> None:
     )
     assert patched != original, "Mutation not applied"
 
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, dir=SCRIPTS) as f:
-        f.write(patched)
-        tmp_script = Path(f.name)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            r = subprocess.run(
-                [sys.executable, str(tmp_script), "--evidence-dir", tmpdir],
-                capture_output=True,
-                text=True,
-                cwd=str(Path(__file__).parent.parent),
-            )
-            assert r.returncode != 0, "Should fail when required field is absent from real record"
-        finally:
-            tmp_script.unlink(missing_ok=True)
+    r = _run_mutant(script, patched, tmp_path, "--evidence-dir", str(tmp_path / "evidence"))
+    assert r.returncode != 0, "Should fail when required field is absent from real record"
 
 
 def test_g61_real_routing_not_mocked() -> None:
@@ -652,7 +717,7 @@ def test_g73_coverage_claim_from_ci_yml(tmp_path: Path) -> None:
             )
 
 
-def test_g73_fail_when_subcommand_unknown() -> None:
+def test_g73_fail_when_subcommand_unknown(tmp_path: Path) -> None:
     """G7.3 mutation proof: RESULT: FAIL when an unknown subcommand appears in README."""
     script = SCRIPTS / "produce_readme_verification.py"
     original = script.read_text()
@@ -663,19 +728,6 @@ def test_g73_fail_when_subcommand_unknown() -> None:
     )
     assert patched != original, "Mutation not applied"
 
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, dir=SCRIPTS) as f:
-        f.write(patched)
-        tmp_script = Path(f.name)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            r = subprocess.run(
-                [sys.executable, str(tmp_script), "--evidence-dir", tmpdir],
-                capture_output=True,
-                text=True,
-                cwd=str(Path(__file__).parent.parent),
-            )
-            assert r.returncode != 0, "Should fail when unknown subcommand is in README"
-            assert "RESULT: FAIL" in r.stdout or "RESULT: FAIL" in r.stderr
-        finally:
-            tmp_script.unlink(missing_ok=True)
+    r = _run_mutant(script, patched, tmp_path, "--evidence-dir", str(tmp_path / "evidence"))
+    assert r.returncode != 0, "Should fail when unknown subcommand is in README"
+    assert "RESULT: FAIL" in r.stdout or "RESULT: FAIL" in r.stderr
