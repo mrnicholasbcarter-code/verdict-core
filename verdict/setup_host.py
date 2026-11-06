@@ -152,6 +152,14 @@ def _inspect_ocr(env: HostEnvironment) -> ocr_release.OcrInspection:
     )
 
 
+def _probe_serve(env: HostEnvironment) -> tuple[bool, str]:
+    """``(healthy, reason)``; a probe that raises is unhealthy, never unknown-as-ok."""
+    try:
+        return bool(env.serve_health()), ""
+    except Exception as exc:
+        return False, f" ({type(exc).__name__})"
+
+
 def _inactive(env: HostEnvironment, *units: str) -> list[str]:
     return [
         f"{unit} is {env.unit_state(unit).get('state', 'unknown')}"
@@ -196,9 +204,17 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     if provider_id == SERVE:
         from verdict import serve_service
 
-        return serve_service.install_problems(unit_dir=env.unit_dir, home=env.home) + _inactive(
-            env, serve_service.SERVICE
-        )
+        problems = serve_service.install_problems(unit_dir=env.unit_dir, home=env.home)
+        inactive = _inactive(env, serve_service.SERVICE)
+        if not inactive:
+            # Active is not healthy: an unanswered or failed probe plans the restart.
+            healthy, why = _probe_serve(env)
+            if not healthy:
+                problems.append(
+                    f"{serve_service.HEALTH_URL} did not answer{why}; "
+                    f"setup restarts {serve_service.SERVICE}"
+                )
+        return problems + inactive
     from verdict.harness_prime import resolve_paths
 
     models = resolve_paths(prime_home=env.prime_home).models
@@ -361,18 +377,34 @@ def _install_metadata(env: HostEnvironment) -> dict[str, Any]:
 def _install_serve(env: HostEnvironment) -> dict[str, Any]:
     from verdict import serve_service
 
+    service = serve_service.SERVICE
     result = serve_service.manage_service(unit_dir=env.unit_dir, home=env.home, run=env.systemctl)
     keep = ("plan", "env_file", "env_file_plan", "env_keys", "token_source", "token_stored")
+    facts = {key: result[key] for key in keep}
+    restarted = False
+    if not result["changed"] and not _probe_serve(env)[0]:
+        # Unchanged files mean the installer started nothing new: restart it.
+        env.systemctl(["systemctl", "--user", "restart", service])
+        restarted = True
+    if not _wait_for_serve(env):
+        return _failed(
+            f"{service} is enabled but {serve_service.HEALTH_URL} did not answer; "
+            f"repair: systemctl --user restart {service}; logs: journalctl --user -u {service}",
+            restarted=restarted,
+            **facts,
+        )
+    action = "restarted" if restarted else "enabled"
     return {
         "status": "applied",
-        "note": f"{serve_service.SERVICE} enabled; token source {result['token_source']}",
-        **{key: result[key] for key in keep},
+        "note": f"{service} {action} and healthy; token source {result['token_source']}",
+        "restarted": restarted,
+        **facts,
     }
 
 
 def _wait_for_serve(env: HostEnvironment) -> bool:
     for attempt in range(SERVE_HEALTH_ATTEMPTS):
-        if env.serve_health():
+        if _probe_serve(env)[0]:
             return True
         if attempt + 1 < SERVE_HEALTH_ATTEMPTS:
             env.sleep(1.0)
@@ -473,13 +505,14 @@ def _serve_rows(env: HostEnvironment) -> list[dict[str, str]]:
                 f"{SERVICE} is {state}; repair: systemctl --user enable --now {SERVICE}; {logs}",
             )
         ]
-    if env.serve_health():
+    healthy, why = _probe_serve(env)
+    if healthy:
         health = _row("Verdict serve health", "ok", f"{HEALTH_URL} answers")
     else:
         health = _row(
             "Verdict serve health",
             "failed",
-            f"{HEALTH_URL} did not answer; repair: systemctl --user restart {SERVICE}; {logs}",
+            f"{HEALTH_URL} did not answer{why}; repair: systemctl --user restart {SERVICE}; {logs}",
         )
     return [_row(label, "ok", f"{SERVICE} is active"), health]
 

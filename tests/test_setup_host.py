@@ -68,7 +68,8 @@ class FakeHost:
         self.refreshes = 0
         self.syncs: list[str] = []
         self.asset = ASSET
-        self.serve_up = True
+        self.serve_up: bool | BaseException = True
+        self.restart_heals = True
         self.env = setup_host.HostEnvironment(
             home=self.home,
             unit_dir=self.unit_dir,
@@ -82,7 +83,7 @@ class FakeHost:
             fetch=self.fetch,
             metadata_refresh=self.refresh,
             prime_sync=self.sync,
-            serve_health=lambda: self.serve_up,
+            serve_health=self.health,
             sleep=lambda seconds: None,
         )
 
@@ -106,6 +107,13 @@ class FakeHost:
         self.systemctl_calls.append(list(args))
         if args[2:4] == ["enable", "--now"]:
             self.active.update(args[4:])
+        if args[2:3] == ["restart"] and self.restart_heals:
+            self.serve_up = True
+
+    def health(self) -> bool:
+        if isinstance(self.serve_up, BaseException):
+            raise self.serve_up
+        return bool(self.serve_up)
 
     def fetch(self, url: str) -> bytes:
         self.fetches.append(url)
@@ -384,18 +392,50 @@ def cli_host(host: FakeHost, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     return host
 
 
+CLASSIC_PLANS = (
+    ["setup", "--dry-run"],
+    ["setup", "--dry-run", "--json"],
+    ["setup", "--dry-run", "--non-interactive", "--json"],
+    ["setup", "--plan"],
+    ["setup", "--plan", "--json"],
+    ["setup", "plan"],
+    ["setup", "plan", "--json"],
+)
+
+
+@pytest.mark.parametrize("argv", CLASSIC_PLANS, ids=" ".join)
 def test_classic_dry_run_and_plan_never_probe_the_host(
-    host: FakeHost, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
 ) -> None:
+    """The classic preview never builds a host environment or observes the host."""
+    import sys
+
+    import verdict.prove_at_rest_service as prove_at_rest_service
     from verdict import cli
 
-    def refuse(cls: type) -> setup_host.HostEnvironment:
-        raise AssertionError("the classic setup plan must not probe host prerequisites")
+    def refuse(*args: object, **kwargs: object) -> Any:
+        raise AssertionError(f"classic setup plan probed the host: {args!r}")
 
     monkeypatch.setattr(setup_host.HostEnvironment, "from_host", classmethod(refuse))
-    cli.cmd_setup(dry_run=True, output_json=True)
-    cli.cmd_setup_plan(output_json=True)
-    assert json.loads(capsys.readouterr().out.split("\n}\n")[0] + "\n}")["kind"] == "setup_plan"
+    monkeypatch.setattr(setup_host, "bootstrap_options", refuse)
+    monkeypatch.setattr(setup_host, "plan_host_actions", refuse)
+    monkeypatch.setattr(prove_at_rest_service, "timer_state", refuse)
+    monkeypatch.setattr(sys, "argv", ["verdict", *argv])
+    before = host.snapshot()
+    cli.main()
+    out = capsys.readouterr().out
+    if "--json" in argv:
+        report = json.loads(out)
+        assert report["kind"] == "setup_plan" and report["mutation_free"] is True
+        assert all(
+            a["action_id"] in {"create-config", "preserve-config"} for a in report["actions"]
+        )
+    else:
+        assert "No changes made" in out
+    assert host.snapshot() == before
 
 
 def test_recommended_setup_previews_host_actions_without_mutation(
@@ -426,3 +466,76 @@ def test_cli_apply_with_an_allowlist_installs_that_prerequisite(
     payload = json.loads(capsys.readouterr().out)
     assert _results(payload)["bootstrap:host:ocr"]["status"] == "applied"
     assert cli_host.ocr.is_file()
+
+
+# --- serve health: unknown is never healthy ---------------------------------------------
+
+
+def _install_serve(host: FakeHost) -> None:
+    host.apply(allowlist=["host.serve"])
+    assert "verdict-serve.service" in host.active and setup_host.plan_host_actions(host.env)[0]
+
+
+def test_active_but_unhealthy_serve_is_planned_and_restarted(host: FakeHost) -> None:
+    _install_serve(host)
+    assert "host.serve" not in [a.provider_id for a in setup_host.plan_host_actions(host.env)]
+    host.serve_up = False
+    [action] = [a for a in setup_host.plan_host_actions(host.env) if a.provider_id == "host.serve"]
+    assert "http://127.0.0.1:8000/health did not answer" in action.reason
+    host.systemctl_calls.clear()
+    report = host.apply(allowlist=["host.serve"])
+    result = _results(report)["bootstrap:host:serve"]
+    assert result["status"] == "applied" and "restarted" in result["note"]
+    assert ["systemctl", "--user", "restart", "verdict-serve.service"] in host.systemctl_calls
+
+
+def test_a_health_probe_exception_is_never_healthy(host: FakeHost) -> None:
+    _install_serve(host)
+    host.serve_up = ConnectionResetError("probe crashed")
+    [action] = [a for a in setup_host.plan_host_actions(host.env) if a.provider_id == "host.serve"]
+    assert "ConnectionResetError" in action.reason
+
+
+def test_serve_still_unhealthy_after_restart_fails_with_its_logs(host: FakeHost) -> None:
+    _install_serve(host)
+    host.serve_up = False
+    host.restart_heals = False
+    result = _results(host.apply(allowlist=["host.serve"]))["bootstrap:host:serve"]
+    assert result["status"] == "failed"
+    assert "journalctl --user -u verdict-serve.service" in result["note"]
+
+
+# --- host-only allowlists never authorize catalog installs ----------------------------
+
+
+@pytest.mark.parametrize("non_interactive", [True, False])
+def test_a_host_only_allowlist_never_authorizes_catalog_installs(
+    host: FakeHost, non_interactive: bool
+) -> None:
+    calls: list[str] = []
+
+    def install_runner(action: Any) -> dict[str, Any]:
+        calls.append(action.action_id)
+        return {"status": "installed"}
+
+    report = run_bootstrap(
+        providers=(),
+        mode=BootstrapMode.APPLY,
+        state_dir=host.root / "state",
+        allowlist=HOST_IDS,
+        non_interactive=non_interactive,
+        consent=False,
+        install_runner=install_runner,
+        **setup_host.bootstrap_options(host.env),
+    ).to_dict()
+    catalog = [
+        a["action_id"]
+        for a in report["plan"]["actions"]
+        if a["kind"] == "install_provider" and a["requires_consent"]
+    ]
+    assert catalog, "the empty observation set must plan catalog install actions"
+    assert calls == []
+    assert sorted(_results(report)) == sorted(
+        f"bootstrap:host:{pid.removeprefix('host.')}" for pid in HOST_IDS
+    )
+    assert set(catalog) <= set(_stage(report, "consent")["details"]["blocked"])
