@@ -30,6 +30,7 @@ def captured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
     async def fake_run(goal: str, **kwargs: Any) -> Any:
         seen["constraints"] = kwargs.get("constraints")
+        seen["policy"] = kwargs["policy"]
         receipt = tmp_path / "receipt.json"
         receipt.write_text("{}")
         return run.GoldenRunResult(tmp_path, "BLOCKED", "fixture", receipt)
@@ -45,6 +46,11 @@ def test_constraints_file_text_reaches_run_golden_path(
     lessons.write_text("Plan at most two nodes.\nRun focused tests only.\n")
     assert cli._orchestrate(_args(tmp_path, "--constraints-file", str(lessons))) == 1
     assert captured["constraints"] == lessons.read_text()
+
+
+def test_cli_requires_revision_bound_hydration(tmp_path: Path, captured: dict[str, Any]) -> None:
+    cli._orchestrate(_args(tmp_path))
+    assert captured["policy"].require_hydration_packet is True
 
 
 def test_without_the_flag_constraints_are_empty(tmp_path: Path, captured: dict[str, Any]) -> None:

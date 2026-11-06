@@ -1301,7 +1301,7 @@ def _action_demo_run(**kwargs: Any) -> ActionResult:
 
 def _register_builtins() -> None:
     """Register the built-in action set at import time."""
-    from verdict.actions.run_controls import cancel_node, cancel_run, retry_node
+    from verdict.actions.run_controls import bind_hydration, cancel_node, cancel_run, retry_node
 
     for name, summary, handler in (
         ("run.cancel", "Cancel an active orchestration run", cancel_run),
@@ -1309,6 +1309,16 @@ def _register_builtins() -> None:
         ("run.retry-node", "Retry failed work through the recovery budget", retry_node),
     ):
         register(ActionSpec(name, "orchestration", "mutation", summary, "Orchestration"), handler)
+    register(
+        ActionSpec(
+            "bind-hydration",
+            "orchestration",
+            "mutation",
+            "Bind hydration packets to a work graph at the repository HEAD",
+            "Orchestration",
+        ),
+        bind_hydration,
+    )
 
     from verdict.actions.extra import (
         _action_acceptance_install_service,

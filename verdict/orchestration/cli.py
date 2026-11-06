@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import threading
 from collections.abc import Mapping
@@ -287,6 +288,21 @@ def add_parsers(subparsers: Any) -> None:
         "--inventory", action="store_true", help="Read-only inventory view; never runs live probes"
     )
 
+    bind = subparsers.add_parser(
+        "bind-hydration",
+        help="Bind queen evidence to every node of a final graph, or fail with no output",
+    )
+    bind.add_argument("--repo", required=True, help="Repository whose HEAD the packets bind to")
+    bind.add_argument("--graph", required=True, help="Final WorkGraph JSON")
+    bind.add_argument("--packets", required=True, help="JSON object of node id to queen evidence")
+    bind.add_argument("--out", required=True, help="Bound graph path, written only when complete")
+    bind.add_argument(
+        "--max-bytes",
+        type=_positive_int,
+        default=60_000,
+        help="Per-packet byte ceiling (default: 60000)",
+    )
+
     context = subparsers.add_parser(
         "context", help="Show recorded context budget and provenance for a run"
     )
@@ -356,6 +372,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
         "supervise": supervisor.dispatch,
         "improve": _improve,
         "orchestrate": _orchestrate,
+        "bind-hydration": _bind_hydration,
         "watch": _watch,
         "run-receipt": _receipt,
         "eligibility": _eligibility,
@@ -652,6 +669,47 @@ def _improve(args: argparse.Namespace) -> int:
     return 0 if results[-1].outcome == "MET" else 1
 
 
+def _repo_head(repo: Path) -> str | None:
+    """The revision packets bind to, or None when the repository has none."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=False
+    )
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and sha else None
+
+
+def _bind_hydration(args: argparse.Namespace) -> int:
+    """Bind supplied evidence to a final graph, writing output only when complete."""
+    from verdict.orchestration.contracts import OrchestrationError, WorkGraph
+    from verdict.orchestration.hydration import bind_hydration_packets
+
+    repo = Path(args.repo)
+    sha = _repo_head(repo)
+    if sha is None:
+        print(f"BLOCKED: {repo} has no HEAD to bind queen evidence to", file=sys.stderr)
+        return 2
+    try:
+        graph = WorkGraph.from_dict(json.loads(Path(args.graph).read_text()))
+        packets = json.loads(Path(args.packets).read_text())
+    except (OSError, ValueError, OrchestrationError) as exc:
+        print(f"BLOCKED: cannot read graph or packets: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(packets, dict):
+        print("BLOCKED: packets must be a JSON object keyed by node id", file=sys.stderr)
+        return 2
+    try:
+        bound = bind_hydration_packets(graph, packets, repo_sha=sha, max_bytes=args.max_bytes)
+    except OrchestrationError as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 1
+    destination = Path(args.out)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(bound.to_dict(), indent=2) + "\n")
+    temporary.replace(destination)
+    print(f"bound {len(bound.nodes)} nodes at {sha}")
+    return 0
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.orchestration.contracts import WorkGraph
     from verdict.orchestration.recovery import FailureIntelligence
@@ -784,6 +842,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         run_deadline_seconds=args.run_deadline,
         require_review=True,
         require_dispatch_permit=True,
+        require_hydration_packet=True,
     )
     from verdict.admit_prove_confirm import passport_confirmation
 

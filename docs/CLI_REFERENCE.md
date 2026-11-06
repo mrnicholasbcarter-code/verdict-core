@@ -14,7 +14,7 @@ The registered subcommands below are grouped by their primary use. Run
 |---|---|
 | Setup and configuration | `setup`, `plan`, `check`, `doctor`, `compat`, `uninstall` |
 | Routing and selection | `route`, `run`, `compare`, `choose`, `simulate`, `models`, `inspect`, `failover-proof`, `replay` |
-| Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
+| Orchestration | `orchestrate`, `bind-hydration`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
 | Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify` |
 | Metadata, memory, and integrations | `metadata`, `memory`, `mcp`, `hook`, `harness`, `runtime` |
 | Traces and demo | `trace`, `demo` |
@@ -60,6 +60,38 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--json` | Print final receipt JSON |
 | `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
 | `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
+
+### `verdict bind-hydration` — Bind queen evidence to a final graph
+
+```bash
+verdict bind-hydration --repo . --graph graph.json --packets packets.json --out bound.json
+```
+
+Binds one `verdict.hydration/v1` packet per node to the repository's current
+HEAD and the final node contract, validating each with the dispatch validator at
+that HEAD. Dispatch validates against the node's own dispatch base, so a node
+with committed dependencies needs a packet rehydrated at that base. It writes
+`--out` only when every node validates, and writes nothing when any packet is
+missing or rejected. It fills in only the absent `repo_sha` and `node_digest`
+binding fields, never invents other evidence, and never refreshes a stale
+binding.
+
+Exit 0: bound. Exit 1: evidence rejected (nothing written; `BLOCKED: <reason>`
+on stderr). Exit 2: no repository HEAD, or an unreadable or malformed graph or
+packets file (nothing written).
+
+Validation is structural: citation revisions and declared review families are
+the queen's own observations, not authenticated sources or review attestations,
+and a packet grants no route, admission or budget authority. See
+[Worker context packs](guides/worker-context.md).
+
+| Flag | Description |
+|---|---|
+| `--repo REPO` | Repository whose HEAD the packets bind to |
+| `--graph GRAPH` | Final WorkGraph JSON |
+| `--packets PACKETS` | JSON object of node id to queen evidence |
+| `--out OUT` | Bound graph path, written only when complete |
+| `--max-bytes MAX_BYTES` | Per-packet byte ceiling (default: 60000) |
 
 ### Mixed-harness runs
 
