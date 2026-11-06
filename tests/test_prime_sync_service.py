@@ -22,19 +22,13 @@ import pytest
 
 import verdict
 from verdict import doctor_diagnostics as dd
-from verdict import ocr_release
 from verdict.doctor_presentation import repair_command
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = "verdict harness prime install-service"
 
 
-def test_missing_timer_repair_outside_a_checkout_names_the_package_installer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    site = tmp_path / "site-packages"
-    (site / "verdict").mkdir(parents=True)
-    monkeypatch.setattr(ocr_release, "package_root", lambda: site)
+def test_missing_timer_repair_names_the_package_installer() -> None:
     repair = dd._prime_sync_timer_repair("missing")
     assert "deploy/" not in repair
     assert repair_command("Prime-sync timer failed x" + repair) == INSTALL
