@@ -259,7 +259,7 @@ def test_get_credential_source_names_a_value_load_into_env_copied_as_the_store(
     """The doctor Credentials list reads provenance from the injection record.
 
     The CLI entry runs ``load_into_env`` first, so a stored value sits in the
-    environment; it is still the store's until the process overwrites it.
+    environment; it is the store's while it equals the value the latest load copied.
     """
     from verdict import credentials_store as module
 
@@ -281,6 +281,25 @@ def test_get_credential_source_names_a_value_load_into_env_copied_as_the_store(
     monkeypatch.setattr(module, "_STORE_INJECTED", {})
     store.load_into_env()
     assert get_credential_source("TEST_KEY", store)[0] == "env"
+
+
+def test_limitation_value_changed_away_and_back_in_process_lists_as_store(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Documented limitation, not a goal: the record holds only a digest of the latest
+    copy, so a value changed away and then set back to that exact string in the same
+    process cannot be told apart from the copy and lists as ``store``."""
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    monkeypatch.setenv("TEST_KEY", "other_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
 
 
 def test_get_credential_source_missing(

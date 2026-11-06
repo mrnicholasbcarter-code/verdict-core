@@ -1418,6 +1418,53 @@ def test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the
     assert "cli-doctor-management-sentinel" not in text
 
 
+def test_cli_credentials_list_names_store_copies_and_exports_without_values(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`verdict credentials list` through cli.main, in --json and text mode.
+
+    cli.main's load_into_env copies the store-only token in: it lists as ``store``.
+    An exported key equal to its stored value is not copied: it lists as ``env``.
+    Neither value is printed.
+    """
+    import sys
+
+    import verdict.credentials_store as credentials_store
+    from verdict.credentials_store import CredentialsStore
+
+    stored_only = "store-only-list-sentinel"
+    exported = "exported-list-sentinel"
+    monkeypatch.setattr(credentials_store, "_STORE_INJECTED", {})
+    # setenv-then-delenv registers the name, so teardown removes cli.main's copy.
+    monkeypatch.setenv("OMNIROUTE_MANAGEMENT_TOKEN", "unset-by-test")
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    store = CredentialsStore()
+    store.set("OMNIROUTE_MANAGEMENT_TOKEN", stored_only)
+    store.set("GEMINI_API_KEY", exported)
+    monkeypatch.setenv("GEMINI_API_KEY", exported)
+
+    monkeypatch.setattr(sys, "argv", ["verdict", "credentials", "list", "--json"])
+    cli.main()
+    out = capsys.readouterr().out
+    sources = {row["name"]: row["source"] for row in json.loads(out)}
+    assert sources["OMNIROUTE_MANAGEMENT_TOKEN"] == "store"
+    assert sources["GEMINI_API_KEY"] == "env"
+
+    # A fresh CLI process: the copy from the previous load is gone again.
+    monkeypatch.delenv("OMNIROUTE_MANAGEMENT_TOKEN")
+    monkeypatch.setattr(sys, "argv", ["verdict", "credentials", "list"])
+    cli.main()
+    text = capsys.readouterr().out
+    # Text rows read "- NAME  SOURCE", with the source upper-cased.
+    rows = [line.split() for line in text.splitlines()]
+    sources_text = {parts[1]: parts[2] for parts in rows if len(parts) >= 3 and parts[0] == "-"}
+    assert sources_text["OMNIROUTE_MANAGEMENT_TOKEN"] == "STORE"
+    assert sources_text["GEMINI_API_KEY"] == "ENV"
+
+    for output in (out, text):
+        assert stored_only not in output and exported not in output
+
+
 def test_cli_doctor_corrupt_config_exits_one_both_modes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
