@@ -35,9 +35,13 @@ missing pin was treated as "nothing to do", and it said nothing.
   the way the runner does and requires it to export exactly the package
   constants. It also requires that no `env` block sets `OCR_VERSION` or
   `OCR_SHA256`, that the workflow has no 64-hex literal, and that the steps run
-  sync, then read, then install. The other requires that no tracked file outside
-  frozen history (`docs/proof/`, archived OpenSpec changes) contains the digest,
-  except `verdict/ocr_release.py`. Both skip when `.github/` or `.git` is absent.
+  sync, then read, then install. Two more require that no tracked file outside
+  frozen history (`docs/proof/`, archived OpenSpec changes), except
+  `verdict/ocr_release.py`, contains the digest or assigns `OCR_VERSION` or
+  `OCR_SHA256` a literal value. They skip when `.github/` or `.git` is absent.
+- `tests/test_wheel_contents.py` builds the wheel, extracts it and, in an `-I`
+  interpreter with a temporary `HOME`, imports the pin and runs the doctor ocr
+  row and the setup ocr action from it with no checkout and no network.
 
 ## Design choice
 The workflow checks out the exact source SHA and runs `uv sync` before the step
@@ -76,6 +80,6 @@ either.
   prime-sync timer (`cp <package_root>/deploy/systemd/...`). In an installed
   package that path does not exist either. That is a separate defect and is not
   fixed here.
-- Pending: live acceptance on the operator host and a GitHub run of
-  `certify-rehearsal.yml` are unticked tasks 3.1 and 3.2 in `tasks.md`. Both
-  need merged main.
+- Pending: live acceptance on the operator host, a GitHub run of
+  `certify-rehearsal.yml` and the archive order are unticked tasks 4.1 to 4.3
+  in `tasks.md`. All need merged main.

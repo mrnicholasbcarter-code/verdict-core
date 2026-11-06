@@ -172,11 +172,13 @@ _SEAMS = (
 def installed_package_env(
     host: FakeHost, monkeypatch: pytest.MonkeyPatch
 ) -> setup_host.HostEnvironment:
-    """``HostEnvironment.from_host()`` as a non-editable install builds it.
+    """``HostEnvironment.from_host()`` with the package root a non-editable install has.
 
-    The package root is a bare ``site-packages`` directory with no ``.github/``;
-    the pin is whatever the package itself provides. Only the side-effecting
-    seams are the fake host's.
+    ``package_root()`` is a bare ``site-packages`` directory with no ``.github/``,
+    the layout the live defect hit; only the side-effecting seams are the fake
+    host's. This runs the checkout's modules in-process.
+    ``tests/test_wheel_contents.py::test_installed_wheel_runs_the_ocr_doctor_row_and_setup_action``
+    runs the same ocr steps from an extracted wheel.
     """
     site = host.root / "site-packages"
     (site / "verdict").mkdir(parents=True)

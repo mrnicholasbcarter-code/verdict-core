@@ -49,15 +49,37 @@ this change.
   extracted wheel returned the pin from `<tmp>/site/verdict/ocr_release.py`. The
   build output was removed.
 
-## 3. Live acceptance (pending; needs merged main)
-AGENTS.md "Definition of done" part 1 requires both checks. Neither can run
-before merge: the first needs an installed build of merged main, and the
-`rehearse` job runs only when `github.ref == 'refs/heads/main'`. Nothing below
-has run.
-- [ ] 3.1 Install merged main non-editable on the operator host and run
+## 3. Cross-family review
+- [x] 3.1 Round 1 (`cx/gpt-5.6-luna-high`, REQUEST_CHANGES), two valid findings:
+  - The doctor and setup tests in the installed layout ran the checkout's modules
+    with `package_root()` redirected. New
+    `tests/test_wheel_contents.py::test_installed_wheel_runs_the_ocr_doctor_row_and_setup_action`
+    runs the doctor ocr row and the setup ocr action from the extracted wheel in
+    an `-I` interpreter with a temporary `HOME`, no ocr on `PATH` and a fake
+    fetch. Red on `124a37e6` with only this test copied in:
+    `AssertionError: assert 'warning' == 'failed'`. Green after the fix.
+  - The requirement said the package is the only copy of the release tag, which
+    recorded ocr output and test pins contradict, and only the digest was
+    checked. The requirement now says "only definition", and new
+    `tests/test_ocr_release.py::test_no_other_tracked_file_defines_the_pin`
+    fails on any other literal `OCR_VERSION`/`OCR_SHA256` assignment. Red on
+    `124a37e6`: it listed `.github/workflows/certify-rehearsal.yml`. Green after.
+  The five ocr test files: 106 passed. The archive order it also raised is task 4.3.
+
+## 4. Live acceptance and archive (pending; needs merged main)
+AGENTS.md "Definition of done" requires all three: part 1 for 4.1 and 4.2,
+part 5 for 4.3. None can run before merge: 4.1 needs an installed build of
+merged main, the `rehearse` job runs only when
+`github.ref == 'refs/heads/main'`, and 4.3 needs the evidence file. Nothing
+below has run.
+- [ ] 4.1 Install merged main non-editable on the operator host and run
   `verdict doctor`. The ocr row must be `ok`, or `failed` with the pinned
   version, and never `cannot verify ocr`. With ocr missing, `verdict setup`
   must plan `host.ocr`. Record the date, SHA, command and raw output.
-- [ ] 3.2 Dispatch `certify-rehearsal.yml` on main. The new step must export the
+- [ ] 4.2 Dispatch `certify-rehearsal.yml` on main. The new step must export the
   package pin, and `sha256sum --check --strict` must pass in the reviewer
   install step. Record the run URL.
+- [ ] 4.3 After the DoD evidence file passes, archive
+  `bod219-setup-host-prerequisites` first, then this change. Until then that
+  change's spec delta still names the workflow as the pin source, and this
+  MODIFIED delta cannot apply.

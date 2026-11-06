@@ -258,3 +258,28 @@ def test_no_other_tracked_file_restates_the_pin_digest() -> None:
         check=False,
     )
     assert result.stdout.split() == ["verdict/ocr_release.py"], result.stdout
+
+
+# A literal value assigned to OCR_VERSION or OCR_SHA256, as Python or as YAML.
+_PIN_DEFINITION = r"""OCR_(VERSION|SHA256)["']?[[:space:]]*[:=][[:space:]]*["']?[0-9a-fv]"""
+
+
+@pytest.mark.skipif(not (ROOT / ".git").exists(), reason="not a git checkout")
+def test_no_other_tracked_file_defines_the_pin() -> None:
+    """A second ``OCR_VERSION``/``OCR_SHA256`` with a literal value is a second pin.
+
+    Tests inject their own pin through the ``ocr_pin`` seam and recorded ocr
+    output names the version it ran; neither assigns these names, so neither
+    matches. Frozen history is exempt.
+    """
+    result = subprocess.run(
+        [
+            *("git", "-C", str(ROOT), "grep", "-lE", _PIN_DEFINITION, "--", "."),
+            *(":!docs/proof", ":!openspec/changes/archive"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.stdout.split() == ["verdict/ocr_release.py"], result.stdout
