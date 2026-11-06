@@ -250,7 +250,18 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
         )
     )
 
-    rows = dd.installed_service_rows(now=NOW, timer_state=fake_timer)
+    synced = {
+        "project": "default/ref-omniroute",
+        "tag": "v3.9.0",
+        "installed_tag": "v3.9.0",
+        "synced_at": NOW.isoformat(),
+        "pages": 12,
+        "ok": True,
+        "problems": [],
+    }
+    rows = dd.installed_service_rows(
+        now=NOW, timer_state=fake_timer, ref_docs_status=lambda: [synced]
+    )
 
     assert all(r["status"] == "ok" for r in rows)
 

@@ -2692,9 +2692,18 @@ default_model_catalog = _action_helpers.default_model_catalog
 
 
 def _cmd_memory_ref_docs(args: Any) -> None:
-    """``verdict memory ref-docs sync|status``: JSON on stdout; exit 1 on a failed sync or row."""
+    """``verdict memory ref-docs sync|status|install-service``: JSON on stdout.
+
+    Exit 1 on a failed sync or status row.
+    """
     from verdict import ref_docs
 
+    if args.ref_docs_command == "install-service":
+        from verdict import ref_docs_service
+
+        result = ref_docs_service.manage_service(dry_run=args.dry_run, uninstall=args.uninstall)
+        print(json.dumps(result, indent=2))
+        return
     if args.ref_docs_command == "status":
         rows = ref_docs.status(workspace=args.workspace)
         if args.json:
