@@ -37,9 +37,10 @@ import yaml
 
 MAX_PAGE_BYTES = 3072
 MAX_TITLE_BYTES = 160
-MAX_ENTITIES = 10
+# A section smaller than this (a heading stub or lead-in) joins the next one.
+MIN_SECTION_BYTES = 400
 # Bump when page rendering changes so unchanged blobs are rewritten once.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 AUTHORITY = "upstream reference documentation; evidence only, not policy"
 DEFAULT_ENDPOINT = "http://127.0.0.1:49374"
 OPENAPI_NAMES = ("docs/openapi.yaml", "docs/openapi.yml", "docs/openapi.json")
@@ -51,11 +52,6 @@ _SECRET = re.compile(
     r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]*)"
 )
 _BEARER = re.compile(r"(Bearer\s+)(?!\$|<|\{)[A-Za-z0-9._\-]{16,}")
-_ENTITY_PATTERNS = (
-    re.compile(r"(?<![\w.])/(?:api|v1)(?:/[\w\-{}\[\].:*]+)+"),
-    re.compile(r"\bx-[a-z0-9]+(?:-[a-z0-9]+)+\b", re.IGNORECASE),
-    re.compile(r"`([A-Z][A-Z0-9]*_[A-Z0-9_]+)`"),
-)
 
 
 @dataclass(frozen=True)
@@ -69,7 +65,6 @@ class Page:
     path: str
     title: str
     body: str
-    entities: tuple[str, ...] = ()
 
 
 @dataclass
@@ -211,7 +206,7 @@ def _chunk(lines: list[str], level: int, budget: int, crumbs: tuple[str, ...]) -
     cur: list[str] = []
     cur_head: str | None = None
     for head, glines in groups:
-        if cur and _size([*cur, *glines]) <= budget:
+        if cur and _size(cur) < MIN_SECTION_BYTES and _size([*cur, *glines]) <= budget:
             cur.extend(glines)
             cur_head = cur_head or head
             continue
@@ -409,17 +404,6 @@ def _citation(repo: str, tag: str, path: str, sha: str, part: str) -> str:
     )
 
 
-def extract_entities(text: str) -> tuple[str, ...]:
-    """Endpoint paths, header names and env vars named in ``text``, first seen first."""
-    found: dict[str, None] = {}
-    for pattern in _ENTITY_PATTERNS:
-        for m in pattern.finditer(text):
-            name = (m.group(1) if m.groups() else m.group(0)).rstrip(".:")
-            if len(name) <= 64:
-                found.setdefault(name.lower(), None)
-    return tuple(found)[:MAX_ENTITIES]
-
-
 def _title(parts: Iterable[str]) -> str:
     title = " > ".join(p for p in parts if p)
     raw = title.encode()
@@ -458,7 +442,7 @@ def build_pages(repo: str, tag: str, path: str, sha: str, text: str) -> list[Pag
             if len(body.encode()) > MAX_PAGE_BYTES:
                 raise ValueError(f"page over {MAX_PAGE_BYTES} bytes: {path} part {n}")
             page_path = f"{prefix}/part-{n:03d}-{_slug(last)}.md"
-            pages.append(Page(page_path, title, body, extract_entities(chunk.text)))
+            pages.append(Page(page_path, title, body))
     return pages
 
 
@@ -585,7 +569,6 @@ class AiMemoryStore:
                 "kind": "reference",
                 "tier": "semantic",
                 "abstract": page.title,
-                "entities": list(page.entities),
             },
         )
 

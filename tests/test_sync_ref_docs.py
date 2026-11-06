@@ -12,7 +12,6 @@ from scripts.sync_ref_docs import (
     Page,
     SyncReport,
     build_pages,
-    extract_entities,
     redact,
     resolve_installed_tag,
     select_paths,
@@ -217,15 +216,14 @@ def test_tag_follows_installed_package(tmp_path: Path) -> None:
     assert resolve_installed_tag(pkg) == "v3.8.53"
 
 
-def test_entities_name_endpoints_headers_and_env_vars() -> None:
-    text = "Call `GET /api/free-tier/summary` with `X-OmniRoute-Decision`; set `ARENA_ELO_SYNC_ENABLED`."
-    assert extract_entities(text) == (
-        "/api/free-tier/summary",
-        "x-omniroute-decision",
-        "arena_elo_sync_enabled",
-    )
-
-
 def test_table_padding_is_compacted() -> None:
     _, chunks = split_markdown("# T\n\n## S\n\n| a      | b    |\n| ------ | ---- |\n", 500)
     assert chunks[0].text.endswith("| a | b |\n| --- | --- |")
+
+
+def test_each_subsection_gets_its_own_page_and_stubs_merge_forward() -> None:
+    subs = "\n\n".join(f"### Sub {i}\n\n" + ("w " * 250) for i in range(3))
+    text = f"# T\n\n## Big\n\nLead-in.\n\n{subs}\n\n## Tail\n\n" + ("t " * 1000)
+    _, chunks = split_markdown(text, 1200)
+    assert [c.crumbs for c in chunks][:3] == [("Big", "Sub 0"), ("Big", "Sub 1"), ("Big", "Sub 2")]
+    assert chunks[0].text.startswith("## Big\n\nLead-in.")
