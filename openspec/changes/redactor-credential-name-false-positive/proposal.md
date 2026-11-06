@@ -35,6 +35,12 @@ is never followed by `:` or `=`.
 - The CLI notes from `verdict route` and the library gate, `describe_bootstrap_failure`,
   `BootstrapError` messages and the Prime supervisor's launch detail all render through
   `describe()`, so this change covers them too.
+- `describe()` also passes its field, detail and remediation through `redact_text`, one
+  part at a time, and keeps the documented `***:***@` userinfo marker. Under the old
+  `field=NAME: detail` layout the label pattern caught a secret at the start of a
+  detail by accident; this makes that a guarantee for secret shapes. A bare value with
+  no label and no known prefix is still not caught. For those, a structural test
+  checks that no diagnostic is built from a credential value.
 - `verdict.security` is not changed.
 - **Format change:** a consumer that splits these lines on `field=<name>:` must split
   on ` - `. No consumer in this repository parses them. The one test that pinned the
@@ -54,11 +60,16 @@ is never followed by `:` or `=`.
 None.
 
 ## Impact
-- `verdict/provider_bootstrap.py` (`BootstrapDiagnostic.describe`).
+- `verdict/provider_bootstrap.py` (`BootstrapDiagnostic.describe`, private
+  `_redact_free_text`).
 - `verdict/api.py` (`lifespan` startup diagnostic loop).
 - `tests/test_diagnostic_credential_name_redaction.py` (new),
+  `tests/test_bootstrap_diagnostics_carry_no_credential_values.py` (new),
   `tests/test_check_dod.py` (one test), `tests/test_provider_bootstrap_adoption.py`
   (one pinned separator).
+- Not changed: `BootstrapDiagnostic.to_dict()` still serializes the raw detail. The
+  structural test shows no detail carries a credential value, but `to_dict()` itself
+  does not redact.
 - `docs/CONFIGURATION.md` ("Secrets in rendered output"), `CHANGELOG.md`.
 - Other diagnostics checked and left alone, because the redactor does not change them:
   the harness status line `token_env: <NAME> (set: ...)`, the JSON `api_key_env` and

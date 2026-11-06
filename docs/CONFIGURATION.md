@@ -350,7 +350,14 @@ echo secret material:
   names `OMNIROUTE_API_KEY`). `NAME: word` is how a real key is written, so
   `verdict.security.redact_text` redacts it, and `scripts/check_dod.py` refuses a
   raw output that the redactor would change. The CLI notes, `verdict serve`
-  startup lines and `describe_bootstrap_failure` all use this format.
+  startup lines, `describe_bootstrap_failure`, `BootstrapError` messages and the
+  Prime supervisor's launch detail all use this format.
+- The line also passes its field, detail and remediation through `redact_text`
+  one part at a time, so an `sk-` key, a `Bearer` token or a `token=<value>` that
+  reaches a detail by mistake is printed as `[redacted]`. A value with no label
+  and no known prefix is not caught that way. The guarantee for those is that no
+  diagnostic is built from a credential value, and a test sets a fake value for
+  every known credential name to check it.
 - A URL that carries `user:password@` userinfo is rendered as `***:***@host`
   everywhere: diagnostic details, `ProviderBinding.to_dict`,
   `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library

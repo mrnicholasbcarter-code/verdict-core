@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.models import ProviderConfig
+from verdict.security import redact_text
 
 __all__ = [
     "DEFAULT_GATEWAY_READY_TIMEOUT_S",
@@ -128,11 +129,21 @@ class BootstrapDiagnostic:
         ``OMNIROUTE_API_KEY``), and ``NAME: word`` is how a real key is written,
         so ``verdict.security.redact_text`` would rewrite the first word of the
         detail and the DoD credential scan would refuse a log with no secret in it.
+
+        The free text (field, detail, remediation) is redacted part by part
+        before it is formatted, so a secret shape that reaches it by mistake
+        (an ``sk-`` key, a ``Bearer`` token, ``token=<value>``) is not printed.
+        Each part is redacted on its own, with no ``field=`` label in front of
+        it. A value with no label and no known prefix is not caught: details
+        must never be built from a credential value.
         """
         origin = f" source={self.source}" if self.source is not None else ""
+        field_name, detail, remediation = (
+            _redact_free_text(part) for part in (self.field, self.detail, self.remediation)
+        )
         return (
-            f"{self.code} [{self.diagnostic_class}] field={self.field}{origin} - "
-            f"{self.detail}; remediation: {self.remediation}"
+            f"{self.code} [{self.diagnostic_class}] field={field_name}{origin} - "
+            f"{detail}; remediation: {remediation}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -345,6 +356,22 @@ def redact_url(value: str) -> str:
     redacts a URL embedded in a longer string, so wrapped error text is safe too.
     """
     return _USERINFO_RE.sub("***:***@", str(value))
+
+
+_USERINFO_MARK = "***:***@"
+_USERINFO_SHIELD = "\0userinfo\0"
+
+
+def _redact_free_text(value: str) -> str:
+    """``redact_text`` for diagnostic free text, keeping the ``***:***@`` form.
+
+    ``redact_url`` renders URL userinfo as ``***:***@`` everywhere (documented in
+    ``docs/CONFIGURATION.md``). ``redact_text`` would rewrite that marker to
+    ``[redacted]@``, so it is shielded while the secret patterns run. Raw userinfo
+    is turned into the marker first, so it ends up in the documented form too.
+    """
+    shielded = redact_url(value).replace(_USERINFO_MARK, _USERINFO_SHIELD)
+    return redact_text(shielded).replace(_USERINFO_SHIELD, _USERINFO_MARK)
 
 
 def _text(source: Mapping[str, str], name: str) -> str:
