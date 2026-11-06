@@ -190,13 +190,7 @@ def test_uninstall_removes_the_unit_and_env_file(home: Path) -> None:
     assert result["changed"] is True
 
 
-def test_unit_state_and_health_are_injectable() -> None:
-    def show(args: list[str]) -> object:
-        import subprocess
-
-        return subprocess.CompletedProcess(args, 0, "LoadState=loaded\nActiveState=active\n", "")
-
-    assert serve_service.unit_state(run=show)["state"] == "active"  # type: ignore[arg-type]
+def test_health_probe_is_injectable() -> None:
     urls: list[str] = []
 
     def probe(*, base_url: str) -> bool:

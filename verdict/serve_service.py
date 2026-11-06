@@ -19,7 +19,6 @@ import os
 import re
 import secrets
 import stat
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -267,15 +266,6 @@ def install_problems(*, unit_dir: Path | None = None, home: Path | None = None) 
     if _mode(env_file) != 0o600:
         problems.append(f"{env_file} has mode {_mode(env_file):04o}, not 0600")
     return problems
-
-
-def unit_state(
-    *, run: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
-) -> dict[str, Any]:
-    """Installed/failed/active state of ``verdict-serve.service``. Never raises."""
-    from verdict.prove_at_rest_service import timer_state
-
-    return timer_state(SERVICE, run=run)
 
 
 def healthy(*, probe: Callable[..., bool] | None = None) -> bool:
