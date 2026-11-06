@@ -313,9 +313,11 @@ def resolve_management_token(environ: Mapping[str, str] | None = None) -> str | 
 
 
 def injected_from_store(name: str, environ: Mapping[str, str] | None = None) -> bool:
-    """True when ``name``'s environment value is the one ``load_into_env`` copied in.
+    """True when ``name``'s environment value equals the one ``load_into_env`` copied
+    from the store in its latest load.
 
-    A value the process set or overwrote itself after the copy is not injected.
+    A value that differs from that copy is not injected. Limitation: a value changed
+    away and set back to that exact string in the same process is also injected.
     """
     source = os.environ if environ is None else environ
     value = source.get(name)
@@ -347,12 +349,17 @@ def get_credential_source(env_name: str, store: CredentialsStore | None = None) 
 
     Returns:
         (source, masked_value) where source is "env", "store", or "missing";
-        a gateway key name may also come from "key_file" or "prime_auth"
+        a gateway key name may also come from "key_file" or "prime_auth".
+        An environment value equal to the one ``load_into_env`` copied from the store
+        in its latest load is "store" (recorded provenance; see
+        :func:`injected_from_store`). Limitation: a value changed away and set back
+        to that exact string in the same process also reads as "store".
     """
     # Check environment first
     env_value = os.environ.get(env_name)
     if env_value:
-        return "env", _mask_value(env_value)
+        source = "store" if injected_from_store(env_name) else "env"
+        return source, _mask_value(env_value)
 
     # Check store
     if store is None:

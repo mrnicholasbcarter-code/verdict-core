@@ -253,6 +253,83 @@ def test_get_credential_source_from_store(
     assert "set (len=" in masked
 
 
+def test_get_credential_source_names_a_value_load_into_env_copied_as_the_store(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The doctor Credentials list reads provenance from the injection record.
+
+    The CLI entry runs ``load_into_env`` first, so a stored value sits in the
+    environment; it is the store's while it equals the value the latest load copied.
+    """
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    # setenv then delenv registers TEST_KEY for cleanup after load_into_env sets it.
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    assert os.environ["TEST_KEY"] == "stored_value"
+    source, masked = get_credential_source("TEST_KEY", store)
+    assert source == "store"
+    assert "stored_value" not in masked
+    # An in-process overwrite after the copy is an export again.
+    monkeypatch.setenv("TEST_KEY", "other_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+    # An export made before the load, equal to the stored value, stays an export.
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    store.load_into_env()
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+
+
+def test_get_credential_source_drops_a_copy_the_next_load_does_not_repeat(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two real loads, no manual reset between them: the second load clears the record.
+
+    The process exports the copied string itself after load 1, so load 2 does not copy
+    the name. A stale digest from load 1 would still match that string; it must not.
+    """
+    from verdict import credentials_store as module
+
+    # One test-local record for the whole test; never reset between the loads.
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
+    assert "TEST_KEY" in module._STORE_INJECTED
+    # The process exports the name itself, with the copied string. Until the next load
+    # this is the documented set-back limitation and still reads as the store.
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
+    store.load_into_env()
+    assert os.environ["TEST_KEY"] == "stored_value"
+    assert "TEST_KEY" not in module._STORE_INJECTED
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+
+
+def test_limitation_value_changed_away_and_back_in_process_lists_as_store(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Documented limitation, not a goal: the record holds only a digest of the latest
+    copy, so a value changed away and then set back to that exact string in the same
+    process cannot be told apart from the copy and lists as ``store``."""
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    monkeypatch.setenv("TEST_KEY", "other_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
+
+
 def test_get_credential_source_missing(
     store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
