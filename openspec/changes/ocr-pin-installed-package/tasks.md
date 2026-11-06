@@ -76,6 +76,9 @@ this change.
   version, so a version-only check cannot tell them apart. Any second copy of the
   current digest fails `::test_no_other_tracked_file_restates_the_pin_digest`, and
   a tag without that digest cannot pass `inspect_ocr`.
+- [x] 3.3 Round 3 (same reviewer, full diff): APPROVE, no findings in any section.
+  It noted that the workflow test uses a Python shim rather than a real
+  `uv sync`, and that the extracted-wheel tests cover package resolution.
 
 ## 4. Live acceptance and archive (pending; needs merged main)
 AGENTS.md "Definition of done" requires all three: part 1 for 4.1 and 4.2,
