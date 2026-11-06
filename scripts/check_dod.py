@@ -14,7 +14,9 @@ The check fails on any missing or mismatched field:
   the same command;
 * ``product`` stories need a green setup/doctor result and operator-host runs;
 * ``repo-tooling`` stories must not change ``verdict/`` in the merged commit;
-* the OpenSpec change is archived and every task in it is ticked;
+* the OpenSpec change is archived and every task in it is ticked, including
+  ``- [ ] (post-merge)`` tasks, which ``scripts/check_openspec_tasks.py`` lets
+  stay open at merge time;
 * the parent confirmation is by someone other than the author, re-runs one of
   the acceptance commands and shows the expected output.
 

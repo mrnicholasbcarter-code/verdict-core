@@ -109,6 +109,14 @@ def _open_task(root: Path) -> str | None:
     return None
 
 
+def _near_miss_marker(root: Path) -> str:
+    # A change of its own, so the count proves the near miss was not read as post-merge.
+    tasks = root / "openspec" / "changes" / "drill-near-miss-marker" / "tasks.md"
+    tasks.parent.mkdir(parents=True)
+    tasks.write_text("- [ ] (post merge) drill: near-miss marker\n", encoding="utf-8")
+    return ""
+
+
 def _archive_without_evidence(root: Path) -> str | None:
     changes = _active_changes(root)
     if not changes:
@@ -148,6 +156,12 @@ DRILLS = (
     Drill("forbidden-symbol", "reachability", "[FORBIDDEN]", _forbidden),
     Drill("openspec-invalid", "openspec", "1 failed", _openspec_invalid),
     Drill("openspec-open-task", "tasks", "- [ ] drill: open task", _open_task),
+    Drill(
+        "openspec-near-miss-marker",
+        "tasks",
+        "openspec change drill-near-miss-marker: 1 open task(s)",
+        _near_miss_marker,
+    ),
     Drill(
         "archive-no-evidence", "dod", "was archived without DoD evidence", _archive_without_evidence
     ),
