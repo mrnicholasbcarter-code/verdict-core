@@ -387,12 +387,13 @@ package. The service runs this interpreter with
 directory that holds the `verdict` package. The timer fires 2 minutes after boot
 and then every 15 minutes. A unit that differs is replaced, and the old copy is
 saved under `~/.verdict/service-rollback/`. It then runs `daemon-reload` and
-`enable --now verdict-prime-sync.timer`. It prints the plan as JSON.
+`enable --now verdict-prime-sync.timer`, and restarts the timer when the timer
+unit changed. It prints the plan as JSON.
 
 | Flag | Description |
 |---|---|
 | `--dry-run` | Print the rendered units and plan; write nothing, run no `systemctl` |
-| `--uninstall` | `disable --now` both units, then remove them |
+| `--uninstall` | When either unit file exists, `disable --now` both units, then remove them |
 
 ---
 

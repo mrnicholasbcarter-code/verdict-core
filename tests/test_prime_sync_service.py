@@ -61,8 +61,15 @@ def installed_site(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _run_installed(site: Path, home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run the extracted wheel with a temporary HOME and a ``systemctl`` that only logs."""
+    fake = home / "bin" / "systemctl"
+    if not fake.exists():
+        fake.parent.mkdir(parents=True)
+        fake.write_text(f'#!/bin/sh\necho "$*" >> "{home}/systemctl.log"\n')
+        fake.chmod(0o755)
     env = {
         **os.environ,
+        "PATH": f"{fake.parent}{os.pathsep}{os.environ.get('PATH', '')}",
         "PYTHONPATH": str(site),
         "HOME": str(home),
         "VERDICT_HOME": str(home / ".verdict"),
@@ -98,7 +105,23 @@ def test_installed_wheel_repair_and_installer_work_without_a_checkout(
         f'ExecStart="{Path(sys.executable).absolute()}" -m verdict harness prime sync-models\n'
         in service
     )
-    assert report["dry_run"] is True and not (tmp_path / ".config" / "systemd").exists()
+    units = tmp_path / ".config" / "systemd" / "user"
+    assert report["dry_run"] is True and not units.exists()
+    assert not (tmp_path / "systemctl.log").exists()
+
+    installed = _run_installed(installed_site, tmp_path, "-m", "verdict", *INSTALL.split()[1:])
+    assert installed.returncode == 0, installed.stderr
+    assert (units / "verdict-prime-sync.service").read_text() == service
+    assert (tmp_path / "systemctl.log").read_text().splitlines() == [
+        "--user daemon-reload",
+        "--user enable --now verdict-prime-sync.timer",
+    ]
+    removed = _run_installed(
+        installed_site, tmp_path, "-m", "verdict", *INSTALL.split()[1:], "--uninstall"
+    )
+    assert removed.returncode == 0, removed.stderr
+    assert not (units / "verdict-prime-sync.service").exists()
+    assert not (units / "verdict-prime-sync.timer").exists()
 
 
 def test_dry_run_renders_the_units_from_this_interpreter_and_package(tmp_path: Path) -> None:
@@ -141,8 +164,20 @@ def test_install_repeat_replace_and_uninstall_are_bounded(
     # A unit copied by hand from the old deploy/systemd template is replaced, with a rollback.
     (units / SERVICE).write_text("[Service]\nEnvironment=VERDICT_CHECKOUT=%h/dev/verdict-core\n")
     replaced = manage_service(unit_dir=units, run=lambda _args: None)
-    assert replaced["plan"][SERVICE] == "replace"
+    assert replaced["plan"] == {SERVICE: "replace", TIMER: "keep"}
     assert "VERDICT_CHECKOUT" in (Path(replaced["rollback"]) / SERVICE).read_text()
+    assert replaced["commands"] == [enable]
+
+    # A replaced timer is restarted: enable --now keeps a running timer on its old schedule.
+    (units / TIMER).write_text("[Timer]\nOnUnitActiveSec=1h\n")
+    calls.clear()
+    retimed = manage_service(unit_dir=units, run=calls.append)
+    assert calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        enable,
+        ["systemctl", "--user", "restart", TIMER],
+    ]
+    assert "OnUnitActiveSec=1h" in (Path(retimed["rollback"]) / TIMER).read_text()
 
     calls.clear()
     removed = manage_service(unit_dir=units, uninstall=True, run=calls.append)

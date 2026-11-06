@@ -65,6 +65,9 @@ def manage_service(
         commands = [["systemctl", "--user", "disable", "--now", TIMER, SERVICE]] if changed else []
     else:
         commands = [["systemctl", "--user", "enable", "--now", TIMER]]
+        if plan[TIMER] == "replace":
+            # enable --now leaves an already running timer on its old schedule.
+            commands.append(["systemctl", "--user", "restart", TIMER])
     rollback = None
     if not dry_run:
         rollback = save_rollback(directory, plan)

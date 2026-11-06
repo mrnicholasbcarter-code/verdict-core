@@ -21,7 +21,9 @@ The template's own `ExecStart` also needed a checkout:
   `plan_units` / `save_rollback` / `_systemctl` helpers, the installing
   interpreter in `ExecStart`, and `WorkingDirectory` set to the directory that
   holds the package. The cadence is the old template's: `OnBootSec=2min`,
-  `OnUnitActiveSec=15min`, `Persistent=true`.
+  `OnUnitActiveSec=15min`, `Persistent=true`. One addition to the mirrored
+  pattern: a replaced timer is restarted, because `enable --now` leaves a
+  running timer on its old schedule.
 - New command `verdict harness prime install-service [--dry-run] [--uninstall]`,
   through the mutation action `harness.prime.install-service`, as
   `verdict acceptance install-service` works.
@@ -51,8 +53,10 @@ on a host with no checkout, and it would be a second copy to keep in step.
 - Code: `verdict/prime_sync_service.py` (new), `verdict/doctor_diagnostics.py`,
   `verdict/actions/extra.py`, `verdict/actions/registry.py`,
   `verdict/commands/parsers_harness.py`, `verdict/commands/dispatch.py`.
-- Tests: `tests/test_prime_sync_service.py` (new; it builds the wheel and runs
-  the repair and the installer from it), `tests/test_doctor_host_prerequisites.py`.
+- Tests: `tests/test_prime_sync_service.py` (new; it builds the wheel, extracts
+  it into a bare `site-packages` and runs the repair, a dry run, an install and
+  an uninstall from it with a temporary HOME and a `systemctl` on PATH that
+  only logs its arguments), `tests/test_doctor_host_prerequisites.py`.
 - The requirement being modified is added by the active change
   `bod219-setup-host-prerequisites`, which must be archived first. That change's
   proposal, task 6.3 and scenario still name the `cp` repair until this
