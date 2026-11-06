@@ -5,6 +5,7 @@ import time
 import urllib.request
 
 from verdict.classifier import classify
+from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, resolve_gateway_key
 from verdict.http_safety import open_no_redirect
 from verdict.models import ModelInfo, ProviderConfig
 
@@ -52,6 +53,11 @@ def fetch_models(provider_name: str, config: ProviderConfig, ttl: int = 60) -> l
     import os
 
     token = config.api_key or (os.environ.get(config.api_key_env) if config.api_key_env else None)
+    if not token and config.api_key_env in GATEWAY_KEY_ENV_NAMES:
+        # A gateway key kept only in credentials.env, the owner-only key file or
+        # Prime's auth.json follows the shared resolver's precedence (BOD-416).
+        resolved = resolve_gateway_key()
+        token = resolved[0] if resolved else None
     if token:
         req.add_header("Authorization", f"Bearer {token}")
 
