@@ -9,6 +9,7 @@
 - [x] 1.5 Run the focused and neighbouring suites, `ruff check`, `ruff format --check` and `mypy --strict` on the touched modules.
 - [x] 1.6 Validate this change with `openspec validate relay-omniroute-anomaly-recording --strict`.
 - [x] 1.7 Cross-family review round 1 (`cx/gpt-5.6-luna-high`, REQUEST_CHANGES on test coverage only): add tests for `compressed`, a positive `X-OmniRoute-Cache-Hit`, repeated safe values, and a non-200 relayed status that is kept while anomalies are recorded. All 12 tests fail on `main` with `KeyError: 'omniroute_anomalies'` and pass here.
+- [x] 1.8 Cross-family review round 2 (REQUEST_CHANGES on test coverage only): pin the recording-only contract. The client gets the upstream body byte for byte, the marker headers pass through, and there is one upstream attempt. Marked and clean replies give the same status, body and attempt count at 200, 400 and 503, each run with its own health cache. Repeated markers are fail-closed end to end through the buffered and streamed relay. 14 of 17 tests fail on `main`; the 3 same-as-clean comparisons pass on `main` by design, since they guard unchanged behaviour.
 
 ## 2. Pending
 

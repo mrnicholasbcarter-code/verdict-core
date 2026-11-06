@@ -121,6 +121,15 @@ def _relay(stream: bool, correlation_id: str) -> tuple[Any, dict[str, Any]]:
     return response, evidence
 
 
+UPSTREAM_BODY = (
+    b'{"id":"chatcmpl-test","model":"selected-model","choices":[],"usage":{"total_tokens":4}}'
+)
+
+
+def _inference_requests(transport: RecordingTransport) -> int:
+    return sum(1 for item in transport.requests if not item["url"].endswith("/models"))
+
+
 def _receipts(log: Path) -> list[dict[str, Any]]:
     path = outcome_log_path(log)
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -130,13 +139,17 @@ def test_buffered_relay_records_anomalies_and_still_returns_the_reply(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     log = tmp_path / "verdict-decisions.jsonl"
-    _logging_app(monkeypatch, MarkedTransport(MARKED), log)
+    transport = MarkedTransport(MARKED)
+    _logging_app(monkeypatch, transport, log)
 
     response, evidence = _relay(False, "relay-marked-buffered")
 
-    # Recorded, not rejected: the client still receives the upstream reply.
+    # Recorded, not rejected: the client receives the upstream reply byte for
+    # byte, with the upstream markers, after one upstream attempt.
     assert response.status_code == 200
-    assert json.loads(response.content)["usage"]["total_tokens"] == 4
+    assert response.content == UPSTREAM_BODY
+    assert response.headers.get_list("x-omniroute-cache") == ["HIT"]
+    assert _inference_requests(transport) == 1
     details = evidence["outcome_event"]["details"]
     assert details["omniroute_anomalies"] == ["cache_hit", "emergency_fallback"]
     receipts = _receipts(log)
@@ -212,3 +225,36 @@ def test_buffered_relay_keeps_a_non_200_status_while_recording_anomalies(
         row["omniroute_anomalies"] == ["cache_hit", "emergency_fallback"] for row in receipts
     )
     assert LEAK_SENTINEL not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
+def test_relay_keeps_repeated_markers_fail_closed_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream: bool
+) -> None:
+    log = tmp_path / "verdict-decisions.jsonl"
+    repeated = [("X-OmniRoute-Cache", "MISS"), ("X-OmniRoute-Cache", "HIT")]
+    if not stream:
+        repeated.insert(0, ("content-type", "application/json"))
+    _logging_app(monkeypatch, MarkedTransport(repeated, stream=stream), log)
+
+    response, evidence = _relay(stream, f"relay-repeated-{stream}")
+
+    assert response.status_code == 200
+    assert evidence["outcome_event"]["details"]["omniroute_anomalies"] == ["cache_hit"]
+    assert [row["omniroute_anomalies"] for row in _receipts(log)] == [["cache_hit"]]
+
+
+@pytest.mark.parametrize("status", [200, 400, 503])
+def test_markers_do_not_change_status_body_or_retry_decisions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: int
+) -> None:
+    observed: dict[str, tuple[int, bytes, int]] = {}
+    for name, headers in (("clean", CLEAN), ("marked", MARKED)):
+        # Each run gets its own health cache: a failed run's feedback would
+        # otherwise narrow admission for the next run and confound the comparison.
+        monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(tmp_path / f"{name}-health-cache.json"))
+        transport = MarkedTransport(headers, status=status)
+        _logging_app(monkeypatch, transport, tmp_path / f"{name}-decisions.jsonl")
+        response, _ = _relay(False, f"relay-compare-{name}-{status}")
+        observed[name] = (response.status_code, response.content, _inference_requests(transport))
+    assert observed["marked"] == observed["clean"]
