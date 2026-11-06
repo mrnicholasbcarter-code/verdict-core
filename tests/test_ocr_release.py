@@ -114,7 +114,7 @@ def test_install_verifies_the_digest_before_writing(tmp_path: Path) -> None:
     assert result["status"] == "installed"
     assert urls == [ocr_release.OCR_ASSET_URL.format(version=PIN)]
     assert target.read_bytes() == ASSET
-    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert result["sha256"] == ASSET_SHA
     assert [p.name for p in target.parent.iterdir()] == ["ocr"]
 

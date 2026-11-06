@@ -195,10 +195,12 @@ def install_release(
     fd, staged = tempfile.mkstemp(dir=target.parent, prefix=".ocr-download-")
     try:
         with os.fdopen(fd, "wb") as handle:
+            # Owner-only: the operator runs this binary from their own PATH;
+            # nobody else on the host needs to read or execute it.
+            os.fchmod(handle.fileno(), 0o700)
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(staged, 0o755)
         os.replace(staged, target)
     finally:
         Path(staged).unlink(missing_ok=True)
