@@ -12,7 +12,8 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
   ``{verdict_version, git_sha, dirty}`` (captured once; nulls explicit)
 * ``run_finished``: ``outcome``, ``reason``
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
-* ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``
+* ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``,
+  optional ``served_check`` (``verdict.served_identity.ServedCheck.to_dict()``), which then decides ``route_identity``
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
 * ``repo_gates``: discovery summary (``gates``, ``declared``, optional ``note``)
@@ -208,6 +209,11 @@ def _attempt_of(event: RunEvent, fallback: int) -> int:
     return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else fallback
 
 
+_SERVED_FIELDS = ("provider", "model", "connection_id", "decision_strategy")
+#: ``served_check.status`` -> attempt ``route_identity``. Anything else is unattested.
+_SERVED_ROUTE_IDENTITY = {"verified": "match", "mismatch": "mismatch"}
+
+
 def _classify_route_identity(
     route_id: str, reported_model: str | None, ok: bool, error: str, failure_category: str
 ) -> str:
@@ -320,6 +326,19 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 row["_terminal_ok"] = ok
                 row["_terminal_error"] = error
                 row["_terminal_reported"] = reported
+                check = data.get("served_check")
+                if isinstance(check, Mapping):
+                    served = check.get("served")
+                    served = served if isinstance(served, Mapping) else {}
+                    row["served_identity"] = {
+                        "status": check.get("status"),
+                        "served_route": check.get("served_route"),
+                        **{field: served.get(field) for field in _SERVED_FIELDS},
+                        "reasons": list(check.get("reasons") or []),
+                    }
+                    if check.get("served_route"):
+                        row["executed_model"] = str(check["served_route"])
+                    row["_terminal_served_status"] = str(check.get("status") or "")
                 if ok:
                     last_success_seq = event.seq
             elif event.type == "failure":
@@ -354,9 +373,15 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             reported = row.pop("_terminal_reported")
             route = row["route_id"]
             failure_cat = row.get("failure_category", "")
-            row["route_identity"] = _classify_route_identity(
-                route, reported if reported else None, ok, error, failure_cat
-            )
+            served_status = row.pop("_terminal_served_status", None)
+            if served_status is None:
+                row["route_identity"] = _classify_route_identity(
+                    route, reported if reported else None, ok, error, failure_cat
+                )
+            elif "model_mismatch" in (error, failure_cat):
+                row["route_identity"] = "mismatch"
+            else:
+                row["route_identity"] = _SERVED_ROUTE_IDENTITY.get(served_status, "unattested")
         else:
             # Dispatched but no terminal yet (shouldn't happen in a finished run)
             row["route_identity"] = "unattested"

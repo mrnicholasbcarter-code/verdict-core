@@ -1558,6 +1558,11 @@ class DagRuntime:
                         if terminal.usage is not None
                         else ({"usage_missing": True} if terminal.ok else {})
                     ),
+                    **(
+                        {"served_check": terminal.served_check}
+                        if terminal.served_check is not None
+                        else {}
+                    ),
                 )
                 self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
                 blocked_line = _blocked_report(terminal.output) if terminal.ok else ""
@@ -1570,6 +1575,7 @@ class DagRuntime:
                         session_ref=terminal.session_ref,
                         executor_kind=terminal.executor_kind,
                         harness=terminal.harness,
+                        served_check=terminal.served_check,
                     )
                 if not terminal.ok or not terminal.output.strip():
                     return await self._fail(run, terminal, failures, worktree)
@@ -1713,6 +1719,8 @@ class DagRuntime:
                     "tokens_source": terminal.usage.tokens_source,
                     "turns": terminal.usage.turns,
                 }
+            if terminal.served_check is not None:
+                record["served_check"] = terminal.served_check
             (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
         except OSError:
             pass

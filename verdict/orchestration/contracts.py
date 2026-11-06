@@ -482,6 +482,7 @@ class WorkerTerminal:
     harness: str = (
         ""  # executor backend that ran this attempt ('prime-headless' | 'direct-gateway')
     )
+    served_check: dict[str, Any] | None = None  # ServedCheck.to_dict() for this response
 
 
 @dataclass(frozen=True)
