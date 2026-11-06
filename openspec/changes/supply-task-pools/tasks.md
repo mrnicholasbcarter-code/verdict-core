@@ -15,7 +15,7 @@
 - [x] 1.6 Run the focused suites, `ruff check`, `ruff format --check`, `mypy --strict`,
   `scripts/check_doc_links.py`, `scripts/check_reachability.py` and
   `openspec validate supply-task-pools --strict`.
-- [ ] 1.7 Independent cross-family review of the diff.
+- [x] 1.7 Independent cross-family review of the diff.
 
 ## 2. Live checks
 
