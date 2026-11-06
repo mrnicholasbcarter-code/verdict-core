@@ -1478,6 +1478,16 @@ def _action_harness_prime_sync_models(**kwargs: Any) -> ActionResult:
     return ActionResult(data=payload)
 
 
+def _action_harness_prime_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install/remove the 15-minute Prime registry sync timer."""
+    from verdict.prime_sync_service import manage_service
+
+    data = manage_service(
+        dry_run=bool(kwargs.get("dry_run", False)), uninstall=bool(kwargs.get("uninstall", False))
+    )
+    return ActionResult(data=data)
+
+
 def _action_autodev_packet_canary_rollback(**kwargs: Any) -> ActionResult:
     """Restore the pre-canary baseline choice. Does not call EligibilityGate."""
     import json as _json

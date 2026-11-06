@@ -384,14 +384,16 @@ whenever it selects a model (worker runs, `verdict eligibility`,
 `verdict orchestrate`). To also refresh it between runs, install the user timer:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now verdict-prime-sync.timer
+verdict harness prime install-service --dry-run   # print the units, write nothing
+verdict harness prime install-service             # write, daemon-reload, enable --now
+verdict harness prime install-service --uninstall # disable and remove both units
 ```
 
-Edit `VERDICT_CHECKOUT` in the service if your checkout is not at
-`~/dev/verdict-core`. `sync-models` writes nothing when the model set is
+The units are rendered from the installed package, so no checkout is needed.
+`verdict-prime-sync.service` runs `<this python> -m verdict harness prime
+sync-models`. The timer starts it 2 minutes after boot and then every 15
+minutes. A unit that differs is replaced, and the old copy is saved under
+`~/.verdict/service-rollback/`. `sync-models` writes nothing when the model set is
 unchanged, and keeps only the newest 5 `models.json.verdict-sync-*.bak` backups.
 Check the last run with `journalctl --user -u verdict-prime-sync`.
 
@@ -410,16 +412,12 @@ combo). An id that is already in the file keeps its existing settings.
 #### Working directory
 
 The timer starts `verdict-prime-sync.service`, which runs
-`python -m verdict.cli`. That puts the service `WorkingDirectory` first on
+`python -m verdict`. That puts the service `WorkingDirectory` first on
 `sys.path`, so a `verdict` package in that directory shadows the
-interpreter's install. Set `WorkingDirectory` to the main checkout: the tree
-that interpreter imports from a directory with no `verdict` package of its
-own.
-
-`deploy/systemd/verdict-prime-sync.service` sets
-`Environment=VERDICT_CHECKOUT=%h/dev/verdict-core` and leaves
-`WorkingDirectory` unset. On the installed user unit, set `WorkingDirectory`
-to that same checkout.
+interpreter's install. `verdict harness prime install-service` sets
+`WorkingDirectory` to the directory that holds the `verdict` package it was
+run from: `site-packages` for an installed package, the checkout for an
+editable one. Re-run it after moving the install.
 
 `verdict doctor` checks this for a loaded `verdict-prime-sync.service`. The
 row label is `Prime-sync code path`, under the Installed services header.

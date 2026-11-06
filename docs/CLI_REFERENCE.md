@@ -372,6 +372,29 @@ Fetches the live `/v1/models` and rewrites only `providers.omniroute.models` in
 | `--gateway GATEWAY` | Gateway base URL (default `$OMNIROUTE_BASE_URL`, then `:20128`) |
 | `--dry-run` | Print the added/removed diff; write nothing |
 
+### `verdict harness prime install-service` — Install the Prime registry sync timer
+
+```bash
+verdict harness prime install-service --dry-run
+verdict harness prime install-service
+verdict harness prime install-service --uninstall
+```
+
+Renders `verdict-prime-sync.service` and `verdict-prime-sync.timer` into
+`~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/`) from the installed
+package. The service runs this interpreter with
+`-m verdict harness prime sync-models`, with `WorkingDirectory` set to the
+directory that holds the `verdict` package. The timer fires 2 minutes after boot
+and then every 15 minutes. A unit that differs is replaced, and the old copy is
+saved under `~/.verdict/service-rollback/`. It then runs `daemon-reload` and
+`enable --now verdict-prime-sync.timer`, and restarts the timer when the timer
+unit changed. It prints the plan as JSON.
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print the rendered units and plan; write nothing, run no `systemctl` |
+| `--uninstall` | `disable --now` each unit whose file exists, then remove both files |
+
 ---
 
 ## Global Flags
@@ -643,8 +666,8 @@ Issues (exit `1`):
   missing, inactive or failed; a failed or stale metadata refresh. Each row
   ends with its repair (`verdict identify install-service`,
   `verdict acceptance install-service`, `verdict metadata install-service` or
-  `verdict metadata refresh`). The prime-sync timer has no Verdict installer:
-  a missing one names `cp <checkout>/deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now verdict-prime-sync.timer` (see
+  `verdict metadata refresh`). A missing prime-sync timer names
+  `verdict harness prime install-service` (see
   [harnesses.md](guides/harnesses.md)), an inactive one
   `systemctl --user enable --now verdict-prime-sync.timer`, a failed one
   `verdict harness prime sync-models`.

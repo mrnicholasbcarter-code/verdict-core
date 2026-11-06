@@ -1334,6 +1334,7 @@ def _register_builtins() -> None:
         _action_harness_disable,
         _action_harness_discover,
         _action_harness_enable,
+        _action_harness_prime_install_service,
         _action_harness_prime_sync_models,
         _action_harness_prime_visibility,
         _action_harness_status,
@@ -2416,6 +2417,16 @@ def _register_builtins() -> None:
                 "Harness",
             ),
             _action_harness_prime_sync_models,
+        ),
+        (
+            ActionSpec(
+                "harness.prime.install-service",
+                "harness",
+                "mutation",
+                "Install the 15-minute Prime registry sync timer (--dry-run shows it)",
+                "Harness",
+            ),
+            _action_harness_prime_install_service,
         ),
         (
             ActionSpec(
