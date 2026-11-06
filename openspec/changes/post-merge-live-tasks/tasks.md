@@ -11,17 +11,36 @@ Owned files: `scripts/check_openspec_tasks.py`, `scripts/check_dod.py`
   exit 0.
 
 ## 2. Tests first
-- [ ] 2.1 New task-check tests fail on unchanged `scripts/check_openspec_tasks.py`.
-- [ ] 2.2 New definition-of-done tests run on unchanged `scripts/check_dod.py`.
+- [x] 2.1 New task-check tests fail on unchanged `scripts/check_openspec_tasks.py`.
+  Result on `2ab6ed75` with only the tests changed: 4 failed, 61 passed across
+  `tests/test_check_openspec_tasks.py` and `tests/test_check_dod.py`. The three
+  `test_open_post_merge_task_passes_and_is_listed` cases failed with
+  `assert 1 == 0`, and `test_plain_open_task_beside_a_post_merge_task_fails`
+  printed `openspec change new: 2 open task(s)`. The 16 near-miss cases passed,
+  as they must: the old check fails every open task.
+- [x] 2.2 New definition-of-done tests run on unchanged `scripts/check_dod.py`.
+  All three passed, because `_openspec()` already fails on any `- [ ]` line and
+  on an active change. A temporary edit of its pattern to skip post-merge lines
+  turned `test_open_post_merge_task_is_not_done` and
+  `test_archive_with_open_post_merge_task_fails_all[True]` red. The `[False]`
+  case stays green there, because an archive with no evidence file fails
+  without reading `tasks.md`.
 
 ## 3. Implementation
-- [ ] 3.1 `scripts/check_openspec_tasks.py` splits open tasks into post-merge
-  and blocking, fails only on blocking ones, and lists both.
-- [ ] 3.2 `scripts/drill_gates.py` adds the `openspec-near-miss-marker` drill.
+- [x] 3.1 `scripts/check_openspec_tasks.py` splits open tasks into post-merge
+  and blocking, fails only on blocking ones, and lists both. After: 67 passed
+  across the two files and `tests/test_drill_gates.py`. A temporary lenient
+  marker, `(?i).*post.?merge`, turned all 16 near-miss cases red.
+- [x] 3.2 `scripts/drill_gates.py` adds the `openspec-near-miss-marker` drill.
+  A local run on `62f32782` with the pinned OpenSpec CLI passed every control,
+  printed `drill openspec-near-miss-marker: FAILED as intended (tasks exit 1)
+  openspec change drill-near-miss-marker: 1 open task(s)`, and ended
+  `gate drills: all drills failed as intended`, exit 0.
 
 ## 4. Docs
-- [ ] 4.1 AGENTS.md "Definition of done", CONTRIBUTING.md and the docstrings of
+- [x] 4.1 AGENTS.md "Definition of done", CONTRIBUTING.md and the docstrings of
   `scripts/check_openspec_tasks.py` and `scripts/check_dod.py` describe the marker.
+  `scripts/check_doc_links.py`: `doc links ok (460 files checked)`.
 
 ## 5. Review
 - [ ] 5.1 Cross-family review of the diff; every finding is fixed or declined
