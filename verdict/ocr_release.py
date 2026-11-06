@@ -45,11 +45,6 @@ Fetch = Callable[[str], bytes]
 ReportedVersion = Callable[[Path], str | None]
 
 
-def package_root() -> Path:
-    """The directory above this package: the checkout only for an editable install."""
-    return Path(__file__).resolve().parent.parent
-
-
 def ocr_pin() -> tuple[str, str]:
     """Return the pinned ``ocr`` release tag and the SHA-256 of its linux/amd64 asset."""
     return OCR_VERSION, OCR_SHA256
