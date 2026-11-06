@@ -283,6 +283,34 @@ def test_get_credential_source_names_a_value_load_into_env_copied_as_the_store(
     assert get_credential_source("TEST_KEY", store)[0] == "env"
 
 
+def test_get_credential_source_drops_a_copy_the_next_load_does_not_repeat(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two real loads, no manual reset between them: the second load clears the record.
+
+    The process exports the copied string itself after load 1, so load 2 does not copy
+    the name. A stale digest from load 1 would still match that string; it must not.
+    """
+    from verdict import credentials_store as module
+
+    # One test-local record for the whole test; never reset between the loads.
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
+    assert "TEST_KEY" in module._STORE_INJECTED
+    # The process exports the name itself, with the copied string. Until the next load
+    # this is the documented set-back limitation and still reads as the store.
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "store"
+    store.load_into_env()
+    assert os.environ["TEST_KEY"] == "stored_value"
+    assert "TEST_KEY" not in module._STORE_INJECTED
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+
+
 def test_limitation_value_changed_away_and_back_in_process_lists_as_store(
     store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

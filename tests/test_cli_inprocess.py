@@ -1415,6 +1415,13 @@ def test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the
     assert exc.value.code == 1
     text = capsys.readouterr().out
     assert "Repair: verdict credentials set OMNIROUTE_MANAGEMENT_TOKEN --stdin" in text
+    # The text Credentials row ("- NAME  SOURCE", source upper-cased) names the store too.
+    credential_rows = [
+        parts[2]
+        for parts in (line.split() for line in text.splitlines())
+        if len(parts) >= 3 and parts[0] == "-" and parts[1] == "OMNIROUTE_MANAGEMENT_TOKEN"
+    ]
+    assert credential_rows == ["STORE"]
     assert "cli-doctor-management-sentinel" not in text
 
 
