@@ -634,9 +634,27 @@ Issues (exit `1`):
 - Missing required credential.
 - Documentation preflight did not pass, unless it is network-only (see below),
   or timed out (`--preflight-timeout`).
+- Installed services: the identify, prime-sync and hourly acceptance timers
+  missing, inactive or failed; a failed or stale metadata refresh. Each row
+  ends with its repair (`verdict identify install-service`,
+  `verdict acceptance install-service`, `verdict metadata install-service` or
+  `verdict metadata refresh`, `verdict harness prime sync-models`).
+- Host prerequisites, each with `repair: <command>`, which text mode prints as
+  `Repair:`: `ocr` missing, a different version, or a SHA-256 that is not the
+  `certify-rehearsal.yml` pin (`verdict setup --apply --allow host.ocr`);
+  `verdict-serve.service` not installed (`--allow host.serve`), inactive
+  (`systemctl --user enable --now verdict-serve.service`) or active without
+  answering `http://127.0.0.1:8000/health`
+  (`systemctl --user restart verdict-serve.service`); `~/.prime/agent/models.json`
+  missing (`--allow host.prime-registry`), without `providers.omniroute` or
+  without models (`verdict harness prime sync-models`); a failing
+  `verdict-prime-sync.service`.
 
 Warnings (exit unaffected):
 
+- Rows with state `warning`: the metadata refresh timer not installed
+  (explicit opt-in; `verdict metadata install-service` or `verdict setup
+  --apply`), and an unreadable `certify-rehearsal.yml` ocr pin.
 - `missing_mcp_config` (no `./.mcp.json`; `--fix` creates it).
 - Memory bridge: `missing_memory_db`, `missing_memory_db_file` (`--fix` creates
   `~/.verdict/` and initializes `memory.db`).
@@ -663,7 +681,30 @@ verdict check
 
 ```bash
 verdict setup
+verdict setup --dry-run --json          # classic mutation-free plan; never probes the host
+verdict setup --recommended             # bootstrap plan, host prerequisites included; no changes
+verdict setup --apply --yes             # interactive: apply the shown plan
+verdict setup --apply --non-interactive --allow host.serve   # headless: only named actions
 ```
+
+APPLY is consent-gated: interactive runs need `--yes` (or the plan prompt);
+`--non-interactive` runs apply only the provider or action ids named with
+`--allow`. All-scope plans and APPLY include these host prerequisites, one
+action each, planned only when the host is missing or differs from it:
+
+| `--allow` id | What APPLY does (existing installer reused) |
+|---|---|
+| `host.ocr` | Downloads the open-code-review release pinned by `OCR_VERSION`/`OCR_SHA256` in `.github/workflows/certify-rehearsal.yml`, checks its SHA-256, and only then installs it at `~/.local/bin/ocr`. A mismatch installs nothing. |
+| `host.metadata` | Runs `verdict metadata refresh --include-p1` when the Core metadata store is missing, then `verdict metadata install-service` (six-hour timer). |
+| `host.acceptance-timer` | `verdict acceptance install-service` (hourly). |
+| `host.identify-timers` | `verdict identify install-service` (passive and screen timers). |
+| `host.serve` | Writes `~/.config/systemd/user/verdict-serve.service` (`127.0.0.1:8000`, `WorkingDirectory=%h`, `EnvironmentFile=%h/.config/verdict/serve.env`) and the 0600 env file with `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`, then `systemctl --user enable --now`. An exported, stored or env-file token is reused; otherwise one is generated with `secrets.token_urlsafe` and saved to the credential store. Values are never printed. Replaced files are copied under `$VERDICT_HOME/service-rollback/`. |
+| `host.prime-registry` | Only when `~/.prime/agent/models.json` is missing: creates `providers.omniroute` (`baseUrl` = gateway + `/v1`, `api: openai-completions`, `apiKey` = the env var name `OMNIROUTE_API_KEY`), then runs `verdict harness prime sync-models` and `verdict harness prime enable` (which waits for serve's `/health`). |
+
+Scoped runs (`verdict setup gateways|harnesses|intelligence`) do not include
+host prerequisites. `verdict setup --rollback` lists host actions as
+`manual_undo_required` with their uninstall command instead of claiming a
+rollback.
 
 ---
 
