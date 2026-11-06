@@ -39,7 +39,9 @@ service or timer a story needs is installed by `verdict setup` and checked by
   `manage_service`, `serve_service`, and `harness_prime` `sync_models` (through
   the `harness.prime.sync-models` action) and `enable`. Metadata refresh runs only
   when the store is missing. Prime enable waits up to 15 probes for serve's
-  `/health`.
+  `/health`. A serve unit that is active but does not answer `/health`, or whose
+  probe raises, is not satisfied: setup plans `host.serve` and APPLY restarts it, then
+  fails with its logs if it is still unhealthy.
 - `capability_bootstrap.run_bootstrap` accepts `host_planner`/`host_runner`. Host
   actions join all-scope plans only, pass the existing consent gate (`--yes`
   interactive, `--allow` ids under `--non-interactive`), are re-planned after
@@ -69,8 +71,10 @@ service or timer a story needs is installed by `verdict setup` and checked by
 - Tests: four new files; `tests/test_cli_inprocess.py` and
   `tests/test_doctor_shared_memory.py` stub the host rows like their existing
   systemd stubs, and one in-process doctor test is added.
-- Not changed: the prime-sync timer still has no installer (it is copied from
-  `deploy/systemd/`); doctor names that copy and the enable command. A
+- Not changed: the prime-sync timer still has no installer. Doctor names the
+  documented install for a missing timer, `cp <checkout>/deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now verdict-prime-sync.timer`, as in
+  `docs/guides/harnesses.md`; `enable --now` for an inactive one; and
+  `verdict harness prime sync-models` for a failed one. A
   `models.json` that exists without `providers.omniroute` is reported, not edited.
 - ADR disposition: no new decision; this reuses the bootstrap consent gate and the
   existing installers.

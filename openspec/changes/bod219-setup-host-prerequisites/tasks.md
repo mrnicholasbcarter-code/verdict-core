@@ -71,6 +71,40 @@ three docs; this change.
 - [x] 5.3 `ruff check .`, `ruff format --check .`, `mypy verdict --strict` (329
   source files) and `git diff --check` pass.
 
+## 6. Review fixes (cross-family review, REQUEST_CHANGES)
+- [x] 6.1 Classic preview: `test_classic_dry_run_and_plan_never_probe_the_host` now
+  runs seven classic forms through `cli.main` (`setup --dry-run [--json]`,
+  `--dry-run --non-interactive --json`, `--plan [--json]`, `setup plan [--json]`)
+  with `HostEnvironment.from_host`, `bootstrap_options`, `plan_host_actions` and
+  `prove_at_rest_service.timer_state` all raising, and asserts a `setup_plan` with
+  only config actions and an unchanged tree. All 7 passed on first run: the classic
+  branch of `cmd_setup_plan` returns before host options are built, so there was no
+  red phase and no code change.
+- [x] 6.2 Serve health, unknown is never healthy. Red first: 4 failed
+  (`test_active_but_unhealthy_serve_is_planned_and_restarted`,
+  `test_a_health_probe_exception_is_never_healthy`,
+  `test_serve_still_unhealthy_after_restart_fails_with_its_logs`,
+  `test_a_health_probe_exception_is_a_failed_row`). Planning now probes `/health`
+  when the unit is active; an unanswered or raising probe plans `host.serve`; APPLY
+  restarts an unchanged unit, waits for `/health`, and fails with
+  `journalctl --user -u verdict-serve.service` if it stays unhealthy; doctor turns a
+  probe exception into a failed row with the restart repair. After: passed.
+- [x] 6.3 Prime-sync repair agreed in code, spec, proposal and docs: missing names the
+  documented install (`cp <checkout>/deploy/systemd/verdict-prime-sync.{service,timer}
+  ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user
+  enable --now verdict-prime-sync.timer`), inactive names `enable --now`, failed
+  names `verdict harness prime sync-models`. `repair_command` accepts a `cp` repair.
+  Red first: `test_a_missing_prime_sync_timer_names_the_documented_install` failed
+  (exact text); after: passed.
+- [x] 6.4 `test_a_host_only_allowlist_never_authorizes_catalog_installs` (interactive
+  and non-interactive): with catalog install actions planned and only host ids
+  allowed, the injected install runner is never called and every catalog action is
+  in the consent stage's `blocked` list. Both passed on first run (existing
+  behaviour, no code change).
+- [x] 6.5 `tests/test_setup_host.py` and `tests/test_doctor_host_prerequisites.py`:
+  5 failed, 38 passed before 6.2 and 6.3; after: 43 passed, and with
+  `tests/test_doctor_presentation.py` 75 passed.
+
 Post-merge parent acceptance is not a ticked task. From installed merged main the
 parent runs `verdict setup --recommended` and `verdict setup --apply --yes` on the
 operator host, then `verdict doctor`, and expects the Host prerequisites rows and

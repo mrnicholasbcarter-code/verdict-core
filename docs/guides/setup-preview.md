@@ -15,7 +15,9 @@ timers, the `verdict serve` unit and a missing Prime registry) are not part of
 this preview, because finding them means looking at the host. `verdict setup
 --recommended` previews them without changes: it reads PATH, the `ocr` file
 digest (running `ocr --version` only when the digest differs), systemd user
-unit state and files, and whether `serve.env` holds the expected keys (never
-their values). APPLY then needs `--yes`, or `--allow
+unit state and files, whether `serve.env` holds the expected keys (never
+their values), and, only when `verdict-serve.service` is active, loopback
+`GET http://127.0.0.1:8000/health`. A probe that fails or raises counts as
+unhealthy and plans a restart. APPLY then needs `--yes`, or `--allow
 <id>` per action under `--non-interactive`. The ids and what each one installs
 are listed under `verdict setup` in [CLI_REFERENCE.md](../CLI_REFERENCE.md).

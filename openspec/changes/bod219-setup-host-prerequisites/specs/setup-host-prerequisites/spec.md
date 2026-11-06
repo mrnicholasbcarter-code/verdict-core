@@ -71,9 +71,10 @@ include host actions.
 
 #### Scenario: No consent, no mutation
 - **WHEN** a non-interactive APPLY names no allowlist
-- **THEN** consent is blocked and nothing changes; an allowlist authorizes only the named prerequisite
+- **THEN** consent is blocked and nothing changes; an allowlist authorizes only the named prerequisite, and host ids never authorize a catalog install
 - **TEST** `tests/test_setup_host.py::test_non_interactive_apply_without_an_allowlist_mutates_nothing`,
-  `::test_an_allowlist_authorizes_only_the_named_prerequisite`
+  `::test_an_allowlist_authorizes_only_the_named_prerequisite`,
+  `::test_a_host_only_allowlist_never_authorizes_catalog_installs`
 
 #### Scenario: Existing state is respected
 - **WHEN** the metadata store or `models.json` already exists
@@ -89,7 +90,7 @@ include host actions.
 
 ### Requirement: Doctor reports each host prerequisite with its exact repair
 `verdict doctor` MUST report ocr missing, a different version or a digest
-mismatch; the serve unit missing or inactive and `/health` unreachable; the
+mismatch; the serve unit missing or inactive and `/health` unreachable or its probe raising; the
 Prime registry missing, without `providers.omniroute` or without models; a
 failing `verdict-prime-sync.service`; and the acceptance, metadata and identify
 timers. Every failed row MUST be an issue and MUST end with `repair: <command>`,
@@ -107,11 +108,25 @@ and the text renderer MUST print that exact command.
   `::test_failing_prime_sync_service_names_the_repair`
 
 #### Scenario: Timer rows name their installer
-- **WHEN** the acceptance, metadata, identify or prime-sync timer is missing or failing
-- **THEN** the row names `verdict acceptance install-service`, `verdict metadata install-service` or `verdict metadata refresh`, `verdict identify install-service`, or `verdict harness prime sync-models`
+- **WHEN** the acceptance, metadata or identify timer is missing or failing
+- **THEN** the row names `verdict acceptance install-service`, `verdict metadata install-service` or `verdict metadata refresh`, or `verdict identify install-service`
 - **TEST** `tests/test_doctor_host_prerequisites.py::test_acceptance_timer_row_names_its_installer`,
   `::test_metadata_rows_name_the_exact_repair`,
   `::test_identify_and_prime_sync_timer_rows_name_their_repair`
+
+#### Scenario: The prime-sync timer names the documented install
+- **WHEN** `verdict-prime-sync.timer` is missing, inactive or failed
+- **THEN** a missing timer names `cp <checkout>/deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now verdict-prime-sync.timer` (the steps in `docs/guides/harnesses.md`; setup has no prime-sync installer), an inactive one `systemctl --user enable --now verdict-prime-sync.timer`, and a failed one `verdict harness prime sync-models`
+- **TEST** `tests/test_doctor_host_prerequisites.py::test_a_missing_prime_sync_timer_names_the_documented_install`,
+  `::test_identify_and_prime_sync_timer_rows_name_their_repair`
+
+#### Scenario: Unknown serve health is never healthy
+- **WHEN** `verdict-serve.service` is active but `/health` does not answer, or the probe raises
+- **THEN** doctor fails the health row with `systemctl --user restart verdict-serve.service`, setup plans `host.serve`, and APPLY restarts the unit and fails with its logs if it stays unhealthy
+- **TEST** `tests/test_doctor_host_prerequisites.py::test_a_health_probe_exception_is_a_failed_row`,
+  `tests/test_setup_host.py::test_active_but_unhealthy_serve_is_planned_and_restarted`,
+  `::test_a_health_probe_exception_is_never_healthy`,
+  `::test_serve_still_unhealthy_after_restart_fails_with_its_logs`
 
 #### Scenario: Failed rows fail doctor in both modes
 - **WHEN** a host-prerequisite row fails

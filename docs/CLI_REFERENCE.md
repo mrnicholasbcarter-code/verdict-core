@@ -638,13 +638,17 @@ Issues (exit `1`):
   missing, inactive or failed; a failed or stale metadata refresh. Each row
   ends with its repair (`verdict identify install-service`,
   `verdict acceptance install-service`, `verdict metadata install-service` or
-  `verdict metadata refresh`, `verdict harness prime sync-models`).
+  `verdict metadata refresh`). The prime-sync timer has no Verdict installer:
+  a missing one names `cp <checkout>/deploy/systemd/verdict-prime-sync.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now verdict-prime-sync.timer` (see
+  [harnesses.md](guides/harnesses.md)), an inactive one
+  `systemctl --user enable --now verdict-prime-sync.timer`, a failed one
+  `verdict harness prime sync-models`.
 - Host prerequisites, each with `repair: <command>`, which text mode prints as
   `Repair:`: `ocr` missing, a different version, or a SHA-256 that is not the
   `certify-rehearsal.yml` pin (`verdict setup --apply --allow host.ocr`);
   `verdict-serve.service` not installed (`--allow host.serve`), inactive
   (`systemctl --user enable --now verdict-serve.service`) or active without
-  answering `http://127.0.0.1:8000/health`
+  answering `http://127.0.0.1:8000/health`, or with a probe that raises
   (`systemctl --user restart verdict-serve.service`); `~/.prime/agent/models.json`
   missing (`--allow host.prime-registry`), without `providers.omniroute` or
   without models (`verdict harness prime sync-models`); a failing
@@ -698,7 +702,7 @@ action each, planned only when the host is missing or differs from it:
 | `host.metadata` | Runs `verdict metadata refresh --include-p1` when the Core metadata store is missing, then `verdict metadata install-service` (six-hour timer). |
 | `host.acceptance-timer` | `verdict acceptance install-service` (hourly). |
 | `host.identify-timers` | `verdict identify install-service` (passive and screen timers). |
-| `host.serve` | Writes `~/.config/systemd/user/verdict-serve.service` (`127.0.0.1:8000`, `WorkingDirectory=%h`, `EnvironmentFile=%h/.config/verdict/serve.env`) and the 0600 env file with `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`, then `systemctl --user enable --now`. An exported, stored or env-file token is reused; otherwise one is generated with `secrets.token_urlsafe` and saved to the credential store. Values are never printed. Replaced files are copied under `$VERDICT_HOME/service-rollback/`. |
+| `host.serve` | Writes `~/.config/systemd/user/verdict-serve.service` (`127.0.0.1:8000`, `WorkingDirectory=%h`, `EnvironmentFile=%h/.config/verdict/serve.env`) and the 0600 env file with `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`, then `systemctl --user enable --now` and waits for `/health`. An active unit that does not answer `/health` is planned again and restarted. An exported, stored or env-file token is reused; otherwise one is generated with `secrets.token_urlsafe` and saved to the credential store. Values are never printed. Replaced files are copied under `$VERDICT_HOME/service-rollback/`. |
 | `host.prime-registry` | Only when `~/.prime/agent/models.json` is missing: creates `providers.omniroute` (`baseUrl` = gateway + `/v1`, `api: openai-completions`, `apiKey` = the env var name `OMNIROUTE_API_KEY`), then runs `verdict harness prime sync-models` and `verdict harness prime enable` (which waits for serve's `/health`). |
 
 Scoped runs (`verdict setup gateways|harnesses|intelligence`) do not include
