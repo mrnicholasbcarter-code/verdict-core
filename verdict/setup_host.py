@@ -2,8 +2,8 @@
 
 These six were done by hand on the operator host on 2026-11-05:
 
-* ``host.ocr``: the open-code-review release pinned in
-  ``.github/workflows/certify-rehearsal.yml``, SHA-256 verified, at ``~/.local/bin/ocr``;
+* ``host.ocr``: the open-code-review release pinned in ``verdict.ocr_release``,
+  SHA-256 verified, at ``~/.local/bin/ocr``;
 * ``host.metadata``: ``verdict metadata refresh`` when the Core metadata store is
   missing, then the six-hour refresh timer;
 * ``host.acceptance-timer`` and ``host.identify-timers``: the hourly acceptance timer
@@ -105,10 +105,10 @@ class HostEnvironment:
 
     home: Path
     unit_dir: Path
-    repo_root: Path
     gateway: str
     prime_home: Path | None = None
     which: Callable[[str], str | None] = shutil.which
+    ocr_pin: Callable[[], tuple[str, str]] = ocr_release.ocr_pin
     ocr_version: Callable[[Path], str | None] = ocr_release.probe_version
     unit_state: Callable[[str], Mapping[str, Any]] = _unit_state
     unit_result: Callable[[str], str | None] = _unit_result
@@ -126,12 +126,7 @@ class HostEnvironment:
         home = Path.home()
         config = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config")))
         gateway = resolve_gateway_binding()[0].removesuffix("/v1")
-        return cls(
-            home=home,
-            unit_dir=config / "systemd" / "user",
-            repo_root=ocr_release.package_root(),
-            gateway=gateway,
-        )
+        return cls(home=home, unit_dir=config / "systemd" / "user", gateway=gateway)
 
 
 # --- observation (read-only) ---------------------------------------------------------
@@ -146,7 +141,7 @@ def _ocr_location(env: HostEnvironment) -> Path | None:
 
 
 def _inspect_ocr(env: HostEnvironment) -> ocr_release.OcrInspection:
-    version, digest = ocr_release.ocr_pin(env.repo_root)
+    version, digest = env.ocr_pin()
     return ocr_release.inspect_ocr(
         _ocr_location(env), version=version, digest=digest, reported_version=env.ocr_version
     )
@@ -179,10 +174,7 @@ def _timer_problems(env: HostEnvironment, rendered: Mapping[str, Any], *units: s
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     """What is wrong with one prerequisite; empty when it is satisfied."""
     if provider_id == OCR:
-        try:
-            found = _inspect_ocr(env)
-        except (OSError, ValueError):
-            return []  # no pin to install from: doctor reports it, setup cannot act
+        found = _inspect_ocr(env)
         return [] if found.ok else [found.describe()]
     if provider_id == METADATA:
         from verdict import metadata_service
@@ -226,9 +218,9 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "description": "Install the pinned open-code-review (ocr) release at ~/.local/bin/ocr.",
         "security_impact": (
             "Downloads one GitHub release asset over HTTPS and installs it only when its "
-            "SHA-256 equals the certify-rehearsal.yml pin; a mismatch installs nothing."
+            "SHA-256 equals the verdict.ocr_release pin; a mismatch installs nothing."
         ),
-        "postcondition": "~/.local/bin/ocr hashes to OCR_SHA256 from certify-rehearsal.yml.",
+        "postcondition": "~/.local/bin/ocr hashes to OCR_SHA256 in verdict.ocr_release.",
         "undo": (
             "Remove ~/.local/bin/ocr; restore ~/.local/bin/ocr.verdict.bak if setup "
             "replaced a binary."
@@ -336,7 +328,7 @@ def _failed(note: str, **extra: Any) -> dict[str, Any]:
 
 
 def _install_ocr(env: HostEnvironment) -> dict[str, Any]:
-    version, digest = ocr_release.ocr_pin(env.repo_root)
+    version, digest = env.ocr_pin()
     result = ocr_release.install_release(
         version=version, digest=digest, target=ocr_release.install_target(env.home), fetch=env.fetch
     )
@@ -472,10 +464,7 @@ def _row(label: str, status: str, detail: str) -> dict[str, str]:
 
 def _ocr_row(env: HostEnvironment) -> dict[str, str]:
     label = "Review tool (ocr)"
-    try:
-        found = _inspect_ocr(env)
-    except (OSError, ValueError) as exc:
-        return _row(label, "warning", f"cannot verify ocr: {exc}")
+    found = _inspect_ocr(env)
     if not found.ok:
         return _row(label, "failed", f"{found.describe()}; repair: {setup_repair(OCR)}")
     if found.path is not None and env.which("ocr") is None:

@@ -1,10 +1,12 @@
 """The pinned open-code-review (``ocr``) release: pin, inspection and verified install.
 
-``.github/workflows/certify-rehearsal.yml`` is the single source of truth for the
-release tag (``OCR_VERSION``) and the SHA-256 of its linux/amd64 asset
-(``OCR_SHA256``). ``verdict setup``, ``verdict doctor`` and
-``scripts/check_dev_readiness.py`` read both through this module; nothing else
-restates them (BOD-219).
+``OCR_VERSION`` (the release tag) and ``OCR_SHA256`` (the SHA-256 of its
+linux/amd64 asset) below are the single source of truth. They ship inside the
+package, so a non-editable install reads them with no repository checkout.
+``verdict setup``, ``verdict doctor``, ``scripts/check_dev_readiness.py`` and
+``.github/workflows/certify-rehearsal.yml`` all read them from this module;
+nothing else restates them, and ``tests/test_ocr_release.py`` fails if anything
+does.
 
 A binary is the pinned release only when its SHA-256 matches: a version string
 is not identity. ``install_release`` hashes the downloaded bytes before it writes
@@ -25,7 +27,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-REHEARSAL_WORKFLOW = ".github/workflows/certify-rehearsal.yml"
+OCR_VERSION = "v1.12.9"
+OCR_SHA256 = "9105c7081b8362a1cb0167f1ddfd1437e147a0e3c9a5af89c03c8859a5b0f0e8"
+#: Where the pin lives, as operator-facing messages name it.
+PIN_SOURCE = "verdict.ocr_release"
 OCR_ASSET_URL = (
     "https://github.com/alibaba/open-code-review/releases/download/"
     "{version}/opencodereview-linux-amd64"
@@ -41,18 +46,13 @@ ReportedVersion = Callable[[Path], str | None]
 
 
 def package_root() -> Path:
-    """The checkout this ``verdict`` package runs from, which holds ``.github/``."""
+    """The directory above this package: the checkout only for an editable install."""
     return Path(__file__).resolve().parent.parent
 
 
-def ocr_pin(root: Path | None = None) -> tuple[str, str]:
-    """Return the ``ocr`` release tag and binary SHA-256 the rehearsal workflow installs."""
-    text = ((root or package_root()) / REHEARSAL_WORKFLOW).read_text(encoding="utf-8")
-    version = re.search(r"^\s*OCR_VERSION:\s*['\"]?(v\d+\.\d+\.\d+)['\"]?\s*$", text, re.MULTILINE)
-    digest = re.search(r"^\s*OCR_SHA256:\s*['\"]?([0-9a-f]{64})['\"]?\s*$", text, re.MULTILINE)
-    if version is None or digest is None:
-        raise ValueError(f"{REHEARSAL_WORKFLOW} must set OCR_VERSION and OCR_SHA256")
-    return version.group(1), digest.group(1)
+def ocr_pin() -> tuple[str, str]:
+    """Return the pinned ``ocr`` release tag and the SHA-256 of its linux/amd64 asset."""
+    return OCR_VERSION, OCR_SHA256
 
 
 def install_target(home: Path) -> Path:
@@ -107,17 +107,17 @@ class OcrInspection:
 
     def describe(self) -> str:
         if self.state == "missing":
-            return f"not on PATH; {REHEARSAL_WORKFLOW} pins {self.version}"
+            return f"not on PATH; {PIN_SOURCE} pins {self.version}"
         if self.state == "wrong_version":
             shown = f"v{self.reported}" if self.reported else "no version"
-            return f"{self.path} reports {shown}; {REHEARSAL_WORKFLOW} pins {self.version}"
+            return f"{self.path} reports {shown}; {PIN_SOURCE} pins {self.version}"
         if self.state == "digest_mismatch":
             return (
                 f"{self.path} reports {self.version} but has sha256 "
-                f"{self.actual_digest or 'unreadable'}; {REHEARSAL_WORKFLOW} pins {self.digest} "
+                f"{self.actual_digest or 'unreadable'}; {PIN_SOURCE} pins {self.digest} "
                 "(the linux/amd64 release asset)"
             )
-        return f"{self.path} is {self.version}, sha256 matches {REHEARSAL_WORKFLOW}"
+        return f"{self.path} is {self.version}, sha256 matches {PIN_SOURCE}"
 
 
 def inspect_ocr(
@@ -183,7 +183,7 @@ def install_release(
             "sha256": actual,
             "expected_sha256": digest,
             "note": (
-                f"downloaded sha256 {actual} does not match the {REHEARSAL_WORKFLOW} pin "
+                f"downloaded sha256 {actual} does not match the {PIN_SOURCE} pin "
                 f"{digest}; nothing installed"
             ),
         }
@@ -211,5 +211,5 @@ def install_release(
         "status": "installed",
         "sha256": digest,
         "backup": str(backup) if backup else None,
-        "note": f"installed {version} at {target}; sha256 verified against {REHEARSAL_WORKFLOW}",
+        "note": f"installed {version} at {target}; sha256 verified against {PIN_SOURCE}",
     }

@@ -12,7 +12,7 @@ mismatch.
 - **WHEN** the readiness script, setup or doctor needs the ocr pin
 - **THEN** each uses `verdict.ocr_release.ocr_pin` and `inspect_ocr`
 - **TEST** `tests/test_ocr_release.py::test_readiness_script_shares_the_helper`,
-  `::test_pin_is_read_from_the_real_rehearsal_workflow`
+  `::test_pin_is_the_package_constants`
 
 #### Scenario: A digest mismatch never installs
 - **WHEN** the downloaded asset does not hash to `OCR_SHA256`

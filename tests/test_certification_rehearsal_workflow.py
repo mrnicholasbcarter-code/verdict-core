@@ -51,7 +51,8 @@ def test_rehearsal_main_only_oidc_permissions_and_protected_environment():
         assert all("test -n" in line or "::add-mask::" in line for line in secret_lines)
     reviewer = next(s for s in steps if s.get("name") == "Install pinned independent reviewer")
     assert "sha256sum --check --strict" in reviewer["run"]
-    assert len(job["env"]["OCR_SHA256"]) == 64
+    # The pin itself comes from verdict.ocr_release (tests/test_ocr_release.py).
+    assert 'test "${#OCR_SHA256}" = 64' in reviewer["run"]
     script = (ROOT / "scripts/run_certification_rehearsals.py").read_text()
     for flag in (
         "--capacity",

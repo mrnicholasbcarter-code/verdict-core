@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from scripts import check_dev_readiness as readiness
+from verdict import ocr_release
 
 ROOT = Path(__file__).resolve().parents[1]
 PIN = "1.13.2"
@@ -27,12 +28,6 @@ jobs:
       - name: openspec validate --all --strict (pinned {PIN})
         run: npx --yes @fission-ai/openspec@{PIN} validate --all --strict --no-interactive
 """
-
-
-def _rehearsal_yml(sha256: str) -> str:
-    return (
-        f"jobs:\n  rehearse:\n    env:\n      OCR_VERSION: {OCR_PIN}\n      OCR_SHA256: {sha256}\n"
-    )
 
 
 def _write_exe(path: Path, body: str) -> Path:
@@ -76,15 +71,14 @@ class Host:
             self.bin / "ocr", f"echo 'open-code-review {OCR_PIN} (bccbc15) linux/amd64'\n"
         )
         self.ocr_sha = _sha256(self.ocr)
+        # The fake ocr binary is "the pinned release": the pin is the package's seam.
+        monkeypatch.setattr(readiness, "ocr_pin", lambda: (OCR_PIN, self.ocr_sha))
 
         self.root.mkdir()
         _git(self.root, "init", "-q", "-b", "main")
         workflows = self.root / ".github" / "workflows"
         workflows.mkdir(parents=True)
         (workflows / "ci.yml").write_text(CI_YML, encoding="utf-8")
-        (workflows / "certify-rehearsal.yml").write_text(
-            _rehearsal_yml(self.ocr_sha), encoding="utf-8"
-        )
         self.hook = _write_exe(
             self.root / ".git" / "hooks" / "pre-push", f'exec {self.vgate} --hook "$@"\n'
         )
@@ -314,6 +308,21 @@ def test_ocr_with_pinned_version_but_other_digest_fails(
     assert f"mv {host.ocr}.download {host.ocr}" in out
 
 
+def test_ocr_check_reads_the_pin_without_the_rehearsal_workflow(
+    host: Host, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ocr pin comes from the package, never from ``--root``'s ``.github/``."""
+    monkeypatch.setattr(readiness, "ocr_pin", ocr_release.ocr_pin)
+    version, digest = ocr_release.ocr_pin()
+    (host.root / ".github" / "workflows" / "certify-rehearsal.yml").unlink(missing_ok=True)
+    host.ocr.unlink()
+    code, out = host.run(capsys)
+    assert code == 1
+    assert [line.split()[1] for line in _failures(out)] == ["ocr"]
+    assert f"releases/download/{version}/opencodereview-linux-amd64" in out
+    assert digest in out
+
+
 def _snapshot(base: Path) -> dict[str, tuple[int, int, str]]:
     state: dict[str, tuple[int, int, str]] = {}
     for path in sorted(base.rglob("*")):
@@ -347,7 +356,7 @@ def test_pins_are_read_from_the_real_workflows() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", pin)
     lint = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert f"npx --yes @fission-ai/openspec@{pin} validate --all --strict" in lint
-    version, digest = readiness.ocr_pin(ROOT)
+    version, digest = readiness.ocr_pin()
     assert re.fullmatch(r"v\d+\.\d+\.\d+", version)
     assert re.fullmatch(r"[0-9a-f]{64}", digest)
 
