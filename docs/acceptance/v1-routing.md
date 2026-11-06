@@ -35,6 +35,14 @@ subscription + free routes only, no metered calls, a hard per-cycle request cap 
   `verified_refresh.py:142-144`), bounded further by `--max-requests`/`--max-wall-seconds` flags
   (defaults 300/600, CLI help below) — the BOD-297 decision on record is that prove-at-rest's chat
   phase takes `min(own cap, coordinator hard cap)`, never the full daemon default.
+- **`--max-requests` bounds the chat phase only.** One `prove-at-rest once` cycle also runs a
+  screening phase and an agentic (tool-use) phase, each with its own budget (`--agentic-max-routes`,
+  3 turns per agentic probe; `verdict/prove_at_rest.py:1010-1022`). A cycle's total request count is
+  therefore larger than `--max-requests`: on 2026-11-05, `--max-requests 16 --agentic-max-routes 4`
+  reported 49 requests (screen 22, chat probes, agentic 4×3). Operator decision 2026-11-05: keep the
+  per-phase budgets while every provider is subscription or free; record the actual per-phase counts
+  as evidence instead of claiming an aggregate 16-request cycle. Revisit (one aggregate cap) if a
+  metered provider is added.
 - No unbounded `test-all`. No new `auto/*` or `combo/*` route publication. Only subscription and
   free routes; no metered calls from this story.
 - Global/pool concurrency ceilings: `HARD_MAX_CONCURRENCY=4` (`verified_refresh.py:145`);
