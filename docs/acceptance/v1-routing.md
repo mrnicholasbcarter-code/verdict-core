@@ -35,6 +35,14 @@ subscription + free routes only, no metered calls, a hard per-cycle request cap 
   `verified_refresh.py:142-144`), bounded further by `--max-requests`/`--max-wall-seconds` flags
   (defaults 300/600, CLI help below) — the BOD-297 decision on record is that prove-at-rest's chat
   phase takes `min(own cap, coordinator hard cap)`, never the full daemon default.
+- **`--max-requests` bounds the chat phase only.** One `prove-at-rest once` cycle also runs a
+  screening phase and an agentic (tool-use) phase, each with its own budget (`--agentic-max-routes`,
+  3 turns per agentic probe; `verdict/prove_at_rest.py:1010-1022`). A cycle's total request count is
+  therefore larger than `--max-requests`: on 2026-11-05, `--max-requests 16 --agentic-max-routes 4`
+  reported 49 requests (screen 22, chat probes, agentic 4×3). Operator decision 2026-11-05: keep the
+  per-phase budgets while every provider is subscription or free; record the actual per-phase counts
+  as evidence instead of claiming an aggregate 16-request cycle. Revisit (one aggregate cap) if a
+  metered provider is added.
 - No unbounded `test-all`. No new `auto/*` or `combo/*` route publication. Only subscription and
   free routes; no metered calls from this story.
 - Global/pool concurrency ceilings: `HARD_MAX_CONCURRENCY=4` (`verified_refresh.py:145`);
@@ -436,9 +444,9 @@ Category | Preconditions | Exact command | Expected observable result | Anti-gam
 - **Category:** Live (gateway/maintenance vertical)
 - **Preconditions:** AWAITING MERGE TO MAIN + INSTALL (not consent — BOD-342 operator consent recorded 2026-10-19 ~15:55Z ("yes and yes"): (1) the installed-runtime cutover via S11, with rollback captured first, after the combined PR merges; (2) BOD-410 live qualification on subscription and free routes only, with a hard request cap. Consent is NOT the open gate for this row.). A30's three-cycle live vertical needs the combined PR merged to main first; BOD-410 consent item (2) bounds the run to subscription + free routes only, no metered, with a hard per-cycle request cap (16 Core-requests here, never raised) once merge+install clears the gate.
 - **Exact command:** `Cycle 1-3: `PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict prove-at-rest once --allow-live-probe --max-requests 16 --max-wall-seconds 600` spaced >= 600 s apart, each followed by `PYTHONPATH=$PWD /home/nick/dev/verdict-core/.venv/bin/python -m verdict acceptance run --gateway http://127.0.0.1:20128` and a `GET /v1/models` before/after capture.`
-- **Expected observable result:** Not observed. Would-be: 3 cycles each respecting 4-route/16-request/4096-output/600s caps; `acceptance run` exit 0 (green) or exit 3 (red, recorded) with `eligible_free > 0` when supply exists; insufficient supply recorded as explicit BLOCKED, never forced green.
-- **Anti-gaming check:** No unbounded test-all; no new auto/opaque route; caps are ceilings only (never raised); insufficient supply must show BLOCKED not a fabricated pass; parent re-run required (author != confirmer, check_dod.py parent_confirmation).
-- **Evidence:** None yet. Target path once merged to main, installed, and run: `/home/nick/dev/verdict-core/.git/verdict-prime/missions/bod431/prime-takeover-20261018/live/<cycle-id>-a30-raw.json` (outside repo) -> `docs/proof/dod/<story>.json` only after `check_dod.py` validates.
+- **Expected observable result:** 3 cycles, each within its per-phase budgets (chat phase within `--max-requests 16`, agentic phase within `--agentic-max-routes`, wall time within 600 s), with the cycle's reported `requests` total and per-phase counts recorded rather than a claimed aggregate of 16 (operator decision 2026-11-05, see "Caps and constraints"); `acceptance run` exit 0 (green) or exit 3 (red, recorded) with `eligible_free > 0` when supply exists; insufficient supply recorded as explicit BLOCKED, never forced green.
+- **Anti-gaming check:** No unbounded test-all; no new auto/opaque route; caps are ceilings only (never raised); insufficient supply must show BLOCKED not a fabricated pass; reported request counts are recorded as observed, never trimmed to match a target; parent re-run required (author != confirmer, check_dod.py parent_confirmation).
+- **Evidence:** Cycle 1 on installed main `ebd72ef7`, 2026-11-05 20:48–20:54 UTC: `prove-at-rest once --allow-live-probe --base-url http://127.0.0.1:20128 --max-requests 16 --max-wall-seconds 600 --agentic-max-routes 4 --agentic-concurrency 2 --agentic-pool-concurrency 1` → exit 0, `requests` 49, `screened` 22, `probed` 12, agentic 3/4 passed, `fresh` 9, `stopped_reason` `route_cap`. Cycles 2–3 and the parent rerun remain. Raw evidence stays outside the repo until `check_dod.py` validates a `docs/proof/dod/<story>.json`.
 - **Status:** AWAITING MERGE TO MAIN + INSTALL (consent already recorded, BOD-342 2026-10-19 ~15:55Z, scope: subscription + free routes only, hard request cap, no metered); deterministic prerequisite code is present at this head
 
 
