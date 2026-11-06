@@ -65,6 +65,17 @@ this change.
     fails on any other literal `OCR_VERSION`/`OCR_SHA256` assignment. Red on
     `124a37e6`: it listed `.github/workflows/certify-rehearsal.yml`. Green after.
   The five ocr test files: 106 passed. The archive order it also raised is task 4.3.
+- [x] 3.2 Round 2 (same reviewer, REQUEST_CHANGES), one valid finding: the
+  definition pattern missed annotated and parenthesised assignments. The scan is
+  now a Python regex over every tracked file naming `OCR_VERSION` or
+  `OCR_SHA256`, with new `::test_pin_definition_pattern` (16 cases, 9 must match).
+  Red with the old pattern: 4 failed (`: str =`, `: Final[str] =`, `= ("…")`, a
+  digest on the line after `= (`). Green: 121 passed across the five ocr test
+  files, and the scan still fails on `124a37e6` at the workflow. Declined: a
+  release tag under another name. Recorded ocr output and test pins hold the same
+  version, so a version-only check cannot tell them apart. Any second copy of the
+  current digest fails `::test_no_other_tracked_file_restates_the_pin_digest`, and
+  a tag without that digest cannot pass `inspect_ocr`.
 
 ## 4. Live acceptance and archive (pending; needs merged main)
 AGENTS.md "Definition of done" requires all three: part 1 for 4.1 and 4.2,

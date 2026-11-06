@@ -260,8 +260,37 @@ def test_no_other_tracked_file_restates_the_pin_digest() -> None:
     assert result.stdout.split() == ["verdict/ocr_release.py"], result.stdout
 
 
-# A literal value assigned to OCR_VERSION or OCR_SHA256, as Python or as YAML.
-_PIN_DEFINITION = r"""OCR_(VERSION|SHA256)["']?[[:space:]]*[:=][[:space:]]*["']?[0-9a-fv]"""
+# A literal value assigned to OCR_VERSION or OCR_SHA256: Python (with or without
+# an annotation or parentheses), a dict key, YAML or a shell assignment.
+_PIN_DEFINITION = re.compile(
+    r"""OCR_(?:VERSION|SHA256)["']?\s*(?::\s*[\w.\[\]| ]+?\s*)?[:=](?!=)[\s("']*(?:v\d|[0-9a-f]{64})"""
+)
+
+
+# <V> and <S> stand for the two names, so this file holds no definition itself.
+@pytest.mark.parametrize(
+    ("text", "defines"),
+    [
+        ('<V> = "v1.13.0"', True),
+        ("<V>: str = 'v1.13.0'", True),
+        ("<V>: Final[str] = 'v1.13.0'", True),
+        ('<V> = ("v1.13.0")', True),
+        ('<S> = (\n    "' + "ab" * 32 + '"\n)', True),
+        ("    <S>: " + "ab" * 32, True),
+        ("  <V>: 'v1.13.0'", True),
+        ('env = {"<V>": "v1.13.0"}', True),
+        ('<V>="v1.13.0" ocr --version', True),
+        ('print("<V>=" + <V>); print("<S>=" + <S>)\'', False),
+        ('test "${#<S>}" = 64', False),
+        ("assert <V> == expected", False),
+        ("pinned by `<V>`/`<S>` in `verdict/ocr_release.py`", False),
+        ('<V>="$(python -c ...)"', False),
+        ("<V>: ${{ env.FROM_THE_PACKAGE }}", False),
+    ],
+)
+def test_pin_definition_pattern(text: str, defines: bool) -> None:
+    text = text.replace("<V>", "OCR_VERSION").replace("<S>", "OCR_SHA256")
+    assert bool(_PIN_DEFINITION.search(text)) is defines
 
 
 @pytest.mark.skipif(not (ROOT / ".git").exists(), reason="not a git checkout")
@@ -274,7 +303,7 @@ def test_no_other_tracked_file_defines_the_pin() -> None:
     """
     result = subprocess.run(
         [
-            *("git", "-C", str(ROOT), "grep", "-lE", _PIN_DEFINITION, "--", "."),
+            *("git", "-C", str(ROOT), "grep", "-lIE", "OCR_(VERSION|SHA256)", "--", "."),
             *(":!docs/proof", ":!openspec/changes/archive"),
         ],
         capture_output=True,
@@ -282,4 +311,9 @@ def test_no_other_tracked_file_defines_the_pin() -> None:
         timeout=60,
         check=False,
     )
-    assert result.stdout.split() == ["verdict/ocr_release.py"], result.stdout
+    defining = [
+        name
+        for name in result.stdout.split()
+        if _PIN_DEFINITION.search((ROOT / name).read_text(encoding="utf-8", errors="replace"))
+    ]
+    assert defining == ["verdict/ocr_release.py"], result.stdout
