@@ -1,34 +1,28 @@
-#!/usr/bin/env python3
-"""Sync upstream reference docs into ai-memory as cited, read-only pages (BOD-346).
+"""Upstream reference docs in ai-memory as cited, read-only pages.
 
-Usage:
-    scripts/sync_ref_docs.py <repo> <tag> <project> [--paths-file F] [--dry-run]
-    scripts/sync_ref_docs.py <repo> installed <project> --package-json PATH
+``verdict memory ref-docs sync`` reads the GitHub git tree at the tag of the
+installed tool (``gh api``) and writes each markdown section as one page of at
+most 3 KB, with a citation, into the tool's own ai-memory project
+(``ref-omniroute``). An OpenAPI file becomes one page group per tag. A local
+manifest under ``$VERDICT_HOME/ref-docs/`` records each file's blob sha and
+pages: a file is rewritten only when its sha changes, pages of removed files
+are deleted, and a re-run with no upstream change writes 0 pages. Page bodies
+are redacted of token-shaped strings before writing.
 
-The source is the GitHub git tree at ``<tag>`` (read through ``gh api``). By
-default every markdown file under ``docs/`` is imported (``i18n`` and
-``screenshots`` excluded), plus ``docs/openapi.{yaml,yml,json}``. A markdown file
-becomes one page per section (H2, then H3/H4, then lines), each at most 3 KB
-including its citation. An OpenAPI file becomes one page group per tag.
-
-A local manifest records each file's blob sha and pages. A file is rewritten
-only when its sha changes, pages of removed files are deleted, and a re-run
-with no upstream change writes 0 pages. Page bodies are redacted of
-token-shaped strings before writing.
+The pages are reference evidence for tasks that touch the tool. They live in
+their own project and are never part of operator-rule scopes.
 """
 
 from __future__ import annotations
 
-import argparse
 import base64
 import json
 import os
 import re
 import subprocess
-import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -589,85 +583,238 @@ def _gh(args: list[str]) -> str:
     return done.stdout
 
 
-def _fetch_blob(repo: str) -> Callable[[str], str]:
+def _fetch_blob(repo: str, gh: Callable[[list[str]], str]) -> Callable[[str], str]:
     def fetch(sha: str) -> str:
-        data = json.loads(_gh([f"repos/{repo}/git/blobs/{sha}"]))
+        data = json.loads(gh([f"repos/{repo}/git/blobs/{sha}"]))
         return base64.b64decode(data["content"]).decode("utf-8")
 
     return fetch
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("repo", help="GitHub owner/name, e.g. cheaper-inference/OmniRoute")
-    parser.add_argument("tag", help="git tag, or 'installed' to read --package-json")
-    parser.add_argument("project", help="ai-memory project, e.g. ref-omniroute")
-    parser.add_argument("--workspace", default="default")
-    parser.add_argument("--package-json", type=Path)
-    parser.add_argument("--paths-file", type=Path, help="import only these repo paths")
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--endpoint", default=os.environ.get("AI_MEMORY_URL", DEFAULT_ENDPOINT))
-    parser.add_argument("--token-file", type=Path)
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
+# --------------------------------------------------------------------------- sources
 
-    tag = args.tag
-    if tag == "installed":
-        if args.package_json is None:
-            parser.error("'installed' needs --package-json")
-        tag = resolve_installed_tag(args.package_json)
-    home = Path(os.environ.get("VERDICT_HOME") or Path.home() / ".verdict")
-    manifest_path = args.manifest or home / "ref-docs" / f"{args.workspace}--{args.project}.json"
-    manifest: dict[str, Any] = (
-        json.loads(manifest_path.read_text("utf-8")) if manifest_path.is_file() else {}
+#: The OmniRoute docs the operator selected for the first slice (2026-11-06).
+OMNIROUTE_PATHS = (
+    "docs/OMNIROUTE_PROVIDER_FAILOVER.md",
+    "docs/OMNIROUTE_ROUTING_POLICY.md",
+    "docs/architecture/ADAPTIVE_ROUTING.md",
+    "docs/architecture/ARCHITECTURE.md",
+    "docs/architecture/MONITORING_SECTIONS.md",
+    "docs/architecture/QUALITY_EVIDENCE_CONTRACT.md",
+    "docs/architecture/REPOSITORY_MAP.md",
+    "docs/architecture/RESILIENCE_GUIDE.md",
+    "docs/architecture/ROUTER_BACKENDS.md",
+    "docs/architecture/admission-lanes.md",
+    "docs/frameworks/EVALS.md",
+    "docs/frameworks/MCP-SERVER.md",
+    "docs/frameworks/MEMORY.md",
+    "docs/frameworks/OPEN_SSE_ARCHITECTURE.md",
+    "docs/frameworks/RADAR.md",
+    "docs/getting-started/AUTO-COMBO-GUIDE.md",
+    "docs/getting-started/FREE-TIERS-GUIDE.md",
+    "docs/getting-started/PROVIDERS-GUIDE.md",
+    "docs/guides/CLAUDE-CODE-CONFIGURATION.md",
+    "docs/guides/CLI-INTEGRATIONS.md",
+    "docs/guides/CODEX-CLI-CONFIGURATION.md",
+    "docs/guides/COST_TRACKING.md",
+    "docs/guides/FREE_PROVIDER_RANKINGS.md",
+    "docs/guides/TIERS.md",
+    "docs/guides/USAGE_QUOTA_GUIDE.md",
+    "docs/openapi.yaml",
+    "docs/reference/API_REFERENCE.md",
+    "docs/reference/CLI-TOOLS.md",
+    "docs/reference/EMBEDDINGS.md",
+    "docs/reference/ENVIRONMENT.md",
+    "docs/reference/FEATURE_FLAGS.md",
+    "docs/reference/FREE_PROXIES_API.md",
+    "docs/reference/FREE_TIERS.md",
+    "docs/reference/OPENAI_COMPATIBILITY.md",
+    "docs/reference/OPENCODE-SESSION-IDENTITY.md",
+    "docs/reference/PROVIDER_PLUGIN_MANIFEST.md",
+    "docs/reference/PROVIDER_REFERENCE.md",
+    "docs/reference/RELAY_BACKEND_STRATEGY.md",
+    "docs/reference/RELAY_TROUBLESHOOTING.md",
+    "docs/reference/REMOVED_PROVIDERS.md",
+    "docs/routing/API_KEY_CONNECTION_PREFERENCE.md",
+    "docs/routing/AUTO-COMBO.md",
+    "docs/routing/QUOTA_SHARE.md",
+    "docs/routing/REASONING_ROUTING.md",
+)
+
+
+class RefDocsError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Source:
+    """One upstream tool: where its docs live and how to read its installed version."""
+
+    name: str
+    repo: str
+    project: str
+    unit: str
+    package: str
+    paths: tuple[str, ...] | None = None
+
+
+SOURCES = {
+    "omniroute": Source(
+        name="omniroute",
+        repo="cheaper-inference/OmniRoute",
+        project="ref-omniroute",
+        unit="omniroute.service",
+        package="omniroute",
+        paths=OMNIROUTE_PATHS,
     )
+}
+#: The hourly timer may miss two runs before doctor reports the docs as stale.
+STALE_AFTER = timedelta(hours=3)
 
-    def save(m: dict[str, Any]) -> None:
-        if args.dry_run:
-            return
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = manifest_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(m, indent=1, sort_keys=True), "utf-8")
-        tmp.replace(manifest_path)
 
+def _unit_exec_start(unit: str) -> str:
+    done = subprocess.run(
+        ["systemctl", "--user", "show", "-p", "ExecStart", "--value", unit],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return done.stdout
+
+
+def installed_package_json(
+    source: Source, exec_start: Callable[[str], str] = _unit_exec_start
+) -> Path:
+    """package.json of the release the tool's systemd unit actually runs."""
+    found = re.search(rf"(/\S*/node_modules/{re.escape(source.package)})/", exec_start(source.unit))
+    if not found:
+        raise RefDocsError(f"{source.unit} does not run a node_modules/{source.package} install")
+    return Path(found.group(1)) / "package.json"
+
+
+def installed_tag(source: Source, exec_start: Callable[[str], str] = _unit_exec_start) -> str:
+    return resolve_installed_tag(installed_package_json(source, exec_start))
+
+
+def verdict_home() -> Path:
+    return Path(os.environ.get("VERDICT_HOME") or Path.home() / ".verdict")
+
+
+def manifest_path(source: Source, workspace: str = "default", home: Path | None = None) -> Path:
+    return (home or verdict_home()) / "ref-docs" / f"{workspace}--{source.project}.json"
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(path.read_text("utf-8")) if path.is_file() else {}
+    return loaded
+
+
+def _saver(path: Path) -> Callable[[dict[str, Any]], None]:
+    def save(manifest: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True), "utf-8")
+        tmp.replace(path)
+
+    return save
+
+
+def run_sync(
+    source: Source,
+    *,
+    tag: str | None = None,
+    workspace: str = "default",
+    dry_run: bool = False,
+    endpoint: str | None = None,
+    token: str | None = None,
+    gh: Callable[[list[str]], str] | None = None,
+    exec_start: Callable[[str], str] = _unit_exec_start,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Sync one source at ``tag`` (default: the installed tag) and return the coverage report."""
+    gh = gh or _gh
+    tag = tag or installed_tag(source, exec_start)
+    path = manifest_path(source, workspace, home)
+    manifest = load_manifest(path)
     store: PageStore
-    if args.dry_run:
+    if dry_run:
         store = DryRunStore()
     else:
-        token = (
-            args.token_file.read_text("utf-8").strip()
-            if args.token_file
-            else os.environ.get("AI_MEMORY_AUTH_TOKEN", "")
-        )
+        token = token if token is not None else os.environ.get("AI_MEMORY_AUTH_TOKEN", "")
         if not token:
-            parser.error("set AI_MEMORY_AUTH_TOKEN or pass --token-file")
-        store = AiMemoryStore(args.endpoint, token, args.workspace, args.project)
-    tree = json.loads(_gh([f"repos/{args.repo}/git/trees/{tag}?recursive=1"]))
+            raise RefDocsError("AI_MEMORY_AUTH_TOKEN is not set")
+        endpoint = endpoint or os.environ.get("AI_MEMORY_URL", DEFAULT_ENDPOINT)
+        store = AiMemoryStore(endpoint, token, workspace, source.project)
+    tree = json.loads(gh([f"repos/{source.repo}/git/trees/{tag}?recursive=1"]))
     if tree.get("truncated"):
-        raise SystemExit("git tree is truncated; refusing a partial sync")
-    only = set(args.paths_file.read_text("utf-8").split()) if args.paths_file else None
+        raise RefDocsError("git tree is truncated; refusing a partial sync")
     report = sync(
-        repo=args.repo,
+        repo=source.repo,
         tag=tag,
-        project=args.project,
+        project=source.project,
         tree=tree["tree"],
-        fetch_blob=_fetch_blob(args.repo),
+        fetch_blob=_fetch_blob(source.repo, gh),
         store=store,
         manifest=manifest,
-        save_manifest=save,
-        only=only,
+        save_manifest=(lambda m: None) if dry_run else _saver(path),
+        only=set(source.paths) if source.paths is not None else None,
     )
-    out = {
+    return {
         "repo": report.repo,
         "tag": report.tag,
         "project": report.project,
-        "dry_run": args.dry_run,
+        "workspace": workspace,
+        "dry_run": dry_run,
+        "manifest": str(path),
         "totals": report.totals(),
         "files": [vars(f) for f in report.files],
     }
-    sys.stdout.write(json.dumps(out, indent=1) + "\n")
-    return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def status(
+    *,
+    workspace: str = "default",
+    home: Path | None = None,
+    exec_start: Callable[[str], str] = _unit_exec_start,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """One row per source: synced tag, installed tag, last sync, page count and problems.
+
+    A row is ``ok`` only when the manifest exists, its tag is the installed tag
+    and the last sync is newer than ``STALE_AFTER``. Anything unknown is a problem.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = []
+    for source in SOURCES.values():
+        path = manifest_path(source, workspace, home)
+        manifest = load_manifest(path)
+        problems = []
+        try:
+            installed: str | None = installed_tag(source, exec_start)
+        except (RefDocsError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+            installed = None
+            problems.append(f"installed version unknown ({exc})")
+        synced_at = manifest.get("synced_at")
+        if not manifest:
+            problems.append(f"never synced ({path} is missing)")
+        else:
+            if installed and manifest.get("tag") != installed:
+                problems.append(f"synced {manifest.get('tag')} but {installed} is installed")
+            if not synced_at:
+                problems.append("last sync time unknown")
+            elif now - datetime.fromisoformat(str(synced_at)) > STALE_AFTER:
+                problems.append(f"last sync {synced_at} is older than {STALE_AFTER}")
+        rows.append(
+            {
+                "source": source.name,
+                "project": f"{workspace}/{source.project}",
+                "tag": manifest.get("tag"),
+                "installed_tag": installed,
+                "synced_at": synced_at,
+                "files": len(manifest.get("files") or {}),
+                "pages": sum(len(f["pages"]) for f in (manifest.get("files") or {}).values()),
+                "ok": not problems,
+                "problems": problems,
+            }
+        )
+    return rows

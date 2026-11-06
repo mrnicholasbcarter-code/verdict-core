@@ -1,12 +1,18 @@
-"""Unit tests for scripts/sync_ref_docs.py (BOD-346)."""
+"""Unit tests for verdict.ref_docs (upstream reference docs in ai-memory)."""
 
 from __future__ import annotations
 
+import base64
 import json
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.sync_ref_docs import (
+import pytest
+
+from verdict import ref_docs
+from verdict.ref_docs import (
     AUTHORITY,
     MAX_PAGE_BYTES,
     Page,
@@ -227,3 +233,77 @@ def test_each_subsection_gets_its_own_page_and_stubs_merge_forward() -> None:
     _, chunks = split_markdown(text, 1200)
     assert [c.crumbs for c in chunks][:3] == [("Big", "Sub 0"), ("Big", "Sub 1"), ("Big", "Sub 2")]
     assert chunks[0].text.startswith("## Big\n\nLead-in.")
+
+
+EXEC_START = (
+    "{ path=/opt/node/bin/node ; argv[]=/opt/node/bin/node "
+    "/opt/node/lib/node_modules/omniroute/bin/omniroute.mjs --port 20128 ; ignore_errors=no }"
+)
+
+
+def _package(tmp_path: Path, version: str) -> Callable[[str], str]:
+    root = tmp_path / "node" / "lib" / "node_modules" / "omniroute"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "package.json").write_text(json.dumps({"version": version}))
+    return lambda unit: EXEC_START.replace("/opt/node", str(tmp_path / "node"))
+
+
+def test_installed_tag_is_read_from_the_package_the_unit_runs(tmp_path: Path) -> None:
+    source = ref_docs.SOURCES["omniroute"]
+    assert ref_docs.installed_tag(source, _package(tmp_path, "3.9.0")) == "v3.9.0"
+    with pytest.raises(ref_docs.RefDocsError):
+        ref_docs.installed_tag(source, lambda unit: "")
+
+
+def test_status_is_ok_only_when_synced_at_the_installed_tag_and_fresh(tmp_path: Path) -> None:
+    exec_start = _package(tmp_path, "3.8.53")
+    now = datetime(2026, 11, 6, 20, 0, tzinfo=timezone.utc)
+
+    def row(manifest: dict[str, Any] | None) -> dict[str, Any]:
+        path = ref_docs.manifest_path(ref_docs.SOURCES["omniroute"], home=tmp_path)
+        if manifest is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(manifest))
+        return ref_docs.status(home=tmp_path, exec_start=exec_start, now=now)[0]
+
+    missing = row(None)
+    assert not missing["ok"] and "never synced" in missing["problems"][0]
+    files = {"docs/a.md": {"pages": ["a/1.md", "a/2.md"]}}
+    fresh = row({"tag": "v3.8.53", "synced_at": "2026-11-06T19:30:00+00:00", "files": files})
+    assert fresh["ok"] and fresh["pages"] == 2 and fresh["installed_tag"] == "v3.8.53"
+    behind = row({"tag": "v3.8.51", "synced_at": "2026-11-06T19:30:00+00:00", "files": files})
+    assert behind["problems"] == ["synced v3.8.51 but v3.8.53 is installed"]
+    stale = row({"tag": "v3.8.53", "synced_at": "2026-11-06T10:00:00+00:00", "files": files})
+    assert not stale["ok"] and "older than" in stale["problems"][0]
+    unknown = ref_docs.status(home=tmp_path, exec_start=lambda unit: "", now=now)[0]
+    assert not unknown["ok"] and unknown["installed_tag"] is None
+
+
+def test_run_sync_follows_the_installed_tag_and_selects_the_source_paths(tmp_path: Path) -> None:
+    source = ref_docs.Source(
+        name="tool",
+        repo=REPO,
+        project="ref-tool",
+        unit="tool.service",
+        package="omniroute",
+        paths=("docs/a.md",),
+    )
+    blob = base64.b64encode(b"# A\n\n## One\n\nText.\n").decode()
+    calls: list[str] = []
+
+    def gh(args: list[str]) -> str:
+        calls.append(args[0])
+        if "/git/trees/" in args[0]:
+            tree = [
+                {"path": "docs/a.md", "type": "blob", "sha": "s1"},
+                {"path": "docs/b.md", "type": "blob", "sha": "s2"},
+            ]
+            return json.dumps({"tree": tree, "truncated": False})
+        return json.dumps({"content": blob})
+
+    report = ref_docs.run_sync(
+        source, dry_run=True, gh=gh, exec_start=_package(tmp_path, "1.2.3"), home=tmp_path
+    )
+    assert report["tag"] == "v1.2.3" and calls[0] == f"repos/{REPO}/git/trees/v1.2.3?recursive=1"
+    assert report["totals"]["files"] == 1 and report["totals"]["pages_written"] == 1
+    assert not ref_docs.manifest_path(source, home=tmp_path).exists()

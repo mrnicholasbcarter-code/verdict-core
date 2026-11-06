@@ -2691,12 +2691,51 @@ def cmd_simulate(
 default_model_catalog = _action_helpers.default_model_catalog
 
 
+def _cmd_memory_ref_docs(args: Any) -> None:
+    """``verdict memory ref-docs sync|status``: JSON on stdout; exit 1 on a failed sync or row."""
+    from verdict import ref_docs
+
+    if args.ref_docs_command == "status":
+        rows = ref_docs.status(workspace=args.workspace)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            for row in rows:
+                state = "ok" if row["ok"] else "FAILED: " + "; ".join(row["problems"])
+                print(
+                    f"{row['project']}: tag {row['tag']} (installed {row['installed_tag']}), "
+                    f"last sync {row['synced_at']}, {row['pages']} pages, {state}"
+                )
+        if not all(row["ok"] for row in rows):
+            raise SystemExit(1)
+        return
+    names = args.source or sorted(ref_docs.SOURCES)
+    unknown = sorted(set(names) - set(ref_docs.SOURCES))
+    if unknown:
+        raise SystemExit(f"unknown source(s): {', '.join(unknown)}")
+    failed = False
+    for name in names:
+        try:
+            report = ref_docs.run_sync(
+                ref_docs.SOURCES[name], tag=args.tag, workspace=args.workspace, dry_run=args.dry_run
+            )
+        except Exception as exc:  # one tool's failure must not hide the others
+            failed = True
+            report = {"source": name, "error": f"{type(exc).__name__}: {exc}"}
+        print(json.dumps(report, indent=1))
+    if failed:
+        raise SystemExit(1)
+
+
 def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
     from verdict.actions.registry import run_action
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
+    if sub == "ref-docs":
+        _cmd_memory_ref_docs(args)
+        return
     if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
         from verdict import present
 
