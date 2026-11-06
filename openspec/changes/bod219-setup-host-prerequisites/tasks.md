@@ -104,6 +104,13 @@ three docs; this change.
 - [x] 6.5 `tests/test_setup_host.py` and `tests/test_doctor_host_prerequisites.py`:
   5 failed, 38 passed before 6.2 and 6.3; after: 43 passed, and with
   `tests/test_doctor_presentation.py` 75 passed.
+- [x] 6.6 Push gate, `bandit -r verdict -ll` B103: `install_release` set the staged
+  `ocr` binary to 0o755 (group and other execute). It now uses `os.fchmod` on the
+  open descriptor to set owner-only 0o700 before writing. Red first:
+  `test_install_verifies_the_digest_before_writing` asserts 0o700 and failed against
+  the 0o755 code (1 failed). After: 52 passed across `tests/test_ocr_release.py`,
+  `tests/test_setup_host.py` and `tests/test_serve_service.py`, and bandit reports no
+  medium or high findings.
 
 Post-merge parent acceptance is not a ticked task. From installed merged main the
 parent runs `verdict setup --recommended` and `verdict setup --apply --yes` on the
