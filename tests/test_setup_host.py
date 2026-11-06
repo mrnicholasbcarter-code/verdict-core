@@ -172,17 +172,13 @@ _SEAMS = (
 def installed_package_env(
     host: FakeHost, monkeypatch: pytest.MonkeyPatch
 ) -> setup_host.HostEnvironment:
-    """``HostEnvironment.from_host()`` with the package root a non-editable install has.
+    """``HostEnvironment.from_host()`` with only the fake host's side-effecting seams.
 
-    ``package_root()`` is a bare ``site-packages`` directory with no ``.github/``,
-    the layout the live defect hit; only the side-effecting seams are the fake
-    host's. This runs the checkout's modules in-process.
+    The ocr pin ships inside the package, so no checkout path is consulted.
+    This runs the checkout's modules in-process.
     ``tests/test_wheel_contents.py::test_installed_wheel_runs_the_ocr_doctor_row_and_setup_action``
     runs the same ocr steps from an extracted wheel.
     """
-    site = host.root / "site-packages"
-    (site / "verdict").mkdir(parents=True)
-    monkeypatch.setattr(ocr_release, "package_root", lambda: site)
     seams = {name: getattr(host.env, name) for name in _SEAMS}
     return dataclasses.replace(setup_host.HostEnvironment.from_host(), **seams)
 
