@@ -5,11 +5,30 @@ label and no known prefix gets through (pinned in
 ``tests/test_diagnostic_credential_name_redaction.py``). The real guarantee is
 that no diagnostic is built from a credential value in the first place.
 
-Every credential name Verdict knows (the credential registry,
-``GATEWAY_KEY_ENV_NAMES`` and the ``api_key_env`` names the test config
-declares) gets its own fake value, in the exported environment and in the
-credential store, and URL-valued names carry a fake userinfo password. Then
-every ``BootstrapDiagnostic`` construction path reachable through a public
+Which names get which fake values, exactly:
+
+* every name in the credential registry and in ``GATEWAY_KEY_ENV_NAMES`` that
+  is not URL-valued, plus ``FAKE_ENV_API_KEY`` (declared by the test config):
+  one value in the exported environment and a different one in the credential
+  store, where the environment value wins;
+* ``FAKE_STORE_ONLY_API_KEY`` (declared by the test config): a value in the
+  credential store only, so the store is the source in force;
+* ``FAKE_UNSET_API_KEY`` (declared by the test config): deliberately no value
+  anywhere, so ``credential_env_missing`` fires. It has no value to leak;
+* URL-valued registry names (``*_BASE_URL``, ``*_API_BASE``): a URL with a fake
+  userinfo password in the exported environment. The URL is shown by design,
+  the password must not be;
+* the gateway key also goes on the gateway start command line, and in the
+  ``verdict route`` case into the owner-only key file and Prime's ``auth.json``.
+
+Some paths unset names on purpose to reach a missing-input diagnostic: the
+gateway key names (``credential_env_missing``), ``OMNIROUTE_MANAGEMENT_TOKEN``
+(``runtime_sources_health_only``), ``OMNIROUTE_BASE_URL`` (no providers) and the
+other URL names in the serve case. Every test here also checks that each
+credential name that reaches a rendered line has a fake value in some source,
+or is ``FAKE_UNSET_API_KEY``.
+
+Then every ``BootstrapDiagnostic`` construction path reachable through a public
 entry point is triggered and rendered: ``describe()``, ``to_dict()``,
 ``BootstrapError`` messages, ``describe_bootstrap_failure``, lifecycle outcomes,
 and the stderr and exception text of ``verdict route``, the library gate,
@@ -28,6 +47,8 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
@@ -65,6 +86,12 @@ def _is_url_name(name: str) -> bool:
 KNOWN_NAMES = sorted({*GATEWAY_KEY_ENV_NAMES, *(spec.env_name for spec in CREDENTIALS)})
 SECRET_NAMES = [name for name in KNOWN_NAMES if not _is_url_name(name)] + [ENV_ONLY_KEY]
 URL_NAMES = [name for name in KNOWN_NAMES if _is_url_name(name)]
+#: Declared by the test config and given no value anywhere, on purpose.
+DELIBERATELY_UNSET = frozenset({UNSET_KEY})
+#: An environment-style credential or endpoint name, as it appears in a line.
+CREDENTIAL_NAME = re.compile(
+    r"\b[A-Z][A-Z0-9_]*_(?:API_KEY|KEY|TOKEN|SECRET|PASSWORD|BASE_URL|API_BASE)\b"
+)
 
 
 def _fake(kind: str, index: int) -> str:
@@ -83,6 +110,11 @@ class Fakes:
     @property
     def gateway_key(self) -> str:
         return self.env["OMNIROUTE_API_KEY"]
+
+    @property
+    def supplied(self) -> set[str]:
+        """Names that have a fake value in at least one source."""
+        return set(self.env) | set(self.store)
 
     def without(self, *names: str) -> dict[str, str]:
         return {k: v for k, v in self.env.items() if k not in names}
@@ -444,13 +476,44 @@ def _routing_config(fakes: Fakes) -> None:
     )
 
 
+class _StopBeforeRoutingError(Exception):
+    """Raised in place of routing. The bootstrap emitters have run by then."""
+
+
+def _verdict_route(fakes: Fakes, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``verdict route`` through ``cli.main``, stopped before any routing decision.
+
+    ``cli.main`` copies the on-disk store into ``os.environ`` itself, outside
+    ``monkeypatch``. Each stored name is recorded as unset first, so teardown
+    removes whatever the CLI exported, and its provenance record stays local.
+    """
+    import verdict.actions.registry as registry
+    import verdict.credentials_store as credentials_store
+    from verdict import cli
+
+    for name in fakes.store:
+        if name not in os.environ:
+            monkeypatch.setenv(name, "")
+            monkeypatch.delenv(name)
+    monkeypatch.setattr(credentials_store, "_STORE_INJECTED", {})
+
+    def stop(*_: object, **__: object) -> None:
+        raise _StopBeforeRoutingError
+
+    monkeypatch.setattr(registry, "run_action", stop)
+    monkeypatch.setattr(
+        cli.sys, "argv", ["verdict", "--skip-setup", "route", "hello", "--allow-offline", "--terse"]
+    )
+    cli.main()
+
+
 def _cli_route_and_library_gate(
     fakes: Fakes, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> Rendered:
-    from verdict.cli import _build_route_gate
-    from verdict.gate import resolve_default_providers
+    from verdict.gate import Gate
 
     rendered = Rendered()
+    log_path = str(fakes.tmp_path / "decisions.jsonl")
     # The gateway key is only in the owner-only key file and Prime's auth.json.
     env = fakes.without(*GATEWAY_KEY_ENV_NAMES)
     env["OMNIROUTE_BASE_URL"] = "http://127.0.0.1:20128"
@@ -465,18 +528,20 @@ def _cli_route_and_library_gate(
     auth.chmod(0o600)
     fakes.values.update((_fake("keyfile", 0), _fake("primeauth", 0)))
 
-    _build_route_gate(allow_offline=True)
-    resolve_default_providers(allow_offline=True)
+    with pytest.raises(_StopBeforeRoutingError):
+        _verdict_route(fakes, monkeypatch)
+    Gate(allow_offline=True, log_path=log_path)
     rendered.text(capsys.readouterr().err)
 
     # A malformed config refuses on both paths.
     (fakes.home / ".config" / "verdict" / "verdict.yaml").write_text(
         f"providers: [{fakes.gateway_key}\n", encoding="utf-8"
     )
-    with pytest.raises(SystemExit):
-        _build_route_gate(allow_offline=True)
+    with pytest.raises(SystemExit) as route_exit:
+        _verdict_route(fakes, monkeypatch)
+    assert route_exit.value.code == 1
     with pytest.raises(BootstrapError) as excinfo:
-        resolve_default_providers(allow_offline=True)
+        Gate(allow_offline=True, log_path=log_path)
     rendered.refusal(excinfo.value)
     rendered.text(capsys.readouterr().err)
     return rendered
@@ -521,16 +586,47 @@ def _supervisor_module() -> ModuleType:
 def _prime_supervisor(
     fakes: Fakes, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> Rendered:
+    """``main --select-only`` with the real production factory, which refuses for
+    missing providers. ``_live_admission_gateway`` stays on its private seam: it
+    runs only inside controller selection after a production bundle exists, so
+    no public entry reaches it offline (see the emitter test for the same note).
+    """
     from verdict.admission import AdmissionUnavailableError
 
     rendered = Rendered()
     _export(fakes, monkeypatch, fakes.without("OMNIROUTE_BASE_URL"))
     supervisor = _supervisor_module()
-    with pytest.raises(supervisor.ControllerLaunchError) as launch:
-        supervisor._build_intelligence_service_from_config(
-            repo=fakes.tmp_path, state_dir=fakes.tmp_path
-        )
-    rendered.text(f"{launch.value.detail}\n{launch.value}")
+    repo, state = fakes.tmp_path / "repo", fakes.tmp_path / "state"
+    repo.mkdir()
+    state.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    identity = ["-c", "user.name=T", "-c", "user.email=t@e.invalid"]
+    commit = ["git", "-C", str(repo), *identity, "commit", "--allow-empty", "-qm", "base"]
+    subprocess.run(commit, check=True)
+
+    def never_launch(*_: object, **__: object) -> None:
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(supervisor, "run_attempt", never_launch)
+    # Worker and reviewer routes come from live OmniRoute availability; they are
+    # not bootstrap emitters, so they are answered offline here.
+    monkeypatch.setattr(
+        supervisor,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {role: {"error": "not_under_test"} for role in roles},
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *("prime_supervisor.py", "--repo", str(repo), "--state-dir", str(state)),
+            *("--prime", "prime-agent", "--select-only"),
+        ],
+    )
+    assert supervisor.main() == 2
+    rendered.text(capsys.readouterr().out)
+
     with pytest.raises(AdmissionUnavailableError) as admission:
         supervisor._live_admission_gateway()
     rendered.text(f"{admission.value.detail}\n{admission.value}")
@@ -614,6 +710,20 @@ def _leaks(rendered: Rendered, values: set[str]) -> Iterator[str]:
                 yield f"{value!r} in {text[:240]!r}"
 
 
+def _named_without_a_value(rendered: Rendered, fakes: Fakes) -> set[str]:
+    """Credential names in the rendered lines that no source gave a fake value."""
+    named = {name for text in rendered.texts for name in CREDENTIAL_NAME.findall(text)}
+    return named - fakes.supplied - DELIBERATELY_UNSET
+
+
+def test_the_name_check_sees_every_config_declared_name(fakes: Fakes) -> None:
+    """The name check is not vacuous: the declared names reach rendered lines."""
+    rendered = _valid_config_with_shadowed_and_missing_values(fakes)
+    named = {name for text in rendered.texts for name in CREDENTIAL_NAME.findall(text)}
+
+    assert {"OMNIROUTE_API_KEY", ENV_ONLY_KEY, STORE_ONLY_KEY, UNSET_KEY} <= named
+
+
 @pytest.mark.parametrize("name", sorted(PATHS))
 def test_no_resolver_or_lifecycle_diagnostic_carries_a_credential_value(
     name: str, fakes: Fakes
@@ -623,6 +733,7 @@ def test_no_resolver_or_lifecycle_diagnostic_carries_a_credential_value(
 
     assert expected_codes <= rendered.codes, sorted(expected_codes - rendered.codes)
     assert list(_leaks(rendered, fakes.values)) == []
+    assert _named_without_a_value(rendered, fakes) == set()
 
 
 @pytest.mark.parametrize("name", sorted(ENTRY_POINTS))
@@ -634,11 +745,17 @@ def test_no_public_entry_point_prints_a_credential_value(
 
     assert expected_codes <= rendered.codes, sorted(expected_codes - rendered.codes)
     assert list(_leaks(rendered, fakes.values)) == []
+    assert _named_without_a_value(rendered, fakes) == set()
 
 
-def test_every_known_credential_name_gets_a_fake_value(fakes: Fakes) -> None:
+def test_fake_values_go_exactly_where_the_docstring_says(fakes: Fakes) -> None:
     """The name lists come from the code, so a new credential is covered automatically."""
     assert set(GATEWAY_KEY_ENV_NAMES) <= set(SECRET_NAMES)
     assert "OMNIROUTE_MANAGEMENT_TOKEN" in SECRET_NAMES
     assert "OMNIROUTE_BASE_URL" in URL_NAMES
     assert {name for name in fakes.env if name in KNOWN_NAMES} == set(KNOWN_NAMES)
+    for name in SECRET_NAMES:
+        assert fakes.env[name] != fakes.store[name], name
+    assert STORE_ONLY_KEY in fakes.store and STORE_ONLY_KEY not in fakes.env
+    assert UNSET_KEY not in fakes.supplied
+    assert all(name not in fakes.store for name in URL_NAMES)

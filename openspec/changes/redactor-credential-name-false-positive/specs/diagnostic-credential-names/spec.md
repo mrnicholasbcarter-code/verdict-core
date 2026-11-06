@@ -41,14 +41,20 @@ value MUST be returned unchanged by `verdict.security.redact_text`, so
 - **THEN** stderr holds `[configuration] field=providers source=default - `
 - **TEST** `tests/test_provider_bootstrap_adoption.py::test_resolve_default_providers_announces_the_builtin_set`
 
-#### Scenario: Every emitter, through its own seam
+#### Scenario: Every emitter, through its public entry
 - **WHEN** a refusal or a note with `field=OMNIROUTE_API_KEY` reaches
-  `describe_bootstrap_failure`, a `BootstrapError` message, the `verdict route` refusal
-  and note output, the library gate notes, the `verdict serve` startup lines (refusal
-  and notes), the `verdict serve` precedence-conflict lines, the Prime supervisor
-  factory or the supervisor's live-admission gateway
+  `describe_bootstrap_failure`, a `BootstrapError` message, `verdict route` through
+  `cli.main` (refusal, and notes up to the routing decision), the library `Gate`
+  constructor (refusal and notes), `verdict serve` through `TestClient(api.app)`
+  (refusal, and notes together with a `precedence_conflict` line), or the Prime
+  supervisor's `main --select-only` with the real production factory
+- **AND** the supervisor's `_live_admission_gateway`, the one emitter left on its
+  private seam because it runs only inside controller selection after a production
+  bundle exists, so no public entry reaches it offline
 - **THEN** each output holds `field=OMNIROUTE_API_KEY - `, never `field=OMNIROUTE_API_KEY:`,
-  and `redact_text` returns it unchanged
+  and `redact_text` returns it unchanged. For the supervisor's JSON report the line
+  checks run on the decoded controller error and the leak check on the raw stdout.
+- **AND** every one of these tests runs under `no_gateway_network`
 - **TEST** `tests/test_diagnostic_credential_name_redaction.py::test_every_emitter_renders_names_safely_and_redacts_free_text`
 
 ### Requirement: A diagnostic line redacts secret shapes in its free text
@@ -86,12 +92,20 @@ step. The next requirement is the guarantee for such values.
 - **TEST** `tests/test_diagnostic_credential_name_redaction.py::test_limitation_an_unlabelled_value_with_no_known_shape_is_not_caught`
 
 ### Requirement: No bootstrap diagnostic carries a credential value
-No `BootstrapDiagnostic` MUST be built from a credential value. With a distinct fake
-value for every name in `verdict.credentials_registry.CREDENTIALS`, every name in
-`GATEWAY_KEY_ENV_NAMES` and every `api_key_env` a config declares, set in the exported
-environment and in the credential store (the owner-only key file and Prime's
-`auth.json` included), and with a fake userinfo password in every URL-valued name, no
-fake value MUST appear in any rendering of any diagnostic. Renderings are
+No `BootstrapDiagnostic` MUST be built from a credential value. The fake values are
+distinct and placed as follows. Each non-URL name in
+`verdict.credentials_registry.CREDENTIALS` and `GATEWAY_KEY_ENV_NAMES`, plus the
+config-declared `FAKE_ENV_API_KEY`, gets one value in the exported environment and a
+different one in the credential store. The config-declared `FAKE_STORE_ONLY_API_KEY`
+gets a value in the credential store only. The config-declared `FAKE_UNSET_API_KEY`
+deliberately gets no value, so `credential_env_missing` fires; it has no value to
+leak. Each URL-valued registry name gets a URL with a fake userinfo password in the
+exported environment. The gateway key also goes on the gateway start command line,
+and in the `verdict route` case into the owner-only key file and Prime's `auth.json`.
+Some paths unset names on purpose to reach a missing-input diagnostic. With these
+values, no fake value MUST appear in any rendering of any diagnostic, and every
+credential name that reaches a rendered line MUST have a fake value in some source or
+be `FAKE_UNSET_API_KEY`. Renderings are
 `describe()`, `to_dict()`, `BootstrapError` messages and `to_dict()`,
 `describe_bootstrap_failure`, `BootstrapResult.to_dict()`, gateway lifecycle outcomes,
 and the stderr and exception text of `verdict route`, the library gate,
@@ -122,15 +136,20 @@ redaction cannot hide a leak.
 - **TEST** `tests/test_bootstrap_diagnostics_carry_no_credential_values.py::test_no_resolver_or_lifecycle_diagnostic_carries_a_credential_value`
 
 #### Scenario: Public entry points
-- **WHEN** `verdict route` and the library gate run with the gateway key only in the key
-  file and Prime's `auth.json`, with a valid and then a malformed config; `verdict serve`
-  starts without the gateway key and the management token, and its startup report is
-  built again with no gateway or upstream URL (`default_upstream_base_url`); and the Prime supervisor
-  factory and live-admission gateway refuse for missing providers
-- **THEN** their stderr, exception text and `server_bootstrap_diagnostics()` report
-  name the expected codes and hold no fake value
+- **WHEN** `verdict route` (through `cli.main`) and the library `Gate` constructor run
+  with the gateway key only in the key file and Prime's `auth.json`, with a valid and
+  then a malformed config; `verdict serve` starts through `TestClient(api.app)` without
+  the gateway key and the management token, and its startup report is built again
+  with no gateway or upstream URL (`default_upstream_base_url`); and the Prime
+  supervisor's `main --select-only` and its live-admission gateway refuse for missing
+  providers
+- **THEN** their stderr, stdout, exception text and `server_bootstrap_diagnostics()`
+  report name the expected codes and hold no fake value
+- **AND** the values `cli.main` copies from the on-disk store into the process
+  environment are removed when the test ends
 - **TEST** `tests/test_bootstrap_diagnostics_carry_no_credential_values.py::test_no_public_entry_point_prints_a_credential_value`,
-  `::test_every_known_credential_name_gets_a_fake_value`
+  `::test_fake_values_go_exactly_where_the_docstring_says`,
+  `::test_the_name_check_sees_every_config_declared_name`
 
 ### Requirement: Secrets written in the label syntax stay redacted
 `verdict.security.redact_text` MUST keep redacting a credential value written after a

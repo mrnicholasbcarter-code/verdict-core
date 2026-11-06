@@ -15,19 +15,27 @@ cannot be told apart from an English word without guessing. The groups below:
 * the lines Verdict renders pass through the redactor unchanged;
 * ``describe()`` redacts secret shapes that reach its free text, which the old
   ``NAME: detail`` layout only caught by accident;
-* every emitter that prints these lines, through its own seam, uses that format.
+* every emitter that prints these lines uses that format, driven through its
+  public entry: ``verdict route`` through ``cli.main``, the library ``Gate``
+  constructor, ``verdict serve`` through ``TestClient(api.app)`` and the Prime
+  supervisor through ``main --select-only``. The resolver is replaced at its
+  module, the one seam every emitter shares, to feed them a refusal or notes.
 
 ``tests/test_bootstrap_diagnostics_carry_no_credential_values.py`` holds the
 structural guarantee: no detail is built from a credential value at all.
 
-Offline only. Every value below is fake.
+Offline only: every test runs under ``no_gateway_network``. Every value below
+is fake.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -50,6 +58,11 @@ from verdict.proxy import UpstreamProxy
 from verdict.security import redact_text
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _offline(no_gateway_network: None) -> None:
+    """Serve startup, routing and the supervisor must not reach a live gateway."""
 
 
 @pytest.fixture(autouse=True)
@@ -352,34 +365,62 @@ def _bootstrap_error_message(
     return str(_refusal())
 
 
+class _StopBeforeRoutingError(Exception):
+    """Raised in place of routing. The bootstrap emitters have run by then."""
+
+
+def _verdict_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``verdict route`` through ``cli.main``, stopped before any routing decision."""
+    import verdict.actions.registry as registry
+    from verdict import cli
+
+    def stop(*_: object, **__: object) -> None:
+        raise _StopBeforeRoutingError
+
+    monkeypatch.setattr(registry, "run_action", stop)
+    monkeypatch.setattr(
+        cli.sys, "argv", ["verdict", "--skip-setup", "route", "hello", "--allow-offline", "--terse"]
+    )
+    cli.main()
+
+
 def _route_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
-    from verdict.cli import _build_route_gate
-
     _resolver_returns(monkeypatch, _refusal())
-    with pytest.raises(SystemExit):
-        _build_route_gate(allow_offline=True)
+    with pytest.raises(SystemExit) as excinfo:
+        _verdict_route(monkeypatch)
+    assert excinfo.value.code == 1
     return capsys.readouterr().err
 
 
 def _route_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
-    from verdict.cli import _build_route_gate
-
     _resolver_returns(monkeypatch, _result_with_notes(tmp_path))
-    _build_route_gate(allow_offline=True)
+    with pytest.raises(_StopBeforeRoutingError):
+        _verdict_route(monkeypatch)
     return capsys.readouterr().err
+
+
+def _library_gate_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> str:
+    from verdict.gate import Gate
+
+    _resolver_returns(monkeypatch, _refusal())
+    with pytest.raises(BootstrapError) as excinfo:
+        Gate(allow_offline=True, log_path=str(tmp_path / "decisions.jsonl"))
+    return f"{capsys.readouterr().err}\n{excinfo.value}"
 
 
 def _library_gate_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
-    from verdict.gate import resolve_default_providers
+    from verdict.gate import Gate
 
     _resolver_returns(monkeypatch, _result_with_notes(tmp_path))
-    resolve_default_providers(allow_offline=True)
+    Gate(allow_offline=True, log_path=str(tmp_path / "decisions.jsonl"))
     return capsys.readouterr().err
 
 
@@ -403,42 +444,89 @@ def _serve_refusal(
 def _serve_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
-    _resolver_returns(monkeypatch, _result_with_notes(tmp_path))
+    """Both serve print sites: the startup diagnostics and the precedence conflicts.
+
+    The config file's ``primary_model`` disagrees with what serve applies, so
+    serve reports a ``precedence_conflict`` whose detail and remediation quote
+    that value. The value holds an ``sk-`` key, which serve must not print.
+    """
+    result = _result_with_notes(tmp_path)
+    result = dataclasses.replace(
+        result,
+        primary_model=f"vendor/{FAKE_SK}",
+        field_sources={**result.field_sources, "primary_model": "config_file"},
+    )
+    _resolver_returns(monkeypatch, result)
     _boot_serve(monkeypatch)
-    return capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "verdict serve: precedence_conflict [configuration] field=primary_model " in err
+    return err
 
 
-def _serve_precedence_conflicts(
+def _git_repo(path: Path) -> Path:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    identity = ["-c", "user.name=T", "-c", "user.email=t@e.invalid"]
+    commit = ["git", "-C", str(path), *identity, "commit", "--allow-empty", "-qm", "base"]
+    subprocess.run(commit, check=True)
+    return path
+
+
+def _supervisor_select_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
-    real = api._serve_field_resolution
+    """The supervisor's ``main --select-only``, with the real production factory.
 
-    def with_conflicts(bootstrap: object) -> tuple[dict[str, str], list[BootstrapDiagnostic]]:
-        values, _ = real(bootstrap)
-        notes = [
-            dataclasses.replace(CREDENTIAL_NAME_DIAGNOSTIC, fatal=False),
-            _leaky_diagnostic(fatal=False),
-        ]
-        return values, notes
-
-    monkeypatch.setattr(api, "_serve_field_resolution", with_conflicts)
-    api._build_intelligence()
-    return capsys.readouterr().err
-
-
-def _supervisor_factory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> str:
+    Its stdout is a JSON report. The leak check runs on that raw stdout; the
+    line checks run on the decoded controller error. Inside JSON, a redacted
+    ``token=[redacted]`` followed by the closing quote is not a fixed point of
+    ``redact_text`` (the label pattern takes the quote with it), which is a
+    property of the shared redactor on JSON, not of this emitter.
+    """
     supervisor = _supervisor_module()
+    repo, state = _git_repo(tmp_path / "repo"), tmp_path / "state"
+    state.mkdir()
     _resolver_returns(monkeypatch, _refusal())
-    with pytest.raises(supervisor.ControllerLaunchError) as excinfo:
-        supervisor._build_intelligence_service_from_config(repo=tmp_path, state_dir=tmp_path)
-    return f"{excinfo.value.detail}\n{excinfo.value}"
+
+    def never_launch(*_: object, **__: object) -> None:
+        raise AssertionError("select-only must never launch Prime")
+
+    monkeypatch.setattr(supervisor, "run_attempt", never_launch)
+    # Worker and reviewer routes come from live OmniRoute availability; they are
+    # not bootstrap emitters, so they are answered offline here.
+    monkeypatch.setattr(
+        supervisor,
+        "_resolve_subagent_report_routes",
+        lambda roles=("worker", "reviewer"): {role: {"error": "not_under_test"} for role in roles},
+    )
+    monkeypatch.setenv("VERDICT_TEST_MODE", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            *("prime_supervisor.py", "--repo", str(repo), "--state-dir", str(state)),
+            *("--prime", "prime-agent", "--select-only"),
+        ],
+    )
+
+    assert supervisor.main() == 2
+    out = capsys.readouterr().out
+    error = json.loads(out)["controller"]["error"]
+    assert error.startswith("production_factory_unavailable: bootstrap_configuration_invalid")
+    for secret in LEAKED:
+        assert secret not in out, secret
+    return error
 
 
 def _supervisor_live_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> str:
+    """Kept on the private seam on purpose. ``_live_admission_gateway`` runs only
+    inside the live-admission loader that controller selection calls after a
+    production bundle exists (IntelligenceService, trusted Prime target map,
+    passports). No public entry reaches it offline without faking the rest of
+    the supervisor. It is the one emitter that wraps the detail in
+    ``AdmissionUnavailableError`` rather than ``ControllerLaunchError``."""
     from verdict.admission import AdmissionUnavailableError
 
     supervisor = _supervisor_module()
@@ -453,11 +541,11 @@ EMITTERS: list[Emitter] = [
     _bootstrap_error_message,
     _route_refusal,
     _route_notes,
+    _library_gate_refusal,
     _library_gate_notes,
     _serve_refusal,
     _serve_notes,
-    _serve_precedence_conflicts,
-    _supervisor_factory,
+    _supervisor_select_only,
     _supervisor_live_admission,
 ]
 

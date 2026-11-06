@@ -356,8 +356,11 @@ echo secret material:
   one part at a time, so an `sk-` key, a `Bearer` token or a `token=<value>` that
   reaches a detail by mistake is printed as `[redacted]`. A value with no label
   and no known prefix is not caught that way. The guarantee for those is that no
-  diagnostic is built from a credential value, and a test sets a fake value for
-  every known credential name to check it.
+  diagnostic is built from a credential value.
+  `tests/test_bootstrap_diagnostics_carry_no_credential_values.py` checks it with
+  fake values for the registered credential names and the gateway key names, in the
+  environment and in the credential store. Its docstring lists where each value goes
+  and which names it leaves unset on purpose.
 - A URL that carries `user:password@` userinfo is rendered as `***:***@host`
   everywhere: diagnostic details, `ProviderBinding.to_dict`,
   `BootstrapResult.to_dict`, `describe_bootstrap_failure` and the CLI/library
