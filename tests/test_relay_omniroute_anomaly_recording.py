@@ -149,6 +149,11 @@ def test_buffered_relay_records_anomalies_and_still_returns_the_reply(
     assert response.status_code == 200
     assert response.content == UPSTREAM_BODY
     assert response.headers.get_list("x-omniroute-cache") == ["HIT"]
+    # The client sees the upstream fallback marker as sent; only Verdict's own
+    # records are restricted to anomaly names.
+    assert response.headers.get_list("x-omniroute-emergency-fallback") == [
+        f"true; key={LEAK_SENTINEL}"
+    ]
     assert _inference_requests(transport) == 1
     details = evidence["outcome_event"]["details"]
     assert details["omniroute_anomalies"] == ["cache_hit", "emergency_fallback"]
