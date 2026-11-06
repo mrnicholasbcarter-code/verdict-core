@@ -309,15 +309,15 @@
   },
   {
     "qualified_name": "verdict.harness_prime.format_certify",
-    "reason": "UNTRIAGED: format_certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+    "reason": "KEEP: text formatter in the Prime harness module's public __all__, parallel to every other verdict.harness_* module; only tests call it today and no behaviour depends on it (triaged in BOD-219 when this module changed)."
   },
   {
     "qualified_name": "verdict.harness_prime.format_discover",
-    "reason": "UNTRIAGED: format_discover has no resolved reference; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+    "reason": "KEEP: text formatter in the Prime harness module's public __all__, parallel to every other verdict.harness_* module; only tests call it today and no behaviour depends on it (triaged in BOD-219 when this module changed)."
   },
   {
     "qualified_name": "verdict.harness_prime.format_status",
-    "reason": "UNTRIAGED: format_status has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+    "reason": "KEEP: text formatter in the Prime harness module's public __all__, parallel to every other verdict.harness_* module; only tests call it today and no behaviour depends on it (triaged in BOD-219 when this module changed)."
   },
   {
     "qualified_name": "verdict.headroom.headroom_is_unknown",
@@ -697,15 +697,11 @@
   },
   {
     "qualified_name": "verdict.harness_prime.certify",
-    "reason": "UNTRIAGED: certify has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+    "reason": "KEEP: dynamic dispatch target; verdict.actions.extra._harness_module('prime') imports verdict.harness_prime with importlib for the harness.prime.certify action, which the static checker cannot resolve (triaged in BOD-219 when this module changed)."
   },
   {
     "qualified_name": "verdict.harness_prime.disable",
-    "reason": "UNTRIAGED: disable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
-  },
-  {
-    "qualified_name": "verdict.harness_prime.enable",
-    "reason": "UNTRIAGED: enable has only non-production references; Architect-locked Prime Agent harness switching for Verdict (verdict/harness_prime.py)."
+    "reason": "KEEP: dynamic dispatch target; verdict.actions.extra._harness_module('prime') imports verdict.harness_prime with importlib for the harness.prime.disable action, which the static checker cannot resolve (triaged in BOD-219 when this module changed)."
   },
   {
     "qualified_name": "verdict.home.main",

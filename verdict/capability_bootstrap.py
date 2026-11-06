@@ -57,6 +57,10 @@ from verdict.setup_plan import SetupAction
 SCHEMA_VERSION = "capability-bootstrap/v1"
 _DIGEST_PREFIX = "sha256:"
 _OWNERSHIP_SCHEMA = "bootstrap-ownership/v1"
+#: Host prerequisite actions (``verdict.setup_host``): planned from observed host
+#: state, so they are re-planned after drift and never skipped as "already applied".
+HOST_PREREQUISITE_KIND = "host_prerequisite"
+_RUNNER_KINDS = frozenset({"install_provider", HOST_PREREQUISITE_KIND})
 
 # Optional presentation boundary: real transitions, never terminal instructions.
 BootstrapObserver = Callable[[str, str, str, Mapping[str, Any]], None]
@@ -1351,8 +1355,13 @@ def apply_bootstrap_actions(
     install_command_runner: InstallCommandRunner | None = None,
     path_resolver: PathResolver | None = None,
     observer: BootstrapObserver | None = None,
+    host_runner: InstallRunner | None = None,
 ) -> tuple[StageResult, StageResult, dict[str, object]]:
-    """Consent gate + idempotent apply with backups and ownership tracking."""
+    """Consent gate + idempotent apply with backups and ownership tracking.
+
+    Host prerequisite actions pass the same consent gate and run through
+    ``host_runner``; without one they are blocked, never recorded as applied.
+    """
 
     pending = [action for action in plan.actions if action.requires_consent]
     noop = not pending or decline_optional
@@ -1370,7 +1379,12 @@ def apply_bootstrap_actions(
         return consent_stage, apply_stage, {"mutated": False, "actions": []}
 
     ownership = _load_ownership(state_dir)
-    remaining = [action for action in pending if not _already_applied(ownership, action.action_id)]
+    remaining = [
+        action
+        for action in pending
+        if action.kind == HOST_PREREQUISITE_KIND
+        or not _already_applied(ownership, action.action_id)
+    ]
     if not remaining:
         consent_stage = StageResult(
             stage=StageName.CONSENT.value,
@@ -1461,10 +1475,17 @@ def apply_bootstrap_actions(
         if action.kind == "install_provider":
             _notify(observer, "action", "running", action.description, action.to_dict())
             result = runner(action)
+        elif action.kind == HOST_PREREQUISITE_KIND:
+            _notify(observer, "action", "running", action.description, action.to_dict())
+            result = (
+                host_runner(action)
+                if host_runner is not None
+                else {"status": "blocked", "note": "no host prerequisite runner supplied"}
+            )
         else:
             result = {"status": "recorded", "kind": action.kind}
 
-        if action.kind == "install_provider" and not _successful_apply_result(result):
+        if action.kind in _RUNNER_KINDS and not _successful_apply_result(result):
             applied.append({"action_id": action.action_id, "result": dict(result)})
             _notify(
                 observer, "action", str(result.get("status", "failed")), action.description, result
@@ -1623,6 +1644,20 @@ def rollback_bootstrap_actions(
                         action_payload = action_obj
                         undo_text = str(action_obj.get("undo") or undo_text)
 
+        if kind == HOST_PREREQUISITE_KIND:
+            # Host installs (units, ocr, serve env, Prime registry) have their own
+            # uninstallers; name them instead of claiming a rollback.
+            manual.append(
+                {
+                    "action_id": action_id,
+                    "status": "manual_undo_required",
+                    "undo": undo_text,
+                    "provider_id": item.get("provider_id"),
+                }
+            )
+            remaining.append(item)
+            continue
+
         if kind == "install_provider":
             if uninstall_runner is not None:
                 try:
@@ -1716,8 +1751,14 @@ def run_bootstrap(
     cwd: Path | None = None,
     observer: BootstrapObserver | None = None,
     confirm_plan: Callable[[UnifiedBootstrapPlan], bool] | None = None,
+    host_planner: Callable[[], Sequence[BootstrapAction]] | None = None,
+    host_runner: InstallRunner | None = None,
 ) -> BootstrapReport:
-    """Run the staged bootstrap pipeline and return a machine-readable report."""
+    """Run the staged bootstrap pipeline and return a machine-readable report.
+
+    ``host_planner`` adds host prerequisite actions (``verdict.setup_host``) to an
+    all-scope plan; it only observes. ``host_runner`` applies them after consent.
+    """
 
     mode_v = BootstrapMode(mode) if not isinstance(mode, BootstrapMode) else mode
     scope_v = BootstrapScope(scope) if not isinstance(scope, BootstrapScope) else scope
@@ -1804,6 +1845,13 @@ def run_bootstrap(
     plan = build_bootstrap_plan(
         normalized, recommendations, mode=mode_v, scope=scope_v, recommended_only=recommended_only
     )
+    if host_planner is not None and scope_v is BootstrapScope.ALL:
+        plan = UnifiedBootstrapPlan(
+            actions=plan.actions + tuple(host_planner()),
+            mutation_free=plan.mutation_free,
+            scope=plan.scope,
+            mode=plan.mode,
+        )
     stages.append(
         StageResult(
             stage=StageName.PREFLIGHT.value,
@@ -1835,6 +1883,7 @@ def run_bootstrap(
             install_command_runner=install_command_runner,
             path_resolver=path_resolver,
             observer=observer,
+            host_runner=host_runner,
         )
         stages.extend([consent_stage, apply_stage])
     else:
@@ -2016,6 +2065,7 @@ def doctor_capability_report(
 
 
 __all__ = [
+    "HOST_PREREQUISITE_KIND",
     "SCHEMA_VERSION",
     "BootstrapAction",
     "BootstrapMode",

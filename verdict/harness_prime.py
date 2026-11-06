@@ -455,6 +455,51 @@ def apply_verdict_provider(
 
 
 OMNIROUTE_PROVIDER_ID = "omniroute"
+#: Prime resolves this env var *name* at request time; the value is never written.
+OMNIROUTE_API_KEY_ENV = "OMNIROUTE_API_KEY"
+
+
+def create_omniroute_registry(
+    *, gateway: str, api_key_env: str = OMNIROUTE_API_KEY_ENV, prime_home: Path | None = None
+) -> Path:
+    """Create a missing Prime ``models.json`` holding one ``providers.omniroute`` entry.
+
+    ``baseUrl`` is the gateway's OpenAI-compatible ``/v1`` root, ``api`` is
+    ``openai-completions`` and ``apiKey`` is the env var *name*. The model list
+    starts empty; ``sync_models`` fills it from the live inventory. An existing
+    file is never replaced (BOD-219 setup).
+    """
+    paths = resolve_paths(prime_home=prime_home)
+    if paths.models.exists():
+        raise HarnessPrimeError(f"{paths.models} already exists; refusing to replace it")
+    base = gateway.strip().rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    provider = {"baseUrl": base, "api": "openai-completions", "apiKey": api_key_env, "models": []}
+    _atomic_write_json(paths.models, {"providers": {OMNIROUTE_PROVIDER_ID: provider}})
+    return paths.models
+
+
+def omniroute_registry_state(*, prime_home: Path | None = None) -> dict[str, Any]:
+    """Doctor view of Prime's registry: ``missing``, ``unreadable``, ``no_provider``,
+    ``no_models`` or ``ok``, with the ``providers.omniroute`` model count. Read-only."""
+    paths = resolve_paths(prime_home=prime_home)
+    state: dict[str, Any] = {"path": str(paths.models), "models": 0}
+    if not paths.models.is_file():
+        return {**state, "state": "missing"}
+    try:
+        data = _load_json(paths.models)
+    except (OSError, ValueError) as exc:
+        return {**state, "state": "unreadable", "error": type(exc).__name__}
+    providers = data.get("providers")
+    provider = providers.get(OMNIROUTE_PROVIDER_ID) if isinstance(providers, Mapping) else None
+    if not isinstance(provider, Mapping):
+        return {**state, "state": "no_provider"}
+    models = provider.get("models")
+    count = (
+        sum(1 for item in models if isinstance(item, Mapping)) if isinstance(models, list) else 0
+    )
+    return {**state, "state": "ok" if count else "no_models", "models": count}
 
 
 @dataclass(frozen=True)
@@ -725,6 +770,7 @@ __all__ = [
     "SyncModelsResult",
     "apply_verdict_provider",
     "certify",
+    "create_omniroute_registry",
     "disable",
     "discover",
     "enable",
@@ -732,6 +778,7 @@ __all__ = [
     "format_discover",
     "format_status",
     "format_sync_models",
+    "omniroute_registry_state",
     "resolve_paths",
     "status",
     "sync_models",

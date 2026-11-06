@@ -179,6 +179,19 @@ def cmd_setup_credentials(*, non_interactive: bool = False) -> None:
         )
 
 
+def _host_prerequisite_options(scope: str) -> dict[str, Any]:
+    """Host prerequisites (ocr, timers, serve unit, Prime registry) join all-scope setup.
+
+    Only the bootstrap plan and APPLY paths call this; the classic ``--dry-run`` /
+    ``--plan`` preview never probes the host.
+    """
+    if scope != "all":
+        return {}
+    from verdict.setup_host import bootstrap_options
+
+    return bootstrap_options()
+
+
 def cmd_setup(
     *,
     dry_run: bool = False,
@@ -259,6 +272,7 @@ def cmd_setup(
             scope=BootstrapScope(scope),
             non_interactive=True,
             allowlist=tuple(allowlist or ()),
+            **_host_prerequisite_options(scope),
         )
         report_payload: dict[str, object] = report.to_dict()
         if output_json:
@@ -276,6 +290,7 @@ def cmd_setup(
             allowlist=tuple(allowlist or ()),
             consent=consent,
             state_dir=Path(state_dir) if state_dir else None,
+            **_host_prerequisite_options(scope),
         )
         apply_payload: dict[str, object] = report.to_dict()
         stages = apply_payload["stages"]
@@ -698,6 +713,7 @@ def cmd_setup_plan(
         mode=BootstrapMode.RECOMMENDED if recommended else BootstrapMode.PLAN,
         scope=BootstrapScope(scope),
         non_interactive=True,
+        **_host_prerequisite_options(scope),
     )
     from verdict.shared_memory import discover_shared_memory_setup
 
