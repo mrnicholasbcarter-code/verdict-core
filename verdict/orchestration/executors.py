@@ -1685,6 +1685,20 @@ class DirectGatewayExecutor:
 
         reported_model = str(body.get("model") or "")
 
+        if check.status == "mismatch":
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                output=text,
+                model=check.served_route or reported_model,
+                stop_reason=stop_reason or "end_turn",
+                error="model_mismatch",
+                duration_seconds=duration,
+                session_ref=f"direct-gateway:{body.get('id', '')}",
+                usage=usage,
+                served_check=served_check,
+            )
+
         if stop_reason not in {"end_turn", "stop", ""}:
             return WorkerTerminal(
                 executor_kind="live",
@@ -1706,20 +1720,6 @@ class DirectGatewayExecutor:
                 duration_seconds=duration,
                 served_check=served_check,
                 usage=usage,
-            )
-
-        if check.status == "mismatch":
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                output=text,
-                model=check.served_route or reported_model,
-                stop_reason=stop_reason or "end_turn",
-                error="model_mismatch",
-                duration_seconds=duration,
-                session_ref=f"direct-gateway:{body.get('id', '')}",
-                usage=usage,
-                served_check=served_check,
             )
 
         return WorkerTerminal(

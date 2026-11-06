@@ -124,3 +124,31 @@ def test_alias_table_matches_omniroute_header_aliases() -> None:
     assert OMNIROUTE_PROVIDER_ALIASES["kilocode"] == "kc"
     assert OMNIROUTE_PROVIDER_ALIASES["grok-cli"] == "gc"
     assert len(set(OMNIROUTE_PROVIDER_ALIASES.values())) == len(OMNIROUTE_PROVIDER_ALIASES)
+
+
+@pytest.mark.parametrize(
+    ("selected", "provider", "model"),
+    [
+        # OmniRoute 3.8.53 reports the requested catalog id in X-OmniRoute-Model
+        # (modelAfterFamilyFallback), before it strips an effort suffix upstream.
+        ("cc/claude-opus-5-5-high", "cc", "claude-opus-5-5-high"),
+        ("cx/gpt-6.1-sol-low", "cx", "gpt-6.1-sol-low"),
+        ("kc/anthropic/claude-opus-5.5", "kc", "anthropic/claude-opus-5.5"),
+        ("kilocode/anthropic/claude-opus-5.5", "kc", "anthropic/claude-opus-5.5"),
+    ],
+)
+def test_effort_suffix_and_nested_catalog_ids_verify(
+    selected: str, provider: str, model: str
+) -> None:
+    headers = {
+        "X-OmniRoute-Provider": provider,
+        "X-OmniRoute-Model": model,
+        "X-OmniRoute-Decision": f"strategy=single; provider={provider}; latency_ms=3",
+    }
+    assert check_served(selected, served_identity_from_headers(headers)).status == "verified"
+
+
+def test_family_fallback_to_another_model_is_a_mismatch() -> None:
+    headers = {**SERVED_OPUS, "X-OmniRoute-Model": "claude-opus-5"}
+    check = check_served("cc/claude-opus-5-5-high", served_identity_from_headers(headers))
+    assert check.status == "mismatch"

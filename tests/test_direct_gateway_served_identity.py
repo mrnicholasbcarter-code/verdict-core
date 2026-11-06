@@ -195,3 +195,12 @@ async def test_runtime_records_served_check_only_when_present(repo: Path) -> Non
     attempts = runtime.run_dir / "attempts"
     assert json.loads((attempts / "a-a1.json").read_text())["served_check"] == CHECK
     assert "served_check" not in json.loads((attempts / "b-a1.json").read_text())
+
+
+async def test_mismatch_with_empty_answer_is_still_a_model_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _gateway(monkeypatch, {**IDENTITY, "X-OmniRoute-Model": "claude-haiku-5-5"}, _body(""))
+    terminal = await _run(TEXT_PROMPT, tmp_path)
+    assert not terminal.ok
+    assert terminal.error == "model_mismatch"
