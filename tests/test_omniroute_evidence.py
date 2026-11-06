@@ -6,9 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from verdict.omniroute_evidence import parse_omniroute_evidence
+from verdict.omniroute_evidence import LiveCandidate, parse_omniroute_evidence
 
 NOW = datetime(2026, 10, 20, 13, tzinfo=timezone.utc)
+PATHS = {
+    "/api/providers": "providers",
+    "/api/resilience/connections": "resilience",
+    "/api/usage/provider-limits": "limits",
+    "/api/resilience/model-cooldowns": "cooldowns",
+    "/api/providers/health-matrix?range=7d": "health_matrix",
+    "/v1/models": "v1_models",
+    "/v1/auto-combo/auto/candidates": "candidates",
+}
 
 
 @pytest.fixture
@@ -100,14 +109,7 @@ def test_oversized_source_fails_closed_not_partial_healthy(sources, monkeypatch)
 
     def transport(request, *, timeout):
         path = request.full_url.removeprefix("http://gateway")
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-            "/v1/models": "v1_models",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "open_no_redirect", transport)
@@ -121,8 +123,10 @@ def test_oversized_source_fails_closed_not_partial_healthy(sources, monkeypatch)
         "cooldowns",
         "health_matrix",
         "v1_models",
+        "candidates",
     }
     assert not evidence.usable_providers
+    assert not evidence.live_candidates
     assert not evidence.proven_by_traffic
 
 
@@ -140,13 +144,7 @@ def test_raw_row_limit_fails_source_closed(sources, monkeypatch):
         path = request.full_url.removeprefix("http://gateway")
         if path == "/v1/models":
             return BytesIO(json.dumps(oversized).encode())
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "open_no_redirect", transport)
@@ -164,14 +162,7 @@ def test_aggregate_deadline_exceeded_fails_remaining_sources_closed(sources, mon
 
     def transport(request, *, timeout):
         path = request.full_url.removeprefix("http://gateway")
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-            "/v1/models": "v1_models",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "open_no_redirect", transport)
@@ -185,6 +176,7 @@ def test_aggregate_deadline_exceeded_fails_remaining_sources_closed(sources, mon
         "cooldowns",
         "health_matrix",
         "v1_models",
+        "candidates",
     )
 
 
@@ -201,14 +193,7 @@ def test_split_credentials_are_confined_and_missing_inference_is_local(
     def transport(request, *, timeout):
         path = request.full_url.removeprefix("http://gateway")
         seen.append((path, request.get_header("Authorization")))
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-            "/v1/models": "v1_models",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "resolve_api_key", lambda: None)
@@ -216,15 +201,19 @@ def test_split_credentials_are_confined_and_missing_inference_is_local(
     evidence = module.fetch_omniroute_evidence(
         "http://gateway/", api_key=inference, management_token=" management-sentinel ", timeout=7
     )
-    assert len(seen) == (6 if inference else 5)
+    assert len(seen) == (7 if inference else 5)
     assert all(
         auth == "Bearer management-sentinel" for path, auth in seen if path.startswith("/api/")
     )
     if inference:
         assert ("/v1/models", "Bearer inference-sentinel") in seen
+        assert ("/v1/auto-combo/auto/candidates", "Bearer inference-sentinel") in seen
         assert not evidence.source_errors
+        assert evidence.live_candidates["a/best"].reachable
     else:
-        assert "v1_models" in evidence.source_errors
+        assert {"v1_models", "candidates"} <= set(evidence.source_errors)
+        assert not any(path.startswith("/v1/") for path, _ in seen)
+        assert not evidence.live_candidates
 
 
 def test_management_401_does_not_fallback_or_retry(sources, monkeypatch):
@@ -243,13 +232,13 @@ def test_management_401_does_not_fallback_or_retry(sources, monkeypatch):
     evidence = module.fetch_omniroute_evidence(
         "http://gateway/", api_key=None, management_token="management-sentinel"
     )
-    assert len(visited) == len(set(url for url, _ in visited)) == 6
-    assert len(evidence.source_errors) == 6
+    assert len(visited) == len(set(url for url, _ in visited)) == 7
+    assert len(evidence.source_errors) == 7
     assert all(
         auth
         == (
             "Bearer inference-sentinel"
-            if url.endswith("/v1/models")
+            if url.startswith("http://gateway/v1/")
             else "Bearer management-sentinel"
         )
         for url, auth in visited
@@ -278,7 +267,8 @@ def test_both_credentials_missing_never_accesses_network(monkeypatch):
 
     monkeypatch.setattr(module, "open_no_redirect", forbidden)
     evidence = module.fetch_omniroute_evidence("http://gateway", api_key=None)
-    assert len(evidence.source_errors) == 6
+    assert len(evidence.source_errors) == 7
+    assert not evidence.live_candidates
     assert not evidence.inventory_route_ids
 
 
@@ -295,14 +285,7 @@ def test_absent_management_token_uses_legacy_api_key_for_management_reads(
     def transport(request, *, timeout):
         path = request.full_url.removeprefix("http://gateway")
         seen.append((path, request.get_method(), request.get_header("Authorization")))
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-            "/v1/models": "v1_models",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "resolve_api_key", lambda: None)
@@ -310,9 +293,9 @@ def test_absent_management_token_uses_legacy_api_key_for_management_reads(
     evidence = module.fetch_omniroute_evidence(
         "http://gateway/", api_key="legacy-sentinel", management_token=management_token, timeout=7
     )
-    # Legacy fallback only when the management token is absent: all six bounded
+    # Legacy fallback only when the management token is absent: all seven bounded
     # GETs carry the inference key, nothing is POSTed, and no source fails.
-    assert len(seen) == len({path for path, _, _ in seen}) == 6
+    assert len(seen) == len({path for path, _, _ in seen}) == 7
     assert all(method == "GET" for _, method, _ in seen)
     assert all(auth == "Bearer legacy-sentinel" for _, _, auth in seen)
     assert not evidence.source_errors
@@ -332,13 +315,7 @@ def test_forbidden_inference_catalog_is_unknown_and_never_cross_retries(sources,
         seen.append((path, request.get_header("Authorization")))
         if path == "/v1/models":
             raise HTTPError(request.full_url, 403, "inference-sentinel", {}, None)
-        name = {
-            "/api/providers": "providers",
-            "/api/resilience/connections": "resilience",
-            "/api/usage/provider-limits": "limits",
-            "/api/resilience/model-cooldowns": "cooldowns",
-            "/api/providers/health-matrix?range=7d": "health_matrix",
-        }[path]
+        name = PATHS[path]
         return BytesIO(json.dumps(sources[name]).encode())
 
     monkeypatch.setattr(module, "resolve_api_key", lambda: None)
@@ -352,7 +329,7 @@ def test_forbidden_inference_catalog_is_unknown_and_never_cross_retries(sources,
     # A deny-all catalog is an honest unknown: one attempt with the inference
     # key only, no retry with the management token, no invented routes.
     assert [auth for path, auth in seen if path == "/v1/models"] == ["Bearer inference-sentinel"]
-    assert len(seen) == 6
+    assert len(seen) == 7
     assert "v1_models" in evidence.source_errors
     assert not evidence.inventory_route_ids
     assert not evidence.proven_by_traffic
@@ -366,14 +343,7 @@ def test_fetch_is_get_only_and_retains_source_failure(sources, monkeypatch):
 
     from verdict import omniroute_evidence as module
 
-    paths = {
-        "/api/providers": "providers",
-        "/api/resilience/connections": "resilience",
-        "/api/usage/provider-limits": "limits",
-        "/api/resilience/model-cooldowns": "cooldowns",
-        "/api/providers/health-matrix?range=7d": "health_matrix",
-        "/v1/models": "v1_models",
-    }
+    paths = PATHS
     visited = []
 
     def transport(request, *, timeout):
@@ -547,3 +517,100 @@ def test_inventory_and_failed_traffic_are_retained_without_granting_proof(source
     assert not evidence.proven_by_traffic
     assert evidence.traffic_by_route["a/best"].last_status == last_status
     assert evidence.traffic_by_route["a/best"].status == "error"
+
+
+def test_live_candidates_group_connections_and_name_blocked_rows(sources):
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert "candidates" not in evidence.source_errors
+    assert evidence.live_candidates == {
+        "a/best": LiveCandidate("a/best", "alpha", ("ok",), True),
+        "cand/two": LiveCandidate(
+            "cand/two", "alpha", ("ok", "ok-spare"), True, ("connection_cooldown",)
+        ),
+        "cand/open": LiveCandidate("cand/open", "beta", ("cool",), False, ("breaker_not_closed",)),
+        "cand/missing": LiveCandidate("cand/missing", "gamma", ("empty",), False, ("unreachable",)),
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("excluded", True, "excluded"),
+        ("excluded", None, "excluded"),
+        ("reachable", False, "unreachable"),
+        ("reachable", 1, "unreachable"),
+        ("breakerState", "HALF_OPEN", "breaker_not_closed"),
+        ("breakerState", None, "breaker_not_closed"),
+        ("connectionCooldown", True, "connection_cooldown"),
+        ("connectionCooldown", "false", "connection_cooldown"),
+        ("modelLocked", True, "model_locked"),
+        ("modelLocked", 0, "model_locked"),
+        ("freeAccessExclusion", "key_excluded", "free_access_excluded"),
+        ("freeAccessExclusion", False, "free_access_excluded"),
+    ],
+)
+def test_odd_or_blocking_candidate_field_is_never_healthy(sources, field, value, reason):
+    sources["candidates"]["candidates"][0][field] = value
+    candidate = parse_omniroute_evidence(**sources, now=NOW).live_candidates["a/best"]
+    assert not candidate.reachable
+    assert candidate.blocked_reasons == (reason,)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["excluded", "breakerState", "connectionCooldown", "modelLocked", "freeAccessExclusion"],
+)
+def test_missing_candidate_field_blocks_row(sources, field):
+    del sources["candidates"]["candidates"][0][field]
+    candidate = parse_omniroute_evidence(**sources, now=NOW).live_candidates["a/best"]
+    assert not candidate.reachable
+    assert len(candidate.blocked_reasons) == 1
+
+
+def test_candidate_route_falls_back_to_model_and_skips_rows_without_identity(sources):
+    rows = sources["candidates"]["candidates"]
+    rows[0]["modelStr"] = None
+    rows.append({"provider": "alpha", "connectionId": "ok", "reachable": True})
+    rows.append({"modelStr": "x/no-provider", "connectionId": "ok"})
+    rows.append({"modelStr": "x/no-connection", "provider": "alpha"})
+    candidates = parse_omniroute_evidence(**sources, now=NOW).live_candidates
+    assert candidates["a/best"].reachable
+    assert set(candidates) == {"a/best", "cand/two", "cand/open", "cand/missing"}
+
+
+@pytest.mark.parametrize("payload", [None, [], {"candidates": None}, {"channel": "auto"}])
+def test_malformed_candidates_payload_is_a_source_error(sources, payload):
+    sources["candidates"] = payload
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert evidence.source_errors == ("candidates",)
+    assert not evidence.live_candidates
+    assert evidence.usable_providers == frozenset({"alpha"})
+
+
+def test_candidates_default_is_unavailable_not_empty_healthy(sources):
+    del sources["candidates"]
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert evidence.source_errors == ("candidates",)
+    assert not evidence.live_candidates
+
+
+def test_candidate_row_cap_fails_candidates_source_closed(sources, monkeypatch):
+    from io import BytesIO
+
+    from verdict import omniroute_evidence as module
+
+    sources["v1_models"]["data"] = sources["v1_models"]["data"][:1]
+    sources["candidates"]["candidates"] *= 2
+
+    def transport(request, *, timeout):
+        return BytesIO(
+            json.dumps(sources[PATHS[request.full_url.removeprefix("http://gateway")]]).encode()
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", transport)
+    evidence = module.fetch_omniroute_evidence(
+        "http://gateway/", api_key="inference-key", timeout=7, raw_row_limit=9
+    )
+    assert evidence.source_errors == ("candidates",)
+    assert not evidence.live_candidates
+    assert evidence.inventory_route_ids == frozenset({"a/best"})

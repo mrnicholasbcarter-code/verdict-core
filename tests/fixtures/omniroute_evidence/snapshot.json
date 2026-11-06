@@ -125,5 +125,69 @@
         "root": "not-entitled"
       }
     ]
+  },
+  "candidates": {
+    "channel": "auto",
+    "candidates": [
+      {
+        "provider": "alpha",
+        "connectionId": "ok",
+        "model": "a/best",
+        "modelStr": "a/best",
+        "excluded": false,
+        "reachable": true,
+        "breakerState": "CLOSED",
+        "connectionCooldown": false,
+        "modelLocked": false,
+        "freeAccessExclusion": null
+      },
+      {
+        "provider": "alpha",
+        "connectionId": "ok",
+        "model": "cand/two",
+        "modelStr": "cand/two",
+        "excluded": false,
+        "reachable": true,
+        "breakerState": "CLOSED",
+        "connectionCooldown": false,
+        "modelLocked": false,
+        "freeAccessExclusion": null
+      },
+      {
+        "provider": "alpha",
+        "connectionId": "ok-spare",
+        "model": "cand/two",
+        "modelStr": "cand/two",
+        "excluded": false,
+        "reachable": true,
+        "breakerState": "CLOSED",
+        "connectionCooldown": true,
+        "modelLocked": false,
+        "freeAccessExclusion": null
+      },
+      {
+        "provider": "beta",
+        "connectionId": "cool",
+        "model": "cand/open",
+        "modelStr": "cand/open",
+        "excluded": false,
+        "reachable": true,
+        "breakerState": "OPEN",
+        "connectionCooldown": false,
+        "modelLocked": false,
+        "freeAccessExclusion": null
+      },
+      {
+        "provider": "gamma",
+        "connectionId": "empty",
+        "model": "cand/missing",
+        "modelStr": "cand/missing",
+        "excluded": false,
+        "breakerState": "CLOSED",
+        "connectionCooldown": false,
+        "modelLocked": false,
+        "freeAccessExclusion": null
+      }
+    ]
   }
 }

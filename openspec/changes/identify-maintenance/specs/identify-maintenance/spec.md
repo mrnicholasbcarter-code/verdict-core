@@ -35,33 +35,33 @@ Doctor SHALL fail if either identify timer is inactive/missing/failed or the pas
 - **THEN** it is not rejected solely due to the retired prober cadence
 
 ### Requirement: Passive inventory separates management and inference authentication
-Passive identify SHALL use the optional management read token only for the five management `/api` GETs and the resolved inference API key only for `/v1/models`. It SHALL retain six fixed source slots and attempt at most six GETs under the shared aggregate deadline. Missing credentials SHALL make only their source slots locally unavailable without network access; management reads SHALL proceed when inference credentials are missing, while both credential families missing SHALL make all six sources unavailable. When the management token is absent, the legacy `api_key` SHALL remain the management credential fallback, but never after a 401 or other request failure. It SHALL NOT retry a failed request with the other authentication family. The management resolver SHALL use stripped `OMNIROUTE_MANAGEMENT_TOKEN` from the environment or the same-named existing secure-store field only; it SHALL never use inference compatibility files or the credentials registry. Existing permission checks are mode checks and SHALL NOT be described as ownership or symlink protection. No new secret file SHALL be created.
+Passive identify SHALL use the optional management read token only for the five management `/api` GETs and the resolved inference API key only for `/v1/models` and `/v1/auto-combo/auto/candidates`. It SHALL retain seven fixed source slots and attempt at most seven GETs under the shared aggregate deadline. Missing credentials SHALL make only their source slots locally unavailable without network access; management reads SHALL proceed when inference credentials are missing, while both credential families missing SHALL make all seven sources unavailable. When the management token is absent, the legacy `api_key` SHALL remain the management credential fallback, but never after a 401 or other request failure. It SHALL NOT retry a failed request with the other authentication family. The management resolver SHALL use stripped `OMNIROUTE_MANAGEMENT_TOKEN` from the environment or the same-named existing secure-store field only; it SHALL never use inference compatibility files or the credentials registry. Existing permission checks are mode checks and SHALL NOT be described as ownership or symlink protection. No new secret file SHALL be created.
 
 #### Scenario: Split credentials stay on their endpoint families
 - **WHEN** passive identify fetches its inventory sources with both credentials available
 - **THEN** the five `/api` requests carry only the management read token
-- **AND** the `/v1/models` request carries only the inference API key
-- **AND** exactly six bounded GETs are attempted
+- **AND** the `/v1/models` and `/v1/auto-combo/auto/candidates` requests carry only the inference API key
+- **AND** exactly seven bounded GETs are attempted
 
 #### Scenario: Legacy management fallback remains supported
 - **WHEN** no management read token is resolved and the legacy `api_key` is available
 - **THEN** the five management requests use `api_key`
-- **AND** `/v1/models` still uses only the inference API key
+- **AND** `/v1/models` and `/v1/auto-combo/auto/candidates` still use only the inference API key
 - **AND** a management-token 401 does not trigger a retry with `api_key`
 
 #### Scenario: Missing inference credential is truthful
 - **WHEN** no inference API key is resolved
-- **THEN** `/v1/models` is recorded as its source error or unavailable source
+- **THEN** `/v1/models` and `/v1/auto-combo/auto/candidates` are recorded as source errors or unavailable sources
 - **AND** management reads do not receive a management token as an inference substitute
 - **AND** an empty or deny-all inference catalog remains an honest empty/unknown result rather than evidence of an available route
 
 #### Scenario: Authentication failures do not cross-retry
 - **WHEN** a management or inference request fails authentication
 - **THEN** that source is recorded as failed without retrying it with the other credential
-- **AND** no additional request is made beyond the six bounded GET contract
+- **AND** no additional request is made beyond the seven bounded GET contract
 
 #### Scenario: Passive inventory has no writes or inference calls
 - **WHEN** passive identify runs
-- **THEN** it performs only the six bounded inventory GETs
+- **THEN** it performs only the seven bounded inventory GETs
 - **AND** it performs no POST, write, model-generation, or `/admin/health` compatibility call
 - **AND** redirects, per-read and aggregate deadlines, decoded-byte limits, raw-row limits, and source-specific error truth remain unchanged

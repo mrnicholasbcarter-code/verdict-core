@@ -200,3 +200,73 @@ def test_missing_catalog_does_not_claim_catalog_coverage():
     report = identify_models(parse_omniroute_evidence(**data, now=NOW), metadata=None)
     assert report["inventory_coverage"] == "unknown"
     assert report["inventory_complete"] is False
+
+
+def test_report_adds_supply_and_task_pools_without_changing_available_routes():
+    from verdict.identify import identify_models
+
+    snapshot = parse_omniroute_evidence(**payloads(), now=NOW)
+    baseline = identify_models(snapshot, metadata=metadata())
+    assert baseline["supply"]["complete"] is False
+    assert "tool_proof_unavailable" in baseline["supply"]["unknowns"]
+    pool = baseline["task_pools"]["implementation"]
+    assert [r["route_id"] for r in pool["fallback"]] == ["a/best"]
+    assert pool["eligible"] == []
+    assert baseline["task_pools"]["dispatch_authorized"] is False
+    assert baseline["task_pools"]["blocked_by_reason"]["not_in_catalog"] == 3
+    assert next(s for s in baseline["sources"] if s["name"] == "candidates") == {
+        "name": "candidates",
+        "path": "/v1/auto-combo/auto/candidates",
+        "status": "ok",
+        "fetched_at": NOW.isoformat(),
+        "observed_at": None,
+    }
+    from verdict.orchestration.health_cache import HealthEntry
+
+    entry = HealthEntry(
+        route_id="a/best",
+        category="ok",
+        checked_at=NOW,
+        until=NOW,
+        consecutive_failures=0,
+        chat_ok=True,
+        tool_ok=True,
+        agentic_ok=True,
+        agentic_checked_at=NOW,
+    )
+    proven = identify_models(snapshot, metadata=metadata(), tool_proof={"a/best": entry})
+    row = proven["task_pools"]["implementation"]["eligible"][0]
+    assert (row["route_id"], row["tool_proof"], row["traffic"]["last_status"]) == (
+        "a/best",
+        "fresh",
+        200,
+    )
+    assert proven["available_routes"] == baseline["available_routes"]
+    assert proven["supply"]["totals"]["tool_proven"] == 1
+
+
+def test_identify_report_reads_health_cache_read_only_and_names_errors(monkeypatch, tmp_path):
+    from verdict import identify
+    from verdict.orchestration.health_cache import HealthCache
+
+    monkeypatch.setattr(identify, "resolve_gateway_binding", lambda: ("http://gateway/v1", None))
+    monkeypatch.setattr(
+        identify,
+        "fetch_omniroute_evidence",
+        lambda *a, **kw: parse_omniroute_evidence(**payloads(), now=NOW),
+    )
+    cache_path = tmp_path / "health.json"
+    monkeypatch.setattr(identify, "default_cache_path", lambda: cache_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("identify wrote the health cache")
+
+    monkeypatch.setattr(HealthCache, "merge_and_save", forbidden)
+    report = identify.identify_report()
+    assert report["tool_proof_error"] is None
+    assert not cache_path.exists()
+    cache_path.write_text("not json")
+    report = identify.identify_report()
+    assert report["tool_proof_error"] == "health_cache_unavailable"
+    assert "tool_proof_unavailable" in report["supply"]["unknowns"]
+    assert cache_path.read_text() == "not json"

@@ -594,6 +594,55 @@ Network probes require the explicit `--allow-live-probe` consent flag.
 
 ---
 
+### `verdict identify` — Passive availability, supply and task pools
+
+```bash
+verdict identify --passive --json                 # read-only; zero model calls
+verdict identify --passive --json --save-report   # also writes $VERDICT_HOME/identify-latest.json (0600)
+verdict identify --screen --allow-live-probe --max-per-provider 1 --max-routes 8 --json
+verdict identify install-service [--dry-run]      # passive and daily screen timers
+```
+
+Passive mode makes at most seven bounded GETs to OmniRoute and no POST, write or
+model call. Five management reads under `/api` (`providers`,
+`resilience/connections`, `usage/provider-limits`, `resilience/model-cooldowns`,
+`providers/health-matrix`) use the management credential. `/v1/models` and
+`/v1/auto-combo/auto/candidates` use the inference API key; without that key both
+slots are unavailable and are not fetched. A failed or malformed source is listed in
+`source_errors`. Passive mode reads tool proof from `health-cache.json` without
+writing it; an unreadable cache gives `tool_proof_error: health_cache_unavailable`.
+Schedules and screen bounds: [identify-maintenance.md](guides/identify-maintenance.md).
+
+The candidate pool is OmniRoute's live view: active connections with valid
+credentials, decorated with breaker state, connection cooldown, model lockout and
+this key's exclusions. A candidate row is usable only when it is reachable, not
+excluded, breaker `CLOSED`, not cooling down, not locked and has no free-access
+exclusion. A missing or odd field makes the row not usable.
+
+Report keys added to the existing passive report:
+
+| Key | Content |
+|---|---|
+| `supply` | `complete` (false while any gap is named), `unknowns` (sorted named gaps, for example `candidates_source_unavailable`, `connections_without_live_candidates:<provider>`, `noauth_candidates:<provider>`, `account_identity_not_reported`), `providers` (per provider: connections, usable connections, catalog routes, live candidates, live reachable, traffic routes, traffic-proven and tool-proven routes, `by_capacity`), `totals`, and `layers` (`catalog`, `live`, `tool_proof` counts; `task_performance` is `not_measured`). Accounts are reported as connection ids only. |
+| `task_pools` | One entry each for `research`, `specification`, `implementation`, `review` and `integration`, with `task_family`, `metric`, `eligible`, `fallback`, their counts and `*_by_capacity`. Also `blocked_by_reason`, `order` and `dispatch_authorized: false`. |
+
+Pool admission comes before ordering. A route must be in the catalog, live
+reachable, on a provider with a usable connection, not cooling down, and its latest
+traffic status must not be 401, 403 or 404. Admitted routes with fresh tool proof
+(for the route or an alias of the same backend model) are `eligible`. Admitted
+routes without it are `fallback`: probation that needs bounded qualification, never
+dispatch-authorized. Other routes are only counted in `blocked_by_reason`. Both
+lists are ordered free, subscription, metered, unknown, then task rating (strongest
+first, unknown last), then route id. Routes with the same backend model collapse to
+the first row, which lists the others in `aliases`.
+
+`verdict doctor` adds the pool summary to its "Identify passive report" row when the
+saved report has `task_pools` and `supply`:
+`implementation pool eligible N (free F), fallback M; supply complete false, U unknowns`.
+Older saved reports keep the old text. The summary never changes the row status.
+
+---
+
 ### `verdict suggest` — Review intelligence suggestions
 
 ```bash

@@ -59,6 +59,27 @@ def save_report(report: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _pool_summary(report: dict[str, Any]) -> str:
+    if "task_pools" not in report or "supply" not in report:
+        return ""
+    try:
+        pool = report["task_pools"]["implementation"]
+        supply = report["supply"]
+        eligible, fallback = pool["eligible_count"], pool["fallback_count"]
+        free = pool["eligible_by_capacity"]["free"]
+        complete, unknowns = supply["complete"], supply["unknowns"]
+        if not all(isinstance(n, int) for n in (eligible, fallback, free)):
+            raise TypeError("pool counts are not integers")
+        if not isinstance(complete, bool) or not isinstance(unknowns, list):
+            raise TypeError("supply completeness is malformed")
+    except (KeyError, TypeError):
+        return "; task pools unreadable"
+    return (
+        f"; implementation pool eligible {eligible} (free {free}), fallback {fallback}"
+        f"; supply complete {str(complete).lower()}, {len(unknowns)} unknowns"
+    )
+
+
 def report_row(*, now: datetime | None = None) -> dict[str, str]:
     path = latest_report_path()
     checked_at = now or datetime.now(timezone.utc)
@@ -79,7 +100,8 @@ def report_row(*, now: datetime | None = None) -> dict[str, str]:
             return {
                 "label": "Identify passive report",
                 "status": "ok",
-                "detail": f"{path} age {int(age)}s; source errors none; model calls 0",
+                "detail": f"{path} age {int(age)}s; source errors none; model calls 0"
+                + _pool_summary(report),
             }
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
         detail = f"{path} missing or unreadable; wait for {SERVICE}"
