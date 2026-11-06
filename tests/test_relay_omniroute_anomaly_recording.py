@@ -68,9 +68,12 @@ def test_outcome_record_carries_anomaly_names_but_no_header_values() -> None:
 
 
 class MarkedTransport(RecordingTransport):
-    def __init__(self, marker_headers: list[tuple[str, str]], *, stream: bool = False) -> None:
+    def __init__(
+        self, marker_headers: list[tuple[str, str]], *, stream: bool = False, status: int = 200
+    ) -> None:
         super().__init__(stream=stream)
         self.marker_headers = marker_headers
+        self.status = status
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await super().handle_async_request(request)
@@ -91,7 +94,7 @@ class MarkedTransport(RecordingTransport):
             headers = [(k, v) for k, v in headers if k.lower() != "content-type"]
             headers.append(("content-type", "text/event-stream"))
             return httpx.Response(200, headers=headers, stream=ChunkedSSE(chunks))
-        return httpx.Response(200, headers=headers, content=await response.aread())
+        return httpx.Response(self.status, headers=headers, content=await response.aread())
 
 
 def _logging_app(monkeypatch: pytest.MonkeyPatch, transport: RecordingTransport, log: Path) -> None:
@@ -168,3 +171,44 @@ def test_streamed_relay_records_anomalies_on_the_finalized_evidence(
     assert evidence["outcome_event"]["event_type"] == "chat_completion_streamed"
     assert evidence["outcome_event"]["details"]["omniroute_anomalies"] == ["cache_hit"]
     assert [row["omniroute_anomalies"] for row in _receipts(log)] == [["cache_hit"]]
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([("X-OmniRoute-Compression", "lite; source=api-key")], ["compressed"]),
+        ([("X-OmniRoute-Cache-Hit", "true")], ["cache_hit"]),
+        ([("X-OmniRoute-Cache", "MISS"), ("X-OmniRoute-Cache", "MISS")], []),
+        (
+            [
+                ("X-OmniRoute-Emergency-Fallback", "false"),
+                ("x-omniroute-emergency-fallback", "false"),
+            ],
+            [],
+        ),
+    ],
+    ids=["compressed", "cache-hit-header", "repeated-safe-cache", "repeated-safe-fallback"],
+)
+def test_observe_execution_covers_every_marker(
+    headers: list[tuple[str, str]], expected: list[str]
+) -> None:
+    assert observe_execution(headers=headers, body=None)["omniroute_anomalies"] == expected
+
+
+def test_buffered_relay_keeps_a_non_200_status_while_recording_anomalies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = tmp_path / "verdict-decisions.jsonl"
+    _logging_app(monkeypatch, MarkedTransport(MARKED, status=400), log)
+
+    response, evidence = _relay(False, "relay-marked-400")
+
+    assert response.status_code == 400
+    assert evidence["outcome_event"]["outcome"] == "error"
+    details = evidence["outcome_event"]["details"]
+    assert details["omniroute_anomalies"] == ["cache_hit", "emergency_fallback"]
+    receipts = _receipts(log)
+    assert receipts and all(
+        row["omniroute_anomalies"] == ["cache_hit", "emergency_fallback"] for row in receipts
+    )
+    assert LEAK_SENTINEL not in json.dumps(evidence)

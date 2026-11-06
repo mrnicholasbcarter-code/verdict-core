@@ -8,6 +8,7 @@
 - [x] 1.4 Document the field in `docs/CLI_REFERENCE.md` (outcome receipts).
 - [x] 1.5 Run the focused and neighbouring suites, `ruff check`, `ruff format --check` and `mypy --strict` on the touched modules.
 - [x] 1.6 Validate this change with `openspec validate relay-omniroute-anomaly-recording --strict`.
+- [x] 1.7 Cross-family review round 1 (`cx/gpt-5.6-luna-high`, REQUEST_CHANGES on test coverage only): add tests for `compressed`, a positive `X-OmniRoute-Cache-Hit`, repeated safe values, and a non-200 relayed status that is kept while anomalies are recorded. All 12 tests fail on `main` with `KeyError: 'omniroute_anomalies'` and pass here.
 
 ## 2. Pending
 
