@@ -347,12 +347,15 @@ def get_credential_source(env_name: str, store: CredentialsStore | None = None) 
 
     Returns:
         (source, masked_value) where source is "env", "store", or "missing";
-        a gateway key name may also come from "key_file" or "prime_auth"
+        a gateway key name may also come from "key_file" or "prime_auth".
+        An environment value ``load_into_env`` copied in, and unchanged since, is
+        "store" (recorded provenance; see :func:`injected_from_store`).
     """
     # Check environment first
     env_value = os.environ.get(env_name)
     if env_value:
-        return "env", _mask_value(env_value)
+        source = "store" if injected_from_store(env_name) else "env"
+        return source, _mask_value(env_value)
 
     # Check store
     if store is None:

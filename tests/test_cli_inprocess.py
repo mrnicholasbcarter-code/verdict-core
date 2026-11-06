@@ -1405,6 +1405,9 @@ def test_cli_doctor_rejected_store_management_token_fails_both_modes_without_the
     assert "HTTP 401" in issue and "credential store" in issue
     [row] = [s for s in report["sections"] if s["label"] == "Management token"]
     assert row["state"] == "failed" and "source: credential_store" in row["detail"]
+    # The Credentials list names the same provenance: load_into_env copied it in.
+    [listed] = [s for s in report["sections"] if s["label"] == "OMNIROUTE_MANAGEMENT_TOKEN"]
+    assert listed["state"] == "store"
     assert "cli-doctor-management-sentinel" not in out
 
     with pytest.raises(SystemExit) as exc:

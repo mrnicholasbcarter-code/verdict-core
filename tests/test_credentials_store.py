@@ -253,6 +253,36 @@ def test_get_credential_source_from_store(
     assert "set (len=" in masked
 
 
+def test_get_credential_source_names_a_value_load_into_env_copied_as_the_store(
+    store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The doctor Credentials list reads provenance from the injection record.
+
+    The CLI entry runs ``load_into_env`` first, so a stored value sits in the
+    environment; it is still the store's until the process overwrites it.
+    """
+    from verdict import credentials_store as module
+
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    # setenv then delenv registers TEST_KEY for cleanup after load_into_env sets it.
+    monkeypatch.setenv("TEST_KEY", "placeholder")
+    monkeypatch.delenv("TEST_KEY")
+    store.set("TEST_KEY", "stored_value")
+    store.load_into_env()
+    assert os.environ["TEST_KEY"] == "stored_value"
+    source, masked = get_credential_source("TEST_KEY", store)
+    assert source == "store"
+    assert "stored_value" not in masked
+    # An in-process overwrite after the copy is an export again.
+    monkeypatch.setenv("TEST_KEY", "other_value")
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+    # An export made before the load, equal to the stored value, stays an export.
+    monkeypatch.setenv("TEST_KEY", "stored_value")
+    monkeypatch.setattr(module, "_STORE_INJECTED", {})
+    store.load_into_env()
+    assert get_credential_source("TEST_KEY", store)[0] == "env"
+
+
 def test_get_credential_source_missing(
     store: CredentialsStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
