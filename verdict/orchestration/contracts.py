@@ -113,6 +113,7 @@ class WorkNode:
     coding: bool = True
     reasoning: bool = False
     min_context_tokens: int = 32_000
+    hydration_packet: str = ""  # queen-owned JSON; validated at the local dispatch boundary
 
     def __post_init__(self) -> None:
         if not self.node_id.strip() or not self.objective.strip():
@@ -163,6 +164,11 @@ class WorkNode:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["kind"] = self.kind.value
+        # An unbound node must serialize (and therefore digest) exactly as it did before
+        # hydration packets existed, or every previously-written receipt stops verifying.
+        # A non-empty packet is kept so the digest still binds the packet to the graph.
+        if not value["hydration_packet"]:
+            del value["hydration_packet"]
         return value
 
     @classmethod

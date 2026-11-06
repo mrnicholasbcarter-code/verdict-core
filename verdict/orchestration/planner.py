@@ -319,6 +319,7 @@ def ensure_verification_files_owned(nodes: list[WorkNode]) -> list[WorkNode]:
                 coding=node.coding,
                 reasoning=node.reasoning,
                 min_context_tokens=node.min_context_tokens,
+                hydration_packet=node.hydration_packet,
             )
         )
     return result
