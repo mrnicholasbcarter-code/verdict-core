@@ -21,7 +21,7 @@
 
 ## 4. Verification and delivery
 
-- [ ] 4.1 Run focused and broad tests, ruff, format, strict mypy, OpenSpec validation, doc links, reachability and proof matrix.
+- [x] 4.1 Run focused and broad tests, ruff, format, strict mypy, OpenSpec validation, doc links, reachability and proof matrix.
 - [ ] 4.2 Obtain useful independent diff review from a different model family and resolve findings.
 - [ ] 4.3 Run one real hydrated Verdict unit and retain digest-bound evidence.
 - [ ] (post-merge) 4.4 Install exact merged main and rerun parent acceptance; do not close the wider context story from this slice alone.
