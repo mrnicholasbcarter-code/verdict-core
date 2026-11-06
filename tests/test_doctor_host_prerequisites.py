@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from tests.test_setup_host import ASSET, GATEWAY, FakeHost
+from tests.test_setup_host import ASSET, GATEWAY, FakeHost, installed_package_env
 from verdict import doctor_diagnostics as dd
-from verdict import harness_prime, setup_host
+from verdict import harness_prime, ocr_release, setup_host
 from verdict.doctor_presentation import repair_command
 
 
@@ -60,10 +60,19 @@ def test_pinned_ocr_is_ok(host: FakeHost) -> None:
     assert _rows(host)["Review tool (ocr)"]["status"] == "ok"
 
 
-def test_unreadable_pin_is_a_warning(host: FakeHost) -> None:
-    (host.repo / ".github" / "workflows" / "certify-rehearsal.yml").unlink()
-    row = _rows(host)["Review tool (ocr)"]
-    assert row["status"] == "warning" and "cannot verify" in row["detail"]
+def test_installed_package_reports_missing_ocr_against_the_pin(
+    host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live defect: a non-editable install showed ``warning | cannot verify ocr: [Errno 2]``."""
+    version, _ = ocr_release.ocr_pin()
+    rows = {
+        row["label"]: row
+        for row in setup_host.doctor_rows(installed_package_env(host, monkeypatch))
+    }
+    row = rows["Review tool (ocr)"]
+    assert row["status"] == "failed", row
+    assert row["detail"].startswith("not on PATH; ") and f"pins {version}" in row["detail"]
+    assert repair_command(row["detail"]) == "verdict setup --apply --allow host.ocr"
 
 
 def test_missing_serve_unit_fails_without_probing_health(host: FakeHost) -> None:

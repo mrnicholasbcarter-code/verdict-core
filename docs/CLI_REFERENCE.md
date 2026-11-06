@@ -645,7 +645,7 @@ Issues (exit `1`):
   `verdict harness prime sync-models`.
 - Host prerequisites, each with `repair: <command>`, which text mode prints as
   `Repair:`: `ocr` missing, a different version, or a SHA-256 that is not the
-  `certify-rehearsal.yml` pin (`verdict setup --apply --allow host.ocr`);
+  `verdict.ocr_release` pin (`verdict setup --apply --allow host.ocr`);
   `verdict-serve.service` not installed (`--allow host.serve`), inactive
   (`systemctl --user enable --now verdict-serve.service`) or active without
   answering `http://127.0.0.1:8000/health`, or with a probe that raises
@@ -658,7 +658,7 @@ Warnings (exit unaffected):
 
 - Rows with state `warning`: the metadata refresh timer not installed
   (explicit opt-in; `verdict metadata install-service` or `verdict setup
-  --apply`), and an unreadable `certify-rehearsal.yml` ocr pin.
+  --apply`).
 - `missing_mcp_config` (no `./.mcp.json`; `--fix` creates it).
 - Memory bridge: `missing_memory_db`, `missing_memory_db_file` (`--fix` creates
   `~/.verdict/` and initializes `memory.db`).
@@ -698,7 +698,7 @@ action each, planned only when the host is missing or differs from it:
 
 | `--allow` id | What APPLY does (existing installer reused) |
 |---|---|
-| `host.ocr` | Downloads the open-code-review release pinned by `OCR_VERSION`/`OCR_SHA256` in `.github/workflows/certify-rehearsal.yml`, checks its SHA-256, and only then installs it at `~/.local/bin/ocr`. A mismatch installs nothing. |
+| `host.ocr` | Downloads the open-code-review release pinned by `OCR_VERSION`/`OCR_SHA256` in `verdict/ocr_release.py` (shipped in the package; `.github/workflows/certify-rehearsal.yml` reads the same values), checks its SHA-256, and only then installs it at `~/.local/bin/ocr`. A mismatch installs nothing. |
 | `host.metadata` | Runs `verdict metadata refresh --include-p1` when the Core metadata store is missing, then `verdict metadata install-service` (six-hour timer). |
 | `host.acceptance-timer` | `verdict acceptance install-service` (hourly). |
 | `host.identify-timers` | `verdict identify install-service` (passive and screen timers). |

@@ -50,7 +50,7 @@ DENY_RULES: dict[str, Callable[[PurePosixPath], bool]] = {
 
 
 @pytest.fixture(scope="module")
-def wheel_entries(tmp_path_factory: pytest.TempPathFactory) -> list[PurePosixPath]:
+def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if shutil.which("uv") is None:
         pytest.skip("uv is required to build the wheel")
     out_dir = tmp_path_factory.mktemp("wheel")
@@ -61,7 +61,12 @@ def wheel_entries(tmp_path_factory: pytest.TempPathFactory) -> list[PurePosixPat
         text=True,
     )
     (wheel,) = out_dir.glob("verdict_core-*.whl")
-    with zipfile.ZipFile(wheel) as archive:
+    return wheel
+
+
+@pytest.fixture(scope="module")
+def wheel_entries(built_wheel: Path) -> list[PurePosixPath]:
+    with zipfile.ZipFile(built_wheel) as archive:
         return [PurePosixPath(name) for name in archive.namelist() if not name.endswith("/")]
 
 
@@ -80,6 +85,22 @@ def test_wheel_entries_match_the_allowlist(wheel_entries: list[PurePosixPath]) -
 def test_wheel_has_no_denied_entries(wheel_entries: list[PurePosixPath], rule: str) -> None:
     denied = [str(path) for path in wheel_entries if DENY_RULES[rule](path)]
     assert not denied, f"wheel ships {rule}: {denied}"
+
+
+def test_installed_wheel_reads_the_ocr_pin_without_a_checkout(
+    built_wheel: Path, tmp_path: Path
+) -> None:
+    """``verdict doctor`` and ``verdict setup`` read the ocr pin from the installed package."""
+    from tests.test_ocr_release import read_pin_from
+    from verdict import ocr_release
+
+    site = tmp_path / "site-packages"
+    with zipfile.ZipFile(built_wheel) as archive:
+        archive.extractall(site)
+    assert not (site / ".github").exists()
+    where, pin = read_pin_from(site, cwd=tmp_path)
+    assert where == site / "verdict" / "ocr_release.py"
+    assert pin == ocr_release.ocr_pin()
 
 
 def test_wheel_demo_modules_are_documented_entry_points(wheel_entries: list[PurePosixPath]) -> None:

@@ -18,8 +18,6 @@ jobs:
       run:
         shell: bash -euo pipefail {0}
     env:
-      OCR_VERSION: v1.12.9
-      OCR_SHA256: 9105c7081b8362a1cb0167f1ddfd1437e147a0e3c9a5af89c03c8859a5b0f0e8
       PYTHONPATH: ${{ github.workspace }}
       VERDICT_ALLOW_UNKNOWN_CAPACITY: 'false'
     steps:
@@ -38,6 +36,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Sync locked dependencies
         run: uv sync --frozen --extra dev --extra server
+      # verdict/ocr_release.py is the only copy of the pin; tests/test_ocr_release.py runs this step.
+      - name: Read the ocr pin from the package
+        run: |
+          .venv/bin/python -c 'from verdict.ocr_release import OCR_SHA256, OCR_VERSION; print("OCR_VERSION=" + OCR_VERSION); print("OCR_SHA256=" + OCR_SHA256)' >> "$GITHUB_ENV"
       - name: Install pinned independent reviewer
         run: |
           test "${#OCR_SHA256}" = 64

@@ -1,13 +1,14 @@
 """Host prerequisites ``verdict setup`` installs (BOD-219 part 2).
 
 Every test builds a ``HostEnvironment`` on a temporary HOME, XDG_CONFIG_HOME and
-VERDICT_HOME with a temporary unit directory, a recording ``systemctl``, an
-injected ocr download and fake metadata-refresh and sync-models steps. Nothing
+VERDICT_HOME with a temporary unit directory, a recording ``systemctl``, a fake
+ocr pin and download, and fake metadata-refresh and sync-models steps. Nothing
 here downloads, calls a provider, runs systemctl or reads the real ``~/.prime``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import stat
@@ -16,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from verdict import harness_prime, setup_host
+from verdict import harness_prime, ocr_release, setup_host
 from verdict.capability_bootstrap import (
     BootstrapMode,
     BootstrapScope,
@@ -55,12 +56,6 @@ class FakeHost:
             "LLMGATE_AUTH_TOKEN",
         ):
             monkeypatch.delenv(name, raising=False)
-        self.repo = tmp_path / "repo"
-        workflows = self.repo / ".github" / "workflows"
-        workflows.mkdir(parents=True)
-        (workflows / "certify-rehearsal.yml").write_text(
-            f"jobs:\n  rehearse:\n    env:\n      OCR_VERSION: {PIN}\n      OCR_SHA256: {ASSET_SHA}\n"
-        )
         self.unit_dir = self.home / ".config" / "systemd" / "user"
         self.active: set[str] = set()
         self.systemctl_calls: list[list[str]] = []
@@ -73,9 +68,9 @@ class FakeHost:
         self.env = setup_host.HostEnvironment(
             home=self.home,
             unit_dir=self.unit_dir,
-            repo_root=self.repo,
             gateway=GATEWAY,
             which=self.which,
+            ocr_pin=lambda: (PIN, ASSET_SHA),
             ocr_version=lambda path: None,
             unit_state=self.unit_state,
             unit_result=lambda unit: None,
@@ -156,6 +151,38 @@ class FakeHost:
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     return FakeHost(tmp_path, monkeypatch)
+
+
+_SEAMS = (
+    "home",
+    "unit_dir",
+    "which",
+    "ocr_version",
+    "unit_state",
+    "unit_result",
+    "systemctl",
+    "fetch",
+    "metadata_refresh",
+    "prime_sync",
+    "serve_health",
+    "sleep",
+)
+
+
+def installed_package_env(
+    host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> setup_host.HostEnvironment:
+    """``HostEnvironment.from_host()`` as a non-editable install builds it.
+
+    The package root is a bare ``site-packages`` directory with no ``.github/``;
+    the pin is whatever the package itself provides. Only the side-effecting
+    seams are the fake host's.
+    """
+    site = host.root / "site-packages"
+    (site / "verdict").mkdir(parents=True)
+    monkeypatch.setattr(ocr_release, "package_root", lambda: site)
+    seams = {name: getattr(host.env, name) for name in _SEAMS}
+    return dataclasses.replace(setup_host.HostEnvironment.from_host(), **seams)
 
 
 def _host_actions(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -348,6 +375,25 @@ def test_an_ocr_digest_mismatch_never_installs(host: FakeHost) -> None:
     assert "nothing installed" in result["note"]
     assert not host.ocr.exists()
     assert _stage(report, "apply")["status"] == "failed"
+
+
+def test_installed_package_plans_and_runs_the_ocr_install_with_the_pin(
+    host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live defect: without ``.github/`` setup found no pin and silently planned no ocr install.
+
+    The fake asset cannot hash to the real pin, so the action fetches the pinned
+    URL and refuses the bytes: the pin was read, and nothing touched the network.
+    """
+    version, digest = ocr_release.ocr_pin()
+    env = installed_package_env(host, monkeypatch)
+    actions = setup_host.plan_host_actions(env)
+    assert [action.provider_id for action in actions][:1] == ["host.ocr"]
+    result = setup_host.run_host_action(actions[0], env)
+    assert host.fetches == [ocr_release.OCR_ASSET_URL.format(version=version)]
+    assert result["status"] == "failed"
+    assert digest in result["note"] and "nothing installed" in result["note"]
+    assert not host.ocr.exists()
 
 
 def test_prime_enable_waits_for_serve_and_names_the_repair(host: FakeHost) -> None:

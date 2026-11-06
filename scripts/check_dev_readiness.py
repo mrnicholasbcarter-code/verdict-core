@@ -12,12 +12,13 @@ Reports, and never changes:
 * the PyPA ``build`` frontend that the proof contract's ``build`` gate runs
   (``python -m build --wheel``) works in the project interpreter;
 * ``ocr`` (open-code-review) on PATH reports the version, and has the SHA-256,
-  that ``.github/workflows/certify-rehearsal.yml`` pins.
+  that ``verdict.ocr_release`` pins.
 
-The workflows are the single source of truth for both pins: this script and
-``tests/test_check_openspec_tasks.py`` read them, and nothing else restates them.
-The ocr pin and binary check are ``verdict.ocr_release``, shared with
-``verdict setup`` and ``verdict doctor``.
+Each pin has one source, and nothing else restates it. The openspec pin is the
+CI ``lint`` job: this script and ``tests/test_check_openspec_tasks.py`` read it.
+The ocr pin is ``verdict.ocr_release``, which ``verdict setup``, ``verdict
+doctor`` and ``.github/workflows/certify-rehearsal.yml`` also read; this script
+shares its binary check too.
 Every problem prints the exact repair. Exit 0 when ready, 1 on any problem.
 
 Limits, by design:
@@ -58,7 +59,6 @@ sys.path.insert(0, str(ROOT))
 # `verdict setup` and `verdict doctor`; the module is stdlib-only and read-only.
 from verdict.ocr_release import (  # noqa: E402
     OCR_ASSET_URL,
-    REHEARSAL_WORKFLOW,
     inspect_ocr,
     ocr_pin,
 )
@@ -327,17 +327,12 @@ def check_build(root: Path, python: str) -> Finding:
     return Finding("build", True, f"{python} -m build: {result.stdout.strip().splitlines()[0]}")
 
 
-def check_ocr(root: Path) -> Finding:
-    """The ocr on PATH must be the release certify-rehearsal.yml pins: version and SHA-256.
+def check_ocr() -> Finding:
+    """The ocr on PATH must be the release verdict.ocr_release pins: version and SHA-256.
 
     Classification is ``verdict.ocr_release.inspect_ocr``, which `verdict doctor` uses too.
     """
-    try:
-        version, digest = ocr_pin(root)
-    except (OSError, ValueError) as exc:
-        return Finding(
-            "ocr", False, str(exc), f"fix OCR_VERSION/OCR_SHA256 in {REHEARSAL_WORKFLOW}"
-        )
+    version, digest = ocr_pin()
     local = shutil.which("ocr")
     target = Path(local) if local else Path.home() / ".local" / "bin" / "ocr"
     staged = shlex.quote(f"{target}.download")
@@ -362,7 +357,7 @@ def run_checks(root: Path, vgate: Path, python: str) -> list[Finding]:
         check_pre_push(root, vgate),
         check_openspec(root),
         check_build(root, python),
-        check_ocr(root),
+        check_ocr(),
     ]
 
 
