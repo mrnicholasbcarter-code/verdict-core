@@ -702,3 +702,53 @@ def test_nonfree_route_reuses_fresh_health_cache_proof(tmp_path: Path) -> None:
     assert result.admitted == (identity,)
     assert result.passport[0].fresh
     assert result.confirm == ()
+
+
+def test_confirm_budget_goes_to_passively_healthy_route_before_catalog_order() -> None:
+    """Expired passports: passive-healthy routes get the budgeted confirms first."""
+    from dataclasses import replace
+
+    from verdict.admission import RuntimeEvidence, RuntimeObservation
+
+    failing = tuple(f"af/model-{i}" for i in range(4))
+    healthy = "codestral/codestral-latest"
+    no_passport = "zz/no-passport"
+    ids = (*failing, healthy, no_passport)
+    base = replace(admit_free_tier_active(_snapshot()), admitted=ids, free_admitted=ids)
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=1))
+    passive = RuntimeEvidence(
+        observations=(
+            RuntimeObservation(
+                key="route:" + healthy,
+                state="healthy",
+                category="ok",
+                source="omniroute:health",
+                until=(NOW + timedelta(minutes=5)).isoformat(),
+            ),
+        )
+    )
+    calls: list[str] = []
+
+    def transport(model: str, payload: object, timeout: float) -> dict[str, object]:
+        calls.append(model)
+        if model in failing:
+            return {"status_code": 400, "body": {"error": {"message": "bad request"}}}
+        return _ok_transport()(model, payload, timeout)
+
+    result = gate_admit_prove_confirm(
+        base,
+        passports={identity: _passport(identity, **expired) for identity in (*failing, healthy)},
+        passive_health=passive,
+        confirm_transport=transport,
+        now=NOW,
+        live=True,
+        consented=True,
+        max_confirm_candidates=4,
+    )
+    assert calls == [healthy, *failing[:3]]
+    assert result.admitted == (healthy,)
+    assert result.chosen == healthy
+    assert set(result.admitted) <= set(base.admitted)
+    named = {(d.model_id, d.reason) for d in result.exclusions}
+    assert (failing[3], "confirm_budget_exhausted") in named
+    assert (no_passport, "confirm_budget_exhausted") in named
