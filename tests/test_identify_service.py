@@ -360,6 +360,13 @@ def _write_ok_report(**extra):
                 "model_calls": 0,
                 "fetched_at": NOW.isoformat(),
                 "source_errors": [],
+                "health_refresh": {
+                    "recorded": 1,
+                    "newest_observed_at": NOW.isoformat(),
+                    "source_errors": [],
+                    "model_calls": 0,
+                    "gateway_writes": 0,
+                },
                 **extra,
             }
         )
@@ -390,7 +397,8 @@ def test_doctor_report_row_summarizes_implementation_pool_and_supply():
     row = report_row(now=NOW)
     assert row["status"] == "ok"
     assert row["detail"] == (
-        f"{path} age 0s; source errors none; model calls 0"
+        f"{path} age 0s; source errors none; model calls 0; "
+        "health refresh recorded 1, newest evidence age 0s"
         "; implementation pool eligible 5 (free 2), fallback 7"
         "; supply complete false, 3 unknowns"
     )
@@ -404,7 +412,8 @@ def test_doctor_report_row_keeps_old_text_without_pool_keys():
     assert row == {
         "label": "Identify passive report",
         "status": "ok",
-        "detail": f"{path} age 0s; source errors none; model calls 0",
+        "detail": f"{path} age 0s; source errors none; model calls 0; "
+        "health refresh recorded 1, newest evidence age 0s",
     }
 
 
