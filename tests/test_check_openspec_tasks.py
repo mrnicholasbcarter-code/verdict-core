@@ -102,7 +102,7 @@ def test_plain_open_task_beside_a_post_merge_task_fails(
         "- [ ] (postmerge) run it live",
         "- [ ] (Post-merge) run it live",
         "- [ ] (POST-MERGE) run it live",
-        "- [ ] (post–merge) run it live",
+        "- [ ] (post\u2013merge) run it live",
         "- [ ] [post-merge] run it live",
         "- [ ] post-merge: run it live",
         "- [ ] 4.1 (post-merge) run it live",
