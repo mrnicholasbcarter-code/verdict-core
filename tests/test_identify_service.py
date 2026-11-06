@@ -42,7 +42,7 @@ def test_units_install_idempotently_and_uninstall(tmp_path):
     assert not directory.exists() and commands == []
     passive = dry["files"][SERVICE]
     screen = dry["files"][SCREEN_SERVICE]
-    assert "-m verdict identify --passive --json --save-report" in passive
+    assert "-m verdict identify --passive --json --save-report --refresh-health-cache" in passive
     assert "UMask=0077" in passive
     argv = shlex.split(
         next(
@@ -110,6 +110,16 @@ def test_native_saved_passive_report_is_private_and_atomic(tmp_path, monkeypatch
     assert list(path.parent.iterdir()) == [path]
 
 
+CLEAN_REFRESH = {
+    "refreshed_at": NOW.isoformat(),
+    "recorded": 2,
+    "newest_observed_at": (NOW - timedelta(seconds=90)).isoformat(),
+    "source_errors": [],
+    "model_calls": 0,
+    "gateway_writes": 0,
+}
+
+
 @pytest.mark.parametrize(
     "age,errors,expected",
     [
@@ -134,6 +144,7 @@ def test_doctor_identify_report_freshness(age, errors, expected):
                     "model_calls": 0,
                     "fetched_at": (NOW - timedelta(seconds=age)).isoformat(),
                     "source_errors": errors,
+                    "health_refresh": CLEAN_REFRESH,
                 }
             )
         )
@@ -143,6 +154,34 @@ def test_doctor_identify_report_freshness(age, errors, expected):
     row = next(r for r in rows if r["label"] == "Identify passive report")
     assert row["status"] == expected
     assert not any(r["label"] == "Prove-at-rest timer" for r in rows)
+
+
+@pytest.mark.parametrize(
+    "refresh,expected",
+    [
+        (CLEAN_REFRESH, "health refresh recorded 2, newest evidence age 90s"),
+        (None, "does not refresh the health cache; repair: verdict identify install-service"),
+        ({**CLEAN_REFRESH, "source_errors": ["health-matrix"]}, "source errors"),
+        ({**CLEAN_REFRESH, "model_calls": 1}, "not zero-call and zero-write"),
+        ({**CLEAN_REFRESH, "gateway_writes": 1}, "not zero-call and zero-write"),
+    ],
+)
+def test_doctor_requires_a_clean_health_refresh(refresh, expected):
+    from verdict.identify_service import latest_report_path, report_row
+
+    report = {
+        "mode": "passive",
+        "model_calls": 0,
+        "fetched_at": NOW.isoformat(),
+        "source_errors": [],
+    }
+    if refresh is not None:
+        report["health_refresh"] = refresh
+    latest_report_path().parent.mkdir(parents=True)
+    latest_report_path().write_text(json.dumps(report))
+    row = report_row(now=NOW)
+    assert row["status"] == ("ok" if refresh is CLEAN_REFRESH else "failed")
+    assert expected in row["detail"]
 
 
 def test_doctor_reports_missing_identify_timer():
@@ -321,6 +360,13 @@ def _write_ok_report(**extra):
                 "model_calls": 0,
                 "fetched_at": NOW.isoformat(),
                 "source_errors": [],
+                "health_refresh": {
+                    "recorded": 1,
+                    "newest_observed_at": NOW.isoformat(),
+                    "source_errors": [],
+                    "model_calls": 0,
+                    "gateway_writes": 0,
+                },
                 **extra,
             }
         )
@@ -351,7 +397,8 @@ def test_doctor_report_row_summarizes_implementation_pool_and_supply():
     row = report_row(now=NOW)
     assert row["status"] == "ok"
     assert row["detail"] == (
-        f"{path} age 0s; source errors none; model calls 0"
+        f"{path} age 0s; source errors none; model calls 0; "
+        "health refresh recorded 1, newest evidence age 0s"
         "; implementation pool eligible 5 (free 2), fallback 7"
         "; supply complete false, 3 unknowns"
     )
@@ -365,7 +412,8 @@ def test_doctor_report_row_keeps_old_text_without_pool_keys():
     assert row == {
         "label": "Identify passive report",
         "status": "ok",
-        "detail": f"{path} age 0s; source errors none; model calls 0",
+        "detail": f"{path} age 0s; source errors none; model calls 0; "
+        "health refresh recorded 1, newest evidence age 0s",
     }
 
 

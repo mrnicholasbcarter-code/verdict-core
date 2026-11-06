@@ -133,6 +133,11 @@ DEFAULT_BUCKET_WINDOW_SECONDS = 60.0
 
 ENV_CACHE_PATH = "VERDICT_HEALTH_CACHE"
 
+EVIDENCE_SOURCE_TRAFFIC = "omniroute_traffic"
+EVIDENCE_SOURCE_WEBHOOK = "omniroute_webhook"
+# Gateway and Verdict clocks may disagree slightly; anything further ahead is not evidence.
+PASSIVE_CLOCK_SKEW_SECONDS = 60.0
+
 
 class HealthCacheError(ValueError):
     """Raised when cache state or inputs violate the contract."""
@@ -341,6 +346,9 @@ class HealthEntry:
     feedback_turn_count: int | None = None
     feedback_turns_source: str | None = None
     feedback_provenance: str | None = None
+    # Passive evidence (OmniRoute traffic or webhook) instead of a Verdict
+    # probe; ``None`` for probe and feedback entries.
+    evidence_source: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.route_id, str) or not self.route_id.strip():
@@ -406,6 +414,8 @@ class HealthEntry:
             payload["feedback_turn_count"] = self.feedback_turn_count
             payload["feedback_turns_source"] = self.feedback_turns_source or "unknown"
             payload["feedback_provenance"] = self.feedback_provenance
+        if self.evidence_source is not None:
+            payload["evidence_source"] = self.evidence_source
         return payload
 
     @classmethod
@@ -471,6 +481,9 @@ class HealthEntry:
             feedback_turn_count=value.get("feedback_turn_count"),
             feedback_turns_source=value.get("feedback_turns_source"),
             feedback_provenance=value.get("feedback_provenance"),
+            evidence_source=(
+                value["evidence_source"] if isinstance(value.get("evidence_source"), str) else None
+            ),
         )
 
 
@@ -1781,6 +1794,92 @@ class HealthCache:
         )
         self._routes[route] = entry
         return entry
+
+    def record_passive_traffic(
+        self,
+        route: str,
+        *,
+        observed_at: datetime,
+        now: datetime,
+        source: str,
+        latency_ms: float | None = None,
+        pool: str | None = None,
+        capacity_evidence: str | None = None,
+    ) -> str:
+        """Fold one observed real-traffic success in as chat-only liveness.
+
+        ``checked_at`` is the gateway's observation time, so evidence ages
+        honestly. Newer or equal evidence, an unexpired negative and usable
+        tool proof all win; this never grants or extends tool or agentic
+        proof. Returns ``"recorded"`` or a ``"skipped_*"`` reason. Does not save.
+        """
+        observed = _aware(observed_at, "observed_at")
+        current = _aware(now, "now")
+        if observed > current + timedelta(seconds=PASSIVE_CLOCK_SKEW_SECONDS):
+            return "skipped_future"
+        if current - observed >= timedelta(seconds=USABLE_SECONDS):
+            return "skipped_too_old"
+        previous = self._routes.get(route)
+        if previous is not None:
+            if previous.checked_at >= observed:
+                return "skipped_newer_or_equal"
+            state = previous.state_at(current)
+            if state == STATE_NEGATIVE:
+                return "skipped_active_negative"
+            if previous.healthy and previous.tool_ok and state in {STATE_FRESH, STATE_STALE}:
+                return "skipped_tool_proof_usable"
+        entry = self.record_liveness(
+            route,
+            latency_ms=latency_ms,
+            pool=pool if pool is not None else (previous.pool if previous else None),
+            capacity_evidence=capacity_evidence,
+            now=observed,
+        )
+        self._routes[route] = replace(entry, evidence_source=source)
+        return "recorded"
+
+    def record_passive_failure(
+        self,
+        route: str,
+        *,
+        observed_at: datetime,
+        now: datetime,
+        http_status: int | None,
+        category: str,
+        source: str,
+    ) -> str:
+        """Fold one observed real-traffic availability failure in as a route negative.
+
+        Same ordering rule as probes: only strictly newer evidence replaces an
+        entry. A negative whose backoff already ended at ``now`` is not written.
+        Returns ``"recorded"`` or a ``"skipped_*"`` reason. Does not save.
+        """
+        observed = _aware(observed_at, "observed_at")
+        current = _aware(now, "now")
+        if observed > current + timedelta(seconds=PASSIVE_CLOCK_SKEW_SECONDS):
+            return "skipped_future"
+        previous = self._routes.get(route)
+        if previous is not None and previous.checked_at >= observed:
+            return "skipped_newer_or_equal"
+        entry = self.record(
+            route,
+            ProbeResult(
+                category=category,
+                chat_ok=False,
+                tool_ok=False,
+                http_status=http_status,
+                failure_scope="route",
+            ),
+            observed,
+        )
+        if entry.state_at(current) != STATE_NEGATIVE:
+            if previous is None:
+                del self._routes[route]
+            else:
+                self._routes[route] = previous
+            return "skipped_expired"
+        self._routes[route] = replace(entry, evidence_source=source)
+        return "recorded"
 
     def record_half_open_success(self, route: str, now: datetime) -> float:
         """Halve the negative backoff after a half-open probe succeeds.

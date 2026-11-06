@@ -14,7 +14,14 @@ def _capacities(value: str) -> list[str]:
 def register(subparsers: Any) -> None:
     parser = subparsers.add_parser("identify", help="Report passive availability and task ratings")
     parser.add_argument(
-        "service_command", nargs="?", choices=["install-service", "uninstall-service"]
+        "service_command",
+        nargs="?",
+        choices=["install-service", "uninstall-service", "register-webhook"],
+    )
+    parser.add_argument(
+        "--webhook-url",
+        help="Receiver URL OmniRoute posts request events to "
+        "(default: http://127.0.0.1:8000 plus the Verdict receiver path)",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
@@ -28,6 +35,11 @@ def register(subparsers: Any) -> None:
         help="Read evidence only; no inference (persistence only with --save-report)",
     )
     modes.add_argument("--screen", action="store_true", help="Run bounded missing agentic checks")
+    parser.add_argument(
+        "--refresh-health-cache",
+        action="store_true",
+        help="With --passive: record observed traffic as chat-only liveness in the health cache",
+    )
     parser.add_argument("--allow-live-probe", action="store_true")
     parser.add_argument("--max-per-provider", type=int)
     parser.add_argument("--max-routes", type=int)

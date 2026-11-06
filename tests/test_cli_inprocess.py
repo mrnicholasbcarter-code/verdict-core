@@ -59,6 +59,14 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
             "model_calls": 0,
             "source_errors": [],
             "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "health_refresh": {
+                "refreshed_at": datetime.now(timezone.utc).isoformat(),
+                "recorded": 0,
+                "newest_observed_at": None,
+                "source_errors": [],
+                "model_calls": 0,
+                "gateway_writes": 0,
+            },
         }
     )
 
