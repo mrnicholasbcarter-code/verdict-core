@@ -149,10 +149,12 @@ class SubagentModelSelector:
             or os.getenv("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        from verdict.credentials_store import resolve_api_key
+        from verdict.credentials_store import resolve_api_key, resolve_management_token
 
         api_key = resolve_api_key()
-        management_token = os.getenv("OMNIROUTE_MANAGEMENT_TOKEN")
+        # Serve's resolver: environment first (blank ignored), then the credential
+        # store, because the supervisor runs without the CLI's load_into_env.
+        management_token = resolve_management_token()
         usage_api_key_id = os.getenv("OMNIROUTE_USAGE_API_KEY_ID")
 
         from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport

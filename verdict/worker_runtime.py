@@ -1040,10 +1040,12 @@ async def cli_run(directory: Path, *, sync_visibility: bool = False) -> int:
             or os.environ.get("LLMGATE_UPSTREAM_BASE_URL")
             or "http://127.0.0.1:20128/v1"
         )
-        from verdict.credentials_store import resolve_api_key
+        from verdict.credentials_store import resolve_api_key, resolve_management_token
 
         api_key = resolve_api_key()
-        management_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
+        # Serve's resolver: environment first (blank ignored), then the credential
+        # store, because `python -m verdict.worker_runtime` skips the CLI's load_into_env.
+        management_token = resolve_management_token()
         usage_api_key_id = os.environ.get("OMNIROUTE_USAGE_API_KEY_ID")
         transport = OmniRouteHTTPTransport(
             base_url,
