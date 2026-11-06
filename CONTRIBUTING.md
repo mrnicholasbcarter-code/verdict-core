@@ -76,6 +76,16 @@ The seven-part definition of done is in [AGENTS.md](AGENTS.md#definition-of-done
 `scripts/check_dod.py` enforces it in CI from `docs/proof/dod/<story>.json`.
 Merged, green and reviewed are necessary, never sufficient.
 
+List every live check that can only run on merged main in the change's
+`tasks.md` as `- [ ] (post-merge) <text>`, with the marker exactly so and
+before any task number (`- [ ] (post-merge) 4.1 Run ...`). The CI step
+"Touched OpenSpec changes have no open tasks" (`scripts/check_openspec_tasks.py`)
+lets these stay open at merge time and lists them. Any other open task still
+fails it unless the pull request has the `wip` label; `(post merge)`,
+`(postmerge)`, `(Post-merge)` and a marker later in the line count as ordinary
+open tasks. `scripts/check_dod.py` counts post-merge tasks like any other: the
+story is not done, and archiving its change fails, until they are ticked.
+
 Reviewers still ask **"who calls this in production?"** An answer naming only
 `tests/` is not a production caller, and `scripts/check_reachability.py` must
 not report the new code.

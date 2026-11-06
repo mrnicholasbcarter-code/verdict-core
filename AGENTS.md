@@ -139,7 +139,14 @@ schema [`proof/dod.schema.json`](proof/dod.schema.json)):
 4. **Stays true.** The acceptance command still passes after its freshness
    window with no manual action, and a scheduled job covers it.
 5. **Spec and docs match.** Its OpenSpec change validates strictly, every task
-   is ticked, and it is archived; docs describe only what runs.
+   is ticked, and it is archived; docs describe only what runs. A live check
+   that can only run on merged main goes in `tasks.md` as
+   `- [ ] (post-merge) <text>`: the marker exactly so, right after the
+   checkbox and before any task number. `scripts/check_openspec_tasks.py` lets
+   a pull request merge with such tasks open, and still fails on any other
+   open task unless the pull request has the `wip` label. `scripts/check_dod.py`
+   counts them like every other task: until they are ticked the story is not
+   done, and archiving its change fails `check_dod.py --all`.
 6. **On main.** Exact-head CI green, squash-merged, clean-main verification.
 7. **Confirmed by the parent.** Someone other than the author re-ran an
    acceptance command and recorded the raw output.
