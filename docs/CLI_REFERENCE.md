@@ -506,6 +506,19 @@ verdict metadata lookup <omniroute_id> [--requires tools,vision,structured,conte
 ---
 
 
+### `verdict memory ref-docs` — Upstream reference docs in ai-memory
+
+Syncs each tool's docs at its installed tag into its own ai-memory project (`ref-omniroute`).
+See [`guides/reference-docs.md`](guides/reference-docs.md).
+
+```bash
+verdict memory ref-docs sync [--source omniroute] [--tag vX.Y.Z] [--dry-run]
+verdict memory ref-docs status [--json]
+verdict memory ref-docs install-service [--dry-run] [--uninstall]
+```
+
+---
+
 ### `verdict ui` — Launch the Streamlit analytics dashboard
 
 ```bash
