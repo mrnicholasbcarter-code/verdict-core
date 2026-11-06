@@ -60,6 +60,72 @@ def test_touched_change_with_open_task_fails(
     assert _main(repo, "--wip") == 0
 
 
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        "- [x] 1.1 done\n- [ ] (post-merge) run the live check on merged main\n",
+        "- [x] 1.1 done\n  - [ ] (post-merge) run the live check on merged main\n",
+        "- [x] 1.1 done\n- [ ] (post-merge) run the live check on merged main\n"
+        "  and record the raw output.\n- [x] (post-merge) an earlier live check\n",
+    ],
+    ids=["plain", "indented", "wrapped-and-ticked"],
+)
+def test_open_post_merge_task_passes_and_is_listed(
+    repo: Path, capsys: pytest.CaptureFixture[str], tasks: str
+) -> None:
+    _commit(repo, {"openspec/changes/new/tasks.md": tasks})
+    assert _main(repo) == 0
+    out = capsys.readouterr().out
+    assert "openspec change new: 1 post-merge task(s) open until after the merge\n" in out
+    assert "  - [ ] (post-merge) run the live check on merged main\n" in out
+    assert "open task(s)" not in out
+
+
+def test_plain_open_task_beside_a_post_merge_task_fails(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(
+        repo,
+        {"openspec/changes/new/tasks.md": "- [ ] (post-merge) run it live\n- [ ] 1.2 still open\n"},
+    )
+    assert _main(repo) == 1
+    out = capsys.readouterr().out
+    assert "openspec change new: 1 open task(s)\n  - [ ] 1.2 still open\n" in out
+    assert "openspec change new: 1 post-merge task(s) open until after the merge\n" in out
+    assert _main(repo, "--wip") == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "- [ ] (post merge) run it live",
+        "- [ ] (postmerge) run it live",
+        "- [ ] (Post-merge) run it live",
+        "- [ ] (POST-MERGE) run it live",
+        "- [ ] (post–merge) run it live",
+        "- [ ] [post-merge] run it live",
+        "- [ ] post-merge: run it live",
+        "- [ ] 4.1 (post-merge) run it live",
+        "- [ ] run it live (post-merge)",
+        "- [ ]  (post-merge) run it live",
+        "- [ ](post-merge) run it live",
+        "- [ ] (post-merge)  run it live",
+        "- [ ] (post-merge)\trun it live",
+        "- [ ] (post-merge)run it live",
+        "- [ ] (post-merge) ",
+        "- [ ] (post-merge)",
+    ],
+)
+def test_near_miss_marker_is_an_open_task(
+    repo: Path, capsys: pytest.CaptureFixture[str], line: str
+) -> None:
+    _commit(repo, {"openspec/changes/new/tasks.md": f"- [x] done\n{line}\n"})
+    assert _main(repo) == 1
+    out = capsys.readouterr().out
+    assert "openspec change new: 1 open task(s)\n" in out
+    assert "post-merge task(s)" not in out
+
+
 def test_ticked_change_and_untouched_debt_pass(repo: Path) -> None:
     _commit(repo, {"openspec/changes/new/tasks.md": "- [x] done\n"})
     assert _main(repo) == 0

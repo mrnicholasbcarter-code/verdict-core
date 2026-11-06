@@ -6,6 +6,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -169,6 +170,37 @@ def test_unticked_task_and_unarchived_change_fail(repo: tuple[Path, dict[str, An
     assert any("unticked" in e for e in _check(root, evidence))
     (root / "openspec/changes/gate").mkdir(parents=True)
     assert any("not archived" in e for e in _check(root, evidence))
+
+
+OPEN_POST_MERGE = "# Tasks\n- [x] build it\n- [ ] (post-merge) run the live check on merged main\n"
+
+
+def test_open_post_merge_task_is_not_done(repo: tuple[Path, dict[str, Any]]) -> None:
+    root, evidence = repo
+    archived = root / "openspec/changes/archive/2026-10-13-gate"
+    (archived / "tasks.md").write_text(OPEN_POST_MERGE, encoding="utf-8")
+    errors = _check(root, evidence)
+    assert "openspec change gate has unticked tasks" in errors, errors
+    shutil.move(archived, root / "openspec/changes/gate")
+    errors = _check(root, evidence)
+    assert "openspec change gate is not archived" in errors, errors
+
+
+@pytest.mark.parametrize("with_evidence", [True, False])
+def test_archive_with_open_post_merge_task_fails_all(
+    repo: tuple[Path, dict[str, Any]], capsys: pytest.CaptureFixture[str], with_evidence: bool
+) -> None:
+    root, evidence = repo
+    tasks = root / "openspec/changes/archive/2026-10-13-gate/tasks.md"
+    tasks.write_text(OPEN_POST_MERGE, encoding="utf-8")
+    if with_evidence:
+        (root / "docs/proof/dod/gate.json").write_text(json.dumps(evidence), encoding="utf-8")
+    assert check_dod.main(["--all", "--root", str(root)]) == 1
+    out = capsys.readouterr().out
+    if with_evidence:
+        assert "NOT DONE: " in out and "openspec change gate has unticked tasks" in out, out
+    else:
+        assert "openspec change gate was archived without DoD evidence" in out, out
 
 
 def test_unredacted_secret_in_raw_output_fails(repo: tuple[Path, dict[str, Any]]) -> None:
