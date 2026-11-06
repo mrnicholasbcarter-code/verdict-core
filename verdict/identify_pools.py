@@ -7,7 +7,7 @@ fallback rows are probation that still needs bounded qualification, and no
 pool authorizes dispatch.
 
 Admission runs before ordering over every catalog route and live candidate.
-Hard checks, first failure wins: in the catalog, live (a reachable candidate;
+Hard checks, first failure wins: not an opaque ``auto/*``/``combo/*`` route, in the catalog, live (a reachable candidate;
 any candidate-source error makes liveness unknown), a provider with a usable
 connection, not cooling down, and latest traffic not 401/403/404. Fresh tool
 proof on the route or on a route reaching the same ``backend_model`` makes a
@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from verdict.admission import is_opaque
 from verdict.capacity import CAPACITY_ORDER, CapacityClass
 from verdict.identify_rank import rate_model, rating_key, rating_metric
 from verdict.metadata.mapping import IdentityMap
@@ -76,6 +77,8 @@ def _proof_routes(
 
 
 def _blocker(evidence: OmniRouteEvidence, route: str, usable_providers: set[str]) -> str | None:
+    if is_opaque(route):
+        return "opaque_route"
     if route not in evidence.inventory_route_ids:
         return "not_in_catalog"
     if "candidates" in evidence.source_errors:

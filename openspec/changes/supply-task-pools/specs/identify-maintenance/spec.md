@@ -52,7 +52,7 @@ as connection ids, never emails.
 ### Requirement: Passive report orders per-task route pools
 The passive report SHALL include `task_pools` for `research`, `specification`,
 `implementation`, `review` and `integration`. Hard admission SHALL come before ordering: a
-route SHALL be in the catalog, live reachable, on a provider with a usable connection, not
+route SHALL NOT be opaque (`auto/*`, `combo/*`), SHALL be in the catalog, live reachable, on a provider with a usable connection, not
 cooling down, and without a latest traffic status of 401, 403 or 404. An admitted route with
 fresh tool proof for itself or an alias of the same backend model SHALL be `eligible`. An
 admitted route without fresh tool proof SHALL be `fallback`, which is probation that needs
@@ -76,6 +76,11 @@ proof from the health cache without writing it; an unreadable cache SHALL be rep
 #### Scenario: Aliases collapse to one row
 - **WHEN** two route ids resolve to the same backend model
 - **THEN** the pool lists one row and names the other route id in `aliases`
+
+#### Scenario: Opaque routes never enter a pool
+- **WHEN** an `auto/*` or `combo/*` route is in the catalog and live candidates, with or without fresh tool proof
+- **THEN** it is neither eligible nor fallback
+- **AND** it is counted under `opaque_route`
 
 #### Scenario: Unknown liveness is not admitted
 - **WHEN** the candidates source failed

@@ -147,6 +147,16 @@ def test_no_tool_proof_is_fallback_never_eligible():
         assert pool["fallback_by_capacity"]["free"] == 1
 
 
+def test_opaque_routes_never_enter_a_pool_even_with_tool_proof():
+    routes = ["auto/fast", "combo/quality", "p/a"]
+    ev = evidence([live(r) for r in routes], capacities=dict.fromkeys(routes, "free"))
+    for cache in (None, proofs(*routes)):
+        result = pools(ev, cache=cache)
+        pool = result["implementation"]
+        assert ids(pool["eligible"]) + ids(pool["fallback"]) == ["p/a"]
+        assert result["blocked_by_reason"] == {"opaque_route": 2}
+
+
 def test_stale_or_negative_tool_proof_is_fallback():
     ev = evidence([live("p/stale"), live("p/neg")])
     cache = {"p/stale": proof("p/stale", age=timedelta(days=30)), "p/neg": proof("p/neg", ok=False)}

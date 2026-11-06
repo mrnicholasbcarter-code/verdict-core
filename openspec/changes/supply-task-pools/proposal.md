@@ -43,5 +43,5 @@ ordered pool of routes per task type.
 `verdict/omniroute_evidence.py`, `verdict/identify.py`, new `verdict/identify_pools.py`,
 `verdict/identify_service.py`, tests, and the identify section of `docs/CLI_REFERENCE.md`.
 No new probe loop, timer, dependency, secret file or numeric policy. No POST, write or model
-call. The six-GET count in the active `identify-maintenance` change becomes seven; this change
-states the seven-GET requirement.
+call. The six-GET requirement in the active `identify-maintenance` change is updated in place to seven
+GETs (that change is not archived, so there is no canonical spec to modify).
