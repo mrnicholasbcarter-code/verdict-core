@@ -205,3 +205,33 @@ def test_unit_state_and_health_are_injectable() -> None:
 
     assert serve_service.healthy(probe=probe) is True
     assert urls == ["http://127.0.0.1:8000/v1"]
+
+
+def test_a_loose_env_file_mode_is_planned_and_rewritten_private(home: Path) -> None:
+    _manage(home, Systemctl())
+    env_file = home / ".config" / "verdict" / "serve.env"
+    env_file.chmod(0o644)
+    unit_dir = home / ".config" / "systemd" / "user"
+    problems = serve_service.install_problems(unit_dir=unit_dir, home=home)
+    assert problems == [f"{env_file} has mode 0644, not 0600"]
+    result = _manage(home, Systemctl())
+    assert result["env_file_plan"] == "replace"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert serve_service.install_problems(unit_dir=unit_dir, home=home) == []
+
+
+def test_install_problems_name_missing_parts_without_token_values(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit_dir = home / ".config" / "systemd" / "user"
+    env_file = home / ".config" / "verdict" / "serve.env"
+    assert serve_service.install_problems(unit_dir=unit_dir, home=home) == [
+        f"{unit_dir / serve_service.SERVICE} is missing",
+        f"{env_file} is missing",
+    ]
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("VERDICT_RECEIPTS_DB=/elsewhere.db\n")
+    env_file.chmod(0o600)
+    problems = serve_service.install_problems(unit_dir=unit_dir, home=home)
+    assert f"{env_file} has no LLMGATE_AUTH_TOKEN" in problems
+    assert any("VERDICT_RECEIPTS_DB is not" in item for item in problems)

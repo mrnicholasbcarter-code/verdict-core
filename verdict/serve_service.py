@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -190,7 +191,14 @@ def manage_service(
     else:
         rendered_env = render_env_file(token, receipts_db)  # validates before any write
         current = env_file.read_text(encoding="utf-8") if env_file.exists() else None
-        env_step = "create" if current is None else "keep" if current == rendered_env else "replace"
+        private = current is not None and _mode(env_file) == 0o600
+        env_step = (
+            "create"
+            if current is None
+            else "keep"
+            if current == rendered_env and private
+            else "replace"
+        )
     changed = plan[SERVICE] != "keep" or env_step != "keep"
     commands = [["systemctl", "--user", "enable", "--now", SERVICE]]
     if changed:
@@ -227,6 +235,37 @@ def manage_service(
         "rollback": rollback,
         "env_rollback": env_rollback,
     }
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def install_problems(*, unit_dir: Path | None = None, home: Path | None = None) -> list[str]:
+    """What an install would change, read-only. Names keys, never their values."""
+    from verdict.paths import verdict_home
+
+    user_home = home or Path.home()
+    directory = unit_dir or (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(user_home / ".config"))) / "systemd" / "user"
+    )
+    unit_step = plan_units(directory, {SERVICE: render_unit()})[SERVICE]
+    problems = []
+    if unit_step != "keep":
+        word = "missing" if unit_step == "create" else "not the rendered unit"
+        problems.append(f"{directory / SERVICE} is {word}")
+    env_file = env_file_path(user_home)
+    if not env_file.is_file():
+        return [*problems, f"{env_file} is missing"]
+    values = _read_env_file(env_file)
+    if not values.get(TOKEN_ENV, "").strip():
+        problems.append(f"{env_file} has no {TOKEN_ENV}")
+    receipts_db = str(verdict_home() / "receipts.db")
+    if values.get(RECEIPTS_ENV) != receipts_db:
+        problems.append(f"{env_file} {RECEIPTS_ENV} is not {receipts_db}")
+    if _mode(env_file) != 0o600:
+        problems.append(f"{env_file} has mode {_mode(env_file):04o}, not 0600")
+    return problems
 
 
 def unit_state(
