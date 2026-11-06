@@ -12,4 +12,4 @@
 
 ## 2. Live proof
 
-- [ ] 2.1 (post-merge) On installed merged main, run one `verdict orchestrate` direct-gateway attempt against the live gateway and show the receipt attempt with `served_identity.status` `verified` and the connection id.
+- [ ] (post-merge) 2.1 On installed merged main, run one `verdict orchestrate` direct-gateway attempt against the live gateway and show the receipt attempt with `served_identity.status` `verified` and the connection id.
