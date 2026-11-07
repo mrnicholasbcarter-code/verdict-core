@@ -420,7 +420,7 @@ def test_fresh_explicit_global_exhaustion_is_distinct_from_unknown(sources):
     assert c.reason == "quota_exhausted"
     assert c.quota_observed_at == NOW - timedelta(hours=1)
     assert c.quota_windows == (
-        QuotaWindow("weekly", "weekly_all", "unknown", 0.0, "2026-10-23T12:00:00+00:00"),
+        QuotaWindow("weekly", "weekly_all", "exhausted", 0.0, "2026-10-23T12:00:00+00:00"),
     )
 
 
@@ -446,6 +446,16 @@ def test_retained_window_keeps_reset_and_names_unresolved_scope(sources):
     assert evidence.model_cooldowns == (
         {"provider": "alpha", "model": "best", "remaining_ms": 60_000, "routes": ("a/best",)},
         {"provider": None, "model": "unscoped", "remaining_ms": None, "routes": ()},
+    )
+
+
+def test_nonfinite_cooldown_remaining_is_unknown_not_a_parse_failure(sources):
+    sources["cooldowns"]["items"] = [
+        {"provider": "alpha", "model": "best", "remainingMs": float("nan")}
+    ]
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert evidence.model_cooldowns == (
+        {"provider": "alpha", "model": "best", "remaining_ms": None, "routes": ("a/best",)},
     )
 
 

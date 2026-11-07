@@ -153,9 +153,13 @@ def _rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _number(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 # Verdict freshness policy, not an upstream API TTL; no additional scheduler.
@@ -262,6 +266,7 @@ def _quota_evidence(
     quotas = cache.get("quotas")
     if not isinstance(quotas, dict) or not quotas or cache.get("message"):
         return "unknown", "quota_unreported", observed, windows
+    resolved = _with_window_states(windows, quotas, now)
     unknown = False
     for window in quotas.values():
         if not isinstance(window, dict):
@@ -293,11 +298,10 @@ def _quota_evidence(
                 and scope.get("severity") in {None, "critical"}
                 and reset is not None
             ):
-                return "exhausted", "global_window_exhausted", observed, windows
+                return "exhausted", "global_window_exhausted", observed, resolved
             unknown = True
     if cache.get("modelQuotas"):
         unknown = True
-    resolved = _with_window_states(windows, quotas, now)
     if unknown:
         return "unknown", "window_scope_or_value_unknown", observed, resolved
     return "available", None, observed, resolved
