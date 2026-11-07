@@ -960,7 +960,10 @@ def _collect_doctor_diagnostics(
 
 
 def installed_service_rows(
-    *, now: datetime | None = None, timer_state: Callable[[str], dict[str, Any]] | None = None
+    *,
+    now: datetime | None = None,
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+    ref_docs_status: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, str]]:
     """Doctor rows for each background systemd unit and the health cache.
 
@@ -968,9 +971,9 @@ def installed_service_rows(
     that is too stale or empty to be useful are all reported with ``status:
     "failed"`` and named by unit/file so the drill
     (``systemctl --user stop verdict-identify.timer; verdict doctor``)
-    exits non-zero and names the unit. ``now`` and ``timer_state`` are
-    injectable for tests; without injection this reads the host's real
-    systemd user units (never available on a CI runner).
+    exits non-zero and names the unit. ``now``, ``timer_state`` and
+    ``ref_docs_status`` are injectable for tests; without injection this reads
+    the host's real systemd user units (never available on a CI runner).
     """
     from verdict.identify_service import SCREEN_TIMER, TIMER, report_row
     from verdict.identify_service import timer_state as identify_timer_state
@@ -1013,6 +1016,8 @@ def installed_service_rows(
             facts += _prime_sync_timer_repair(str(state.get("state", "unknown")))
         rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
     rows.append(_acceptance_timer_row(timer_state))
+    rows.append(_ref_docs_timer_row(injected_timer_state))
+    rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
 
@@ -1161,6 +1166,60 @@ def _acceptance_timer_row(timer_state: Callable[[str], dict[str, Any]]) -> dict[
         "status": "failed",
         "detail": f"{ACCEPTANCE_TIMER} is {state}; repair: verdict acceptance install-service",
     }
+
+
+def _ref_docs_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -> dict[str, str]:
+    """The hourly reference-docs timer is active and its last run succeeded."""
+    from verdict import ref_docs_service
+    from verdict.setup_host import REF_DOCS, setup_repair
+
+    unit = ref_docs_service.TIMER
+    state = (timer_state or ref_docs_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    if name == "active" and result == "success":
+        return {"label": "Reference-docs timer", "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(REF_DOCS)}"
+    elif name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict memory ref-docs sync; "
+            f"logs: journalctl --user -u {ref_docs_service.SERVICE}"
+        )
+    return {"label": "Reference-docs timer", "status": "failed", "detail": detail}
+
+
+def _ref_docs_rows(status: Callable[[], list[dict[str, Any]]] | None) -> list[dict[str, str]]:
+    """One row per reference-docs project: synced tag, installed tag, last sync, pages."""
+    from verdict import ref_docs
+
+    def installed_exec_start(unit: str) -> str:
+        return _systemctl_show_props(unit).get("ExecStart", "")
+
+    repair = "repair: verdict memory ref-docs sync"
+    try:
+        rows = status() if status else ref_docs.status(exec_start=installed_exec_start)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        detail = f"status unreadable ({type(exc).__name__}: {exc}); {repair}"
+        return [{"label": "Reference docs", "status": "failed", "detail": detail}]
+    out = []
+    for row in rows:
+        detail = (
+            f"tag {row['tag']} (installed {row['installed_tag']}), "
+            f"last sync {row['synced_at']}, {row['pages']} pages"
+        )
+        if not row["ok"]:
+            detail += "; " + "; ".join([*row["problems"], repair])
+        out.append(
+            {
+                "label": f"Reference docs {row['project']}",
+                "status": "ok" if row["ok"] else "failed",
+                "detail": detail,
+            }
+        )
+    return out
 
 
 def host_prerequisite_rows() -> list[dict[str, str]]:

@@ -1181,6 +1181,57 @@ def _action_metadata_install_service(**kwargs: Any) -> ActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Upstream reference docs in ai-memory
+# ---------------------------------------------------------------------------
+
+
+def _action_memory_ref_docs_sync(**kwargs: Any) -> ActionResult:
+    """Sync each tool's reference docs at its installed tag; not ok when any sync fails."""
+    from verdict import ref_docs
+
+    names = list(kwargs.get("sources") or sorted(ref_docs.SOURCES))
+    unknown = sorted(set(names) - set(ref_docs.SOURCES))
+    if unknown:
+        return ActionResult(
+            data={"error": f"unknown source(s): {', '.join(unknown)}"}, ok=False, exit_code=2
+        )
+    reports = []
+    for name in names:
+        try:
+            reports.append(
+                ref_docs.run_sync(
+                    ref_docs.SOURCES[name],
+                    tag=kwargs.get("tag"),
+                    workspace=str(kwargs.get("workspace") or "default"),
+                    dry_run=bool(kwargs.get("dry_run", False)),
+                )
+            )
+        except Exception as exc:  # one tool's failure must not hide the others
+            reports.append({"source": name, "error": f"{type(exc).__name__}: {exc}"})
+    ok = not any("error" in report for report in reports)
+    return ActionResult(data={"reports": reports}, ok=ok, exit_code=0 if ok else 1)
+
+
+def _action_memory_ref_docs_status(**kwargs: Any) -> ActionResult:
+    """Synced tag, installed tag and last sync per reference project; not ok on any problem."""
+    from verdict import ref_docs
+
+    rows = ref_docs.status(workspace=str(kwargs.get("workspace") or "default"))
+    ok = all(row["ok"] for row in rows)
+    return ActionResult(data={"projects": rows}, ok=ok, exit_code=0 if ok else 1)
+
+
+def _action_memory_ref_docs_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install/remove the hourly reference-docs timer."""
+    from verdict.ref_docs_service import manage_service
+
+    data = manage_service(
+        dry_run=bool(kwargs.get("dry_run", False)), uninstall=bool(kwargs.get("uninstall", False))
+    )
+    return ActionResult(data=data)
+
+
+# ---------------------------------------------------------------------------
 # Receipt family (show is already registered)
 # ---------------------------------------------------------------------------
 

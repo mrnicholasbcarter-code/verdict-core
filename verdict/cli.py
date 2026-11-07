@@ -2691,12 +2691,53 @@ def cmd_simulate(
 default_model_catalog = _action_helpers.default_model_catalog
 
 
+def _cmd_memory_ref_docs(args: Any) -> None:
+    """``verdict memory ref-docs sync|status|install-service``: JSON on stdout.
+
+    Exit non-zero on a failed sync or status row.
+    """
+    from verdict.actions.registry import run_action
+
+    command = args.ref_docs_command
+    if command == "install-service":
+        result = run_action(
+            "memory.ref-docs.install-service",
+            {"dry_run": args.dry_run, "uninstall": args.uninstall},
+        )
+    elif command == "status":
+        result = run_action("memory.ref-docs.status", {"workspace": args.workspace})
+        if not args.json:
+            for row in result.data["projects"]:
+                state = "ok" if row["ok"] else "FAILED: " + "; ".join(row["problems"])
+                print(
+                    f"{row['project']}: tag {row['tag']} (installed {row['installed_tag']}), "
+                    f"last sync {row['synced_at']}, {row['pages']} pages, {state}"
+                )
+    else:
+        result = run_action(
+            "memory.ref-docs.sync",
+            {
+                "sources": args.source,
+                "tag": args.tag,
+                "workspace": args.workspace,
+                "dry_run": args.dry_run,
+            },
+        )
+    if command != "status" or args.json:
+        print(json.dumps(result.data, indent=2))
+    if not result.ok:
+        raise SystemExit(result.exit_code or 1)
+
+
 def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
     from verdict.actions.registry import run_action
 
     db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
     sub = getattr(args, "memory_command", None)
+    if sub == "ref-docs":
+        _cmd_memory_ref_docs(args)
+        return
     if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
         from verdict import present
 

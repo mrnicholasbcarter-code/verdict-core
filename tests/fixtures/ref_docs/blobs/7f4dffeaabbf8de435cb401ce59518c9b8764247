@@ -1,0 +1,16 @@
+openapi: 3.1.0
+info:
+  title: Widget API
+  version: 1.0.0
+  description: Fixture spec.
+tags:
+  - name: Routing
+    description: Route selection.
+paths:
+  /v1/route:
+    post:
+      tags: [Routing]
+      summary: Choose a route
+      responses:
+        "200":
+          description: The chosen route.

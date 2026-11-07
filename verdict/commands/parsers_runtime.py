@@ -269,6 +269,28 @@ def register(subparsers: Any) -> None:
     docs_p.add_argument("--db-path", default=None, help="Shared memory database path")
     docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    ref_p = memory_sub.add_parser(
+        "ref-docs", help="Upstream reference docs in ai-memory, synced to the installed version"
+    )
+    ref_sub = ref_p.add_subparsers(dest="ref_docs_command", required=True)
+    ref_sync_p = ref_sub.add_parser("sync", help="Sync each tool's docs at its installed tag")
+    ref_sync_p.add_argument(
+        "--source", action="append", help="Tool to sync (default: every known tool)"
+    )
+    ref_sync_p.add_argument(
+        "--tag", default=None, help="Sync this tag instead of the installed one"
+    )
+    ref_sync_p.add_argument("--workspace", default="default", help="ai-memory workspace")
+    ref_sync_p.add_argument("--dry-run", action="store_true", help="Report without writing")
+    ref_status_p = ref_sub.add_parser("status", help="Synced tag, installed tag and last sync")
+    ref_status_p.add_argument("--workspace", default="default", help="ai-memory workspace")
+    ref_status_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    ref_install_p = ref_sub.add_parser(
+        "install-service", help="Install or remove the hourly reference-docs sync timer"
+    )
+    ref_install_p.add_argument("--dry-run", action="store_true", help="Show the plan only")
+    ref_install_p.add_argument("--uninstall", action="store_true", help="Remove the units")
+
     setup_p = memory_sub.add_parser(
         "setup", help="Autopilot wizard to connect tools (Codex, Claude, Pi) to Unified Memory"
     )

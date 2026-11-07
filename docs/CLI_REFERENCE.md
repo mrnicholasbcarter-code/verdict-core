@@ -506,6 +506,19 @@ verdict metadata lookup <omniroute_id> [--requires tools,vision,structured,conte
 ---
 
 
+### `verdict memory ref-docs` — Upstream reference docs in ai-memory
+
+Syncs each tool's docs at its installed tag into its own ai-memory project (`ref-omniroute`).
+See [`guides/reference-docs.md`](guides/reference-docs.md).
+
+```bash
+verdict memory ref-docs sync [--source omniroute] [--tag vX.Y.Z] [--dry-run]
+verdict memory ref-docs status [--json]
+verdict memory ref-docs install-service [--dry-run] [--uninstall]
+```
+
+---
+
 ### `verdict ui` — Launch the Streamlit analytics dashboard
 
 ```bash
@@ -779,6 +792,7 @@ action each, planned only when the host is missing or differs from it:
 | `host.metadata` | Runs `verdict metadata refresh --include-p1` when the Core metadata store is missing, then `verdict metadata install-service` (six-hour timer). |
 | `host.acceptance-timer` | `verdict acceptance install-service` (hourly). |
 | `host.identify-timers` | `verdict identify install-service` (passive and screen timers). |
+| `host.ref-docs-timer` | `verdict memory ref-docs install-service` (hourly upstream reference-docs sync, low priority). |
 | `host.serve` | Writes `~/.config/systemd/user/verdict-serve.service` (`127.0.0.1:8000`, `WorkingDirectory=%h`, `EnvironmentFile=%h/.config/verdict/serve.env`) and the 0600 env file with `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`, then `systemctl --user enable --now` and waits for `/health`. An active unit that does not answer `/health` is planned again and restarted. An exported, stored or env-file token is reused; otherwise one is generated with `secrets.token_urlsafe` and saved to the credential store. Values are never printed. Replaced files are copied under `$VERDICT_HOME/service-rollback/`. |
 | `host.prime-registry` | Only when `~/.prime/agent/models.json` is missing: creates `providers.omniroute` (`baseUrl` = gateway + `/v1`, `api: openai-completions`, `apiKey` = the env var name `OMNIROUTE_API_KEY`), then runs `verdict harness prime sync-models` and `verdict harness prime enable` (which waits for serve's `/health`). |
 

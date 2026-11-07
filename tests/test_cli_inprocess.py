@@ -48,6 +48,13 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     import verdict.identify_service as identify_service
 
     monkeypatch.setattr(identify_service, "timer_state", _fake_timer_state_active)
+    import verdict.ref_docs as ref_docs
+    import verdict.ref_docs_service as ref_docs_service
+
+    monkeypatch.setattr(
+        ref_docs_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
+    )
+    monkeypatch.setattr(ref_docs, "status", lambda **kwargs: [])
     from datetime import datetime, timezone
 
     monkeypatch.setattr(

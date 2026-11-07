@@ -1,0 +1,821 @@
+"""Upstream reference docs in ai-memory as cited, read-only pages.
+
+``verdict memory ref-docs sync`` reads the GitHub git tree at the tag of the
+installed tool (``gh api``) and writes each markdown section as one page of at
+most 3 KB, with a citation, into the tool's own ai-memory project
+(``ref-omniroute``). An OpenAPI file becomes one page group per tag. A local
+manifest under ``$VERDICT_HOME/ref-docs/`` records each file's blob sha and
+pages: a file is rewritten only when its sha changes, pages of removed files
+are deleted, and a re-run with no upstream change writes 0 pages. Page bodies
+are redacted of token-shaped strings before writing.
+
+The pages are reference evidence for tasks that touch the tool. They live in
+their own project and are never part of operator-rule scopes.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import subprocess
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Protocol
+
+import httpx
+import yaml
+
+from verdict import paths
+
+MAX_PAGE_BYTES = 3072
+MAX_TITLE_BYTES = 160
+# A section smaller than this (a heading stub or lead-in) joins the next one.
+MIN_SECTION_BYTES = 400
+# Bump when page rendering changes so unchanged blobs are rewritten once.
+FORMAT_VERSION = 3
+AUTHORITY = "upstream reference documentation; evidence only, not policy"
+DEFAULT_ENDPOINT = "http://127.0.0.1:49374"
+OPENAPI_NAMES = ("docs/openapi.yaml", "docs/openapi.yml", "docs/openapi.json")
+_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+_SECRET = re.compile(
+    r"\b(sk-[A-Za-z0-9_\-]{8,}|oma_live_[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_\-]{20,}|xox[abprs]-[A-Za-z0-9\-]{10,}"
+    r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]*)"
+)
+_BEARER = re.compile(r"(Bearer\s+)(?!\$|<|\{)[A-Za-z0-9._\-]{16,}")
+
+
+@dataclass(frozen=True)
+class Chunk:
+    crumbs: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True)
+class Page:
+    path: str
+    title: str
+    body: str
+
+
+@dataclass
+class FileResult:
+    path: str
+    status: str  # written | unchanged | deleted
+    pages_written: int = 0
+    pages_deleted: int = 0
+
+
+@dataclass
+class SyncReport:
+    repo: str
+    tag: str
+    project: str
+    files: list[FileResult] = field(default_factory=list)
+
+    def totals(self) -> dict[str, int]:
+        return {
+            "files": sum(1 for f in self.files if f.status != "deleted"),
+            "files_written": sum(1 for f in self.files if f.status == "written"),
+            "files_unchanged": sum(1 for f in self.files if f.status == "unchanged"),
+            "files_deleted": sum(1 for f in self.files if f.status == "deleted"),
+            "pages_written": sum(f.pages_written for f in self.files),
+            "pages_deleted": sum(f.pages_deleted for f in self.files),
+        }
+
+
+class PageStore(Protocol):
+    def write(self, page: Page, tags: list[str]) -> None: ...
+
+    def delete(self, path: str) -> None: ...
+
+
+# --------------------------------------------------------------------------- splitting
+
+
+def redact(text: str) -> str:
+    """Replace token-shaped strings so example secrets never reach memory."""
+    text = _SECRET.sub(lambda m: m.group(0)[:3] + "<redacted>", text)
+    return _BEARER.sub(r"\1<redacted>", text)
+
+
+def _compact_table_row(line: str) -> str:
+    """Drop markdown table cell padding, which only wastes page bytes."""
+    if not line.lstrip().startswith("|"):
+        return line
+    return re.sub(r" {2,}", " ", re.sub(r"-{4,}", "---", line))
+
+
+def _strip_frontmatter(lines: list[str]) -> list[str]:
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return lines[i + 1 :]
+    return lines
+
+
+def _headings(lines: list[str]) -> list[tuple[int, int, str]]:
+    """(line index, level, text) of every heading outside code fences."""
+    out: list[tuple[int, int, str]] = []
+    fence: str | None = None
+    for i, line in enumerate(lines):
+        m = _FENCE.match(line)
+        if m:
+            marker = m.group(1)
+            if fence is None:
+                fence = marker[0] * 3
+            elif marker.startswith(fence):
+                fence = None
+            continue
+        if fence is None:
+            h = _HEADING.match(line)
+            if h:
+                out.append((i, len(h.group(1)), h.group(2).strip()))
+    return out
+
+
+def _size(lines: list[str]) -> int:
+    return len("\n".join(lines).strip().encode())
+
+
+def _split_at(lines: list[str], level: int) -> list[tuple[str | None, list[str]]]:
+    starts = [(i, text) for i, lvl, text in _headings(lines) if lvl == level]
+    if not starts:
+        return [(None, lines)]
+    groups: list[tuple[str | None, list[str]]] = []
+    if starts[0][0] > 0:
+        groups.append((None, lines[: starts[0][0]]))
+    for n, (i, text) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        groups.append((text, lines[i:end]))
+    return groups
+
+
+def _hard_split(line: str, budget: int) -> list[str]:
+    raw = line.encode()
+    return [raw[i : i + budget].decode("utf-8", "ignore") for i in range(0, len(raw), budget)]
+
+
+def _pack_lines(lines: list[str], budget: int) -> list[list[str]]:
+    """Pack lines into chunks of at most ``budget`` bytes; re-open split code fences."""
+    chunks: list[list[str]] = []
+    cur: list[str] = []
+    fence: str | None = None
+    reserve = 8
+    for line in lines:
+        pieces = (
+            _hard_split(line, budget - reserve - 8) if len(line.encode()) > budget // 2 else [line]
+        )
+        for piece in pieces:
+            if cur and _size([*cur, piece]) > budget - reserve:
+                if fence:
+                    cur.append(fence)
+                chunks.append(cur)
+                cur = [fence] if fence else []
+            cur.append(piece)
+            m = _FENCE.match(piece)
+            if m:
+                marker = m.group(1)
+                if fence is None:
+                    fence = marker[0] * 3
+                elif marker.startswith(fence):
+                    fence = None
+    if cur and any(x.strip() for x in cur):
+        chunks.append(cur)
+    return chunks
+
+
+def _chunk(lines: list[str], level: int, budget: int, crumbs: tuple[str, ...]) -> list[Chunk]:
+    if _size(lines) <= budget:
+        return [Chunk(crumbs, "\n".join(lines).strip())] if _size(lines) else []
+    if level > 4:
+        return [Chunk(crumbs, "\n".join(c).strip()) for c in _pack_lines(lines, budget)]
+    groups = _split_at(lines, level)
+    if len(groups) == 1:
+        return _chunk(lines, level + 1, budget, crumbs)
+    out: list[Chunk] = []
+    cur: list[str] = []
+    cur_head: str | None = None
+    for head, glines in groups:
+        if cur and _size(cur) < MIN_SECTION_BYTES and _size([*cur, *glines]) <= budget:
+            cur.extend(glines)
+            cur_head = cur_head or head
+            continue
+        if cur:
+            out.append(Chunk(crumbs + ((cur_head,) if cur_head else ()), "\n".join(cur).strip()))
+            cur = []
+        if _size(glines) <= budget:
+            cur, cur_head = list(glines), head
+        else:
+            out.extend(_chunk(glines, level + 1, budget, crumbs + ((head,) if head else ())))
+    if cur:
+        out.append(Chunk(crumbs + ((cur_head,) if cur_head else ()), "\n".join(cur).strip()))
+    return [c for c in out if c.text]
+
+
+def split_markdown(text: str, budget: int, *, pack: bool = False) -> tuple[str, list[Chunk]]:
+    """Return the document title and its section chunks (each <= budget bytes).
+
+    Each H2 section starts its own chunk unless ``pack`` is set, which joins
+    adjacent small H2 sections (used for generated OpenAPI endpoint lists).
+    """
+    lines = [_compact_table_row(x) for x in _strip_frontmatter(text.splitlines())]
+    title = ""
+    for i, lvl, text in _headings(lines):
+        if lvl == 1:
+            title = text
+            del lines[i]
+            break
+    if pack:
+        return title, _chunk(lines, 2, budget, ())
+    chunks: list[Chunk] = []
+    for head, glines in _split_at(lines, 2):
+        crumbs = (head,) if head else ()
+        chunks.extend(_chunk(glines, 3, budget, crumbs))
+    return title, chunks
+
+
+# --------------------------------------------------------------------------- openapi
+
+
+def _shape(schema: Any, depth: int = 0) -> str:
+    if not isinstance(schema, dict):
+        return "any"
+    if "$ref" in schema:
+        return str(schema["$ref"]).rsplit("/", 1)[-1]
+    for key, sep in (("oneOf", " | "), ("anyOf", " | "), ("allOf", " & ")):
+        if key in schema:
+            return sep.join(_shape(s, depth) for s in schema[key])
+    kind = schema.get("type", "object" if "properties" in schema else "any")
+    if "const" in schema:
+        return f"{kind}={json.dumps(schema['const'])}"
+    if "enum" in schema:
+        return f"{kind}({'|'.join(str(v) for v in schema['enum'][:12])})"
+    if kind == "array":
+        return f"array<{_shape(schema.get('items'), depth)}>"
+    props = schema.get("properties")
+    if kind == "object" and isinstance(props, dict) and props:
+        if depth >= 2:
+            return "object{…}"
+        required = set(schema.get("required") or [])
+        inner = ", ".join(
+            f"{k}{'*' if k in required else ''}: {_shape(v, depth + 1)}" for k, v in props.items()
+        )
+        return f"object{{{inner}}}"
+    return str(kind)
+
+
+def _clip(text: str, limit: int = 600) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _param_line(p: dict[str, Any]) -> str:
+    schema = p.get("schema") or {}
+    bits = [_shape(schema)]
+    for key in ("default", "minimum", "maximum", "minLength", "maxLength", "pattern", "format"):
+        if key in schema:
+            bits.append(f"{key}={schema[key]}")
+    where = f"{p.get('in', '?')}, {'required' if p.get('required') else 'optional'}"
+    desc = f" — {p['description'].strip()}" if p.get("description") else ""
+    return f"- `{p.get('name', p.get('$ref', '?'))}` ({where}): {'; '.join(bits)}{desc}"
+
+
+def _endpoint_md(
+    spec: dict[str, Any], path: str, method: str, op: dict[str, Any], shared: list[Any]
+) -> str:
+    comps = spec.get("components") or {}
+    lines = [f"## {method.upper()} {path}", "", f"Summary: {op.get('summary', '').strip()}"]
+    if op.get("description"):
+        lines.append(f"Description: {_clip(' '.join(str(op['description']).split()))}")
+    sec = op.get("security")
+    if sec is None:
+        auth = "none declared on the operation"
+    elif not sec:
+        auth = "explicitly none (public)"
+    else:
+        auth = " or ".join("+".join(req) for req in sec)
+    flags = [
+        n
+        for k, n in (
+            ("x-loopback-only", "loopback only"),
+            ("x-always-protected", "always protected"),
+            ("x-internal", "internal"),
+        )
+        if op.get(k)
+    ]
+    lines.append(f"Auth: {auth}" + (f"; {', '.join(flags)}" if flags else ""))
+    params = [*shared, *(op.get("parameters") or [])]
+    if params:
+        lines.append("Parameters:")
+        lines.extend(_param_line(p) for p in params if isinstance(p, dict))
+    body = op.get("requestBody")
+    if isinstance(body, dict):
+        for ctype, media in (body.get("content") or {}).items():
+            req = "required" if body.get("required") else "optional"
+            lines.append(
+                f"Request body ({ctype}, {req}): {_clip(_shape((media or {}).get('schema')), 500)}"
+            )
+    lines.append("Responses:")
+    for code, resp in (op.get("responses") or {}).items():
+        if isinstance(resp, dict) and "$ref" in resp:
+            name = str(resp["$ref"]).rsplit("/", 1)[-1]
+            resp = (comps.get("responses") or {}).get(name, {})
+        resp = resp if isinstance(resp, dict) else {}
+        shapes = [
+            f"{ct}: {_clip(_shape((m or {}).get('schema')), 500)}"
+            for ct, m in (resp.get("content") or {}).items()
+        ]
+        desc = " ".join(str(resp.get("description", "")).split())
+        lines.append(
+            f"- {code}: {_clip(desc, 200)}" + (f" — {'; '.join(shapes)}" if shapes else "")
+        )
+    return "\n".join(lines)
+
+
+def _slug(text: str, limit: int = 40) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:limit].strip("-") or "section"
+
+
+def render_openapi(spec: dict[str, Any]) -> list[tuple[str, str]]:
+    """One markdown document per endpoint tag (plus overview and schemas): (slug, text)."""
+    info = spec.get("info") or {}
+    groups: dict[str, tuple[list[str], list[str]]] = {}
+    tag_desc = {t.get("name"): t.get("description", "") for t in spec.get("tags") or []}
+    for path, item in (spec.get("paths") or {}).items():
+        shared = item.get("parameters") or []
+        for method, op in item.items():
+            if method == "parameters" or not isinstance(op, dict):
+                continue
+            tag = (op.get("tags") or ["Untagged"])[0]
+            names, blocks = groups.setdefault(_slug(tag), ([], []))
+            if tag not in names:
+                names.append(tag)
+            blocks.append(_endpoint_md(spec, path, method, op, shared))
+    docs: list[tuple[str, str]] = []
+    schemes = (spec.get("components") or {}).get("securitySchemes") or {}
+    overview = [f"# {info.get('title', 'API')} {info.get('version', '')} (OpenAPI overview)", ""]
+    overview.append(str(info.get("description", "")).strip())
+    overview.append("\n## Security schemes")
+    overview.extend(
+        f"- `{name}`: {s.get('type')} {s.get('scheme', s.get('in', ''))} — {' '.join(str(s.get('description', '')).split())}"
+        for name, s in schemes.items()
+    )
+    overview.append("\n## Tags")
+    overview.extend(f"- {t}: {d}" for t, d in tag_desc.items())
+    docs.append(("overview", "\n".join(overview)))
+    for slug, (names, blocks) in sorted(groups.items()):
+        head = [f"# OpenAPI endpoints: {' / '.join(names)}", ""]
+        head.extend(f"{n}: {tag_desc[n]}" for n in names if tag_desc.get(n))
+        docs.append((slug, "\n".join([*head, "", *blocks])))
+    schemas = (spec.get("components") or {}).get("schemas") or {}
+    if schemas:
+        sblocks = ["# OpenAPI component schemas", ""]
+        for name, s in schemas.items():
+            desc = " ".join(str(s.get("description", "")).split()) if isinstance(s, dict) else ""
+            sblocks += [f"## {name}", _clip(_shape(s), 1500), *([desc] if desc else []), ""]
+        docs.append(("schemas", "\n".join(sblocks)))
+    return docs
+
+
+# --------------------------------------------------------------------------- pages
+
+
+def _citation(repo: str, tag: str, path: str, sha: str, part: str) -> str:
+    return "\n".join(
+        [
+            "---",
+            f"Authority: {AUTHORITY}.",
+            f"- repo: {repo}",
+            f"- tag: {tag}",
+            f"- path: {path}",
+            f"- blob sha: {sha}",
+            f"- part: {part}",
+            f"- url: https://github.com/{repo}/blob/{tag}/{path}",
+        ]
+    )
+
+
+def _title(parts: Iterable[str]) -> str:
+    title = " > ".join(p for p in parts if p)
+    raw = title.encode()
+    return (
+        title
+        if len(raw) <= MAX_TITLE_BYTES
+        else raw[: MAX_TITLE_BYTES - 3].decode("utf-8", "ignore") + "…"
+    )
+
+
+def build_pages(repo: str, tag: str, path: str, sha: str, text: str) -> list[Page]:
+    """Split one upstream file into cited pages of at most MAX_PAGE_BYTES."""
+    overhead = len(_citation(repo, tag, path, sha, "9999/9999").encode()) + MAX_TITLE_BYTES + 8
+    budget = MAX_PAGE_BYTES - overhead
+    stem = path.rsplit(".", 1)[0]
+    docs: list[tuple[str, str, list[Chunk]]] = []
+    if path in OPENAPI_NAMES:
+        spec = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+        for slug, md in render_openapi(spec):
+            title, chunks = split_markdown(redact(md), budget, pack=True)
+            docs.append((f"{stem}/{slug}", title, chunks))
+    else:
+        title, chunks = split_markdown(redact(text), budget)
+        docs.append((stem, title or path.rsplit("/", 1)[-1], chunks))
+    total = sum(len(c) for _, _, c in docs)
+    pages: list[Page] = []
+    n = 0
+    for prefix, doc_title, chunks in docs:
+        for chunk in chunks:
+            n += 1
+            title = _title((doc_title, *chunk.crumbs))
+            last = chunk.crumbs[-1] if chunk.crumbs else "intro"
+            body = (
+                f"# {title}\n\n{chunk.text}\n\n{_citation(repo, tag, path, sha, f'{n}/{total}')}\n"
+            )
+            if len(body.encode()) > MAX_PAGE_BYTES:
+                raise ValueError(f"page over {MAX_PAGE_BYTES} bytes: {path} part {n}")
+            page_path = f"{prefix}/part-{n:03d}-{_slug(last)}.md"
+            pages.append(Page(page_path, title, body))
+    return pages
+
+
+# --------------------------------------------------------------------------- sync
+
+
+def select_paths(tree: list[dict[str, Any]], only: set[str] | None) -> dict[str, str]:
+    """Map path -> blob sha for the files to import."""
+    out: dict[str, str] = {}
+    for entry in tree:
+        path = str(entry.get("path", ""))
+        if entry.get("type") != "blob":
+            continue
+        if only is not None:
+            keep = path in only
+        else:
+            segs = path.split("/")
+            keep = path in OPENAPI_NAMES or (
+                segs[0] == "docs"
+                and path.endswith(".md")
+                and not any("i18n" in s or "screenshots" in s for s in segs)
+            )
+        if keep:
+            out[path] = str(entry["sha"])
+    return out
+
+
+def sync(
+    *,
+    repo: str,
+    tag: str,
+    project: str,
+    tree: list[dict[str, Any]],
+    fetch_blob: Callable[[str], str],
+    store: PageStore,
+    manifest: dict[str, Any],
+    save_manifest: Callable[[dict[str, Any]], None],
+    only: set[str] | None = None,
+) -> SyncReport:
+    """Bring ``project`` in line with ``tree``; ``manifest`` is updated per file."""
+    report = SyncReport(repo, tag, project)
+    files: dict[str, Any] = manifest.setdefault("files", {})
+    manifest.update(repo=repo, project=project)
+    tags = ["upstream-reference", _slug(repo.rsplit("/", 1)[-1]), tag]
+    wanted = select_paths(tree, only)
+    for path in sorted(set(files) - set(wanted)):
+        old = files[path]
+        for page_path in old["pages"]:
+            store.delete(page_path)
+        del files[path]
+        report.files.append(FileResult(path, "deleted", pages_deleted=len(old["pages"])))
+        save_manifest(manifest)
+    for path, sha in sorted(wanted.items()):
+        old = files.get(path)
+        if old and old["sha"] == sha and old.get("format") == FORMAT_VERSION:
+            report.files.append(FileResult(path, "unchanged"))
+            continue
+        pages = build_pages(repo, tag, path, sha, fetch_blob(sha))
+        for page in pages:
+            store.write(page, tags)
+        stale = sorted(set(old["pages"]) - {p.path for p in pages}) if old else []
+        for page_path in stale:
+            store.delete(page_path)
+        files[path] = {
+            "sha": sha,
+            "tag": tag,
+            "format": FORMAT_VERSION,
+            "pages": [p.path for p in pages],
+        }
+        report.files.append(FileResult(path, "written", len(pages), len(stale)))
+        save_manifest(manifest)
+    manifest["tag"] = tag
+    manifest["synced_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    save_manifest(manifest)
+    return report
+
+
+def resolve_installed_tag(package_json: Path) -> str:
+    """Tag of the installed release: ``v`` + the package.json version."""
+    version = json.loads(package_json.read_text("utf-8"))["version"]
+    return f"v{version}"
+
+
+# --------------------------------------------------------------------------- io
+
+
+class AiMemoryStore:
+    """Minimal MCP-over-HTTP writer for one ai-memory workspace/project."""
+
+    def __init__(self, endpoint: str, token: str, workspace: str, project: str) -> None:
+        self._url = endpoint.rstrip("/") + "/mcp"
+        self._headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        self._scope = {"workspace": workspace, "project": project}
+        self._client = httpx.Client(timeout=60)
+        self._id = 0
+
+    def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._id,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": {**arguments, **self._scope}},
+        }
+        resp = self._client.post(self._url, headers=self._headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("result") or {}
+        if "error" in data or result.get("isError"):
+            raise RuntimeError(f"ai-memory {tool} failed: {json.dumps(data)[:300]}")
+        parsed: dict[str, Any] = json.loads(result["content"][0]["text"])
+        return parsed
+
+    def write(self, page: Page, tags: list[str]) -> None:
+        self.call(
+            "memory_write_page",
+            {
+                "path": page.path,
+                "body": page.body,
+                "tags": tags,
+                "kind": "reference",
+                "tier": "semantic",
+                "abstract": page.title,
+            },
+        )
+
+    def delete(self, path: str) -> None:
+        self.call("memory_delete_page", {"path": path})
+
+
+class DryRunStore:
+    def write(self, page: Page, tags: list[str]) -> None:
+        return None
+
+    def delete(self, path: str) -> None:
+        return None
+
+
+def _gh(args: list[str]) -> str:
+    done = subprocess.run(
+        ["gh", "api", *args], capture_output=True, text=True, check=True, timeout=120
+    )
+    return done.stdout
+
+
+def _fetch_blob(repo: str, gh: Callable[[list[str]], str]) -> Callable[[str], str]:
+    def fetch(sha: str) -> str:
+        data = json.loads(gh([f"repos/{repo}/git/blobs/{sha}"]))
+        return base64.b64decode(data["content"]).decode("utf-8")
+
+    return fetch
+
+
+# --------------------------------------------------------------------------- sources
+
+#: The OmniRoute docs the operator selected for the first slice (2026-11-06).
+OMNIROUTE_PATHS = (
+    "docs/OMNIROUTE_PROVIDER_FAILOVER.md",
+    "docs/OMNIROUTE_ROUTING_POLICY.md",
+    "docs/architecture/ADAPTIVE_ROUTING.md",
+    "docs/architecture/ARCHITECTURE.md",
+    "docs/architecture/MONITORING_SECTIONS.md",
+    "docs/architecture/QUALITY_EVIDENCE_CONTRACT.md",
+    "docs/architecture/REPOSITORY_MAP.md",
+    "docs/architecture/RESILIENCE_GUIDE.md",
+    "docs/architecture/ROUTER_BACKENDS.md",
+    "docs/architecture/admission-lanes.md",
+    "docs/frameworks/EVALS.md",
+    "docs/frameworks/MCP-SERVER.md",
+    "docs/frameworks/MEMORY.md",
+    "docs/frameworks/OPEN_SSE_ARCHITECTURE.md",
+    "docs/frameworks/RADAR.md",
+    "docs/getting-started/AUTO-COMBO-GUIDE.md",
+    "docs/getting-started/FREE-TIERS-GUIDE.md",
+    "docs/getting-started/PROVIDERS-GUIDE.md",
+    "docs/guides/CLAUDE-CODE-CONFIGURATION.md",
+    "docs/guides/CLI-INTEGRATIONS.md",
+    "docs/guides/CODEX-CLI-CONFIGURATION.md",
+    "docs/guides/COST_TRACKING.md",
+    "docs/guides/FREE_PROVIDER_RANKINGS.md",
+    "docs/guides/TIERS.md",
+    "docs/guides/USAGE_QUOTA_GUIDE.md",
+    "docs/openapi.yaml",
+    "docs/reference/API_REFERENCE.md",
+    "docs/reference/CLI-TOOLS.md",
+    "docs/reference/EMBEDDINGS.md",
+    "docs/reference/ENVIRONMENT.md",
+    "docs/reference/FEATURE_FLAGS.md",
+    "docs/reference/FREE_PROXIES_API.md",
+    "docs/reference/FREE_TIERS.md",
+    "docs/reference/OPENAI_COMPATIBILITY.md",
+    "docs/reference/OPENCODE-SESSION-IDENTITY.md",
+    "docs/reference/PROVIDER_PLUGIN_MANIFEST.md",
+    "docs/reference/PROVIDER_REFERENCE.md",
+    "docs/reference/RELAY_BACKEND_STRATEGY.md",
+    "docs/reference/RELAY_TROUBLESHOOTING.md",
+    "docs/reference/REMOVED_PROVIDERS.md",
+    "docs/routing/API_KEY_CONNECTION_PREFERENCE.md",
+    "docs/routing/AUTO-COMBO.md",
+    "docs/routing/QUOTA_SHARE.md",
+    "docs/routing/REASONING_ROUTING.md",
+)
+
+
+class RefDocsError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Source:
+    """One upstream tool: where its docs live and how to read its installed version."""
+
+    name: str
+    repo: str
+    project: str
+    unit: str
+    package: str
+    paths: tuple[str, ...] | None = None
+
+
+SOURCES = {
+    "omniroute": Source(
+        name="omniroute",
+        repo="cheaper-inference/OmniRoute",
+        project="ref-omniroute",
+        unit="omniroute.service",
+        package="omniroute",
+        paths=OMNIROUTE_PATHS,
+    )
+}
+#: The hourly timer may miss two runs before doctor reports the docs as stale.
+STALE_AFTER = timedelta(hours=3)
+
+
+def _unit_exec_start(unit: str) -> str:
+    done = subprocess.run(
+        ["systemctl", "--user", "show", "-p", "ExecStart", "--value", unit],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return done.stdout
+
+
+def installed_package_json(
+    source: Source, exec_start: Callable[[str], str] = _unit_exec_start
+) -> Path:
+    """package.json of the release the tool's systemd unit actually runs."""
+    found = re.search(rf"(/\S*/node_modules/{re.escape(source.package)})/", exec_start(source.unit))
+    if not found:
+        raise RefDocsError(f"{source.unit} does not run a node_modules/{source.package} install")
+    return Path(found.group(1)) / "package.json"
+
+
+def installed_tag(source: Source, exec_start: Callable[[str], str] = _unit_exec_start) -> str:
+    return resolve_installed_tag(installed_package_json(source, exec_start))
+
+
+def manifest_path(source: Source, workspace: str = "default", home: Path | None = None) -> Path:
+    return (home or paths.verdict_home()) / "ref-docs" / f"{workspace}--{source.project}.json"
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(path.read_text("utf-8")) if path.is_file() else {}
+    return loaded
+
+
+def _saver(path: Path) -> Callable[[dict[str, Any]], None]:
+    def save(manifest: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True), "utf-8")
+        tmp.replace(path)
+
+    return save
+
+
+def run_sync(
+    source: Source,
+    *,
+    tag: str | None = None,
+    workspace: str = "default",
+    dry_run: bool = False,
+    endpoint: str | None = None,
+    token: str | None = None,
+    gh: Callable[[list[str]], str] | None = None,
+    exec_start: Callable[[str], str] = _unit_exec_start,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Sync one source at ``tag`` (default: the installed tag) and return the coverage report."""
+    gh = gh or _gh
+    tag = tag or installed_tag(source, exec_start)
+    path = manifest_path(source, workspace, home)
+    manifest = load_manifest(path)
+    store: PageStore
+    if dry_run:
+        store = DryRunStore()
+    else:
+        token = token if token is not None else os.environ.get("AI_MEMORY_AUTH_TOKEN", "")
+        if not token:
+            raise RefDocsError("AI_MEMORY_AUTH_TOKEN is not set")
+        endpoint = endpoint or os.environ.get("AI_MEMORY_URL", DEFAULT_ENDPOINT)
+        store = AiMemoryStore(endpoint, token, workspace, source.project)
+    tree = json.loads(gh([f"repos/{source.repo}/git/trees/{tag}?recursive=1"]))
+    if tree.get("truncated"):
+        raise RefDocsError("git tree is truncated; refusing a partial sync")
+    report = sync(
+        repo=source.repo,
+        tag=tag,
+        project=source.project,
+        tree=tree["tree"],
+        fetch_blob=_fetch_blob(source.repo, gh),
+        store=store,
+        manifest=manifest,
+        save_manifest=(lambda m: None) if dry_run else _saver(path),
+        only=set(source.paths) if source.paths is not None else None,
+    )
+    return {
+        "repo": report.repo,
+        "tag": report.tag,
+        "project": report.project,
+        "workspace": workspace,
+        "dry_run": dry_run,
+        "manifest": str(path),
+        "totals": report.totals(),
+        "files": [vars(f) for f in report.files],
+    }
+
+
+def status(
+    *,
+    workspace: str = "default",
+    home: Path | None = None,
+    exec_start: Callable[[str], str] = _unit_exec_start,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """One row per source: synced tag, installed tag, last sync, page count and problems.
+
+    A row is ``ok`` only when the manifest exists, its tag is the installed tag
+    and the last sync is newer than ``STALE_AFTER``. Anything unknown is a problem.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = []
+    for source in SOURCES.values():
+        path = manifest_path(source, workspace, home)
+        manifest = load_manifest(path)
+        problems = []
+        try:
+            installed: str | None = installed_tag(source, exec_start)
+        except (RefDocsError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+            installed = None
+            problems.append(f"installed version unknown ({exc})")
+        synced_at = manifest.get("synced_at")
+        if not manifest:
+            problems.append(f"never synced ({path} is missing)")
+        else:
+            if installed and manifest.get("tag") != installed:
+                problems.append(f"synced {manifest.get('tag')} but {installed} is installed")
+            if not synced_at:
+                problems.append("last sync time unknown")
+            elif now - datetime.fromisoformat(str(synced_at)) > STALE_AFTER:
+                problems.append(f"last sync {synced_at} is older than {STALE_AFTER}")
+        rows.append(
+            {
+                "source": source.name,
+                "project": f"{workspace}/{source.project}",
+                "tag": manifest.get("tag"),
+                "installed_tag": installed,
+                "synced_at": synced_at,
+                "files": len(manifest.get("files") or {}),
+                "pages": sum(len(f["pages"]) for f in (manifest.get("files") or {}).values()),
+                "ok": not problems,
+                "problems": problems,
+            }
+        )
+    return rows
