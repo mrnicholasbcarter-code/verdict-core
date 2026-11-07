@@ -31,8 +31,15 @@ routes, live candidates, live reachable routes, traffic-proven routes, tool-prov
 connections, and capacity counts over live candidates. It SHALL keep the layers separate:
 catalog, live, tool proof and task performance; task performance SHALL be `not_measured`.
 `supply.complete` SHALL be false unless every completeness check is clean, and
-`supply.unknowns` SHALL be a sorted list of named gaps. Account identity SHALL be reported only
-as connection ids, never emails.
+`supply.unknowns` SHALL be a sorted list of named gaps. Each provider row SHALL include
+`limits` and `cooldowns` taken from the already parsed passive evidence, with no extra read.
+A limit SHALL name the connection, window, explicit scope, that window's own state, remaining
+percent and reset time. A cooldown SHALL name the model, remaining milliseconds and the catalog
+routes it matched. `totals` SHALL count connections that reported a window and cooldown rows.
+A connection with no retained window SHALL be named `limits_not_reported:<connection id>`,
+unless the limits source itself failed, which remains `source_unavailable:limits`. A retained
+window SHALL NOT change connection usability or pool admission. Account identity SHALL be
+reported only as connection ids, never emails.
 
 #### Scenario: Connection without live candidates
 - **WHEN** a provider has a configured connection but no row in the candidate pool
@@ -43,6 +50,17 @@ as connection ids, never emails.
 - **WHEN** the candidates source has an error
 - **THEN** `supply.unknowns` names `candidates_source_unavailable`
 - **AND** `supply.complete` is false
+
+#### Scenario: Reported limit and cooldown stay with their provider
+- **WHEN** one connection reports a quota window and one model cooldown matches that provider
+- **THEN** that provider's `limits` names the connection, window, scope, state, remaining percent and reset time
+- **AND** its `cooldowns` names the model, remaining milliseconds and matched routes
+- **AND** a connection with no window is named `limits_not_reported:<connection id>`
+
+#### Scenario: Failed limits source stays one gap
+- **WHEN** the limits source failed
+- **THEN** `supply.unknowns` names `source_unavailable:limits`
+- **AND** it does not name `limits_not_reported` for each connection
 
 #### Scenario: Layers are not merged
 - **WHEN** a route is in the catalog and live but has no fresh tool proof

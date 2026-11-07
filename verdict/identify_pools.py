@@ -226,9 +226,32 @@ def build_supply(
     for provider in sorted(providers):
         live = [c for c in candidates.values() if c.provider == provider]
         connections = [c for c in evidence.connections if c.provider == provider]
+        limits = [
+            {
+                "connection_id": connection.connection_id,
+                "name": window.name,
+                "scope": window.scope,
+                "state": window.state,
+                "remaining_percent": window.remaining_percent,
+                "reset_at": window.reset_at,
+            }
+            for connection in connections
+            for window in connection.quota_windows
+        ]
+        cooldowns = [
+            {
+                "model": row["model"],
+                "remaining_ms": row["remaining_ms"],
+                "routes": list(row["routes"]),
+            }
+            for row in evidence.model_cooldowns
+            if row["provider"] == provider
+        ]
         rows.append(
             {
                 "provider": provider,
+                "limits": limits,
+                "cooldowns": cooldowns,
                 "connections": len(connections),
                 "usable_connections": sum(c.usable for c in connections),
                 "catalog_routes": sum(
@@ -254,6 +277,12 @@ def build_supply(
         unknowns.add("tool_proof_unavailable")
     if evidence.connections:
         unknowns.add("account_identity_not_reported")
+    if "limits" not in evidence.source_errors:
+        unknowns.update(
+            f"limits_not_reported:{connection.connection_id}"
+            for connection in evidence.connections
+            if not connection.quota_windows
+        )
     if "candidates" not in evidence.source_errors:
         unknowns.update(
             f"connections_without_live_candidates:{row['provider']}"
@@ -281,6 +310,8 @@ def build_supply(
             "traffic_proven": len(evidence.proven_by_traffic),
             "connections": len(evidence.connections),
             "usable_connections": sum(c.usable for c in evidence.connections),
+            "connections_with_limits": sum(bool(c.quota_windows) for c in evidence.connections),
+            "cooldown_count": len(evidence.model_cooldowns),
             "by_capacity": _by_capacity([_capacity(evidence, r) for r in candidates]),
         },
         "layers": {

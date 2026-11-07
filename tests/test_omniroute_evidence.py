@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from verdict.omniroute_evidence import LiveCandidate, parse_omniroute_evidence
+from verdict.omniroute_evidence import LiveCandidate, QuotaWindow, parse_omniroute_evidence
 
 NOW = datetime(2026, 10, 20, 13, tzinfo=timezone.utc)
 PATHS = {
@@ -419,6 +419,34 @@ def test_fresh_explicit_global_exhaustion_is_distinct_from_unknown(sources):
     assert c.quota_state == "exhausted"
     assert c.reason == "quota_exhausted"
     assert c.quota_observed_at == NOW - timedelta(hours=1)
+    assert c.quota_windows == (
+        QuotaWindow("weekly", "weekly_all", "unknown", 0.0, "2026-10-23T12:00:00+00:00"),
+    )
+
+
+def test_retained_window_keeps_reset_and_names_unresolved_scope(sources):
+    cache = sources["limits"]["caches"]["empty"]
+    cache["quotas"]["weekly"]["remainingPercentage"] = 35
+    cache["quotas"]["scoped"] = {
+        "remainingPercentage": 80,
+        "resetAt": "2026-10-24T12:00:00Z",
+        "claudeQuota": {"kind": "weekly_scoped", "modelId": "some-model"},
+    }
+    sources["cooldowns"]["items"] = [
+        {"provider": "alpha", "model": "best", "remainingMs": 60_000},
+        {"model": "unscoped"},
+    ]
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    connection = next(c for c in evidence.connections if c.connection_id == "empty")
+    assert connection.quota_state == "unknown"
+    assert connection.quota_windows == (
+        QuotaWindow("scoped", "weekly_scoped", "unknown", 80.0, "2026-10-24T12:00:00+00:00"),
+        QuotaWindow("weekly", "weekly_all", "available", 35.0, "2026-10-23T12:00:00+00:00"),
+    )
+    assert evidence.model_cooldowns == (
+        {"provider": "alpha", "model": "best", "remaining_ms": 60_000, "routes": ("a/best",)},
+        {"provider": None, "model": "unscoped", "remaining_ms": None, "routes": ()},
+    )
 
 
 def test_positive_scoped_window_is_not_global_headroom(sources):
