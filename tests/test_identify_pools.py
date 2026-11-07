@@ -14,6 +14,7 @@ from verdict.omniroute_evidence import (
     ConnectionHealth,
     LiveCandidate,
     OmniRouteEvidence,
+    QuotaWindow,
     TrafficEvidence,
 )
 from verdict.orchestration.health_cache import HealthEntry
@@ -268,6 +269,9 @@ def test_supply_names_unknowns_and_counts_layers_apart():
         [
             "account_identity_not_reported",
             "catalog_routes_without_live_candidate:1",
+            "limits_not_reported:c1",
+            "limits_not_reported:g1",
+            "limits_not_reported:g2",
             "connections_without_live_candidates:g",
             "noauth_candidates:cloudflare-playground",
         ]
@@ -280,6 +284,8 @@ def test_supply_names_unknowns_and_counts_layers_apart():
         "traffic_proven": 0,
         "connections": 3,
         "usable_connections": 2,
+        "connections_with_limits": 0,
+        "cooldown_count": 0,
         "by_capacity": {"free": 1, "subscription": 0, "metered": 1, "unknown": 1},
     }
     assert supply["layers"] == {
@@ -294,6 +300,57 @@ def test_supply_names_unknowns_and_counts_layers_apart():
     assert providers["g"]["live_candidates"] == 0 and providers["g"]["catalog_routes"] == 1
     assert providers["p"]["traffic_routes"] == 1 and providers["p"]["tool_proven_routes"] == 1
     assert providers["cloudflare-playground"]["catalog_routes"] == 1
+
+
+def test_supply_keeps_limits_resets_and_cooldowns_by_provider():
+    from dataclasses import replace
+
+    ev = evidence(
+        [live("p/a"), live("p/cooled")],
+        connections=(
+            conn("c1", "p"),
+            replace(
+                conn("c2", "p", usable=False),
+                quota_state="exhausted",
+                quota_windows=(
+                    QuotaWindow(
+                        "weekly", "weekly_all", "exhausted", 0.0, "2026-10-23T12:00:00+00:00"
+                    ),
+                ),
+            ),
+        ),
+        cooled=("p/cooled",),
+    )
+    ev = replace(
+        ev,
+        model_cooldowns=(
+            {"provider": "p", "model": "cooled", "remaining_ms": 60000, "routes": ("p/cooled",)},
+        ),
+    )
+    supply = build_supply(ev, proofs("p/a"), NOW)
+    provider = next(row for row in supply["providers"] if row["provider"] == "p")
+    assert provider["limits"] == [
+        {
+            "connection_id": "c2",
+            "name": "weekly",
+            "scope": "weekly_all",
+            "state": "exhausted",
+            "remaining_percent": 0.0,
+            "reset_at": "2026-10-23T12:00:00+00:00",
+        }
+    ]
+    assert provider["cooldowns"] == [
+        {"model": "cooled", "remaining_ms": 60000, "routes": ["p/cooled"]}
+    ]
+    assert supply["totals"]["connections_with_limits"] == 1
+    assert supply["totals"]["cooldown_count"] == 1
+    assert "limits_not_reported:c1" in supply["unknowns"]
+
+
+def test_failed_limits_source_stays_one_gap():
+    supply = build_supply(evidence([live("p/a")], errors=("limits",)), proofs("p/a"), NOW)
+    assert "source_unavailable:limits" in supply["unknowns"]
+    assert not any(gap.startswith("limits_not_reported:") for gap in supply["unknowns"])
 
 
 def test_supply_without_tool_proof_is_unknown():

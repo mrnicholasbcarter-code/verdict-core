@@ -16,6 +16,10 @@
   `scripts/check_doc_links.py`, `scripts/check_reachability.py` and
   `openspec validate supply-task-pools --strict`.
 - [x] 1.7 Independent cross-family review of the diff.
+- [x] 1.8 Retain parsed quota windows and model cooldowns on each provider row of `supply`,
+  name a connection with no window `limits_not_reported:<connection id>`, and keep a failed
+  limits source as the single `source_unavailable:limits` gap. Window retention does not
+  change connection usability or pool admission.
 
 ## 2. Live checks
 

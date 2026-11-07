@@ -67,6 +67,21 @@ class _DecodedBudget:
 
 
 @dataclass(frozen=True)
+class QuotaWindow:
+    """One reported quota window, kept apart from the connection verdict.
+
+    ``scope`` is the explicit upstream kind, or ``unresolved`` when the payload
+    does not name a connection-wide scope. ``state`` describes this window only.
+    """
+
+    name: str
+    scope: str
+    state: Literal["unknown", "available", "exhausted"]
+    remaining_percent: float | None
+    reset_at: str | None
+
+
+@dataclass(frozen=True)
 class ConnectionHealth:
     connection_id: str
     provider: str
@@ -77,6 +92,7 @@ class ConnectionHealth:
     quota_state: Literal["unknown", "available", "exhausted"] = "unknown"
     quota_reason: str | None = None
     quota_observed_at: datetime | None = None
+    quota_windows: tuple[QuotaWindow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,6 +135,7 @@ class OmniRouteEvidence:
     traffic_by_route: Mapping[str, TrafficEvidence] = field(default_factory=dict)
     route_capacity_evidence: Mapping[str, str] = field(default_factory=dict)
     live_candidates: Mapping[str, LiveCandidate] = field(default_factory=dict)
+    model_cooldowns: tuple[Mapping[str, Any], ...] = ()
 
 
 def _date(value: Any) -> datetime | None:
@@ -136,32 +153,120 @@ def _rows(value: Any) -> list[dict[str, Any]]:
 
 
 def _number(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 # Verdict freshness policy, not an upstream API TTL; no additional scheduler.
 QUOTA_MAX_SYNC_INTERVALS = 2
 
 
+def _window_remaining(window: dict[str, Any]) -> float | None:
+    remaining = _number(window.get("remainingPercentage"))
+    if remaining is None:
+        remaining = _number(window.get("remaining"))
+    if remaining is None:
+        used, total = _number(window.get("used")), _number(window.get("total"))
+        if used is not None and total is not None and total > 0:
+            remaining = total - used
+    return remaining if remaining is not None and math.isfinite(remaining) else None
+
+
+def _retained_windows(quotas: Any) -> tuple[QuotaWindow, ...]:
+    """Keep every object window, including ones the connection verdict ignores."""
+    if not isinstance(quotas, dict):
+        return ()
+    kept = []
+    for name in sorted(key for key in quotas if isinstance(key, str)):
+        window = quotas[name]
+        if not isinstance(window, dict):
+            continue
+        scope_row = window.get("claudeQuota")
+        kind = scope_row.get("kind") if isinstance(scope_row, dict) else None
+        scope = kind if isinstance(kind, str) else "unresolved"
+        reset = _date(window.get("resetAt"))
+        kept.append(
+            QuotaWindow(
+                name,
+                scope,
+                "unknown",
+                _window_remaining(window),
+                reset.isoformat() if reset is not None else None,
+            )
+        )
+    return tuple(kept)
+
+
+def _window_state(
+    window: dict[str, Any], now: datetime
+) -> Literal["unknown", "available", "exhausted"]:
+    """The same global-window rules, applied to one window instead of the connection."""
+    scope = window.get("claudeQuota")
+    if not isinstance(scope, dict) or scope.get("kind") not in {"session", "weekly_all"}:
+        return "unknown"
+    reset = _date(window.get("resetAt"))
+    if reset is not None and reset <= now:
+        return "unknown"
+    if window.get("unlimited") is True:
+        return "available"
+    if window.get("fractionReported") is False or reset is None:
+        return "unknown"
+    remaining = _window_remaining(window)
+    if remaining is None:
+        return "unknown"
+    if remaining <= 0:
+        if scope.get("active") is True and scope.get("severity") in {None, "critical"}:
+            return "exhausted"
+        return "unknown"
+    return "available"
+
+
+def _with_window_states(
+    windows: tuple[QuotaWindow, ...], quotas: Mapping[str, Any], now: datetime
+) -> tuple[QuotaWindow, ...]:
+    return tuple(
+        QuotaWindow(
+            window.name,
+            window.scope,
+            _window_state(quotas[window.name], now)
+            if isinstance(quotas.get(window.name), dict)
+            else "unknown",
+            window.remaining_percent,
+            window.reset_at,
+        )
+        for window in windows
+    )
+
+
 def _quota_evidence(
     cache: dict[str, Any] | None, interval_minutes: Any, now: datetime
-) -> tuple[Literal["unknown", "available", "exhausted"], str | None, datetime | None]:
+) -> tuple[
+    Literal["unknown", "available", "exhausted"],
+    str | None,
+    datetime | None,
+    tuple[QuotaWindow, ...],
+]:
     if cache is None:
-        return "unknown", "cache_missing", None
+        return "unknown", "cache_missing", None, ()
     observed = _date(cache.get("fetchedAt"))
+    windows = _retained_windows(cache.get("quotas"))
     interval = _number(interval_minutes)
     if interval is None or not math.isfinite(interval) or interval <= 0:
-        return "unknown", "sync_interval_unknown", observed
+        return "unknown", "sync_interval_unknown", observed, windows
     if observed is None or observed > now:
-        return "unknown", "observation_time_unknown", observed
+        return "unknown", "observation_time_unknown", observed, windows
     age_minutes = (now - observed).total_seconds() / 60
     if age_minutes > QUOTA_MAX_SYNC_INTERVALS * interval:
-        return "unknown", "observation_stale", observed
+        return "unknown", "observation_stale", observed, windows
     quotas = cache.get("quotas")
     if not isinstance(quotas, dict) or not quotas or cache.get("message"):
-        return "unknown", "quota_unreported", observed
+        return "unknown", "quota_unreported", observed, windows
+    resolved = _with_window_states(windows, quotas, now)
     unknown = False
     for window in quotas.values():
         if not isinstance(window, dict):
@@ -182,14 +287,8 @@ def _quota_evidence(
         if window.get("fractionReported") is False or reset is None:
             unknown = True
             continue
-        remaining = _number(window.get("remainingPercentage"))
+        remaining = _window_remaining(window)
         if remaining is None:
-            remaining = _number(window.get("remaining"))
-        if remaining is None:
-            used, total = _number(window.get("used")), _number(window.get("total"))
-            if used is not None and total is not None and total > 0:
-                remaining = total - used
-        if remaining is None or not math.isfinite(remaining):
             unknown = True
         elif remaining <= 0:
             # Claude current-limit percentages can be predictive display data.
@@ -199,13 +298,13 @@ def _quota_evidence(
                 and scope.get("severity") in {None, "critical"}
                 and reset is not None
             ):
-                return "exhausted", "global_window_exhausted", observed
+                return "exhausted", "global_window_exhausted", observed, resolved
             unknown = True
     if cache.get("modelQuotas"):
         unknown = True
     if unknown:
-        return "unknown", "window_scope_or_value_unknown", observed
-    return "available", None, observed
+        return "unknown", "window_scope_or_value_unknown", observed, resolved
+    return "available", None, observed, resolved
 
 
 def _connection_reason(
@@ -341,7 +440,7 @@ def parse_omniroute_evidence(
         if not isinstance(connection_id, str) or not isinstance(provider, str):
             continue
         cache = caches.get(connection_id)
-        quota_state, quota_reason, observed = _quota_evidence(
+        quota_state, quota_reason, observed, quota_windows = _quota_evidence(
             cache if isinstance(cache, dict) else None,
             limits.get("intervalMinutes") if "limits" not in errors else None,
             now,
@@ -362,6 +461,7 @@ def parse_omniroute_evidence(
                 quota_state,
                 quota_reason,
                 observed,
+                quota_windows,
             )
         )
     from verdict.orchestration.eligibility import _classify_capacity
@@ -396,12 +496,27 @@ def parse_omniroute_evidence(
             routes.setdefault((provider, model), []).append(route_id)
             routes.setdefault((provider, route_id), []).append(route_id)
     cooled: set[str] = set()
+    model_cooldowns = []
     for row in _rows(cooldowns.get("items")) if "cooldowns" not in errors else []:
         model, provider = row.get("model"), row.get("provider")
         if isinstance(model, str):
             cooled.add(model)
+            matched = (
+                tuple(sorted(routes.get((provider, model), [])))
+                if isinstance(provider, str)
+                else ()
+            )
             if isinstance(provider, str):
-                cooled.update(routes.get((provider, model), []))
+                cooled.update(matched)
+            remaining = _number(row.get("remainingMs"))
+            model_cooldowns.append(
+                {
+                    "provider": provider if isinstance(provider, str) else None,
+                    "model": model,
+                    "remaining_ms": int(remaining) if remaining is not None else None,
+                    "routes": matched,
+                }
+            )
     proven: dict[str, TrafficEvidence] = {}
     traffic_by_route: dict[str, TrafficEvidence] = {}
     for group in _rows(health_matrix.get("providers")) if "health_matrix" not in errors else []:
@@ -452,6 +567,7 @@ def parse_omniroute_evidence(
         MappingProxyType(
             _live_candidates(candidates["candidates"]) if "candidates" not in errors else {}
         ),
+        tuple(model_cooldowns),
     )
 
 
