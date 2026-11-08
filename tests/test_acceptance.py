@@ -786,3 +786,31 @@ def test_low_precision_still_fails_eligibility(live: Path, monkeypatch: pytest.M
     assert check["passed"] is False
     assert "precision 50% < 95%" in check["reason"]
     assert "recall_trend" in check["detail"]
+
+
+def test_serve_check_accepts_reasoning_content_when_content_is_null():
+    from verdict.acceptance import _json
+
+    raw_response = json.dumps(
+        {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "model": "nvidia/nemotron-3.5-super-vl",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": "The user wants OK so I respond OK.",
+                    },
+                    "finish_reason": "length",
+                }
+            ],
+        }
+    )
+    reply = _json(raw_response)
+    assert reply is not None
+    msg = reply["choices"][0].get("message") or {}
+    content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
+    assert content == "The user wants OK so I respond OK."

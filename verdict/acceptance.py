@@ -517,7 +517,8 @@ def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
         reply = _json(raw)
         content = None
         if isinstance(reply, dict) and reply.get("choices"):
-            content = (reply["choices"][0].get("message") or {}).get("content")
+            msg = reply["choices"][0].get("message") or {}
+            content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
         check.detail = {
             "http_status": status,
             "model": (reply or {}).get("model"),
