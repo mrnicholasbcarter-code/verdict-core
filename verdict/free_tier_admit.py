@@ -2163,6 +2163,12 @@ def execute_offload_chat(
     message = (choices[0] or {}).get("message") if isinstance(choices[0], Mapping) else {}
     content = message.get("content") if isinstance(message, Mapping) else ""
     if not isinstance(content, str) or not content.strip():
+        content = (
+            message.get("reasoning_content") or message.get("reasoning") or ""
+            if isinstance(message, Mapping)
+            else ""
+        )
+    if not isinstance(content, str) or not content.strip():
         return "error", "invalid provider response: missing completion content"
     return "sent", content
 
