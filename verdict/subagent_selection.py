@@ -739,7 +739,11 @@ def _has_inference_output(payload: Any) -> bool:
             continue
         message = choice.get("message")
         if isinstance(message, Mapping) and message.get("role") == "assistant":
-            content = message.get("content")
+            content = (
+                message.get("content")
+                or message.get("reasoning_content")
+                or message.get("reasoning")
+            )
             if isinstance(content, str) and content.strip():
                 return True
     return False

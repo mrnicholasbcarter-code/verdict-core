@@ -850,7 +850,11 @@ def _has_assistant_output(body: Mapping[str, Any]) -> bool:
         if (
             isinstance(message, Mapping)
             and message.get("role") == "assistant"
-            and _has_content(message.get("content"))
+            and (
+                _has_content(message.get("content"))
+                or _has_content(message.get("reasoning_content"))
+                or _has_content(message.get("reasoning"))
+            )
         ):
             return True
     return False

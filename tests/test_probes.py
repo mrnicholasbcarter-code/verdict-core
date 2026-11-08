@@ -578,3 +578,50 @@ def test_openai_transport_bounds_read_before_json_parse() -> None:
     )
     with pytest.raises(ProbeResponseTooLargeError):
         transport("model", ProbePolicy().payload("model"), 1)
+
+
+def test_has_assistant_output_accepts_reasoning_when_content_is_none():
+    from verdict.probes import _has_assistant_output
+
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "The user wants OK so I respond OK.",
+                }
+            }
+        ]
+    }
+    assert _has_assistant_output(body) is True
+
+    body_reasoning = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning": "The user wants OK so I respond OK.",
+                }
+            }
+        ]
+    }
+    assert _has_assistant_output(body_reasoning) is True
+
+
+def test_has_inference_output_accepts_reasoning():
+    from verdict.subagent_selection import _has_inference_output
+
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "Thought tokens here.",
+                }
+            }
+        ]
+    }
+    assert _has_inference_output(body) is True
