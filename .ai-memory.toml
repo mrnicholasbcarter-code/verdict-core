@@ -1,0 +1,11 @@
+# ai-memory scope marker for this repository (BOD-339 ticket 1, AC1).
+# Every harness session started anywhere in this checkout (or a worktree
+# that contains this commit) is captured into one project. Under allowlist
+# capture mode, only repositories that carry a marker like this are captured.
+workspace = "default"
+project = "mrnicholasbcarter-code-verdict-core"
+
+# Session-start memory brief, moved here from the retired home marker.
+[briefing]
+inject_on_session_start = true
+max_chars = 4000
