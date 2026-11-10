@@ -20,8 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-ai-memory audit and draft tickets (report only). Nothing is built, installed or
-upgraded until the operator approves the tickets.
+Ticket 1 (harness-agnostic memory) in progress. N02 retest queued behind it.
 
 ## Decisions
 
