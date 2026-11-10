@@ -1,5 +1,8 @@
 # AGENTS.md — working on verdict-core
 
+> **Read this first:** [ETHOS.md](ETHOS.md). It holds the mission, the rules in
+> force, and what is being worked on now.
+
 Guide for AI coding agents (and humans) changing this repository. Every rule
 names the test or script that enforces it. If a rule and the code disagree,
 the code on `main` wins: fix this file in the same change.
