@@ -1,3 +1,6 @@
+**Read this first:** [ETHOS.md](ETHOS.md)
+
+@ETHOS.md
 @AGENTS.md
 
 Human contributor setup, Definition of Done and PR rules are in [CONTRIBUTING.md](CONTRIBUTING.md).

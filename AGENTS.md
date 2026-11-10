@@ -1,5 +1,8 @@
 # AGENTS.md — working on verdict-core
 
+> **Read this first:** [ETHOS.md](ETHOS.md). It holds the mission, the rules in
+> force, and what is being worked on now.
+
 Guide for AI coding agents (and humans) changing this repository. Every rule
 names the test or script that enforces it. If a rule and the code disagree,
 the code on `main` wins: fix this file in the same change.
@@ -190,8 +193,17 @@ archived change, only when `scripts/check_dod.py <file>` passes; CI runs
 - Ruflo, RuVector, SONA and Hindsight are removed legacy integrations. Do not
   reintroduce them.
 
-## Optional tooling
+## Required code intelligence
 
-A codebase-memory graph (`search_graph`, `trace_path`, `get_code_snippet`) can
-speed up discovery. Fall back to `git grep` for strings, configs and non-code
-files. Always confirm against the source before you write a claim.
+Per [BOD-342 D6](https://linear.app/bodanglin/issue/BOD-342), the code graph
+(codebase-memory) and the symbol tools (Serena) are the live source of code
+facts. Their facts are not copied into memory.
+
+- **Controller and ticket owner:** codebase-memory (`search_graph`,
+  `trace_path`, `get_code_snippet`) and Serena are required. Get code facts
+  from them before you write a claim or a context pack.
+- **Workers:** get code facts from the context pack. No language server runs
+  per worker by default (D6).
+- Use `git grep` for strings, configs and non-code files. Always confirm
+  against the source before you write a claim.
+- No test or gate enforces this rule yet (a D3 gap).
