@@ -812,6 +812,10 @@ def test_main_dispatches_help_route_stats_detect(
 
     # Pin an empty provider catalog so the route falls back to the primary
     # model deterministically even on hosts running a live local server.
+    # ``providers: {}`` alone is not enough: the CLI still adds its default providers
+    # (OmniRoute and a keyless local Ollama on 11434), and ``fetch_models`` then does a real
+    # HTTP request, so a host with Ollama installed routed to its ``nomic-embed-text:latest``.
+    monkeypatch.setattr("verdict.intelligence.fetch_models", lambda *a, **k: [])
     cfg_dir = tmp_path / ".config" / "verdict"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "verdict.yaml").write_text(

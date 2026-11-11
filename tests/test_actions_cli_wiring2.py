@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -25,8 +26,13 @@ BASELINES = FIX / "baselines"
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)")
 # Any tmp home path used to sandbox HOME/XDG in captures; pytest and
 # tempfile.mkdtemp use different prefixes so the pattern is intentionally broad.
+# The prefix is the real temp dir (``tempfile.gettempdir()``, which follows ``TMPDIR``) or
+# ``/tmp``, not only a hard-coded ``/tmp``.
 _TMPHOME_RE = re.compile(
-    r"/tmp/(?:tmp[A-Za-z0-9_]+|vw2_[A-Za-z0-9_]+|pytest-of-[A-Za-z0-9_-]+/pytest-[0-9]+/[A-Za-z0-9_.-]+)"
+    "(?:"
+    + "|".join(sorted({re.escape(tempfile.gettempdir()), "/tmp"}, key=len, reverse=True))
+    + ")"
+    + r"/(?:tmp[A-Za-z0-9_]+|vw2_[A-Za-z0-9_]+|pytest-of-[A-Za-z0-9_-]+/pytest-[0-9]+/[A-Za-z0-9_.-]+)"
 )
 
 
@@ -349,7 +355,10 @@ def test_stdout_matches_baseline(name: str, argv: list[str], rel_cwd: str) -> No
     import shutil
     import tempfile
 
-    home = Path(tempfile.mkdtemp(prefix="vw2_")) / "home"
+    # ``present.*`` wraps long paths, so the layout depends on the path length: keep the home
+    # short even when ``TMPDIR`` points at a long directory.
+    short_root = "/tmp" if Path("/tmp").is_dir() else None
+    home = Path(tempfile.mkdtemp(prefix="vw2_", dir=short_root)) / "home"
     home.mkdir()
     try:
         cwd = FIX / rel_cwd
