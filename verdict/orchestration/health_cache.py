@@ -1566,8 +1566,15 @@ class HealthCache:
         )
         return True
 
-    def record(self, route: str, result: ProbeResult, now: datetime) -> HealthEntry:
-        """Record one probe and return the stored entry. Does not save."""
+    def record(
+        self, route: str, result: ProbeResult, now: datetime, *, keep_agentic: bool = False
+    ) -> HealthEntry:
+        """Record one probe and return the stored entry. Does not save.
+
+        ``keep_agentic`` is for a chat-liveness observation that must neither grant nor clear
+        agentic proof: the previous agentic fields are carried over unchanged. It does not
+        widen the set of categories that preserve proof on their own.
+        """
         if not isinstance(route, str) or not route.strip():
             raise HealthCacheError("route must be non-empty")
         current = _aware(now, "now")
@@ -1612,6 +1619,8 @@ class HealthCache:
                 CATEGORY_PERMISSION,
             }
         )
+        if keep_agentic and previous is not None:
+            preserve_agentic = True
         if preserve_agentic and previous is not None:
             # No answer does not revoke an older proof; conflicting same-time
             # evidence still fails closed, as in the cache's merge policy.

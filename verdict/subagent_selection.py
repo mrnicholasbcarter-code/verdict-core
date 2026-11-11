@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -704,7 +704,15 @@ def openai_health_probe(
                 except (TypeError, ValueError):
                     return HealthResult(False, "malformed_response", response.status)
                 if not _has_inference_output(payload):
-                    return HealthResult(False, "malformed_response", response.status)
+                    flags = _empty_but_alive_flags(
+                        payload,
+                        requested=candidate.route_id,
+                        headers=getattr(response, "headers", None),
+                    )
+                    if flags is None:
+                        return HealthResult(False, "malformed_response", response.status)
+                    # Chat liveness only: the reply says nothing about tools or agentic ability.
+                    return replace(classify_probe_status(response.status), error_message=flags)
                 return classify_probe_status(response.status)
         except urllib.error.HTTPError as exc:
             try:
@@ -726,6 +734,42 @@ def openai_health_probe(
             return classify_probe_status(None)
 
     return probe
+
+
+def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str | None:
+    """Flags for a reply cut off by the 1-token limit, or None when it is not that.
+
+    A route whose well-formed assistant message has empty or null text (observed:
+    ``finish_reason: length`` with 0 or 1 completion tokens) is alive for chat. That holds
+    only when the message is a real assistant message, the finish reason is a normal one,
+    and the gateway says the requested route served it. Anything else stays malformed.
+    """
+    from verdict.served_identity import check_served, served_identity_from_headers
+
+    if not isinstance(payload, Mapping):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes, bytearray)):
+        return None
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            continue
+        message = choice.get("message")
+        if not (isinstance(message, Mapping) and message.get("role") == "assistant"):
+            continue
+        if choice.get("finish_reason") not in _EMPTY_ALIVE_FINISH_REASONS:
+            continue
+        if check_served(requested, served_identity_from_headers(headers)).status != "verified":
+            return None
+        flags = ["empty_content"]
+        usage = payload.get("usage")
+        if isinstance(usage, Mapping) and usage.get("completion_tokens") == 0:
+            flags.append("zero_output_tokens")
+        return ",".join(flags)
+    return None
+
+
+_EMPTY_ALIVE_FINISH_REASONS = frozenset({"length", "stop"})
 
 
 def _has_inference_output(payload: Any) -> bool:

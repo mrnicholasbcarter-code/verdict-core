@@ -1320,6 +1320,7 @@ class EligibilityLadder:
             failure_category=category,
             retry_after_seconds=result.retry_after_seconds,
             health_cache_path=cache.path if cache is not None else None,
+            liveness_only=True,
         )
         with self._persist_lock:
             self._state["health"][route_id] = {
