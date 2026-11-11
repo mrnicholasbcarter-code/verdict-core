@@ -86,7 +86,7 @@ def test_zero_output_tokens_is_flagged_even_when_text_is_null() -> None:
     body = json.dumps(
         {
             "choices": [
-                {"finish_reason": "stop", "message": {"role": "assistant", "content": None}}
+                {"finish_reason": "length", "message": {"role": "assistant", "content": None}}
             ],
             "usage": {"completion_tokens": 0},
         }
@@ -118,6 +118,8 @@ def test_empty_content_from_a_cached_reply_is_not_alive() -> None:
         b'{"choices":[]}',
         b'{"choices":[{"finish_reason":"length","message":{"role":"user","content":""}}]}',
         b'{"choices":[{"finish_reason":"content_filter","message":{"role":"assistant","content":""}}]}',
+        # operator-specified: empty text with finish_reason stop is malformed, not alive
+        b'{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":""}}]}',
         b'{"choices":[{"message":{"role":"assistant","content":""}}]}',
         b'{"choices":[{"finish_reason":"length"}]}',
     ],
@@ -307,3 +309,208 @@ def test_the_worker_launch_probe_records_its_failure_as_liveness_only(
     assert seen and all(seen)
     entry = HealthCache(cache.path).entry(DEAD)
     assert entry is not None and entry.agentic_ok is True
+
+
+# --- Q1 review findings: only a null/empty/whitespace text with finish_reason length is alive ---
+
+_ID = _headers("groq", "openai/gpt-oss-20b")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # 1. refusal string, no content key
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "refusal": "I cannot help"},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        # 1b. refusal next to empty content
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "", "refusal": "no"},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        # 2. top-level error object next to an empty assistant message
+        {
+            "error": {"message": "upstream failed"},
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
+            ],
+        },
+        # 3. tool_calls only
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        # 3b. legacy function_call
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "function_call": {"name": "f"},
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        # 5. first choice is a user message, second is an empty assistant message
+        {
+            "choices": [
+                {"message": {"role": "user", "content": "x"}, "finish_reason": "length"},
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"},
+            ]
+        },
+        # 5b. two choices, both empty assistant messages
+        {
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"},
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"},
+            ]
+        },
+        # 6. assistant message with no content key at all and nothing else to explain it
+        # (no content key is not null: only an explicit null or empty string is accepted)
+        {"choices": [{"message": {"role": "assistant"}, "finish_reason": "length"}]},
+        # empty text with finish_reason stop
+        {"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]},
+        # non-string content shapes
+        {"choices": [{"message": {"role": "assistant", "content": []}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"role": "assistant", "content": 0}, "finish_reason": "length"}]},
+        # null error key is still an error key only when truthy; a populated one is rejected
+        {
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
+            ],
+            "error": "boom",
+        },
+    ],
+    ids=[
+        "refusal-no-content",
+        "refusal-with-empty-content",
+        "top-level-error",
+        "tool-calls-only",
+        "function-call-only",
+        "user-then-empty-assistant",
+        "two-empty-assistant-choices",
+        "no-content-key",
+        "empty-with-stop",
+        "list-content",
+        "numeric-content",
+        "error-string",
+    ],
+)
+def test_reply_shapes_that_are_not_a_truncated_empty_completion_stay_malformed(
+    payload: dict[str, Any],
+) -> None:
+    result = _probe(ROUTE, json.dumps(payload).encode(), _ID)
+    assert result == HealthResult(False, "malformed_response", 200), payload
+
+
+@pytest.mark.parametrize("content", [None, "", "   ", "\n\t "])
+def test_null_empty_or_whitespace_text_with_length_is_alive_and_flagged(content: Any) -> None:
+    payload = {
+        "choices": [
+            {"message": {"role": "assistant", "content": content}, "finish_reason": "length"}
+        ]
+    }
+    result = _probe(ROUTE, json.dumps(payload).encode(), _ID)
+    assert result.healthy is True and result.status_code == 200
+    assert "empty_content" in result.error_message
+
+
+def test_null_error_and_null_refusal_keys_do_not_disqualify_a_truncated_reply() -> None:
+    """The captured beam-free body carries ``refusal: null``; null error/tool_calls are fine."""
+    payload = {
+        "error": None,
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "refusal": None,
+                    "tool_calls": None,
+                    "function_call": None,
+                },
+                "finish_reason": "length",
+            }
+        ],
+    }
+    assert _probe(ROUTE, json.dumps(payload).encode(), _ID).healthy is True
+
+
+def test_whitespace_text_is_not_inference_output_so_it_is_only_alive_through_the_flagged_path() -> (
+    None
+):
+    payload = {
+        "choices": [{"message": {"role": "assistant", "content": "  "}, "finish_reason": "length"}]
+    }
+    result = _probe(ROUTE, json.dumps(payload).encode(), _ID)
+    assert (result.healthy, result.error_message) == (True, "empty_content")
+
+
+# --- tool_ok: a failed liveness probe keeps it, and no reader selects on it alone ----------------
+
+
+def test_liveness_failure_keeps_tool_ok_but_marks_the_route_unhealthy(tmp_path: Path) -> None:
+    cache = _proven_cache(tmp_path)
+
+    record_dispatch_observation(
+        ROUTE,
+        healthy=False,
+        observed_at=NOW,
+        failure_category="malformed_response",
+        health_cache_path=cache.path,
+        liveness_only=True,
+    )
+
+    entry = HealthCache(cache.path).entry(ROUTE)
+    assert entry is not None
+    assert (entry.tool_ok, entry.agentic_ok) == (True, True)
+    assert (entry.healthy, entry.chat_ok) == (False, False)
+    # unhealthy: never fresh or stale, so every reader that requires a usable state skips it
+    assert entry.state_at(NOW + timedelta(seconds=1)) in {"negative", "unprobed"}
+
+
+def test_non_liveness_failure_still_clears_tool_ok(tmp_path: Path) -> None:
+    cache = _proven_cache(tmp_path)
+    record_dispatch_observation(
+        ROUTE,
+        healthy=False,
+        observed_at=NOW,
+        failure_category="malformed_response",
+        health_cache_path=cache.path,
+    )
+    entry = HealthCache(cache.path).entry(ROUTE)
+    assert entry is not None and entry.tool_ok is False
+
+
+def test_a_route_kept_tool_ok_by_liveness_is_not_selected_by_the_readers(tmp_path: Path) -> None:
+    """An unhealthy entry with tool_ok kept must not look like a usable coding worker."""
+    from verdict.prove_at_rest import status_report
+
+    cache = _proven_cache(tmp_path)
+    record_dispatch_observation(
+        ROUTE,
+        healthy=False,
+        observed_at=NOW,
+        failure_category="malformed_response",
+        health_cache_path=cache.path,
+        liveness_only=True,
+    )
+    reloaded = HealthCache(cache.path)
+    report = status_report(reloaded, now=NOW + timedelta(seconds=1))
+
+    assert report["top_healthy_coding_workers"] == []
+    assert reloaded.lookup(ROUTE, NOW + timedelta(seconds=1)).healthy is False

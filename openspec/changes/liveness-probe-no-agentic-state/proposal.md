@@ -14,15 +14,18 @@ permission. Chat liveness evidence erased unrelated capability proof (BOD-299 AC
 
 ## What Changes
 
-- `openai_health_probe`: a reply with an empty or null assistant message is ALIVE for chat when
-  the message role is assistant, `finish_reason` is `length` or `stop`, and the gateway's served
-  identity verifies as the requested route (cache hits and other anomalies still void it). It is
-  flagged in `error_message` (`empty_content`, plus `zero_output_tokens` when the usage says 0).
-  A reply that is not JSON, has no choices, has a non-assistant role, an unusual finish reason or
-  no verified identity stays `malformed_response`.
+- `openai_health_probe`: a reply is ALIVE for chat only when ALL hold: no truthy top-level
+  `error`; exactly one choice with `finish_reason: "length"` (not `stop`); an assistant message
+  whose `content` key is present and is null, empty or whitespace-only, with no truthy `refusal`,
+  `tool_calls` or `function_call`; and the gateway's served identity verifies as the requested
+  route (cache hits and other anomalies still void it). It is flagged in `error_message`
+  (`empty_content`, plus `zero_output_tokens` when usage says 0). Every other shape stays
+  `malformed_response`.
 - `record_dispatch_observation(..., liveness_only=True)` and `HealthCache.record(...,
-  keep_agentic=True)`: a failed chat-liveness observation marks the route unhealthy for chat but
-  carries the previous agentic fields over unchanged. The ladder (`_record_health`) and the worker
+  keep_agentic=True, keep_tool_ok=True)`: a failed chat-liveness observation marks the route
+  unhealthy for chat but carries the previous agentic fields and `tool_ok` over unchanged. The
+  entry stays unhealthy, so every reader of `tool_ok` (each also requires a healthy, fresh or
+  chat-ok entry; audited 2026-11-11) still skips the route. The ladder (`_record_health`) and the worker
   launch probe pass `liveness_only=True`. Every other caller keeps today's behaviour.
 - `malformed_response` is NOT added to the global categories that preserve agentic proof.
 

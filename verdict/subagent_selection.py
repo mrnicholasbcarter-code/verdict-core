@@ -739,37 +739,49 @@ def openai_health_probe(
 def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str | None:
     """Flags for a reply cut off by the 1-token limit, or None when it is not that.
 
-    A route whose well-formed assistant message has empty or null text (observed:
-    ``finish_reason: length`` with 0 or 1 completion tokens) is alive for chat. That holds
-    only when the message is a real assistant message, the finish reason is a normal one,
-    and the gateway says the requested route served it. Anything else stays malformed.
+    Alive only when ALL of these hold; anything else stays ``malformed_response``:
+
+    * the body is an object with no truthy top-level ``error``;
+    * there is exactly one choice, and its ``finish_reason`` is ``length``;
+    * the message is an assistant message whose ``content`` key is present and is null, an
+      empty string or whitespace only, with no truthy ``refusal``, ``tool_calls`` or
+      ``function_call``;
+    * the gateway's served identity verifies as the requested route.
+
+    ``stop`` is deliberately not accepted: a reply that stopped on its own with no text is not a
+    truncated completion.
     """
     from verdict.served_identity import check_served, served_identity_from_headers
 
-    if not isinstance(payload, Mapping):
+    if not isinstance(payload, Mapping) or payload.get("error"):
         return None
     choices = payload.get("choices")
-    if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes, bytearray)):
+    if (
+        not isinstance(choices, Sequence)
+        or isinstance(choices, (str, bytes, bytearray))
+        or len(choices) != 1
+    ):
         return None
-    for choice in choices:
-        if not isinstance(choice, Mapping):
-            continue
-        message = choice.get("message")
-        if not (isinstance(message, Mapping) and message.get("role") == "assistant"):
-            continue
-        if choice.get("finish_reason") not in _EMPTY_ALIVE_FINISH_REASONS:
-            continue
-        if check_served(requested, served_identity_from_headers(headers)).status != "verified":
-            return None
-        flags = ["empty_content"]
-        usage = payload.get("usage")
-        if isinstance(usage, Mapping) and usage.get("completion_tokens") == 0:
-            flags.append("zero_output_tokens")
-        return ",".join(flags)
-    return None
-
-
-_EMPTY_ALIVE_FINISH_REASONS = frozenset({"length", "stop"})
+    choice = choices[0]
+    if not isinstance(choice, Mapping) or choice.get("finish_reason") != "length":
+        return None
+    message = choice.get("message")
+    if not (isinstance(message, Mapping) and message.get("role") == "assistant"):
+        return None
+    if "content" not in message:
+        return None
+    content = message["content"]
+    if content is not None and not (isinstance(content, str) and not content.strip()):
+        return None
+    if any(message.get(key) for key in ("refusal", "tool_calls", "function_call")):
+        return None
+    if check_served(requested, served_identity_from_headers(headers)).status != "verified":
+        return None
+    flags = ["empty_content"]
+    usage = payload.get("usage")
+    if isinstance(usage, Mapping) and usage.get("completion_tokens") == 0:
+        flags.append("zero_output_tokens")
+    return ",".join(flags)
 
 
 def _has_inference_output(payload: Any) -> bool:
