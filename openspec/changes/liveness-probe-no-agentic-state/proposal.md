@@ -16,8 +16,9 @@ permission. Chat liveness evidence erased unrelated capability proof (BOD-299 AC
 
 - `openai_health_probe`: a reply is ALIVE for chat only when ALL hold: top-level `error` absent
   or null; exactly one choice with `finish_reason: "length"` (not `stop`); an assistant message
-  whose `content` key is present and is null, empty or whitespace-only, with `refusal`,
-  `tool_calls` and `function_call` each absent or null (a present empty value is rejected); and the gateway's served identity verifies as the requested
+  whose `content` key is present and is null, empty or whitespace-only, with no refusal and
+  no tool-call payload of any kind: `refusal`, `tool_calls` and the legacy `function_call` are each
+  absent or null (a present empty value is rejected); and the gateway's served identity verifies as the requested
   route (cache hits and other anomalies still void it). It is flagged in `error_message`
   (`empty_content`, plus `zero_output_tokens` when usage says 0). Every other shape stays
   `malformed_response`.
