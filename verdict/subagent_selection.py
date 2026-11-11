@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -704,7 +704,15 @@ def openai_health_probe(
                 except (TypeError, ValueError):
                     return HealthResult(False, "malformed_response", response.status)
                 if not _has_inference_output(payload):
-                    return HealthResult(False, "malformed_response", response.status)
+                    flags = _empty_but_alive_flags(
+                        payload,
+                        requested=candidate.route_id,
+                        headers=getattr(response, "headers", None),
+                    )
+                    if flags is None:
+                        return HealthResult(False, "malformed_response", response.status)
+                    # Chat liveness only: the reply says nothing about tools or agentic ability.
+                    return replace(classify_probe_status(response.status), error_message=flags)
                 return classify_probe_status(response.status)
         except urllib.error.HTTPError as exc:
             try:
@@ -726,6 +734,56 @@ def openai_health_probe(
             return classify_probe_status(None)
 
     return probe
+
+
+def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str | None:
+    """Flags for a reply cut off by the 1-token limit, or None when it is not that.
+
+    Alive only when ALL of these hold; anything else stays ``malformed_response``:
+
+    * the body is an object whose top-level ``error`` is absent or null;
+    * there is exactly one choice, and its ``finish_reason`` is ``length``;
+    * the message is an assistant message whose ``content`` key is present and is null, an
+      empty string or whitespace only, with no refusal and no tool-call payload of any kind:
+      ``refusal``, ``tool_calls`` and the legacy ``function_call`` are each absent or null (any
+      other value, even an empty list, string, 0 or false, is rejected; the captured
+      ``beam-free`` body carries ``refusal: null``);
+    * the gateway's served identity verifies as the requested route.
+
+    ``stop`` is deliberately not accepted: a reply that stopped on its own with no text is not a
+    truncated completion.
+    """
+    from verdict.served_identity import check_served, served_identity_from_headers
+
+    if not isinstance(payload, Mapping) or payload.get("error") is not None:
+        return None
+    choices = payload.get("choices")
+    if (
+        not isinstance(choices, Sequence)
+        or isinstance(choices, (str, bytes, bytearray))
+        or len(choices) != 1
+    ):
+        return None
+    choice = choices[0]
+    if not isinstance(choice, Mapping) or choice.get("finish_reason") != "length":
+        return None
+    message = choice.get("message")
+    if not (isinstance(message, Mapping) and message.get("role") == "assistant"):
+        return None
+    if "content" not in message:
+        return None
+    content = message["content"]
+    if content is not None and not (isinstance(content, str) and not content.strip()):
+        return None
+    if any(message.get(key) is not None for key in ("refusal", "tool_calls", "function_call")):
+        return None
+    if check_served(requested, served_identity_from_headers(headers)).status != "verified":
+        return None
+    flags = ["empty_content"]
+    usage = payload.get("usage")
+    if isinstance(usage, Mapping) and usage.get("completion_tokens") == 0:
+        flags.append("zero_output_tokens")
+    return ",".join(flags)
 
 
 def _has_inference_output(payload: Any) -> bool:

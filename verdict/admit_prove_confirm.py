@@ -259,11 +259,17 @@ def record_dispatch_observation(
     health_cache_path: Path | None = None,
     failure_category: str = "upstream",
     retry_after_seconds: float | None = None,
+    liveness_only: bool = False,
 ) -> None:
     """Refresh permit proof from a real confirm, screen or completed dispatch.
 
     This is liveness/authorization evidence only, never tool or task-quality
     credit. Callers supply the call's start time so concurrent negatives win.
+
+    ``liveness_only`` is for the 1-token chat liveness probe: its failure marks the route
+    unhealthy for chat but never reads or clears agentic proof or ``tool_ok``, which only an
+    agentic or tool probe or session evidence may change. The entry is still unhealthy, so no
+    reader that requires a healthy or fresh state selects the route from the kept ``tool_ok``.
     """
     from verdict.orchestration.health_cache import HealthCache, ProbeResult, default_cache_path
 
@@ -287,6 +293,8 @@ def record_dispatch_observation(
                     failure_scope="route",
                 ),
                 observed_at,
+                keep_agentic=liveness_only,
+                keep_tool_ok=liveness_only,
             )
 
         cache.merge_and_save(record_negative)

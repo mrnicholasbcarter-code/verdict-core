@@ -603,6 +603,8 @@ class WorkerController:
                     observed_at=probe_started,
                     failure_category=health.category,
                     retry_after_seconds=health.retry_after_seconds,
+                    # This is the 1-token chat probe: it never touches agentic proof.
+                    liveness_only=True,
                 )
                 if self.gateway_origin is not None:
                     self.confirmation = passport_confirmation([candidate.route_id], now=self.now())
