@@ -12,5 +12,5 @@
 ## 3. Docs
 - [x] 3.1 `docs/CLI_REFERENCE.md`; `ETHOS.md` NOW line (operator wording, BOD-339)
 
-- [ ] (post-merge, needs operator OK) `verdict setup --apply --allow host.docs-refresh-timer`; doctor shows the row ok
+- [ ] (post-merge) Install with `verdict setup --apply --allow host.docs-refresh-timer` after the operator approves; doctor shows the row ok
 - [ ] (post-merge) After the first timer run, `verdict doctor` documentation preflight stays ready past the 24 h mark with no `--fix` by hand
