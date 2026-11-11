@@ -26,6 +26,9 @@ from verdict.memory_plane import SCHEMA_VERSION, MemoryPlane, MemoryRecord
 
 DOCUMENT_PREFLIGHT_VERSION = "1"
 DEFAULT_FRESHNESS_SECONDS = 86_400
+#: ``fix=True`` renews a still-fresh manifest with less than this left, so a scheduled
+#: ``memory docs --fix`` keeps documents continuously fresh. Read-only checks ignore it.
+DEFAULT_RENEW_MARGIN_SECONDS = 12 * 3_600
 
 
 class DocumentationPreflightError(RuntimeError):
@@ -76,6 +79,7 @@ class DocumentationPreflightReport:
     source_roots: dict[str, str | None] | None = None
     repaired: bool = False
     timed_out: bool = False
+    renewed: int = 0
 
     @property
     def passed(self) -> bool:
@@ -123,6 +127,7 @@ class DocumentationPreflightReport:
             "duplicate_projections": [dict(item) for item in self.duplicate_projections],
             "repaired": self.repaired,
             "timed_out": self.timed_out,
+            "renewed": self.renewed,
         }
 
 
@@ -170,6 +175,7 @@ def run_documentation_preflight(
     fetch: Callable[[str], bytes] | None = None,
     progress: Callable[[str], None] | None = None,
     deadline_seconds: float | None = None,
+    renew_margin_seconds: float = DEFAULT_RENEW_MARGIN_SECONDS,
 ) -> DocumentationPreflightReport:
     """Check and optionally repair authoritative documentation memory.
 
@@ -188,11 +194,17 @@ def run_documentation_preflight(
     shared SQLite memory plane); once exceeded, remaining sources/entries are
     left unchecked and the report comes back with ``timed_out=True`` instead
     of hanging.
+
+    ``renew_margin_seconds`` applies to ``fix=True`` only: a manifest that is still
+    fresh but expires within the margin is re-ingested (counted in ``renewed``, never
+    as stale). The read-only check is unchanged, so an expired or missing document is
+    still reported as such. ``0`` disables renewal.
     """
 
     current = time.time() if now is None else now
     selected = tuple(discover_sources(repo_root) if sources is None else sources)
     inventory_count = ingested = skipped = stale = missing = unverifiable = orphaned = 0
+    renewed = 0
     errors: list[str] = []
     commits: dict[str, str] = {}
     roots: dict[str, str | None] = {}
@@ -262,12 +274,17 @@ def run_documentation_preflight(
                             "verified": manifest.authority_verified,
                         }
                     )
+                renewing = False
                 if manifest and _manifest_is_fresh(plane, manifest, entry, current, fetch=fetch):
-                    detail["state"] = "fresh"
-                    source_details.append(detail)
-                    skipped += 1
-                    continue
-                if manifest:
+                    expires_at = manifest.expires_at or 0.0
+                    if not fix or expires_at - current >= renew_margin_seconds:
+                        detail["state"] = "fresh"
+                        source_details.append(detail)
+                        skipped += 1
+                        continue
+                    renewing = True
+                    detail["state"] = "renewing"
+                elif manifest:
                     stale += 1
                     detail["state"] = "stale"
                 else:
@@ -301,10 +318,11 @@ def run_documentation_preflight(
                             ),
                             "fresh_until": manifest_record.expires_at,
                             "verified": True,
-                            "state": "repaired",
+                            "state": "renewed" if renewing else "repaired",
                         }
                     )
                     ingested += 1
+                    renewed += int(renewing)
                 except Exception as exc:
                     unverifiable += 1
                     detail["state"] = "unverifiable"
@@ -346,6 +364,7 @@ def run_documentation_preflight(
             duplicate_projections=duplicate_projections,
             repaired=bool(fix and ingested),
             timed_out=timed_out,
+            renewed=renewed,
         )
     finally:
         plane.close()

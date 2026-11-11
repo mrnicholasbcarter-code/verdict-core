@@ -658,3 +658,107 @@ def test_preflight_without_removed_roots_never_fetches_network(tmp_path, monkeyp
     assert report.passed
     assert report.sources == 1
     assert report.ingested == 1
+
+
+# --- renewal margin: --fix keeps the manifest from ever reaching its expiry ------------------
+
+_HOUR = 3_600
+_TTL = 24 * _HOUR
+
+
+def _one_doc(tmp_path: Path) -> tuple[DocumentationSource, Path]:
+    docs = tmp_path / "docs" / "adr"
+    docs.mkdir(parents=True)
+    (docs / "ADR-001.md").write_text(
+        "# Decision\n\nUse the local memory plane.\n", encoding="utf-8"
+    )
+    return _source(tmp_path), tmp_path / "memory.db"
+
+
+def _expires_at(db: Path) -> float:
+    with MemoryPlane(db) as plane:
+        manifest = plane.history(
+            "documentation-manifest", "fixture:docs/adr/ADR-001.md", scope="shared"
+        )[-1]
+        assert manifest.expires_at is not None
+        return float(manifest.expires_at)
+
+
+def test_fix_leaves_a_document_with_more_than_the_margin_untouched(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=0).passed
+    before = _expires_at(db)
+
+    # 11 h old: 13 h left, outside the 12 h margin.
+    report = run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=11 * _HOUR)
+
+    assert report.passed and report.ingested == 0 and report.renewed == 0
+    assert report.skipped_fresh == 1
+    assert _expires_at(db) == before
+
+
+def test_fix_renews_a_fresh_document_inside_the_margin(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=0).passed
+
+    # 13 h old: 11 h left, inside the 12 h margin but not expired.
+    now = 13 * _HOUR
+    report = run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=now)
+
+    assert report.passed and report.renewed == 1 and report.ingested == 1
+    assert report.stale == 0 and report.missing == 0
+    assert report.inventory_details["fixture"][0]["state"] == "renewed"
+    assert _expires_at(db) == now + _TTL
+
+
+def test_fix_renews_an_expired_document(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=0).passed
+
+    now = _TTL + _HOUR
+    report = run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=now)
+
+    assert report.passed and report.stale == 1 and report.renewed == 0 and report.ingested == 1
+    assert _expires_at(db) == now + _TTL
+
+
+def test_read_only_check_ignores_the_margin_and_stays_strict(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=0).passed
+    before = _expires_at(db)
+
+    # Inside the margin but unexpired: doctor (fix=False) must still pass, and write nothing.
+    inside = run_documentation_preflight(
+        sources=[source], memory_path=db, fix=False, now=13 * _HOUR
+    )
+    assert inside.passed and inside.renewed == 0 and _expires_at(db) == before
+
+    # Expired: doctor must fail. The margin never relaxes the check.
+    expired = run_documentation_preflight(
+        sources=[source], memory_path=db, fix=False, now=_TTL + _HOUR
+    )
+    assert not expired.passed and expired.stale == 1
+
+
+def test_missing_document_is_still_red_in_doctor_check(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+
+    report = run_documentation_preflight(sources=[source], memory_path=db, fix=False, now=0)
+
+    assert not report.passed and report.missing == 1 and report.renewed == 0
+    assert report.state == "missing"
+
+
+def test_margin_is_configurable_and_zero_disables_renewal(tmp_path: Path) -> None:
+    source, db = _one_doc(tmp_path)
+    assert run_documentation_preflight(sources=[source], memory_path=db, fix=True, now=0).passed
+
+    off = run_documentation_preflight(
+        sources=[source], memory_path=db, fix=True, now=13 * _HOUR, renew_margin_seconds=0
+    )
+    assert off.renewed == 0 and off.ingested == 0
+
+    wide = run_documentation_preflight(
+        sources=[source], memory_path=db, fix=True, now=13 * _HOUR, renew_margin_seconds=20 * _HOUR
+    )
+    assert wide.renewed == 1

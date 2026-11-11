@@ -35,6 +35,7 @@ HOST_IDS = [
     "host.acceptance-timer",
     "host.identify-timers",
     "host.ref-docs-timer",
+    "host.docs-refresh-timer",
     "host.serve",
     "host.prime-registry",
 ]
@@ -291,6 +292,8 @@ def test_apply_with_consent_installs_every_prerequisite_through_the_existing_ins
         "verdict-identify-screen.timer",
         "verdict-ref-docs.service",
         "verdict-ref-docs.timer",
+        "verdict-docs-refresh.service",
+        "verdict-docs-refresh.timer",
         "verdict-serve.service",
     ):
         assert (host.unit_dir / unit).is_file(), unit
@@ -306,6 +309,7 @@ def test_apply_with_consent_installs_every_prerequisite_through_the_existing_ins
         "verdict-identify.timer",
         "verdict-identify-screen.timer",
         "verdict-ref-docs.timer",
+        "verdict-docs-refresh.timer",
         "verdict-serve.service",
     } <= enabled
     env_file = host.home / ".config" / "verdict" / "serve.env"
@@ -446,6 +450,28 @@ def test_ref_docs_timer_is_planned_until_installed_and_active(host: FakeHost) ->
     ]
     assert action.reason == "verdict-ref-docs.timer is missing"
     assert action.undo == "verdict memory ref-docs install-service --uninstall"
+
+
+def test_docs_refresh_timer_is_planned_until_installed_and_active(host: FakeHost) -> None:
+    def planned() -> list[str]:
+        return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
+
+    assert "host.docs-refresh-timer" in planned()
+    report = host.apply(allowlist=["host.docs-refresh-timer"], non_interactive=True)
+    result = _results(report)["bootstrap:host:docs-refresh-timer"]
+    assert result["status"] == "applied" and "verdict-docs-refresh.timer" in result["note"]
+    assert ["systemctl", "--user", "enable", "--now", "verdict-docs-refresh.timer"] in (
+        host.systemctl_calls
+    )
+    assert "host.docs-refresh-timer" not in planned()
+    host.active.discard("verdict-docs-refresh.timer")
+    [action] = [
+        a
+        for a in setup_host.plan_host_actions(host.env)
+        if a.provider_id == "host.docs-refresh-timer"
+    ]
+    assert action.reason == "verdict-docs-refresh.timer is missing"
+    assert action.undo == "verdict memory docs --install-service --uninstall"
 
 
 # --- CLI wiring ------------------------------------------------------------------------

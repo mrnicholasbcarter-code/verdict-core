@@ -1346,6 +1346,7 @@ def _register_builtins() -> None:
         _action_mcp_init,
         _action_mcp_status,
         _action_memory_docs,
+        _action_memory_docs_install_service,
         _action_memory_export,
         _action_memory_graph,
         _action_memory_import,
@@ -1856,6 +1857,16 @@ def _register_builtins() -> None:
                 "Memory",
             ),
             _action_memory_ref_docs_install_service,
+        ),
+        (
+            ActionSpec(
+                "memory.docs.install-service",
+                "memory",
+                "mutation",
+                "Install the six-hourly documentation refresh timer (--dry-run shows it)",
+                "Memory",
+            ),
+            _action_memory_docs_install_service,
         ),
         # mcp family (per subcommand)
         (

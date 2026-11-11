@@ -283,6 +283,27 @@ def test_ref_docs_timer_row_names_its_repair(state: str, result: str, repair: st
     assert repair_command(row["detail"]) == repair
 
 
+@pytest.mark.parametrize(
+    ("state", "result", "repair"),
+    [
+        ("missing", "unknown", "verdict setup --apply --allow host.docs-refresh-timer"),
+        ("inactive", "success", "systemctl --user enable --now verdict-docs-refresh.timer"),
+        ("failed", "failed", "verdict memory docs --fix"),
+        ("active", "failed", "verdict memory docs --fix"),
+    ],
+)
+def test_docs_refresh_timer_row_names_its_repair(state: str, result: str, repair: str) -> None:
+    row = dd._docs_refresh_timer_row(lambda unit: {"state": state, "result": result})
+    assert row["status"] == "failed"
+    assert f"verdict-docs-refresh.timer is {state}; last result {result}" in row["detail"]
+    assert repair_command(row["detail"]) == repair
+
+
+def test_docs_refresh_timer_row_is_ok_when_active_and_last_run_succeeded() -> None:
+    row = dd._docs_refresh_timer_row(lambda unit: {"state": "active", "result": "success"})
+    assert row["status"] == "ok" and row["label"] == "Documentation refresh timer"
+
+
 @pytest.mark.usefixtures("_isolated")
 def test_ref_docs_rows_show_each_project_tag_and_last_sync() -> None:
     def timer_state(unit: str) -> dict[str, object]:
