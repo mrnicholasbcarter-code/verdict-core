@@ -1,0 +1,14 @@
+bod416-keyfile-route at 2026-11-06T03:07:25Z
+installed_commit=124a37e6762df32eceee72ea2e6e651870aaaa6c
+credential_store_present=no
+key_file_present=yes
+catalog_cache_before=no
+command: env -i PATH=... HOME=<tmp> XDG_CONFIG_HOME=<tmp>/.config VERDICT_HOME=<tmp>/state verdict route --terse "Write a Python function that returns the sum of two integers."
+key_env_vars_in_child=0
+route_stdout=nvidia/google/gemma-4-31b-it
+route_stderr_bytes=0
+credential_env_missing_count=0
+catalog_cache_after_entries=1
+gateway=http://127.0.0.1:20128
+route_exit=0
+RESULT: routed with the gateway key from the key file only

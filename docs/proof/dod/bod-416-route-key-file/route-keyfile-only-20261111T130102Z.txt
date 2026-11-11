@@ -1,0 +1,15 @@
+bod416-keyfile-route at 2026-11-11T13:01:03Z
+installed_commit=dbfbb00d6e294c80b4bc0deef6d8e809abf7cf36
+installed_tree_clean=yes
+credential_store_present=no
+key_file_present=yes
+catalog_cache_before=no
+command: env -i PATH=... HOME=<tmp> XDG_CONFIG_HOME=<tmp>/.config VERDICT_HOME=<tmp>/state verdict route --terse "Write a Python function that returns the sum of two integers."
+key_env_vars_in_child=0
+route_stdout=bzl/deepseek/deepseek-v4-flash-0731free:free
+route_stderr_bytes=662
+credential_env_missing_count=0
+catalog_cache_after_entries=1
+gateway=http://127.0.0.1:20128
+route_exit=0
+RESULT: routed with the gateway key from the key file only
