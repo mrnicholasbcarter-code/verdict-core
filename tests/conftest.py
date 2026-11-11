@@ -246,6 +246,7 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     from verdict import (
         acceptance_service,
         census_passports_service,
+        docs_refresh_service,
         identify_service,
         metadata_service,
         prove_at_rest_service,
@@ -255,6 +256,7 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     for installer in (
         acceptance_service.manage_service,
         census_passports_service.manage_census_service,
+        docs_refresh_service.manage_service,
         identify_service.manage_service,
         metadata_service.manage_service,
         prove_at_rest_service.manage_service,

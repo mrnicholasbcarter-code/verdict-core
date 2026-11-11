@@ -268,6 +268,15 @@ def register(subparsers: Any) -> None:
     docs_p.add_argument("--repo-root", default=str(Path.cwd()), help="Repository root")
     docs_p.add_argument("--db-path", default=None, help="Shared memory database path")
     docs_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    docs_p.add_argument(
+        "--install-service",
+        action="store_true",
+        help="Install the six-hourly documentation refresh timer (see --dry-run, --uninstall)",
+    )
+    docs_p.add_argument("--dry-run", action="store_true", help="With --install-service: plan only")
+    docs_p.add_argument(
+        "--uninstall", action="store_true", help="With --install-service: remove the units"
+    )
 
     ref_p = memory_sub.add_parser(
         "ref-docs", help="Upstream reference docs in ai-memory, synced to the installed version"

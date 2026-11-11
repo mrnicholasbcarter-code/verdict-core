@@ -1231,6 +1231,16 @@ def _action_memory_ref_docs_install_service(**kwargs: Any) -> ActionResult:
     return ActionResult(data=data)
 
 
+def _action_memory_docs_install_service(**kwargs: Any) -> ActionResult:
+    """Render (dry-run) or install/remove the six-hourly documentation refresh timer."""
+    from verdict.docs_refresh_service import manage_service
+
+    data = manage_service(
+        dry_run=bool(kwargs.get("dry_run", False)), uninstall=bool(kwargs.get("uninstall", False))
+    )
+    return ActionResult(data=data)
+
+
 # ---------------------------------------------------------------------------
 # Receipt family (show is already registered)
 # ---------------------------------------------------------------------------

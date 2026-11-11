@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Ticket 1 (harness-agnostic memory) in progress. N02 retest queued behind it.
+Ticket 1 (harness-agnostic memory) in progress. Done: every harness writes to one ai-memory project (`default/verdict`), and Hermes gets per-turn recall. Open: operator recall eval at hit@5 0.85 against the 0.90 bar (BOD-348 N51). N02 retest queued behind it.
 
 ## Decisions
 

@@ -2738,11 +2738,22 @@ def cmd_memory(args: Any) -> None:
     if sub == "ref-docs":
         _cmd_memory_ref_docs(args)
         return
-    if not (sub in {"docs", "masterdocs"} and getattr(args, "json", False)):
+    if not (
+        (sub in {"docs", "masterdocs"} and getattr(args, "json", False))
+        or (sub == "docs" and getattr(args, "install_service", False))
+    ):
         from verdict import present
 
         present.header(f"Memory / {sub or 'help'}")
 
+    if sub == "docs" and getattr(args, "install_service", False):
+        result = run_action(
+            "memory.docs.install-service", {"dry_run": args.dry_run, "uninstall": args.uninstall}
+        )
+        print(json.dumps(result.data, indent=2))
+        if not result.ok:
+            raise SystemExit(result.exit_code or 1)
+        return
     if sub == "docs":
         result = run_action(
             "memory.docs",
