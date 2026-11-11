@@ -2,9 +2,9 @@
 
 ### Requirement: A reply cut off by the liveness token limit is alive and flagged
 The 1-token chat liveness probe SHALL count a reply as alive only when it is an HTTP 200 chat
-completion with no truthy top-level `error`, exactly one choice whose `finish_reason` is `length`,
+completion whose top-level `error` is absent or null, exactly one choice whose `finish_reason` is `length`,
 an assistant message whose `content` is present and null, empty or whitespace-only and which has
-no truthy `refusal`, `tool_calls` or `function_call`, and whose served identity verifies as the
+`refusal`, `tool_calls` and `function_call` each absent or null, and whose served identity verifies as the
 requested route with no proof-voiding anomaly. It SHALL flag the reply as `empty_content`, and as
 `zero_output_tokens` when usage reports 0 completion tokens.
 

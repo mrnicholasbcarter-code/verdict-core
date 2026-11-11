@@ -741,11 +741,12 @@ def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str
 
     Alive only when ALL of these hold; anything else stays ``malformed_response``:
 
-    * the body is an object with no truthy top-level ``error``;
+    * the body is an object whose top-level ``error`` is absent or null;
     * there is exactly one choice, and its ``finish_reason`` is ``length``;
     * the message is an assistant message whose ``content`` key is present and is null, an
-      empty string or whitespace only, with no truthy ``refusal``, ``tool_calls`` or
-      ``function_call``;
+      empty string or whitespace only, and ``refusal``, ``tool_calls`` and ``function_call``
+      are each absent or null (any other value, even an empty list, string, 0 or false, is
+      rejected; the captured ``beam-free`` body carries ``refusal: null``);
     * the gateway's served identity verifies as the requested route.
 
     ``stop`` is deliberately not accepted: a reply that stopped on its own with no text is not a
@@ -753,7 +754,7 @@ def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str
     """
     from verdict.served_identity import check_served, served_identity_from_headers
 
-    if not isinstance(payload, Mapping) or payload.get("error"):
+    if not isinstance(payload, Mapping) or payload.get("error") is not None:
         return None
     choices = payload.get("choices")
     if (
@@ -773,7 +774,7 @@ def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str
     content = message["content"]
     if content is not None and not (isinstance(content, str) and not content.strip()):
         return None
-    if any(message.get(key) for key in ("refusal", "tool_calls", "function_call")):
+    if any(message.get(key) is not None for key in ("refusal", "tool_calls", "function_call")):
         return None
     if check_served(requested, served_identity_from_headers(headers)).status != "verified":
         return None

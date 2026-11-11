@@ -388,12 +388,77 @@ _ID = _headers("groq", "openai/gpt-oss-20b")
         # non-string content shapes
         {"choices": [{"message": {"role": "assistant", "content": []}, "finish_reason": "length"}]},
         {"choices": [{"message": {"role": "assistant", "content": 0}, "finish_reason": "length"}]},
-        # null error key is still an error key only when truthy; a populated one is rejected
+        # a populated error is rejected
         {
             "choices": [
                 {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
             ],
             "error": "boom",
+        },
+        # review 2: present-but-falsy values are still present, so still rejected
+        {
+            "error": 0,
+            "choices": [
+                {"message": {"role": "assistant", "content": None}, "finish_reason": "length"}
+            ],
+        },
+        {
+            "error": False,
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
+            ],
+        },
+        {
+            "error": "",
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
+            ],
+        },
+        {
+            "error": {},
+            "choices": [
+                {"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}
+            ],
+        },
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": None, "tool_calls": []},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "", "refusal": ""},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": None, "function_call": {}},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "", "refusal": False},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": None, "tool_calls": 0},
+                    "finish_reason": "length",
+                }
+            ]
         },
     ],
     ids=[
@@ -409,6 +474,15 @@ _ID = _headers("groq", "openai/gpt-oss-20b")
         "list-content",
         "numeric-content",
         "error-string",
+        "error-zero",
+        "error-false",
+        "error-empty-string",
+        "error-empty-object",
+        "tool-calls-empty-list",
+        "refusal-empty-string",
+        "function-call-empty-object",
+        "refusal-false",
+        "tool-calls-zero",
     ],
 )
 def test_reply_shapes_that_are_not_a_truncated_empty_completion_stay_malformed(
