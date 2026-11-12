@@ -96,7 +96,7 @@ class SSETerminalParser:
         max_buffer: int = DEFAULT_MAX_PENDING_EVENT_BYTES,
         max_events: int = DEFAULT_MAX_EVENTS,
     ) -> None:
-        if surface not in {"chat", "responses"}:
+        if surface not in {"chat", "responses", "messages"}:
             raise ValueError(f"unsupported relay surface: {surface}")
         self._surface = surface
         self._max_bytes = max_bytes
@@ -113,6 +113,8 @@ class SSETerminalParser:
         self._usage: dict[str, Any] | None = None
         self._models: list[str] = []
         self._responses_terminal: str | None = None
+        self._messages_stop = False
+        self._content_blocks = 0
         self._outcome: StreamOutcome | None = None
 
     @property
@@ -131,6 +133,8 @@ class SSETerminalParser:
 
         if self._surface == "chat":
             return self._done
+        if self._surface == "messages":
+            return self._messages_stop
         return self._responses_terminal is not None
 
     def feed_chunk(self, chunk: bytes) -> None:
@@ -169,6 +173,17 @@ class SSETerminalParser:
             state = StreamState.SUCCESS if self._done else StreamState.ABRUPT_EOF
             detail = None if self._done else "stream ended without a terminal event"
             terminal_event = "chat_done" if self._done else None
+        elif self._surface == "messages":
+            if self._messages_stop and self._content_blocks:
+                state = StreamState.SUCCESS
+                detail = None
+            elif self._messages_stop:
+                state = StreamState.INCOMPLETE
+                detail = "message_stop arrived without a content block"
+            else:
+                state = StreamState.ABRUPT_EOF
+                detail = "stream ended without a terminal event"
+            terminal_event = "message_stop" if self._messages_stop else None
         else:
             if self._responses_terminal == "response.completed":
                 state = StreamState.SUCCESS
@@ -231,7 +246,7 @@ class SSETerminalParser:
         self._events += 1
         if self._events > self._max_events:
             self._fail("stream exceeded its event limit")
-        if self._done or self._responses_terminal is not None:
+        if self._done or self._responses_terminal is not None or self._messages_stop:
             self._fail("stream emitted data after its terminal event")
         if self._surface == "chat" and data == "[DONE]":
             self._done = True
@@ -252,6 +267,9 @@ class SSETerminalParser:
                 if isinstance(usage, dict):
                     self._usage = usage
             return
+        if self._surface == "messages":
+            self._finish_messages_event(parsed)
+            return
         model = parsed.get("model")
         if isinstance(model, str) and model.strip():
             self._models.append(model)
@@ -263,6 +281,32 @@ class SSETerminalParser:
             for choice in choices:
                 if isinstance(choice, dict) and choice.get("finish_reason") is not None:
                     self._finish_reasons.append(str(choice["finish_reason"]))
+
+    def _finish_messages_event(self, parsed: dict[str, Any]) -> None:
+        event_type = parsed.get("type")
+        if event_type == "error":
+            self._fail("messages stream emitted an error event")
+        if event_type == "ping":
+            return
+        message = parsed.get("message")
+        if isinstance(message, dict):
+            model = message.get("model")
+            if isinstance(model, str) and model.strip():
+                self._models.append(model)
+        usage = parsed.get("usage")
+        if isinstance(usage, dict):
+            self._usage = usage
+        if event_type == "content_block_stop":
+            self._content_blocks += 1
+            return
+        if event_type == "message_delta":
+            delta = parsed.get("delta")
+            reason = delta.get("stop_reason") if isinstance(delta, dict) else None
+            if isinstance(reason, str):
+                self._finish_reasons.append(reason)
+            return
+        if event_type == "message_stop":
+            self._messages_stop = True
 
     def _fail(self, message: str) -> NoReturn:
         if self._outcome is None:

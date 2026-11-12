@@ -1033,6 +1033,7 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
 
     The OmniRoute webhook receiver authenticates each delivery by its HMAC
     signature instead, because OmniRoute cannot send Verdict's bearer token.
+    ``POST /v1/messages`` also accepts the same server token as ``x-api-key``.
     """
     if request.url.path in {"/health", OMNIROUTE_WEBHOOK_PATH}:
         return cast(Response, await call_next(request))
@@ -1047,23 +1048,44 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
         except ValueError:
             _is_loopback = False
         if not _is_loopback:
-            return _proxy_error(403, "anonymous mode is loopback-only")
+            return _proxy_error(
+                403, "anonymous mode is loopback-only", surface=_auth_surface(request)
+            )
         return cast(Response, await call_next(request))
     if not token:
-        return _proxy_error(503, "server authentication is not configured")
+        return _proxy_error(
+            503, "server authentication is not configured", surface=_auth_surface(request)
+        )
     authorization = request.headers.get("authorization", "")
     scheme, _, supplied = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not supplied:
+    api_key = request.headers.get("x-api-key", "") if request.url.path == "/v1/messages" else ""
+    bearer_present = scheme.lower() == "bearer" and bool(supplied)
+    if api_key and bearer_present and not bearer_matches(api_key, supplied):
+        return _proxy_error(403, "authentication failed", surface="messages")
+    if api_key:
+        if bearer_matches(api_key, token):
+            return cast(Response, await call_next(request))
+        return _proxy_error(403, "authentication failed", surface="messages")
+    if not bearer_present:
         return JSONResponse(
             status_code=401,
-            content={
-                "error": {"message": "authentication required", "type": "authentication_error"}
-            },
+            content=_auth_required_body(request),
             headers={"www-authenticate": "Bearer"},
         )
     if not bearer_matches(supplied, token):
-        return _proxy_error(403, "authentication failed")
+        return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
     return cast(Response, await call_next(request))
+
+
+def _auth_surface(request: Request) -> str | None:
+    return "messages" if request.url.path == "/v1/messages" else None
+
+
+def _auth_required_body(request: Request) -> dict[str, Any]:
+    error = {"message": "authentication required", "type": "authentication_error"}
+    if request.url.path == "/v1/messages":
+        return {"type": "error", "error": error}
+    return {"error": error}
 
 
 @app.middleware("http")
@@ -1510,8 +1532,19 @@ def _proxy_error(
     *,
     extra: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    surface: str | None = None,
 ) -> JSONResponse:
-    payload: dict[str, Any] = {"error": {"message": message, "type": "invalid_request_error"}}
+    error_type = "invalid_request_error"
+    if status_code in {401, 403}:
+        error_type = "authentication_error"
+    elif status_code == 413:
+        error_type = "request_too_large"
+    elif status_code >= 500:
+        error_type = "api_error"
+    error: dict[str, Any] = {"message": message, "type": error_type}
+    payload: dict[str, Any] = (
+        {"type": "error", "error": error} if surface == "messages" else {"error": error}
+    )
     if extra:
         payload.update(extra)
     return JSONResponse(status_code=status_code, content=payload, headers=headers)
@@ -1995,29 +2028,37 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if content_length is not None:
         try:
             if int(content_length) > max_bytes:
-                return _proxy_error(413, "request body exceeds configured size limit")
+                return _proxy_error(
+                    413, "request body exceeds configured size limit", surface=surface
+                )
         except ValueError:
-            return _proxy_error(400, "content-length must be an integer")
+            return _proxy_error(400, "content-length must be an integer", surface=surface)
     body_parts: list[bytes] = []
     body_size = 0
     async for chunk in request.stream():
         body_size += len(chunk)
         if body_size > max_bytes:
-            return _proxy_error(413, "request body exceeds configured size limit")
+            return _proxy_error(413, "request body exceeds configured size limit", surface=surface)
         body_parts.append(chunk)
     body = b"".join(body_parts)
     if len(body) > max_bytes:
-        return _proxy_error(413, "request body exceeds configured size limit")
+        return _proxy_error(413, "request body exceeds configured size limit", surface=surface)
     try:
         payload = json.loads(body)
     except (TypeError, ValueError, json.JSONDecodeError):
-        return _proxy_error(400, "request body must be valid JSON")
+        return _proxy_error(400, "request body must be valid JSON", surface=surface)
     if not isinstance(payload, dict):
-        return _proxy_error(400, "request body must be a JSON object")
+        return _proxy_error(400, "request body must be a JSON object", surface=surface)
 
     task = _task_text(payload)
     protocol = protocol_for_surface(surface)
-    event_prefix = "chat_completion" if surface == "chat" else "responses"
+    event_prefix = (
+        "chat_completion"
+        if surface == "chat"
+        else "responses"
+        if surface == "responses"
+        else "messages"
+    )
     features = request_features(payload)
     correlation_id = request.headers.get("x-verdict-correlation-id")
     if not correlation_id and isinstance(payload.get("correlation_id"), str):
@@ -2031,6 +2072,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     try:
         authority_context = _authority_context(payload, task=task)
         authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
+        authority_context["_relay_protocol"] = protocol
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -2041,7 +2083,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         from verdict.execution_path import ExecutionPathError
 
         if isinstance(exc, ExecutionPathError):
-            return _proxy_error(400, str(exc))
+            return _proxy_error(400, str(exc), surface=surface)
         raise
     if client_request_id is None and decision.request_id:
         # An intelligence that mints its own ids keeps them; precedence stays
@@ -2060,12 +2102,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         try:
             relay_admitted = relay_admission_provider()
         except Exception as exc:
-            return _proxy_error(503, f"live admission unavailable: {type(exc).__name__}")
+            return _proxy_error(
+                503, f"live admission unavailable: {type(exc).__name__}", surface=surface
+            )
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         if "free_supply_unknown" in decision.safety_flags:
-            return _proxy_error(503, "free supply unknown; higher-tier fallback denied")
-        return _proxy_error(503, "no executable route was selected")
+            return _proxy_error(
+                503, "free supply unknown; higher-tier fallback denied", surface=surface
+            )
+        return _proxy_error(503, "no executable route was selected", surface=surface)
     attempted_routes = [item.route.to_dict() for item in attempts]
     route_evidence, evidence_key = _start_evidence(
         decision,
@@ -2095,6 +2141,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             decision.reason,
             extra={"decision": _safe_decision_dict(decision)},
             headers=_evidence_headers(evidence),
+            surface=surface,
         )
 
     if decision.protected and is_opaque_alias(attempts[0].model):
@@ -2113,6 +2160,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             503,
             "protected execution requires an attested actual route",
             headers=_evidence_headers(evidence),
+            surface=surface,
         )
     started_at = monotonic()
     result: BufferedUpstreamResponse | StreamedUpstreamResponse | None = None
@@ -2276,6 +2324,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             model=attempt.model,
             route_id=proof.route_id,
             profile_digest=relay_profile_digest,
+            protocol=protocol if surface == "messages" else None,
         )
         now = datetime.now(timezone.utc)
         attempt_id = _dispatch_attempt_id()
@@ -2341,6 +2390,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         try:
             if surface == "responses":
                 result = await proxy_instance.responses(forwarded, idempotency_key=request_key)
+            elif surface == "messages":
+                result = await proxy_instance.messages(forwarded, idempotency_key=request_key)
             else:
                 result = await proxy_instance.chat(forwarded, idempotency_key=request_key)
             validated_stream = None
@@ -2538,7 +2589,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
 
     if result is None:
         if dispatch_denial is not None and not attempts_used:
-            return _proxy_error(503, dispatch_denial)
+            return _proxy_error(503, dispatch_denial, surface=surface)
         evidence = _finish_evidence(
             route_evidence,
             build_outcome_event(
@@ -2570,6 +2621,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 )
             },
             headers=_evidence_headers(evidence),
+            surface=surface,
         )
 
     budget_exhausted = (
@@ -2752,6 +2804,12 @@ async def chat_completions(request: Request) -> Response:
 async def responses(request: Request) -> Response:
     """Route and transparently forward an OpenAI Responses request."""
     return await _relay_completion(request, surface="responses")
+
+
+@app.post("/v1/messages")
+async def messages(request: Request) -> Response:
+    """Route and transparently forward an Anthropic Messages request."""
+    return await _relay_completion(request, surface="messages")
 
 
 def _start_evidence(
