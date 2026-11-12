@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from verdict.commands.parsers_autodev import register
 from verdict.metadata_service import SERVICE, TIMER, manage_service, timer_state
@@ -77,3 +80,112 @@ def test_metadata_timer_state_exposes_failure_and_trigger() -> None:
     assert state["result"] == "exit-code"
     assert state["failed"] is True
     assert state["state"] == "failed"
+
+
+def test_metadata_timer_install_cadence_source_failure_and_doctor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cadence render, idempotent install, source-failure doctor, and recovery.
+
+    Covers acceptance A24 #1-#2: dry-run and declined setup make no calls;
+    one idempotent install uses the injected runner and a temporary unit dir;
+    the rendered unit pins the 6h cadence and boot trigger; a
+    never-completed/failed timer is observable by doctor; a failed source is
+    reported (never fabricated) and later success recovers.
+    """
+    from verdict import doctor_diagnostics as dd
+    from verdict.metadata import METADATA_SCHEMA_VERSION, SourceStatus, save_store
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.metadata_service import SERVICE, TIMER, manage_service
+
+    unit_dir = tmp_path / "systemd" / "user"
+    calls: list[list[str]] = []
+
+    # Dry-run: no systemd/state/provider calls, nothing written.
+    preview = manage_service(unit_dir=unit_dir, dry_run=True, run=calls.append)
+    assert calls == []
+    assert not unit_dir.exists()
+    assert preview["changed"] is True
+    assert "OnBootSec=5m" in preview["files"][TIMER]
+    assert "OnUnitInactiveSec=6h" in preview["files"][TIMER]
+    assert "metadata refresh --include-p1" in preview["files"][SERVICE]
+
+    # One idempotent install via the injected runner into the temp unit dir.
+    installed = manage_service(unit_dir=unit_dir, run=calls.append)
+    assert installed["changed"] is True
+    assert (unit_dir / TIMER).read_text() == preview["files"][TIMER]
+    assert calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", TIMER],
+        ["systemctl", "--user", "try-restart", SERVICE],
+    ]
+    calls.clear()
+    assert manage_service(unit_dir=unit_dir, run=calls.append)["changed"] is False
+    assert calls == []
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
+    fetched_at = "2026-10-16T11:55:00Z"
+    now = datetime(2026, 10, 16, 12, 0, 0, tzinfo=timezone.utc)
+
+    def save_snapshot(sources: dict[str, SourceStatus]) -> None:
+        save_store(
+            MetadataSnapshot(
+                schema_version=METADATA_SCHEMA_VERSION,
+                refreshed_at=fetched_at,
+                sources=sources,
+                records=(),
+            )
+        )
+
+    ok_sources = {
+        name: SourceStatus(source=name, status="ok", fetched_at=fetched_at, record_count=1)
+        for name in ("models.dev", "models.dev.models", "litellm")
+    }
+    save_snapshot(ok_sources)
+
+    states: dict[str, dict[str, object]] = {
+        "metadata": {
+            "installed": True,
+            "failed": True,
+            "active": False,
+            "state": "failed",
+            "last_trigger": None,
+            "result": "exit-code",
+        }
+    }
+
+    def timer_state(unit: str) -> dict[str, object]:
+        return states["metadata"]
+
+    # Never-completed / failed timer is observable by doctor.
+    failed = dd.installed_service_rows(now=now, timer_state=timer_state)
+    failed_row = next(row for row in failed if row["label"] == "Metadata refresh timer")
+    assert failed_row["status"] == "failed"
+    assert "never completed" in failed_row["detail"]
+
+    # Source failure: one public source errors; doctor reports it (no fabricated
+    # rating) and the timer still needs a refresh repair.
+    states["metadata"] = {
+        "installed": True,
+        "failed": False,
+        "active": True,
+        "state": "active",
+        "last_trigger": "Fri 2026-10-16 11:55:00 UTC",
+        "last_completion": "Fri 2026-10-16 11:56:00 UTC",
+        "result": "success",
+    }
+    failing_sources = dict(ok_sources)
+    failing_sources["models.dev"] = SourceStatus(
+        source="models.dev", status="error", fetched_at=fetched_at, record_count=0, reason="boom"
+    )
+    save_snapshot(failing_sources)
+    source_failed = dd.installed_service_rows(now=now, timer_state=timer_state)
+    source_row = next(row for row in source_failed if row["label"] == "Metadata refresh timer")
+    assert source_row["status"] == "failed"
+    assert "source models.dev failed" in source_row["detail"]
+
+    # Later success recovers: fresh sources and a completed refresh are ok.
+    save_snapshot(ok_sources)
+    recovered = dd.installed_service_rows(now=now, timer_state=timer_state)
+    recovered_row = next(row for row in recovered if row["label"] == "Metadata refresh timer")
+    assert recovered_row["status"] == "ok"
