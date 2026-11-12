@@ -6,7 +6,7 @@
 - [x] 1.2 Add red-first tests in `tests/test_acceptance.py`; show failing without fix, green after
 - [x] 1.3 Run focused `tests/test_acceptance.py`, `ruff check`, `ruff format --check`, `mypy --strict verdict/acceptance_toolcheck.py`
 - [x] 1.4 Independent cross-family review of the diff (APPROVE, antigravity/gemini-3-flash)
-- [ ] 1.5 Push through vgate; CI exact-head checks green on PR head; squash-merge to main
+- [ ] (post-merge) 1.5 Push through vgate; CI exact-head checks green on PR head; squash-merge to main
 
 ## 2. Live checks
 
