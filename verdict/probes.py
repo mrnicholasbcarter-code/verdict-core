@@ -201,6 +201,7 @@ class ProbeObservation:
     next_probe_at: datetime | None = None
     quarantine_until: datetime | None = None
     response_bytes: int | None = None
+    tool_called: bool = False
 
     def as_runtime_observation(self) -> Any:
         """Convert to the existing structured availability-observation contract."""
@@ -694,6 +695,9 @@ class ProbeRunner:
                 next_probe_at=_datetime_from_mono(state.next_probe_at, observed_at, now_mono),
                 response_bytes=response_bytes,
             )
+        # A 2xx reply is capability evidence only when the assistant actually
+        # made a tool call; a bare text answer proves availability, not tools.
+        called = _assistant_tool_called(body)
         state.consecutive_failures = 0
         state.last_state = "ready"
         state.next_probe_at = now_mono + self.policy.cooldown_seconds
@@ -711,6 +715,7 @@ class ProbeRunner:
             consecutive_failures=0,
             next_probe_at=_datetime_from_mono(state.next_probe_at, observed_at, now_mono),
             response_bytes=response_bytes,
+            tool_called=called,
         )
 
     def _record_failure(
@@ -825,6 +830,26 @@ def _response_anomalies(response: Any) -> tuple[str, ...]:
 
 def _int_or_none(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
+
+
+def _assistant_tool_called(body: Mapping[str, Any]) -> bool:
+    """True when the assistant message actually requested a tool call.
+
+    A bare text completion proves availability, not tool capability.
+    """
+    choices = body.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, Mapping):
+                continue
+            message = choice.get("message")
+            if (
+                isinstance(message, Mapping)
+                and isinstance(message.get("tool_calls"), list)
+                and message["tool_calls"]
+            ):
+                return True
+    return False
 
 
 def _probe_token_count(observation: ProbeObservation) -> int:

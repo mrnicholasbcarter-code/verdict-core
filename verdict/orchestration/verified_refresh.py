@@ -48,13 +48,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from verdict.orchestration.credential_pools import pool_of
+from verdict.orchestration.credential_pools import canonical_route, pool_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_OK,
     CATEGORY_PAYMENT,
     CATEGORY_PERMISSION,
     CATEGORY_RATE_LIMITED,
+    STATE_FRESH,
     BucketReservation,
     HealthCache,
     HealthCacheLockTimeoutError,
@@ -459,6 +460,7 @@ REASON_JOINED_NOT_COVERED = "joined_job_not_covered"
 REASON_PROVIDER_STOP = "provider_scope_stopped"
 REASON_NOT_TESTED = "not_tested"
 REASON_CANCELLED = "cancelled"
+REASON_REUSED_FRESH = "reused_fresh"
 REASON_AUTH_OUTAGE = "auth_outage"  # confirmed gateway-key outage (BOD-338 breaker)
 REASON_PROBE_ERROR = "probe_error"  # the probe itself raised; nothing written
 
@@ -610,6 +612,11 @@ def select_candidates(
     by_id = snapshot.by_id()
     wanted = [by_id[rid] for rid in dict.fromkeys(needed_ids) if rid in by_id]
     candidates = [row for row in wanted if _is_refreshable(row, authorized=authorized)]
+    # One probe per alias family: agy/x and antigravity/x reach one backend
+    # model on one credential, so probing both mints two independent proofs of
+    # the same capability. Keep the highest-priority member per family; effort
+    # variants stay distinct -- a no-think proof never qualifies another effort.
+    candidates = _one_per_alias_family(candidates)
     if explicit:
         # Explicit ids are their own top band; preserve priority then rank
         # inside it but keep all supplied refreshable ids ahead of nothing.
@@ -638,6 +645,20 @@ def select_candidates(
         per_provider[key] = taken + 1
         fair.append(row)
     return fair[: config.max_routes]
+
+
+def _one_per_alias_family(candidates: list[RowInput]) -> list[RowInput]:
+    """Keep one representative per canonical route (alias family).
+
+    Alias prefixes (agy/antigravity, af/api-airforce, ...) reach the same
+    backend model on one credential, so one member's probe covers the family.
+    Effort variants and ``no-think/`` wrappers keep distinct canonical ids and
+    are never collapsed onto each other.
+    """
+    kept: dict[str, RowInput] = {}
+    for row in sorted(candidates, key=lambda r: (_priority(r), _rank_hint(r))):
+        kept.setdefault(canonical_route(row.route_id), row)
+    return list(kept.values())
 
 
 def _round_robin_by_provider(rows: Sequence[RowInput]) -> list[RowInput]:
@@ -784,12 +805,13 @@ def _lanes(row: RowInput) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class _InFlight:
-    """One dispatched probe: its row, bucket reservation, reserved requests, lanes."""
+    """One dispatched probe: its row, bucket reservation, reserved requests, lanes, and observed time."""
 
     row: RowInput
     reservation: BucketReservation
     requests: int
     lanes: frozenset[str]
+    observed_at: datetime
 
 
 class _Scopes:
@@ -987,6 +1009,25 @@ class RefreshCoordinator:
         ):
             return self._from_marker(prior, consumer, OUTCOME_DEBOUNCED, note="debounced")
 
+        # Fresh-evidence reuse is bound to the stable scope: evidence a
+        # different scope produced is never reused (scope isolation), so a
+        # job under another gateway/profile/consent always re-probes. With
+        # a matching scope (or no prior marker), a row whose shared-cache
+        # entry is already fresh is skipped entirely -- zero calls, no wait.
+        reuse_fresh = True
+        if prior is not None:
+            marker_scope = str(prior.get("scope") or "")
+            if marker_scope and marker_scope != snapshot.effective_scope:
+                reuse_fresh = False
+        if (
+            reuse_fresh
+            and wanted
+            and all(
+                self.cache.lookup(row.route_id, self.clock()).state == STATE_FRESH for row in wanted
+            )
+        ):
+            return self._empty(OUTCOME_REUSED_FRESH, consumer, job_id or "fresh", wanted, None)
+
         if lock.acquire():
             try:
                 return self._run_owned_job(
@@ -999,6 +1040,7 @@ class RefreshCoordinator:
                     cancel=cancel,
                     job_id=job_id or self._new_job_id(),
                     scope=snapshot.effective_scope,
+                    reuse_fresh=reuse_fresh,
                 )
             finally:
                 lock.release()
@@ -1028,6 +1070,7 @@ class RefreshCoordinator:
         cancel: Callable[[], bool],
         job_id: str,
         scope: str = "",
+        reuse_fresh: bool = True,
     ) -> RefreshOutcome:
         started = self.monotonic()
         deadline = started + config.wall_seconds
@@ -1137,6 +1180,27 @@ class RefreshCoordinator:
                     return  # an unknown-pool route waits until it can run alone
                 if lanes & busy_lanes():
                     continue  # its pool/provider lane is busy; try the next row
+                # Reuse fresh observed liveness instead of re-checking it: a
+                # sibling producer may have proven this route after the
+                # snapshot was taken, so skip the probe and keep its bucket
+                # token unspent. Only a FRESH entry (healthy and inside the
+                # evidence window) is reused; stale and half-open rows are
+                # still re-probed by this job. Reuse is scope-bound: when a
+                # different stable scope produced the shared evidence (see
+                # refresh_for_consumer), this job re-probes instead of
+                # adopting another scope's proof.
+                if reuse_fresh:
+                    lookup = self.cache.lookup(row.route_id, self.clock())
+                    if lookup.entry is not None and lookup.state == STATE_FRESH:
+                        pending.remove(row)
+                        outcomes[row.route_id] = RouteOutcome(
+                            row.route_id,
+                            row.provider,
+                            False,
+                            False,
+                            refresh_reason=REASON_REUSED_FRESH,
+                        )
+                        continue
                 # Per-provider token bucket: reserve the whole probe up front
                 # and PERSIST the reservation under the shared lock before
                 # dispatch, so a following same-provider route (and the next
@@ -1164,10 +1228,13 @@ class RefreshCoordinator:
                     )
                     continue
                 per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
+                observed_at = self.clock()
                 future = executor.submit(
                     self._probe_one, row, per_call_timeout, deadline=deadline, cancel=probe_cancel
                 )
-                inflight[future] = _InFlight(row, reservation, probe_requests, lanes)
+                inflight[future] = _InFlight(
+                    row, reservation, probe_requests, lanes, observed_at=observed_at
+                )
 
         with ThreadPoolExecutor(max_workers=config.concurrency) as executor:
             while True:
@@ -1280,7 +1347,7 @@ class RefreshCoordinator:
                             admitting = False
                             continue
                         route_out = self._persist_and_classify(
-                            row, outcome, scopes, deadline=deadline
+                            row, outcome, scopes, deadline=deadline, observed_at=job.observed_at
                         )
                     except HealthCacheLockTimeoutError:
                         cap_reason = cap_reason or (
@@ -1441,7 +1508,13 @@ class RefreshCoordinator:
         )
 
     def _persist_and_classify(
-        self, row: RowInput, outcome: FullProbeOutcome, scopes: _Scopes, *, deadline: float
+        self,
+        row: RowInput,
+        outcome: FullProbeOutcome,
+        scopes: _Scopes,
+        *,
+        deadline: float,
+        observed_at: datetime | None = None,
     ) -> RouteOutcome:
         """Serialize cache write + scope bookkeeping; return the row outcome."""
         if outcome.no_write:
@@ -1467,14 +1540,26 @@ class RefreshCoordinator:
 
         result = outcome.result
         assert result is not None  # no_write is False here
-        now = self.clock()
+        now = observed_at if observed_at is not None else self.clock()
         category = result.category
         retry_after = outcome.retry_after_seconds
         # A chat-only liveness probe (consented METERED/UNKNOWN) records a
         # successful chat as a healthy LIVENESS entry (tool_ok stays false),
         # never as a coding-worker proof and never as a negative.
         liveness_success = outcome.liveness and result.chat_ok and category == CATEGORY_OK
-        is_verified = bool(result.healthy and result.tool_ok) and not outcome.liveness
+        # A full probe that succeeds (chat + tool) without echoing the served
+        # model id is also recorded as chat liveness: fresh and healthy, but
+        # no tool-capability proof is minted for an unidentified reply.
+        recorded_as_liveness = liveness_success or (
+            result.chat_ok
+            and result.tool_ok
+            and category == CATEGORY_OK
+            and result.identity != "verified"
+        )
+        is_verified = (
+            bool(result.healthy and result.tool_ok and result.identity == "verified")
+            and not outcome.liveness
+        )
         # Determine scope stop BEFORE the write so a provider block persists even
         # if a sibling later succeeds; the write records the scoped cooldown too.
         # Per-model 403 (explicit model denial) and per-model 429 (per-model
@@ -1486,7 +1571,38 @@ class RefreshCoordinator:
         provider_stop = category in _PROVIDER_STOP_CATEGORIES and not model_scoped
 
         def _mutate(cache: HealthCache) -> None:
+            # A late completion must not overwrite a newer durable observation:
+            # preserve the original observed timestamps and let newer
+            # negatives win. merge_and_save reloaded disk first, so existing
+            # is the authoritative on-disk entry.
+            existing = cache._routes.get(row.route_id)
+            if existing is not None and existing.checked_at >= now:
+                return
             if liveness_success:
+                cache.record_liveness(
+                    row.route_id,
+                    latency_ms=result.latency_ms,
+                    pool=row.pool,
+                    capacity_evidence=row.capacity_evidence,
+                    now=now,
+                    identity=result.identity,
+                )
+            elif result.identity == "verified":
+                # Tool-capability strength is minted only from a strict
+                # served-identity receipt; an unidentified reply is chat
+                # liveness only and never carries tool_ok proof.
+                cache.record(row.route_id, result, now)
+            elif (
+                result.chat_ok
+                and result.tool_ok
+                and result.category == CATEGORY_OK
+                and result.identity != "verified"
+            ):
+                # Fully successful probe (chat + tool) whose gateway never
+                # echoed the served model id: record chat liveness only, no
+                # tool-capability proof for an unidentified reply (rule 4).
+                # Model mismatches and tool failures keep the record() path
+                # so their categories/negatives are preserved.
                 cache.record_liveness(
                     row.route_id,
                     latency_ms=result.latency_ms,
@@ -1545,7 +1661,7 @@ class RefreshCoordinator:
             row.provider,
             probed=True,
             verified=is_verified,
-            alive=liveness_success,
+            alive=recorded_as_liveness,
             category=category,
             http_status=outcome.http_status,
             refresh_reason=None,

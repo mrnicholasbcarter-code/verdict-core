@@ -493,7 +493,9 @@ def test_census_active_candidates_filtered_and_budgeted(tmp_path):
 
     def transport(model, phase, timeout):
         calls.append((model, phase))
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     result = run_census(
         snapshot,
@@ -582,7 +584,9 @@ def test_census_fake_gateway_integration(tmp_path):
     now = datetime.now(timezone.utc)
     result = run_census(
         snapshot,
-        lambda *args: ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True),
+        lambda *args: ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=args[0]
+        ),
         cache=HealthCache(tmp_path / "health.json"),
         passport_store_path=tmp_path / "state.json",
         now=now,
@@ -705,7 +709,9 @@ def test_census_matches_aliased_passive_health(tmp_path):
 
     result = run_census(
         snapshot,
-        lambda *args: ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True),
+        lambda *args: ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=args[0]
+        ),
         cache=HealthCache(tmp_path / "health.json"),
         passport_store_path=tmp_path / "state.json",
         now=now,
@@ -836,7 +842,9 @@ def test_census_six_free_active_routes_and_provider_cooldown(tmp_path):
 
     def probe(model, phase, timeout):
         calls.append((model, phase))
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     report = run_census(
         snapshot,
@@ -904,7 +912,9 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
 
     def transport(model, phase, timeout):
         calls.append((model, phase))
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     ctx = multiprocessing.get_context("fork")
     started = ctx.Event()
@@ -956,7 +966,9 @@ def test_census_probe_loop_is_owned_by_the_shared_coordinator(tmp_path):
 
     def transport2(model, phase, timeout):
         calls2.append((model, phase))
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     run_census(
         big_snapshot,
@@ -1198,7 +1210,9 @@ def test_census_skips_routes_with_unexpired_negative_health(tmp_path):
 
     def probe(model, phase, timeout):
         calls.append((model, phase))
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     cache = HealthCache(tmp_path / "health.json")
     cache.record("bad/model-0", _bad_result(), NOW)
@@ -1249,7 +1263,9 @@ def _ok_transport(calls):
 
     def transport(model, phase, timeout):
         calls.append(model)
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=model
+        )
 
     return transport
 
