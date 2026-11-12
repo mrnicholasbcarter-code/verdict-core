@@ -1427,6 +1427,20 @@ class EligibilityLadder:
             }
             self._persist()
 
+    def effort_model_rows(self) -> dict[str, dict[str, Any]]:
+        """Allowlisted effort facts from inventory already fetched for selection.
+
+        Production callers use this instead of reading private rows. Price,
+        secrets and other inventory fields are not included.
+        """
+        from verdict.orchestration.effort import allowlisted_effort_facts
+
+        return {
+            route_id: allowlisted_effort_facts(row)
+            for route_id, row in self._rows.items()
+            if route_id
+        }
+
     def summary(self) -> dict[str, int]:
         order = list(EligibilityStage)
 

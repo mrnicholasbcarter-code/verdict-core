@@ -761,6 +761,7 @@ async def run_golden_path(
     decision_signal_provider: DecisionSignalProvider | None = None,
     mode: str = "",
     dispatch_authority: DispatchAuthority | None = None,
+    model_rows: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> GoldenRunResult:
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
@@ -1147,6 +1148,7 @@ async def run_golden_path(
         policy=policy,
         inflight=inflight,
         dispatch_authority=dispatch_authority,
+        model_rows=model_rows,
     )
     # Attempts dispatched by an earlier controller life keep their numbers; the
     # next attempt continues after them so the receipt never merges two lives.
