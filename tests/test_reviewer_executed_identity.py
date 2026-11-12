@@ -21,10 +21,7 @@ from tests.test_orch_review import (
     _verdict,
 )
 
-_POSITIVE_COVERAGE = {
-    "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
-    "findings": [],
-}
+_POSITIVE_COVERAGE = {"manifest": {"coverage": {"selected": [{"path": "x.py"}]}}, "findings": []}
 
 
 def _covered(model: object | None = None, *, include_model: bool = True) -> dict[str, object]:
@@ -34,9 +31,7 @@ def _covered(model: object | None = None, *, include_model: bool = True) -> dict
     return {"manifest": manifest, "findings": []}
 
 
-def _interpret_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
-):
+def _interpret_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]):
     """Call ``_interpret`` on the payload as written, with no runner rewrite."""
     monkeypatch.setenv("TEST_OCR_KEY", "k")
     raw = tmp_path / "ocr-raw.json"
@@ -103,7 +98,9 @@ def test_unobserved_identity_reselects_another_independent_reviewer(
     assert result.attempts[0]["scope"] == "route"
     assert "identity_unobserved" in str(result.attempts[0]["detail"])
     assert selector.failed == ["cc/a"]
-    launched = [c["argv"][c["argv"].index("--model") + 1] for c in runner.calls if "--model" in c["argv"]]
+    launched = [
+        c["argv"][c["argv"].index("--model") + 1] for c in runner.calls if "--model" in c["argv"]
+    ]
     assert launched == ["cc/a", "cx/b"]
 
 
@@ -131,11 +128,7 @@ def _independent_events(
     worker_route: str = "kr/claude-sonnet-4",
     worker_executed: str = "kr/claude-sonnet-4",
 ) -> list[dict[str, object]]:
-    review: dict[str, object] = {
-        "status": "PASS",
-        "route_id": reviewer_route,
-        "blocking": 0,
-    }
+    review: dict[str, object] = {"status": "PASS", "route_id": reviewer_route, "blocking": 0}
     if observed is not _MISSING:
         review["observed_model"] = observed
     return [
@@ -148,7 +141,9 @@ def _independent_events(
 def test_claim_missing_observed_model_is_not_observed() -> None:
     from verdict.orchestration.claims import CLAIM_STATUS_NOT_OBSERVED, derive_claims
 
-    claim = next(c for c in derive_claims(_independent_events(), {}) if c.id == "independent_review")
+    claim = next(
+        c for c in derive_claims(_independent_events(), {}) if c.id == "independent_review"
+    )
     assert claim.status == CLAIM_STATUS_NOT_OBSERVED
 
 
@@ -165,7 +160,14 @@ def test_legacy_stream_without_observed_model_key_is_not_observed() -> None:
 def test_claim_blank_and_unusable_observed_model_is_not_observed() -> None:
     from verdict.orchestration.claims import CLAIM_STATUS_NOT_OBSERVED, derive_claims
 
-    for observed in ("", "   ", {"id": "cx/gpt-5.5"}, ["cx/gpt-5.5"], "auto/coding", "omniroute/auto/coding"):
+    for observed in (
+        "",
+        "   ",
+        {"id": "cx/gpt-5.5"},
+        ["cx/gpt-5.5"],
+        "auto/coding",
+        "omniroute/auto/coding",
+    ):
         claim = next(
             c
             for c in derive_claims(_independent_events(observed=observed), {})
@@ -226,10 +228,7 @@ def test_claim_observed_identity_is_checked_not_only_the_selected_route() -> Non
     from verdict.orchestration.claims import CLAIM_STATUS_NOT_OBSERVED, derive_claims
 
     events = _independent_events(reviewer_route="cx/gpt-5.5", observed="cx/gpt-5.5")
-    events.insert(
-        2,
-        _event(80, "review_attempt", {"route_id": "kr/claude-haiku"}, ""),
-    )
+    events.insert(2, _event(80, "review_attempt", {"route_id": "kr/claude-haiku"}, ""))
     claim = next(c for c in derive_claims(events, {}) if c.id == "independent_review")
     assert claim.status == CLAIM_STATUS_NOT_OBSERVED
     assert "claude" in claim.evidence[0].value["shared_families"]
