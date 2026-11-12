@@ -95,6 +95,7 @@ from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     STATE_STALE,
     STATE_UNPROBED,
+    BucketReservation,
     HealthCache,
     HealthCacheError,
     HealthCacheLockTimeoutError,
@@ -1370,13 +1371,20 @@ class Prober:
             if stats.agentic_stopped_reason:
                 return
         pending = pending[: self.agentic_max_routes]
+        # BOD-297: the agentic phase shares the cycle's single request budget
+        # with the chat phase (and the gateway screen). Conversations that
+        # would exceed the remaining requests are deferred, never run over it.
+        remaining_requests = self.max_requests - stats.requests
+        pending = pending[: max(0, remaining_requests // AGENTIC_TURNS)]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
         if pending:
             # Prove the cache is writable before any dispatch, as the chat phase does.
             self._save()
-        running: dict[Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]], AdmittedRoute]
-        running = {}
+        running: dict[
+            Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]],
+            tuple[AdmittedRoute, BucketReservation | None],
+        ] = {}
         busy: Counter[str] = Counter()
         with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
             while pending or running:
@@ -1409,16 +1417,28 @@ class Prober:
                         else:
                             pending.remove(route)
                             continue
-                    # Reserve every turn up front; an empty bucket keeps the
-                    # route pending while other pools' conversations run.
-                    if not self.cache.consume(
-                        route.provider, now, pool=route.pool, amount=AGENTIC_TURNS
-                    ):
+                    # Reserve every turn up front and PERSIST the reservation
+                    # before dispatch, so another process reading the shared
+                    # cache sees the spend (durable reservation, not an
+                    # in-memory consume that a cache reload would drop).
+                    reservation = self.cache.reserve_bucket(
+                        route.provider,
+                        now,
+                        pool=route.pool,
+                        amount=AGENTIC_TURNS,
+                        deadline=deadline,
+                        monotonic=self.monotonic,
+                        sleep=self.sleep,
+                    )
+                    if reservation is None:
                         empty_pools.add(route_pool)
                         continue
                     pending.remove(route)
                     busy[route_pool] += 1
-                    running[pool.submit(self._converse, route.route_id, deadline)] = route
+                    running[pool.submit(self._converse, route.route_id, deadline)] = (
+                        route,
+                        reservation,
+                    )
                 if not running:
                     if not pending or stats.agentic_stopped_reason:
                         break
@@ -1445,11 +1465,21 @@ class Prober:
                         break
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in done:
-                    route = running.pop(future)
+                    route, reservation = running.pop(future)
                     busy[_pool_of(route)] -= 1
                     exchanges, fake_file, finished = future.result()
                     stats.requests += len(exchanges)
                     if stats.auth_outage or not finished or not exchanges:
+                        # The conversation never sent all its reserved turns:
+                        # release the unused tokens back to the shared bucket.
+                        if reservation is not None:
+                            self.cache.release_bucket(
+                                reservation,
+                                AGENTIC_TURNS - len(exchanges),
+                                deadline=None,
+                                monotonic=self.monotonic,
+                                sleep=self.sleep,
+                            )
                         continue
                     self._record_agentic(route, exchanges, fake_file, stats)
                     if stats.auth_outage:

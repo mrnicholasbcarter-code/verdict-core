@@ -13,7 +13,7 @@ from typing import Any
 from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.identify_pools import build_supply, build_task_pools
-from verdict.identify_rank import rank_models
+from verdict.identify_rank import RatedModel, rank_models, rating_key
 from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
 from verdict.metadata.store import MetadataSnapshot, load_store
@@ -31,6 +31,7 @@ from verdict.orchestration.health_cache import (
     agentic_capability,
     default_cache_path,
 )
+from verdict.orchestration.verified_refresh import _JobLock
 from verdict.passive_health import refresh_health_from_traffic
 from verdict.prove_at_rest import (
     DEFAULT_MAX_WALL_SECONDS,
@@ -215,22 +216,57 @@ def screen_models(
     )
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
-    rated.sort(
-        key=lambda rating: _CAPACITY_ORDER.get(
-            CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")), 3
-        )
-    )
+
+    # Strongest task rating first, unknown ratings last: no economic
+    # membership or rank filtering (BOD-297). When the caller selects
+    # capacity classes explicitly, screen those classes in the canonical
+    # consent order instead, strongest rating first within each class.
     cache.reload()
     requested = cache.rescreen_requests()
-    # Hints only reorder free routes; consent, cooldowns and every cap remain.
-    rated.sort(
-        key=lambda rating: (
-            _CAPACITY_ORDER.get(
-                CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")), 3
-            ),
-            rating.route_id not in requested,
+    if capacities:
+        capacity_rank = {c: i for i, c in enumerate(_CAPACITY_ORDER)}
+        rated.sort(
+            key=lambda rating: (
+                capacity_rank.get(
+                    CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")),
+                    len(_CAPACITY_ORDER),
+                ),
+                rating.route_id not in requested,
+                *rating_key(rating),
+                rating.route_id,
+            )
         )
-    )
+    else:
+        # No capacity filter: strongest task rating first, unknown ratings last
+        # (BOD-297). Equal scores prefer the lexicographically later route id so
+        # a canonical route screens before its alias siblings.
+        rated.sort(key=lambda rating: rating.route_id, reverse=True)
+        rated.sort(key=lambda rating: (rating.score is None, -(rating.score or 0.0)))
+
+    # All configured, reachable supply is considered: inventory ids that are
+    # live candidates but carry no traffic proof yet screen with an unknown
+    # rating, last.
+    seen_ids = {row["route_id"] for row in report["available_routes"]}
+    extra_ratings: list[RatedModel] = []
+    for rid in sorted(evidence.inventory_route_ids):
+        if rid in seen_ids:
+            continue
+        live = evidence.live_candidates.get(rid)
+        if live is None or not live.reachable:
+            continue
+        provider = evidence.route_identities.get(rid, (rid.split("/", 1)[0],))[0]
+        extra_ratings.append(
+            RatedModel(
+                route_id=rid,
+                provider=provider,
+                score=None,
+                metric=None,
+                source=None,
+                as_of=None,
+                basis="unknown",
+            )
+        )
+    all_ratings = list(rated) + extra_ratings
     prober = Prober(
         cache=cache,
         routes_loader=lambda: (),
@@ -245,67 +281,112 @@ def screen_models(
     families: dict[tuple[str, str], str] = {}
     rows = []
     checked = passed = requests = 0
-    for rating in rated:
-        route_id = rating.route_id
-        provider = evidence.proven_by_traffic[route_id].provider
-        capacity = evidence.route_capacities.get(route_id, "unknown")
-        if (providers and provider not in providers) or (capacities and capacity not in capacities):
-            continue
-        fallback = canonical_route(route_id).split("/", 1)
-        family = evidence.route_identities.get(route_id, (fallback[0], fallback[-1]))
-        row: dict[str, Any] = {
-            **asdict(rating),
-            "provider": provider,
-            "capacity": capacity,
-            "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
-            "turns_sent": 0,
-            "rescreen_requested": route_id in requested,
-            "latency_ms": None,
+
+    # BOD-297: identify screening is a coordinator consumer. Acquire the
+    # shared lease before sending; another producer's in-flight job wins and
+    # identify sends nothing.
+    lock = _JobLock(cache.path.parent / "verified-refresh.lock")
+    if not lock.acquire():
+        # The lease is held: report every candidate as skipped and send
+        # nothing. Nothing was acquired, so there is nothing to release.
+        stopped_reason = "lock_timeout"
+        for rating in all_ratings:
+            route_id = rating.route_id
+            rows.append(
+                {
+                    **asdict(rating),
+                    "provider": rating.provider,
+                    "capacity": evidence.route_capacities.get(route_id, "unknown"),
+                    "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
+                    "turns_sent": 0,
+                    "rescreen_requested": route_id in requested,
+                    "latency_ms": None,
+                    "result": "skipped_locked",
+                    "rating_unknown_reason": (
+                        "missing_or_stale_task_rating" if rating.basis == "unknown" else None
+                    ),
+                }
+            )
+        return {
+            **report,
+            "mode": "screen",
+            "routes": rows,
+            "routes_checked": 0,
+            "passed": 0,
+            "model_calls": 0,
+            "model_requests_sent": 0,
+            "stopped_reason": stopped_reason,
         }
-        now = clock()
-        cache.reload()
-        lookup = cache.lookup(route_id, now)
-        if family in families:
-            row.update(result="skipped_alias", alias_of=families[family])
-        else:
-            families[family] = route_id
-            # A fresh alias proof avoids repeating the same underlying model.
-            siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
-            if lookup.state == STATE_NEGATIVE:
-                row["result"] = "skipped_negative"
-            elif any(
-                agentic_capability(cache.entry(r), now)["qualified"] for r in [route_id, *siblings]
-            ):
-                row["result"] = "skipped_fresh"
-            elif provider in stopped_providers:
-                row["result"] = "skipped_provider_stopped"
-            elif pool_of(route_id) in _cooled_pools(cache, now):
-                row["result"] = "skipped_cooldown"
-            elif checked >= max_routes or counts[provider] >= max_per_provider:
-                row["result"] = "skipped_cap"
+    try:
+        for rating in all_ratings:
+            route_id = rating.route_id
+            if route_id in evidence.proven_by_traffic:
+                provider = evidence.proven_by_traffic[route_id].provider
             else:
-                row.update(
-                    prober.screen_route(
-                        AdmittedRoute(
-                            route_id,
-                            provider,
-                            capacity,
-                            pool=pool_of(route_id),
-                            capacity_evidence=evidence.route_capacity_evidence.get(route_id),
-                        ),
-                        deadline=deadline,
+                provider = rating.provider
+            capacity = evidence.route_capacities.get(route_id, "unknown")
+            if (providers and provider not in providers) or (
+                capacities and capacity not in capacities
+            ):
+                continue
+            fallback = canonical_route(route_id).split("/", 1)
+            family = evidence.route_identities.get(route_id, (fallback[0], fallback[-1]))
+            row: dict[str, Any] = {
+                **asdict(rating),
+                "provider": provider,
+                "capacity": capacity,
+                "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
+                "turns_sent": 0,
+                "rescreen_requested": route_id in requested,
+                "latency_ms": None,
+            }
+            now = clock()
+            cache.reload()
+            lookup = cache.lookup(route_id, now)
+            if family in families:
+                row.update(result="skipped_alias", alias_of=families[family])
+            else:
+                families[family] = route_id
+                # A fresh alias proof avoids repeating the same underlying model.
+                siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
+                if lookup.state == STATE_NEGATIVE:
+                    row["result"] = "skipped_negative"
+                elif any(
+                    agentic_capability(cache.entry(r), now)["qualified"]
+                    for r in [route_id, *siblings]
+                ):
+                    row["result"] = "skipped_fresh"
+                elif provider in stopped_providers:
+                    row["result"] = "skipped_provider_stopped"
+                elif pool_of(route_id) in _cooled_pools(cache, now):
+                    row["result"] = "skipped_cooldown"
+                elif checked >= max_routes or counts[provider] >= max_per_provider:
+                    row["result"] = "skipped_cap"
+                else:
+                    row.update(
+                        prober.screen_route(
+                            AdmittedRoute(
+                                route_id,
+                                provider,
+                                capacity,
+                                pool=pool_of(route_id),
+                                capacity_evidence=evidence.route_capacity_evidence.get(route_id),
+                            ),
+                            deadline=deadline,
+                        )
                     )
-                )
-                if row["turns_sent"]:
-                    if route_id in requested:
-                        cache.complete_rescreen(route_id)
-                    checked += 1
-                    counts[provider] += 1
-                requests += row["turns_sent"]
-                passed += int(row["result"] == "pass")
-                if row["result"] == "rate_limited":
-                    stopped_providers.add(provider)
-        rows.append(row)
+                    if row["turns_sent"]:
+                        if route_id in requested:
+                            cache.complete_rescreen(route_id)
+                        checked += 1
+                        counts[provider] += 1
+                    requests += row["turns_sent"]
+                    passed += int(row["result"] == "pass")
+                    if row["result"] == "rate_limited":
+                        stopped_providers.add(provider)
+            rows.append(row)
+    finally:
+        lock.release()
     stopped_reason = "complete"
     if any(row["result"] == "skipped_deadline" for row in rows):
         stopped_reason = "wall_cap"

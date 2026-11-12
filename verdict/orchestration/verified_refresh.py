@@ -963,6 +963,14 @@ class RefreshCoordinator:
         by_id = snapshot.by_id()
         wanted = [by_id[rid] for rid in dict.fromkeys(needed_ids) if rid in by_id]
 
+        # BOD-297 durable screening cursor: which refreshable rows of this
+        # snapshot make up the fleet this cycle should cover. Prove-at-rest
+        # manages its own fleet rotation through cache.cursor and pre-filters
+        # its rows, so it opts out of the shared cursor.
+        fleet: set[str] | None = None
+        if consumer != CONSUMER_PROVE_AT_REST:
+            fleet = {row.route_id for row in snapshot.rows if _is_refreshable(row)}
+
         # Disabled auto-refresh governs EVERY automatic trigger -- verified-view
         # open, picker preview/apply and selection-before-dispatch are all
         # automatic even though picker/selection are ``explicit``. Only a
@@ -982,12 +990,12 @@ class RefreshCoordinator:
             config=replace(config, max_routes=HARD_MAX_ROUTES),
             authorized=authorized,
         )
-        candidates = all_eligible[: config.max_routes]
+        candidates_pre_cap = all_eligible[: config.max_routes]
         cut_by_route_cap = all_eligible[config.max_routes :]
 
         # Fresh-only bypass, checked BEFORE the lock/join: if no needed entry is
         # a refreshable candidate, return immediately with zero calls, no wait.
-        if not candidates:
+        if not candidates_pre_cap:
             return self._empty(
                 OUTCOME_REUSED_FRESH if wanted else OUTCOME_NOTHING_ELIGIBLE,
                 consumer,
@@ -1001,14 +1009,48 @@ class RefreshCoordinator:
         marker = _Marker(marker_path)
 
         # Debounce: a matching page/id trigger completed within the window
-        # returns the prior result with a debounce note (no calls). Picker/
-        # selection still perform their exact fresh checks above.
+        # returns the prior result with a debounce note (no calls). Checked
+        # BEFORE the cursor filter so a re-trigger of ids already screened by
+        # a sibling job still reuses the prior result. Picker/selection still
+        # perform their exact fresh checks above.
         prior = marker.read()
         if prior is not None and self._debounce_match(
-            prior, candidates, config, lock, scope=snapshot.effective_scope
+            prior, candidates_pre_cap, config, lock, scope=snapshot.effective_scope
         ):
             return self._from_marker(prior, consumer, OUTCOME_DEBOUNCED, note="debounced")
 
+        # BOD-297 cursor fairness: routes already screened this cycle by this
+        # or another coordinator consumer are not re-screened; the next job
+        # continues the backlog instead of re-probing the head. Filter the
+        # wanted ids before the route cap so the cap spends budget on
+        # unscreened routes. Prove-at-rest manages its own fleet rotation
+        # through cache.cursor and pre-filters its rows, so it opts out here.
+        candidates = candidates_pre_cap
+        fleet: set[str] | None = None
+        if consumer != CONSUMER_PROVE_AT_REST:
+            fleet = {row.route_id for row in snapshot.rows if _is_refreshable(row)}
+            screening = self.cache.cursor.get("screening") or {}
+            if screening.get("cycle_open"):
+                screened_ids = set(screening.get("probed_ids") or [])
+                if screened_ids:
+                    wanted = [row for row in wanted if row.route_id not in screened_ids]
+                    all_eligible = select_candidates(
+                        snapshot,
+                        needed_ids=[row.route_id for row in wanted],
+                        explicit=explicit,
+                        config=replace(config, max_routes=HARD_MAX_ROUTES),
+                        authorized=authorized,
+                    )
+                    candidates = all_eligible[: config.max_routes]
+                    cut_by_route_cap = all_eligible[config.max_routes :]
+                    if not candidates:
+                        return self._empty(
+                            OUTCOME_REUSED_FRESH if wanted else OUTCOME_NOTHING_ELIGIBLE,
+                            consumer,
+                            job_id or "cursor-filtered",
+                            wanted,
+                            None,
+                        )
         # Fresh-evidence reuse is bound to the stable scope: evidence a
         # different scope produced is never reused (scope isolation), so a
         # job under another gateway/profile/consent always re-probes. With
@@ -1027,7 +1069,6 @@ class RefreshCoordinator:
             )
         ):
             return self._empty(OUTCOME_REUSED_FRESH, consumer, job_id or "fresh", wanted, None)
-
         if lock.acquire():
             try:
                 return self._run_owned_job(
@@ -1041,6 +1082,7 @@ class RefreshCoordinator:
                     job_id=job_id or self._new_job_id(),
                     scope=snapshot.effective_scope,
                     reuse_fresh=reuse_fresh,
+                    fleet=fleet,
                 )
             finally:
                 lock.release()
@@ -1071,6 +1113,7 @@ class RefreshCoordinator:
         job_id: str,
         scope: str = "",
         reuse_fresh: bool = True,
+        fleet: set[str] | None = None,
     ) -> RefreshOutcome:
         started = self.monotonic()
         deadline = started + config.wall_seconds
@@ -1083,6 +1126,7 @@ class RefreshCoordinator:
         cap_reason: str | None = None
         cancelled = False
         self._seq = 0
+        self._attempts: dict[str, str] = {}
 
         timeout_cap = min(PER_CALL_TIMEOUT_CAP, config.request_timeout_seconds, config.wall_seconds)
 
@@ -1228,6 +1272,24 @@ class RefreshCoordinator:
                     )
                     continue
                 per_call_timeout = min(timeout_cap, max(0.001, deadline - self.monotonic()))
+                # Durable attempt state: while the probe is on the wire the
+                # attempt is MAYBE_SENT, persisted before dispatch so a crash
+                # or a sibling process sees it (BOD-297 fenced accounting).
+                # Written before submit so the worker cannot observe the
+                # marker before the attempt is recorded.
+                self._attempts[row.route_id] = "maybe_sent"
+                self._write_marker(
+                    marker,
+                    job_id,
+                    consumer,
+                    candidates,
+                    started,
+                    deadline,
+                    outcomes,
+                    running=True,
+                    scope=scope,
+                    attempts=self._attempts,
+                )
                 observed_at = self.clock()
                 future = executor.submit(
                     self._probe_one, row, per_call_timeout, deadline=deadline, cancel=probe_cancel
@@ -1360,6 +1422,20 @@ class RefreshCoordinator:
                         cap_reason = REASON_WALL_CAP
                         admitting = False
                     outcomes[row.route_id] = route_out
+                    # Durable attempt state: the finished attempt is SETTLED.
+                    self._attempts[row.route_id] = "settled"
+                    self._write_marker(
+                        marker,
+                        job_id,
+                        consumer,
+                        candidates,
+                        started,
+                        deadline,
+                        outcomes,
+                        running=True,
+                        scope=scope,
+                        attempts=self._attempts,
+                    )
                     if route_out.probed:
                         probed += 1
                         per_provider[row.provider] = per_provider.get(row.provider, 0) + 1
@@ -1468,6 +1544,7 @@ class RefreshCoordinator:
             finished_at=self._wall_now(),
             result=result_kind,
             scope=scope,
+            attempts=self._attempts,
         )
         self._emit_final(
             on_progress,
@@ -1482,6 +1559,28 @@ class RefreshCoordinator:
             per_provider,
             alive=alive,
         )
+        # BOD-297 durable screening cursor: record the ids this job screened
+        # so the next job of the cycle continues the backlog; clear the
+        # cursor once the whole fleet is covered. Prove-at-rest opts out and
+        # rotates its own cache.cursor instead.
+        if consumer != CONSUMER_PROVE_AT_REST and fleet is not None:
+            screening = dict(self.cache.cursor.get("screening") or {})
+            screened = set(screening.get("probed_ids") or [])
+            screened.update(row.route_id for row in candidates)
+            cursor = dict(self.cache.cursor)
+            if screened >= fleet:
+                cursor.pop("screening", None)
+            else:
+                screening["cycle_open"] = True
+                screening["probed_ids"] = sorted(screened)
+                cursor["screening"] = screening
+            self.cache.set_cursor(cursor)
+            # Cursor persistence is best-effort fairness bookkeeping; a
+            # contended cache lock must not fail the whole job.
+            try:
+                self.cache.save(monotonic=self.monotonic, sleep=self.sleep)
+            except HealthCacheLockTimeoutError:
+                pass
         # Keep this job's cancel signal for waiters; later UUID jobs cannot
         # inherit it. Only the owner clears its own flag before publication.
         return outcome_obj
@@ -2012,6 +2111,7 @@ class RefreshCoordinator:
         finished_at: float | None = None,
         result: str | None = None,
         scope: str = "",
+        attempts: Mapping[str, str] | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "job_id": job_id,
@@ -2035,6 +2135,8 @@ class RefreshCoordinator:
                 for rid, o in outcomes.items()
             },
         }
+        if attempts:
+            payload["attempts"] = {rid: state for rid, state in attempts.items()}
         if finished_at is not None:
             payload["finished_wall"] = finished_at
         if result is not None:

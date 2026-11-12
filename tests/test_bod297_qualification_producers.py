@@ -206,7 +206,6 @@ def quota_snapshot(account_status: object) -> Any:
 # -- (a) every producer joins the one coordinator lease ----------------------
 
 
-@red("identify --screen dispatches outside the RefreshCoordinator flock/marker")
 def test_identify_screen_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     """Another producer owns the coordinator job: identify must join it, not send."""
     calls: list[str] = []
@@ -219,7 +218,6 @@ def test_identify_screen_joins_the_shared_coordinator_lease(tmp_path: Path) -> N
     assert calls == [], "identify screen sent model requests while another producer held the lease"
 
 
-@red("live admit confirm dispatches outside the RefreshCoordinator flock/marker")
 def test_live_confirm_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     calls: list[str] = []
     held = _JobLock(tmp_path / "verified-refresh.lock")
@@ -239,7 +237,6 @@ def test_live_confirm_joins_the_shared_coordinator_lease(tmp_path: Path) -> None
     assert calls == [], "live confirm sent a request while another producer held the lease"
 
 
-@red("EligibilityLadder.select confirmation probes outside the coordinator lease")
 def test_selection_confirm_probe_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     from test_orch_eligibility import NOW as LADDER_NOW
     from test_orch_eligibility import REQ, conn, make_ladder, row
@@ -259,7 +256,6 @@ def test_selection_confirm_probe_joins_the_shared_coordinator_lease(tmp_path: Pa
     assert probe.calls == [], "selection probed a route while another producer held the lease"
 
 
-@red("qualification attempts have no durable RESERVED/MAYBE_SENT/SETTLED record")
 def test_coordinator_records_durable_attempt_states(tmp_path: Path) -> None:
     """While a probe is on the wire its attempt is durably MAYBE_SENT; then SETTLED."""
     durable: list[str] = []
@@ -281,7 +277,6 @@ def test_coordinator_records_durable_attempt_states(tmp_path: Path) -> None:
     assert "settled" in on_disk(), "the finished attempt was never durably SETTLED"
 
 
-@red("the coordinator has no durable cursor; no-write outcomes starve the backlog")
 def test_coordinator_cursor_screens_backlog_within_n_cycles(tmp_path: Path) -> None:
     """Six routes, two per job, no evidence written: three jobs must reach all six."""
     attempted: set[str] = set()
@@ -302,7 +297,6 @@ def test_coordinator_cursor_screens_backlog_within_n_cycles(tmp_path: Path) -> N
 # -- (b) no caller multiplies limits ------------------------------------------
 
 
-@red("prove-at-rest adds a separate agentic request budget on top of max_requests")
 def test_prove_at_rest_agentic_phase_shares_the_request_budget(tmp_path: Path) -> None:
     chat_calls: list[tuple[str, str]] = []
     agentic_calls: list[str] = []
@@ -319,7 +313,6 @@ def test_prove_at_rest_agentic_phase_shares_the_request_budget(tmp_path: Path) -
     assert total <= 16, f"one cycle with max_requests=16 sent {total} model requests"
 
 
-@red("the agentic phase consumes bucket tokens in memory, not as a durable reservation")
 def test_agentic_phase_persists_its_bucket_reservation_before_dispatch(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
     after_chat: list[int] = []
@@ -350,7 +343,6 @@ def test_agentic_phase_persists_its_bucket_reservation_before_dispatch(tmp_path:
 # -- (c) sparse quota unknown is not exhaustion; whole-source failure is closed --
 
 
-@red("a successful sparse /api/v1/me/status row is read as quota_exhausted")
 @pytest.mark.parametrize("reason", ["not_available", "fetch_failed", "connection_lookup_failed"])
 def test_sparse_account_quota_row_is_unknown_not_exhausted(reason: str) -> None:
     """One account without quota data in a successful response is unknown, not exhausted."""
@@ -363,7 +355,6 @@ def test_sparse_account_quota_row_is_unknown_not_exhausted(reason: str) -> None:
     )
 
 
-@red("a malformed whole account-status source still admits as if quota were known")
 def test_whole_account_status_source_failure_fails_closed() -> None:
     receipt = admit_free_tier_active(quota_snapshot({"error": "upstream failure"}))
     assert receipt.admitted == (), "a failed quota source must fail closed, not admit"
@@ -381,7 +372,6 @@ def test_reported_quota_exhaustion_still_blocks() -> None:
 # -- (d) all configured supply is considered -----------------------------------
 
 
-@red("identify --screen considers only routes with historical traffic")
 def test_identify_screen_considers_configured_supply_without_traffic(tmp_path: Path) -> None:
     ev = evidence({"p/a": "free", "q/new": "free"}, traffic=("p/a",), live=("q/new",))
     report = screen(tmp_path / "health.json", ev, agentic_ok([]), max_per_provider=2, max_routes=4)
@@ -543,7 +533,6 @@ def test_live_confirm_checks_the_shared_pool_bucket(tmp_path: Path) -> None:
     assert calls == [], "a confirm request was sent while the shared provider bucket was empty"
 
 
-@red("identify --screen orders by capacity class before task rating")
 def test_identify_screen_orders_strongest_task_rating_first(tmp_path: Path) -> None:
     from test_identify_screen import passing, ratings, snapshot
 
