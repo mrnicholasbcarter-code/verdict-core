@@ -753,8 +753,11 @@ def test_debounce_window_expires(tmp_path: Path) -> None:
     out = coord2.refresh_for_consumer(
         _snapshot(rows), consumer="verified_view", needed_ids=["cc/a"], config=RefreshConfig()
     )
-    assert out.outcome == OUTCOME_COMPLETED
-    assert t2.calls  # it re-probed
+    # Fresh shared evidence is reused: the expired debounce window no longer
+    # forces a redundant check of a route that is already fresh.
+    assert out.outcome == OUTCOME_REUSED_FRESH
+    assert out.probed == 0
+    assert not t2.calls
 
 
 # ---------------------------------------------------------------------------

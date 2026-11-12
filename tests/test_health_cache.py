@@ -515,7 +515,11 @@ def test_two_step_probe_replays_recorded_outcomes(tmp_path: Path) -> None:
     )
     prober.run_once()
     worker = cache.lookup("agy/codestral", _at(10))
-    assert worker.state == STATE_FRESH and worker.entry is not None and worker.entry.tool_ok
+    # A full probe whose gateway never echoes the served model id records
+    # chat liveness only: fresh, chat_ok, but no tool-capability proof.
+    assert worker.state == STATE_FRESH and worker.entry is not None
+    assert worker.entry.chat_ok and not worker.entry.tool_ok
+    assert worker.entry.identity == "not_reported"
     paid = cache.lookup("cerebras/gpt-oss-120b", _at(10))
     assert paid.state == STATE_NEGATIVE
     assert paid.entry is not None and paid.entry.category == CATEGORY_PAYMENT
@@ -549,9 +553,11 @@ def test_subscription_gets_the_full_chat_and_tool_probe(tmp_path: Path) -> None:
     prober.run_once()
     assert transport.calls == [("sub/m", "chat"), ("sub/m", "tool")]
     entry = cache.entry("sub/m")
-    assert entry is not None and entry.healthy and entry.tool_ok is True
+    # Full probe, no served-model echo: chat liveness only, no tool proof.
+    assert entry is not None and entry.healthy and not entry.tool_ok
+    assert entry.identity == "not_reported"
     workers = cache.healthy_routes(_at(1), predicate=lambda item: item.tool_ok)
-    assert [w.route_id for w in workers] == ["sub/m"]
+    assert not workers
 
 
 def test_bucket_stops_a_provider_mid_cycle(tmp_path: Path) -> None:
@@ -1176,14 +1182,12 @@ def test_empty_reported_model_stored_as_not_reported_identity(tmp_path: Path) ->
     assert entry.identity == "not_reported", (
         f"expected identity='not_reported', got {entry.identity!r}"
     )
-    # Status report must also surface it.
+    # No served identity => no tool-capability strength: liveness only.
+    assert entry.chat_ok and not entry.tool_ok
+    # Status report must not surface it as a coding worker (tool proof missing).
     report = status_report(cache, now=NOW)
     workers = report.get("top_healthy_coding_workers", [])
-    worker = next((w for w in workers if w["route_id"] == "cx/silent-model"), None)
-    assert worker is not None, f"probed route missing from status report: {workers!r}"
-    assert worker.get("identity") == "not_reported", (
-        f"status report worker must carry identity='not_reported', got {worker!r}"
-    )
+    assert not any(w["route_id"] == "cx/silent-model" for w in workers), workers
 
 
 def test_identity_verified_only_after_a_successful_match(tmp_path: Path) -> None:
