@@ -567,6 +567,15 @@ def _collect_doctor_diagnostics(
     total = len(capabilities)
     sections.append(("Capability coverage", "ok", f"{covered}/{total} covered (bootstrap view)"))
 
+    try:
+        from verdict.capability_registry import build_default_registry, probe_and_register
+        from verdict.code_intelligence import code_intelligence_doctor_section
+
+        probe_and_register(build_default_registry(), Path.cwd())
+        sections.append(code_intelligence_doctor_section(Path.cwd()))
+    except Exception as exc:
+        sections.append(("Code intelligence", "warn", f"probe failed: {type(exc).__name__}"))
+
     from verdict.documentation_preflight import run_documentation_preflight
 
     if progress is not None:

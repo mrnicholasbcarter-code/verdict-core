@@ -1,12 +1,15 @@
 """Probes and cited code-intelligence facts for context packs.
 
 Unit tests script the subprocess runner. They do not call the installed
-binaries. The one live test skips when ``codebase-memory-mcp`` is absent.
+binaries. The one live test is opt-in: set ``VERDICT_LIVE_SMOKE=1`` and have
+``codebase-memory-mcp`` on ``PATH``. The daemon refuses a CLI client while a
+different install's session is running, so the default suite skips it.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,18 +37,15 @@ _READY_INDEX = {
 
 
 def _git_repo(path: Path, message: str = "init") -> str:
+    path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "dev"], cwd=path, check=True)
-    (path / "readme.txt").write_text("x\n", encoding="utf-8")
+    (path / "readme.txt").write_text(f"{message}\n", encoding="utf-8")
     subprocess.run(["git", "add", "readme.txt"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=path, check=True)
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=path,
-        check=True,
-        capture_output=True,
-        text=True,
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
     )
     return head.stdout.strip()
 
@@ -59,7 +59,9 @@ def _probe_runner(repo: Path, *, serena_ok: bool = True):
 
     def runner(argv: list[str], **kwargs: object) -> CommandResult:
         if argv and argv[0] == "git":
-            return real(argv, cwd=kwargs.get("cwd") if isinstance(kwargs.get("cwd"), Path) else None)
+            return real(
+                argv, cwd=kwargs.get("cwd") if isinstance(kwargs.get("cwd"), Path) else None
+            )
         if "health-check" in argv:
             raise AssertionError("serena project health-check must not run in a probe")
         joined = " ".join(argv)
@@ -68,10 +70,7 @@ def _probe_runner(repo: Path, *, serena_ok: bool = True):
                 return CommandResult(1, "", "serena missing")
             return CommandResult(0, "Serena 2.1.0\n", "")
         if "list_projects" in joined:
-            payload = {
-                "projects": [{"name": "proj", "root_path": str(repo)}],
-                "has_more": False,
-            }
+            payload = {"projects": [{"name": "proj", "root_path": str(repo)}], "has_more": False}
             return CommandResult(0, json.dumps(payload), "")
         if "index_status" in joined:
             payload = {**_READY_INDEX, "root_path": str(repo)}
@@ -81,7 +80,9 @@ def _probe_runner(repo: Path, *, serena_ok: bool = True):
     return runner
 
 
-def test_probe_unavailable_when_binary_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_probe_unavailable_when_binary_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(code_intelligence.shutil, "which", lambda _name: None)
     health = probe_code_intelligence(tmp_path)
     assert health.codebase_memory.status == "unavailable"
@@ -128,21 +129,13 @@ def test_probe_does_not_start_serena_language_server(
 
 
 @pytest.mark.parametrize(
-    ("artifact_commit", "expected"),
-    [
-        ("HEAD", "fresh"),
-        ("other", "stale"),
-        (None, "unverified"),
-    ],
+    ("artifact_commit", "expected"), [("HEAD", "fresh"), ("other", "stale"), (None, "unverified")]
 )
 def test_index_freshness_from_artifact(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    artifact_commit: str | None,
-    expected: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, artifact_commit: str | None, expected: str
 ) -> None:
     head = _git_repo(tmp_path)
-    other = _git_repo(tmp_path / "other")
+    other = _git_repo(tmp_path / "other", "other")
     monkeypatch.setattr(code_intelligence.shutil, "which", _which_present)
     monkeypatch.setattr(code_intelligence, "run_command", _probe_runner(tmp_path))
     if artifact_commit == "HEAD":
@@ -155,8 +148,7 @@ def test_index_freshness_from_artifact(
         dest = tmp_path / ".codebase-memory"
         dest.mkdir()
         (dest / "artifact.json").write_text(
-            json.dumps({"commit": recorded, "schema_version": 2}),
-            encoding="utf-8",
+            json.dumps({"commit": recorded, "schema_version": 2}), encoding="utf-8"
         )
     health = probe_code_intelligence(tmp_path)
     assert health.freshness == expected
@@ -242,9 +234,7 @@ def _retrieval_runner(mode: str):
 
 def test_retrieval_records_empty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(code_intelligence, "run_command", _retrieval_runner("empty"))
-    facts = retrieve_code_facts(
-        tmp_path, symbols=["Missing"], token_budget=2000, health=_healthy()
-    )
+    facts = retrieve_code_facts(tmp_path, symbols=["Missing"], token_budget=2000, health=_healthy())
     assert facts.facts == ()
     assert facts.query_log
     assert {entry.outcome for entry in facts.query_log} == {"empty"}
@@ -260,10 +250,7 @@ def test_retrieval_records_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     monkeypatch.setattr(code_intelligence, "run_command", runner)
     facts = retrieve_code_facts(
-        tmp_path,
-        symbols=["ContextPackCompiler"],
-        token_budget=2000,
-        health=_healthy("unavailable"),
+        tmp_path, symbols=["ContextPackCompiler"], token_budget=2000, health=_healthy("unavailable")
     )
     assert facts.facts == ()
     assert {entry.outcome for entry in facts.query_log} == {"unavailable"}
@@ -318,7 +305,9 @@ def test_retrieval_cites_definition_and_caller(
     )
     files = {fact.file for fact in facts.facts}
     assert "verdict/context_pack.py" in files
-    assert any(fact.kind == "caller" and fact.file.endswith("worker_context.py") for fact in facts.facts)
+    assert any(
+        fact.kind == "caller" and fact.file.endswith("worker_context.py") for fact in facts.facts
+    )
     kinds = {entry.query: entry.outcome for entry in facts.query_log}
     assert kinds["definition"] == "facts"
     assert kinds["callers"] == "facts"
@@ -337,11 +326,7 @@ def test_facts_to_context_units_cite_file_line_and_mark_stale() -> None:
         end_line=1125,
     )
     stale = CodeFactSet(
-        facts=(fact,),
-        query_log=(),
-        source_revision="abc123",
-        freshness="stale",
-        project="proj",
+        facts=(fact,), query_log=(), source_revision="abc123", freshness="stale", project="proj"
     )
     units = facts_to_context_units(stale)
     assert len(units) == 1
@@ -352,19 +337,16 @@ def test_facts_to_context_units_cite_file_line_and_mark_stale() -> None:
     assert unit.revision == "abc123"
     assert unit.source_uri == "verdict/context_pack.py:843"
     assert unit.status == "stale"
-    assert unit.source_digest == "sha256:" + __import__("hashlib").sha256(
-        unit.content.encode()
-    ).hexdigest()
+    assert (
+        unit.source_digest
+        == "sha256:" + __import__("hashlib").sha256(unit.content.encode()).hexdigest()
+    )
     assert "verdict/context_pack.py:843" in unit.content
     assert len(unit.content) <= 1500
 
     active = facts_to_context_units(
         CodeFactSet(
-            facts=(fact,),
-            query_log=(),
-            source_revision="abc123",
-            freshness="fresh",
-            project="proj",
+            facts=(fact,), query_log=(), source_revision="abc123", freshness="fresh", project="proj"
         )
     )
     assert active[0].status == "active"
@@ -382,11 +364,7 @@ def test_compile_code_intelligence_pack_contains_cited_fact() -> None:
     )
     units = facts_to_context_units(
         CodeFactSet(
-            facts=(fact,),
-            query_log=(),
-            source_revision="abc123",
-            freshness="fresh",
-            project="proj",
+            facts=(fact,), query_log=(), source_revision="abc123", freshness="fresh", project="proj"
         )
     )
     pack = compile_code_intelligence_pack(units, token_budget=2000, plan_id="plan-ci")
@@ -397,11 +375,7 @@ def test_compile_code_intelligence_pack_contains_cited_fact() -> None:
 
 
 def test_doctor_section_states(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    cases = {
-        "unavailable": "failed",
-        "stale": "warn",
-        "fresh": "ok",
-    }
+    cases = {"unavailable": "failed", "stale": "warn", "fresh": "ok"}
     for freshness, state in cases.items():
         monkeypatch.setattr(
             code_intelligence,
@@ -419,27 +393,23 @@ def test_doctor_section_states(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 def test_probe_and_register_overwrites_stub_health(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(code_intelligence, "probe_code_intelligence", lambda _root: _healthy("fresh"))
+    monkeypatch.setattr(
+        code_intelligence, "probe_code_intelligence", lambda _root: _healthy("fresh")
+    )
     registry = build_default_registry()
     before = {
         item.provider_id: item.health
         for item in registry.providers()
         if item.provider_id in {"adapter.serena_lsp", "adapter.codebase_memory"}
     }
-    assert before == {
-        "adapter.serena_lsp": "unavailable",
-        "adapter.codebase_memory": "unavailable",
-    }
+    assert before == {"adapter.serena_lsp": "unavailable", "adapter.codebase_memory": "unavailable"}
     probe_and_register(registry, tmp_path)
     after = {
         item.provider_id: item.health
         for item in registry.providers()
         if item.provider_id in {"adapter.serena_lsp", "adapter.codebase_memory"}
     }
-    assert after == {
-        "adapter.serena_lsp": "healthy",
-        "adapter.codebase_memory": "healthy",
-    }
+    assert after == {"adapter.serena_lsp": "healthy", "adapter.codebase_memory": "healthy"}
 
 
 def test_doctor_collector_appends_section_after_capability_coverage() -> None:
@@ -451,12 +421,13 @@ def test_doctor_collector_appends_section_after_capability_coverage() -> None:
     assert coverage < call
 
 
-@pytest.mark.skipif(shutil.which("codebase-memory-mcp") is None, reason="codebase-memory-mcp absent")
+@pytest.mark.skipif(
+    shutil.which("codebase-memory-mcp") is None or os.environ.get("VERDICT_LIVE_SMOKE") != "1",
+    reason="live code-intelligence smoke is opt-in; the daemon refuses a second install",
+)
 def test_live_retrieve_cites_compiler_and_a_caller() -> None:
     repo = Path(__file__).resolve().parents[1]
-    facts = retrieve_code_facts(
-        repo, symbols=["ContextPackCompiler"], token_budget=4000
-    )
+    facts = retrieve_code_facts(repo, symbols=["ContextPackCompiler"], token_budget=4000)
     cited = " ".join(f"{fact.file}:{fact.line} {fact.text}" for fact in facts.facts)
     assert "verdict/context_pack.py" in cited
     assert any(fact.kind == "caller" for fact in facts.facts)

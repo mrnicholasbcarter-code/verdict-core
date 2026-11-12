@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Final, Literal
 
 from verdict.semantic_capabilities import SEMANTIC_CAPABILITIES, is_semantic_capability
@@ -707,6 +708,21 @@ def build_default_registry(
     return registry
 
 
+def probe_and_register(registry: SemanticCapabilityRegistry, repo_root: Path) -> Any:
+    """Re-register Serena and codebase-memory with probed health.
+
+    ``register`` overwrites by ``provider_id``. The default registry is left
+    unavailable; callers that want a live probe use this function.
+    """
+
+    from verdict.code_intelligence import probe_code_intelligence
+
+    health = probe_code_intelligence(repo_root)
+    registry.register(make_serena_lsp_stub(health=health.serena.status))
+    registry.register(make_codebase_memory_stub(health=health.codebase_memory.status))
+    return health
+
+
 def resolve_capability(
     capability_id: str, *, registry: SemanticCapabilityRegistry | None = None
 ) -> ResolveDecision:
@@ -746,5 +762,6 @@ __all__ = [
     "make_semgrep_security_stub",
     "make_serena_lsp_stub",
     "make_tree_sitter_ast_descriptor",
+    "probe_and_register",
     "resolve_capability",
 ]
