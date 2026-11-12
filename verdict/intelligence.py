@@ -1271,16 +1271,27 @@ class IntelligenceService:
             if endpoint and endpoint[0]
             else "http://127.0.0.1:20128"
         )
+        from verdict.orchestration.contracts import TaskRequirements as OrchTaskRequirements
+
+        orch_reqs = OrchTaskRequirements(
+            required_capabilities=frozenset(requirements.names)
+            if requirements.names
+            else frozenset({"tools"}),
+            min_context_tokens=requirements.min_context or 32_000,
+            task_category="coding"
+            if getattr(profile, "spend_policy", "") == "coding"
+            else "general",
+        )
         selector = build_selector(
             gateway_url,
             scope="",
             prefer="",
-            required_capabilities=requirements.required_capabilities,
-            min_context_tokens=requirements.min_context_tokens,
+            required_capabilities=orch_reqs.required_capabilities,
+            min_context_tokens=orch_reqs.min_context_tokens,
             now=self.admit_now,
-            task_category=requirements.task_category,
+            task_category=orch_reqs.task_category,
         )
-        _, candidates = selector._assess_all(requirements, self.admit_now)
+        _, candidates = selector._assess_all(orch_reqs, self.admit_now)
         ladder_order = [c.route_id for c in candidates if c.route_id in set(raw_offered)]
         remaining = [rid for rid in raw_offered if rid not in set(ladder_order)]
         offered_universe = tuple(ladder_order + remaining)
