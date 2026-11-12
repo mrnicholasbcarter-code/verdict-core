@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "bod-432",
+  "kind": "product",
+  "author": "t_f90d6231 (queen, cc/claude-opus-5-5)",
+  "merged_sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+  "pr": 918,
+  "on_main": {
+    "at": "2026-11-12T16:20:00Z",
+    "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+    "environment": "operator-host",
+    "command": "gh pr checks 918 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39246075752",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-432/on-main-gh-pr-checks-918.txt",
+      "sha256": "e951d15786f7bc9d768994b63331682e351cf93da46fcc63b78eb75c37e4f545"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "A07: a raw chat request that sets allow_legacy_selector is rejected before selection or send.",
+      "expect": "reserved control field 'allow_legacy_selector' is not accepted",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-12T16:20:30Z",
+        "sha": "a12e5dda59c9632fe83c6d726b3c58ce5bac9cf2",
+        "environment": "operator-host",
+        "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-432/a07-first.txt",
+          "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-12T22:27:01Z",
+        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "environment": "operator-host",
+        "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-432/a07-fresh.txt",
+          "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-acceptance.timer",
+  "setup_doctor": {
+    "status": "green",
+    "command": "env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/UID python -m verdict doctor --json",
+    "at": "2026-11-12T22:54:49Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-432/doctor-20261112T225449Z.txt",
+      "sha256": "d778927873010c0fe66cb06d0a5bd5b3bb501e43a45efaca3beeac80c144e35e"
+    }
+  },
+  "openspec": {
+    "change": "v1-authority-inventory"
+  },
+  "parent_confirmation": {
+    "by": "t_c5827c78 (confirmer, cx/gpt-6.1-sol)",
+    "at": "2026-11-12T22:44:20Z",
+    "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-432/confirm-a07.txt",
+      "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
+    }
+  }
+}

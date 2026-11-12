@@ -1,0 +1,13 @@
+command: env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/UID python -m verdict doctor --json
+cwd: installed-main
+at: 2026-11-12T22:54:49Z
+exit_code: 0
+status: ok
+issues: []
+warnings: ["missing_mcp_config"]
+acceptance_state: green
+acceptance_failed: []
+eligible_free: 1
+installed_sha: df1f61930fff7cc80188cb4f97293ef1e98919bd
+section_count: 63
+section_states: {"header": 3, "key_file": 1, "not-installed": 1, "note": 2, "ok": 31, "optional": 18, "section": 1, "store": 4, "warn": 1, "warning": 1}

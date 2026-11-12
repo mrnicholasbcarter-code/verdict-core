@@ -1,0 +1,1 @@
+{"error":{"message":"reserved control field 'allow_legacy_selector' is not accepted","type":"invalid_request_error"}}
