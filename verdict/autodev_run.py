@@ -2849,9 +2849,31 @@ def compile_unit_context(
         repository_instructions=read_optional(("AGENTS.md",)),
         relevant_examples=(unit.context, *intelligence),
         governing_docs=read_optional(discover_governing_docs(repo)),
-        prior_verified_outcomes=tuple(prior_failures),
+        prior_verified_outcomes=(*prior_failures, *_cited_memory_outcomes(unit.objective)),
         token_budget=token_budget,
     )
+
+
+def _cited_memory_outcomes(objective: str) -> tuple[str, ...]:
+    """Cited prior decisions for a worker brief, plus an explicit recall status.
+
+    Recalled facts are quoted, untrusted evidence bound to their source record
+    and content revision. The status line always appears, so a brief records
+    whether recall found facts, found nothing on a healthy plane, or could not
+    read the plane at all. A memory outage never raises: the brief still builds.
+    """
+    from verdict.context_intelligence import recall_memory_for_task
+
+    recall = recall_memory_for_task(objective)
+    lines = [
+        (
+            f"[memory:{item.namespace}:{item.key} source={item.record_id} "
+            f"revision={item.source_revision} authority={item.authority}] {item.content}"
+        )
+        for item in recall.citations
+    ]
+    lines.append(recall.status_line())
+    return tuple(lines)
 
 
 def _prior_unit_failures(ledger: ReceiptStore, unit: WorkUnit, *, limit: int = 3) -> list[str]:
