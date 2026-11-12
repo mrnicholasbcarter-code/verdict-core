@@ -37,6 +37,7 @@ from verdict.orchestration.contracts import (
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
+    _accepts_keyword,
     executor_gateway_origin,
     gateway_origin_matches,
     normalize_gateway_origin,
@@ -374,7 +375,10 @@ class PrimeHeadlessExecutor:
         effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         started = time.monotonic()
-        argv = self._command(prompt, route_id, cwd, effort=effort)
+        if _accepts_keyword(self._command, "effort"):
+            argv = self._command(prompt, route_id, cwd, effort=effort)
+        else:
+            argv = self._command(prompt, route_id, cwd)
         child_env = self._child_env()
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
