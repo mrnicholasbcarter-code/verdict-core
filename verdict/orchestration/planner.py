@@ -33,7 +33,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.controller_operations import bounded_executor_call
 from verdict.orchestration.verification import resolve_verify_argv
-from verdict.orchestration.worker_context import WorkerPrompt, build_worker_context
+from verdict.orchestration.worker_context import WorkerContext, WorkerPrompt, build_worker_context
 from verdict.security import redact_text
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -641,6 +641,7 @@ def hydrate_node_prompt(
     max_prompt_bytes: int | None = None,
     context_plan: ContextPlan | None = None,
     mandatory_suffix: str = "",
+    prepared_context: WorkerContext | None = None,
     structured: Literal[False] = False,
 ) -> str: ...
 
@@ -655,6 +656,7 @@ def hydrate_node_prompt(
     max_prompt_bytes: int | None = None,
     context_plan: ContextPlan | None = None,
     mandatory_suffix: str = "",
+    prepared_context: WorkerContext | None = None,
     structured: Literal[True],
 ) -> WorkerPrompt: ...
 
@@ -668,6 +670,7 @@ def hydrate_node_prompt(
     max_prompt_bytes: int | None = None,
     context_plan: ContextPlan | None = None,
     mandatory_suffix: str = "",
+    prepared_context: WorkerContext | None = None,
     structured: bool = False,
 ) -> str | WorkerPrompt:
     """Hydrate one node with an advisory native pack; never authorize a route.
@@ -693,6 +696,12 @@ def hydrate_node_prompt(
     context_index = len(lines)
 
     lines.append("RULES:")
+    lines.append(
+        "  - Start from task using supplied findings; do not re-verify settled evidence "
+        "unless a check fails, its cited source changes, or a named open question needs research. "
+        "Settled means supplied observed snapshot, NOT authenticated truth or route authority. "
+        "Independent acceptance checks still must run."
+    )
     lines.append("  - Do not create summary/notes files; report in your final message.")
     if node.owned_files:
         lines.append("  - Only edit files listed in OWNED_FILES. Never touch any other file.")
@@ -718,17 +727,35 @@ def hydrate_node_prompt(
         "or 'RESULT: BLOCKED <reason>' if you cannot complete the objective."
     )
     mandatory_prompt = "\n".join(lines) + mandatory_suffix
-    context = build_worker_context(
-        node,
-        repo=repo,
-        max_context_bytes=min(
-            max_context_bytes, max(0, max_prompt_bytes - len(mandatory_prompt.encode()) - 1)
-        )
+    allowed_bytes = (
+        min(max_context_bytes, max(0, max_prompt_bytes - len(mandatory_prompt.encode()) - 1))
         if max_prompt_bytes is not None
-        else max_context_bytes,
-        context_plan=context_plan,
-        mandatory_prompt_tokens=estimate_tokens(mandatory_prompt) + 1,
+        else max_context_bytes
     )
+    mandatory_tokens = estimate_tokens(mandatory_prompt) + 1
+    if prepared_context is not None:
+        if len(prepared_context.text.encode()) > allowed_bytes:
+            raise ValueError("Prepared context exceeds remaining byte budget")
+        if context_plan is not None and prepared_context.pack is not None:
+            ceiling = context_plan.input_token_budget
+            if context_plan.candidate_context_window is not None:
+                ceiling = min(
+                    ceiling,
+                    context_plan.candidate_context_window
+                    - context_plan.output_token_reserve
+                    - context_plan.tool_token_reserve,
+                )
+            if prepared_context.pack.used_tokens > max(0, ceiling - mandatory_tokens):
+                raise ValueError("Prepared context exceeds selected candidate token budget")
+        context = prepared_context
+    else:
+        context = build_worker_context(
+            node,
+            repo=repo,
+            max_context_bytes=allowed_bytes,
+            context_plan=context_plan,
+            mandatory_prompt_tokens=mandatory_tokens,
+        )
     if context.text:
         lines.insert(context_index, context.text)
     prompt = "\n".join(lines) + mandatory_suffix
