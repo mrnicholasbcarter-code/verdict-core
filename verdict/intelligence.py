@@ -227,9 +227,11 @@ def prepared_task_profile(
     from verdict.execution_path import ExecutionPathRequest
 
     context = dict(context)
-    # Server-only relay bookkeeping. It is not a request capability, so it must
-    # not change the profile digest that admission proofs are bound to.
-    context.pop("_relay_protocol", None)
+    # Server-only relay bookkeeping. Keep it off the profile digest, but pass
+    # it to proof minting: only anthropic.messages is bound into the scope.
+    relay_protocol = context.pop("_relay_protocol", None)
+    if relay_protocol == "anthropic.messages":
+        context["_messages_protocol"] = relay_protocol
     nested = context.get("execution_path_request")
     flags = (
         "tools_required",
@@ -633,7 +635,7 @@ class IntelligenceService:
                             model=route.model,
                             route_id=route.route_id,
                             profile_digest=profile_digest,
-                            protocol=context.get("_relay_protocol")
+                            protocol=context.get("_messages_protocol")
                             if isinstance(context, dict)
                             else None,
                         )
