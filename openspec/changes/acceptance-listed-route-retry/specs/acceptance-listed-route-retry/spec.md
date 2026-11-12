@@ -1,10 +1,10 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Acceptance listed-route independent check retries once
 
 The independent 2-turn tool check (`verdict.acceptance_toolcheck.measure`) probes each route in
 the listed sample once. When a listed route's first attempt returns `fail` (anything except an
-account-level block), the route is probed a second time with the same request before it counts
+account-level block), the route SHALL be probed a second time with the same request before it counts
 against precision. The route counts as failed only when both attempts fail; if either attempt
 passes, the route passes. Both attempts are recorded in `result["checks"]`, tagged `attempt: 1`
 and `attempt: 2`, so flaky routes stay visible. Account-level outcomes (`401/402/403/429`) are
