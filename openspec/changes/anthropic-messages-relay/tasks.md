@@ -19,8 +19,8 @@
 
 ## 4. Harness and docs
 
-- [ ] 4.1 `verdict harness claude enable` sets `ANTHROPIC_BASE_URL` to the Verdict origin root, never `:20128`, never writes token values; disable restores exactly: `tests/test_harness_claude.py`
-- [ ] 4.2 Certification notes state the Messages path is gateway-supported; docs (`docs/guides/harnesses.md`, `docs/guides/harness-bootstrap.md`, `docs/guides/coding-agent-gate.md`) point Claude Code at Verdict
+- [x] 4.1 `verdict harness claude enable` sets `ANTHROPIC_BASE_URL` to the Verdict origin root, never `:20128`, never writes token values; disable restores exactly: `tests/test_harness_claude.py`
+- [x] 4.2 Certification notes state the Messages path is gateway-supported; docs (`docs/guides/harnesses.md`, `docs/guides/harness-bootstrap.md`, `docs/guides/coding-agent-gate.md`) point Claude Code at Verdict
 
 ## 5. Regression
 
