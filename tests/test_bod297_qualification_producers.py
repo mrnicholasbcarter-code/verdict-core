@@ -666,3 +666,108 @@ def test_passive_identify_is_get_only_with_no_model_calls_or_writes(
     assert not any(body for _method, _path, body in requests)
     assert report["model_calls"] == 0
     assert tree() == before, "passive identify changed files under HOME"
+
+
+# -- (j) two real producer processes share one cap under one owner ------------
+
+_PRODUCER_DRIVER = r'''
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from verdict.orchestration.health_cache import HealthCache
+from verdict.prove_at_rest import ProbeExchange
+from verdict.orchestration.verified_refresh import (
+    RefreshCoordinator,
+    RefreshSnapshot,
+    RefreshConfig,
+    RowInput,
+)
+
+NOW = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
+
+tmp, routes_json, max_requests, results_path = sys.argv[1:5]
+routes = json.loads(routes_json)
+max_requests = int(max_requests)
+
+cache = HealthCache(Path(tmp) / "health.json")
+sent = []
+
+
+def send(route: str, phase: str, timeout: float) -> ProbeExchange:
+    sent.append((route, phase))
+    # Hold the lease while the request is in flight so a concurrent producer
+    # contends for the same job instead of getting its own turn on an empty cache.
+    time.sleep(0.25)
+    return ProbeExchange(
+        http_status=200,
+        ok=True,
+        chat_exact=True,
+        tool_called=True,
+        reported_model=route.split("/", 1)[1],
+    )
+
+
+coordinator = RefreshCoordinator(
+    cache=cache,
+    transport=send,
+    clock=lambda: NOW,
+    monotonic=lambda: 0.0,
+    sleep=lambda _s: None,
+    lock_path=Path(tmp) / "verified-refresh.lock",
+    marker_path=Path(tmp) / "verified-refresh.json",
+)
+coordinator.refresh_for_consumer(
+    RefreshSnapshot(
+        rows=[
+            RowInput(r, r.split("/", 1)[0], "UNVERIFIED", "free", refreshable=True)
+            for r in routes
+        ],
+        scope="bod297",
+    ),
+    consumer="proc",
+    needed_ids=routes,
+    config=RefreshConfig(max_requests=max_requests),
+    explicit=True,
+)
+
+Path(results_path).write_text(json.dumps({"sends": len(sent)}))
+'''
+
+
+def test_two_producer_processes_share_one_cap_under_one_owner(tmp_path: Path) -> None:
+    """Two OS processes refreshing the same routes share one lock owner and one cap.
+
+    The coordinator's flock means only one producer owns the job at a time and
+    spends the approved request cap; the other producer joins/reuses and sends
+    nothing, so the approved cap is not multiplied per process.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    routes = [f"p{i}/m" for i in range(4)]
+    max_requests = 4
+    driver = tmp_path / "producer.py"
+    driver.write_text(_PRODUCER_DRIVER)
+    result_a = tmp_path / "result-a.json"
+    result_b = tmp_path / "result-b.json"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.getcwd()
+
+    base = [sys.executable, str(driver), str(tmp_path), json.dumps(routes), str(max_requests)]
+    pa = subprocess.Popen(base + [str(result_a)], env=env)
+    time.sleep(0.05)  # let A win the lease first so B genuinely contends
+    pb = subprocess.Popen(base + [str(result_b)], env=env)
+    pa.wait(timeout=120)
+    pb.wait(timeout=120)
+    assert pa.returncode == 0 and pb.returncode == 0, "a producer process crashed"
+
+    ra = json.loads(result_a.read_text())["sends"]
+    rb = json.loads(result_b.read_text())["sends"]
+    total = ra + rb
+    assert total <= max_requests, f"the approved cap was multiplied across processes: {total} > {max_requests}"
+    assert {ra, rb} == {4, 0}, f"exactly one owner should spend the single cap, got {ra} and {rb}"
