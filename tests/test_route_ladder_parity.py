@@ -113,33 +113,18 @@ def test_choose_and_route_terse_parity(
     chosen_id = choose_payload["selected"]["route_id"]
 
     # Run route --terse
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "verdict",
-            "route",
-            "fix a failing unit test",
-            "--terse",
-        ],
-    )
+    monkeypatch.setattr("sys.argv", ["verdict", "route", "fix a failing unit test", "--terse"])
     cli.main()
     route_out = capsys.readouterr().out.strip()
     assert route_out == chosen_id
 
 
 def test_allow_legacy_selector_flag(
-    live_pool: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
+    live_pool: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         "sys.argv",
-        [
-            "verdict",
-            "route",
-            "fix a failing unit test",
-            "--allow-legacy-selector",
-            "--terse",
-        ],
+        ["verdict", "route", "fix a failing unit test", "--allow-legacy-selector", "--terse"],
     )
     try:
         cli.main()

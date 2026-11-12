@@ -1265,7 +1265,12 @@ class IntelligenceService:
         raw_offered = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
         from verdict.free_tier_admit import normalize_omniroute_origin
         from verdict.orchestration.eligibility_report import build_selector
-        gateway_url = normalize_omniroute_origin(endpoint[0]) if endpoint and endpoint[0] else "http://127.0.0.1:20128"
+
+        gateway_url = (
+            normalize_omniroute_origin(endpoint[0])
+            if endpoint and endpoint[0]
+            else "http://127.0.0.1:20128"
+        )
         selector = build_selector(
             gateway_url,
             scope="",

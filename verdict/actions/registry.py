@@ -364,9 +364,13 @@ def _action_route(**kwargs: Any) -> ActionResult:
             gate = build_route_gate(allow_offline=allow_offline)
         if terse:
             dec = gate.route(task, criticality, context=context or None)
-            return ActionResult(data={"task": task, "gate": gate, "decision": dec, "selection": None})
+            return ActionResult(
+                data={"task": task, "gate": gate, "decision": dec, "selection": None}
+            )
         dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
-        return ActionResult(data={"task": task, "gate": gate, "decision": dec, "selection": selection})
+        return ActionResult(
+            data={"task": task, "gate": gate, "decision": dec, "selection": selection}
+        )
 
     from verdict.credentials_store import resolve_gateway_binding
     from verdict.free_tier_admit import normalize_omniroute_origin
@@ -379,9 +383,13 @@ def _action_route(**kwargs: Any) -> ActionResult:
     except Exception:
         gateway = "http://127.0.0.1:20128"
 
-    requires = frozenset(p.strip() for p in str(context.get("requires", "")).split(",") if p.strip())
+    requires = frozenset(
+        p.strip() for p in str(context.get("requires", "")).split(",") if p.strip()
+    )
     family = profile_task(task, context=context).task_family
-    task_category = str(context.get("task_category") or ("coding" if family.startswith("code") else "general"))
+    task_category = str(
+        context.get("task_category") or ("coding" if family.startswith("code") else "general")
+    )
     requirements = TaskRequirements(
         required_capabilities=requires or TaskRequirements().required_capabilities,
         coding="code" in requires or family.startswith("code"),
@@ -400,7 +408,12 @@ def _action_route(**kwargs: Any) -> ActionResult:
         )
     except (OrchestrationError, ValueError) as exc:
         return ActionResult(
-            data={"task": task, "selected": None, "reason": "invalid_selection_request", "reasons": [str(exc)]},
+            data={
+                "task": task,
+                "selected": None,
+                "reason": "invalid_selection_request",
+                "reasons": [str(exc)],
+            },
             ok=False,
             exit_code=1,
         )
