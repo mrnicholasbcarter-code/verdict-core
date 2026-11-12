@@ -793,7 +793,7 @@ async def run_executor(
         return await executor.run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
-    return await executor.run(  # type: ignore[call-arg]
+    return await executor.run(
         prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, **kwargs
     )
 
