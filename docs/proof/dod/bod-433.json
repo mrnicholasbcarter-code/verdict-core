@@ -27,11 +27,11 @@
         "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
         "environment": "operator-host",
         "command": "uv run python -m pytest -q -p no:cacheprovider tests/test_health_cache.py tests/test_health_cache_unsaved_reload.py tests/test_relay_admission.py tests/test_orch_eligibility.py tests/test_worker_runtime.py tests/test_dispatch_permits.py tests/test_api_dispatch_permits.py tests/test_dagruntime_dispatch_permits.py tests/test_worker_dispatch_permits.py tests/test_orch_gateway_origin.py",
-        "real_state_marker": "285 passed, 1 warning in 12.18s",
+        "real_state_marker": "285 passed, 1 warning in 16.82s",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/bod-433/focused-tests-20261112.txt",
-          "sha256": "9e852874f7cd841805f7f5a66b2ff03564d9a67f5ae8165410ee1020b8007d77"
+          "sha256": "6a0cba46acb2b72f72d9ecccf27b4f4229f892f0f3e0d98e6ac5622057e4e564"
         }
       },
       "fresh_run": {
