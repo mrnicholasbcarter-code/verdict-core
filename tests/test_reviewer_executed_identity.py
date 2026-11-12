@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from tests.test_orch_review import (
-    FakeRunner,
     FakeSelector,
     OcrRun,
     PayloadRunner,
