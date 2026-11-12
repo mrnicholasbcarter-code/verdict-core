@@ -1,0 +1,1511 @@
+{
+  "acceptance": {
+    "age_seconds": 412,
+    "eligible_free": 8,
+    "failed": [],
+    "path": "~/.verdict/acceptance/20261112T162343Z.json",
+    "state": "green"
+  },
+  "capability_bootstrap": {
+    "capabilities": [
+      {
+        "authority": null,
+        "capability_id": "harness.execute",
+        "fallback_candidates": [
+          "harness.claude_code",
+          "harness.codex",
+          "harness.cursor",
+          "harness.hermes",
+          "harness.cline",
+          "harness.opencode",
+          "harness.prime"
+        ],
+        "health": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "authority": null,
+        "capability_id": "gateway.inventory",
+        "fallback_candidates": [
+          "gateway.omniroute",
+          "gateway.litellm",
+          "gateway.9router"
+        ],
+        "health": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "authority": null,
+        "capability_id": "gateway.execute",
+        "fallback_candidates": [
+          "gateway.omniroute",
+          "gateway.litellm",
+          "gateway.9router"
+        ],
+        "health": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "authority": 10,
+        "capability_id": "code.symbols",
+        "fallback_candidates": [
+          "adapter.serena_lsp",
+          "native.verdict.ast"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "authority": 10,
+        "capability_id": "code.definitions",
+        "fallback_candidates": [
+          "native.verdict.ast",
+          "adapter.serena_lsp"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "authority": 10,
+        "capability_id": "code.references",
+        "fallback_candidates": [
+          "native.verdict.ast",
+          "adapter.serena_lsp"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "authority": 10,
+        "capability_id": "code.graph",
+        "fallback_candidates": [
+          "adapter.codebase_memory",
+          "adapter.serena_lsp",
+          "native.verdict.ast"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "authority": 10,
+        "capability_id": "docs.lookup",
+        "fallback_candidates": [
+          "native.verdict",
+          "adapter.context7"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.",
+        "selected_provider_id": "native.verdict",
+        "status": "covered"
+      },
+      {
+        "authority": 40,
+        "capability_id": "memory.search",
+        "fallback_candidates": [
+          "native.verdict.memory_plane",
+          "adapter.codebase_memory"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.memory_plane.",
+        "selected_provider_id": "native.verdict.memory_plane",
+        "status": "covered"
+      },
+      {
+        "authority": 20,
+        "capability_id": "security.secrets",
+        "fallback_candidates": [
+          "native.verdict.security",
+          "security.gitleaks"
+        ],
+        "health": "healthy",
+        "reason": "Satisfied by healthy provider native.verdict.security.",
+        "selected_provider_id": "native.verdict.security",
+        "status": "covered"
+      }
+    ],
+    "kind": "doctor_capability_report",
+    "providers": [
+      {
+        "auth_state": "unknown",
+        "authority": 90,
+        "capabilities": [
+          "code.changed-neighborhood",
+          "code.graph",
+          "memory.search"
+        ],
+        "config_sources": [
+          "~/.claude.json",
+          "~/.codex/config.toml",
+          "~/.hermes/config.yaml",
+          "~/.prime/agent/settings.json"
+        ],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Codebase Memory MCP install docs",
+        "install_source": "codebase-memory-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/codebase-memory-mcp",
+        "provider_id": "adapter.codebase_memory",
+        "provider_kind": "intelligence",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 70,
+        "capabilities": [
+          "docs.library",
+          "docs.lookup"
+        ],
+        "config_sources": [
+          "~/.claude.json",
+          "~/.hermes/config.yaml",
+          "~/.prime/agent/settings.json"
+        ],
+        "failure_reason": "configured in harness MCP; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Context7 MCP install docs",
+        "install_source": "context7-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "configured",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "adapter.context7",
+        "provider_kind": "docs",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 80,
+        "capabilities": [
+          "code.callees",
+          "code.callers",
+          "code.definitions",
+          "code.graph",
+          "code.imports",
+          "code.references",
+          "code.symbols"
+        ],
+        "config_sources": [
+          "~/.claude.json",
+          "~/.codex/config.toml",
+          "~/.hermes/config.yaml",
+          "~/.prime/agent/settings.json"
+        ],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Serena MCP install docs",
+        "install_source": "serena-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/serena",
+        "provider_id": "adapter.serena_lsp",
+        "provider_kind": "intelligence",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "npm install -g 9router",
+        "install_source": "https://github.com/1jehuang/9router",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "gateway.9router",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "pip install litellm",
+        "install_source": "https://github.com/BerriAI/litellm",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "gateway.litellm",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 50,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory",
+          "gateway.quota"
+        ],
+        "config_sources": [],
+        "failure_reason": "endpoint configured but not live-certified",
+        "freshness": "fresh",
+        "hard_dependency": false,
+        "health_state": "unhealthy",
+        "install_command": "npm install -g omniroute",
+        "install_source": "https://github.com/NeuronZero/omniroute",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "configured",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "http://127.0.0.1:20128",
+        "provider_id": "gateway.omniroute",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Claude Code install docs",
+        "install_source": "https://docs.anthropic.com/claude-code",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/claude",
+        "provider_id": "harness.claude_code",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "npm install -g cline  # or install the VS Code Cline extension",
+        "install_source": "https://github.com/cline/cline",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "harness.cline",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Codex CLI install docs",
+        "install_source": "https://github.com/openai/codex",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/codex",
+        "provider_id": "harness.codex",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Cursor CLI install docs",
+        "install_source": "https://cursor.com",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/cursor-agent",
+        "provider_id": "harness.cursor",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Hermes installer",
+        "install_source": "https://github.com/NousResearch/hermes-agent",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/hermes",
+        "provider_id": "harness.hermes",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream OpenCode install docs",
+        "install_source": "opencode",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "harness.opencode",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Prime Agent install docs",
+        "install_source": "prime-agent",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/prime-agent",
+        "provider_id": "harness.prime",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "not_required",
+        "authority": 10,
+        "capabilities": [
+          "code.graph",
+          "code.symbols"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "fresh",
+        "hard_dependency": false,
+        "health_state": "healthy",
+        "install_command": "",
+        "install_source": "verdict-native",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "healthy",
+        "managed_by_verdict": false,
+        "optional": false,
+        "path_or_endpoint": null,
+        "provider_id": "native.verdict.ast",
+        "provider_kind": "intelligence",
+        "qualification_state": "qualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.mcp_config",
+          "security.prompt_injection"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow AgentShield install docs",
+        "install_source": "agentshield",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "security.agentshield",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.secrets"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Gitleaks install docs",
+        "install_source": "https://github.com/gitleaks/gitleaks",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/gitleaks",
+        "provider_id": "security.gitleaks",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.agent_config"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Semgrep install docs",
+        "install_source": "https://semgrep.dev",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "~/.local/bin/semgrep",
+        "provider_id": "security.semgrep",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 5,
+        "capabilities": [
+          "git.diff",
+          "repo.state"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Install ripgrep via OS package manager",
+        "install_source": "ripgrep",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/usr/bin/rg",
+        "provider_id": "tool.ripgrep",
+        "provider_kind": "other",
+        "qualification_state": "unqualified",
+        "version": null
+      }
+    ],
+    "schema_version": "capability-bootstrap/v1"
+  },
+  "documentation_preflight": {
+    "duplicate_projections": [],
+    "errors": [],
+    "ingested": 0,
+    "inventory": 43,
+    "inventory_details": {
+      "verdict-core-docs": [
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "b7b11ac57675fb8bde23de5971a17d64f69c887c5e86e0af4a88c461ff7feb77",
+          "fresh_until": 1794587531.2298396,
+          "path": "benchmarks/fixtures/legit_workspace/docs/adr/ADR-001-spend.md",
+          "raw_hash": "a3ec2752e48d3d22f9fff0530529647d64c2c64b6f5540623799bfdb8579db6c",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/benchmarks/fixtures/legit_workspace/docs/adr/ADR-001-spend.md",
+          "state": "fresh",
+          "tree_sha": "ddfb13068c34e9a69282b743036dc4cca5ce1c60",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "2f84940648cb13ad141851ef9b045db6d4a54ea0e8fac87efba12e0d30b017ac",
+          "fresh_until": 1794587531.2298396,
+          "path": "benchmarks/fixtures/uplift_workspace/docs/adr/ADR-0447-cooldown.md",
+          "raw_hash": "986cac97e289003ab853accd6ea636eb1be737264dcc2caae2da4354a67408e2",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/benchmarks/fixtures/uplift_workspace/docs/adr/ADR-0447-cooldown.md",
+          "state": "fresh",
+          "tree_sha": "50fe98bd4bbb0e85bcf9fb6980957875d5fa51e2",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "0febef6ccf9454f20e670f027e7a937ae202b5dfdd51a962b42eab6efddca88d",
+          "fresh_until": 1794587531.2298396,
+          "path": "benchmarks/fixtures/uplift_workspace/docs/adr/ADR-0448-drop-codes.md",
+          "raw_hash": "c80e37c80c3301b527f837d815ad334467f4e92381e7c24a2258362886889b7b",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/benchmarks/fixtures/uplift_workspace/docs/adr/ADR-0448-drop-codes.md",
+          "state": "fresh",
+          "tree_sha": "3e37d765b477ce1f1a463996d609e63aff3ec437",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "869af27e07c29cf6211b36c7530d66df5e8fbefb6cad10edd07f34577617c941",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/0001-verdict-control-plane-invariants.md",
+          "raw_hash": "5a92d3a1ff67adcf51c12953b881d928a022bf8f3ae5d43f9d41ae319a4b1527",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/0001-verdict-control-plane-invariants.md",
+          "state": "fresh",
+          "tree_sha": "4e9f5ae72f123ba708b8e526b95d26d8799ea0df",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "5e9abaf30574239cb567638c4aaf8f9ddb392dc8463d464eeaded63fee5b73ac",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-001-evidence-ledger.md",
+          "raw_hash": "ee204b1c486ed34b7d6316a725d83ba622e4efa0f72ea2208014481ae2009f24",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-001-evidence-ledger.md",
+          "state": "fresh",
+          "tree_sha": "e8c687aa609fddd81cf76fee06ed0df0efcbf72f",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "c368bfd5246143e24ed19d2419a9dec24bcc65d77317ffa4d08065abc76f51fc",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-002-orchestrator-routing.md",
+          "raw_hash": "a25f6f1ef95bacc468005d8ca7ac96ae067801d42376281354f0be761af70a65",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-002-orchestrator-routing.md",
+          "state": "fresh",
+          "tree_sha": "de276fd387d373b5c2f0df6647b5fb2c37e02381",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "1cbd4faa0be1aab7a5a6f72b56aa4b10323818945c38788b8c8991d1370b1a51",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-003-platform-neutral-guidance-boundary.md",
+          "raw_hash": "0729b378d104281197aeb0e994d6fe6c655fb82d45b533198c7d77efb09ab7b7",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-003-platform-neutral-guidance-boundary.md",
+          "state": "fresh",
+          "tree_sha": "e1e77c8201095201cf3027b9bcb6ad767b897af0",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "de0b6a156c0f468bbaffd480578e8f9e7a1eb6a30b2e69cc0a0af515c750d9a8",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-004-local-first-memory-plane.md",
+          "raw_hash": "184d6390ef367f037027122fcb0a3fcba24c1e8bf8911bf7b210df30d6fafd2c",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-004-local-first-memory-plane.md",
+          "state": "fresh",
+          "tree_sha": "7ba4f38ed49244be7b9590745c8522e4529a4e10",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "96eb68e69cd14a522348ce7efa073219a7ad5bab59e296a5cd1f6005f60533c3",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-005-code-intelligence-graph-memory-bridge.md",
+          "raw_hash": "b4a788bc930a5cec18e3529ce543c4acdd99cfea88c606de9325483f984dd976",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-005-code-intelligence-graph-memory-bridge.md",
+          "state": "fresh",
+          "tree_sha": "f0b9d17c1ee468bb106907c928d4be2b5dd41961",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "695ad3df9ef749d750f7902da10bd243460755186e67ecba26e07f5c39ae1598",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-006-authoritative-documentation-preflight.md",
+          "raw_hash": "9275a5b7b2e2537fe2c6c6fb88bb09fa81f21bed9ac22f16e980a605177ca0a8",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-006-authoritative-documentation-preflight.md",
+          "state": "fresh",
+          "tree_sha": "fc054d4326f60cb29fab5b0de47066381854ad34",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "a009890555391aa6611566c1142d39a25ca2b3f4a5a7bc0c57949a91a3f7dbc6",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-007-omniroute-catalog-qualification.md",
+          "raw_hash": "70733379bfd633a315fbb60f9f4e8d2a8c69fc852d31bd89ba59adfee15bd425",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-007-omniroute-catalog-qualification.md",
+          "state": "fresh",
+          "tree_sha": "73cdc58cf09ddd9a8ce82a73b333e94348ae382d",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "0fa11c76e83334f4a47d111e1c60fa32b67faedd32f1edd985406a42f5f68233",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-008-global-runtime-ownership.md",
+          "raw_hash": "76f3757528e443b42078cdb1b1e827994a985ed432c6606975a4cb8096cd0aec",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-008-global-runtime-ownership.md",
+          "state": "fresh",
+          "tree_sha": "283cd97927c4a5d66b36edf781a8634b306e48ee",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "affc57a200c09c26d8991947f5e09b289f46ed081ce982f77796e6822b5e5ce9",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-009-durable-memory-write-gate.md",
+          "raw_hash": "f12e30cf2c5d35edd5ece3f38a78a381f25467c8bd5a40372710a115d912e76e",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-009-durable-memory-write-gate.md",
+          "state": "fresh",
+          "tree_sha": "c46b4af82927ddee61a2d6ca52f44293ec53719a",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "47b126fce357ac6f728a73b147325b1bbe81ee99d8bea43f2e9c734431a62d76",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-010-fail-closed-capability-passports.md",
+          "raw_hash": "414b0c59899de030d794658a16c5ee74c4c5bae9a748b787e6d60dbeabbde03d",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-010-fail-closed-capability-passports.md",
+          "state": "fresh",
+          "tree_sha": "b6fe5569d67717a2ffeb46ce40eae4b558797f8b",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "9b82e83bcddde7e108c056cc06d5cb1a98853cba8618c5703350eea60d25b960",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-011-omniroute-catalog-qualification-baseline.md",
+          "raw_hash": "90d71976b2cad235702fc71cebc69087af473d7f3eaf4a40555aaff90fadea7a",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-011-omniroute-catalog-qualification-baseline.md",
+          "state": "fresh",
+          "tree_sha": "5ad81264a317d5cb67cd5946159529ca2e21e311",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "0e52787317a2599b6b906f098aade495f8487552194e8b3e5691dd255800181d",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-012-consented-budgeted-probes.md",
+          "raw_hash": "03a4d602cdc79dfa899bf8086e69fb5aa5b384a927f316b22db13f30a8174bd1",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-012-consented-budgeted-probes.md",
+          "state": "fresh",
+          "tree_sha": "e1f208ef614ea61cd97660a396629b3d0684a4cd",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "a353a65abc11158cc86bc8a3382689bf4fd167242f520b05abb2e5325f034d48",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-013-independent-protocol-surface-qualification.md",
+          "raw_hash": "01005c6f195d224a4a94cbb8b7fc38ce80c32ec1c0724ec346a7eb998b132c63",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-013-independent-protocol-surface-qualification.md",
+          "state": "fresh",
+          "tree_sha": "f4201e6819f9ad3d84fa432bdc72de64610b7cfc",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "428590642aeb48511e7c800214ed5c67edda6651cb681ba8059d0d0991aad2c5",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-014-tool-and-structured-output-qualification.md",
+          "raw_hash": "8530b8b4a9b8b3d1a84d255f9d10894a014b4bdd1a85858b02162e4cf7402dc3",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-014-tool-and-structured-output-qualification.md",
+          "state": "fresh",
+          "tree_sha": "03dc5c784cd84ada8a94a5bb8f6b856f016e58fd",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "3634e5114b44455c9c6fe5bebe52cd8df20d55f6bdcbe062a816012a81077d31",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-015-evidence-authority-and-portable-receipts.md",
+          "raw_hash": "6e78000b0a92a8aadc46dfd53964d4d1dd3a19660e373620913f21d22c5258c7",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-015-evidence-authority-and-portable-receipts.md",
+          "state": "fresh",
+          "tree_sha": "125f74f5b2c4a50b4235155ef34f3ee5e01ebbee",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "0649d10a1ac3dabe2e53903c3d561c26c9cc49b725b818a9395acbd30b389725",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-016-deterministic-policy-and-transition-graphs.md",
+          "raw_hash": "94edd2c9272a193f7ec1782c2069acdd53a7ffd21e275909e1d84f8facd7dd65",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-016-deterministic-policy-and-transition-graphs.md",
+          "state": "fresh",
+          "tree_sha": "3fc786ce8fd922cbf56c99146a943096424e3b99",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "27a83ec21179dda13950226a25fe34c0a683dfc8b18bdef26ae59b1f5711e2ad",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-017-durable-privacy-safe-receipt-ledger.md",
+          "raw_hash": "ae12172b2727eb87aa5a4b0682fd36efd8ab25b71ba4f8d84291d112fc2287b9",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-017-durable-privacy-safe-receipt-ledger.md",
+          "state": "fresh",
+          "tree_sha": "e98309823dbb30a509d931b50653a53c2c2880f5",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "1d0d736d5798973e62d74c34070570bd5dc562944db48bd996b99902eb544a7b",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-018-shadow-and-counterfactual-evaluation.md",
+          "raw_hash": "e94da5b809df9fd4eee3e5046604097cc232ef33b9f27b4bc8c70103cc1c0a4b",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-018-shadow-and-counterfactual-evaluation.md",
+          "state": "fresh",
+          "tree_sha": "63aced8599e54f27e066bc447d3318624c0a865e",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "ce74f3efb73d11798f4dda8e931a121e1d452d547475d14221594a3119a09724",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-019-runtime-negotiated-passports.md",
+          "raw_hash": "750c9668611ece8594dd32163e38509d69395728dda807d679a26d1955f61370",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-019-runtime-negotiated-passports.md",
+          "state": "fresh",
+          "tree_sha": "4a8418f6561446c73b754193d12deebb3ecfe8ab",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "ad0076c1fda526f4613387f4c50f49a5972ba85c84ff4f97431693415ab6acb0",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-020-gateway-adapter-contracts.md",
+          "raw_hash": "59a6bcc31076252981c27bc72d569d80810192de51a3232b0df0c67f67d80ed5",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-020-gateway-adapter-contracts.md",
+          "state": "fresh",
+          "tree_sha": "d725313e2b34c7519291f892a7a7de9bda75b52e",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "effb9f9c71c690624ab15d6b77cc49048acf35983138708c91f9d9be113bbf2a",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-021-deterministic-provider-receipts.md",
+          "raw_hash": "f5b693720db0452ed3c4a7b10a5fc2a5e266ecedabb067a99cd1d5452c2e8121",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-021-deterministic-provider-receipts.md",
+          "state": "fresh",
+          "tree_sha": "5f74ee6f79a7c5edf355efc0fb1f247cf51e4416",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "aabaa5ff8e1fc33fe8d217c7788614d8b82b193146adeb6847e1a395e675a2a8",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-022-context-provider-conformance.md",
+          "raw_hash": "6e43ab9ca78a727505c148776a9f517428449e35327185d4a5e28a713bd157fa",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-022-context-provider-conformance.md",
+          "state": "fresh",
+          "tree_sha": "bce9eddfb24b6d862fc0d2c9a4b0d4cef5dddf11",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "bcd20f1baaaeddea32d5a932b057b6667e5c1492497918ecabbc3363dc2a06e1",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-023-governed-swarm-supervision.md",
+          "raw_hash": "d6a83d1d1ace1db0e1991d1a5c3a559d984b76b8e06a5a53a268163ee7af2662",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-023-governed-swarm-supervision.md",
+          "state": "fresh",
+          "tree_sha": "f59b82aa75bb28732cb181494e9e766b342061ca",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "518afb2f23253799d2bda376d5d74f9f3fac3a56062ffcb08c933ce18f5776ce",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-024-cross-repo-compatibility-gate.md",
+          "raw_hash": "d1b11fcfb0817414e608c9b1a9a8f143465d161a341230b77efc62529e1a04c0",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-024-cross-repo-compatibility-gate.md",
+          "state": "fresh",
+          "tree_sha": "3aaecca053bcf21466b6f15c6306ee6ce495d1b5",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "3201ff3b1e8264bcaf8eedf1d23bd4a4c078d5f9084ddc5183a0c2d9ff1cc0f4",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-025-node-envelope-enforcement.md",
+          "raw_hash": "603c1fc9fde15b9678c4f1983b60976c27fca9464383e4faecdf970b95c17b13",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-025-node-envelope-enforcement.md",
+          "state": "fresh",
+          "tree_sha": "ef7c554034bf57bf443471b46cee03c964e6617e",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "650cb7b57f3c83a225265c39484b836e65858e9d8b1f8af92f8403abcc2cafcf",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-026-responses-compatibility-boundary.md",
+          "raw_hash": "3640e14be5b9b9b400517f500fb077c1986f2e2aa059cea8503537d73ed6050d",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-026-responses-compatibility-boundary.md",
+          "state": "fresh",
+          "tree_sha": "c01cb74761920063086705cc28f7adb352bdcc5b",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "a8448ae0ddf5e120b9af1b16afb85a76d20dcf75a5404d9e41c7ad82cb5317e4",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-027-observed-free-status-and-context-omissions.md",
+          "raw_hash": "9bf9b4ba9832fa7933d74d1ac8845cfb95dfc11e5f7302ff4d3443484df2472b",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-027-observed-free-status-and-context-omissions.md",
+          "state": "fresh",
+          "tree_sha": "c0ae92dd185fe2842388be8a16ac45a6ee612951",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "9d69c2f68bb85c3ccfefd92a6818190aad585032ab693016301adcc38043404f",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-028-launch-gate-tooling.md",
+          "raw_hash": "1aa28d20f8073b36520a507933ceb61e78376570221a6938281f31aa62c5d282",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-028-launch-gate-tooling.md",
+          "state": "fresh",
+          "tree_sha": "ad2a5d633c2560344ab6d64f20668b23c7a193a4",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "84730fb976de208ba7840d23dd00c79bbb78cd3a3b60df8d6d935cf71f2841ee",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-030-proof-carrying-decision-plane.md",
+          "raw_hash": "ab9584135100c626f90a88cac58aca4a8308b7447bc12d01d646c44bc22f33c3",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-030-proof-carrying-decision-plane.md",
+          "state": "fresh",
+          "tree_sha": "21f6368eb40f91f007987d6b05fc2e6eb51c86b6",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "6781c97d8ff0f4c13c338b2e5548499902f7b730ea5f97adc2f59931922cd7b9",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-031-prime-workflow-skills.md",
+          "raw_hash": "9c1b2aa36871ad279ab9971f1bd06b7021387a5f5b09fbbc07f86355d664516c",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-031-prime-workflow-skills.md",
+          "state": "fresh",
+          "tree_sha": "1afc21f03ee27a0155b32c748525d87ce2583ce3",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "49237b4c13caf79f4fb1c69d256fbf9aa802940c23c1f93ef15da0fe9b0edecf",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-032-core-model-metadata-store.md",
+          "raw_hash": "2c4261aa3f3a556e7eafb13016cab42a50a6bd791cba6f70272ecc54045d4630",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-032-core-model-metadata-store.md",
+          "state": "fresh",
+          "tree_sha": "5c0a69ae20f299ca0cad6dcf6a02b9a7ebd2e259",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "3e58420401290128b170fed3554d87884519a2b71075f3fb6b13ed9f8dcfdc60",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-033-shared-memory-provider.md",
+          "raw_hash": "096f27e5a41b2b53fecda0ac5e7a7f1182489923783294cecd061e944ee835da",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-033-shared-memory-provider.md",
+          "state": "fresh",
+          "tree_sha": "329c7bdf5ac7a77450bccec8f55a681604071435",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "7369e5a45082ba82b0c63c8f1ab7d276e3d96abe489621f37c53eade05a4f9af",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md",
+          "raw_hash": "c0d9f5fad07b2d09763f8a2221ef4e1652f86deeb993582d2a8d6026839db1b0",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-034-memory-outbox-mirror-and-fail-open-shared-recall.md",
+          "state": "fresh",
+          "tree_sha": "ef53a7edcda84e92ef033059b404f8fd861d7c59",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "6363339849d7cb8edb31f2c1b5d0ef746ef464ef839506eee8827ef3ad04b74b",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-035-authorized-selected-route-dispatch.md",
+          "raw_hash": "b5a4162c54eaf848b80a61a1251c1b88a0da8b363a5e4668aff1e65689302db3",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-035-authorized-selected-route-dispatch.md",
+          "state": "fresh",
+          "tree_sha": "be0fd552a89dc7bfbdf4d94c1624f28368a9e0e2",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "f95720f9733d074829cb37024f83445d792d7cdf1265be5715ecc99df8bdef70",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-036-goal-to-receipt-orchestration.md",
+          "raw_hash": "050352d6719dc54873af6157cfc88ec171b086dc9b1802b22fd45d7b6876a7bb",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-036-goal-to-receipt-orchestration.md",
+          "state": "fresh",
+          "tree_sha": "c03682fb22df2dc3925212836305a5f035b8e9a2",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "4c0f02bf0d60ea598534fa03d4e48c3df47f536076f4ee539cc36462db13c4e1",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-037-supervisor-concurrency-governor.md",
+          "raw_hash": "b7a95ad3f4d9688736305fb18fb1a9f0c76da9db4044bcdb9dfab0e594c38b92",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-037-supervisor-concurrency-governor.md",
+          "state": "fresh",
+          "tree_sha": "9093e1064f78e15e7fdcf5ad5fca957f91aeeee7",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "81a8e9342f7dc9e980492f9b8c7cb4919ac70f8d68b233fc7ee416ca807b7b95",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-038-improvement-cycle.md",
+          "raw_hash": "87788d6c579e01d0b658c79f7c652409f7ab69eb0dfb7a171260a89e6c81f212",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-038-improvement-cycle.md",
+          "state": "fresh",
+          "tree_sha": "960a48e3630650b818c11b7e63c7a389da287ecb",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "520ed7c7eb836f50342ee4ce42d246d06dbe37753f95b9089689f6a9e1d8d0ce",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-039-passive-inventory-split-authentication.md",
+          "raw_hash": "8e559847ff2e7f73a6b09f50ae12bb1a21a710bbc21e8e7fd7c1674e6ba32619",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-039-passive-inventory-split-authentication.md",
+          "state": "fresh",
+          "tree_sha": "0c5359ed3d635747c1496b8ae5d7a520eee56869",
+          "verified": true
+        },
+        {
+          "commit": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+          "document_hash": "7180231539324f27e8f25e7a5ad39b003252ff64e46ec1a7f19338baba1083f3",
+          "fresh_until": 1794587531.2298396,
+          "path": "docs/adr/ADR-ORCHESTRATOR-ROUTING.md",
+          "raw_hash": "7180231539324f27e8f25e7a5ad39b003252ff64e46ec1a7f19338baba1083f3",
+          "repository": "https://github.com/mrnicholasbcarter-code/verdict-core",
+          "source_url": "https://github.com/mrnicholasbcarter-code/verdict-core/blob/4f94f755a47ba419ffa16b85499c73522ff881fb/docs/adr/ADR-ORCHESTRATOR-ROUTING.md",
+          "state": "fresh",
+          "tree_sha": "0751ed42300601eddec6e7c9cd9c8ac33e15ef37",
+          "verified": true
+        }
+      ]
+    },
+    "missing": 0,
+    "operation": "documentation-preflight",
+    "orphaned": 0,
+    "passed": true,
+    "preflight_version": "1",
+    "renewed": 0,
+    "repaired": false,
+    "skipped_fresh": 43,
+    "source_commits": {
+      "verdict-core-docs": "4f94f755a47ba419ffa16b85499c73522ff881fb"
+    },
+    "source_roots": {
+      "verdict-core-docs": "~/.local/share/verdict/installed-main"
+    },
+    "sources": 1,
+    "stale": 0,
+    "state": "ready",
+    "status": "ready",
+    "timed_out": false,
+    "unverifiable": 0
+  },
+  "gateway_lifecycle": {
+    "attempts": 1,
+    "detail": "inventory reachable",
+    "diagnostic": null,
+    "gateway_url": "http://127.0.0.1:20128",
+    "launched": false,
+    "ready": true,
+    "state": "already_ready",
+    "waited_for_owner": false
+  },
+  "issues": [],
+  "repaired": [],
+  "runtime_health": {
+    "errors": [],
+    "generated_at": "2026-11-12T16:32:27.492553Z",
+    "observations": [],
+    "passed": true,
+    "schema_version": "1",
+    "status": "unknown",
+    "summary": {
+      "absent": 0,
+      "authenticated": 0,
+      "catalog_claimed": 0,
+      "configured": 0,
+      "degraded": 0,
+      "observed_working": 0,
+      "protocol_compatible": 0,
+      "reachable": 0,
+      "unknown": 0
+    }
+  },
+  "sections": [
+    {
+      "detail": "7/10 covered (bootstrap view)",
+      "label": "Capability coverage",
+      "state": "ok"
+    },
+    {
+      "detail": "ready (43 documents, 0 ingested, 0 stale, 0 missing)",
+      "label": "Documentation preflight",
+      "state": "ok"
+    },
+    {
+      "detail": "mcp-memory-service",
+      "label": "Shared memory",
+      "state": "not-installed"
+    },
+    {
+      "detail": "claude-fable-5-1 (Tier-0)",
+      "label": "Configured Primary Model",
+      "state": "ok"
+    },
+    {
+      "detail": "gateway already_ready url=http://127.0.0.1:20128: inventory reachable",
+      "label": "Gateway lifecycle",
+      "state": "ok"
+    },
+    {
+      "detail": "active: gateway_kind=omniroute (verdict.yaml gateway_kind); 6 ranked providers (coding) at http://127.0.0.1:20128",
+      "label": "Advisory rankings",
+      "state": "ok"
+    },
+    {
+      "detail": "DB-backed key hermes",
+      "label": "Gateway key",
+      "state": "ok"
+    },
+    {
+      "detail": "valid (source: credential_store); serve reads runtime sources health + connections",
+      "label": "Management token",
+      "state": "ok"
+    },
+    {
+      "detail": "See .env.example in the repository root for the full environment variable reference.",
+      "label": "Environment reference",
+      "state": "section"
+    },
+    {
+      "detail": "Found 0 configured node endpoints",
+      "label": "Connected to OmniRoute",
+      "state": "ok"
+    },
+    {
+      "detail": "green: ~/.verdict/acceptance/20261112T162343Z.json, 7 min old",
+      "label": "Live acceptance",
+      "state": "ok"
+    },
+    {
+      "detail": "",
+      "label": "Credentials",
+      "state": "header"
+    },
+    {
+      "detail": "set (len=35)",
+      "label": "OMNIROUTE_API_KEY",
+      "state": "store"
+    },
+    {
+      "detail": "set (len=35)",
+      "label": "VERDICT_OMNIROUTE_API_KEY",
+      "state": "key_file"
+    },
+    {
+      "detail": "set (len=22)",
+      "label": "OMNIROUTE_BASE_URL",
+      "state": "env"
+    },
+    {
+      "detail": "set (len=35)",
+      "label": "OMNIROUTE_MANAGEMENT_TOKEN",
+      "state": "store"
+    },
+    {
+      "detail": "not set",
+      "label": "OMNIROUTE_USAGE_API_KEY_ID",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "LLMGATE_UPSTREAM_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "LLMGATE_UPSTREAM_BASE_URL",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "LLMGATE_PROBE_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "LLMGATE_PROBE_BASE_URL",
+      "state": "optional"
+    },
+    {
+      "detail": "set (len=35)",
+      "label": "LLMGATE_AUTH_TOKEN",
+      "state": "store"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENAI_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENAI_BASE_URL",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENAI_API_BASE",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "GEMINI_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENROUTER_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "XAI_MANAGEMENT_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "PI_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "HERMES_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "TYPESAFE_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "TYPESAFE_BASE_URL",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "AI_MEMORY_AUTH_TOKEN",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENJEV_API_KEY",
+      "state": "optional"
+    },
+    {
+      "detail": "not set",
+      "label": "OPENJEV_BASE_URL",
+      "state": "optional"
+    },
+    {
+      "detail": "all set",
+      "label": "Required credentials",
+      "state": "ok"
+    },
+    {
+      "detail": "Census retired in favour of the identify timers; keep legacy units disabled.",
+      "label": "Census runtime",
+      "state": "note"
+    },
+    {
+      "detail": "",
+      "label": "Installed services",
+      "state": "header"
+    },
+    {
+      "detail": "verdict-identify.timer is active; command verdict identify --passive --json --save-report --refresh-health-cache; last attempt Thu 2026-11-12 15:41:29 UTC; last completion Thu 2026-11-12 15:41:34 UTC; result success; next run unknown",
+      "label": "Identify timer",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-identify-screen.timer is active; command verdict identify --screen; last attempt Thu 2026-11-12 00:00:14 UTC; last completion Thu 2026-11-12 00:01:28 UTC; result success; next run Fri 2026-11-13 00:00:00 UTC",
+      "label": "Identify screen timer",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-prime-sync.timer is active",
+      "label": "Prime-sync timer",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-acceptance.timer is active",
+      "label": "Acceptance timer",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-ref-docs.timer is active; last result success",
+      "label": "Reference-docs timer",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-docs-refresh.timer is active; last result success",
+      "label": "Documentation refresh timer",
+      "state": "ok"
+    },
+    {
+      "detail": "tag v3.8.53 (installed v3.8.53), last sync 2026-11-12T16:01:25+00:00, 1436 pages",
+      "label": "Reference docs default/ref-omniroute",
+      "state": "ok"
+    },
+    {
+      "detail": "~/.verdict/identify-latest.json age 539s; source errors none; model calls 0; health refresh recorded 20, newest evidence age 554s; implementation pool eligible 7 (free 4), fallback 608; supply complete false, 34 unknowns",
+      "label": "Identify passive report",
+      "state": "ok"
+    },
+    {
+      "detail": "not registered (never attempted); health matrix remains the passive source; repair: verdict identify register-webhook",
+      "label": "OmniRoute webhook",
+      "state": "warning"
+    },
+    {
+      "detail": "verdict-metadata-refresh.timer active; arena_elo=skipped, artificial_analysis=skipped, bfcl=skipped, litellm=650s, models.dev=650s, models.dev.models=650s, open_llm_leaderboard=skipped, openrouter.artificial_analysis=650s",
+      "label": "Metadata refresh timer",
+      "state": "ok"
+    },
+    {
+      "detail": "40 fresh, 0 stale route(s); passive traffic 40 (newest age 555s); webhook 0; probes 0",
+      "label": "Health cache",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-prime-sync.service: cwd ~/.local/share/verdict/installed-main, package ~/.local/share/verdict/installed-main/verdict",
+      "label": "Prime-sync code path",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-identify.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime identify",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-identify-screen.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime identify-screen",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-acceptance.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime acceptance",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-prime-sync.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime prime-sync",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-metadata-refresh.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime metadata-refresh",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-serve.service: package ~/.local/share/verdict/installed-main/verdict, build git 4f94f755a47b, gateway default, state ~/.verdict",
+      "label": "Runtime serve",
+      "state": "ok"
+    },
+    {
+      "detail": "",
+      "label": "Host prerequisites",
+      "state": "header"
+    },
+    {
+      "detail": "~/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release",
+      "label": "Review tool (ocr)",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-serve.service is active",
+      "label": "Verdict serve unit",
+      "state": "ok"
+    },
+    {
+      "detail": "http://127.0.0.1:8000/health answers",
+      "label": "Verdict serve health",
+      "state": "ok"
+    },
+    {
+      "detail": "~/.prime/agent/models.json: providers.omniroute has 3801 model(s)",
+      "label": "Prime registry",
+      "state": "ok"
+    },
+    {
+      "detail": "verdict-prime-sync.service last result success",
+      "label": "Prime-sync service",
+      "state": "ok"
+    }
+  ],
+  "shared_memory": {
+    "auth_state": "not-configured",
+    "configured": false,
+    "endpoint": null,
+    "install_action": "none",
+    "installed": false,
+    "mutated": false,
+    "provider_id": "mcp-memory-service",
+    "state": "not-installed",
+    "token_env": "VERDICT_SHARED_MEMORY_TOKEN"
+  },
+  "status": "ok",
+  "warnings": [
+    "missing_mcp_config"
+  ]
+}
