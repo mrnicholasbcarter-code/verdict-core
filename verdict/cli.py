@@ -913,68 +913,103 @@ def cmd_route(
             result = run_action("route", params)
 
     data = result.data
-    gate = data["gate"]
-    dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
-    base_selection = data["selection"]
-    selection = None
-    if base_selection is not None:
-        selection = type(base_selection)(
-            strategy="DIRECT",
-            model=dec.model,
-            reasoning="CLI route/run dispatched one provider completion directly",
-            timestamp=base_selection.timestamp,
-        )
-    transport_ok = dec.transport_outcome in {"sent", "success"}
+    if allow_legacy_selector:
+        gate = data["gate"]
+        dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
+        base_selection = data["selection"]
+        selection = None
+        if base_selection is not None:
+            selection = type(base_selection)(
+                strategy="DIRECT",
+                model=dec.model,
+                reasoning="CLI route/run dispatched one provider completion directly",
+                timestamp=base_selection.timestamp,
+            )
+        transport_ok = dec.transport_outcome in {"sent", "success"}
 
-    if terse:
+        if terse:
+            if not transport_ok:
+                error_payload = {
+                    "model": getattr(dec, "model", None),
+                    "provider": getattr(dec, "provider", None),
+                    "transport_outcome": dec.transport_outcome,
+                    "reason": getattr(dec, "reason", ""),
+                    "request_id": getattr(dec, "request_id", ""),
+                    "execute_preview": (dec.execute_preview or "")[:500],
+                }
+                print(json.dumps(error_payload, sort_keys=True))
+                raise SystemExit(1)
+            print(dec.model)
+            return
+
+        from verdict import present
+
+        assert selection is not None  # non-terse always requests a strategy
+        present.header("Routing Decision")
+        present.kv(
+            {
+                "Task": task[:100] + ("..." if len(task) > 100 else ""),
+                "Model": f"{dec.model}  (T{dec.tier})",
+                "Provider": dec.provider,
+                "Outcome": dec.decision,
+                "Managed": dec.managed_backend_status,
+                "Transport": dec.transport_outcome,
+                "Quality": dec.quality_outcome,
+                "Protected": str(dec.protected).lower(),
+                "Degraded": str(dec.degraded_mode).lower(),
+                "Latency": f"{dec.latency_ms:.1f}ms",
+                "Strategy": selection.strategy,
+                "Reason": dec.reason,
+            }
+        )
+        payload: dict[str, Any] = {
+            "strategy_selection": selection.to_dict(),
+            "transport_outcome": dec.transport_outcome,
+            "model": dec.model,
+            "provider": dec.provider,
+            "request_id": dec.request_id,
+        }
+        if dec.admit_receipt:
+            payload["admit_receipt"] = dec.admit_receipt
+        if dec.execute_preview:
+            payload["execute_preview"] = dec.execute_preview[:500]
+        print(json.dumps(payload, sort_keys=True))
         if not transport_ok:
+            raise SystemExit(1)
+        return
+
+    if not result.ok or data.get("selected") is None:
+        if terse:
             error_payload = {
-                "model": getattr(dec, "model", None),
-                "provider": getattr(dec, "provider", None),
-                "transport_outcome": dec.transport_outcome,
-                "reason": getattr(dec, "reason", ""),
-                "request_id": getattr(dec, "request_id", ""),
-                "execute_preview": (dec.execute_preview or "")[:500],
+                "model": data.get("model"),
+                "reason": data.get("reason") or (data.get("reasons") or ["no_eligible_route"])[0],
+                "reasons": data.get("reasons", []),
             }
             print(json.dumps(error_payload, sort_keys=True))
-            raise SystemExit(1)
-        print(dec.model)
+        else:
+            print(json.dumps(data, sort_keys=True, indent=2))
+        raise SystemExit(1)
+
+    selected = data["selected"]
+    model = selected["route_id"]
+    if terse:
+        print(model)
         return
 
     from verdict import present
 
-    assert selection is not None  # non-terse always requests a strategy
     present.header("Routing Decision")
     present.kv(
         {
             "Task": task[:100] + ("..." if len(task) > 100 else ""),
-            "Model": f"{dec.model}  (T{dec.tier})",
-            "Provider": dec.provider,
-            "Outcome": dec.decision,
-            "Managed": dec.managed_backend_status,
-            "Transport": dec.transport_outcome,
-            "Quality": dec.quality_outcome,
-            "Protected": str(dec.protected).lower(),
-            "Degraded": str(dec.degraded_mode).lower(),
-            "Latency": f"{dec.latency_ms:.1f}ms",
-            "Strategy": selection.strategy,
-            "Reason": dec.reason,
+            "Model": f"{model}  (T{selected.get('tier', 0)})",
+            "Provider": selected.get("provider", ""),
+            "Outcome": "route:accept",
+            "Gateway": data.get("gateway", ""),
+            "Reasons": "; ".join(data.get("reasons", [])),
         }
     )
-    payload: dict[str, Any] = {
-        "strategy_selection": selection.to_dict(),
-        "transport_outcome": dec.transport_outcome,
-        "model": dec.model,
-        "provider": dec.provider,
-        "request_id": dec.request_id,
-    }
-    if dec.admit_receipt:
-        payload["admit_receipt"] = dec.admit_receipt
-    if dec.execute_preview:
-        payload["execute_preview"] = dec.execute_preview[:500]
-    print(json.dumps(payload, sort_keys=True))
-    if not transport_ok:
-        raise SystemExit(1)
+    print(json.dumps(data, sort_keys=True, indent=2))
 
 
 def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = False) -> None:

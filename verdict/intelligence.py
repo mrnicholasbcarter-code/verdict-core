@@ -1262,7 +1262,23 @@ class IntelligenceService:
         receipt = gate_capability(
             receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self.admit_now
         )
-        offered_universe = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
+        raw_offered = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
+        from verdict.free_tier_admit import normalize_omniroute_origin
+        from verdict.orchestration.eligibility_report import build_selector
+        gateway_url = normalize_omniroute_origin(endpoint[0]) if endpoint and endpoint[0] else "http://127.0.0.1:20128"
+        selector = build_selector(
+            gateway_url,
+            scope="",
+            prefer="",
+            required_capabilities=requirements.required_capabilities,
+            min_context_tokens=requirements.min_context_tokens,
+            now=self.admit_now,
+            task_category=requirements.task_category,
+        )
+        _, candidates = selector._assess_all(requirements, self.admit_now)
+        ladder_order = [c.route_id for c in candidates if c.route_id in set(raw_offered)]
+        remaining = [rid for rid in raw_offered if rid not in set(ladder_order)]
+        offered_universe = tuple(ladder_order + remaining)
         offered_ids = set(offered_universe)
         offered_admitted = tuple(item for item in receipt.admitted if item in offered_ids)
         offered_set = set(offered_admitted)
