@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "story": "bod-433",
+  "kind": "product",
+  "author": "t_54add59f (queen, auto/reasoning:pro) on installed main df1f6193; code merged via PR 918 at 4f642962, PR 920 at a79e787d, PR 938 at c99aa5d4 (all ancestors of df1f6193)",
+  "merged_sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+  "pr": 918,
+  "on_main": {
+    "at": "2026-11-12T22:16:23Z",
+    "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+    "environment": "operator-host",
+    "command": "gh pr checks 918 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39246075752",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-433/on-main-gh-pr-checks-918.txt",
+      "sha256": "e951d15786f7bc9d768994b63331682e351cf93da46fcc63b78eb75c37e4f545"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "A04/A10 focused suite on installed main: revocation linearizes at the dispatch permit and survives restart; duplicate and late-fenced writers cannot mint a second permit; the relay, worker and DagRuntime handoffs commit a permit before every send and deny with zero sends otherwise.",
+      "expect": "285 passed",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-12T22:16:23Z",
+        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "environment": "operator-host",
+        "command": "uv run python -m pytest -q -p no:cacheprovider tests/test_health_cache.py tests/test_health_cache_unsaved_reload.py tests/test_relay_admission.py tests/test_orch_eligibility.py tests/test_worker_runtime.py tests/test_dispatch_permits.py tests/test_api_dispatch_permits.py tests/test_dagruntime_dispatch_permits.py tests/test_worker_dispatch_permits.py tests/test_orch_gateway_origin.py",
+        "real_state_marker": "285 passed, 1 warning in 12.18s",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-433/focused-tests-20261112.txt",
+          "sha256": "9e852874f7cd841805f7f5a66b2ff03564d9a67f5ae8165410ee1020b8007d77"
+        }
+      },
+      "fresh_run": {
+        "at": "1970-01-01T00:00:00Z",
+        "sha": "0000000000000000000000000000000000000000",
+        "environment": "operator-host",
+        "command": "uv run python -m pytest -q -p no:cacheprovider tests/test_health_cache.py tests/test_health_cache_unsaved_reload.py tests/test_relay_admission.py tests/test_orch_eligibility.py tests/test_worker_runtime.py tests/test_dispatch_permits.py tests/test_api_dispatch_permits.py tests/test_dagruntime_dispatch_permits.py tests/test_worker_dispatch_permits.py tests/test_orch_gateway_origin.py",
+        "real_state_marker": "TODO-fresh-run: not before the 6h window; same command on installed main; marker = the passed count line",
+        "exit_code": -1,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-433/TODO-fresh-run.txt",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-acceptance.timer (OnCalendar=hourly, Persistent=true) -> verdict-acceptance.service runs 'verdict acceptance run', whose route and serve checks exercise the permit-gated relay path on installed main every hour. The focused suite (285 passed) covers the cache, relay, worker and DagRuntime permit contracts directly.",
+  "setup_doctor": {
+    "status": "not_applicable",
+    "reason": "S03 adds no service or timer; it changes dispatch handling inside the existing verdict-serve.service and verdict orchestrate. verdict doctor --json reports issues owned by other lanes (eligibility precision, identify refresh), not by S03."
+  },
+  "openspec": {
+    "change": "v1-permits-streams-public-models"
+  },
+  "parent_confirmation": {
+    "by": "TODO-independent-confirmer (a non-author model family; not t_54add59f / auto/reasoning:pro)",
+    "at": "1970-01-01T00:00:00Z",
+    "command": "uv run python -m pytest -q -p no:cacheprovider tests/test_health_cache.py tests/test_health_cache_unsaved_reload.py tests/test_relay_admission.py tests/test_orch_eligibility.py tests/test_worker_runtime.py tests/test_dispatch_permits.py tests/test_api_dispatch_permits.py tests/test_dagruntime_dispatch_permits.py tests/test_worker_dispatch_permits.py tests/test_orch_gateway_origin.py",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-433/TODO-parent-confirmation.txt",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

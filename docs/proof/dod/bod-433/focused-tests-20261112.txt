@@ -1,0 +1,5 @@
+  /home/nick/dev/verdict-core/.worktrees/t_54add59f/tests/conftest.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 285 passed, 1 warning in 12.18s ========================
