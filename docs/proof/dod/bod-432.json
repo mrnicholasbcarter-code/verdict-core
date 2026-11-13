@@ -52,11 +52,11 @@
   "stays_true_job": "verdict-acceptance.timer",
   "setup_doctor": {
     "status": "green",
-    "command": "env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/UID python -m verdict doctor --json",
-    "at": "2026-11-12T22:54:49Z",
+    "command": "env -i HOME=$HOME PATH=/home/nick/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict doctor --json",
+    "at": "2026-11-13T03:05:00Z",
     "raw_output": {
-      "path": "docs/proof/dod/bod-432/doctor-20261112T225449Z.txt",
-      "sha256": "d778927873010c0fe66cb06d0a5bd5b3bb501e43a45efaca3beeac80c144e35e"
+      "path": "docs/proof/dod/bod-432/doctor-20261113T030500Z.json",
+      "sha256": "a13a390b247e632da654ff6ebd86796fd22a9f11daf0d0ecaaa3fa8a91347a81"
     }
   },
   "openspec": {
