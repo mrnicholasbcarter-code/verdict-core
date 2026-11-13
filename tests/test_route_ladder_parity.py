@@ -27,6 +27,7 @@ def live_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str,
     from verdict.metadata import store
     from verdict.orchestration import run
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(tmp_path / "health-cache.json"))
     monkeypatch.setenv("VERDICT_SESSION_EVIDENCE", str(tmp_path / "sessions.jsonl"))
@@ -100,6 +101,8 @@ def test_choose_and_route_terse_parity(
         [
             "verdict",
             "choose",
+            "--task",
+            "fix a failing unit test",
             "--task-class",
             "implementation",
             "--requires",
@@ -117,6 +120,35 @@ def test_choose_and_route_terse_parity(
     cli.main()
     route_out = capsys.readouterr().out.strip()
     assert route_out == chosen_id
+
+
+def test_default_route_does_not_construct_gate(live_pool, monkeypatch, capsys):
+    def forbidden(**kwargs):
+        pytest.fail("default route constructed the legacy Gate")
+
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", forbidden)
+    cli.cmd_route("fix a failing unit test", "medium", terse=True)
+    assert capsys.readouterr().out == "free/weak\n"
+
+
+def test_serve_uses_only_ladder_candidates_in_ladder_order(monkeypatch, tmp_path):
+    import test_live_candidate_shortlist as fixtures
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from verdict.orchestration.contracts import TaskRequirements
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    service = fixtures._service([], top_k=4)
+    monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (
+        fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None
+    ))
+    candidates = [SimpleNamespace(route_id=rid) for rid in (fixtures.FAST, fixtures.STRONG)]
+    selector = SimpleNamespace(_assess_all=lambda *args: ([], candidates))
+    monkeypatch.setattr("verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector)
+    request = fixtures._request(fixtures.NEW, fixtures.STRONG, fixtures.FAST)
+    prepared = service._prepare_execution_path_request("fix code", "low", fixtures._context(request), request)
+    assert [o.route.route_id for o in prepared.offers] == [fixtures.FAST, fixtures.STRONG]
 
 
 def test_allow_legacy_selector_flag(
