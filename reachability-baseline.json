@@ -125,7 +125,7 @@
   },
   {
     "qualified_name": "verdict.context_inject.extract_envelope",
-    "reason": "UNTRIAGED: extract_envelope has only non-production references; Inject the compiled cheap-path context pack into the upstream request (verdict/context_inject.py)."
+    "reason": "KEEP: round-trip reader for the injected envelope, used by tests to verify the pack actually reached the forwarded payload for each relay surface (chat, responses, messages); the envelope digest is the receipt's ground truth, so the reader is the verification counterpart of inject_context_pack."
   },
   {
     "qualified_name": "verdict.context_lift.refuse_secret_write",
