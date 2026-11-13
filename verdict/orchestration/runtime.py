@@ -815,6 +815,7 @@ class DagRuntime:
                 self._select_with_stats, requirements, self.now()
             )
             counts = _ladder_counts(considered)
+            accounting = (_post or {}).pop("selection_accounting", None)
             if _post:
                 counts = {**counts, **_post}
             # BOD-277: per-route eligibility verdicts for trace drill-down.
@@ -828,6 +829,7 @@ class DagRuntime:
                 "candidates": _cands,
                 "candidates_omitted": _cands_omitted,
                 "omitted_summary": _omitted_summary,  # AC7: per-state detail for omitted
+                "selection_accounting": accounting,
             }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire

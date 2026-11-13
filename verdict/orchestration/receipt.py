@@ -418,7 +418,37 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     }
     if commit:
         record["commit"] = commit
+    if any(
+        event.type == "eligibility" and event.data.get("selection_accounting") for event in events
+    ):
+        record["selection_accounting"] = _selection_accounting_for(events)
     return record
+
+
+def _selection_accounting_for(events: list[RunEvent]) -> dict[str, Any]:
+    from verdict.orchestration.eligibility import selection_accounting
+
+    supply: list[Mapping[str, Any]] = []
+    sent: list[str] = []
+    authority_expired = False
+    for event in events:
+        data = event.data
+        if event.type == "eligibility" and isinstance(data.get("selection_accounting"), Mapping):
+            for key in ("known_unavailable_reasons", "unqualified_reasons"):
+                supply.extend(
+                    {**row, "failed_stage": "TASK_ELIGIBLE"}
+                    for row in data["selection_accounting"].get(key, [])
+                )
+        if event.type == "dispatch":
+            sent.append(str(data.get("route_id") or ""))
+            supply.append({**data, "admitted": True})
+        if (
+            data.get("termination_reason")
+            in {"budget_exhausted", "deadline_exceeded", "permit_expired", "passport_expired"}
+            or data.get("reason") == "pre-dispatch recheck: no_fresh_passport"
+        ):
+            authority_expired = True
+    return selection_accounting(supply, attempted=sent, authority_expired=authority_expired)
 
 
 def _no_change_implement_nodes(
