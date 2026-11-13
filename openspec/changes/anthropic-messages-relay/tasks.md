@@ -24,4 +24,4 @@
 
 ## 5. Regression
 
-- [ ] (post-merge) 5.1 Existing chat and responses relay, stream, and admission tests pass unchanged
+- [x] 5.1 Existing chat and responses relay, stream, and admission tests pass unchanged: `tests/test_relay_admission.py`, `tests/test_relay_identity.py`, `tests/test_stream_relay_wiring.py`, `tests/test_stream_terminal.py`, `tests/test_anthropic_messages_relay.py`, `tests/test_admission.py`, `tests/test_api_relay_context_length.py`, `tests/test_nested_requirement_relay.py` — 154 passed
