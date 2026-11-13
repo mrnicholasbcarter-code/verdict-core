@@ -136,13 +136,18 @@ verdict harness claude disable
 
 See [harnesses.md#claude-code](harnesses.md#claude-code).
 
-Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
-proxy today is OpenAI-compatible only — full Anthropic Messages passthrough via
-Verdict is a **remaining gap**. Until then:
+Claude Code's default traffic is Anthropic Messages (`/v1/messages`).
+`verdict harness claude enable` sets `ANTHROPIC_BASE_URL` to the Verdict origin
+root (`http://127.0.0.1:8000`, no `/v1`). Claude Code appends `/v1/messages`.
+Verdict serves that path and delegates translation to the upstream gateway.
+An OmniRoute-looking `:20128` URL is refused. Do not point Claude Code at
+OmniRoute, and do not write token values into settings (`ANTHROPIC_AUTH_TOKEN`
+is read from the process environment).
 
 1. Keep **SessionStart** fail-closed via `verdict hook claude-gate` (installed by
    `verdict harness claude enable`).
-2. Route any OpenAI-compatible side tooling at `http://127.0.0.1:8000/v1`.
+2. Messages base URL is the Verdict root. OpenAI-compatible side tooling stays
+   at `http://127.0.0.1:8000/v1`.
 3. Do **not** fall back to `api.anthropic.com` if the local path is down.
 
 ```json
