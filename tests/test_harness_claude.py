@@ -69,10 +69,14 @@ def test_enable_writes_openai_env_gate_and_backup(tmp_path: Path) -> None:
 
     data = json.loads(config.read_text(encoding="utf-8"))
     assert data["env"]["OPENAI_BASE_URL"] == DEFAULT_BASE_URL
+    assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
+    assert "/v1" not in data["env"]["ANTHROPIC_BASE_URL"]
     assert data["env"]["SOME_OTHER"] == "keep-me"
     assert data["env"]["VERDICT_HARNESS"] == "claude"
     assert "20128" not in data["env"]["OPENAI_BASE_URL"]
-    assert "ANTHROPIC_BASE_URL" not in data["env"]
+    assert "20128" not in data["env"]["ANTHROPIC_BASE_URL"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in data["env"]
+    assert "ANTHROPIC_API_KEY" not in data["env"]
     assert SECRET not in config.read_text(encoding="utf-8")
     session = data["hooks"]["SessionStart"]
     assert any(
@@ -94,6 +98,9 @@ def test_enable_refuses_omniroute_and_unhealthy(tmp_path: Path) -> None:
             health_check=_healthy,
             force=False,
         )
+    unchanged = (claude_home / "settings.json").read_text(encoding="utf-8")
+    assert unchanged == ORIGINAL_SETTINGS
+    assert "ANTHROPIC_BASE_URL" not in unchanged
     with pytest.raises(HarnessClaudeError, match="health"):
         enable(claude_home=claude_home, health_check=_unhealthy, force=False)
 
@@ -143,7 +150,8 @@ def test_certify_is_partial_without_live_token(
     assert report.overall == "partial"
     assert report.facets["hooks"] == "supported"
     assert report.facets["model_selection"] == "partial"
-    assert any("BOD-102" in note or "Messages" in note for note in report.notes)
+    assert any("translation delegated to the upstream gateway" in note for note in report.notes)
+    assert not any("unsupported" in note.lower() for note in report.notes)
     assert any("secrets" in item for item in report.needs_owner)
     assert SECRET not in format_certify(report)
 
@@ -189,3 +197,73 @@ def test_cli_help_lists_claude_commands(
     for name in ("discover", "enable", "disable", "status", "certify"):
         assert name in out
     assert SECRET not in out
+
+
+def test_derived_anthropic_url_keeps_omniroute_port() -> None:
+    from verdict.harness_claude import _anthropic_origin
+
+    derived = _anthropic_origin("http://127.0.0.1:20128/v1")
+    assert derived == "http://127.0.0.1:20128"
+    assert "20128" in derived
+    assert _anthropic_origin("http://127.0.0.1:8000/v1") == "http://127.0.0.1:8000"
+
+
+def test_enable_strips_messages_suffix_without_rewriting_openai_url(tmp_path: Path) -> None:
+    claude_home = _claude_home(tmp_path)
+    config = claude_home / "settings.json"
+    config.write_text(ORIGINAL_SETTINGS, encoding="utf-8")
+    messages_base = "http://127.0.0.1:8000/v1/messages"
+    enable(claude_home=claude_home, base_url=messages_base, health_check=_healthy)
+    data = json.loads(config.read_text(encoding="utf-8"))
+    assert data["env"]["OPENAI_BASE_URL"] == messages_base
+    assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
+    assert "20128" not in data["env"]["ANTHROPIC_BASE_URL"]
+    assert SECRET not in config.read_text(encoding="utf-8")
+
+
+def test_discover_and_status_see_either_verdict_url(tmp_path: Path) -> None:
+    claude_home = _claude_home(tmp_path)
+    config = claude_home / "settings.json"
+    config.write_text(
+        json.dumps(
+            {
+                "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8000", "VERDICT_HARNESS": "claude"},
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "verdict",
+                                    "args": ["hook", "claude-gate"],
+                                }
+                            ]
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    found = discover(claude_home=claude_home, which=lambda _name: "/tmp/claude")
+    assert found.pointing_at_verdict is True
+    assert found.pointing_at_omniroute is False
+    assert found.base_url == "http://127.0.0.1:8000"
+    report = status(claude_home=claude_home)
+    assert report.enabled is True
+    assert report.base_url == "http://127.0.0.1:8000"
+
+    config.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:20128",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    mixed = discover(claude_home=claude_home, which=lambda _name: None)
+    assert mixed.pointing_at_verdict is True
+    assert mixed.pointing_at_omniroute is True

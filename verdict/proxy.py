@@ -127,13 +127,17 @@ class UpstreamProxy:
         """Describe the configured executable route without reading gateway state."""
 
         provider = model.split("/", 1)[0] if "/" in model else "configured-upstream"
+        if protocol == "openai.responses":
+            endpoint_path = "responses"
+        elif protocol == "anthropic.messages":
+            endpoint_path = "messages"
+        else:
+            endpoint_path = "chat/completions"
         return RouteIdentity(
             gateway="verdict-upstream",
             provider=provider,
             connection="configured",
-            endpoint=self._url(
-                "responses" if protocol == "openai.responses" else "chat/completions"
-            ),
+            endpoint=self._url(endpoint_path),
             protocol=protocol,
             model_id=model,
         )
@@ -261,6 +265,17 @@ class UpstreamProxy:
             compatibility_rule_version=compatibility_rule_version,
         )
 
+    async def messages(
+        self, payload: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> BufferedUpstreamResponse | StreamedUpstreamResponse:
+        """Forward an Anthropic Messages request without adapting the payload.
+
+        The gateway binding already ends in ``/v1``, so the joined path is
+        ``/v1/messages``. The gateway translates; this method does not.
+        """
+
+        return await self._forward("messages", payload, idempotency_key=idempotency_key)
+
     async def _forward(
         self,
         path: str,
@@ -283,11 +298,13 @@ class UpstreamProxy:
             json_payload=payload,
         )
         requested_model = payload.get("model") if isinstance(payload.get("model"), str) else None
-        protocol = (
-            "openai.responses"
-            if path.rstrip("/").endswith("responses")
-            else "openai.chat.completions"
-        )
+        normalized_path = path.rstrip("/")
+        if normalized_path.endswith("messages"):
+            protocol = "anthropic.messages"
+        elif normalized_path.endswith("responses"):
+            protocol = "openai.responses"
+        else:
+            protocol = "openai.chat.completions"
         if payload.get("stream") is not True:
             try:
                 response = await client.send(request)
