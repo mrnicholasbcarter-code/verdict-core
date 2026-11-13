@@ -83,9 +83,8 @@ class StreamOutcome:
 class SSETerminalParser:
     """Chunk-boundary-independent SSE framing plus terminal-state tracking.
 
-    Feeding the same bytes as one chunk, byte-by-byte, or with multibyte UTF-8
-    sequences split across chunk edges produces identical results. Bytes are
-    never re-emitted here; callers yield the original chunks unchanged.
+    Feeding the same bytes in any chunking (including split multibyte UTF-8)
+    produces identical results; bytes are never re-emitted here.
     """
 
     def __init__(
@@ -154,9 +153,8 @@ class SSETerminalParser:
     def finalize(self) -> StreamOutcome:
         """Consume transport EOF and return the one terminal outcome.
 
-        Protocol violations and EOF without a semantic terminal raise
-        :class:`StreamProtocolError` after the outcome is recorded, so the
-        outcome is always observable even when finalization fails.
+        Protocol violations raise :class:`StreamProtocolError` after the
+        outcome is recorded, so the outcome stays observable.
         """
 
         if self._outcome is not None:
@@ -174,15 +172,13 @@ class SSETerminalParser:
             detail = None if self._done else "stream ended without a terminal event"
             terminal_event = "chat_done" if self._done else None
         elif self._surface == "messages":
-            if self._messages_stop and self._content_seen:
-                state = StreamState.SUCCESS
-                detail = None
-            elif self._messages_stop:
-                state = StreamState.INCOMPLETE
-                detail = "message_stop arrived without content"
-            else:
-                state = StreamState.ABRUPT_EOF
-                detail = "stream ended without a terminal event"
+            state, detail = (
+                (StreamState.INCOMPLETE, "message_stop arrived without content")
+                if self._messages_stop and not self._content_seen
+                else (StreamState.SUCCESS, None)
+                if self._messages_stop
+                else (StreamState.ABRUPT_EOF, "stream ended without a terminal event")
+            )
             terminal_event = "message_stop" if self._messages_stop else None
         else:
             if self._responses_terminal == "response.completed":
@@ -289,32 +285,25 @@ class SSETerminalParser:
         if event_type == "ping":
             return
         message = parsed.get("message")
-        if isinstance(message, dict):
-            model = message.get("model")
-            if isinstance(model, str) and model.strip():
-                self._models.append(model)
+        model = message.get("model") if isinstance(message, dict) else None
+        if isinstance(model, str) and model.strip():
+            self._models.append(model)
         usage = parsed.get("usage")
         if isinstance(usage, dict):
             self._usage = usage
-        if event_type == "content_block_start":
+        delta = parsed.get("delta")
+        delta = delta if isinstance(delta, dict) else {}
+        content_events = {"content_block_start", "content_block_stop"}
+        if event_type in content_events or (
+            event_type == "content_block_delta" and delta.get("type") not in {None, ""}
+        ):
             self._content_seen = True
-            return
-        if event_type == "content_block_delta":
-            delta = parsed.get("delta")
-            if isinstance(delta, dict) and delta.get("type") not in {None, ""}:
-                self._content_seen = True
-            return
-        if event_type == "content_block_stop":
-            self._content_seen = True
-            return
-        if event_type == "message_delta":
-            delta = parsed.get("delta")
-            reason = delta.get("stop_reason") if isinstance(delta, dict) else None
+        elif event_type == "message_delta":
+            reason = delta.get("stop_reason")
             if isinstance(reason, str):
                 self._finish_reasons.append(reason)
                 self._content_seen = True
-            return
-        if event_type == "message_stop":
+        elif event_type == "message_stop":
             self._messages_stop = True
 
     def _fail(self, message: str) -> NoReturn:
@@ -333,9 +322,8 @@ class SSETerminalParser:
 class CloseOnce:
     """Call the wrapped object's ``aclose`` exactly once, absorbing repeats.
 
-    A repeated (or concurrent) close is a no-op. A close error is recorded and
-    returned, never re-raised: cleanup errors are terminal-outcome data, not a
-    reason to abandon the outcome that is already recorded.
+    A repeated close is a no-op; a close error is recorded and returned, never
+    re-raised: cleanup errors are outcome data, not a reason to abandon it.
     """
 
     def __init__(self, upstream: Any) -> None:
@@ -369,9 +357,7 @@ class PrimedBody:
     """A first-chunk-primed body that always closes its source exactly once.
 
     The first chunk is buffered (the relay commits to a client stream only
-    after it), the rest streams straight through. Because there is no
-    generator between this wrapper and the validated stream, ``aclose`` always
-    reaches the source even if the body was never iterated.
+    after it); ``aclose`` always reaches the source even if never iterated.
     """
 
     def __init__(self, body: AsyncIterator[bytes], first: bytes) -> None:
@@ -397,8 +383,8 @@ class PrimedBody:
 async def prime_stream(body: AsyncIterator[bytes]) -> PrimedBody:
     """Read the first chunk before the stream is committed to a consumer.
 
-    Priming never opens a second upstream: the validated stream stays the sole
-    owner of the transport, and an empty stream closes it before failing.
+    The validated stream stays the sole owner of the transport; an empty
+    stream closes it before failing.
     """
 
     try:
@@ -414,13 +400,9 @@ async def prime_stream(body: AsyncIterator[bytes]) -> PrimedBody:
 class ValidatedSSEStream:
     """Validate SSE framing while yielding the original bytes unchanged.
 
-    The stream owns one :class:`SSETerminalParser` and one :class:`CloseOnce`.
-    However it ends — completion, protocol violation, cancellation, an
-    upstream transport error or explicit close — it records exactly one
-    :class:`StreamOutcome` and closes the real upstream exactly once. The semantic terminal
-    (:attr:`terminal`) is independent of transport EOF; only a successful
-    semantic terminal makes
-    :attr:`outcome`.``checked_success`` true.
+    Owns one :class:`SSETerminalParser` and one :class:`CloseOnce`; however it
+    ends it records exactly one :class:`StreamOutcome` and closes the upstream
+    once. Only a successful semantic terminal makes ``checked_success`` true.
     """
 
     def __init__(
@@ -483,10 +465,9 @@ class ValidatedSSEStream:
         return self._parser.outcome
 
     async def aclose(self) -> None:
-        """Close the real upstream exactly once and record one abort outcome.
+        """Close the real upstream once and record one abort outcome.
 
-        Idempotent: after a completed stream the recorded outcome (success,
-        failed, incomplete, protocol error, abrupt EOF) is preserved; only a
+        Idempotent: a completed stream keeps its recorded outcome; only a
         still-open stream records an abort.
         """
 
@@ -515,13 +496,9 @@ class ValidatedSSEStream:
 def identity_proof_status(selected: str, served: str | None, *, attested: bool) -> str:
     """Normalize an attempt's served identity into a proof status (E1/E2/E3).
 
-    E1 — substitution: a concrete selected model that a gateway served as a
-    different model can never mint proof (``fatal_identity_mismatch``); a
-    provider-local id for the namespaced selection preserves identity.
-    E2 — opacity: an opaque alias never attests a concrete member route, so
-    it stays unverifiable and protected work fails closed on it.
-    E3 — attestation: without a served identity or an adapter attestation the
-    receipt can only record ``"unavailable"``; it never becomes verified.
+    E1 — a substituted concrete model never mints proof; E2 — an opaque alias
+    stays unverifiable; E3 — without served identity or attestation the
+    receipt records ``"unavailable"``, never verified.
     """
 
     if is_opaque_alias(selected):
