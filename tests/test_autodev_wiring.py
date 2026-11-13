@@ -711,11 +711,17 @@ def _route_verdict(
     )
 
 
-def _ladder(verdicts: Sequence[RouteVerdict], built: dict[str, Any] | None = None) -> Any:
+def _ladder(
+    verdicts: Sequence[RouteVerdict],
+    built: dict[str, Any] | None = None,
+    requirements: list[Any] | None = None,
+) -> Any:
     """Fake ``build_selector`` result whose ``select`` returns ``verdicts``."""
 
     class _Selector:
-        def select(self, requirements: Any, *, now: Any) -> Any:
+        def select(self, req: Any, *, now: Any) -> Any:
+            if requirements is not None:
+                requirements.append(req)
             return None, tuple(verdicts)
 
     def build_selector(gateway: str, **kwargs: Any) -> Any:
@@ -732,24 +738,36 @@ def _scripted_probe(
     *,
     answers: Mapping[str, str] | None = None,
     costs: Mapping[str, str] | None = None,
+    served: Mapping[str, str | None] | None = None,
 ) -> list[str]:
-    """Scripted probe transport per route; returns the list of probed route ids."""
+    """Scripted probe transport per route; returns the list of probed route ids.
+
+    ``served`` maps a route id to the ``x-omniroute-model`` header value the
+    gateway reports for it; ``None`` omits the header. Routes not in the map
+    report the route id minus its first segment, the historical default.
+    """
     probed: list[str] = []
-    served: dict[str, str] = {}
+    headers: dict[str, str] = {}
     reply = dict(answers or {})
     price = dict(costs or {})
+    served_map = dict(served or {})
 
     class Response:
         def __init__(self) -> None:
-            self.headers = dict(served)
+            self.headers = dict(headers)
 
     monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
 
     def factory(base_url: str, **kwargs: Any) -> Any:
         def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
             probed.append(model)
-            served["x-omniroute-model"] = model.split("/", 1)[1]
-            served["x-omniroute-response-cost"] = price.get(model, "0")
+            if model in served_map:
+                value = served_map[model]
+                if value is not None:
+                    headers["x-omniroute-model"] = value
+            else:
+                headers["x-omniroute-model"] = model.split("/", 1)[1]
+            headers["x-omniroute-response-cost"] = price.get(model, "0")
             kwargs["opener"](None, timeout=1)
             content = reply.get(model, "OK")
             return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
@@ -2234,6 +2252,304 @@ def test_retry_selection_accepts_subscription_candidates_from_live_selection(
     assert [c["selection_reason"] for c in remaining]
     assert retry.selected_route.model == remaining[0]["route_id"]
     assert "capacity=subscription" in remaining[0]["selection_reason"]
+
+
+# ── autodev-executor-ladder acceptance tests ──────────────────────────────
+
+
+def test_prepare_live_autodev_selected_admits_provider_prefixed_served_model(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1.1 A provider-prefixed served-model header admits the route."""
+    import verdict.autodev_run as autodev
+
+    route_a = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    route_b = "devin-desktop/swe-2-flash-medium"
+    verdicts = [
+        _route_verdict(route_a, rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(route_b, rank=1, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    # route_a gateway header is provider-prefixed: "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    probed = _scripted_probe(monkeypatch, served={route_a: route_a})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == [route_a, route_b]
+    assert dropped == ()
+    assert [item["route_id"] for item in candidates] == [route_a, route_b]
+    assert decision.selected_route.model in {route_a, route_b}
+
+
+def test_prepare_live_autodev_selected_drops_other_served_model_as_identity(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1.2 Another served model is dropped as identity."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch, served={FREE_A: "wrong-model"})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == [FREE_A, FREE_B]
+    assert dropped == ({"route_id": FREE_A, "reason": "identity"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+    assert decision.selected_route.model == FREE_B
+
+
+def test_prepare_live_autodev_selected_drops_missing_served_model_as_identity(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1.3 A response without a served-model header is dropped as identity."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    # None indicates missing header
+    probed = _scripted_probe(monkeypatch, served={FREE_A: None})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert probed == [FREE_A, FREE_B]
+    assert dropped == ({"route_id": FREE_A, "reason": "identity"},)
+    assert [item["route_id"] for item in candidates] == [FREE_B]
+    assert decision.selected_route.model == FREE_B
+
+
+@pytest.mark.parametrize(
+    ("served_header", "should_admit"),
+    [("provider/model:free", True), ("model:free", True), ("other-model:free", False)],
+)
+def test_prepare_live_autodev_pinned_probe_accepts_both_served_model_forms(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, served_header: str, should_admit: bool
+) -> None:
+    """1.4 The pinned probe accepts a provider-prefixed header and refuses another model before planning."""
+    import verdict.autodev_run as autodev
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": served_header, "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    if not should_admit:
+        with pytest.raises(AutodevError, match="probe failed"):
+            autodev.prepare_live_autodev(
+                "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+            )
+        return
+
+    decision, plan, _headers = autodev.prepare_live_autodev(
+        "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+    )
+    assert decision.selected_route.model == "provider/model:free"
+    assert len(plan.units) == 2
+
+
+def test_prepare_live_autodev_selected_backfills_after_probe_failures(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2.1 Lower-ranked routes are probed after higher-ranked probes fail."""
+    import verdict.autodev_run as autodev
+
+    # Four routes from four distinct model families:
+    # 0: groq (gpt) - probe fails
+    # 1: gemini - probe fails
+    # 2: mistral - probe passes
+    # 3: qwen - probe passes
+    r0 = "groq/openai/gpt-oss-120b"
+    r1 = "antigravity/gemini-3.1-flash-lite"
+    r2 = "mistral/codestral-latest"
+    r3 = "groq/qwen/qwen3.8-27b"
+    verdicts = [
+        _route_verdict(r0, rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(r1, rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(r2, rank=2, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(r3, rank=3, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch, answers={r0: "not OK", r1: "not OK"})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key", top_n=2
+    )
+
+    assert probed == [r0, r1, r2, r3]
+    assert dropped == ({"route_id": r0, "reason": "content"}, {"route_id": r1, "reason": "content"})
+    assert [item["route_id"] for item in candidates] == [r2, r3]
+    assert decision.selected_route.model in {r2, r3}
+
+
+def test_prepare_live_autodev_selected_stops_at_top_n_admitted_routes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2.2 The walk stops at top_n admitted routes."""
+    import verdict.autodev_run as autodev
+
+    # Five routes from five distinct families:
+    routes = [
+        "mistral/codestral-latest",  # codestral
+        "antigravity/gemini-3.1-flash-lite",  # gemini
+        "gc/grok-4.5",  # grok
+        "groq/qwen/qwen3.8-27b",  # qwen
+        "devin-desktop/swe-2-flash-medium",  # swe
+    ]
+    verdicts = [
+        _route_verdict(r, rank=i, capacity=CapacityClass.SUBSCRIPTION) for i, r in enumerate(routes)
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key", top_n=3
+    )
+
+    assert probed == routes[:3]
+    assert dropped == ()
+    assert [item["route_id"] for item in candidates] == routes[:3]
+
+
+def test_prepare_live_autodev_selected_probes_each_family_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2.3 A model family is probed once, whether its probe passed or failed."""
+    import verdict.autodev_run as autodev
+
+    # r0 and r1 are both in the "gpt" family
+    # r0 probe fails, r1 must NOT be probed even though r0 failed
+    r0 = "groq/openai/gpt-oss-120b"
+    r1 = "groq/openai/gpt-oss-20b"
+    r2 = "antigravity/gemini-3.1-flash-lite"
+    verdicts = [
+        _route_verdict(r0, rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(r1, rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(r2, rank=2, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch, answers={r0: "not OK"})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key", top_n=3
+    )
+
+    assert probed == [r0, r2]
+    assert dropped == ({"route_id": r0, "reason": "content"},)
+    assert [item["route_id"] for item in candidates] == [r2]
+
+
+def test_prepare_live_autodev_selected_stops_at_the_probe_budget(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2.4 The walk stops at eight probes and names every probed route."""
+    import verdict.autodev_run as autodev
+
+    # Ten distinct families, all answering not OK
+    routes = [f"free/r{i}:free" for i in range(10)]
+    verdicts = [_route_verdict(r, rank=i) for i, r in enumerate(routes)]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch, answers={r: "not OK" for r in routes})
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key", top_n=3
+        )
+
+    assert probed == routes[:8]
+    message = str(excinfo.value)
+    assert "probed 8 free route(s) and none answered correctly" in message
+    for r in routes[:8]:
+        assert f"{r}=content" in message
+    for r in routes[8:]:
+        assert r not in message
+
+
+def test_prepare_live_autodev_selected_excludes_reserved_pools_in_the_executor_request(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """3.1 The executor ladder request excludes the claude and codex pools."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    requirements_seen: list[Any] = []
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder(verdicts, requirements=requirements_seen),
+    )
+    _scripted_probe(monkeypatch)
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    assert len(requirements_seen) >= 1
+    req = requirements_seen[0]
+    assert req.exclude_pools == frozenset({"claude", "codex"})
+
+
+def test_live_planner_models_excludes_reserved_pools_in_the_planner_request() -> None:
+    """3.2 The planner ladder request excludes the claude and codex pools."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
+    requirements_seen: list[Any] = []
+
+    class _Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            requirements_seen.append(req)
+            return None, tuple(verdicts)
+
+    autodev._live_planner_models(_Selector(), top_n=3)
+
+    assert len(requirements_seen) == 1
+    req = requirements_seen[0]
+    assert req.exclude_pools == frozenset({"claude", "codex"})
 
 
 # ── BOD-432: live-probe receipt freshness and named refusals ────────────────
