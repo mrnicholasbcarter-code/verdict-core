@@ -105,6 +105,7 @@ hardening pass (successor for ADR-023).
 | [036](ADR-036-goal-to-receipt-orchestration.md) — Goal-to-receipt orchestration | Frontier DAG, capacity-aware eligibility ladder, same-node reassignment, independent OCR review, fail-closed receipt, supervised controller | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (live runs + fresh-clone certification) | Scope successor to ADR-023 for multi-worker execution |
 | [037](ADR-037-supervisor-concurrency-governor.md) — Supervisor concurrency governor | Bounded concurrent stories under one supervisor; `VERDICT_MULTI_STORY` off by default | Accepted | *(new — pending ecosystem re-audit)* | PARTIALLY_TRUE | — |
 | [038](ADR-038-improvement-cycle.md) — Measured improvement cycle | `verdict improve`: bounded cycles above a supervised run, measured only from recomputable receipt evidence, deterministic lessons, unchanged-relaunch refusal | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (offline tests + live cycles 2026-10-12) | Amends ADR-036 |
+| [040](ADR-040-policy-enforcement-contract.md) — Policy enforcement contract | Native dispatch/resume, review/integration, and Done/learning gates enforcing packet validity and exact source identity | **Proposed** | *(new — pending ecosystem re-audit)* | *(pending enforcement implementation)* | Supersedes ADR-016 and ADR-036 in part for lifecycle boundaries |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
