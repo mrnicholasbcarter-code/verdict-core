@@ -1022,12 +1022,31 @@ async def run_golden_path(
         # BOD-340: the approved operator policy is the single authority for
         # native execution boundaries; fail closed before any planning or
         # dispatch.  Memory retrieval never approves or promotes rules.
-        from verdict.operator_policy import PolicyUnavailableError, load_policy_source
+        from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
 
         try:
-            _policy_source = load_policy_source()
+            _policy_verdict, _policy_audit = admit_action(
+                ActionContext(
+                    action="orchestrate.run",
+                    argv=("verdict", "orchestrate"),
+                    cwd=str(repo),
+                    worktree=str(repo),
+                    linear_issue=(openspec_block or {}).get("linear_issue"),
+                    acceptance_criteria=tuple(
+                        str(item) for item in (openspec_block or {}).get("acceptance_criteria", ())
+                    ),
+                )
+            )
         except PolicyUnavailableError as exc:
             admission_reason = f"operator policy unavailable: {exc}"
+            return _blocked_before_plan(run_dir, admission_reason)
+        if not _policy_verdict.allowed:
+            admission_reason = f"operator policy denied: {_policy_verdict.reason}"
+            events.emit(
+                "operator_policy_denied",
+                decision_id=_policy_audit["decision_id"],
+                reason=_policy_verdict.reason,
+            )
             return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).

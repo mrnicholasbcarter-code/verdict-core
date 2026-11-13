@@ -556,3 +556,58 @@ def audit_record(
         "argv_fingerprint": fingerprint_text(argv_text) if argv_text else None,
         "at": timestamp or _iso_now(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Boundary admission (production caller for evaluate/override/audit)
+# ---------------------------------------------------------------------------
+
+
+class _MemoryNonceStore:
+    """Process-local single-use nonce record. Not durable across restarts."""
+
+    def __init__(self) -> None:
+        self._used: set[str] = set()
+
+    def used(self, nonce: str) -> bool:
+        return nonce in self._used
+
+    def record(self, nonce: str) -> None:
+        self._used.add(nonce)
+
+
+_NONCE_STORE = _MemoryNonceStore()
+
+
+def admit_action(
+    context: ActionContext,
+    *,
+    source: PolicySource | None = None,
+    override_token: dict[str, Any] | None = None,
+    nonce_store: Any | None = None,
+    now: datetime | None = None,
+) -> tuple[PolicyVerdict, dict[str, Any]]:
+    """Evaluate one protected action and return the secret-free audit record.
+
+    Loads the approved source (fail closed on missing/corrupt/stale policy),
+    evaluates the action, and when a matching deny rule requires an override
+    validates the supplied token through :func:`check_override_token`. A
+    validated override is the only path that turns that deny into allow.
+    Memory text is never consulted.
+    """
+    loaded = source if source is not None else load_policy_source()
+    verdict = evaluate_action(context, loaded)
+    if verdict.override_required and verdict.rule_id is not None and override_token is not None:
+        rule = next(item for item in loaded.rules if item.rule_id == verdict.rule_id)
+        store = nonce_store if nonce_store is not None else _NONCE_STORE
+        check_override_token(override_token, loaded, rule, nonce_store=store, now=now)
+        canon = _canonicalize(context)
+        verdict = PolicyVerdict(
+            decision=Decision.ALLOW,
+            rule_id=verdict.rule_id,
+            reason=f"override_accepted:{verdict.rule_id}",
+            decision_id=_decision_id(loaded.digest, verdict.rule_id, canon),
+            policy_digest=loaded.digest,
+            override_required=False,
+        )
+    return verdict, audit_record(verdict, context)

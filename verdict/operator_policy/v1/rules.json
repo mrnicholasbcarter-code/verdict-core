@@ -12,6 +12,44 @@
   "notes": "Source-bound operator safety/workflow rules enforced in CODE before side effects. Memory pages are evidence only; retrieval never approves or promotes rules.",
   "rules": [
     {
+      "rule_id": "pol.allow-lifecycle-admission",
+      "title": "Lifecycle admission of an already-tracked story is allowed",
+      "effect": "allow",
+      "scope": "lifecycle.admit",
+      "matcher": {
+        "actions": ["story.ready", "supervise.admit", "worker.admit", "orchestrate.run"]
+      },
+      "deny_reason": "",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 80,
+      "decision_refs": [
+        "BOD-340: the approved policy drives READY, supervise, worker and orchestrate admission"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.allow-source-edit-with-issue",
+      "title": "Source edit or branch creation is allowed when a tracked issue and acceptance criteria are present",
+      "effect": "allow",
+      "scope": "source.write",
+      "matcher": {
+        "actions": ["source.edit", "branch.create"],
+        "requires_linear_issue": true,
+        "requires_acceptance_criteria": true
+      },
+      "deny_reason": "",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 20,
+      "decision_refs": [
+        "AGENTS.md release train: one story = one branch"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
       "rule_id": "pol.require-tracked-issue-ac",
       "title": "Source edit or branch creation requires a valid tracked BOD issue plus acceptance criteria",
       "effect": "deny",
