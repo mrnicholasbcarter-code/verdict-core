@@ -114,7 +114,7 @@ class SSETerminalParser:
         self._models: list[str] = []
         self._responses_terminal: str | None = None
         self._messages_stop = False
-        self._content_blocks = 0
+        self._content_seen = False
         self._outcome: StreamOutcome | None = None
 
     @property
@@ -174,12 +174,12 @@ class SSETerminalParser:
             detail = None if self._done else "stream ended without a terminal event"
             terminal_event = "chat_done" if self._done else None
         elif self._surface == "messages":
-            if self._messages_stop and self._content_blocks:
+            if self._messages_stop and self._content_seen:
                 state = StreamState.SUCCESS
                 detail = None
             elif self._messages_stop:
                 state = StreamState.INCOMPLETE
-                detail = "message_stop arrived without a content block"
+                detail = "message_stop arrived without content"
             else:
                 state = StreamState.ABRUPT_EOF
                 detail = "stream ended without a terminal event"
@@ -296,14 +296,23 @@ class SSETerminalParser:
         usage = parsed.get("usage")
         if isinstance(usage, dict):
             self._usage = usage
+        if event_type == "content_block_start":
+            self._content_seen = True
+            return
+        if event_type == "content_block_delta":
+            delta = parsed.get("delta")
+            if isinstance(delta, dict) and delta.get("type") not in {None, ""}:
+                self._content_seen = True
+            return
         if event_type == "content_block_stop":
-            self._content_blocks += 1
+            self._content_seen = True
             return
         if event_type == "message_delta":
             delta = parsed.get("delta")
             reason = delta.get("stop_reason") if isinstance(delta, dict) else None
             if isinstance(reason, str):
                 self._finish_reasons.append(reason)
+                self._content_seen = True
             return
         if event_type == "message_stop":
             self._messages_stop = True

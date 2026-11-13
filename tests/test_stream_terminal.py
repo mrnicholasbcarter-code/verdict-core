@@ -459,6 +459,44 @@ async def test_messages_message_stop_after_content_is_checked_success() -> None:
     assert validated.outcome.usage == {"output_tokens": 1}
 
 
+async def test_messages_delta_content_without_block_stop_still_succeeds() -> None:
+    """A valid Anthropic stream may omit content_block_stop entirely.
+
+    ``content_block_delta`` events carry the content and ``message_delta``
+    carries the stop reason; ``message_stop`` after either is a checked
+    success, not an INCOMPLETE.
+    """
+    wire = b"".join(
+        [
+            b'event: message_start\ndata: {"type":"message_start","message":{"model":"m"}}\n\n',
+            b'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+            b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+    )
+    validated = ValidatedSSEStream(CloseCountingStream([wire]), surface="messages")
+    assert await drain(validated) == wire
+    assert validated.outcome is not None
+    assert validated.outcome.checked_success
+    assert validated.outcome.state == StreamState.SUCCESS
+    assert validated.outcome.finish_reasons == ("end_turn",)
+
+
+async def test_messages_message_stop_without_any_content_is_incomplete() -> None:
+    wire = b"".join(
+        [
+            b'event: message_start\ndata: {"type":"message_start"}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+    )
+    validated = ValidatedSSEStream(CloseCountingStream([wire]), surface="messages")
+    with pytest.raises(StreamProtocolError):
+        await drain(validated)
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.INCOMPLETE
+    assert not validated.outcome.checked_success
+
+
 async def test_messages_eof_before_message_stop_is_abrupt() -> None:
     payload = b'event: message_start\ndata: {"type":"message_start"}\n\n'
     validated = ValidatedSSEStream(CloseCountingStream([payload]), surface="messages")
