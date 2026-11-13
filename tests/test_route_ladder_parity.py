@@ -201,9 +201,40 @@ def test_serve_uses_only_ladder_candidates_in_ladder_order(monkeypatch, tmp_path
     ]
 
 
-def test_allow_legacy_selector_flag(
-    live_pool: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+def test_allow_legacy_selector_flag_uses_the_gate_and_never_the_ladder(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from verdict.models import RoutingDecision
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+
+    built: list[bool] = []
+    contexts: list[Any] = []
+
+    class _LegacyGate:
+        def route(self, task: str, criticality: str, context: Any = None) -> RoutingDecision:
+            del task, criticality
+            contexts.append(context)
+            return RoutingDecision(
+                model="legacy/route",
+                provider="omniroute",
+                tier=3,
+                reason="legacy stub",
+                decision="selected",
+                transport_outcome="sent",
+                request_id="req-legacy",
+            )
+
+    def build(allow_offline: bool = False) -> _LegacyGate:
+        built.append(allow_offline)
+        return _LegacyGate()
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("--allow-legacy-selector reached the selection ladder")
+
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", build)
+    monkeypatch.setattr("verdict.orchestration.selection.select_route_for_task", forbidden)
     monkeypatch.setattr(
         "sys.argv",
         ["verdict", "route", "fix a failing unit test", "--allow-legacy-selector", "--terse"],
@@ -211,4 +242,11 @@ def test_allow_legacy_selector_flag(
     try:
         cli.main()
     except SystemExit as exc:
-        assert exc.code in {0, 1}
+        assert exc.code in (0, None)
+
+    # The flag builds the legacy gate once, online, and prints the gate's route, not the
+    # ladder's ("free/weak" for this inventory). The escape is recorded on the request.
+    assert built == [False]
+    assert capsys.readouterr().out == "legacy/route\n"
+    assert len(contexts) == 1
+    assert contexts[0][CONTEXT_ALLOW_LEGACY] is True
