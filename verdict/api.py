@@ -2605,6 +2605,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     response_headers.update(_evidence_headers(route_evidence))
 
     if isinstance(result, BufferedUpstreamResponse):
+        from verdict.orchestration.eligibility import selection_accounting
+
         if result.status_code < 400 and response_actual_route_status(result) != "mismatch":
             from verdict.admit_prove_confirm import record_dispatch_observation
 
@@ -2631,6 +2633,11 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         if result.status_code >= 400
                         and "free_supply_unknown" in decision.safety_flags
                         else {}
+                    ),
+                    "selection_accounting": selection_accounting(
+                        decision.candidate_states,
+                        attempted=[row["model"] for row in attempts_used],
+                        authority_expired=budget_exhausted,
                     ),
                     "compatibility_rule_version": result.compatibility_rule_version,
                     # Recorded, not enforced: names only, never header values.

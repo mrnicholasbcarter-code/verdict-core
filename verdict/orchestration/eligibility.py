@@ -248,6 +248,85 @@ class _Assessment:
         )
 
 
+def selection_accounting(
+    routes: Sequence[Mapping[str, Any]],
+    *,
+    attempted: Sequence[str] = (),
+    authority_expired: bool = False,
+) -> dict[str, Any]:
+    """Project existing gate evidence and actual sends; never admit or rank routes.
+
+    Actual free sends take precedence over later negatives on the same route.
+    Only explicit authority termination marks otherwise eligible unsent supply.
+    """
+    sent = set(attempted)
+    classes: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+    negative = {
+        "quota_exhausted",
+        "quota_low",
+        "payment_required",
+        "authentication",
+        "permission",
+        "catalog_stale",
+        "provider_rate_limited",
+        "rate_limited",
+        "newer_negative",
+        "unavailable",
+        "failed",
+    }
+    for row in routes:
+        route = str(row.get("route_id") or row.get("model_id") or "")
+        if not route or route.lower().startswith(_OPAQUE_PREFIXES):
+            continue
+        capacity = row.get("capacity_class")
+        free = capacity == CapacityClass.FREE or row.get("capacity_order") == 0
+        reason = str(row.get("reason") or "")
+        code = reason.removeprefix("admission:")
+        eligible = row.get("admitted") is True or (
+            row.get("failed_stage") is None and row.get("reached") in ("TASK_ELIGIBLE", "SELECTED")
+        )
+        if route in sent and free:
+            category = "eligible_free_attempted"
+        elif code in negative or code.startswith("cooldown:"):
+            category = "known_unavailable"
+        elif (
+            row.get("failed_stage")
+            and code
+            not in {
+                "at_capacity",
+                "excluded_route",
+                "excluded_pool",
+                "excluded_family",
+                "effort_duplicate",
+            }
+        ) or (row.get("admitted") is False and reason):
+            category = "unqualified_supply"
+        elif authority_expired and eligible and route not in sent:
+            category = "eligible_unattempted_authority_expired"
+        else:
+            continue
+        if classes.get(route) == "eligible_free_attempted":
+            continue
+        classes[route] = category
+        reasons[route] = reason
+    block: dict[str, Any] = {
+        key: sorted(route for route, category in classes.items() if category == key)
+        for key in (
+            "eligible_free_attempted",
+            "known_unavailable",
+            "unqualified_supply",
+            "eligible_unattempted_authority_expired",
+        )
+    }
+    for category, key in (
+        ("known_unavailable", "known_unavailable_reasons"),
+        ("unqualified_supply", "unqualified_reasons"),
+    ):
+        block[key] = [{"route_id": route, "reason": reasons[route]} for route in block[category]]
+    return block
+
+
 class EligibilityLadder:
     def __init__(
         self,
@@ -1061,7 +1140,11 @@ class EligibilityLadder:
         Keys: ``probed``, ``stale``, ``healthy_after_probe``,
         ``eligible_after_probe``.  Empty dict before the first call.
         """
-        return dict(getattr(self._select_stats, "value", {}))
+        stats = dict(getattr(self._select_stats, "value", {}))
+        accounting = getattr(self, "_last_accounting", None)
+        if accounting:
+            stats["selection_accounting"] = accounting
+        return stats
 
     def select(
         self, requirements: TaskRequirements, *, now: datetime
@@ -1119,6 +1202,15 @@ class EligibilityLadder:
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         probe_order = self._probe_order(candidates)
+        # BOD-297: selection confirmation joins the shared coordinator lease;
+        # never probe while another producer owns the job.
+        health_cache = getattr(self, "_health_cache", None)
+        if health_cache is not None:
+            from verdict.orchestration.verified_refresh import _JobLock
+
+            _lock_path = health_cache.path.parent / "verified-refresh.lock"
+            if _JobLock(_lock_path).live():
+                probe_order = []
         for a in probe_order:
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
@@ -1207,6 +1299,18 @@ class EligibilityLadder:
             )
         verdicts: list[RouteVerdict] = []
         selected: RouteVerdict | None = None
+        accounting = selection_accounting(
+            [
+                {
+                    "route_id": a.route_id,
+                    "capacity_class": a.capacity,
+                    "failed_stage": a.failed_stage.value if a.failed_stage else None,
+                    "reached": a.reached.value if a.reached else None,
+                    "reason": a.reason,
+                }
+                for a in assessments
+            ]
+        )
         for a in assessments:
             if chosen is not None and a.route_id == chosen.route_id:
                 selected = RouteVerdict(
@@ -1246,6 +1350,20 @@ class EligibilityLadder:
                         ),
                     )
                 )
+        # Carry the full classification through the existing candidate-event
+        # path, including when no route is selected or candidate rows are capped.
+        from dataclasses import replace
+
+        accounting = selection_accounting([v.to_dict() for v in verdicts])
+        verdicts = [
+            replace(
+                v, rank_components={**(v.rank_components or {}), "selection_accounting": accounting}
+            )
+            for v in verdicts
+        ]
+        if selected is not None:
+            selected = next(v for v in verdicts if v.route_id == selected.route_id)
+        self._last_accounting = accounting
         self._last_verdicts = tuple(verdicts)
         final_verdicts = tuple(verdicts)
         # Compute post-probe stats for callers that need them (e.g. event emitters).
@@ -1426,6 +1544,20 @@ class EligibilityLadder:
                 "checked_at": _iso(now),
             }
             self._persist()
+
+    def effort_model_rows(self) -> dict[str, dict[str, Any]]:
+        """Allowlisted effort facts from inventory already fetched for selection.
+
+        Production callers use this instead of reading private rows. Price,
+        secrets and other inventory fields are not included.
+        """
+        from verdict.orchestration.effort import allowlisted_effort_facts
+
+        return {
+            route_id: allowlisted_effort_facts(row)
+            for route_id, row in self._rows.items()
+            if route_id
+        }
 
     def summary(self) -> dict[str, int]:
         order = list(EligibilityStage)

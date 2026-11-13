@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 if TYPE_CHECKING:
     from verdict.orchestration.contracts import WorkerExecutor, WorkerTerminal
 
+from verdict.orchestration.contracts import EFFORT_OMITTED
+
 STATE_FILE = "controller-operations.json"
 RUN_DIR_ENV = "VERDICT_SUPERVISED_RUN_DIR"
 CGROUP_ROOT_ENV = "VERDICT_CONTROLLER_CGROUP_ROOT"
@@ -361,6 +363,7 @@ async def bounded_executor_call(
     run_dir: Path | None,
     phase: str,
     attempt_id: str,
+    effort: Any = EFFORT_OMITTED,
 ) -> WorkerTerminal:
     """Bound the whole initial/repair call, including direct HTTP multi-phase I/O.
 
@@ -370,7 +373,7 @@ async def bounded_executor_call(
     fire for an executor that does not honour its timeout.
     """
     # Lazy import keeps the self-registering launcher lightweight and standalone.
-    from verdict.orchestration.contracts import WorkerTerminal
+    from verdict.orchestration.contracts import WorkerTerminal, run_executor
 
     started = time.monotonic()
     with operation_scope(
@@ -378,11 +381,13 @@ async def bounded_executor_call(
     ):
         try:
             return await asyncio.wait_for(
-                executor.run(
+                run_executor(
+                    executor,
                     prompt,
                     route_id=route_id,
                     cwd=cwd,
                     timeout_seconds=executor_timeout_within(timeout_seconds),
+                    effort=effort,
                 ),
                 timeout_seconds,
             )

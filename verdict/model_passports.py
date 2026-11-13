@@ -385,10 +385,11 @@ def run_qualification(
         )
         if deep:
             # Tier-2 deep probe re-verifies the route under a wider, tool-bearing
-            # payload; the probe transport does not surface response bodies, so
-            # tool support itself comes from the catalog capability plus a live
-            # healthy re-check.
-            _run_tier2(probe, model_id, transport, live, consented)
+            # payload. Tool support is minted only from an observed tool-call
+            # receipt, never from catalog capability alone.
+            deep_ok = _run_tier2(probe, model_id, transport, live, consented)
+            if require_tools:
+                tool_support = bool(tool_support and deep_ok)
         if require_tools and not tool_support:
             state = "degraded"
             reason = "tool_support_unavailable"
@@ -481,7 +482,9 @@ def _run_tier2(
         provider="tier2",
         budget=ProbeBudget(provider="tier2", max_requests=1, max_tokens=64),
     )
-    return bool(results and results[0].availability_state == "ready")
+    # Tool support exists only when the deep probe actually observed a tool
+    # call; a healthy text-only answer is availability evidence, not a receipt.
+    return bool(results and results[0].availability_state == "ready" and results[0].tool_called)
 
 
 def _failed_observation(model_id: str) -> ProbeObservation:
