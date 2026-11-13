@@ -258,9 +258,11 @@ def test_live_confirm_only_touches_candidate_pool_shortlist(monkeypatch, tmp_pat
     service.confirm_transport = None
     monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (_snapshot(), "", True, None))
     monkeypatch.setattr(service, "_resolve_confirm_transport", lambda endpoint: transport)
-    monkeypatch.setattr(
-        "verdict.orchestration.health_cache.default_cache_path", lambda: tmp_path / "health.json"
-    )
+    # Redirect the health cache through its environment variable, which is read on every call.
+    # Patching ``health_cache.default_cache_path`` instead leaves a stale copy of the patched
+    # function in any module that is first imported while the patch is active, and later tests
+    # in the same process then read a deleted temp path.
+    monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(tmp_path / "health.json"))
     prepared = service._prepare_execution_path_request(
         "fix code",
         "low",

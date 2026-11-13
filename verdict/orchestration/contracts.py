@@ -540,6 +540,7 @@ EVENT_TYPES = frozenset(
         "executor_map_unmatched",  # BOD-284: --executor-map keys not in the final plan
         "openspec_admission",  # BOD-205: change contract admission
         "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
+        "operator_policy_denied",  # BOD-340: approved policy refused the run
         "run_finished",
     }
 )
@@ -662,6 +663,12 @@ class WorkerExecutor(Protocol):
     ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the
     ``models.json`` copy in the launch dir it pins for that route and ``cwd``. Executors that
     send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
+
+    An executor MAY also accept an optional ``effort: str | None`` keyword.
+    A string is the chosen thinking level for that call only. ``None`` means
+    the policy omitted the provider override. Executors that do not accept
+    the keyword are called exactly as before. Omitted (the sentinel, not
+    ``None``) keeps the executor's own constructor default.
     """
 
     async def run(
@@ -742,13 +749,25 @@ def gateway_origin_matches(reported: str, bound: str) -> bool:
 
 def _accepts_tools_flag(executor: object) -> bool:
     """True when ``executor.run`` takes a ``tools`` keyword (or ``**kwargs``)."""
+    return _accepts_keyword(executor, "tools")
+
+
+class _EffortOmitted:
+    def __repr__(self) -> str:
+        return "EFFORT_OMITTED"
+
+
+#: Distinguishes "caller did not pass effort" from explicit ``None``.
+EFFORT_OMITTED = _EffortOmitted()
+
+
+def _accepts_keyword(executor: object, name: str) -> bool:
+    """True when ``executor.run`` takes ``name`` or ``**kwargs``."""
     try:
         params = inspect.signature(executor.run).parameters  # type: ignore[attr-defined]
     except (AttributeError, TypeError, ValueError):
         return False
-    return "tools" in params or any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 async def run_executor(
@@ -759,18 +778,24 @@ async def run_executor(
     cwd: Path,
     timeout_seconds: float,
     tools: bool = True,
+    effort: Any = EFFORT_OMITTED,
 ) -> WorkerTerminal:
-    """Call ``executor.run``; pass ``tools=False`` only to executors that accept it.
+    """Call ``executor.run``; pass optional keywords only to executors that accept them.
 
-    With ``tools=True`` (every worker call) the call is byte-identical to a
+    With ``tools=True`` and effort omitted, the call is byte-identical to a
     plain ``executor.run(...)``, so existing executors and fakes are unchanged.
     """
-    if tools or not _accepts_tools_flag(executor):
+    kwargs: dict[str, Any] = {}
+    if not tools and _accepts_keyword(executor, "tools"):
+        kwargs["tools"] = False
+    if effort is not EFFORT_OMITTED and _accepts_keyword(executor, "effort"):
+        kwargs["effort"] = effort
+    if not kwargs:
         return await executor.run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
         )
-    return await executor.run(  # type: ignore[call-arg]
-        prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=False
+    return await executor.run(
+        prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, **kwargs
     )
 
 
@@ -807,7 +832,13 @@ class AnswerOnlyExecutor:
             )
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         return await run_executor(
             self.inner,
@@ -816,6 +847,7 @@ class AnswerOnlyExecutor:
             cwd=cwd,
             timeout_seconds=timeout_seconds,
             tools=False,
+            effort=effort,
         )
 
 

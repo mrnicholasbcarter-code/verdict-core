@@ -87,7 +87,10 @@ class _Executor:
 
 class _Reviewer:
     async def review(self, **kwargs: Any) -> ReviewResult:
-        return ReviewResult("PASS", "fake", "cx/rev")
+        # The independence claim reads the executed reviewer identity, so a
+        # synthetic PASS must record one. cx/rev shares no identity, family, or
+        # pool with the cc/x worker route the offline golden path selects.
+        return ReviewResult("PASS", "fake", "cx/rev", observed_model="cx/rev")
 
 
 def _repo(tmp_path: Path) -> Path:

@@ -549,7 +549,11 @@ async def test_unindependent_review_is_not_met_and_needs_operator_action(tmp_pat
         async def review(self, **kwargs: Any) -> Any:
             from verdict.orchestration.contracts import ReviewResult
 
-            return ReviewResult("PASS", "fake", "cc/claude-haiku-5")
+            # Record the executed reviewer identity so the claim judges the
+            # shared claude family instead of stopping at an unobserved one.
+            return ReviewResult(
+                "PASS", "fake", "cc/claude-haiku-5", observed_model="cc/claude-haiku-5"
+            )
 
     class _SonnetWorker:
         async def run(

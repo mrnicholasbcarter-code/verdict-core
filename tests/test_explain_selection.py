@@ -310,11 +310,13 @@ class TestBehaviourParityAcrossFixtures:
                 "session_score",
                 "session_passes",
                 "session_fails",
-            ] + (
-                ["fallback", "fallback_reason"]
-                if v.reason == "selected" and v.capacity_class == CapacityClass.SUBSCRIPTION
-                else []
-            )
+                *(
+                    ["fallback", "fallback_reason"]
+                    if v.reason == "selected" and v.capacity_class == CapacityClass.SUBSCRIPTION
+                    else []
+                ),
+                "selection_accounting",
+            ]
 
     def test_no_regression_from_test_orch_eligibility_case(self, tmp_path: Path) -> None:
         # Mirrors ``TestSelect::test_select_skips_unhealthy_and_picks_next``

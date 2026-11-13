@@ -113,6 +113,80 @@ def test_two_turn_check_passes_fails_and_names_account_blocks() -> None:
     assert acceptance_toolcheck.check_route("p/blocked", post).outcome == "account"
 
 
+def _flaky_tool_gateway(
+    fail_always: frozenset[str] = frozenset(), fail_once: frozenset[str] = frozenset()
+):
+    """Fake gateway that fails every attempt on fail_always and the first attempt on fail_once."""
+    calls: dict[str, int] = {}
+
+    def post(path: str, body: dict[str, Any]) -> tuple[int, Any]:
+        route = body["model"]
+        calls[route] = calls.get(route, 0) + 1
+        if route in fail_always or (route in fail_once and calls[route] == 1):
+            return 502, None
+        turn2 = any(m["role"] == "tool" for m in body["messages"])
+        name, args = (
+            ("write_file", {"path": "out.txt", "content": NOTE.upper()})
+            if turn2
+            else ("read_file", {"path": "notes.txt"})
+        )
+        call = {"id": "c1", "function": {"name": name, "arguments": json.dumps(args)}}
+        return 200, {"choices": [{"message": {"content": "", "tool_calls": [call]}}]}
+
+    return post
+
+
+def test_listed_route_fails_once_then_passes_retry_counts_as_pass() -> None:
+    listed = [_verdict("p/a", eligible=True), _verdict("p/b", eligible=True)]
+    synced = {"p": [{"id": "a"}, {"id": "b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_flaky_tool_gateway(fail_once={"p/a"}),
+        seed="s",
+    )
+    assert quality["precision"] == pytest.approx(1.0)
+    pa = [c for c in quality["checks"] if c["route"] == "p/a"]
+    assert [c["attempt"] for c in pa] == [1, 2]
+    assert pa[0]["outcome"] == "fail" and pa[1]["outcome"] == "pass"
+    assert [c["attempt"] for c in quality["checks"] if c["route"] == "p/b"] == [1]
+
+
+def test_listed_route_failing_both_attempts_counts_once() -> None:
+    listed = [_verdict("p/a", eligible=True), _verdict("p/b", eligible=True)]
+    synced = {"p": [{"id": "a"}, {"id": "b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_flaky_tool_gateway(fail_always={"p/a"}),
+        seed="s",
+    )
+    assert quality["precision"] == pytest.approx(0.5)
+    pa = [c for c in quality["checks"] if c["route"] == "p/a"]
+    assert [c["attempt"] for c in pa] == [1, 2]
+    assert all(c["outcome"] == "fail" for c in pa)
+
+
+def test_account_blocked_listed_route_is_not_retried() -> None:
+    listed = [_verdict("p/blocked", eligible=True)]
+    synced = {"p": [{"id": "blocked"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_good_tool_gateway(blocked=frozenset({"p/blocked"})),
+        seed="s",
+    )
+    assert quality["precision"] is None
+    pb = [c for c in quality["checks"] if c["route"] == "p/blocked"]
+    assert len(pb) == 1 and pb[0]["attempt"] == 1 and pb[0]["outcome"] == "account"
+
+
 def test_measure_counts_unserved_listed_routes_against_precision() -> None:
     listed = [_verdict("p/a", eligible=True), _verdict("p/ghost", eligible=True)]
     synced = {"p": [{"id": "a"}, {"id": "b"}]}

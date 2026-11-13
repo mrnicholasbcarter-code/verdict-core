@@ -417,7 +417,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
-    "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline — feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
+    "reason": "KEEP: cross-process fcntl integration lock serialising the merge step (ADR-037). The multi-story supervisor path is feature-flagged off, so only tests call it; retained as the admission pipeline public surface, not dead code."
   },
   {
     "qualified_name": "verdict.orchestration.verified_refresh.VerifiedRow",
