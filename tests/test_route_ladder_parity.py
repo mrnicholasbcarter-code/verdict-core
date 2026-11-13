@@ -122,6 +122,46 @@ def test_choose_and_route_terse_parity(
     assert route_out == chosen_id
 
 
+def test_orchestrate_selector_and_choose_share_first_route(live_pool, monkeypatch, capsys):
+    from verdict.orchestration.cli import build_selector
+    from verdict.orchestration.contracts import TaskRequirements
+
+    monkeypatch.setattr("sys.argv", ["verdict", "choose", "--task", "fix code", "--json"])
+    cli.main()
+    chosen = json.loads(capsys.readouterr().out)["selected"]["route_id"]
+    selector = build_selector(
+        "http://127.0.0.1:1", scope="", prefer="", visibility_executor="direct-gateway"
+    )
+    route, _ = selector.select(TaskRequirements(), now=datetime.now(timezone.utc))
+    assert route is not None
+    assert route.route_id == chosen == "free/weak"
+
+
+def test_route_preserves_explicit_requirement_floors(live_pool, monkeypatch, capsys):
+    from verdict.orchestration.selection import SelectionResult
+
+    captured = []
+
+    def select(requirements, **kwargs):
+        captured.append(requirements)
+        return SelectionResult(None, ("no_candidates",), {}, {})
+
+    monkeypatch.setattr("verdict.orchestration.selection.select_route_for_task", select)
+    with pytest.raises(SystemExit, match="1"):
+        cli.cmd_route(
+            "fix code",
+            "medium",
+            terse=True,
+            min_context_tokens=200_000,
+            reasoning_required=True,
+            vision_required=True,
+            structured_output_required=True,
+        )
+    assert captured[0].min_context_tokens == 200_000
+    assert captured[0].required_capabilities >= {"vision", "structured_output", "reasoning"}
+    assert json.loads(capsys.readouterr().out)["reason"] == "no_eligible_route"
+
+
 def test_default_route_does_not_construct_gate(live_pool, monkeypatch, capsys):
     def forbidden(**kwargs):
         pytest.fail("default route constructed the legacy Gate")
@@ -132,23 +172,33 @@ def test_default_route_does_not_construct_gate(live_pool, monkeypatch, capsys):
 
 
 def test_serve_uses_only_ladder_candidates_in_ladder_order(monkeypatch, tmp_path):
-    import test_live_candidate_shortlist as fixtures
-    from dataclasses import replace
     from types import SimpleNamespace
-    from verdict.orchestration.contracts import TaskRequirements
+
+    import test_live_candidate_shortlist as fixtures
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     service = fixtures._service([], top_k=4)
-    monkeypatch.setattr(service, "_load_admit_snapshot", lambda: (
-        fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None
-    ))
+    service.admit_snapshot = None
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None),
+    )
     candidates = [SimpleNamespace(route_id=rid) for rid in (fixtures.FAST, fixtures.STRONG)]
     selector = SimpleNamespace(_assess_all=lambda *args: ([], candidates))
-    monkeypatch.setattr("verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector
+    )
     request = fixtures._request(fixtures.NEW, fixtures.STRONG, fixtures.FAST)
-    prepared = service._prepare_execution_path_request("fix code", "low", fixtures._context(request), request)
+    prepared = service._prepare_execution_path_request(
+        "fix code", "low", fixtures._context(request), request
+    )
     assert [o.route.route_id for o in prepared.offers] == [fixtures.FAST, fixtures.STRONG]
+    assert [entry.route_id for entry in prepared.pool_receipt.shortlist] == [
+        fixtures.FAST,
+        fixtures.STRONG,
+    ]
 
 
 def test_allow_legacy_selector_flag(

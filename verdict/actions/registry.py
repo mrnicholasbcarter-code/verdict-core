@@ -390,10 +390,21 @@ def _action_route(**kwargs: Any) -> ActionResult:
     task_category = str(
         context.get("task_category") or ("coding" if family.startswith("code") else "general")
     )
+    capabilities = set(requires - {"code"}) or set(TaskRequirements().required_capabilities)
+    for flag, capability in (
+        ("tools_required", "tools"),
+        ("reasoning_required", "reasoning"),
+        ("vision_required", "vision"),
+        ("structured_output_required", "structured_output"),
+        ("streaming_required", "streaming"),
+    ):
+        if context.get(flag):
+            capabilities.add(capability)
     requirements = TaskRequirements(
-        required_capabilities=requires or TaskRequirements().required_capabilities,
+        required_capabilities=frozenset(capabilities),
+        min_context_tokens=int(str(context.get("min_context_tokens") or 32_000)),
         coding="code" in requires or family.startswith("code"),
-        reasoning=bool(context.get("reasoning_required")),
+        reasoning="reasoning" in capabilities,
         task_category=task_category,
     )
     capacity = tuple(p.strip() for p in str(context.get("capacity", "")).split(",") if p.strip())

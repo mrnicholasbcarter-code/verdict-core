@@ -891,7 +891,11 @@ def cmd_route(
 
         ctx[CONTEXT_ALLOW_LEGACY] = True
 
-    gate = _action_helpers.build_route_gate(allow_offline=allow_offline)
+    gate = (
+        _action_helpers.build_route_gate(allow_offline=allow_offline)
+        if allow_legacy_selector
+        else None
+    )
     params = {
         "task": task,
         "criticality": criticality,
