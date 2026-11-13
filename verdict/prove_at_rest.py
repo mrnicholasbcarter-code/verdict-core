@@ -95,6 +95,7 @@ from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     STATE_STALE,
     STATE_UNPROBED,
+    BucketReservation,
     HealthCache,
     HealthCacheError,
     HealthCacheLockTimeoutError,
@@ -1370,13 +1371,20 @@ class Prober:
             if stats.agentic_stopped_reason:
                 return
         pending = pending[: self.agentic_max_routes]
+        # BOD-297: the agentic phase shares the cycle's single request budget
+        # with the chat phase (and the gateway screen). Conversations that
+        # would exceed the remaining requests are deferred, never run over it.
+        remaining_requests = self.max_requests - stats.requests
+        pending = pending[: max(0, remaining_requests // AGENTIC_TURNS)]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
         if pending:
             # Prove the cache is writable before any dispatch, as the chat phase does.
             self._save()
-        running: dict[Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]], AdmittedRoute]
-        running = {}
+        running: dict[
+            Future[tuple[list[ProbeExchange], AgenticFakeFile, bool]],
+            tuple[AdmittedRoute, BucketReservation | None],
+        ] = {}
         busy: Counter[str] = Counter()
         with ThreadPoolExecutor(max_workers=self.agentic_concurrency) as pool:
             while pending or running:
@@ -1409,16 +1417,28 @@ class Prober:
                         else:
                             pending.remove(route)
                             continue
-                    # Reserve every turn up front; an empty bucket keeps the
-                    # route pending while other pools' conversations run.
-                    if not self.cache.consume(
-                        route.provider, now, pool=route.pool, amount=AGENTIC_TURNS
-                    ):
+                    # Reserve every turn up front and PERSIST the reservation
+                    # before dispatch, so another process reading the shared
+                    # cache sees the spend (durable reservation, not an
+                    # in-memory consume that a cache reload would drop).
+                    reservation = self.cache.reserve_bucket(
+                        route.provider,
+                        now,
+                        pool=route.pool,
+                        amount=AGENTIC_TURNS,
+                        deadline=deadline,
+                        monotonic=self.monotonic,
+                        sleep=self.sleep,
+                    )
+                    if reservation is None:
                         empty_pools.add(route_pool)
                         continue
                     pending.remove(route)
                     busy[route_pool] += 1
-                    running[pool.submit(self._converse, route.route_id, deadline)] = route
+                    running[pool.submit(self._converse, route.route_id, deadline)] = (
+                        route,
+                        reservation,
+                    )
                 if not running:
                     if not pending or stats.agentic_stopped_reason:
                         break
@@ -1445,11 +1465,21 @@ class Prober:
                         break
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in done:
-                    route = running.pop(future)
+                    route, reservation = running.pop(future)
                     busy[_pool_of(route)] -= 1
                     exchanges, fake_file, finished = future.result()
                     stats.requests += len(exchanges)
                     if stats.auth_outage or not finished or not exchanges:
+                        # The conversation never sent all its reserved turns:
+                        # release the unused tokens back to the shared bucket.
+                        if reservation is not None:
+                            self.cache.release_bucket(
+                                reservation,
+                                AGENTIC_TURNS - len(exchanges),
+                                deadline=None,
+                                monotonic=self.monotonic,
+                                sleep=self.sleep,
+                            )
                         continue
                     self._record_agentic(route, exchanges, fake_file, stats)
                     if stats.auth_outage:
@@ -1654,13 +1684,17 @@ class Prober:
         return max(retry_after, float(self.interval_seconds) + 60.0)
 
     def _converse(
-        self, route_id: str, deadline: float
+        self, route_id: str, deadline: float, cooldown_key: str | None = None
     ) -> tuple[list[ProbeExchange], AgenticFakeFile, bool]:
         """One read/edit/read conversation. Runs in a worker thread; no cache access.
 
         Returns the exchanges, the fake file, and whether the conversation
         reached a verdict (all turns ran, or a turn failed) rather than being
         cut short by the deadline or the stop signal.
+
+        If ``cooldown_key`` is given, the provider/pool cooldown is re-checked
+        before each turn; if a cooldown becomes active mid-conversation, the
+        remaining turns are not sent.
         """
         assert self.agentic_transport is not None
         fake_file = AgenticFakeFile()
@@ -1670,6 +1704,11 @@ class Prober:
             remaining = deadline - self.monotonic()
             if self._stop.is_set() or remaining <= 0:
                 return exchanges, fake_file, False
+            if cooldown_key is not None:
+                self.cache.reload()
+                cooldown = self.cache.cooldown_for(cooldown_key, self.clock())
+                if cooldown is not None:
+                    return exchanges, fake_file, False
             payload = payload_fn(route_id, conversation)
             try:
                 ex = self.agentic_transport(
@@ -1710,7 +1749,20 @@ class Prober:
         )
         if reservation is None:
             return outcome
-        exchanges, fake_file, finished = self._converse(route.route_id, deadline)
+        # A provider cooldown can become active between the bucket check and
+        # the conversation; re-check before sending the first turn.
+        if self.cache.cooldown_for(f"provider:{route.provider}", observed) is not None:
+            self.cache.release_bucket(
+                reservation,
+                AGENTIC_TURNS,
+                deadline=deadline,
+                monotonic=self.monotonic,
+                sleep=self.sleep,
+            )
+            return outcome
+        exchanges, fake_file, finished = self._converse(
+            route.route_id, deadline, cooldown_key=f"provider:{route.provider}"
+        )
         outcome["turns_sent"] = len(exchanges)
         latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
         outcome["latency_ms"] = sum(latencies) if latencies else None

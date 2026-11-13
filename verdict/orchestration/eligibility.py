@@ -1202,6 +1202,15 @@ class EligibilityLadder:
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
         probe_order = self._probe_order(candidates)
+        # BOD-297: selection confirmation joins the shared coordinator lease;
+        # never probe while another producer owns the job.
+        health_cache = getattr(self, "_health_cache", None)
+        if health_cache is not None:
+            from verdict.orchestration.verified_refresh import _JobLock
+
+            _lock_path = health_cache.path.parent / "verified-refresh.lock"
+            if _JobLock(_lock_path).live():
+                probe_order = []
         for a in probe_order:
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm

@@ -206,7 +206,6 @@ def quota_snapshot(account_status: object) -> Any:
 # -- (a) every producer joins the one coordinator lease ----------------------
 
 
-@red("identify --screen dispatches outside the RefreshCoordinator flock/marker")
 def test_identify_screen_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     """Another producer owns the coordinator job: identify must join it, not send."""
     calls: list[str] = []
@@ -219,7 +218,6 @@ def test_identify_screen_joins_the_shared_coordinator_lease(tmp_path: Path) -> N
     assert calls == [], "identify screen sent model requests while another producer held the lease"
 
 
-@red("live admit confirm dispatches outside the RefreshCoordinator flock/marker")
 def test_live_confirm_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     calls: list[str] = []
     held = _JobLock(tmp_path / "verified-refresh.lock")
@@ -239,7 +237,6 @@ def test_live_confirm_joins_the_shared_coordinator_lease(tmp_path: Path) -> None
     assert calls == [], "live confirm sent a request while another producer held the lease"
 
 
-@red("EligibilityLadder.select confirmation probes outside the coordinator lease")
 def test_selection_confirm_probe_joins_the_shared_coordinator_lease(tmp_path: Path) -> None:
     from test_orch_eligibility import NOW as LADDER_NOW
     from test_orch_eligibility import REQ, conn, make_ladder, row
@@ -259,7 +256,6 @@ def test_selection_confirm_probe_joins_the_shared_coordinator_lease(tmp_path: Pa
     assert probe.calls == [], "selection probed a route while another producer held the lease"
 
 
-@red("qualification attempts have no durable RESERVED/MAYBE_SENT/SETTLED record")
 def test_coordinator_records_durable_attempt_states(tmp_path: Path) -> None:
     """While a probe is on the wire its attempt is durably MAYBE_SENT; then SETTLED."""
     durable: list[str] = []
@@ -281,7 +277,6 @@ def test_coordinator_records_durable_attempt_states(tmp_path: Path) -> None:
     assert "settled" in on_disk(), "the finished attempt was never durably SETTLED"
 
 
-@red("the coordinator has no durable cursor; no-write outcomes starve the backlog")
 def test_coordinator_cursor_screens_backlog_within_n_cycles(tmp_path: Path) -> None:
     """Six routes, two per job, no evidence written: three jobs must reach all six."""
     attempted: set[str] = set()
@@ -302,7 +297,6 @@ def test_coordinator_cursor_screens_backlog_within_n_cycles(tmp_path: Path) -> N
 # -- (b) no caller multiplies limits ------------------------------------------
 
 
-@red("prove-at-rest adds a separate agentic request budget on top of max_requests")
 def test_prove_at_rest_agentic_phase_shares_the_request_budget(tmp_path: Path) -> None:
     chat_calls: list[tuple[str, str]] = []
     agentic_calls: list[str] = []
@@ -319,7 +313,6 @@ def test_prove_at_rest_agentic_phase_shares_the_request_budget(tmp_path: Path) -
     assert total <= 16, f"one cycle with max_requests=16 sent {total} model requests"
 
 
-@red("the agentic phase consumes bucket tokens in memory, not as a durable reservation")
 def test_agentic_phase_persists_its_bucket_reservation_before_dispatch(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
     after_chat: list[int] = []
@@ -350,7 +343,6 @@ def test_agentic_phase_persists_its_bucket_reservation_before_dispatch(tmp_path:
 # -- (c) sparse quota unknown is not exhaustion; whole-source failure is closed --
 
 
-@red("a successful sparse /api/v1/me/status row is read as quota_exhausted")
 @pytest.mark.parametrize("reason", ["not_available", "fetch_failed", "connection_lookup_failed"])
 def test_sparse_account_quota_row_is_unknown_not_exhausted(reason: str) -> None:
     """One account without quota data in a successful response is unknown, not exhausted."""
@@ -363,7 +355,6 @@ def test_sparse_account_quota_row_is_unknown_not_exhausted(reason: str) -> None:
     )
 
 
-@red("a malformed whole account-status source still admits as if quota were known")
 def test_whole_account_status_source_failure_fails_closed() -> None:
     receipt = admit_free_tier_active(quota_snapshot({"error": "upstream failure"}))
     assert receipt.admitted == (), "a failed quota source must fail closed, not admit"
@@ -381,7 +372,6 @@ def test_reported_quota_exhaustion_still_blocks() -> None:
 # -- (d) all configured supply is considered -----------------------------------
 
 
-@red("identify --screen considers only routes with historical traffic")
 def test_identify_screen_considers_configured_supply_without_traffic(tmp_path: Path) -> None:
     ev = evidence({"p/a": "free", "q/new": "free"}, traffic=("p/a",), live=("q/new",))
     report = screen(tmp_path / "health.json", ev, agentic_ok([]), max_per_provider=2, max_routes=4)
@@ -392,7 +382,6 @@ def test_identify_screen_considers_configured_supply_without_traffic(tmp_path: P
 # -- (e) alias/effort mapping never mints independent or stronger proof ---------
 
 
-@red("the coordinator probes alias ids of one backend model as independent proofs")
 def test_coordinator_probes_one_alias_family_member(tmp_path: Path) -> None:
     calls: list[tuple[str, str]] = []
     rows = (free_row("agy/gemini-x"), free_row("antigravity/gemini-x"))
@@ -401,7 +390,6 @@ def test_coordinator_probes_one_alias_family_member(tmp_path: Path) -> None:
     assert len(probed) == 1, f"one backend model was probed as {sorted(probed)}"
 
 
-@red("a no-think variant's tool proof qualifies the thinking default route")
 def test_effort_variant_proof_does_not_qualify_a_different_effort() -> None:
     weaker, default = "no-think/cc/claude-x", "cc/claude-x"
     ev = OmniRouteEvidence(
@@ -439,7 +427,6 @@ def test_effort_variant_proof_does_not_qualify_a_different_effort() -> None:
 # -- (f) only a strict served-identity tool receipt mints tool strength --------
 
 
-@red("a probe with no served-model echo still mints a verified tool proof")
 def test_coordinator_requires_served_model_identity_for_tool_strength(tmp_path: Path) -> None:
     outcome = refresh(coordinator(tmp_path, chat_ok(echo=False)), (free_row("p/m"),))
     entry = HealthCache(tmp_path / "health.json").entry("p/m")
@@ -447,7 +434,6 @@ def test_coordinator_requires_served_model_identity_for_tool_strength(tmp_path: 
     assert entry is None or not entry.tool_ok, "tool strength was minted without a served identity"
 
 
-@red("run_qualification copies catalog tool capability into passport tool_support")
 def test_passport_tool_support_requires_an_observed_tool_call() -> None:
     def chat_only(model_id: str, payload: object, timeout: float) -> dict[str, object]:
         body = {
@@ -466,7 +452,6 @@ def test_passport_tool_support_requires_an_observed_tool_call() -> None:
     assert passport.tool_support is False, "catalog metadata minted tool_support with no tool call"
 
 
-@red("a late coordinator success overwrites a newer negative and restamps observed time")
 def test_late_success_keeps_newer_negative_and_observed_time(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
     clock = [NOW]
@@ -488,7 +473,6 @@ def test_late_success_keeps_newer_negative_and_observed_time(tmp_path: Path) -> 
 # -- (g) consent, per-run budget and admission before each request; order ------
 
 
-@red("identify --screen ignores an active scoped provider cooldown")
 def test_identify_screen_honours_scoped_provider_cooldown(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
     cache = HealthCache(path)
@@ -507,7 +491,6 @@ def test_identify_screen_honours_scoped_provider_cooldown(tmp_path: Path) -> Non
     assert calls == [], "a request was sent into a provider that is cooling down"
 
 
-@red("identify --screen admits once per conversation, not before each request")
 def test_identify_screen_admits_before_each_request(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
 
@@ -548,7 +531,6 @@ def test_live_confirm_checks_the_shared_pool_bucket(tmp_path: Path) -> None:
     assert calls == [], "a confirm request was sent while the shared provider bucket was empty"
 
 
-@red("identify --screen orders by capacity class before task rating")
 def test_identify_screen_orders_strongest_task_rating_first(tmp_path: Path) -> None:
     from test_identify_screen import passing, ratings, snapshot
 
@@ -623,7 +605,6 @@ def test_maintenance_never_reprobes_an_active_negative(tmp_path: Path) -> None:
     assert calls == [], f"an active 404 negative was re-probed {len(calls)} times in 15 minutes"
 
 
-@red("the coordinator re-probes a route another producer proved after the snapshot")
 def test_fresh_repeated_run_rechecks_shared_cache_and_sends_nothing(tmp_path: Path) -> None:
     cache = HealthCache(tmp_path / "health.json")
     proven = ProbeResult(category="ok", chat_ok=True, tool_ok=True, identity="verified")
@@ -683,3 +664,110 @@ def test_passive_identify_is_get_only_with_no_model_calls_or_writes(
     assert not any(body for _method, _path, body in requests)
     assert report["model_calls"] == 0
     assert tree() == before, "passive identify changed files under HOME"
+
+
+# -- (j) two real producer processes share one cap under one owner ------------
+
+_PRODUCER_DRIVER = r"""
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from verdict.orchestration.health_cache import HealthCache
+from verdict.prove_at_rest import ProbeExchange
+from verdict.orchestration.verified_refresh import (
+    RefreshCoordinator,
+    RefreshSnapshot,
+    RefreshConfig,
+    RowInput,
+)
+
+NOW = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
+
+tmp, routes_json, max_requests, results_path = sys.argv[1:5]
+routes = json.loads(routes_json)
+max_requests = int(max_requests)
+
+cache = HealthCache(Path(tmp) / "health.json")
+sent = []
+
+
+def send(route: str, phase: str, timeout: float) -> ProbeExchange:
+    sent.append((route, phase))
+    # Hold the lease while the request is in flight so a concurrent producer
+    # contends for the same job instead of getting its own turn on an empty cache.
+    time.sleep(0.25)
+    return ProbeExchange(
+        http_status=200,
+        ok=True,
+        chat_exact=True,
+        tool_called=True,
+        reported_model=route.split("/", 1)[1],
+    )
+
+
+coordinator = RefreshCoordinator(
+    cache=cache,
+    transport=send,
+    clock=lambda: NOW,
+    monotonic=lambda: 0.0,
+    sleep=lambda _s: None,
+    lock_path=Path(tmp) / "verified-refresh.lock",
+    marker_path=Path(tmp) / "verified-refresh.json",
+)
+coordinator.refresh_for_consumer(
+    RefreshSnapshot(
+        rows=[
+            RowInput(r, r.split("/", 1)[0], "UNVERIFIED", "free", refreshable=True)
+            for r in routes
+        ],
+        scope="bod297",
+    ),
+    consumer="proc",
+    needed_ids=routes,
+    config=RefreshConfig(max_requests=max_requests),
+    explicit=True,
+)
+
+Path(results_path).write_text(json.dumps({"sends": len(sent)}))
+"""
+
+
+def test_two_producer_processes_share_one_cap_under_one_owner(tmp_path: Path) -> None:
+    """Two OS processes refreshing the same routes share one lock owner and one cap.
+
+    The coordinator's flock means only one producer owns the job at a time and
+    spends the approved request cap; the other producer joins/reuses and sends
+    nothing, so the approved cap is not multiplied per process.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    routes = [f"p{i}/m" for i in range(4)]
+    max_requests = 4
+    driver = tmp_path / "producer.py"
+    driver.write_text(_PRODUCER_DRIVER)
+    result_a = tmp_path / "result-a.json"
+    result_b = tmp_path / "result-b.json"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.getcwd()
+
+    base = [sys.executable, str(driver), str(tmp_path), json.dumps(routes), str(max_requests)]
+    pa = subprocess.Popen([*base, str(result_a)], env=env)
+    time.sleep(0.05)  # let A win the lease first so B genuinely contends
+    pb = subprocess.Popen([*base, str(result_b)], env=env)
+    pa.wait(timeout=120)
+    pb.wait(timeout=120)
+    assert pa.returncode == 0 and pb.returncode == 0, "a producer process crashed"
+
+    ra = json.loads(result_a.read_text())["sends"]
+    rb = json.loads(result_b.read_text())["sends"]
+    total = ra + rb
+    assert total <= max_requests, (
+        f"the approved cap was multiplied across processes: {total} > {max_requests}"
+    )
+    assert {ra, rb} == {4, 0}, f"exactly one owner should spend the single cap, got {ra} and {rb}"
