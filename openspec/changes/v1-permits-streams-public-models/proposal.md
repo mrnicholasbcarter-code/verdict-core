@@ -2,7 +2,7 @@
 
 ## Why
 
-Waves 3-5 of the V1 hardening plan make dispatch revocable, make streamed responses end in a checked terminal state, give every verified-refresh producer one stable scope, and publish only locally verified models. The complete 13-story umbrella plan is in `docs/contracts/v1-hardening-umbrella-plan.md` and tracked in Linear under BOD-431. Wave 2 (S02, S04) is in `openspec/changes/v1-authority-inventory`. This change covers S03 (BOD-433), S06 (BOD-434), S05 phase 1 (BOD-297) and S07 (BOD-435).
+Waves 3-5 of the V1 hardening plan make dispatch revocable, make streamed responses end in a checked terminal state, give every verified-refresh producer one stable scope, and publish only locally verified models. The complete 13-story umbrella plan is in `docs/contracts/v1-hardening-umbrella-plan.md` and tracked in Linear under BOD-431. Wave 2 (S02, S04) is in `openspec/changes/archive/2026-11-12-v1-authority-inventory`. This change covers S03 (BOD-433), S06 (BOD-434), S05 phase 1 (BOD-297) and S07 (BOD-435).
 
 ## What Changes
 

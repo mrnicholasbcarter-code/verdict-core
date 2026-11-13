@@ -2,7 +2,7 @@
 
 ## Context
 
-Waves 3-5 of V1 hardening: S03 (BOD-433), S06 (BOD-434), S05 phase 1 (BOD-297) and S07 (BOD-435). Wave 2 is in `openspec/changes/v1-authority-inventory`.
+Waves 3-5 of V1 hardening: S03 (BOD-433), S06 (BOD-434), S05 phase 1 (BOD-297) and S07 (BOD-435). Wave 2 is in `openspec/changes/archive/2026-11-12-v1-authority-inventory`.
 
 ## Decisions
 
