@@ -355,9 +355,10 @@ def _action_route(**kwargs: Any) -> ActionResult:
     terse: bool = bool(kwargs.get("terse", False))
 
     context: dict[str, object] = dict(kwargs.get("context") or {})
+    gate = kwargs.get("gate")
     if allow_legacy_selector:
         context[CONTEXT_ALLOW_LEGACY] = True
-        gate = kwargs.get("gate")
+    if gate is not None or allow_legacy_selector or allow_offline:
         if gate is None:
             from verdict.actions.helpers import build_route_gate
 

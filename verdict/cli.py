@@ -891,11 +891,8 @@ def cmd_route(
 
         ctx[CONTEXT_ALLOW_LEGACY] = True
 
-    gate = (
-        _action_helpers.build_route_gate(allow_offline=allow_offline)
-        if allow_legacy_selector
-        else None
-    )
+    use_legacy = allow_legacy_selector or allow_offline
+    gate = _action_helpers.build_route_gate(allow_offline=allow_offline) if use_legacy else None
     params = {
         "task": task,
         "criticality": criticality,
@@ -917,7 +914,7 @@ def cmd_route(
             result = run_action("route", params)
 
     data = result.data
-    if allow_legacy_selector:
+    if use_legacy:
         gate = data["gate"]
         dec = _execute_cli_decision(gate, task, data["decision"], allow_offline=allow_offline)
         base_selection = data["selection"]
