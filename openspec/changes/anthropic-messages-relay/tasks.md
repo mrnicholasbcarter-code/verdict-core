@@ -24,4 +24,4 @@
 
 ## 5. Regression
 
-- [ ] 5.1 Existing chat and responses relay, stream, and admission tests pass unchanged
+- [ ] (post-merge) 5.1 Existing chat and responses relay, stream, and admission tests pass unchanged
