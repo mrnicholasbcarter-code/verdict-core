@@ -111,6 +111,20 @@ def ready_decision(
     if waiting:
         return ReadyDecision(verdict=ReadyVerdict.WAIT, reason="; ".join(waiting))
 
+    from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
+
+    try:
+        verdict, _audit = admit_action(
+            ActionContext(action="story.ready", argv=("verdict", "ready"), linear_issue=None)
+        )
+    except PolicyUnavailableError as exc:
+        return ReadyDecision(
+            verdict=ReadyVerdict.WAIT, reason=f"operator policy unavailable: {exc}"
+        )
+    if not verdict.allowed:
+        return ReadyDecision(
+            verdict=ReadyVerdict.WAIT, reason=f"operator policy denied: {verdict.reason}"
+        )
     return ReadyDecision(
         verdict=ReadyVerdict.READY, reason="all dependencies are MAIN_VERIFIED; story is ready"
     )

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -783,6 +784,177 @@ def _compact_optional(
     return kept
 
 
+# ---------------------------------------------------------------- memory recall
+#
+# Deterministic, read-only recall of cited prior decisions for a worker brief.
+# The plane is opened read-only and never created, migrated or written. A
+# healthy search that finds nothing is reported separately from a plane that is
+# missing, busy, unreadable or on an incompatible schema, so a caller can tell
+# "nothing relevant" apart from "memory is down". Recalled text is untrusted
+# evidence: it is cited, never an instruction, and never route authority.
+
+# Fact namespaces only. Transcripts, session history and gate audit events are
+# not decisions and are never recalled into a worker brief.
+_RECALL_NAMESPACES = ("decisions", "feedback", "patterns", "evidence")
+_RECALL_TERM = re.compile(r"[A-Za-z][A-Za-z0-9_-]{3,}")
+_RECALL_STOPWORDS = frozenset(
+    {
+        "that",
+        "this",
+        "with",
+        "from",
+        "into",
+        "without",
+        "must",
+        "should",
+        "when",
+        "then",
+        "update",
+        "change",
+        "changing",
+        "keep",
+        "make",
+        "only",
+        "each",
+        "every",
+        "their",
+    }
+)
+DEFAULT_RECALL_LIMIT = 5
+RecallStatus = Literal["ok", "empty", "unavailable"]
+
+
+@dataclass(frozen=True)
+class MemoryCitation:
+    """One recalled fact, bound to the record it came from.
+
+    ``source_revision`` is the sha256 of the record content, so a later brief
+    can prove which exact revision it cited. The content is untrusted evidence.
+    """
+
+    record_id: str
+    namespace: str
+    key: str
+    content: str
+    source_revision: str
+    authority: str
+    observed_at: str
+
+
+@dataclass(frozen=True)
+class MemoryRecall:
+    """Result of one deterministic recall.
+
+    ``available`` is False only when the plane could not be read. ``status``
+    distinguishes a healthy search with no relevant facts (``empty``) from a
+    plane that is missing, busy or incompatible (``unavailable``).
+    """
+
+    status: RecallStatus
+    available: bool
+    citations: tuple[MemoryCitation, ...] = ()
+    reason: str = ""
+
+    def status_line(self) -> str:
+        """One line a brief can carry so empty and unavailable stay explicit."""
+        if self.status == "ok":
+            return f"memory: {len(self.citations)} cited fact(s) recalled"
+        if self.status == "empty":
+            return "memory: empty (healthy search, no relevant cited facts)"
+        return f"memory: unavailable ({self.reason or 'unreadable'})"
+
+
+def _recall_terms(task: str) -> str:
+    terms = (term.lower() for term in _RECALL_TERM.findall(task))
+    return " ".join(list(dict.fromkeys(t for t in terms if t not in _RECALL_STOPWORDS))[:12])
+
+
+def _open_recall_plane(path: Path) -> tuple[MemoryPlane | None, str]:
+    """Open an existing plane read-only. Never creates or migrates one."""
+    from verdict.memory_plane import MemoryPlane, WalPendingError
+
+    if not path.is_file():
+        return None, "no_default_location"
+    try:
+        return MemoryPlane.open_readonly(path), ""
+    except WalPendingError:
+        return None, "memory_plane_busy"
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        return None, "memory_plane_unavailable"
+
+
+def recall_memory_for_task(
+    task: str,
+    *,
+    plane_path: Path | None = None,
+    namespaces: Sequence[str] = _RECALL_NAMESPACES,
+    limit: int = DEFAULT_RECALL_LIMIT,
+    verified_only: bool = True,
+) -> MemoryRecall:
+    """Recall bounded, cited facts for ``task`` from the mandatory memory plane.
+
+    Read-only: the plane is never created, migrated or written. ``verified_only``
+    keeps unverified records (raw transcripts, unreviewed outcomes) out of the
+    brief. An empty healthy search and an unreadable plane are different results.
+    """
+    from verdict.documentation_preflight import shared_memory_path
+
+    path = Path(plane_path).expanduser() if plane_path is not None else shared_memory_path()
+    plane, reason = _open_recall_plane(path)
+    if plane is None:
+        return MemoryRecall("unavailable", False, reason=reason)
+    try:
+        query = _recall_terms(task)
+        if not query:
+            return MemoryRecall("empty", True)
+        citations: list[MemoryCitation] = []
+        seen: set[str] = set()
+        for namespace in namespaces:
+            for result in plane.search_ranked(query, namespace=namespace, limit=limit):
+                record = result.record
+                if result.stale or record.record_id in seen:
+                    continue
+                if verified_only and not record.authority_verified:
+                    continue
+                seen.add(record.record_id)
+                citations.append(
+                    MemoryCitation(
+                        record_id=record.record_id,
+                        namespace=record.namespace,
+                        key=record.key,
+                        content=record.content,
+                        source_revision=_digest_text(record.content),
+                        authority=record.authority or "unverified",
+                        observed_at=datetime.fromtimestamp(
+                            record.created_at or unix_time(), timezone.utc
+                        )
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                    )
+                )
+                if len(citations) >= limit:
+                    break
+            if len(citations) >= limit:
+                break
+        if plane is not None and not _recall_snapshot_held(plane):
+            return MemoryRecall("unavailable", False, reason="memory_plane_busy")
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        return MemoryRecall("unavailable", False, reason="memory_plane_unavailable")
+    finally:
+        plane.close()
+    if not citations:
+        return MemoryRecall("empty", True)
+    return MemoryRecall("ok", True, tuple(citations))
+
+
+def _recall_snapshot_held(plane: MemoryPlane) -> bool:
+    try:
+        plane.check_unchanged()
+    except (OSError, sqlite3.Error):
+        return False
+    return True
+
+
 __all__ = [
     "FABRIC_SCHEMA_VERSION",
     "SCHEMA_VERSION",
@@ -803,5 +975,6 @@ __all__ = [
     "execute_context_query",
     "plan_context_query",
     "plan_slices",
+    "recall_memory_for_task",
     "retrieve_units",
 ]

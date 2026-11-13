@@ -367,6 +367,23 @@ def evaluate_admission(
     cfg = config or DEFAULT_CONFIG
     pressure = pressure or ResourcePressure()  # unknown → 0.0 per-dim; governor NaN→1.0
 
+    from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
+
+    try:
+        policy_verdict, _audit = admit_action(
+            ActionContext(action="supervise.admit", argv=("verdict", "supervise", story_id))
+        )
+    except PolicyUnavailableError as exc:
+        return AdmissionDecision(
+            admit=False, reason_code="POLICY", reason=f"operator policy unavailable: {exc}"
+        )
+    if not policy_verdict.allowed:
+        return AdmissionDecision(
+            admit=False,
+            reason_code="POLICY",
+            reason=f"operator policy denied: {policy_verdict.reason}",
+        )
+
     # --- Gate 1: ready_decision -------------------------------------------
     rd: ReadyDecision = ready_decision(labels=labels, deps=deps, main_sha=main_sha)
     if rd.verdict == ReadyVerdict.EXCLUDED:

@@ -41,6 +41,7 @@ from verdict.orchestration.candidate_builder import (
 from verdict.orchestration.candidate_builder import build_candidates as _build_candidates
 from verdict.orchestration.candidate_builder import build_rejections as _build_rejections
 from verdict.orchestration.contracts import (
+    EFFORT_OMITTED,
     TRANSITIONS,
     CapacityClass,
     EligibilityStage,
@@ -76,6 +77,12 @@ from verdict.orchestration.controller_operations import (
 )
 from verdict.orchestration.controls import ControlReader, ControlRequest
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
+from verdict.orchestration.effort import (
+    allowlisted_effort_facts,
+    choose_effort,
+    effort_reason,
+    task_kind_for_node,
+)
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     DispatchPermit,
@@ -239,6 +246,12 @@ class NodeRun:
     dispatch_proof: AdmissionProof | None = None
     # BOD-433: the permit the current attempt was sent under (None = no send yet).
     permit: DispatchPermit | None = None
+    # Per-attempt chosen effort. Reset on every reselection so a replaced
+    # route cannot keep the previous attempt's override.
+    chosen_effort: str | None = None
+    effort_reason: dict[str, Any] = field(default_factory=dict)
+    effort_route_id: str = ""
+    effort_attempt: int = 0
 
 
 @dataclass(frozen=True)
@@ -395,6 +408,19 @@ def _blocked_report(output: str) -> str:
     return ""
 
 
+def _effort_rows(
+    model_rows: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, dict[str, Any]] | None:
+    """Copy only reasoning/thinkingLevelMap facts. None stays None (unavailable)."""
+    if model_rows is None:
+        return None
+    return {
+        str(route): allowlisted_effort_facts(row)
+        for route, row in model_rows.items()
+        if isinstance(row, Mapping)
+    }
+
+
 class DagRuntime:
     """Execute a validated ``WorkGraph`` to an explicit COMPLETE or BLOCKED result."""
 
@@ -416,6 +442,7 @@ class DagRuntime:
         base_ref: str = "HEAD",
         inflight: dict[str, str] | None = None,
         dispatch_authority: DispatchAuthority | None = None,
+        model_rows: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.repo, self.run_dir, self.graph = repo, run_dir, graph
         self.dispatch_authority = dispatch_authority
@@ -428,6 +455,8 @@ class DagRuntime:
         # node_id -> route_id. Shared with the selector's load callback so concurrent
         # selections spread across routes; reserved at SELECTION time, not dispatch.
         self.inflight: dict[str, str] = inflight if inflight is not None else {}
+        # Allowlisted effort facts only. None means the inventory was not supplied.
+        self.model_rows = _effort_rows(model_rows)
         self._run_started_monotonic: float | None = None
         self._slots = asyncio.Semaphore(min(policy.max_parallel, graph.max_parallel))
         self._base_sha = ""
@@ -449,6 +478,28 @@ class DagRuntime:
                 configured=policy.attempt_timeout_seconds,
                 applied=900.0,
             )
+
+    def _bind_effort(self, run: NodeRun, route_id: str) -> None:
+        """Choose effort for this route and attempt. Replaces any previous bind."""
+        task_kind = task_kind_for_node(run.node.kind)
+        rows = self.model_rows
+        if rows is None or route_id not in rows:
+            facts: Mapping[str, Any] = {}
+            source = "unavailable"
+        else:
+            facts = rows[route_id]
+            source = "model_rows"
+        chosen = choose_effort(task_kind, facts)
+        reason = effort_reason(task_kind, chosen, facts)
+        reason["metadata_source"] = source
+        reason["route_id"] = route_id
+        reason["attempt"] = run.attempt
+        if source == "unavailable":
+            reason["row_unavailable"] = True
+        run.chosen_effort = chosen
+        run.effort_reason = reason
+        run.effort_route_id = route_id
+        run.effort_attempt = run.attempt
 
     # ------------------------------------------------------------------ state
     def _set(self, run: NodeRun, state: NodeState, **data: Any) -> None:
@@ -779,6 +830,22 @@ class DagRuntime:
     # ------------------------------------------------------------------ node
     async def _drive(self, node_id: str) -> None:
         run = self.nodes[node_id]
+        if run.node.kind is NodeKind.REVIEW:
+            # Review is mechanical, so it has no model-selection event today.
+            # Emit the one selection that binds this attempt's chosen effort.
+            # Integrate stays event-identical: it is not a worker dispatch.
+            run.attempt += 1
+            self._bind_effort(run, "")
+            self.events.emit(
+                "selection",
+                node_id,
+                route_id="",
+                provider="",
+                attempt=run.attempt,
+                chosen_effort=run.chosen_effort,
+                effort_reason=run.effort_reason,
+            )
+            run.attempt -= 1
         if run.node.kind in {NodeKind.INTEGRATE, NodeKind.REVIEW}:
             await self._integrate_node(run)
             return
@@ -815,6 +882,7 @@ class DagRuntime:
                 self._select_with_stats, requirements, self.now()
             )
             counts = _ladder_counts(considered)
+            accounting = (_post or {}).pop("selection_accounting", None)
             if _post:
                 counts = {**counts, **_post}
             # BOD-277: per-route eligibility verdicts for trace drill-down.
@@ -828,6 +896,7 @@ class DagRuntime:
                 "candidates": _cands,
                 "candidates_omitted": _cands_omitted,
                 "omitted_summary": _omitted_summary,  # AC7: per-state detail for omitted
+                "selection_accounting": accounting,
             }
             if choice is None:
                 # Check if we can wait for a short cooldown to expire
@@ -962,6 +1031,7 @@ class DagRuntime:
                 self.selector, "_allow_unknown", False
             ):
                 _probe_fields["unknown_capacity_opt_in"] = True
+            self._bind_effort(run, choice.route_id)
             self.events.emit(
                 "selection",
                 node_id,
@@ -971,6 +1041,8 @@ class DagRuntime:
                 plan=choice.plan_label,
                 rank=choice.rank,
                 attempt=run.attempt,
+                chosen_effort=run.chosen_effort,
+                effort_reason=run.effort_reason,
                 **_probe_fields,
             )
             self._capacity[node_id] = choice.capacity_class.value
@@ -1521,7 +1593,14 @@ class DagRuntime:
                     return True  # nothing was sent; do not reselect or retry
                 origin_pinned = False  # the executor's run() takes over the pin
                 terminal = await self._execute(
-                    prompt, run.route_id, worktree, node_id=node.node_id, attempt=run.attempt
+                    prompt,
+                    run.route_id,
+                    worktree,
+                    node_id=node.node_id,
+                    attempt=run.attempt,
+                    effort=run.chosen_effort
+                    if run.effort_route_id == run.route_id and run.effort_attempt == run.attempt
+                    else EFFORT_OMITTED,
                 )
             finally:
                 if origin_pinned:
@@ -1726,7 +1805,14 @@ class DagRuntime:
             pass
 
     async def _execute(
-        self, prompt: str, route_id: str, cwd: Path, *, node_id: str, attempt: int
+        self,
+        prompt: str,
+        route_id: str,
+        cwd: Path,
+        *,
+        node_id: str,
+        attempt: int,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         timeout_seconds = min(float(self.policy.attempt_timeout_seconds), 900.0)
         try:
@@ -1739,6 +1825,7 @@ class DagRuntime:
                 run_dir=self.run_dir,
                 phase="worker",
                 attempt_id=f"{node_id}-a{attempt}",
+                effort=effort,
             )
         except OwnershipError as exc:
             return WorkerTerminal(
