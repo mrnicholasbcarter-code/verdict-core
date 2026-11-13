@@ -540,6 +540,7 @@ EVENT_TYPES = frozenset(
         "executor_map_unmatched",  # BOD-284: --executor-map keys not in the final plan
         "openspec_admission",  # BOD-205: change contract admission
         "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
+        "operator_policy_denied",  # BOD-340: approved policy refused the run
         "run_finished",
     }
 )

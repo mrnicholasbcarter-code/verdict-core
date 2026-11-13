@@ -1001,6 +1001,31 @@ def _bootstrap_gateway_url() -> str | None:
 
 def _worker_admission(config: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> AdmittedSet:
     """Canonical live admission, then worker-only scope and controller exclusion."""
+    from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
+
+    task_block = config.get("task") or {}
+    try:
+        policy_verdict, _audit = admit_action(
+            ActionContext(
+                action="worker.admit",
+                argv=("verdict", "worker"),
+                linear_issue=str(task_block.get("linear_issue") or "") or None,
+                acceptance_criteria=tuple(
+                    str(item) for item in (task_block.get("acceptance_criteria") or ())
+                ),
+                brief_refs=tuple(str(item) for item in (task_block.get("brief_refs") or ())),
+                ownership_refs=tuple(
+                    str(item) for item in (task_block.get("ownership_refs") or ())
+                ),
+                safety_refs=tuple(str(item) for item in (task_block.get("safety_refs") or ())),
+                proof_refs=tuple(str(item) for item in (task_block.get("proof_refs") or ())),
+            )
+        )
+    except PolicyUnavailableError as exc:
+        raise RuntimeError(f"operator policy unavailable: {exc}") from exc
+    if not policy_verdict.allowed:
+        raise RuntimeError(f"operator policy denied: {policy_verdict.reason}")
+
     from verdict.orchestration.run import resolve_api_key
 
     gateway = str(config.get("gateway") or _bootstrap_gateway_url() or DEFAULT_OMNIROUTE_URL)
