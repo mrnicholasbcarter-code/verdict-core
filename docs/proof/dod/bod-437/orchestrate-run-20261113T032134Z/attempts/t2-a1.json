@@ -1,0 +1,37 @@
+{
+ "node_id": "t2",
+ "attempt": 1,
+ "route_id": "groq/openai/gpt-oss-120b",
+ "ok": false,
+ "reported_model": "openai/gpt-oss-120b",
+ "stop_reason": "end_turn",
+ "status_code": null,
+ "error": "diff_rejected: no unified diff found in model output",
+ "output_tail": "RESULT: DONE",
+ "duration_seconds": 1.6295822999672964,
+ "session_ref": "direct-gateway:chatcmpl-9e9b9f04-cd6f-4ec5-b85d-e7eb38033ff0",
+ "usage": {
+  "input_tokens": 815,
+  "output_tokens": 121,
+  "cost_usd": null,
+  "tokens_source": "http_response",
+  "turns": 1
+ },
+ "served_check": {
+  "status": "verified",
+  "selected_route": "groq/openai/gpt-oss-120b",
+  "served_route": "groq/openai/gpt-oss-120b",
+  "served": {
+   "provider": "groq",
+   "model": "openai/gpt-oss-120b",
+   "connection_id": "a70f7b83-5604-4b6e-890e-6883bb18a9f9",
+   "decision_strategy": "single",
+   "decision_provider": "groq",
+   "request_id": "1794540228468-e48e93eef986-2rf",
+   "version": "3.8.53",
+   "fallback_attempts": null,
+   "conflicting": []
+  },
+  "reasons": []
+ }
+}

@@ -1,0 +1,277 @@
+{
+  "claimed_outcome": "BLOCKED",
+  "controller_events": [
+    {
+      "at": "2026-11-13T03:22:15.628369Z",
+      "attempt_id": "20261113T032134Z:3fced6834c03d929:t1-a1",
+      "epoch": 0,
+      "gateway_origin": "http://127.0.0.1:20128",
+      "node_id": "t1",
+      "permit_id": "9b9c3b0fe2fe49e5b58d98a9ec169cba",
+      "phase": "dispatch_permit",
+      "route_id": "groq/openai/gpt-oss-120b",
+      "seq": 12
+    },
+    {
+      "at": "2026-11-13T03:23:47.834932Z",
+      "attempt_id": "20261113T032134Z:3fced6834c03d929:t2-a1",
+      "epoch": 0,
+      "gateway_origin": "http://127.0.0.1:20128",
+      "node_id": "t2",
+      "permit_id": "df502174945041dfa98f9de6dc45a447",
+      "phase": "dispatch_permit",
+      "route_id": "groq/openai/gpt-oss-120b",
+      "seq": 26
+    },
+    {
+      "at": "2026-11-13T03:23:49.485725Z",
+      "node_id": "t2",
+      "phase": "session_feedback",
+      "reason": "non_availability_failure",
+      "recorded": false,
+      "route_id": "groq/openai/gpt-oss-120b",
+      "seq": 30
+    },
+    {
+      "at": "2026-11-13T03:25:12.049027Z",
+      "attempt_id": "20261113T032134Z:3fced6834c03d929:t2-a2",
+      "epoch": 0,
+      "gateway_origin": "http://127.0.0.1:20128",
+      "node_id": "t2",
+      "permit_id": "f89e249086e146a792741c0db3f6507d",
+      "phase": "dispatch_permit",
+      "route_id": "opencode-go/beam-free",
+      "seq": 41
+    }
+  ],
+  "cooldowns": [
+    {
+      "at": "2026-11-13T03:23:49.491339Z",
+      "category": "unknown",
+      "key": "groq/openai/gpt-oss-120b",
+      "node_id": "t2",
+      "scope": "route",
+      "seq": 31,
+      "until": "2026-11-13T03:25:49+00:00"
+    }
+  ],
+  "decision_signals": null,
+  "event_count": 50,
+  "events_digest": "sha256:efa14da77f83d0893bfa3122674494c12af3528308c067583254c9b3676ee66d",
+  "finished_at": "2026-11-13T03:25:19.752411Z",
+  "goal": "create ok.txt",
+  "graph_digest": "sha256:45581d4a1e64ac0b3b8893ac26922960e2600b9b50725e0fc50c9f583fe8e442",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 49
+      },
+      {
+        "name": "no_change",
+        "ok": true,
+        "seq": 45
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 44
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "no_change_nodes": [
+    "t2"
+  ],
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "cache_checked_at": "2026-11-13T00:01:01.505201+00:00",
+          "cache_freshness": "fresh",
+          "capacity_class": "free",
+          "duration_seconds": 8.69,
+          "evidence_level": "probation",
+          "executed_model": "openai/gpt-oss-120b",
+          "executor_kind": "live",
+          "fault_injected": false,
+          "harness": "direct-gateway",
+          "intended_route": "groq/openai/gpt-oss-120b",
+          "outcome": "success",
+          "probe_class": "agentic",
+          "provider": "groq",
+          "route_id": "groq/openai/gpt-oss-120b",
+          "route_identity": "unattested",
+          "served_identity": {
+            "connection_id": null,
+            "decision_strategy": null,
+            "model": null,
+            "provider": null,
+            "reasons": [
+              "no_served_identity_headers"
+            ],
+            "served_route": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 687,
+            "output_tokens": 71,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "t1",
+      "validated_by": [
+        {
+          "command": "test -f ok.txt",
+          "exit_code": 0,
+          "seq": 16
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "cache_checked_at": "2026-11-13T00:01:01.505201+00:00",
+          "cache_freshness": "fresh",
+          "capacity_class": "free",
+          "duration_seconds": 1.63,
+          "evidence_level": "probation",
+          "executed_model": "groq/openai/gpt-oss-120b",
+          "executor_kind": "live",
+          "failure_category": "unknown",
+          "fault_injected": false,
+          "harness": "direct-gateway",
+          "intended_route": "groq/openai/gpt-oss-120b",
+          "outcome": "failure",
+          "probe_class": "agentic",
+          "provider": "groq",
+          "route_id": "groq/openai/gpt-oss-120b",
+          "route_identity": "match",
+          "served_identity": {
+            "connection_id": "a70f7b83-5604-4b6e-890e-6883bb18a9f9",
+            "decision_strategy": "single",
+            "model": "openai/gpt-oss-120b",
+            "provider": "groq",
+            "reasons": [],
+            "served_route": "groq/openai/gpt-oss-120b",
+            "status": "verified"
+          },
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 815,
+            "output_tokens": 121,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        },
+        {
+          "attempt": 2,
+          "cache_checked_at": "2026-11-13T00:01:28.791756+00:00",
+          "cache_freshness": "fresh",
+          "capacity_class": "free",
+          "duration_seconds": 7.48,
+          "evidence_level": "probation",
+          "executed_model": "beam-free",
+          "executor_kind": "live",
+          "fault_injected": false,
+          "harness": "direct-gateway",
+          "intended_route": "opencode-go/beam-free",
+          "outcome": "success",
+          "probe_class": "agentic",
+          "provider": "opencode-go",
+          "route_id": "opencode-go/beam-free",
+          "route_identity": "unattested",
+          "served_identity": {
+            "connection_id": null,
+            "decision_strategy": null,
+            "model": null,
+            "provider": null,
+            "reasons": [
+              "no_served_identity_headers"
+            ],
+            "served_route": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 814,
+            "output_tokens": 281,
+            "tokens_source": "http_response",
+            "turns": 1
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "t2",
+      "validated_by": [
+        {
+          "command": "grep -q ok ok.txt",
+          "exit_code": 0,
+          "seq": 46
+        }
+      ]
+    }
+  ],
+  "outcome": "BLOCKED",
+  "planner_attempts": [],
+  "producer": {
+    "dirty": false,
+    "git_sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+    "verdict_version": "0.5.0"
+  },
+  "reason": "review status MISSING (PASS required)",
+  "reassignments": [
+    {
+      "at": "2026-11-13T03:25:11.745387Z",
+      "attempt": 2,
+      "from_route": "groq/openai/gpt-oss-120b",
+      "node_id": "t2",
+      "reason": "unknown",
+      "seq": 35,
+      "to_route": "opencode-go/beam-free"
+    }
+  ],
+  "repo_gate_results": [],
+  "repo_gates": [
+    {
+      "at": "2026-11-13T03:22:24.406190Z",
+      "declared": false,
+      "gates": [],
+      "node_id": "t1",
+      "note": "none declared",
+      "seq": 17
+    }
+  ],
+  "retry_budget": {
+    "max_attempts_per_node": 4,
+    "max_cooldown_wait_seconds": 120.0,
+    "max_parallel": 3
+  },
+  "review": {
+    "blocking": 0,
+    "reviewer": "",
+    "route_id": "",
+    "status": "MISSING"
+  },
+  "route_identity_summary": {
+    "attempts": 3,
+    "match": 1,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 2
+  },
+  "run_id": "20261113T032134Z",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-11-13T03:21:53.982090Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "bod-437",
+  "kind": "product",
+  "author": "t_07010be2 (queen, auto/reasoning:pro) on operator host; ledger join code merged via PR 920 at a79e787d (ancestor of df1f6193); S09 surface also covered by later identity/receipt work in PR 970 and PR 938",
+  "merged_sha": "a79e787d7be2267b0a23df00a699f24f3eb51ed0",
+  "pr": 920,
+  "on_main": {
+    "at": "2026-10-19T17:56:27Z",
+    "sha": "a79e787d7be2267b0a23df00a699f24f3eb51ed0",
+    "environment": "operator-host",
+    "command": "gh pr checks 920 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39295950560",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-437/on-main-gh-pr-checks-920.txt",
+      "sha256": "712730b229ef6380e23e184fe2cd0edd1f972dfe439a35e5a97ac9b24ffe6fa0"
+    }
+  },
+  "freshness_window_hours": 1,
+  "stays_true_job": "Focused S09 suite (test_outcome_attempts / test_outcome_records / test_autodev_outcome_attempts / test_outcome_shadow / test_orch_receipt) runs in CI on every push to main; the hourly verdict-acceptance.timer exercises the installed path that writes attempt + checker_result rows via the orchestration receipt writer. Window is 1h to match the hourly acceptance timer cadence; final installed-main live proof is owned by BOD-439.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict doctor --json",
+    "at": "2026-11-13T02:47:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-437/doctor-green-20261113T0247Z.json",
+      "sha256": "42a8e9aa92d1159f1866bbc95d6ad2634c90b13748528a32ca42ae2c7ba7b05d"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "A18/A26/A28 focused: every attempt links a verified checker without rewriting receipts; terminal rows carry lineage only (no quality_credit); operational failures stay unscored; self-claimed checker_result is refused; focused suite 130 passed.",
+      "expect": "130 passed",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-13T02:50:00Z",
+        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "environment": "operator-host",
+        "command": "TMPDIR=/tmp uv run python -m pytest -q -p no:cacheprovider tests/test_outcome_attempts.py tests/test_outcome_records.py tests/test_autodev_outcome_attempts.py tests/test_outcome_shadow.py tests/test_orch_receipt.py",
+        "real_state_marker": "130 passed, 13 skipped",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-437/focused-tests-20261113T0250Z.txt",
+          "sha256": "53ab75017e982157eec9e95e974287757fbfa9bbbdd7002c766c0706a7174abc"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-13T05:06:00Z",
+        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "environment": "operator-host",
+        "command": "TMPDIR=/tmp uv run python -m pytest -q -p no:cacheprovider tests/test_outcome_attempts.py tests/test_outcome_records.py tests/test_autodev_outcome_attempts.py tests/test_outcome_shadow.py tests/test_orch_receipt.py",
+        "real_state_marker": "130 passed, 13 skipped",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-437/focused-tests-fresh-20261113T0506Z.txt",
+          "sha256": "0fb11a1c3010753420c738ef0092192879021be7bcf57951bc42592b5cf686a6"
+        }
+      }
+    }
+  ],
+  "openspec": {
+    "change": "v1-ledger-history-runtimes"
+  },
+  "parent_confirmation": {
+    "by": "TODO-independent-confirmer (a non-author model family; not t_07010be2 / auto/reasoning:pro)",
+    "at": "1970-01-01T00:00:00Z",
+    "command": "TMPDIR=/tmp uv run python -m pytest -q -p no:cacheprovider tests/test_outcome_attempts.py tests/test_outcome_records.py tests/test_autodev_outcome_attempts.py tests/test_outcome_shadow.py tests/test_orch_receipt.py",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-437/TODO-parent-confirmation.txt",
+      "sha256": "2f73349cfc4630255319c6c8dfc1b46a8996ace9d14d8e07563b165915918ec2"
+    }
+  }
+}
