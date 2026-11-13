@@ -15,6 +15,7 @@
 - [Decision Signals](decision-signals/)
 - [Contracts](contracts/)
 - [OpenSpec](openspec/)
+- [BOD-340 native execution boundary map](policy/bod-340-boundary-map.md): every caller that can start or advance work, what it checks today, and the bypass and gap lists
 
 ## Visuals
 
