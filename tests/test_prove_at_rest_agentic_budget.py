@@ -450,13 +450,14 @@ def test_agentic_phase_runs_after_the_chat_phase_hits_its_caps(tmp_path: Path) -
     # BOD-297/S05-B (decision 14, same pattern as items 1/4): with 2-request
     # full probes, max_requests=2 admits exactly 1 route into the plan
     # (max_routes = max_requests // 2), so the coordinator labels the cap
-    # "route_cap" where the old per-route loop labeled it "request_cap";
-    # the numeric effect (probe exactly p0, leave p1/p2 for agentic) is
-    # unchanged.
+    # "route_cap" where the old per-route loop labeled it "request_cap".
+    # BOD-297: the agentic phase shares the cycle's single request budget with
+    # the chat phase -- chat spent its one request, so nothing remains for
+    # agentic probing (no limit multiplication).
     assert stats.stopped_reason == "route_cap"
     assert stats.agentic_stopped_reason == "complete"
-    assert stats.agentic_passed == 2  # p0 failed chat (negative); p1, p2 qualify
-    assert agentic_capability(HealthCache(cache.path).entry("p1/m"), NOW)["qualified"]
+    assert stats.requests == 1
+    assert stats.agentic_passed == 0
 
 
 def test_save_after_the_wall_cap_is_not_a_lock_timeout(tmp_path: Path) -> None:

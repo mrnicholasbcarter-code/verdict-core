@@ -345,17 +345,7 @@ def _action_models_list(**kwargs: Any) -> ActionResult:
 
 
 def _action_route(**kwargs: Any) -> ActionResult:
-    """Route a single task through the gate (planning step).
-
-    Callers may pass ``gate`` explicitly (the CLI does so, preserving its
-    long-standing ``_build_route_gate`` monkeypatch surface); otherwise the
-    action builds one via ``helpers.build_route_gate``.  Returns the raw
-    ``decision`` and (when requested) the ``selection`` for the presenter;
-    the CLI owns any transport execution (``_execute_cli_decision``).
-
-    ``terse=True`` calls only ``gate.route`` to preserve the legacy escape
-    surface for tests that stub a route-only gate.
-    """
+    """Route a single task through the gate or selection ladder."""
     from verdict.serve_path import CONTEXT_ALLOW_LEGACY
 
     task: str = kwargs["task"]
@@ -365,19 +355,101 @@ def _action_route(**kwargs: Any) -> ActionResult:
     terse: bool = bool(kwargs.get("terse", False))
 
     context: dict[str, object] = dict(kwargs.get("context") or {})
+    gate = kwargs.get("gate")
     if allow_legacy_selector:
         context[CONTEXT_ALLOW_LEGACY] = True
+    if gate is not None or allow_legacy_selector or allow_offline:
+        if gate is None:
+            from verdict.actions.helpers import build_route_gate
 
-    gate = kwargs.get("gate")
-    if gate is None:
-        from verdict.actions.helpers import build_route_gate
+            gate = build_route_gate(allow_offline=allow_offline)
+        if terse:
+            dec = gate.route(task, criticality, context=context or None)
+            return ActionResult(
+                data={"task": task, "gate": gate, "decision": dec, "selection": None}
+            )
+        dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
+        return ActionResult(
+            data={"task": task, "gate": gate, "decision": dec, "selection": selection}
+        )
 
-        gate = build_route_gate(allow_offline=allow_offline)
-    if terse:
-        dec = gate.route(task, criticality, context=context or None)
-        return ActionResult(data={"task": task, "gate": gate, "decision": dec, "selection": None})
-    dec, selection = gate.route_with_strategy(task, criticality, context=context or None)
-    return ActionResult(data={"task": task, "gate": gate, "decision": dec, "selection": selection})
+    from verdict.credentials_store import resolve_gateway_binding
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.orchestration.contracts import OrchestrationError, TaskRequirements
+    from verdict.orchestration.selection import select_route_for_task
+    from verdict.task_profile import profile_task
+
+    try:
+        gateway = normalize_omniroute_origin(resolve_gateway_binding()[0])
+    except Exception:
+        gateway = "http://127.0.0.1:20128"
+
+    requires = frozenset(
+        p.strip() for p in str(context.get("requires", "")).split(",") if p.strip()
+    )
+    family = profile_task(task, context=context).task_family
+    task_category = str(
+        context.get("task_category") or ("coding" if family.startswith("code") else "general")
+    )
+    capabilities = set(requires - {"code"}) or set(TaskRequirements().required_capabilities)
+    for flag, capability in (
+        ("tools_required", "tools"),
+        ("reasoning_required", "reasoning"),
+        ("vision_required", "vision"),
+        ("structured_output_required", "structured_output"),
+        ("streaming_required", "streaming"),
+    ):
+        if context.get(flag):
+            capabilities.add(capability)
+    requirements = TaskRequirements(
+        required_capabilities=frozenset(capabilities),
+        min_context_tokens=int(str(context.get("min_context_tokens") or 32_000)),
+        coding="code" in requires or family.startswith("code"),
+        reasoning="reasoning" in capabilities,
+        task_category=task_category,
+    )
+    capacity = tuple(p.strip() for p in str(context.get("capacity", "")).split(",") if p.strip())
+    explicit_model = context.get("explicit_model")
+
+    try:
+        selection = select_route_for_task(
+            requirements,
+            gateway=gateway,
+            capacity=capacity,
+            explicit_model=str(explicit_model) if explicit_model else None,
+        )
+    except (OrchestrationError, ValueError) as exc:
+        return ActionResult(
+            data={
+                "task": task,
+                "selected": None,
+                "reason": "invalid_selection_request",
+                "reasons": [str(exc)],
+            },
+            ok=False,
+            exit_code=1,
+        )
+
+    payload = dict(selection.explanation)
+    payload.update(
+        gateway=gateway,
+        reasons=list(selection.reasons),
+        selected_because="selected because " + "; ".join(selection.reasons),
+        provenance=selection.provenance,
+    )
+    if selection.route is None:
+        payload["reason"] = "explicit_model_ineligible" if explicit_model else "no_eligible_route"
+        payload["selected"] = None
+        return ActionResult(data=payload, ok=False, exit_code=1)
+
+    selected_dict = selection.route.to_dict() | {
+        "gateway": gateway,
+        "model": selection.route.route_id,
+        "resource_pool": selection.route.capacity_class.value,
+    }
+    payload["selected"] = selected_dict
+    payload["model"] = selection.route.route_id
+    return ActionResult(data=payload)
 
 
 def _action_doctor(**kwargs: Any) -> ActionResult:

@@ -1270,9 +1270,44 @@ class IntelligenceService:
         receipt = gate_capability(
             receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self.admit_now
         )
-        offered_universe = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
+        raw_offered = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
+        from verdict.free_tier_admit import normalize_omniroute_origin
+        from verdict.orchestration.eligibility_report import build_selector
+
+        gateway_url = (
+            normalize_omniroute_origin(endpoint[0])
+            if endpoint and endpoint[0]
+            else "http://127.0.0.1:20128"
+        )
+        from verdict.orchestration.contracts import TaskRequirements as OrchTaskRequirements
+
+        orch_reqs = OrchTaskRequirements(
+            required_capabilities=frozenset(requirements.names)
+            if requirements.names
+            else frozenset({"tools"}),
+            min_context_tokens=requirements.min_context or 32_000,
+            task_category="coding"
+            if getattr(profile, "spend_policy", "") == "coding"
+            else "general",
+        )
+        offered_universe = raw_offered
+        if self.admit_snapshot is None and endpoint and endpoint[0]:
+            selector = build_selector(
+                gateway_url,
+                scope="",
+                prefer="",
+                required_capabilities=orch_reqs.required_capabilities,
+                min_context_tokens=orch_reqs.min_context_tokens,
+                now=self.admit_now,
+                task_category=orch_reqs.task_category,
+                visibility_executor="direct-gateway",
+            )
+            _, candidates = selector._assess_all(orch_reqs, self.admit_now)
+            offered_universe = tuple(
+                c.route_id for c in candidates if c.route_id in set(raw_offered)
+            )
         offered_ids = set(offered_universe)
-        offered_admitted = tuple(item for item in receipt.admitted if item in offered_ids)
+        offered_admitted = tuple(item for item in offered_universe if item in receipt.admitted)
         offered_set = set(offered_admitted)
         receipt = replace(
             receipt,
@@ -1298,6 +1333,27 @@ class IntelligenceService:
             )
         except CandidatePoolError as exc:
             raise ExecutionPathError(f"candidate pool rejected live offers: {exc}") from exc
+        if self.admit_snapshot is None and endpoint and endpoint[0]:
+            order = {route_id: index for index, route_id in enumerate(offered_universe)}
+            shortlist = tuple(sorted(pool.shortlist, key=lambda item: order[item.route_id]))
+            pool = replace(
+                pool,
+                shortlist=shortlist,
+                shortlist_digest=hashlib.sha256(
+                    json.dumps(
+                        [item.to_dict() for item in shortlist],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+            )
+            receipt = replace(
+                receipt,
+                admitted=tuple(
+                    item.route_id for item in shortlist if item.route_id in receipt.admitted
+                ),
+                candidate_pool=pool.to_dict(),
+            )
         confirm_transport = self._resolve_confirm_transport(endpoint)
         confirm_live = bool(
             live and confirm_transport is not None and self.confirm_transport is None
@@ -1349,7 +1405,10 @@ class IntelligenceService:
         plans_by_id = {plan.candidate_id: plan for plan in plans}
         confirmed_ids.difference_update(cannot_fit)
         filtered_offers_list = []
-        for offer in request.offers:
+        offer_order = {route_id: index for index, route_id in enumerate(offered_universe)}
+        for offer in sorted(
+            request.offers, key=lambda item: offer_order.get(item.route.route_id, len(offer_order))
+        ):
             if offer.route.route_id not in confirmed_ids:
                 continue
             plan = plans_by_id[offer.route.route_id]
