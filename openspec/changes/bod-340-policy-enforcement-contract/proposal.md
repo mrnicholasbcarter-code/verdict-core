@@ -52,7 +52,7 @@ this change is the spec the enforcement slices implement.
   (`wt/t_8a2d92f7`); coordinate before editing.
 - Policy: rule changes alter the approved digest; the new digest needs
   operator approval (ADR-040 open questions; BOD-342 decision log).
-- ADR: [ADR-040](../../docs/adr/ADR-040-policy-enforcement-contract.md)
+- ADR: [ADR-040](../../../docs/adr/ADR-040-policy-enforcement-contract.md)
   (Proposed) supersedes ADR-016 and ADR-036 in part for the lifecycle
   boundaries; both stay in force.
 - Evidence: `docs/policy/bod-340-boundary-map.md` is the entrypoint and
