@@ -1684,13 +1684,17 @@ class Prober:
         return max(retry_after, float(self.interval_seconds) + 60.0)
 
     def _converse(
-        self, route_id: str, deadline: float
+        self, route_id: str, deadline: float, cooldown_key: str | None = None
     ) -> tuple[list[ProbeExchange], AgenticFakeFile, bool]:
         """One read/edit/read conversation. Runs in a worker thread; no cache access.
 
         Returns the exchanges, the fake file, and whether the conversation
         reached a verdict (all turns ran, or a turn failed) rather than being
         cut short by the deadline or the stop signal.
+
+        If ``cooldown_key`` is given, the provider/pool cooldown is re-checked
+        before each turn; if a cooldown becomes active mid-conversation, the
+        remaining turns are not sent.
         """
         assert self.agentic_transport is not None
         fake_file = AgenticFakeFile()
@@ -1700,6 +1704,11 @@ class Prober:
             remaining = deadline - self.monotonic()
             if self._stop.is_set() or remaining <= 0:
                 return exchanges, fake_file, False
+            if cooldown_key is not None:
+                self.cache.reload()
+                cooldown = self.cache.cooldown_for(cooldown_key, self.clock())
+                if cooldown is not None:
+                    return exchanges, fake_file, False
             payload = payload_fn(route_id, conversation)
             try:
                 ex = self.agentic_transport(
@@ -1740,7 +1749,20 @@ class Prober:
         )
         if reservation is None:
             return outcome
-        exchanges, fake_file, finished = self._converse(route.route_id, deadline)
+        # A provider cooldown can become active between the bucket check and
+        # the conversation; re-check before sending the first turn.
+        if self.cache.cooldown_for(f"provider:{route.provider}", observed) is not None:
+            self.cache.release_bucket(
+                reservation,
+                AGENTIC_TURNS,
+                deadline=deadline,
+                monotonic=self.monotonic,
+                sleep=self.sleep,
+            )
+            return outcome
+        exchanges, fake_file, finished = self._converse(
+            route.route_id, deadline, cooldown_key=f"provider:{route.provider}"
+        )
         outcome["turns_sent"] = len(exchanges)
         latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
         outcome["latency_ms"] = sum(latencies) if latencies else None

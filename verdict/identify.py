@@ -358,7 +358,10 @@ def screen_models(
                     row["result"] = "skipped_fresh"
                 elif provider in stopped_providers:
                     row["result"] = "skipped_provider_stopped"
-                elif pool_of(route_id) in _cooled_pools(cache, now):
+                elif (
+                    pool_of(route_id) in _cooled_pools(cache, now)
+                    or cache.cooldown_for(f"provider:{provider}", now) is not None
+                ):
                     row["result"] = "skipped_cooldown"
                 elif checked >= max_routes or counts[provider] >= max_per_provider:
                     row["result"] = "skipped_cap"

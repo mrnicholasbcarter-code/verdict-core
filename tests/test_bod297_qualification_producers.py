@@ -473,7 +473,6 @@ def test_late_success_keeps_newer_negative_and_observed_time(tmp_path: Path) -> 
 # -- (g) consent, per-run budget and admission before each request; order ------
 
 
-@red("identify --screen ignores an active scoped provider cooldown")
 def test_identify_screen_honours_scoped_provider_cooldown(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
     cache = HealthCache(path)
@@ -492,7 +491,6 @@ def test_identify_screen_honours_scoped_provider_cooldown(tmp_path: Path) -> Non
     assert calls == [], "a request was sent into a provider that is cooling down"
 
 
-@red("identify --screen admits once per conversation, not before each request")
 def test_identify_screen_admits_before_each_request(tmp_path: Path) -> None:
     path = tmp_path / "health.json"
 
@@ -670,7 +668,7 @@ def test_passive_identify_is_get_only_with_no_model_calls_or_writes(
 
 # -- (j) two real producer processes share one cap under one owner ------------
 
-_PRODUCER_DRIVER = r'''
+_PRODUCER_DRIVER = r"""
 import json
 import sys
 import time
@@ -734,7 +732,7 @@ coordinator.refresh_for_consumer(
 )
 
 Path(results_path).write_text(json.dumps({"sends": len(sent)}))
-'''
+"""
 
 
 def test_two_producer_processes_share_one_cap_under_one_owner(tmp_path: Path) -> None:
@@ -759,9 +757,9 @@ def test_two_producer_processes_share_one_cap_under_one_owner(tmp_path: Path) ->
     env["PYTHONPATH"] = os.getcwd()
 
     base = [sys.executable, str(driver), str(tmp_path), json.dumps(routes), str(max_requests)]
-    pa = subprocess.Popen(base + [str(result_a)], env=env)
+    pa = subprocess.Popen([*base, str(result_a)], env=env)
     time.sleep(0.05)  # let A win the lease first so B genuinely contends
-    pb = subprocess.Popen(base + [str(result_b)], env=env)
+    pb = subprocess.Popen([*base, str(result_b)], env=env)
     pa.wait(timeout=120)
     pb.wait(timeout=120)
     assert pa.returncode == 0 and pb.returncode == 0, "a producer process crashed"
@@ -769,5 +767,7 @@ def test_two_producer_processes_share_one_cap_under_one_owner(tmp_path: Path) ->
     ra = json.loads(result_a.read_text())["sends"]
     rb = json.loads(result_b.read_text())["sends"]
     total = ra + rb
-    assert total <= max_requests, f"the approved cap was multiplied across processes: {total} > {max_requests}"
+    assert total <= max_requests, (
+        f"the approved cap was multiplied across processes: {total} > {max_requests}"
+    )
     assert {ra, rb} == {4, 0}, f"exactly one owner should spend the single cap, got {ra} and {rb}"

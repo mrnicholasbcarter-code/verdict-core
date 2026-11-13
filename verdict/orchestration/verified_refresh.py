@@ -1026,7 +1026,6 @@ class RefreshCoordinator:
         # unscreened routes. Prove-at-rest manages its own fleet rotation
         # through cache.cursor and pre-filters its rows, so it opts out here.
         candidates = candidates_pre_cap
-        fleet: set[str] | None = None
         if consumer != CONSUMER_PROVE_AT_REST:
             fleet = {row.route_id for row in snapshot.rows if _is_refreshable(row)}
             screening = self.cache.cursor.get("screening") or {}
@@ -1577,10 +1576,8 @@ class RefreshCoordinator:
             self.cache.set_cursor(cursor)
             # Cursor persistence is best-effort fairness bookkeeping; a
             # contended cache lock must not fail the whole job.
-            try:
+            with contextlib.suppress(HealthCacheLockTimeoutError):
                 self.cache.save(monotonic=self.monotonic, sleep=self.sleep)
-            except HealthCacheLockTimeoutError:
-                pass
         # Keep this job's cancel signal for waiters; later UUID jobs cannot
         # inherit it. Only the owner clears its own flag before publication.
         return outcome_obj
