@@ -1,0 +1,185 @@
+{
+  "schema_version": "verdict.operator-policy/v1",
+  "version": 1,
+  "title": "Approved operator policy for native execution boundaries",
+  "decision_refs": [
+    "operator/decision-20261013-memory-ai-memory.md (operator decision 2026-10-13)",
+    "AGENTS.md push gate (operator-authorized recreation, Nick 2026-11-05)",
+    "AGENTS.md definition of done"
+  ],
+  "linear_issue": "BOD-340",
+  "effective_at": "2026-11-13T00:00:00Z",
+  "notes": "Source-bound operator safety/workflow rules enforced in CODE before side effects. Memory pages are evidence only; retrieval never approves or promotes rules.",
+  "rules": [
+    {
+      "rule_id": "pol.require-tracked-issue-ac",
+      "title": "Source edit or branch creation requires a valid tracked BOD issue plus acceptance criteria",
+      "effect": "deny",
+      "scope": "source.write",
+      "matcher": {
+        "actions": ["source.edit", "branch.create"],
+        "requires_linear_issue": true,
+        "requires_acceptance_criteria": true
+      },
+      "deny_reason": "source_edit_or_branch_creation_without_tracked_issue_and_acceptance_criteria",
+      "override": {
+        "requires_operator": "nick@nickcarter.dev",
+        "bound_action": "source.edit.maintenance",
+        "bound_scope": "governing-artifacts",
+        "expiry_seconds": 86400,
+        "nonce_required": true,
+        "approval_ref": "operator maintenance disposition, specific reviewed no-change"
+      },
+      "waivable": true,
+      "enabled": true,
+      "precedence": 10,
+      "decision_refs": [
+        "AGENTS.md release train: one story = one branch, BOD issue id in title/body"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.block-push-no-verify",
+      "title": "Push gate bypass (git push --no-verify) is never admitted",
+      "effect": "deny",
+      "scope": "git.push",
+      "matcher": {
+        "actions": ["git.push"],
+        "argv_any": ["--no-verify"]
+      },
+      "deny_reason": "push_gate_bypass_no_verify",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 5,
+      "decision_refs": [
+        "AGENTS.md push gate (vgate operator-owned; --no-verify deny-listed)"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.block-vgate-mutation",
+      "title": "Mutation of the push gate or protected guards is never admitted",
+      "effect": "deny",
+      "scope": "gate.mutate",
+      "matcher": {
+        "actions": ["gate.mutate"],
+        "command_names": ["vgate"],
+        "argv_excludes": ["--help", "--version"]
+      },
+      "deny_reason": "vgate_mutation_protected",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 5,
+      "decision_refs": [
+        "AGENTS.md push gate: never modify /home/nick/bin/vgate or bypass it"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.block-unauthorized-service-restart",
+      "title": "Unauthorized restart of OmniRoute, Prime or the gateway is never admitted",
+      "effect": "deny",
+      "scope": "service.restart",
+      "matcher": {
+        "actions": ["service.restart"],
+        "argv_any": ["verdict-serve", "omniroute", "prime-agent"]
+      },
+      "deny_reason": "unauthorized_service_restart",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 8,
+      "decision_refs": [
+        "AGENTS.md: no installed service restart or upgrade without operator approval"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.block-kill-running-work",
+      "title": "Killing or destructively interfering with running work is never admitted",
+      "effect": "deny",
+      "scope": "process.kill",
+      "matcher": {
+        "actions": ["process.kill"],
+        "argv_any": ["running-work", "owned-worker"]
+      },
+      "deny_reason": "destructive_interference_with_running_work",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 8,
+      "decision_refs": [
+        "BOD-96 workflow lease/proof/stall discipline: do not kill running work"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.require-cited-brief-dispatch",
+      "title": "Subagent dispatch requires a prepared cited brief with ownership, safety and proof",
+      "effect": "deny",
+      "scope": "subagent.dispatch",
+      "matcher": {
+        "actions": ["subagent.dispatch"],
+        "requires_brief_refs": true,
+        "requires_ownership_refs": true,
+        "requires_safety_refs": true,
+        "requires_proof_refs": true
+      },
+      "deny_reason": "subagent_dispatch_without_prepared_cited_brief",
+      "override": {
+        "requires_operator": "nick@nickcarter.dev",
+        "bound_action": "subagent.dispatch.maintenance",
+        "bound_scope": "governing-artifacts",
+        "expiry_seconds": 86400,
+        "nonce_required": true,
+        "approval_ref": "operator-approved dispatch exception"
+      },
+      "waivable": true,
+      "enabled": true,
+      "precedence": 12,
+      "decision_refs": [
+        "BOD-303 packet/lifecycle contract: hydrated brief plus ownership, safety and proof before dispatch"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.allow-git-push-through-gate",
+      "title": "A git push through the gate (with --verify, default) is allowed",
+      "effect": "allow",
+      "scope": "git.push",
+      "matcher": {
+        "actions": ["git.push"],
+        "argv_excludes": ["--no-verify"]
+      },
+      "deny_reason": "",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 85,
+      "decision_refs": [
+        "AGENTS.md push gate: vgate runs on push and must not be bypassed"
+      ],
+      "linear_issue": "BOD-340"
+    },
+    {
+      "rule_id": "pol.allow-benign-read-only",
+      "title": "Read-only and diagnostic actions are allowed when no deny rule matches",
+      "effect": "allow",
+      "scope": "control.read",
+      "matcher": {
+        "actions": ["file.read", "catalog.query", "doctor.diagnose", "eligibility.check", "route.explain"]
+      },
+      "deny_reason": "",
+      "override": null,
+      "waivable": false,
+      "enabled": true,
+      "precedence": 90,
+      "decision_refs": [
+        "AGENTS.md: legitimate read-only and benign work remains allowed"
+      ],
+      "linear_issue": "BOD-340"
+    }
+  ]
+}

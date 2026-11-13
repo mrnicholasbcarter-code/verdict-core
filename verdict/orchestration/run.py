@@ -1019,6 +1019,16 @@ async def run_golden_path(
                     "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
                 )
                 return _blocked_before_plan(run_dir, admission_reason)
+        # BOD-340: the approved operator policy is the single authority for
+        # native execution boundaries; fail closed before any planning or
+        # dispatch.  Memory retrieval never approves or promotes rules.
+        from verdict.operator_policy import PolicyUnavailableError, load_policy_source
+
+        try:
+            _policy_source = load_policy_source()
+        except PolicyUnavailableError as exc:
+            admission_reason = f"operator policy unavailable: {exc}"
+            return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
