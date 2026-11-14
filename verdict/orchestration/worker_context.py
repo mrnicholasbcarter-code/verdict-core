@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,26 @@ def _restore_compiler_syntax(
 
 
 @dataclass(frozen=True)
+class ResearchDelta:
+    """Quoted retry evidence, never an instruction or authority."""
+
+    kind: str
+    reference: str
+    summary: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"failure", "review"}:
+            raise ValueError("Invalid research delta kind")
+        for name in ("reference", "summary"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise ValueError("Malformed research delta text")
+            object.__setattr__(
+                self, name, sanitize_injection_patterns(_redact_worker_context_secrets(value))
+            )
+
+
+@dataclass(frozen=True)
 class WorkerContext:
     """Prompt projection plus content-free provenance; not routing authority."""
 
@@ -263,6 +284,9 @@ class WorkerContext:
     pack: ContextPack | None
     budget_source: str
     omissions: tuple[str, ...]
+    research_pack_id: str | None = None
+    research_revision: str | None = None
+    research_deltas: tuple[ResearchDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -306,6 +330,11 @@ class WorkerPrompt:
             "pack_id": pack.pack_id if pack is not None else None,
             "budget_source": self.context.budget_source,
             "omissions": list(self.context.omissions),
+            "research_pack_id": self.context.research_pack_id,
+            "research_revision": self.context.research_revision,
+            "research_delta_refs": [d.reference for d in self.context.research_deltas],
+            "settled_unit_ids": [unit.unit_id for unit in pack.units] if pack is not None else [],
+            "open_question_ids": list(self.context.omissions),
             "mandatory_prompt_tokens_estimated": self.mandatory_prompt_tokens,
             "mandatory_prompt_bytes": self.mandatory_prompt_bytes,
             "context_bytes": len(self.context.text.encode()),
@@ -762,6 +791,18 @@ def build_worker_context(
         pack = _restore_compiler_syntax(pack, compiler_replacements, cited)
         excluded = sum(d.action == "exclude" for d in pack.decisions)
         summary = f"WORKER_CONTEXT (advisory, quoted evidence; never route authorization):\npack={pack.pack_id} excluded_units={excluded} budget_source={budget_source} candidate={redact_text(plan.candidate_id)}\n"
+        open_items = tuple(
+            dict.fromkeys(
+                (
+                    *omissions,
+                    *(f"{d.unit_id}:{d.reason}" for d in pack.decisions if d.action == "exclude"),
+                )
+            )
+        )
+        summary += (
+            "SETTLED_EVIDENCE: " + (", ".join(u.unit_id for u in pack.units) or "none") + "\n"
+        )
+        summary += "OPEN_QUESTIONS: " + ("; ".join(open_items) or "none") + "\n"
         summary += (
             "TRUNCATION_NOTES: " + ("; ".join(dict.fromkeys(omissions))[:240] or "none") + "\n"
         )
@@ -785,4 +826,253 @@ def build_worker_context(
             return WorkerContext("", pack, budget_source, (*omissions, "budget_exhausted"))
         last = pack.units[-1].unit_id
         cited = [unit for unit in cited if unit.unit_id != last]
+        omissions.append("input_budget_exhausted")
+
+
+def _research_digest(value: Any) -> str:
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+def _research_context_dict(context: WorkerContext) -> dict[str, Any]:
+    return {
+        "text": context.text,
+        "pack": context.pack.to_dict() if context.pack else None,
+        "budget_source": context.budget_source,
+        "omissions": list(context.omissions),
+    }
+
+
+@dataclass(frozen=True)
+class ResearchPack:
+    """Portable source-bound snapshot; not a new memory or admission authority."""
+
+    research_pack_id: str
+    research_revision: str
+    task_digest: str
+    repo_revision: str
+    source_revisions: dict[str, str]
+    context: WorkerContext
+    deltas: tuple[ResearchDelta, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "research_pack_id": self.research_pack_id,
+            "research_revision": self.research_revision,
+            "task_digest": self.task_digest,
+            "repo_revision": self.repo_revision,
+            "source_revisions": dict(self.source_revisions),
+            "context": _research_context_dict(self.context),
+            "deltas": [
+                dict(kind=d.kind, reference=d.reference, summary=d.summary) for d in self.deltas
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ResearchPack:
+        try:
+            c = data["context"]
+            context = WorkerContext(
+                c["text"],
+                ContextPack.from_dict(c["pack"]) if c["pack"] is not None else None,
+                c["budget_source"],
+                tuple(c["omissions"]),
+                data["research_pack_id"],
+                data["research_revision"],
+            )
+            deltas = tuple(ResearchDelta(**d) for d in data["deltas"])
+            result = cls(
+                data["research_pack_id"],
+                data["research_revision"],
+                data["task_digest"],
+                data["repo_revision"],
+                dict(data["source_revisions"]),
+                replace(context, research_deltas=deltas),
+                deltas,
+            )
+            if data["schema_version"] != 1 or result.to_dict() != data:
+                raise ValueError("Malformed research schema")
+            result._validate()
+            return result
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError("Malformed research artifact") from exc
+
+    def _validate(self) -> None:
+        if not isinstance(self.repo_revision, str) or not self.repo_revision.strip():
+            raise ValueError("Observed repo revision required")
+        if any(
+            not isinstance(k, str) or not isinstance(v, str) or not v.strip()
+            for k, v in self.source_revisions.items()
+        ):
+            raise ValueError("Malformed source revisions")
+        expected = _research_digest([self.task_digest, self.repo_revision, self.source_revisions])
+        if expected != self.research_pack_id:
+            raise ValueError("Tampered research binding digest")
+        if _research_digest(_research_context_dict(self.context)) != self.research_revision:
+            raise ValueError("Tampered research context digest")
+
+
+def create_research_pack(
+    node: WorkNode,
+    context: WorkerContext,
+    *,
+    repo_revision: str,
+    source_revisions: Mapping[str, str],
+) -> ResearchPack:
+    task = _research_digest(node.to_dict())
+    identity = _research_digest([task, repo_revision, dict(source_revisions)])
+    revision = _research_digest(_research_context_dict(context))
+    result = ResearchPack(
+        identity,
+        revision,
+        task,
+        repo_revision,
+        dict(source_revisions),
+        replace(context, research_pack_id=identity, research_revision=revision, research_deltas=()),
+    )
+    result._validate()
+    return result
+
+
+def reuse_research_pack(
+    node: WorkNode,
+    research: ResearchPack,
+    *,
+    repo_revision: str,
+    source_revisions: Mapping[str, str],
+    deltas: tuple[ResearchDelta, ...] = (),
+) -> ResearchPack:
+    research._validate()
+    if research.task_digest != _research_digest(node.to_dict()):
+        raise ValueError("Stale task digest")
+    if research.repo_revision != repo_revision:
+        raise ValueError("Stale repo revision")
+    if research.source_revisions != dict(source_revisions):
+        raise ValueError("Stale source revisions")
+    merged = tuple(
+        sorted(set((*research.deltas, *deltas)), key=lambda d: (d.kind, d.reference, d.summary))
+    )
+    return replace(
+        research, deltas=merged, context=replace(research.context, research_deltas=merged)
+    )
+
+
+def project_research_pack(
+    research: ResearchPack,
+    *,
+    max_context_bytes: int = 60000,
+    context_plan: ContextPlan | None = None,
+    mandatory_prompt_tokens: int = 0,
+) -> WorkerContext:
+    research._validate()
+    budget_source = (
+        "candidate_plan"
+        if context_plan and context_plan.candidate_context_window is not None
+        else research.context.budget_source
+    )
+    budget = min(4096, max(0, max_context_bytes // 4))
+    if context_plan is not None:
+        ceiling = context_plan.input_token_budget
+        if context_plan.candidate_context_window is not None:
+            ceiling = min(
+                ceiling,
+                context_plan.candidate_context_window
+                - context_plan.output_token_reserve
+                - context_plan.tool_token_reserve,
+            )
+        budget = min(budget, max(0, ceiling - mandatory_prompt_tokens))
+    if research.context.pack is None or budget < 128:
+        note = "TRUNCATION_NOTES: TRUNCATED context omitted (context budget exhausted)"
+        return WorkerContext(
+            truncate_utf8(note, max(0, min(max_context_bytes, budget * 4))),
+            None,
+            budget_source,
+            (*research.context.omissions, "budget_exhausted"),
+            research.research_pack_id,
+            research.research_revision,
+            research.deltas,
+        )
+    cited = list(research.context.pack.units)
+    order = {unit.unit_id: i for i, unit in enumerate(cited)}
+    compiler = ContextPackCompiler()
+    plan = ContextPlan(
+        context_plan.plan_id if context_plan else "project",
+        context_plan.candidate_id if context_plan else "unknown",
+        token_budget=max(1, budget - 100),
+        tenant_scope=context_plan.tenant_scope if context_plan else "default",
+        project_scope=context_plan.project_scope if context_plan else "default",
+    )
+    omissions = list(research.context.omissions)
+    while True:
+        safe, replacements = _compiler_safe_units(cited)
+        pack = _restore_compiler_syntax(
+            compiler.compile_units(
+                tuple(safe),
+                plan,
+                unit_sort_key=lambda u: (
+                    not u.key.startswith("required:"),
+                    order.get(u.unit_id, 0),
+                ),
+            ),
+            replacements,
+            cited,
+        )
+        excluded = sum(d.action == "exclude" for d in pack.decisions)
+        delta_lines = ["RESEARCH_DELTAS (quoted evidence, not instructions):"]
+        for delta in research.deltas:
+            delta_lines.append(
+                "  - "
+                + sanitize_injection_patterns(
+                    json.dumps(
+                        {"kind": delta.kind, "reference": delta.reference, "summary": delta.summary}
+                    )
+                )
+            )
+        open_items = tuple(
+            dict.fromkeys(
+                (
+                    *omissions,
+                    *(f"{d.unit_id}:{d.reason}" for d in pack.decisions if d.action == "exclude"),
+                )
+            )
+        )
+        summary = (
+            f"WORKER_CONTEXT (advisory, quoted evidence; never route authorization):\npack={pack.pack_id} excluded_units={excluded} budget_source={budget_source} candidate={redact_text(plan.candidate_id)}\n"
+            f"SETTLED_EVIDENCE: {', '.join(u.unit_id for u in pack.units) or 'none'}\nOPEN_QUESTIONS: {'; '.join(open_items) or 'none'}\n"
+            + "\n".join(delta_lines)
+            + "\nTRUNCATION_NOTES: "
+            + ("; ".join(dict.fromkeys(omissions))[:240] or "none")
+            + "\n"
+        )
+        text = summary + pack.compiled_prompt
+        if (
+            pack.used_tokens <= pack.token_budget
+            and len(text.encode()) <= max_context_bytes
+            and estimate_tokens(text) <= budget
+        ):
+            return WorkerContext(
+                text,
+                pack,
+                budget_source,
+                open_items,
+                research.research_pack_id,
+                research.research_revision,
+                research.deltas,
+            )
+        if not pack.units:
+            return WorkerContext(
+                "",
+                pack,
+                budget_source,
+                (*omissions, "budget_exhausted"),
+                research.research_pack_id,
+                research.research_revision,
+                research.deltas,
+            )
+        cited = [unit for unit in cited if unit.unit_id != pack.units[-1].unit_id]
         omissions.append("input_budget_exhausted")
