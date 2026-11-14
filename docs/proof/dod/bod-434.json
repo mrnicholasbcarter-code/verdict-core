@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "bod-434",
+  "kind": "product",
+  "author": "t_236d3f15 (queen, cc/claude-opus-5-5) on installed main df1f6193; code merged via PR 984 at d48399fb (ancestor of df1f6193); stream-terminal implementation surface merged earlier via PR 918 and PR 920",
+  "merged_sha": "d48399fbadaa02055e637ee2c59640de6b84fb98",
+  "pr": 984,
+  "on_main": {
+    "at": "2026-11-12T22:50:00Z",
+    "sha": "d48399fbadaa02055e637ee2c59640de6b84fb98",
+    "environment": "operator-host",
+    "command": "gh pr checks 984 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43258164130",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-434/on-main-gh-pr-checks-984.txt",
+      "sha256": "24f8fb291c1e0c4cb851b398e29d5558f4446950e9780c935eded4a33908333a"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "A17-A23 live acceptance on installed main: the relay path exercises checked stream terminals end to end (the serve check streams a chat completion through the permit-gated relay and records a checked success); doctor, eligibility, choose, route, serve and harness-prime all pass.",
+      "expect": "\"status\": \"green\"",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-12T16:37:25Z",
+        "sha": "d48399fbadaa02055e637ee2c59640de6b84fb98",
+        "environment": "operator-host",
+        "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict acceptance run --json",
+        "real_state_marker": "\"gateway\": \"http://127.0.0.1:20128\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-434/acceptance-first-20261112T163725Z.json",
+          "sha256": "8b5a32d7e257ad0fad255fc8d8bd1eb2fd4d96161c64ca8a1ae84a7bd5b1335b"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-12T22:46:00Z",
+        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "environment": "operator-host",
+        "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict acceptance run --json",
+        "real_state_marker": "\"gateway\": \"http://127.0.0.1:20128\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-434/acceptance-fresh2-20261112T224600Z.json",
+          "sha256": "8bcaa6396f1fd3158ecdd001f9a2d561254656030c74932ab451aff126beb379"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-acceptance.timer (OnCalendar=hourly, Persistent=true) -> verdict-acceptance.service runs 'verdict acceptance run' on installed main every hour; its serve check streams a chat completion through the permit-gated relay, exercising the checked stream-terminal path. The focused suites (test_stream_terminal.py, test_stream_relay_wiring.py) run in CI on every push to main.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict doctor --json",
+    "at": "2026-11-12T22:51:27Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-434/doctor-green-20261112T225127Z.json",
+      "sha256": "d1d8c4c8ba7f22f764546e455a7c6f18dada65e8081138b0743c2966a0ce87ce"
+    }
+  },
+  "openspec": {
+    "change": "v1-permits-streams-public-models"
+  },
+  "parent_confirmation": {
+    "by": "TODO-independent-confirmer (a non-author model family; not t_236d3f15 / cc/claude-opus-5-5)",
+    "at": "1970-01-01T00:00:00Z",
+    "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict acceptance run --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-434/TODO-parent-confirmation.txt",
+      "sha256": "2f73349cfc4630255319c6c8dfc1b46a8996ace9d14d8e07563b165915918ec2"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.9, pytest-9.1.1, pluggy-1.6.0
+rootdir: /operator/.local/share/verdict/installed-main
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, cov-7.1.0, anyio-4.14.2, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 107 items
+
+tests/test_stream_terminal.py .......................                    [ 21%]
+tests/test_stream_relay_wiring.py ........                               [ 28%]
+tests/test_api_relay_context_length.py ..........                        [ 38%]
+tests/test_relay_identity.py ..                                          [ 40%]
+tests/test_proxy.py ...........................................          [ 80%]
+tests/test_relay_admission.py .....................                      [100%]
+
+=============================== warnings summary ===============================
+tests/conftest.py:9
+  /operator/.local/share/verdict/installed-main/tests/conftest.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 107 passed, 1 warning in 31.79s ========================

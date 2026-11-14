@@ -1,0 +1,373 @@
+{
+  "checks": [
+    {
+      "argv": [
+        "verdict",
+        "doctor",
+        "--json"
+      ],
+      "detail": {
+        "exit_code": 0,
+        "issues": [],
+        "own_issues": 0
+      },
+      "exit_code": 0,
+      "name": "doctor",
+      "passed": true,
+      "reason": "no doctor issue",
+      "seconds": 4.7,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:ecc0f4e983878bb250a8c7bf626c4ca69e92f2319905a40c1b803c3931291834"
+    },
+    {
+      "argv": [
+        "verdict",
+        "eligibility",
+        "--json",
+        "--gateway",
+        "http://127.0.0.1:20128"
+      ],
+      "detail": {
+        "eligible_free": 8,
+        "independent_check": {
+          "checks": [
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "opencode-go/beam-free"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "groq/openai/gpt-oss-120b"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "antigravity/gemini-3-flash"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "antigravity/gemini-3.5-flash-lite"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "antigravity/gemini-3.1-flash-lite"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "groq/qwen/qwen3.8-27b"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "groq/openai/gpt-oss-20b"
+            },
+            {
+              "detail": "turn1: HTTP 402",
+              "listed": false,
+              "outcome": "account",
+              "route": "bzl/gpt-5.4-mini"
+            },
+            {
+              "detail": "turn1: HTTP 401",
+              "listed": false,
+              "outcome": "account",
+              "route": "lma/gpt-5.5-instant"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "mistral/voxtral-mini-transcribe-realtime-3-0"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/gemini-2.5-pro-thinking-128"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/gpt-5.2-chat"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": false,
+              "outcome": "pass",
+              "route": "bazaarlink/qwen/qwen3.7-flash:free"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/doubao-seed-1-6-thinking-250615"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/suno-v4.5"
+            },
+            {
+              "detail": "turn1: HTTP 401",
+              "listed": false,
+              "outcome": "account",
+              "route": "lmarena/minimax-m3"
+            },
+            {
+              "detail": "turn1: HTTP 401",
+              "listed": false,
+              "outcome": "account",
+              "route": "lmarena/ernie-5.0-preview-1220"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/kling-image"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/viduq2-turbo"
+            }
+          ],
+          "estimated_missed": 102.33333333333333,
+          "listed": 8,
+          "listed_in_cooling_pool": [],
+          "listed_unserved": [],
+          "population_after": 1228,
+          "population_before": 1662,
+          "population_excluded": {
+            "catalog_non_chat": 36,
+            "id_non_chat": 0,
+            "inactive_provider": 398
+          },
+          "precision": 1.0,
+          "precision_min": 0.95,
+          "recall_estimate": 0.07250755287009064,
+          "recall_min": 0.9,
+          "served_set_source": "synced+v1_models",
+          "unlisted_measured": 8,
+          "unlisted_passes": 1,
+          "unlisted_population": 1228,
+          "unlisted_wilson": [
+            0.02241690886329617,
+            0.4708948057698615
+          ]
+        },
+        "listed_without_agentic_proof": [],
+        "recall_trend": {
+          "estimate": 0.07250755287009064,
+          "excluded": {
+            "catalog_non_chat": 36,
+            "id_non_chat": 0,
+            "inactive_provider": 398
+          },
+          "n": 8,
+          "passes": 1,
+          "population_after": 1228,
+          "population_before": 1662,
+          "wilson_high": 0.4708948057698615,
+          "wilson_low": 0.02241690886329617
+        },
+        "summary": {
+          "available": 40,
+          "by_reached_stage": {
+            "AVAILABLE": 9,
+            "DISCOVERED": 325,
+            "ENTITLED": 3434,
+            "HEALTHY": 1,
+            "NONE": 0,
+            "SELECTED": 0,
+            "TASK_ELIGIBLE": 31
+          },
+          "discovered": 3800,
+          "eligible": 31,
+          "entitled": 3475,
+          "healthy": 41,
+          "selected": null
+        }
+      },
+      "exit_code": 0,
+      "name": "eligibility",
+      "passed": true,
+      "reason": "8 eligible; precision 100%, recall 7% (trend, 1/8 unlisted pass)",
+      "seconds": 17.6,
+      "stderr_sha256": "sha256:0c6f8cc1d4125c99bfdc902eca366d164e5ce193a81c1c3f312dff67c620d6fa",
+      "stdout_sha256": "sha256:1b226184296cbf05acc3d2ee2aa5a7e3998157ab963a296e4fd427b3e9174a9c"
+    },
+    {
+      "argv": [
+        "verdict",
+        "choose",
+        "--task-class",
+        "implementation",
+        "--requires",
+        "tools,code",
+        "--capacity",
+        "free,subscription",
+        "--json"
+      ],
+      "detail": {
+        "selected": {
+          "capability_tier": 3,
+          "capacity_class": "free",
+          "capacity_evidence": "plan_label",
+          "context_window": 1000000,
+          "cooldown_scope": "",
+          "cooldown_until": null,
+          "failed_stage": null,
+          "gateway": "http://127.0.0.1:20128",
+          "model": "antigravity/gemini-3.5-flash-lite",
+          "plan_label": "free",
+          "pool": "google-antigravity",
+          "price": 2.8,
+          "provider": "antigravity",
+          "rank": 0,
+          "rank_components": {
+            "advisory_category": "coding",
+            "advisory_omission": "no_entry",
+            "advisory_provenance": null,
+            "advisory_rank": null,
+            "cache_checked_at": "2026-11-12T16:17:42.582000+00:00",
+            "cache_freshness": "fresh",
+            "capacity_order": 0,
+            "declared_tier": null,
+            "evidence_level": "probation",
+            "expected_tokens": null,
+            "fit": 0,
+            "load": 0,
+            "price": 2.8,
+            "probe_class": "agentic",
+            "provider_pref": 0,
+            "quota_percent": 0.0,
+            "quota_rank": 4,
+            "rating": 49.3,
+            "rating_as_of": "2026-11-12T16:21:35Z",
+            "rating_basis": "score",
+            "rating_metric": "aa_coding",
+            "rating_source": "openrouter.artificial_analysis",
+            "route_id": "antigravity/gemini-3.5-flash-lite",
+            "session_fails": 0,
+            "session_passes": 0,
+            "session_score": 0.5,
+            "slack": 0
+          },
+          "reached": "SELECTED",
+          "reason": "selected",
+          "resource_pool": "free",
+          "route_id": "antigravity/gemini-3.5-flash-lite",
+          "supports_tools": true
+        }
+      },
+      "exit_code": 0,
+      "name": "choose",
+      "passed": true,
+      "reason": "route selected",
+      "seconds": 8.6,
+      "stderr_sha256": "sha256:0c6f8cc1d4125c99bfdc902eca366d164e5ce193a81c1c3f312dff67c620d6fa",
+      "stdout_sha256": "sha256:226183b21bf77c1f4defe40522c01f1a4addcdd112a9f6dd39a4a4a051f7d080"
+    },
+    {
+      "argv": [
+        "verdict",
+        "route",
+        "--terse",
+        "Write a Python function that returns the sum of two integers."
+      ],
+      "detail": {
+        "model": "codex/codex-auto-review",
+        "reason": null
+      },
+      "exit_code": 0,
+      "name": "route",
+      "passed": true,
+      "reason": "routed to codex/codex-auto-review",
+      "seconds": 43.0,
+      "stderr_sha256": "sha256:0c6f8cc1d4125c99bfdc902eca366d164e5ce193a81c1c3f312dff67c620d6fa",
+      "stdout_sha256": "sha256:86308aec3e3f903c4796276c8f6c8ba6dc8697cca7f3d806f72b2b0ccd623d5c"
+    },
+    {
+      "argv": [
+        "verdict",
+        "serve",
+        "--port",
+        "34593",
+        "--host",
+        "127.0.0.1",
+        "+ POST /v1/chat/completions"
+      ],
+      "detail": {
+        "http_status": 200,
+        "model": "codex-auto-review",
+        "served_by": "codex/codex-auto-review"
+      },
+      "exit_code": 200,
+      "name": "serve",
+      "passed": true,
+      "reason": "HTTP 200 from codex-auto-review",
+      "seconds": 49.8,
+      "stderr_sha256": "sha256:bbdc631e0553b571434649e44b60bcd143b9610298f6c274dd4907136731c2cb",
+      "stdout_sha256": "sha256:cd092780eef330b3e19e2412b530697c5fb7658c8d8e4adeaaed7279ffd13c0b"
+    },
+    {
+      "argv": [
+        "verdict",
+        "harness",
+        "prime",
+        "status",
+        "--json"
+      ],
+      "detail": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "enabled": true,
+        "integration": "openai-compatible",
+        "provider": "verdict"
+      },
+      "exit_code": 0,
+      "name": "harness-prime",
+      "passed": true,
+      "reason": "Prime uses verdict serve",
+      "seconds": 0.7,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:7dc1d16738516b67793e0601dd9323ade98c6cc3a64196391404b2e4dd8d3ded"
+    }
+  ],
+  "eligible_free": 8,
+  "failed": [],
+  "finished_at": "2026-11-12T16:39:30.031408+00:00",
+  "gateway": "http://127.0.0.1:20128",
+  "notification": {
+    "event": null,
+    "mode": "off",
+    "red_streak": 0
+  },
+  "path": "/operator/.verdict/acceptance/20261112T163725Z.json",
+  "python": "/operator/.local/share/verdict/installed-main/.venv/bin/python",
+  "schema_version": 1,
+  "source_sha": "d48399fbadaa02055e637ee2c59640de6b84fb98",
+  "started_at": "2026-11-12T16:37:25.650377+00:00",
+  "status": "green",
+  "verdict_version": "0.5.0"
+}

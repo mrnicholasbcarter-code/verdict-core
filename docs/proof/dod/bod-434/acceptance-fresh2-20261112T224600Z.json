@@ -1,0 +1,329 @@
+{
+  "checks": [
+    {
+      "argv": [
+        "verdict",
+        "doctor",
+        "--json"
+      ],
+      "detail": {
+        "exit_code": 1,
+        "issues": [],
+        "own_issues": 1
+      },
+      "exit_code": 1,
+      "name": "doctor",
+      "passed": true,
+      "reason": "no doctor issue",
+      "seconds": 6.2,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:085cae70e0c95ee8d3378e8cc492eae6bb6a9c103bc21fe6359ea046fcf14dd7"
+    },
+    {
+      "argv": [
+        "verdict",
+        "eligibility",
+        "--json",
+        "--gateway",
+        "http://127.0.0.1:20128"
+      ],
+      "detail": {
+        "eligible_free": 1,
+        "independent_check": {
+          "checks": [
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/glm-5.3-flashx"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "nvidia/vila"
+            },
+            {
+              "detail": "turn1: HTTP 503",
+              "listed": false,
+              "outcome": "fail",
+              "route": "huggingchat/Qwen/Qwen3.5-397B-A17B"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/gemini-pro"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/gemini-3.6-flash"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/solar-pro4"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/gpt-image-2.5-c"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "bai/minimax-m2.7"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/qwen3-coder-next"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/gemini-3.1-flash-lite-image-token"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "nvidia/phi-3-vision-128k-instruct"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/qwen-coder-turbo-latest"
+            }
+          ],
+          "estimated_missed": 0.0,
+          "listed": 1,
+          "listed_in_cooling_pool": [],
+          "listed_unserved": [],
+          "population_after": 1269,
+          "population_before": 1696,
+          "population_excluded": {
+            "catalog_non_chat": 42,
+            "id_non_chat": 0,
+            "inactive_provider": 385
+          },
+          "precision": 1.0,
+          "precision_min": 0.95,
+          "recall_estimate": 1.0,
+          "recall_min": 0.9,
+          "served_set_source": "synced+v1_models",
+          "unlisted_measured": 12,
+          "unlisted_passes": 0,
+          "unlisted_population": 1269,
+          "unlisted_wilson": [
+            0.0,
+            0.2425007574992425
+          ]
+        },
+        "listed_without_agentic_proof": [],
+        "recall_trend": {
+          "estimate": 1.0,
+          "excluded": {
+            "catalog_non_chat": 42,
+            "id_non_chat": 0,
+            "inactive_provider": 385
+          },
+          "n": 12,
+          "passes": 0,
+          "population_after": 1269,
+          "population_before": 1696,
+          "wilson_high": 0.2425007574992425,
+          "wilson_low": 0.0
+        },
+        "summary": {
+          "available": 38,
+          "by_reached_stage": {
+            "AVAILABLE": 22,
+            "DISCOVERED": 294,
+            "ENTITLED": 3634,
+            "HEALTHY": 23,
+            "NONE": 0,
+            "SELECTED": 0,
+            "TASK_ELIGIBLE": 16
+          },
+          "discovered": 3989,
+          "eligible": 16,
+          "entitled": 3695,
+          "healthy": 61,
+          "selected": null
+        }
+      },
+      "exit_code": 0,
+      "name": "eligibility",
+      "passed": true,
+      "reason": "1 eligible; precision 100%, recall 100% (trend, 0/12 unlisted pass)",
+      "seconds": 19.0,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:ade4dd355302aa76bda9f6e78a2e9d585524033d926a841d6beb1dd4b687cbeb"
+    },
+    {
+      "argv": [
+        "verdict",
+        "choose",
+        "--task-class",
+        "implementation",
+        "--requires",
+        "tools,code",
+        "--capacity",
+        "free,subscription",
+        "--json"
+      ],
+      "detail": {
+        "selected": {
+          "capacity_class": "free",
+          "capacity_evidence": "import_free_only",
+          "context_window": 1048576,
+          "cooldown_scope": "",
+          "cooldown_until": null,
+          "failed_stage": null,
+          "gateway": "http://127.0.0.1:20128",
+          "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+          "plan_label": "",
+          "pool": "nvidia",
+          "provider": "nvidia",
+          "rank": 0,
+          "rank_components": {
+            "advisory_category": "coding",
+            "advisory_omission": "no_entry",
+            "advisory_provenance": null,
+            "advisory_rank": null,
+            "cache_checked_at": "2026-11-12T22:37:16.407000+00:00",
+            "cache_freshness": "fresh",
+            "capacity_order": 0,
+            "declared_tier": null,
+            "evidence_level": "probation",
+            "expected_tokens": null,
+            "fit": 0,
+            "load": 0,
+            "price": null,
+            "probe_class": "agentic",
+            "provider_pref": 0,
+            "quota_percent": null,
+            "quota_rank": 2,
+            "rating": null,
+            "rating_as_of": null,
+            "rating_basis": "unknown",
+            "rating_metric": "aa_coding",
+            "rating_source": null,
+            "route_id": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+            "session_fails": 0,
+            "session_passes": 0,
+            "session_score": 0.5,
+            "slack": 4
+          },
+          "reached": "SELECTED",
+          "reason": "selected",
+          "resource_pool": "free",
+          "route_id": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+          "supports_tools": true
+        }
+      },
+      "exit_code": 0,
+      "name": "choose",
+      "passed": true,
+      "reason": "route selected",
+      "seconds": 9.0,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:005b79b8afd0ad48ffa0be84e48fabf73ef01a7d5c8cc1b19fac2a6f13c02bdf"
+    },
+    {
+      "argv": [
+        "verdict",
+        "route",
+        "--terse",
+        "Write a Python function that returns the sum of two integers."
+      ],
+      "detail": {
+        "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "reason": null
+      },
+      "exit_code": 0,
+      "name": "route",
+      "passed": true,
+      "reason": "routed to nvidia/nemotron-3.5-super-vl-120b-a12b",
+      "seconds": 34.3,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:97612d4a0f850072b7a28f7735f07f6915c690b01f04a47f4e838246ccc35b67"
+    },
+    {
+      "argv": [
+        "verdict",
+        "serve",
+        "--port",
+        "40849",
+        "--host",
+        "127.0.0.1",
+        "+ POST /v1/chat/completions"
+      ],
+      "detail": {
+        "http_status": 200,
+        "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "served_by": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+      },
+      "exit_code": 200,
+      "name": "serve",
+      "passed": true,
+      "reason": "HTTP 200 from nvidia/nemotron-3.5-super-vl-120b-a12b",
+      "seconds": 101.4,
+      "stderr_sha256": "sha256:27ad675de0e5faa902eb03d77a91dd36947ae84edf328e80a98a8fe377200740",
+      "stdout_sha256": "sha256:4fd26f64d890eccfc14089b9477a5b55f9dc377e04c928357c686ead094797fc"
+    },
+    {
+      "argv": [
+        "verdict",
+        "harness",
+        "prime",
+        "status",
+        "--json"
+      ],
+      "detail": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "enabled": true,
+        "integration": "openai-compatible",
+        "provider": "verdict"
+      },
+      "exit_code": 0,
+      "name": "harness-prime",
+      "passed": true,
+      "reason": "Prime uses verdict serve",
+      "seconds": 2.4,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:7dc1d16738516b67793e0601dd9323ade98c6cc3a64196391404b2e4dd8d3ded"
+    }
+  ],
+  "eligible_free": 1,
+  "failed": [],
+  "finished_at": "2026-11-12T22:48:53.273805+00:00",
+  "gateway": "http://127.0.0.1:20128",
+  "notification": {
+    "event": "recovery",
+    "mode": "off",
+    "red_streak": 0
+  },
+  "path": "/operator/.verdict/acceptance/20261112T224600Z.json",
+  "python": "/operator/.local/share/verdict/installed-main/.venv/bin/python",
+  "schema_version": 1,
+  "source_sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+  "started_at": "2026-11-12T22:46:00.956519+00:00",
+  "status": "green",
+  "verdict_version": "0.5.0"
+}
