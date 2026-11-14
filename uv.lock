@@ -23,7 +23,7 @@ resolution-markers = [
 [manifest]
 constraints = [
     { name = "authlib", specifier = ">=1.9.1" },
-    { name = "dnspython", specifier = ">=2.9.0" },
+    { name = "dnspython", specifier = ">=2.9.2" },
     { name = "filelock", marker = "python_full_version >= '3.11'", specifier = ">=4.2.1" },
     { name = "gitpython", specifier = ">=3.1.60" },
     { name = "joserfc", specifier = ">=1.7.6" },

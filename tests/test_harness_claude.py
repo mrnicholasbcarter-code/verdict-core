@@ -199,13 +199,16 @@ def test_cli_help_lists_claude_commands(
     assert SECRET not in out
 
 
-def test_derived_anthropic_url_keeps_omniroute_port() -> None:
+def test_derived_anthropic_url_strips_path_suffixes() -> None:
+    """_anthropic_origin is a pure URL transform: it keeps scheme/host/port and
+    drops path suffixes. OmniRoute refusal lives in enable(), which runs before
+    this transform, so the transform itself must not special-case :20128."""
     from verdict.harness_claude import _anthropic_origin
 
     derived = _anthropic_origin("http://127.0.0.1:20128/v1")
     assert derived == "http://127.0.0.1:20128"
-    assert "20128" in derived
     assert _anthropic_origin("http://127.0.0.1:8000/v1") == "http://127.0.0.1:8000"
+    assert _anthropic_origin("http://127.0.0.1:8000/v1/messages") == "http://127.0.0.1:8000"
 
 
 def test_enable_strips_messages_suffix_without_rewriting_openai_url(tmp_path: Path) -> None:
