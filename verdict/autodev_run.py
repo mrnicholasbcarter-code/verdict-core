@@ -2198,7 +2198,7 @@ def prepare_live_autodev(
     if (
         probe.get("status_code") != 200
         or extract_content(probe["body"]).strip() != "OK"
-        or served != model.split("/", 1)[1]
+        or not _served_model_matches(model, served)
         or cost is None
         or float(cost) != 0
     ):
@@ -2261,6 +2261,24 @@ _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 #: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
 _PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
 
+#: Probe budget per unpinned selection. Mirrors the eligibility ladder's own
+#: ``max_probes_per_select=8`` in ``verdict/orchestration/eligibility_report.py``.
+_EXECUTOR_PROBE_BUDGET = 8
+
+
+def _served_model_matches(route_id: str, served: str | None) -> bool:
+    """True when the gateway's served-model header names ``route_id``.
+
+    The gateway reports the served model in two forms depending on provider:
+    the route id without its first segment (``model``) or the whole route id
+    (``provider/model``). Anything else — a missing header or another model —
+    is rejected.
+    """
+    if not served:
+        return False
+    return served == route_id or served == route_id.split("/", 1)[-1]
+
+
 #: Operator policy (grok-fast-premium-policy): premium models reserved for
 #: explicit premium work, never ordinary planner or executor candidates, on any
 #: provider prefix (gc/, grok-cli/, omniroute/gc/, ...).
@@ -2292,6 +2310,7 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
         coding=True,
         reasoning=True,
         frontier_worthy=True,
+        exclude_pools=_PLANNER_EXCLUDED_POOLS,
     )
     try:
         _chosen, verdicts = selector.select(
@@ -2365,6 +2384,7 @@ def prepare_live_autodev_selected(
         coding=True,
         reasoning=False,
         frontier_worthy=False,
+        exclude_pools=_PLANNER_EXCLUDED_POOLS,
     )
     refresh_hook = selection_refresh_hook(gateway)
     extra: dict[str, Any] = {}
@@ -2394,10 +2414,15 @@ def prepare_live_autodev_selected(
     # BOD-406: free and prepaid subscription routes both cost no marginal cash, so
     # both qualify; metered routes and the D22 pools never do. One route per model
     # family keeps the retry ladder from being two copies of the same model.
-    ladder: list[tuple[Any, str]] = []
-    families: set[str] = set()
+    candidates: list[dict[str, Any]] = []
     dropped: list[dict[str, str]] = []
+    families: set[str] = set()
+    probed_count = 0
+
+    started = time.time()
     for verdict in ordered:
+        if len(candidates) >= top_n or probed_count >= _EXECUTOR_PROBE_BUDGET:
+            break
         reached = getattr(verdict.reached, "value", None)
         route_id = str(verdict.route_id)
         if verdict.capacity_class is CapacityClass.FREE:
@@ -2417,22 +2442,13 @@ def prepare_live_autodev_selected(
         if _is_premium_reserved(route_id):
             dropped.append({"route_id": route_id, "reason": "premium_reserved"})
             continue
-        if route_family(route_id) in families:
+        fam = route_family(route_id)
+        if fam in families:
             continue
-        families.add(route_family(route_id))
-        ladder.append((verdict, f"{reached.lower()} rank={verdict.rank} capacity={capacity}"))
-        if len(ladder) == top_n:
-            break
-    if not ladder:
-        raise AutodevError(
-            "autodev selection found no eligible free or subscription executor route "
-            "(no paid or frontier fallback)"
-        )
+        families.add(fam)
+        selection_reason = f"{reached.lower()} rank={verdict.rank} capacity={capacity}"
 
-    started = time.time()
-    candidates: list[dict[str, Any]] = []
-    for route, selection_reason in ladder:
-        route_id = str(route.route_id)
+        probed_count += 1
         headers: dict[str, str] = {}
 
         def opener(request: Any, *, timeout: float, _sink: dict[str, str] = headers) -> Any:
@@ -2464,25 +2480,25 @@ def prepare_live_autodev_selected(
                 120.0,
             )
         except urllib.error.HTTPError as exc:
-            # One route's upstream rejection (401 from a provider, 429, 5xx) drops
-            # that route; it must not abort selection of the remaining candidates.
             dropped.append({"route_id": route_id, "reason": f"http_{exc.code}"})
             continue
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             dropped.append({"route_id": route_id, "reason": type(exc).__name__})
             continue
+
         served = headers.get("x-omniroute-model")
         cost = headers.get("x-omniroute-response-cost")
         try:
             zero_cost = cost is not None and float(cost) == 0
         except ValueError:
             zero_cost = False
+
         reason = ""
         if probe.get("status_code") != 200:
             reason = f"http_{probe.get('status_code')}"
         elif extract_content(probe["body"]).strip() != "OK":
             reason = "content"
-        elif served != route_id.split("/", 1)[1]:
+        elif not _served_model_matches(route_id, served):
             reason = "identity"
         elif (
             headers.get("x-omniroute-cache-hit", "").lower() == "true"
@@ -2493,9 +2509,11 @@ def prepare_live_autodev_selected(
             reason = "missing_cost_header"
         elif not zero_cost:
             reason = f"cost_{cost}"
+
         if reason:
             dropped.append({"route_id": route_id, "reason": reason})
             continue
+
         candidates.append(
             {
                 "strategy": "direct_cheap",
@@ -2512,10 +2530,16 @@ def prepare_live_autodev_selected(
                 "selection_reason": f"{selection_reason} probe=OK cost={cost}",
             }
         )
+
     if not candidates:
+        if not probed_count:
+            raise AutodevError(
+                "autodev selection found no eligible free or subscription executor route "
+                "(no paid or frontier fallback)"
+            )
         detail = ", ".join(f"{item['route_id']}={item['reason']}" for item in dropped)
         raise AutodevError(
-            f"autodev selection probed {len(dropped)} free route(s) and none answered "
+            f"autodev selection probed {probed_count} free route(s) and none answered "
             f"correctly: {detail}"
         )
 
