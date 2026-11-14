@@ -12,10 +12,6 @@
     "reason": "KEEP: paired cheaper-model lift. No production importer; the live lift test and benchmark doc call it. Catalog fetch now comes from verdict.live_routing."
   },
   {
-    "qualified_name": "verdict.execution_hosts",
-    "reason": "UNTRIAGED: orphan module (316 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
-  },
-  {
     "qualified_name": "verdict.live_routing",
     "reason": "KEEP: classify, select, explain, and live catalog fetch, probe, and chat execute used by the routing demo and context lift. No production entry point reaches this module."
   },
@@ -26,10 +22,6 @@
   {
     "qualified_name": "verdict.memory_mirror",
     "reason": "WIRE: BOD-146 outbox mirror worker has test callers but no production worker launch."
-  },
-  {
-    "qualified_name": "verdict.memory_providers",
-    "reason": "UNTRIAGED: orphan module (1 lines); work/dead-modules.md 2026-10-13 lists it. Wire it from production or delete it."
   },
   {
     "qualified_name": "verdict.release.normalize",
