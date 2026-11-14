@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "bod-416-route-key-file",
+  "kind": "product",
+  "author": "queen card t_2db35846 (cc/claude-opus-5-5); the fix itself was merged earlier in PRs 882, 916, 956 and 961",
+  "merged_sha": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+  "pr": 982,
+  "on_main": {
+    "at": "2026-11-12T16:30:00Z",
+    "sha": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+    "environment": "operator-host",
+    "command": "gh pr checks 982 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43257875372",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-416-route-key-file/on-main-gh-pr-checks-982.txt",
+      "sha256": "f011e2998000eadab99cbebb5d2bca1f801b78a1bd495c6be412fe99b0990230"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Historical AC3 / A06 live: with the gateway key only in the owner-only key file (no key env vars, no credential store, isolated HOME and VERDICT_HOME, no catalog cache) verdict route routes to a concrete model, not credential_env_missing. Script strips host paths itself.",
+      "expect": "RESULT: routed with the gateway key from the key file only",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-12T16:32:31Z",
+        "sha": "4f94f755a47ba419ffa16b85499c73522ff881fb",
+        "environment": "operator-host",
+        "command": "scripts/bod416_keyfile_route.sh <raw-output-file>",
+        "real_state_marker": "route_stdout=codex/codex-auto-review",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-416-route-key-file/route-keyfile-first-20261112T163231Z.txt",
+          "sha256": "2cb770d472c59a9bbac068a3949a9db5f98d79bc5be96417b73f9db0a20682f6"
+        }
+      },
+      "fresh_run": {
+        "at": "1970-01-01T00:00:00Z",
+        "sha": "0000000000000000000000000000000000000000",
+        "environment": "operator-host",
+        "command": "scripts/bod416_keyfile_route.sh <raw-output-file>",
+        "real_state_marker": "TODO-fresh-run",
+        "exit_code": -1,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-416-route-key-file/TODO-fresh-route-keyfile-only.txt",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-acceptance.timer route check (verdict route --terse; the unit resolves the gateway key through the shared resolver, so a key-file-only or store-backed key both route)",
+  "setup_doctor": {
+    "status": "green",
+    "at": "2026-11-12T16:31:00Z",
+    "command": "env -i HOME=$HOME PATH=... XDG_RUNTIME_DIR=... OMNIROUTE_BASE_URL=http://127.0.0.1:20128 python -m verdict doctor --json (installed main, exit 0, issues [])",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-416-route-key-file/setup-doctor-20261112T163200Z.json",
+      "sha256": "89e60fbb75ca44a341ac84a19e0d8ee0b1c59dbee5cf26532fdaa2d79745bc5e"
+    }
+  },
+  "openspec": {
+    "change": "bod-416-route-discovery-key-file"
+  },
+  "parent_confirmation": {
+    "by": "confirmer card t_119a0d06 (antigravity/gemini-3-flash)",
+    "at": "1970-01-01T00:00:00Z",
+    "command": "scripts/bod416_keyfile_route.sh <raw-output-file>",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-416-route-key-file/TODO-parent-confirmation.txt",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
