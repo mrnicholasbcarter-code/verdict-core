@@ -2532,14 +2532,14 @@ def prepare_live_autodev_selected(
         )
 
     if not candidates:
-        if not dropped:
+        if not probed_count:
             raise AutodevError(
                 "autodev selection found no eligible free or subscription executor route "
                 "(no paid or frontier fallback)"
             )
         detail = ", ".join(f"{item['route_id']}={item['reason']}" for item in dropped)
         raise AutodevError(
-            f"autodev selection probed {len(dropped)} free route(s) and none answered "
+            f"autodev selection probed {probed_count} free route(s) and none answered "
             f"correctly: {detail}"
         )
 

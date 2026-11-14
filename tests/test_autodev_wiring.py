@@ -761,6 +761,7 @@ def _scripted_probe(
     def factory(base_url: str, **kwargs: Any) -> Any:
         def transport(model: str, payload: Any, timeout_seconds: float) -> Any:
             probed.append(model)
+            headers.clear()
             if model in served_map:
                 value = served_map[model]
                 if value is not None:
