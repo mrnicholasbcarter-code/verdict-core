@@ -1,0 +1,33 @@
+schema: verdict-change-v1
+created: 2026-11-12
+status: proposed
+name: anthropic-messages-relay
+description: "Anthropic Messages relay surface through the existing governed HTTP relay, with protocol translation delegated to the upstream gateway."
+capabilities:
+  added:
+    - relay-anthropic-messages
+  modified: []
+  removed: []
+  renamed: []
+tasks_file: tasks.md
+proposal_file: proposal.md
+design_file: design.md
+specs_dir: specs
+validation:
+  openspec_validate: strict
+  proof_matrix: required
+  doc_links: required
+  reachability: required
+  tests:
+    - tests/test_anthropic_messages_relay.py
+    - tests/test_stream_terminal.py
+    - tests/test_harness_claude.py
+acceptance:
+  - "POST /v1/messages routes through the same admission, proof, and receipt path as chat/responses"
+  - "Anthropic SSE streams terminate on message_stop and fail closed otherwise"
+  - "Context pack injects into the Anthropic system field, preserving client system content"
+  - "Claude harness enable points ANTHROPIC_BASE_URL at Verdict root, never OmniRoute"
+  - "Existing chat and responses relay tests pass unchanged"
+notes:
+  - "Protocol translation stays in the upstream gateway (OmniRoute /v1/messages); Core owns only the boundary."
+  - "count_tokens and beta endpoints are out of scope; they fail closed with 404."

@@ -53,6 +53,7 @@ from verdict.orchestration.prime_settings import (
     prepare_launch_agent_dir,
     prime_retry_policy_problems,
 )
+from verdict.orchestration.research_metrics import extract_prime_research_fetches
 from verdict.served_identity import check_served, served_identity_from_headers
 
 __all__ = [
@@ -595,6 +596,7 @@ class PrimeHeadlessExecutor:
     ) -> WorkerTerminal:
         values, parsed_any = _iter_json_values(stdout)
         messages = _collect_messages(values)
+        research_fetches = extract_prime_research_fetches(messages) if messages else None
         assistant: dict[str, Any] | None = None
         for message in messages:
             if message.get("role") == "assistant":
@@ -615,6 +617,7 @@ class PrimeHeadlessExecutor:
                     status_code=returncode if returncode == 125 else None,
                     duration_seconds=duration,
                     usage=usage,
+                    research_fetches=research_fetches,
                 )
             if not parsed_any:
                 return WorkerTerminal(
@@ -624,6 +627,7 @@ class PrimeHeadlessExecutor:
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
                     duration_seconds=duration,
                     usage=usage,
+                    research_fetches=research_fetches,
                 )
             return WorkerTerminal(
                 executor_kind="live",
@@ -632,6 +636,7 @@ class PrimeHeadlessExecutor:
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
 
         reported_model = str(assistant.get("model", ""))
@@ -648,6 +653,7 @@ class PrimeHeadlessExecutor:
                 error="model_mismatch",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         error_message = assistant.get("errorMessage")
         if error_message:
@@ -661,6 +667,7 @@ class PrimeHeadlessExecutor:
                 status_code=_parse_status_code(error_text),
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         if stop_reason not in {"stop", "end_turn"}:
             return WorkerTerminal(
@@ -671,6 +678,7 @@ class PrimeHeadlessExecutor:
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         if not text.strip():
             return WorkerTerminal(
@@ -681,6 +689,7 @@ class PrimeHeadlessExecutor:
                 error="empty_output",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         return WorkerTerminal(
             executor_kind="live",
@@ -690,6 +699,7 @@ class PrimeHeadlessExecutor:
             stop_reason=stop_reason,
             duration_seconds=duration,
             usage=usage,
+            research_fetches=research_fetches,
         )
 
 

@@ -12,8 +12,9 @@ harness  →  Verdict (:8000)  →  OmniRoute (:20128)
              admit + receipt      execute chosen model
 ```
 
-Claude Code's default Anthropic Messages traffic is not proxied by Verdict.
-The Claude adapter below covers a side-path and a SessionStart gate only.
+Claude Code Messages traffic uses the Verdict origin root (`http://127.0.0.1:8000`,
+no `/v1`). Claude Code appends `/v1/messages`. Translation is delegated to the
+upstream gateway. The OpenAI-compatible side-path still uses `:8000/v1`.
 Direct provider traffic remains outside this relay boundary.
 
 See [coding-agent-gate.md](coding-agent-gate.md) for the relay's fail-closed
@@ -26,22 +27,30 @@ supervisor/lease contract is not).
 
 Architect lock: `verdict harness claude discover|enable|disable|status|certify`.
 
-These commands switch Claude Code onto Verdict for the **OpenAI-compatible**
-side-path and install a fail-closed SessionStart gate, without hand-editing
-`~/.claude/settings.json`.
+These commands point Claude Code at Verdict for Anthropic Messages and the
+OpenAI-compatible side-path, and install a fail-closed SessionStart gate,
+without hand-editing `~/.claude/settings.json`.
 
 ### Scope (partial certification)
 
-Claude Code's default traffic is Anthropic Messages (`/v1/messages`). Verdict's
-proxy today is OpenAI-compatible only — full Anthropic passthrough is a
-remaining gap. Until then this adapter:
+Claude Code's default traffic is Anthropic Messages (`/v1/messages`).
+`verdict harness claude enable` sets `env.ANTHROPIC_BASE_URL` to the Verdict
+origin root (`http://127.0.0.1:8000`, no `/v1`). Claude Code appends
+`/v1/messages` itself. Verdict serves that path and delegates translation to
+the upstream gateway. An OmniRoute-looking `:20128` URL is still refused.
 
-1. Sets `env.OPENAI_BASE_URL` → `http://127.0.0.1:8000/v1`
-2. Ensures SessionStart runs `verdict hook claude-gate`
-3. Does **not** set `ANTHROPIC_BASE_URL` (wrong protocol for Verdict today)
-4. Never writes token values (export `LLMGATE_AUTH_TOKEN` / `OPENAI_API_KEY` yourself)
+This adapter:
 
-Live enable with secrets is **NEEDS_OWNER**.
+1. Sets `env.ANTHROPIC_BASE_URL` → `http://127.0.0.1:8000` (origin root, no `/v1`)
+2. Sets `env.OPENAI_BASE_URL` → `http://127.0.0.1:8000/v1`
+3. Ensures SessionStart runs `verdict hook claude-gate`
+4. Never writes token values. `ANTHROPIC_AUTH_TOKEN` is read from the process
+   environment, not written into settings. The same rule applies to
+   `LLMGATE_AUTH_TOKEN` and `OPENAI_API_KEY`.
+
+Live enable with secrets is **NEEDS_OWNER**. Certify stays **partial**: the
+Messages path is configured, exact model selection is unproven, and this guide
+does not claim a live Claude Code session.
 
 ### Enable
 
@@ -59,7 +68,8 @@ verdict harness claude enable
 
 1. Health-check Verdict (`/health`, then `/v1/models`) unless `--force`.
 2. Copy `~/.claude/settings.json` → `settings.json.verdict.bak` before writing.
-3. Upsert `env.OPENAI_BASE_URL` and Verdict harness markers.
+3. Upsert `env.ANTHROPIC_BASE_URL` (origin root), `env.OPENAI_BASE_URL`, and
+   Verdict harness markers.
 4. Append SessionStart `verdict hook claude-gate` when missing.
 
 ### Discover / status / certify
@@ -71,7 +81,8 @@ verdict harness claude certify
 ```
 
 Status/certify print whether the token env is set (`yes`/`no`) — never the value.
-Certify overall level is **partial** while Messages proxy remains unsupported.
+Certify overall level stays **partial**. The Messages note states
+gateway-delegated support; that is not a full certification.
 
 ### Disable
 

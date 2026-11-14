@@ -199,7 +199,18 @@ def inject_context_pack(
 
     envelope = {"role": ENVELOPE_ROLE, "content": compiled_prompt}
     forwarded = dict(payload)
-    if surface == "responses":
+    if surface == "messages":
+        if "system" not in payload:
+            forwarded["system"] = compiled_prompt
+        else:
+            current = payload.get("system")
+            if isinstance(current, str):
+                forwarded["system"] = f"{compiled_prompt}\n\n{current}"
+            elif isinstance(current, list) and all(isinstance(item, dict) for item in current):
+                forwarded["system"] = [{"type": "text", "text": compiled_prompt}, *current]
+            else:
+                return skip("unsupported_system_shape")
+    elif surface == "responses":
         current = payload.get("input")
         if isinstance(current, list):
             forwarded["input"] = [envelope, *current]
@@ -232,7 +243,9 @@ def inject_context_pack(
         pack_digest=pack_digest,
         prompt_digest=prompt_digest or digest,
         envelope_digest=digest,
-        reason="injected_leading_system_envelope",
+        reason="injected_system_field"
+        if surface == "messages"
+        else "injected_leading_system_envelope",
         raw_artifact_pointer=pointer,
         cache_control_preserved=cache_control_preserved,
     )
@@ -240,6 +253,14 @@ def inject_context_pack(
 
 def extract_envelope(payload: dict[str, Any], *, surface: str) -> str | None:
     """Return the leading envelope content of a forwarded payload, if present."""
+    if surface == "messages":
+        system = payload.get("system")
+        if isinstance(system, str):
+            return system
+        if isinstance(system, list) and system and isinstance(system[0], dict):
+            text = system[0].get("text")
+            return text if isinstance(text, str) else None
+        return None
     items = payload.get("input" if surface == "responses" else "messages")
     if not isinstance(items, list) or not items:
         return None

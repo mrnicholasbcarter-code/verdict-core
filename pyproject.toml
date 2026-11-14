@@ -193,8 +193,8 @@ dependencies = ["verdict-core"]
 [tool.uv]
 constraint-dependencies = [
     # pip-audit/osv findings that failed Security Scan, CI and Proof on main.
-    # GHSA-45c3-73f7-pv4m: reject vulnerable DNS parsers in every resolution.
-    "dnspython>=2.9.0",
+    # GHSA-45c3-73f7-pv4m, GHSA-vvf4-9x63-8xvv: reject vulnerable DNS parsers in every resolution.
+    "dnspython>=2.9.2",
     # GHSA-6v38-4h7w-rj9h, GHSA-c73q-w75p-j82v and PYSEC-2026-4354..4360.
     "authlib>=1.9.1",
     # GHSA-69hj-f68j-2879, GHSA-8mx5-7m5m-r77g (fixed releases require Python 3.11).
