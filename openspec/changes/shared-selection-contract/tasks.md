@@ -46,17 +46,12 @@ files also passed in reordered execution with `-p no:xdist` (124-test run).
 
 ## 3. Capability floor, no critical-path exception
 
-- [x] 3.1 A frontier-worthy task raises the capability floor and still selects a free route that clears Evidence: `tests/test_orch_eligibility.py::test_planner_respects_capability_floor_before_cheapest_tier` (both parameters passed in the 146-test pytest run).
-  it; verify with the frontier test asserting a free first route when both a free and a subscription
-  route clear the raised floor
-- [x] 3.2 Free routes that do not clear the raised floor are recorded as failing the floor, not as Evidence: `tests/test_selection_accounting.py::test_selector_emits_accounting_without_claiming_a_dispatch` and `::test_receipt_uses_real_dispatches_and_preserves_selector_rejections` (passed in both pytest runs).
-  skipped; verify with the receipt/diagnostic test for that case
+- [x] 3.1 A frontier-worthy task raises the capability floor and still selects a free route that clears it; verify with the frontier test asserting a free first route when both a free and a subscription route clear the raised floor — Evidence: `tests/test_orch_eligibility.py::test_planner_respects_capability_floor_before_cheapest_tier` (both parameters passed in the 146-test focused pytest run).
+- [x] 3.2 Free routes that do not clear the raised floor are recorded as failing the floor, not as skipped; verify with the receipt/diagnostic test for that case — Evidence: `tests/test_selection_accounting.py::test_selector_emits_accounting_without_claiming_a_dispatch` and `::test_receipt_uses_real_dispatches_and_preserves_selector_rejections` (passed in both pytest runs).
 
 ## 4. Receipt supply classes
 
-- [x] 4.1 A selection receipt names eligible free routes attempted, known-unavailable routes, unqualified Evidence: `tests/test_selection_accounting.py::test_classes_are_disjoint_sorted_and_authority_requires_evidence` (both parameters), `::test_buffered_relay_reports_actual_free_sends`, and `::test_receipt_uses_real_dispatches_and_preserves_selector_rejections` (passed in both pytest runs).
-  supply, and eligible routes unattempted because caller authority expired, with each route in exactly
-  one class; verify with the receipt-class test over a mixed evidence set
+- [x] 4.1 A selection receipt names eligible free routes attempted, known-unavailable routes, unqualified supply, and eligible routes unattempted because caller authority expired, with each route in exactly one class; verify with the receipt-class test over a mixed evidence set — Evidence: `tests/test_selection_accounting.py::test_classes_are_disjoint_sorted_and_authority_requires_evidence` (both parameters), `::test_buffered_relay_reports_actual_free_sends`, and `::test_receipt_uses_real_dispatches_and_preserves_selector_rejections` (passed in both pytest runs).
 - [ ] 4.2 `budget_exhausted` and `free_supply_unknown` keep their current names and are not replaced or
   merged by the new classes; verify with the regression test asserting both existing reasons still appear
   under their current names
