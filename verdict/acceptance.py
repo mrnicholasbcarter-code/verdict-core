@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +33,7 @@ from typing import IO, Any
 
 from verdict.acceptance_state import ISSUE_PREFIX, acceptance_dir, prune, update_alert_state
 from verdict.http_safety import open_no_redirect
+from verdict.openrouter_free_set import load_openrouter_free_set
 from verdict.security import redact_text
 
 KEEP_RESULTS = 48
@@ -580,6 +581,13 @@ def _guarded(name: str, run: Callable[[], Check]) -> Check:
 
 
 def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
+    # Refresh the OpenRouter public free-set cache before any check runs so
+    # eligibility (and every downstream classifier) sees current public 0/0
+    # membership instead of a stale cache. Cache-only on failure: never blocks
+    # acceptance on a fetch error.
+    with suppress(Exception):
+        load_openrouter_free_set(refresh=True)
+
     def cli(name: str, args: list[str], timeout: float, judge: Judge) -> Callable[[], Check]:
         return lambda: _cli_check(name, args, timeout, judge, gateway)
 

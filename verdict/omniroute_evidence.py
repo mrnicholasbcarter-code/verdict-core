@@ -22,6 +22,7 @@ from urllib.request import Request
 
 from verdict.credentials_store import resolve_api_key
 from verdict.http_safety import open_no_redirect
+from verdict.openrouter_free_set import load_openrouter_free_set
 
 # BOD-345/S04 discovery bounds (same contract as verdict.free_tier_admit): a
 # 20s per-HTTP-read timeout, a 30s aggregate deadline shared across the seven
@@ -473,6 +474,7 @@ def parse_omniroute_evidence(
     capacity_rules: dict[str, str] = {}
     routes: dict[tuple[str, str], list[str]] = {}
     inventory: set[str] = set()
+    free_set = load_openrouter_free_set(refresh=False)
     for row in _rows(v1_models.get("data")) if "v1_models" not in errors else []:
         route_id, provider = row.get("id"), row.get("owned_by", row.get("provider"))
         if isinstance(route_id, str) and route_id:
@@ -485,7 +487,7 @@ def parse_omniroute_evidence(
             if isinstance(row.get("root"), str) and row["root"]:
                 identities[route_id] = (provider, row["root"])
             classifications = [
-                _classify_capacity(conn, row, route_id=route_id, openrouter_free_set=None)
+                _classify_capacity(conn, row, route_id=route_id, openrouter_free_set=free_set)
                 for conn in provider_rows
                 if conn.get("id") in usable_ids and conn.get("provider") == provider
             ]

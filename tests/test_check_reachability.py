@@ -663,16 +663,15 @@ def test_unknown_ratchet_base_is_an_error(ratchet_repo: Path) -> None:
         checker.ratchet(ratchet_repo, result, "no-such-ref")
 
 
-# execution_hosts and the memory_providers package still have no production
-# importer. The superseded modules verdict.memory_providers.ai_memory_experimental
-# and verdict.workflows.autodev must be gone. verdict.workflows remains an orphan
-# package shell, but this branch edits it, so it cannot stay UNTRIAGED. Every
-# other orphan module must leave the baseline.
-PENDING_CONTROLLER_ORPHANS = frozenset({"verdict.execution_hosts", "verdict.memory_providers"})
+# The original 26 UNTRIAGED orphan modules from the reachability ratchet
+# (ea4c7afd) are all resolved: 21 deleted, 2 kept with reasons, and the last
+# two — verdict.execution_hosts and verdict.memory_providers — were deleted
+# in the BOD-397 triage. No orphan module may stay UNTRIAGED.
+PENDING_CONTROLLER_ORPHANS = frozenset()
 
 
 def test_untriaged_orphan_modules_are_only_the_pending_controller_set() -> None:
-    """Only the controller-pending orphan modules may stay UNTRIAGED."""
+    """No orphan module may stay UNTRIAGED after the BOD-397 triage."""
     root = Path(__file__).parents[1]
     entries = checker.load_baseline(root / checker.MODULE_BASELINE_NAME)
     untriaged = {

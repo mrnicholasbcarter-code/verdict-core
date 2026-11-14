@@ -124,11 +124,15 @@ verdict harness claude compat cc/claude-opus-5-5 --mode native --json
 verdict harness claude compat --mode openai-side-path --json
 ```
 
-Native Anthropic Messages (`/v1/messages`) is **unsupported / NEEDS_OWNER BOD-102**
-for every exact id, even a freshly VERIFIED Claude-looking route. There is no
-native proxy in this feature. The existing env/SessionStart gate is reported as
-**OpenAI side path; not native Claude Code selection**. Configured side-path facts
-are unproven for exact selection: `selected_id_unproven`,
+Anthropic Messages (`/v1/messages`) is served by Verdict and translated by the
+upstream gateway. `verdict harness claude enable` sets `ANTHROPIC_BASE_URL` to
+the Verdict origin root (`http://127.0.0.1:8000`, no `/v1`). The token is read
+from the process environment (`ANTHROPIC_AUTH_TOKEN`); it is never written.
+An OmniRoute-looking `:20128` URL is refused.
+
+The read-only compat report does not prove exact model selection. The existing
+env/SessionStart gate is not native Claude Code selection. Configured facts
+stay unproven for exact selection: `selected_id_unproven`,
 `exact_selection_tested=false`, `selectable=false`, `apply_available=false`.
 
 The reader performs no refresh, probe, certification, helper execution, settings,
@@ -139,5 +143,5 @@ joined to the last local completion projection, labelled with that source. Missi
 local input yields an empty diagnostic report, not a live catalog sweep.
 
 There is no Claude apply/select/force/restore branch or selected-models write API.
-Native support needs BOD-102 and separately designed exact end-to-end evidence.
-See [local completion](tui-completion.md) for snapshot limits and prompt help.
+Exact model selection remains unproven and needs separately designed end-to-end
+evidence. See [local completion](tui-completion.md) for snapshot limits and prompt help.

@@ -33,9 +33,11 @@ import httpx
 
 from verdict.http_safety import omniroute_evidence_headers
 from verdict.orchestration.contracts import (
+    EFFORT_OMITTED,
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
+    _accepts_keyword,
     executor_gateway_origin,
     gateway_origin_matches,
     normalize_gateway_origin,
@@ -322,7 +324,9 @@ class PrimeHeadlessExecutor:
             f"(launch has {origin or 'no gateway origin'})"
         )
 
-    def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
+    def _command(
+        self, prompt: str, route_id: str, cwd: Path, *, effort: Any = EFFORT_OMITTED
+    ) -> list[str]:
         cmd = [
             self.prime_bin,
             "-p",
@@ -337,28 +341,45 @@ class PrimeHeadlessExecutor:
             str(cwd),
             *self.extra_args,
         ]
-        if self.thinking is not None:
+        if self.thinking is not None and effort is EFFORT_OMITTED:
             cmd.extend(["--thinking", self.thinking])
+        elif effort is not None and effort is not EFFORT_OMITTED:
+            cmd.extend(["--thinking", effort])
         cmd.append("--")  # prompt is data, never a flag
         cmd.append(prompt)
         return cmd
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         """Run one prompt as an agent worker. Prime headless has no answer-only mode."""
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, effort=effort
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="prime-headless")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         started = time.monotonic()
-        argv = self._command(prompt, route_id, cwd)
+        if _accepts_keyword(self._command, "effort"):
+            argv = self._command(prompt, route_id, cwd, effort=effort)
+        else:
+            argv = self._command(prompt, route_id, cwd)
         child_env = self._child_env()
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
@@ -792,7 +813,14 @@ class FaultInjectingExecutor:
         return None
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         self._state.dispatches += 1
         if self._is_worker_attempt(cwd):
@@ -806,6 +834,7 @@ class FaultInjectingExecutor:
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
                 tools=tools,
+                effort=effort,
             )
         if kind == "hang":
             await asyncio.sleep(timeout_seconds)
@@ -1444,17 +1473,36 @@ class DirectGatewayExecutor:
             diff_path.unlink(missing_ok=True)
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=tools,
+            effort=effort,
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="direct-gateway")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         started = time.monotonic()
         owned_files = self._parse_owned_files(prompt) if tools else []
@@ -1474,6 +1522,9 @@ class DirectGatewayExecutor:
             # implement prompts often take longer to produce the whole answer.
             "stream": is_implement,
         }
+        if effort is not EFFORT_OMITTED and effort is not None:
+            # Passthrough field. OmniRoute does not report applied effort.
+            payload["reasoning_effort"] = effort
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 if is_implement:
@@ -1824,7 +1875,14 @@ class MixedExecutor:
         return self._default
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         # Delegate entirely.  executor_kind and harness are set by the delegate
         # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
@@ -1838,4 +1896,5 @@ class MixedExecutor:
             cwd=cwd,
             timeout_seconds=timeout_seconds,
             tools=tools,
+            effort=effort,
         )

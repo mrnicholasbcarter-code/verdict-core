@@ -32,7 +32,7 @@ from verdict.identify_rank import rate_model, rating_key, rating_metric
 from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.store import MetadataSnapshot
 from verdict.omniroute_evidence import OmniRouteEvidence
-from verdict.orchestration.credential_pools import backend_model, pool_of
+from verdict.orchestration.credential_pools import backend_model, canonical_route, pool_of
 from verdict.orchestration.health_cache import HealthEntry, agentic_capability
 
 TASK_FAMILIES: Mapping[str, str] = {
@@ -58,21 +58,28 @@ def _by_capacity(classes: list[CapacityClass]) -> dict[str, int]:
 def _proof_routes(
     routes: list[str], cache_routes: Mapping[str, HealthEntry] | None, now: datetime
 ) -> dict[str, str]:
-    """Route -> the route whose fresh agentic proof covers it (itself first)."""
+    """Route -> the route whose fresh agentic proof covers it (itself first).
+
+    The canonical route id keys the proof: alias prefixes of one backend
+    model (agy/antigravity, af/api-airforce) share one key, so one member's
+    proof covers the family -- never independent duplicate proofs. Effort
+    variants (``-low``/``-thinking-high``/...) and ``no-think/`` wrappers keep
+    distinct canonical ids, so a proof never qualifies a different effort.
+    """
     fresh = sorted(
         route
         for route, entry in (cache_routes or {}).items()
         if agentic_capability(entry, now)["qualified"]
     )
-    by_model: dict[tuple[str, str], str] = {}
+    by_model: dict[str, str] = {}
     for route in fresh:
-        by_model.setdefault(backend_model(route), route)
+        by_model.setdefault(canonical_route(route), route)
     covered = {}
     for route in routes:
         if route in fresh:
             covered[route] = route
-        elif backend_model(route) in by_model:
-            covered[route] = by_model[backend_model(route)]
+        elif canonical_route(route) in by_model:
+            covered[route] = by_model[canonical_route(route)]
     return covered
 
 

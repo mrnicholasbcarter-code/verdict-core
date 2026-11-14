@@ -652,6 +652,28 @@ def _improve(args: argparse.Namespace) -> int:
     return 0 if results[-1].outcome == "MET" else 1
 
 
+def _public_effort_rows(selector: object) -> Mapping[str, Mapping[str, Any]] | None:
+    """Effort facts from a public selector method. Never reads private rows.
+
+    None means the already-fetched inventory is not exposed. An empty mapping
+    means it was fetched and contained no routes. Only reasoning and
+    thinkingLevelMap are kept.
+    """
+    from verdict.orchestration.effort import allowlisted_effort_facts
+
+    public = getattr(selector, "effort_model_rows", None)
+    if not callable(public):
+        return None
+    rows = public()
+    if not isinstance(rows, Mapping):
+        return None
+    return {
+        str(route): allowlisted_effort_facts(row)
+        for route, row in rows.items()
+        if isinstance(row, Mapping)
+    }
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.orchestration.contracts import WorkGraph
     from verdict.orchestration.recovery import FailureIntelligence
@@ -827,6 +849,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             openspec_change_dir=openspec_change_dir,
             constraints=constraints,
             dispatch_authority=dispatch_authority,
+            model_rows=_public_effort_rows(selector),
         )
     )
     stop.set()

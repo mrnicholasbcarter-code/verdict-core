@@ -761,6 +761,7 @@ async def run_golden_path(
     decision_signal_provider: DecisionSignalProvider | None = None,
     mode: str = "",
     dispatch_authority: DispatchAuthority | None = None,
+    model_rows: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> GoldenRunResult:
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
@@ -1019,6 +1020,35 @@ async def run_golden_path(
                     "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
                 )
                 return _blocked_before_plan(run_dir, admission_reason)
+        # BOD-340: the approved operator policy is the single authority for
+        # native execution boundaries; fail closed before any planning or
+        # dispatch.  Memory retrieval never approves or promotes rules.
+        from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
+
+        try:
+            _policy_verdict, _policy_audit = admit_action(
+                ActionContext(
+                    action="orchestrate.run",
+                    argv=("verdict", "orchestrate"),
+                    cwd=str(repo),
+                    worktree=str(repo),
+                    linear_issue=(openspec_block or {}).get("linear_issue"),
+                    acceptance_criteria=tuple(
+                        str(item) for item in (openspec_block or {}).get("acceptance_criteria", ())
+                    ),
+                )
+            )
+        except PolicyUnavailableError as exc:
+            admission_reason = f"operator policy unavailable: {exc}"
+            return _blocked_before_plan(run_dir, admission_reason)
+        if not _policy_verdict.allowed:
+            admission_reason = f"operator policy denied: {_policy_verdict.reason}"
+            events.emit(
+                "operator_policy_denied",
+                decision_id=_policy_audit["decision_id"],
+                reason=_policy_verdict.reason,
+            )
+            return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
@@ -1147,6 +1177,7 @@ async def run_golden_path(
         policy=policy,
         inflight=inflight,
         dispatch_authority=dispatch_authority,
+        model_rows=model_rows,
     )
     # Attempts dispatched by an earlier controller life keep their numbers; the
     # next attempt continues after them so the receipt never merges two lives.

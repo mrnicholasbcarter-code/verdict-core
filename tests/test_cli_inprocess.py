@@ -187,7 +187,7 @@ def test_cmd_route_and_run_send_configured_provider_completion(
         _action_helpers, "build_route_gate", lambda allow_offline=False: _LiveGate()
     )
 
-    cli.cmd_route("format a bullet list", "low", terse=False)
+    cli.cmd_route("format a bullet list", "low", terse=False, allow_legacy_selector=True)
     out = capsys.readouterr().out
     assert sent == [("http://127.0.0.1:20128/v1", "openrouter/free-model", "format a bullet list")]
     assert '"transport_outcome": "sent"' in out
@@ -195,7 +195,7 @@ def test_cmd_route_and_run_send_configured_provider_completion(
     assert "req-bod136" in out
 
     sent.clear()
-    cli.cmd_run("format a bullet list", "low", terse=True)
+    cli.cmd_run("format a bullet list", "low", terse=True, allow_legacy_selector=True)
     assert sent == [("http://127.0.0.1:20128/v1", "openrouter/free-model", "format a bullet list")]
     assert capsys.readouterr().out.strip() == "openrouter/free-model"
 
@@ -244,7 +244,7 @@ def test_cmd_route_identity_mismatch_fails_closed(
         _action_helpers, "build_route_gate", lambda allow_offline=False: _LiveGate()
     )
     with pytest.raises(SystemExit) as exc:
-        cli.cmd_route("format docs", "low")
+        cli.cmd_route("format docs", "low", allow_legacy_selector=True)
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "identity mismatch" in out
@@ -838,7 +838,9 @@ def test_main_dispatches_help_route_stats_detect(
     monkeypatch.setattr(
         "verdict.cli.execute_offload_chat", lambda *a, **k: ("error", "ConnectError")
     )
-    monkeypatch.setattr(cli.sys, "argv", ["verdict", "route", "hello", "--terse"])
+    monkeypatch.setattr(
+        cli.sys, "argv", ["verdict", "route", "hello", "--terse", "--allow-legacy-selector"]
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 1

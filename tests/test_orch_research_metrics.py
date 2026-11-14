@@ -184,3 +184,49 @@ def test_structured_transcript_only_and_call_id_deduplication():
         )
         == ()
     )
+
+
+def test_save_attempt_persists_research_fetches_and_metrics(tmp_path):
+    import json
+
+    from verdict.orchestration.contracts import AttemptUsage, WorkerTerminal
+    from verdict.orchestration.research_metrics import normalize_research_fetch
+    from verdict.orchestration.runtime import DagRuntime
+
+    fetch = normalize_research_fetch("read", {"path": "src/app.py", "offset": 1, "limit": 10})
+    assert fetch is not None
+    terminal = WorkerTerminal(
+        ok=True,
+        model="test/route",
+        output="RESULT: DONE",
+        research_fetches=(fetch,),
+        usage=AttemptUsage(input_tokens=100, output_tokens=50, tokens_source="prime_stdout"),
+    )
+
+    rt = object.__new__(DagRuntime)
+    rt.run_dir = tmp_path
+
+    duplication_metrics = {
+        "worker_id": "node-1-a1",
+        "model": "test/route",
+        "pack_id": "p1",
+        "pack_revision": "r1",
+        "baseline_fetches": 1,
+        "research_tool_calls": 1,
+        "duplicated_research_tool_calls": 0,
+        "partial_overlap_tool_calls": 0,
+        "duplicated_research_call_share": 0.0,
+        "research_tokens": None,
+        "duplicated_research_tokens": None,
+        "duplicated_research_share": None,
+        "token_accounting_status": "unavailable",
+        "total_input_tokens": 100,
+    }
+
+    rt._save_attempt("node-1", 1, "test/route", terminal, research_metrics=duplication_metrics)
+
+    attempt_file = tmp_path / "attempts" / "node-1-a1.json"
+    assert attempt_file.exists()
+    record = json.loads(attempt_file.read_text())
+    assert record["research_fetches"] == [fetch]
+    assert record["research_duplication"] == duplication_metrics
