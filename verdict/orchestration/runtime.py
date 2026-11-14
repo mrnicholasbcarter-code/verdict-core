@@ -92,6 +92,10 @@ from verdict.orchestration.health_cache import (
 )
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.research_metrics import (
+    measure_research_duplication,
+    normalize_research_fetch,
+)
 from verdict.orchestration.salvage import (
     _MAX_EVIDENCE_PATHS,
     restore_salvaged_files,
@@ -1609,6 +1613,42 @@ class DagRuntime:
                     )
                 self.inflight.pop(node.node_id, None)
             try:
+                research_metrics: dict[str, Any] | None = None
+                if terminal.research_fetches is not None:
+                    baseline_fetches: list[dict[str, Any]] = []
+                    for src in evidence.get("sources", []):
+                        if isinstance(src, Mapping):
+                            span = src.get("span")
+                            path = src.get("path")
+                            if isinstance(span, Mapping) and isinstance(path, str):
+                                start = span.get("start_line", 1)
+                                end = span.get("end_line")
+                                limit = (
+                                    (end - start + 1)
+                                    if (type(end) is int and type(start) is int and end >= start)
+                                    else None
+                                )
+                                fetch = normalize_research_fetch(
+                                    "read",
+                                    {"path": path, "offset": start, "limit": limit},
+                                    revision=src.get("revision")
+                                    if isinstance(src.get("revision"), str)
+                                    else None,
+                                )
+                                if fetch is not None:
+                                    baseline_fetches.append(fetch)
+                    pack_id = str(evidence.get("pack_id") or "")
+                    research_metrics = measure_research_duplication(
+                        baseline_fetches,
+                        terminal.research_fetches,
+                        worker_id=f"{node.node_id}-a{run.attempt}",
+                        model=terminal.model or run.route_id,
+                        pack_id=pack_id,
+                        pack_revision=pack_id,
+                        total_input_tokens=terminal.usage.input_tokens
+                        if terminal.usage is not None
+                        else None,
+                    )
                 self.events.emit(
                     "terminal",
                     node.node_id,
@@ -1642,8 +1682,19 @@ class DagRuntime:
                         if terminal.served_check is not None
                         else {}
                     ),
+                    **(
+                        {"research_duplication": research_metrics}
+                        if research_metrics is not None
+                        else {}
+                    ),
                 )
-                self._save_attempt(node.node_id, run.attempt, run.route_id, terminal)
+                self._save_attempt(
+                    node.node_id,
+                    run.attempt,
+                    run.route_id,
+                    terminal,
+                    research_metrics=research_metrics,
+                )
                 blocked_line = _blocked_report(terminal.output) if terminal.ok else ""
                 if blocked_line:
                     terminal = WorkerTerminal(
@@ -1766,7 +1817,12 @@ class DagRuntime:
         return permit
 
     def _save_attempt(
-        self, node_id: str, attempt: int, route_id: str, terminal: WorkerTerminal
+        self,
+        node_id: str,
+        attempt: int,
+        route_id: str,
+        terminal: WorkerTerminal,
+        research_metrics: Mapping[str, Any] | None = None,
     ) -> None:
         """Durable per-attempt evidence (sanitized by the executor); never fatal."""
         if terminal.executor_kind == "fault-injected":
@@ -1800,6 +1856,10 @@ class DagRuntime:
                 }
             if terminal.served_check is not None:
                 record["served_check"] = terminal.served_check
+            if terminal.research_fetches is not None:
+                record["research_fetches"] = list(terminal.research_fetches)
+            if research_metrics is not None:
+                record["research_duplication"] = dict(research_metrics)
             (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
         except OSError:
             pass

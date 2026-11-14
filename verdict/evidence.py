@@ -133,6 +133,33 @@ def _safe_candidate_record(value: object) -> dict[str, Any]:
     return record
 
 
+def _tool_name(item: dict[str, Any]) -> str | None:
+    """OpenAI function names, plus Anthropic tool entries that have no function object."""
+
+    function = item.get("function")
+    if isinstance(function, dict):
+        function_name = function.get("name")
+        if isinstance(function_name, str):
+            return function_name
+    if "function" not in item:
+        name = item.get("name")
+        if isinstance(name, str):
+            return name
+    return None
+
+
+def _content_has_vision(message: object) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if message.get("type") in {"input_image", "image_url", "image"}:
+        return True
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(part, dict) and part.get("type") in {"image_url", "input_image", "image"}
+        for part in content
+    )
+
+
 def request_features(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract protocol shape without retaining messages or tool arguments."""
 
@@ -154,29 +181,13 @@ def request_features(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(response_format, dict) and isinstance(response_format.get("type"), str)
             else None
         ),
-        "vision": any(
-            isinstance(message, dict)
-            and (
-                message.get("type") in {"input_image", "image_url"}
-                or (
-                    isinstance(message.get("content"), list)
-                    and any(
-                        isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}
-                        for part in message["content"]
-                    )
-                )
-            )
-            for message in content_items
-        ),
+        "vision": any(_content_has_vision(message) for message in content_items)
+        or _content_has_vision({"content": payload.get("system")}),
         "reasoning": isinstance(payload.get("reasoning"), (dict, str)),
     }
     if isinstance(tools, list):
         names = [
-            item.get("function", {}).get("name")
-            for item in tools
-            if isinstance(item, dict)
-            and isinstance(item.get("function"), dict)
-            and isinstance(item["function"].get("name"), str)
+            name for item in tools if isinstance(item, dict) for name in (_tool_name(item),) if name
         ]
         feature_payload["tool_count"] = len(tools)
         feature_payload["tool_names"] = [_safe_tool_name(name) for name in names if name]
