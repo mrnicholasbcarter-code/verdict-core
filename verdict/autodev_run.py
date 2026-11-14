@@ -2425,7 +2425,7 @@ def prepare_live_autodev_selected(
             break
         reached = getattr(verdict.reached, "value", None)
         route_id = str(verdict.route_id)
-        if route_id.endswith(":free") or verdict.capacity_class is CapacityClass.FREE:
+        if verdict.capacity_class is CapacityClass.FREE:
             capacity = "free"
         elif verdict.capacity_class is CapacityClass.SUBSCRIPTION:
             capacity = "subscription"

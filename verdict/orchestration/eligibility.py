@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from verdict.capacity import CAPACITY_ORDER, billing_capacity_override, classify_route_capacity
 from verdict.identify_rank import RatedModel, rate_model, rating_key
-from verdict.openrouter_free_set import OpenRouterFreeSet
+from verdict.openrouter_free_set import OpenRouterFreeSet, key_limit_on_non_free_is_route_scoped
 from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
@@ -1261,7 +1261,15 @@ class EligibilityLadder:
                     entry = self._state["cooldowns"].get(f"route:{a.route_id}")
                     if isinstance(entry, dict):
                         a.cooldown_until = str(entry.get("until"))
-                    if result.category in _PROVIDER_SCOPE_CATEGORIES:
+                    if (
+                        result.category in _PROVIDER_SCOPE_CATEGORIES
+                        and not key_limit_on_non_free_is_route_scoped(
+                            route_id=a.route_id,
+                            http_status=getattr(result, "status_code", None),
+                            detail=result.error_message or "",
+                            free_set=self.openrouter_free_set,
+                        )
+                    ):
                         until = self._active_cooldown(f"provider:{a.provider}", now)
                         blocked[a.provider] = _iso(until) if until else str(a.cooldown_until)
                     continue
@@ -1450,7 +1458,16 @@ class EligibilityLadder:
                 seconds = cooldown_seconds_for(category, result.retry_after_seconds)
                 entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
                 self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-                if provider and category in _PROVIDER_SCOPE_CATEGORIES:
+                if (
+                    provider
+                    and category in _PROVIDER_SCOPE_CATEGORIES
+                    and not key_limit_on_non_free_is_route_scoped(
+                        route_id=route_id,
+                        http_status=getattr(result, "status_code", None),
+                        detail=result.error_message or "",
+                        free_set=self.openrouter_free_set,
+                    )
+                ):
                     self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
                     self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
                 # Live-evidence not-free override: mark the route and pool so
