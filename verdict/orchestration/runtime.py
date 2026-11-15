@@ -103,7 +103,13 @@ from verdict.orchestration.salvage import (
 )
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
-from verdict.orchestration.worker_context import WorkerPrompt
+from verdict.orchestration.worker_context import (
+    ResearchDelta,
+    ResearchPack,
+    WorkerPrompt,
+    create_research_pack,
+    reuse_research_pack,
+)
 from verdict.relay import admission_proof, dispatch_scope
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
@@ -1708,6 +1714,16 @@ class DagRuntime:
                         served_check=terminal.served_check,
                     )
                 if not terminal.ok or not terminal.output.strip():
+                    failure = self.classifier.classify(terminal, now=self.now())
+                    self._persist_research_pack(
+                        node,
+                        hydrated,
+                        base,
+                        evidence,
+                        deltas=(
+                            ResearchDelta("failure", f"attempt-{run.attempt}", failure.category),
+                        ),
+                    )
                     return await self._fail(run, terminal, failures, worktree)
                 if run.permit is not None and (
                     await asyncio.to_thread(_revocation_epoch, run.permit.scope) != run.permit.epoch
@@ -1728,6 +1744,17 @@ class DagRuntime:
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
                     failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    self._persist_research_pack(
+                        node,
+                        hydrated,
+                        base,
+                        evidence,
+                        deltas=(
+                            ResearchDelta(
+                                "failure", f"attempt-{run.attempt}-verify", "verification_failed"
+                            ),
+                        ),
+                    )
                     return await self._fail(run, failed, failures, worktree, validated=True)
                 run.commit = await self.git.commit_all(
                     worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
@@ -1743,6 +1770,7 @@ class DagRuntime:
                         "commit": run.commit,
                     }
                 )
+                self._persist_research_pack(node, hydrated, base, evidence)
                 self._set(run, NodeState.VALIDATED, commit=run.commit)
                 return True
             finally:
@@ -1862,6 +1890,81 @@ class DagRuntime:
                 record["research_duplication"] = dict(research_metrics)
             (directory / f"{node_id}-a{attempt}.json").write_text(json.dumps(record, indent=1))
         except OSError:
+            pass
+
+    def _persist_research_pack(
+        self,
+        node: WorkNode,
+        hydrated: Any,
+        base: str,
+        evidence: Mapping[str, Any],
+        *,
+        deltas: tuple[ResearchDelta, ...] = (),
+    ) -> None:
+        """Create or refresh the persisted ResearchPack for a node; never fatal.
+
+        Stored under run_dir/context_artifacts/<node_id>.json so a retry or
+        replacement can reuse the same research_pack_id/research_revision and
+        only append deltas, without repeating retrieval.
+        """
+        if not isinstance(hydrated, WorkerPrompt):
+            return
+        pack_dir = self.run_dir / "context_artifacts"
+        pack_path = pack_dir / f"{node.node_id}.json"
+        source_revisions = {
+            str(src["path"]): str(src["revision"])
+            for src in evidence.get("sources", [])
+            if isinstance(src, Mapping)
+            and isinstance(src.get("path"), str)
+            and src["path"].strip()
+            and isinstance(src.get("revision"), str)
+            and src["revision"].strip()
+        }
+        try:
+            pack_dir.mkdir(parents=True, exist_ok=True)
+            if pack_path.exists():
+                research = ResearchPack.from_dict(json.loads(pack_path.read_text()))
+                try:
+                    updated = reuse_research_pack(
+                        node,
+                        research,
+                        repo_revision=base,
+                        source_revisions=source_revisions,
+                        deltas=deltas,
+                    )
+                except ValueError:
+                    # Stale task/source/repo revision: invalidate reuse and
+                    # rebuild from the current context rather than relabeling
+                    # stale facts.
+                    updated = create_research_pack(
+                        node,
+                        hydrated.context,
+                        repo_revision=base,
+                        source_revisions=source_revisions,
+                    )
+                    if deltas:
+                        updated = reuse_research_pack(
+                            node,
+                            updated,
+                            repo_revision=base,
+                            source_revisions=source_revisions,
+                            deltas=deltas,
+                        )
+            else:
+                updated = create_research_pack(
+                    node, hydrated.context, repo_revision=base, source_revisions=source_revisions
+                )
+                if deltas:
+                    updated = reuse_research_pack(
+                        node,
+                        updated,
+                        repo_revision=base,
+                        source_revisions=source_revisions,
+                        deltas=deltas,
+                    )
+            pack_path.write_text(json.dumps(updated.to_dict(), indent=2))
+        except (OSError, ValueError, json.JSONDecodeError):
+            # Research persistence is advisory; a run must never fail because of it.
             pass
 
     async def _execute(
