@@ -1046,3 +1046,194 @@ def test_permitted_metered_sorts_after_capable_free_and_subscription(tmp_path, m
     assert paid.rank is None
     assert paid.failed_stage is EligibilityStage.HEALTHY
     assert paid.reason == "payment_required"
+
+
+def test_terminal_reasons_free_supply_unknown_and_budget_exhausted_preserve_names_and_distinction(
+    monkeypatch, tmp_path
+):
+    """Prove free_supply_unknown and budget_exhausted keep current names and remain distinct."""
+    from fastapi.testclient import TestClient
+
+    from tests.relay_proof_helpers import with_relay_proofs
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from tests.test_proxy import FixedIntelligence
+    from verdict import api
+    from verdict.models import RoutingDecision
+    from verdict.orchestration.eligibility import selection_accounting
+    from verdict.proxy import UpstreamProxy
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+
+    # 1. Assert free_supply_unknown terminal reason appears under its current name
+    # when an unverified free supply fails upstream without escalation.
+    free_unknown_ids = ("free-unknown-a", "sub-a")
+
+    class FreeUnknownIntelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=free_unknown_ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=[free_unknown_ids[1]],
+                    safety_flags=["subscription_fallback_policy", "free_supply_unknown"],
+                    candidate_states=[
+                        {
+                            "model_id": free_unknown_ids[0],
+                            "route_id": free_unknown_ids[0],
+                            "admitted": True,
+                            "capacity_order": 0,
+                        }
+                    ],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=[free_unknown_ids[1]],
+                candidate_states=[
+                    {"model_id": model, "route_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(free_unknown_ids, (0, 1), strict=True)
+                ],
+            )
+
+    transport_free_unknown = ContextLengthTransport([(503, '{"error":"service_unavailable"}')])
+    events_free_unknown = []
+    original_finish = api._finish_evidence
+
+    def capture_free_unknown(evidence, outcome, key):
+        events_free_unknown.append(outcome.to_dict())
+        return original_finish(evidence, outcome, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", capture_free_unknown)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: FreeUnknownIntelligence())
+    monkeypatch.setattr(
+        api,
+        "_build_proxy",
+        lambda: UpstreamProxy("http://upstream.test/v1", transport=transport_free_unknown),
+    )
+
+    with TestClient(api.app) as client:
+        res = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "regression-free-supply-unknown"},
+        )
+    assert res.status_code == 503
+    assert len(transport_free_unknown.requests) == 1
+    free_unknown_terminal = events_free_unknown[-1]["details"]
+    free_reason = free_unknown_terminal["termination_reason"]
+    assert free_reason == "free_supply_unknown"
+
+    # 2. Assert budget_exhausted terminal reason appears under its current name
+    # when all three free attempts fail.
+    budget_ids = ("free-b1", "free-b2", "free-b3", "sub-b1")
+
+    class BudgetExhaustedIntelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=budget_ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=list(budget_ids[1:3]),
+                    safety_flags=["subscription_fallback_policy"],
+                    candidate_states=[
+                        {
+                            "model_id": model,
+                            "route_id": model,
+                            "admitted": True,
+                            "capacity_order": 0,
+                        }
+                        for model in budget_ids[:3]
+                    ],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=list(budget_ids[1:]),
+                candidate_states=[
+                    {"model_id": model, "route_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(budget_ids, (0, 0, 0, 1), strict=True)
+                ],
+            )
+
+    transport_budget = ContextLengthTransport([(503, '{"error":"service_unavailable"}')] * 3)
+    events_budget = []
+
+    def capture_budget(evidence, outcome, key):
+        events_budget.append(outcome.to_dict())
+        return original_finish(evidence, outcome, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", capture_budget)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: BudgetExhaustedIntelligence())
+    monkeypatch.setattr(
+        api,
+        "_build_proxy",
+        lambda: UpstreamProxy("http://upstream.test/v1", transport=transport_budget),
+    )
+
+    with TestClient(api.app) as client:
+        res = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "regression-budget-exhausted"},
+        )
+    assert res.status_code == 503
+    assert len(transport_budget.requests) == 3
+    budget_terminal = events_budget[-1]["details"]
+    budget_reason = budget_terminal["termination_reason"]
+    assert budget_reason == "budget_exhausted"
+
+    # 3. Both reasons are distinct and not merged into the selection_accounting classes.
+    assert free_reason != budget_reason
+
+    accounting_classes = {
+        "eligible_free_attempted",
+        "known_unavailable",
+        "unqualified_supply",
+        "eligible_unattempted_authority_expired",
+    }
+    accounting_reasons_fields = {"known_unavailable_reasons", "unqualified_reasons"}
+    expected_accounting_keys = accounting_classes | accounting_reasons_fields
+
+    for terminal_details, reason_name in (
+        (free_unknown_terminal, "free_supply_unknown"),
+        (budget_terminal, "budget_exhausted"),
+    ):
+        accounting = terminal_details["selection_accounting"]
+        # The reason is recorded as termination_reason, not as a selection_accounting class key
+        assert terminal_details["termination_reason"] == reason_name
+        assert reason_name not in accounting
+        assert set(accounting.keys()) == expected_accounting_keys
+        # Neither reason replaces or is merged into category lists as class labels
+        for cls_name in accounting_classes:
+            assert reason_name not in accounting[cls_name]
+            assert cls_name != reason_name
+
+    # Check direct selection_accounting projection behavior:
+    # authority_expired=False vs True maps to eligible_unattempted_authority_expired,
+    # never introducing budget_exhausted or free_supply_unknown as class names.
+    sample_candidates = [
+        {"route_id": "free/a", "capacity_order": 0, "admitted": True},
+        {"route_id": "sub/a", "capacity_order": 1, "admitted": True},
+    ]
+    acct_no_expire = selection_accounting(
+        sample_candidates, attempted=["free/a"], authority_expired=False
+    )
+    acct_expired = selection_accounting(
+        sample_candidates, attempted=["free/a"], authority_expired=True
+    )
+    assert "budget_exhausted" not in acct_no_expire
+    assert "free_supply_unknown" not in acct_no_expire
+    assert "budget_exhausted" not in acct_expired
+    assert "free_supply_unknown" not in acct_expired
+    assert acct_no_expire["eligible_unattempted_authority_expired"] == []
+    assert acct_expired["eligible_unattempted_authority_expired"] == ["sub/a"]
