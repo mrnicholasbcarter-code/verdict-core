@@ -847,6 +847,7 @@ def cmd_route(
     task: str,
     criticality: str,
     terse: bool = False,
+    output_json: bool = False,
     allow_offline: bool = False,
     allow_legacy_selector: bool | None = None,
     task_family: str | None = None,
@@ -980,7 +981,7 @@ def cmd_route(
         return
 
     if not result.ok or data.get("selected") is None:
-        if terse:
+        if terse or output_json:
             error_payload = {
                 "model": data.get("model"),
                 "reason": data.get("reason") or (data.get("reasons") or ["no_eligible_route"])[0],
@@ -995,6 +996,9 @@ def cmd_route(
     model = selected["route_id"]
     if terse:
         print(model)
+        return
+    if output_json:
+        print(json.dumps(data, sort_keys=True, indent=2))
         return
 
     from verdict import present

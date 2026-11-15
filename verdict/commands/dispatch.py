@@ -270,10 +270,14 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             parser.print_help()
             sys.exit(1)
     elif args.command == "route":
+        task_text = args.task_flag or args.task
+        if not task_text:
+            parser.error("verdict route requires a task (positional or --task)")
         legacy.cmd_route(
-            args.task,
+            task_text,
             args.criticality,
             args.terse,
+            output_json=getattr(args, "json", False),
             allow_offline=getattr(args, "allow_offline", False),
             allow_legacy_selector=getattr(args, "allow_legacy_selector", None),
         )
