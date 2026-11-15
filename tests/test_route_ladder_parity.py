@@ -239,6 +239,81 @@ def test_serve_uses_only_ladder_candidates_in_ladder_order(monkeypatch, tmp_path
     ]
 
 
+def test_serve_final_decision_matches_shared_selector_first_route(
+    monkeypatch, tmp_path, no_gateway_network
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    import test_live_candidate_shortlist as fixtures
+
+    from verdict.execution_path import optimize_execution_path
+
+    assessed = []
+    optimized = []
+
+    def observe_optimizer(request):
+        decision = optimize_execution_path(request)
+        optimized.append((request, decision))
+        return decision
+
+    # Observe, do not replace, ADR-035's final strategy authority.
+    monkeypatch.setattr("verdict.serve_path.optimize_execution_path", observe_optimizer)
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+
+    ladder_candidates = tuple(
+        SimpleNamespace(route_id=route_id) for route_id in (fixtures.FAST, fixtures.STRONG)
+    )
+
+    class FakeSelector:
+        def select(self, requirements, *, now):
+            del requirements, now
+            return ladder_candidates[0], ladder_candidates
+
+        def _assess_all(self, requirements, now):
+            assessed.append((requirements, now))
+            return [], list(ladder_candidates)
+
+    selector = FakeSelector()
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector
+    )
+
+    service = fixtures._service([], top_k=4)
+    service.admit_snapshot = None
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None),
+    )
+
+    request = fixtures._request(fixtures.NEW, fixtures.STRONG, fixtures.FAST)
+    serve_decision = asyncio.run(
+        service.route("fix code", criticality="low", context=fixtures._context(request))
+    )
+    assert len(optimized) == len(assessed) == 1
+    prepared, execution_decision = optimized[0]
+    requirements, now = assessed[0]
+    shared_first, _ = selector.select(requirements, now=now)
+    admitted_order = [candidate.route_id for candidate in ladder_candidates]
+    assert [offer.route.route_id for offer in prepared.offers] == admitted_order
+    assert [entry.route_id for entry in prepared.pool_receipt.shortlist] == admitted_order
+    assert execution_decision.selected_candidate_id == shared_first.route_id
+    assert "bod104_execution_path_authority" in serve_decision.safety_flags
+
+    admitted = {candidate.route_id for candidate in ladder_candidates}
+    prepared_ids = {offer.route.route_id for offer in prepared.offers}
+    shortlist_ids = {entry.route_id for entry in prepared.pool_receipt.shortlist}
+
+    assert prepared_ids <= admitted
+    assert shortlist_ids <= admitted
+    assert f"bod104_route_id:{shared_first.route_id}" in serve_decision.safety_flags
+    assert serve_decision.model == shared_first.route_id.split("/", 1)[1]
+
+
 def test_allow_legacy_selector_flag_uses_the_gate_and_never_the_ladder(
     live_pool: list[dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
