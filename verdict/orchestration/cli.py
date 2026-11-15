@@ -495,6 +495,8 @@ def _selector_visibility_executor(args: argparse.Namespace) -> str:
     Preserve that rule on top of the registry: ``direct-gateway`` selects the
     live-gateway visibility adapter; everything else (including the ``prime``
     alias and any future harness) uses the default adapter's visibility.
+    When a map is present the result is always ``DEFAULT_REGISTRY.default_name()``
+    (``prime-headless`` today), regardless of the ``--executor`` value.
     """
     default = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
     mapping = getattr(args, "executor_map", "") or ""
