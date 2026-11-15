@@ -57,10 +57,10 @@ class ExecutionTarget:
     """
 
     harness: str  # adapter name registered in HarnessRegistry
-    transport: str  # "openai-compat" | "anthropic-messages" | "local" | custom
-    provider: str  # lower-case OmniRoute provider prefix
-    model: str  # bare OmniRoute route id, e.g. "cc/claude-sonnet-5"
-    capacity_class: CapacityClass
+    transport: str = ""  # "openai-compat" | "anthropic-messages" | "local" | custom
+    provider: str = ""  # lower-case OmniRoute provider prefix
+    model: str = ""  # bare OmniRoute route id, e.g. "cc/claude-sonnet-5"
+    capacity_class: CapacityClass = CapacityClass.UNKNOWN
     reasoning_effort: str | None = None
     compatibility_profile: str = ""  # e.g. "prime-0.9.8", "claude-messages-1"
 
@@ -142,6 +142,18 @@ class HarnessRegistry:
         if cls in self._executor_labels:
             return self._executor_labels[cls]
         return getattr(cls, "__name__", str(cls))
+
+    def executor_for(
+        self, target: ExecutionTarget, *, gateway: str, api_key: str
+    ) -> WorkerExecutor:
+        """Build the worker executor for an ``ExecutionTarget``'s harness.
+
+        Dispatch selects the adapter by ``target.harness`` alone; the adapter
+        translates the target into a launch.  ``gateway``/``api_key`` are the
+        dispatch credentials (Verdict key precedence applies inside the
+        executor).
+        """
+        return self.resolve(target.harness).worker_executor(gateway=gateway, api_key=api_key)
 
 
 DEFAULT_REGISTRY = HarnessRegistry()

@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from verdict.orchestration.executors import FaultInjectionState
 
-from verdict.orchestration.contracts import WorkerExecutor
+from verdict.orchestration.contracts import CapacityClass, WorkerExecutor
 from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
-from verdict.orchestration.harness import DEFAULT_REGISTRY
+from verdict.orchestration.harness import DEFAULT_REGISTRY, ExecutionTarget
 from verdict.orchestration.runtime import DispatchAuthority, RuntimePolicy
 
 DEFAULT_RUNS = Path(".verdict") / "runs"
@@ -447,8 +447,14 @@ def _prime_visibility(args: argparse.Namespace) -> int:
 
 
 def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerExecutor:
-    """Build one named executor backend via the HarnessRegistry."""
-    return DEFAULT_REGISTRY.resolve(name).worker_executor(gateway=gateway, api_key=api_key)
+    """Build one named executor backend via the HarnessRegistry.
+
+    CLI/backend selection knows only the harness name; the eligibility ladder
+    fills provider/model/capacity at dispatch time, so the ExecutionTarget
+    carries the harness plus unknown identity here.
+    """
+    target = ExecutionTarget(harness=name, capacity_class=CapacityClass.UNKNOWN)
+    return DEFAULT_REGISTRY.executor_for(target, gateway=gateway, api_key=api_key)
 
 
 def _parse_executor_map(raw: str) -> dict[str, str]:
