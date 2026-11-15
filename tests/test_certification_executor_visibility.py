@@ -105,7 +105,39 @@ def test_visibility_backend_bound_to_executor(executor, expected_source, monkeyp
 def test_cli_threads_visibility_policy():
     source = Path(cli.__file__).read_text()
     assert "from verdict.orchestration.harness import DEFAULT_REGISTRY" in source
+    assert "visibility_executor=_selector_visibility_executor(args)" in source
+    assert "_selector_visibility_executor" in source
+
+
+def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
+    """Any --executor-map keeps the strict default visibility, matching main.
+
+    On main, ``_selector_visibility_executor`` returned ``prime`` whenever an
+    executor map was present (mixed dispatch), and ``direct-gateway`` only for a
+    pure direct-gateway run.  The registry-backed version must keep that rule:
+    a map forces the default adapter's visibility regardless of the default
+    backend name.
+    """
+    import argparse
+
+    def ns(executor: str, executor_map: str = "") -> argparse.Namespace:
+        return argparse.Namespace(executor=executor, executor_map=executor_map)
+
+    # Pure direct-gateway run -> live-gateway visibility
+    assert cli._selector_visibility_executor(ns("direct-gateway")) == "direct-gateway"
+    # Pure prime / alias runs -> prime-headless visibility
+    assert cli._selector_visibility_executor(ns("prime")) == "prime"
+    assert cli._selector_visibility_executor(ns("prime-headless")) == "prime-headless"
+    # Any executor map -> default adapter visibility (prime-headless)
     assert (
-        'visibility_executor=getattr(args, "executor", DEFAULT_REGISTRY.default_name())' in source
+        cli._selector_visibility_executor(ns("direct-gateway", "node-1=prime-headless"))
+        == "prime-headless"
     )
-    assert "_selector_visibility_executor" not in source
+    assert (
+        cli._selector_visibility_executor(ns("prime-headless", "node-1=direct-gateway"))
+        == "prime-headless"
+    )
+    assert (
+        cli._selector_visibility_executor(ns("prime", "node-1=prime,node-2=direct-gateway"))
+        == "prime-headless"
+    )

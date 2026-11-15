@@ -486,6 +486,23 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
     return result
 
 
+def _selector_visibility_executor(args: argparse.Namespace) -> str:
+    """Map CLI executor selection onto the harness name that owns visibility.
+
+    Historically the ladder's spawn-visibility gate was bound to the *default*
+    worker backend only when no ``--executor-map`` was given: any node mapping
+    meant mixed dispatch and the strict Prime visibility check stayed in force.
+    Preserve that rule on top of the registry: ``direct-gateway`` selects the
+    live-gateway visibility adapter; everything else (including the ``prime``
+    alias and any future harness) uses the default adapter's visibility.
+    """
+    default = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
+    mapping = getattr(args, "executor_map", "") or ""
+    if mapping.strip():
+        return DEFAULT_REGISTRY.default_name()
+    return default
+
+
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
     from verdict.orchestration.executors import FaultInjectingExecutor
 
@@ -771,7 +788,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             prefer=args.prefer,
             load=lambda route: sum(1 for r in inflight.values() if r == route),
             state_file=state_path,
-            visibility_executor=getattr(args, "executor", DEFAULT_REGISTRY.default_name()),
+            visibility_executor=_selector_visibility_executor(args),
             **refresh_kwargs,
             **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
         )
