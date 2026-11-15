@@ -978,3 +978,71 @@ def test_relay_three_free_failures_report_budget_exhaustion(monkeypatch, tmp_pat
     assert terminal["termination_reason"] == "budget_exhausted"
     assert [row["model"] for row in terminal["attempted_routes"]] == list(ids[:3])
     assert not any(row.get("details", {}).get("fallback") for row in events)
+
+
+def test_permitted_metered_sorts_after_capable_free_and_subscription(tmp_path, monkeypatch):
+    """Order a mixed-tier ladder free, then subscription, then metered last."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage
+    from verdict.orchestration.health_cache import ProbeResult
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+
+    free_id, sub_id, paid_id = "freeco/model", "subco/model", "paidco/model"
+    rows = [
+        _ladder_row(free_id, pricing={"input": 1}, tier=2),
+        _ladder_row(sub_id, pricing={"input": 1}, tier=2),
+        _ladder_row(paid_id, pricing={"input": 1}, tier=2),
+    ]
+    conns = [
+        _conn("freeco", auth="apikey", free=True),
+        _conn("subco", auth="oauth"),
+        _conn("paidco", auth="apikey"),
+    ]
+    cache = HealthCache(tmp_path / "health.json")
+    for route in (free_id, sub_id, paid_id):
+        cache.record(
+            route,
+            ProbeResult(
+                category="ok", chat_ok=True, tool_ok=True, agentic_ok=True, probe_class="agentic"
+            ),
+            NOW,
+        )
+    cache.save()
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / "state.json",
+        health_cache=cache,
+        metadata=None,
+    )
+    requirements = TaskRequirements(max_capability_tier=3)
+
+    verdicts = {v.route_id: v for v in ladder.evaluate(requirements, now=NOW)}
+    ranked = sorted((v for v in verdicts.values() if v.rank is not None), key=lambda v: v.rank)
+    assert [v.route_id for v in ranked] == [free_id, sub_id, paid_id]
+    assert [v.capacity_class for v in ranked] == [
+        CapacityClass.FREE,
+        CapacityClass.SUBSCRIPTION,
+        CapacityClass.METERED,
+    ]
+    assert [v.rank_components["capacity_order"] for v in ranked] == [0, 1, 2]
+
+    # A payment-required negative still excludes the metered route outright.
+    # The failure is recorded one second later so it wins the cache's
+    # strictly-newer checked_at merge over the earlier healthy probe.
+    later = NOW + timedelta(seconds=1)
+    cache.record(
+        paid_id,
+        ProbeResult(category="payment_required", chat_ok=False, tool_ok=False, http_status=402),
+        later,
+    )
+    cache.save()
+    excluded = {v.route_id: v for v in ladder.evaluate(requirements, now=later)}
+    paid = excluded[paid_id]
+    assert paid.rank is None
+    assert paid.failed_stage is EligibilityStage.HEALTHY
+    assert paid.reason == "payment_required"
