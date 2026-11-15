@@ -105,5 +105,5 @@ def test_visibility_backend_bound_to_executor(executor, expected_source, monkeyp
 def test_cli_threads_visibility_policy():
     source = Path(cli.__file__).read_text()
     assert "from verdict.orchestration.harness import DEFAULT_REGISTRY" in source
-    assert "visibility_executor=args.executor" in source
+    assert "visibility_executor=getattr(args, \"executor\", DEFAULT_REGISTRY.default_name())" in source
     assert "_selector_visibility_executor" not in source

@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 
-from verdict.orchestration import DEFAULT_REGISTRY, HarnessRegistry
 from verdict.orchestration.contracts import CapacityClass, OrchestrationError, WorkerTerminal
 from verdict.orchestration.executors import (
     DirectGatewayExecutor,
@@ -31,10 +30,12 @@ from verdict.orchestration.executors import (
     ScriptedExecutor,
 )
 from verdict.orchestration.harness import (
+    DEFAULT_REGISTRY,
     CapabilityLevel,
     ExecutionTarget,
     HarnessCapabilities,
     HarnessCapability,
+    HarnessRegistry,
     OmittedCapabilityError,
 )
 

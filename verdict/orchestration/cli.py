@@ -771,7 +771,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             prefer=args.prefer,
             load=lambda route: sum(1 for r in inflight.values() if r == route),
             state_file=state_path,
-            visibility_executor=args.executor,
+            visibility_executor=getattr(args, "executor", DEFAULT_REGISTRY.default_name()),
             **refresh_kwargs,
             **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
         )

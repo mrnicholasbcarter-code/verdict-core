@@ -11,9 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from verdict.orchestration import DEFAULT_REGISTRY
 from verdict.orchestration.contracts import OrchestrationError
-from verdict.orchestration.harness import ExecutionTarget, HarnessCapability, HarnessRegistry
+from verdict.orchestration.harness import (
+    DEFAULT_REGISTRY,
+    ExecutionTarget,
+    HarnessCapability,
+    HarnessRegistry,
+)
 
 HARNESS_MODULE = Path(__file__).resolve().parents[1] / "verdict" / "orchestration" / "harness.py"
 
@@ -106,7 +110,7 @@ def test_harness_registry_is_wired_into_production_callers() -> None:
         text=True,
     ).stdout.split()
     files = {Path(f).name for f in output}
-    assert files == {"cli.py", "eligibility_report.py", "run.py", "__init__.py"}, (
+    assert files == {"cli.py", "eligibility_report.py", "run.py"}, (
         f"unexpected production importers of harness: {files}"
     )
 
