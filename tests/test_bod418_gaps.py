@@ -310,6 +310,73 @@ class TestG4CacheRefresh:
             "acceptance.py must import load_openrouter_free_set to refresh the cache"
         )
 
+    def test_acceptance_refresh_with_margin_prevents_cache_gap(self, tmp_path: Path) -> None:
+        """End-to-end replay of the acceptance refresh cadence gap.
+
+        Simulates:
+        1. Acceptance tick T0 (refresh=True, min_remaining_seconds=7200) -> fetches live
+        2. Acceptance tick T0+6h-1.3s (refresh=True, min_remaining_seconds=7200) -> fetches live (does not return cache)
+        3. Cache-only reader (refresh=False) 30s later -> gets set (no gap)
+        """
+        from datetime import timedelta, timezone
+
+        from verdict.openrouter_free_set import load_openrouter_free_set
+
+        cache_path = tmp_path / "openrouter-free-set.json"
+        fetch_calls: list[dict[str, Any]] = []
+
+        def counting_fetch(url: str, timeout: float) -> dict[str, Any]:
+            fetch_calls.append({"url": url, "timeout": timeout})
+            return {
+                "data": [
+                    {
+                        "id": "poolside/laguna-xs-2.1:free",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "architecture": {"output_modalities": ["text"]},
+                    }
+                ]
+            }
+
+        t0 = datetime(2026, 11, 15, 0, 0, 16, 460000, tzinfo=timezone.utc)
+        ttl = 21600.0
+
+        # Step 1: First acceptance tick at T0 -> fetches live
+        first = load_openrouter_free_set(
+            now=t0,
+            cache_path=cache_path,
+            ttl_seconds=ttl,
+            fetch=counting_fetch,
+            refresh=True,
+            min_remaining_seconds=7200.0,
+        )
+        assert first is not None
+        assert first.source == "live"
+        assert len(fetch_calls) == 1
+
+        # Step 2: Second acceptance tick at T0 + 6h - 1.3s (21598.7s)
+        # With margin 7200s: age (21598.7) + 7200 >= 21600 => refetches live
+        t1 = t0 + timedelta(seconds=21598.7)
+        second = load_openrouter_free_set(
+            now=t1,
+            cache_path=cache_path,
+            ttl_seconds=ttl,
+            fetch=counting_fetch,
+            refresh=True,
+            min_remaining_seconds=7200.0,
+        )
+        assert second is not None
+        assert second.source == "live"
+        assert len(fetch_calls) == 2
+
+        # Step 3: Cache-only reader 30s later (refresh=False) -> gets the freshly written set
+        t2 = t1 + timedelta(seconds=30)
+        reader = load_openrouter_free_set(
+            now=t2, cache_path=cache_path, ttl_seconds=ttl, refresh=False
+        )
+        assert reader is not None
+        assert reader.source == "cache"
+        assert reader.contains("poolside/laguna-xs-2.1:free")
+
 
 # ---------------------------------------------------------------------------
 # G5 / G6: key-limit scoping and stale drop

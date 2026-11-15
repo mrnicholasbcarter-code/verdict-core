@@ -585,8 +585,11 @@ def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
     # eligibility (and every downstream classifier) sees current public 0/0
     # membership instead of a stale cache. Cache-only on failure: never blocks
     # acceptance on a fetch error.
+    # The refresher runs hourly via verdict-acceptance.timer (OnCalendar=hourly),
+    # so we pass a 2-hour refresh margin to prevent the 6-hour TTL from expiring
+    # between hourly ticks.
     with suppress(Exception):
-        load_openrouter_free_set(refresh=True)
+        load_openrouter_free_set(refresh=True, min_remaining_seconds=2 * 3600)
 
     def cli(name: str, args: list[str], timeout: float, judge: Judge) -> Callable[[], Check]:
         return lambda: _cli_check(name, args, timeout, judge, gateway)
