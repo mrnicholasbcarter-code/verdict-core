@@ -386,6 +386,16 @@ def test_no_change_needs_the_exact_shape_and_a_reason(
     assert any(e.startswith("openspec") for e in errors), errors
 
 
+def test_both_no_change_guards_report_together(repo: tuple[Path, dict[str, Any]]) -> None:
+    root, evidence = repo
+    story = _no_change_story(
+        root, evidence, story="bod-7-cleanup", extra="openspec/changes/bod-7-thing/tasks.md"
+    )
+    errors = _check_story(root, story)
+    assert any("merged commit changed" in e for e in errors), errors
+    assert any("named after this story" in e for e in errors), errors
+
+
 def test_the_other_checks_still_run_for_a_no_change_story(
     repo: tuple[Path, dict[str, Any]],
 ) -> None:
