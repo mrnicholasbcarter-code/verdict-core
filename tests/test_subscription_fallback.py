@@ -406,6 +406,78 @@ def test_known_subscription_tokens_always_before_unknown(monkeypatch):
     assert prepared.pool_receipt.shortlist[0].route_id == live.STRONG
 
 
+def _usage_series(route, totals, family="code_edit"):
+    """Distinct accepted attempts with varying token totals for a real median."""
+    from verdict.candidate_pool import OutcomeObservation
+
+    return tuple(
+        OutcomeObservation(
+            route_id=route,
+            task_family=family,
+            success=True,
+            quality_credit=1.0,
+            total_tokens=total,
+            observation_id=f"{route}:{i}",
+        )
+        for i, total in enumerate(totals)
+    )
+
+
+def _subscription_order(tmp_path, monkeypatch, quotas, observations):
+    """Rank subscription routes once, with the given per-provider quota headroom."""
+    _history(monkeypatch, observations)
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
+    conns = []
+    for route in ids:
+        provider = route.split("/", 1)[0]
+        conn = _conn(provider, auth="oauth")
+        conn["quota_percent"] = quotas[provider]
+        conns.append(conn)
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / f"state-{','.join(str(q) for q in quotas.values())}.json",
+        metadata=_snapshot(_record("aaa/low", ids[0], aa_coding=_score(90))),
+    )
+    verdicts = ladder.evaluate(TaskRequirements(), now=NOW)
+    ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+    return [v.route_id for v in ranked], {v.route_id: v for v in verdicts}
+
+
+def test_subscription_order_follows_token_median_not_quota_headroom(tmp_path, monkeypatch):
+    """Measured subscription usage orders routes; remaining quota never does."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    observations = (
+        _usage_series(ids[0], (800, 1000, 1400))  # median 1000
+        + _usage_series(ids[1], (2000, 3000, 4000))  # median 3000
+        + _usage_series(ids[2], (100, 200))  # below the three-sample minimum
+    )
+    # Sparse route gets the most headroom; measured routes get the least.
+    order_a, verdicts_a = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 10.0, "bbb": 20.0, "ccc": 95.0}, observations
+    )
+    assert order_a == [ids[0], ids[1], ids[2]]
+    assert verdicts_a[ids[0]].rank_components["expected_tokens"] == 1000
+    assert verdicts_a[ids[1]].rank_components["expected_tokens"] == 3000
+    assert verdicts_a[ids[2]].rank_components["expected_tokens"] is None
+    # Flip every headroom value; the order and token estimates must not move.
+    order_b, verdicts_b = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 95.0, "bbb": 5.0, "ccc": 50.0}, observations
+    )
+    assert order_b == order_a
+    for route in ids:
+        assert (
+            verdicts_b[route].rank_components["expected_tokens"]
+            == verdicts_a[route].rank_components["expected_tokens"]
+        )
+    assert verdicts_b[ids[0]].rank_components["quota_percent"] == 95.0
+    assert verdicts_b[ids[2]].rank_components["quota_percent"] == 50.0
+
+
 def test_subscription_token_tie_uses_rating(monkeypatch):
     """Use rating to break ties between equal subscription token estimates."""
     service = _service()
