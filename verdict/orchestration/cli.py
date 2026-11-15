@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from verdict.orchestration.contracts import WorkerExecutor
 from verdict.orchestration.eligibility_report import build_selector, prime_visibility_report
+from verdict.orchestration.harness import DEFAULT_REGISTRY
 from verdict.orchestration.runtime import DispatchAuthority, RuntimePolicy
 
 DEFAULT_RUNS = Path(".verdict") / "runs"
@@ -130,9 +131,11 @@ def add_parsers(subparsers: Any) -> None:
     orch.add_argument("--json", action="store_true", help="Print the final receipt JSON")
     orch.add_argument(
         "--executor",
-        choices=("prime", "direct-gateway"),
-        default="prime",
-        help="Worker executor backend (default: prime)",
+        choices=tuple(DEFAULT_REGISTRY.names()),
+        default="prime-headless",
+        help="Worker executor backend (default: prime-headless). Backends are the "
+        "registered HarnessAdapter names; the legacy alias 'prime' resolves to "
+        "prime-headless.",
     )
     orch.add_argument(
         "--planner-executor",
@@ -147,8 +150,9 @@ def add_parsers(subparsers: Any) -> None:
         help=(
             "Route specific nodes to a named executor backend; unmapped nodes use "
             "--executor as the default.  Format: comma-separated node_id=backend pairs "
-            "where backend is one of 'prime' or 'direct-gateway'. "
-            "Example: --executor-map node-1=prime,node-2=direct-gateway. "
+            "where backend is a registered HarnessAdapter name "
+            f"({', '.join(DEFAULT_REGISTRY.names())}). "
+            "Example: --executor-map node-1=prime-headless,node-2=direct-gateway. "
             "When any mapping is provided the run automatically uses MixedExecutor; "
             "--executor sets the fallback for unmapped nodes."
         ),
@@ -443,20 +447,16 @@ def _prime_visibility(args: argparse.Namespace) -> int:
 
 
 def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerExecutor:
-    """Build one named executor backend (prime or direct-gateway)."""
-    from verdict.orchestration.executors import DirectGatewayExecutor, PrimeHeadlessExecutor
-
-    if name == "direct-gateway":
-        return DirectGatewayExecutor(base_url=gateway, api_key=api_key)
-    return PrimeHeadlessExecutor()
+    """Build one named executor backend via the HarnessRegistry."""
+    return DEFAULT_REGISTRY.resolve(name).worker_executor(gateway=gateway, api_key=api_key)
 
 
 def _parse_executor_map(raw: str) -> dict[str, str]:
-    """Parse ``node-1=prime,node-2=direct-gateway`` into a dict.
+    """Parse ``node-1=prime-headless,node-2=direct-gateway`` into a dict.
 
     Raises :class:`SystemExit` with a clear message for unknown backend names.
     """
-    known = {"prime", "direct-gateway"}
+    known = set(DEFAULT_REGISTRY.names())
     result: dict[str, str] = {}
     if not raw.strip():
         return result
@@ -478,14 +478,6 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
             sys.exit("error: --executor-map: node_id must not be empty")
         result[node_id] = backend
     return result
-
-
-def _selector_visibility_executor(args: argparse.Namespace) -> str:
-    default = getattr(args, "executor", "prime")
-    mapping = getattr(args, "executor_map", "")
-    if default == "direct-gateway" and not mapping:
-        return "direct-gateway"
-    return "prime"
 
 
 def _executor(args: argparse.Namespace) -> WorkerExecutor:
@@ -773,7 +765,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             prefer=args.prefer,
             load=lambda route: sum(1 for r in inflight.values() if r == route),
             state_file=state_path,
-            visibility_executor=_selector_visibility_executor(args),
+            visibility_executor=args.executor,
             **refresh_kwargs,
             **({"capacity": args.capacity} if getattr(args, "capacity", ()) else {}),
         )

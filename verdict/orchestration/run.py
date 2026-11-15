@@ -50,6 +50,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
+from verdict.orchestration.harness import DEFAULT_REGISTRY
 from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
 from verdict.orchestration.worker_context import (
     ResearchPack,
@@ -798,20 +799,8 @@ async def run_golden_path(
             pass  # Existing graph validation below fails closed as before.
     # BOD-188: record executor identity for harness-independence proof.
     # Planning can now use a distinct answer-only backend from worker dispatch.
-    _worker_executor_identity = getattr(executor, "__class__", type(executor)).__name__
-    _planner_executor_for_event = planner_executor or executor
-    _planner_executor_identity = getattr(
-        _planner_executor_for_event, "__class__", type(_planner_executor_for_event)
-    ).__name__
-    _executor_labels: dict[str, str] = {
-        "DirectGatewayExecutor": "direct-gateway",
-        "FaultInjectingExecutor": "fault-injecting",
-        "MixedExecutor": "mixed",
-        "PrimeHeadlessExecutor": "prime-headless",
-        "ScriptedExecutor": "scripted",
-    }
-    _worker_backend = _executor_labels.get(_worker_executor_identity, _worker_executor_identity)
-    _planner_backend = _executor_labels.get(_planner_executor_identity, _planner_executor_identity)
+    _worker_backend = DEFAULT_REGISTRY.label_for(executor)
+    _planner_backend = DEFAULT_REGISTRY.label_for(planner_executor or executor)
     # BOD-225: capture once; resumed starts keep the original producer. Legacy
     # runs without producer remain legacy, even after an upgrade of Verdict.
     prior_started = next((e for e in log.read() if e.type == "run_started"), None)

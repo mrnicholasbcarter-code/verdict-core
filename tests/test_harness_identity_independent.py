@@ -13,11 +13,7 @@ import pytest
 
 from verdict.orchestration import DEFAULT_REGISTRY
 from verdict.orchestration.contracts import OrchestrationError
-from verdict.orchestration.harness import (
-    ExecutionTarget,
-    HarnessCapability,
-    HarnessRegistry,
-)
+from verdict.orchestration.harness import ExecutionTarget, HarnessCapability, HarnessRegistry
 
 HARNESS_MODULE = Path(__file__).resolve().parents[1] / "verdict" / "orchestration" / "harness.py"
 
@@ -67,7 +63,9 @@ def test_execution_target_round_trips_all_dimensions() -> None:
         reasoning_effort="high",
         compatibility_profile="prime-0.9.8",
     )
-    restored = ExecutionTarget(**{f.name: getattr(target, f.name) for f in target.__dataclass_fields__.values()})
+    restored = ExecutionTarget(
+        **{f.name: getattr(target, f.name) for f in target.__dataclass_fields__.values()}
+    )
     assert restored == target
     assert restored.harness != restored.provider
     assert restored.provider != restored.model
@@ -85,22 +83,32 @@ def test_registry_lookup_is_by_adapter_name_only() -> None:
         DEFAULT_REGISTRY.resolve("no-such-adapter")
 
 
-def test_no_production_caller_imports_harness_yet() -> None:
-    """S1 adds the module but wires no production caller except __init__.py.
+def test_harness_registry_is_wired_into_production_callers() -> None:
+    """S1 adds the module; S2 wires the single production callers through it.
 
-    S2 is the slice that routes cli.py / build_selector / executors / run.py
-    through DEFAULT_REGISTRY.  Until then this test documents the invariant
-    and fails if someone wires a caller out of order.
+    cli.py (executor construction + visibility), eligibility_report.py
+    (build_selector visibility delegation) and run.py (receipt/executor labels)
+    all resolve adapters via DEFAULT_REGISTRY. executors.py does not import
+    harness -- harness imports executors, not the reverse.
     """
     import subprocess
 
     output = subprocess.run(
-        ["git", "grep", "-l", "from verdict.orchestration.harness import", "--", "verdict/"],
+        [
+            "git",
+            "grep",
+            "-l",
+            "from verdict.orchestration.harness import",
+            "--",
+            "verdict/orchestration/",
+        ],
         capture_output=True,
         text=True,
     ).stdout.split()
     files = {Path(f).name for f in output}
-    assert files == {"__init__.py"}, f"unexpected production importers of harness: {files}"
+    assert files == {"cli.py", "eligibility_report.py", "run.py", "__init__.py"}, (
+        f"unexpected production importers of harness: {files}"
+    )
 
 
 # --------------------------------------------------------------------------- HarnessRegistry contract
@@ -118,6 +126,7 @@ def test_registry_rejects_adapter_without_all_capability_facets() -> None:
                 HarnessCapabilities,
                 HarnessCapability,
             )
+
             return HarnessCapabilities(
                 harness="incomplete",
                 facets={HarnessCapability.WORKER_LAUNCH: CapabilityLevel.SUPPORTED},

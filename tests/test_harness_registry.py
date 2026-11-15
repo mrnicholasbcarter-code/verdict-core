@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -36,7 +35,6 @@ from verdict.orchestration.harness import (
     OmittedCapabilityError,
 )
 
-
 # --------------------------------------------------------------------------- fixtures
 
 
@@ -51,7 +49,7 @@ class _FakeAdapter:
         return HarnessCapabilities(
             harness="fake-missing",
             facets={
-                HarnessCapability.WORKER_LAUNCH: CapabilityLevel.SUPPORTED,
+                HarnessCapability.WORKER_LAUNCH: CapabilityLevel.SUPPORTED
                 # every other facet deliberately omitted
             },
             notes=("incomplete adapter, must be rejected at registration",),
@@ -148,7 +146,7 @@ def test_registered_adapter_must_not_omit_capabilities() -> None:
 def test_direct_gateway_visibility_comes_from_live_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     catalog_rows = [
         {"id": "cc/claude-sonnet-5", "owned_by": "anthropic"},
-        {"id": "auto/reasoning:pro", "owned_by": "combo"},   # opaque, excluded
+        {"id": "auto/reasoning:pro", "owned_by": "combo"},  # opaque, excluded
         {"id": "kg/model", "owned_by": "x"},
     ]
     vis = DEFAULT_REGISTRY.resolve("direct-gateway").harness_visibility(
@@ -197,8 +195,14 @@ def test_execution_target_fields_are_disjoint() -> None:
 
 def test_registry_label_map_covers_production_executors() -> None:
     assert DEFAULT_REGISTRY.label_for(PrimeHeadlessExecutor()) == "prime-headless"
-    assert DEFAULT_REGISTRY.label_for(DirectGatewayExecutor(base_url="http://x", api_key="")) == "direct-gateway"
-    assert DEFAULT_REGISTRY.label_for(FaultInjectingExecutor(PrimeHeadlessExecutor(), {})) == "fault-injecting"
+    assert (
+        DEFAULT_REGISTRY.label_for(DirectGatewayExecutor(base_url="http://x", api_key=""))
+        == "direct-gateway"
+    )
+    assert (
+        DEFAULT_REGISTRY.label_for(FaultInjectingExecutor(PrimeHeadlessExecutor(), {}))
+        == "fault-injecting"
+    )
     assert (
         DEFAULT_REGISTRY.label_for(
             ScriptedExecutor(lambda prompt, route_id, cwd: WorkerTerminal(ok=True, model=""))

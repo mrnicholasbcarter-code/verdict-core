@@ -530,7 +530,7 @@ def test_cli_parser_exposes_planner_executor_role() -> None:
     add_parsers(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["orchestrate", "ship", "--planner-executor", "direct-gateway"])
 
-    assert args.executor == "prime"
+    assert args.executor == "prime-headless"
     assert args.planner_executor == "direct-gateway"
 
 

@@ -27,7 +27,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 
@@ -1816,13 +1816,8 @@ class MixedExecutor:
     Usage (via ``--executor-map``)::
 
         verdict orchestrate "goal" \
-            --executor-map "node-1=prime,node-2=direct-gateway"
+            --executor-map "node-1=prime-headless,node-2=direct-gateway"
     """
-
-    _BACKEND_KINDS: ClassVar[dict[str, str]] = {
-        "prime": "prime-headless",
-        "direct-gateway": "direct-gateway",
-    }
 
     def __init__(self, node_map: dict[str, WorkerExecutor], default: WorkerExecutor) -> None:
         self._map = dict(node_map)

@@ -14,13 +14,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
-from verdict.orchestration.contracts import (
-    CapacityClass,
-    OrchestrationError,
-    WorkerExecutor,
-)
+from verdict.orchestration.contracts import CapacityClass, OrchestrationError, WorkerExecutor
 from verdict.orchestration.eligibility import HarnessVisibility
 
 SCHEMA_VERSION = "verdict.harness/v1"
@@ -60,13 +56,13 @@ class ExecutionTarget:
     launch; they do not rewrite it.
     """
 
-    harness: str                       # adapter name registered in HarnessRegistry
-    transport: str                     # "openai-compat" | "anthropic-messages" | "local" | custom
-    provider: str                      # lower-case OmniRoute provider prefix
-    model: str                         # bare OmniRoute route id, e.g. "cc/claude-sonnet-5"
+    harness: str  # adapter name registered in HarnessRegistry
+    transport: str  # "openai-compat" | "anthropic-messages" | "local" | custom
+    provider: str  # lower-case OmniRoute provider prefix
+    model: str  # bare OmniRoute route id, e.g. "cc/claude-sonnet-5"
     capacity_class: CapacityClass
     reasoning_effort: str | None = None
-    compatibility_profile: str = ""    # e.g. "prime-0.9.8", "claude-messages-1"
+    compatibility_profile: str = ""  # e.g. "prime-0.9.8", "claude-messages-1"
 
 
 @dataclass(frozen=True)
@@ -80,13 +76,15 @@ class HarnessCapabilities:
 class HarnessAdapter(Protocol):
     """Boundary between Verdict's control plane and one coding-agent harness."""
 
-    name: str                          # registry key, e.g. "prime-headless"
+    name: str  # registry key, e.g. "prime-headless"
 
     def capabilities(self) -> HarnessCapabilities: ...
     def worker_executor(self, *, gateway: str, api_key: str) -> WorkerExecutor: ...
-    def harness_visibility(self, *, catalog_rows: Any, sync_visibility: bool) -> HarnessVisibility: ...
-    def label(self) -> str: ...        # receipt/event executor_kind label fallback
-    def not_implemented(self, feature: str) -> None: ...   # raises OrchestrationError
+    def harness_visibility(
+        self, *, catalog_rows: Any, sync_visibility: bool
+    ) -> HarnessVisibility: ...
+    def label(self) -> str: ...  # receipt/event executor_kind label fallback
+    def not_implemented(self, feature: str) -> None: ...  # raises OrchestrationError
 
 
 class HarnessRegistry:
@@ -143,12 +141,6 @@ class HarnessRegistry:
         cls = type(executor)
         if cls in self._executor_labels:
             return self._executor_labels[cls]
-        for adapter in self._adapters.values():
-            if (
-                getattr(adapter, "executor_class", None) is not None
-                and isinstance(executor, adapter.executor_class)
-            ):
-                return adapter.label()
         return getattr(cls, "__name__", str(cls))
 
 
@@ -158,7 +150,6 @@ DEFAULT_REGISTRY = HarnessRegistry()
 class PrimeHeadlessAdapter:
     name = "prime-headless"
     executor_label = "prime-headless"
-    executor_class = None  # type: ignore[assignment]  # wired below after import
 
     def capabilities(self) -> HarnessCapabilities:
         return HarnessCapabilities(
@@ -190,7 +181,9 @@ class PrimeHeadlessAdapter:
     def harness_visibility(self, *, catalog_rows: Any, sync_visibility: bool) -> HarnessVisibility:
         from verdict.orchestration.eligibility_report import prime_visibility
 
-        return prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
+        return cast(
+            HarnessVisibility, prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
+        )
 
     def label(self) -> str:
         return self.executor_label
@@ -202,7 +195,6 @@ class PrimeHeadlessAdapter:
 class DirectGatewayAdapter:
     name = "direct-gateway"
     executor_label = "direct-gateway"
-    executor_class = None  # type: ignore[assignment]  # wired below after import
 
     def capabilities(self) -> HarnessCapabilities:
         return HarnessCapabilities(
@@ -251,9 +243,6 @@ from verdict.orchestration.executors import (  # noqa: E402
     ScriptedExecutor,
 )
 
-PrimeHeadlessAdapter.executor_class = PrimeHeadlessExecutor  # type: ignore[assignment]
-DirectGatewayAdapter.executor_class = DirectGatewayExecutor  # type: ignore[assignment]
-
 DEFAULT_REGISTRY.register(
     PrimeHeadlessAdapter(),
     default=True,
@@ -262,9 +251,7 @@ DEFAULT_REGISTRY.register(
     executor_label="prime-headless",
 )
 DEFAULT_REGISTRY.register(
-    DirectGatewayAdapter(),
-    executor_class=DirectGatewayExecutor,
-    executor_label="direct-gateway",
+    DirectGatewayAdapter(), executor_class=DirectGatewayExecutor, executor_label="direct-gateway"
 )
 # Wrapper labels so run.py's receipt table can be fully delegated to the registry.
 DEFAULT_REGISTRY._executor_labels[FaultInjectingExecutor] = "fault-injecting"
