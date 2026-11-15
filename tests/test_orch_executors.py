@@ -65,6 +65,7 @@ def run(executor: object, prompt: str, cwd: Path, timeout: float = 30.0) -> Work
     terminal = asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
     if isinstance(executor, PrimeHeadlessExecutor):
         assert terminal.executor_kind == "live"
+        assert terminal.harness == "prime-headless"
     return terminal
 
 

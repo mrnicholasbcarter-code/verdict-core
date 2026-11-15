@@ -1,4 +1,4 @@
-"""Offline tests for the generic harness contracts layer (BOD-286 slice S1).
+"""Offline tests for the generic harness contracts layer (BOD-286 slices S1 and S3).
 
 These tests exercise ``verdict/orchestration/harness.py`` with no provider
 calls, no network, and an isolated ``VERDICT_HOME``.  They prove:
@@ -8,11 +8,14 @@ calls, no network, and an isolated ``VERDICT_HOME``.  They prove:
 * PrimeHeadlessExecutor/DirectGatewayExecutor construction is byte-identical
   to before the refactor;
 * capabilities are explicitly enumerated, never inferred;
-* harness identity never implies provider/model identity (architecture test).
+* harness identity never implies provider/model identity (architecture test);
+* a fake (non-Prime) harness registered through the same registry drives a
+  bounded node, proving the registry is not Prime-specific (slice S3).
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -212,3 +215,96 @@ def test_registry_label_map_covers_production_executors() -> None:
     assert DEFAULT_REGISTRY.label_for(MixedExecutor({}, PrimeHeadlessExecutor())) == "mixed"
     # unknown executor falls back to class name, never crashes
     assert DEFAULT_REGISTRY.label_for(object()) == "object"
+
+
+# --------------------------------------------------------------------------- slice S3: a fake (non-Prime) harness through the registry
+
+
+class FakeHarnessAdapter:
+    name = "fake-harness"
+    executor_label = "scripted"
+    executor_class = None
+
+    def capabilities(self) -> HarnessCapabilities:
+        return HarnessCapabilities(
+            harness="fake-harness",
+            facets={
+                HarnessCapability.WORKER_LAUNCH: CapabilityLevel.SUPPORTED,
+                HarnessCapability.INTERACTIVE_ATTACH: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.MODEL_SWITCHING: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.CONTEXT_INJECTION: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.RESUME_CHECKPOINT: CapabilityLevel.NOT_INSTALLED,
+                HarnessCapability.MCP: CapabilityLevel.NOT_INSTALLED,
+                HarnessCapability.HOOKS: CapabilityLevel.NOT_INSTALLED,
+                HarnessCapability.TOOL_INTERCEPTION: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.EVENT_STREAM: CapabilityLevel.NOT_INSTALLED,
+            },
+            notes=("offline proof: no Prime, no gateway, no identity inference",),
+        )
+
+    def worker_executor(self, *, gateway: str, api_key: str):
+        # The delegate is a ScriptedExecutor: it never touches the network and
+        # self-stamps harness="scripted", distinct from any live harness name.
+        return ScriptedExecutor(
+            lambda prompt, route_id, cwd: WorkerTerminal(
+                ok=True,
+                output=f"fake:{route_id}",
+                model=route_id,
+                executor_kind="offline",
+                harness="scripted",
+            )
+        )
+
+    def harness_visibility(self, *, catalog_rows: Any, sync_visibility: bool):
+        from verdict.orchestration.eligibility import HarnessVisibility
+
+        return HarnessVisibility(None, source="none")
+
+    def label(self) -> str:
+        return self.executor_label
+
+    def not_implemented(self, feature: str) -> None:
+        raise OrchestrationError(f"fake-harness does not implement {feature}")
+
+
+def test_fake_harness_adapter_registered_and_resolvable() -> None:
+    # A fresh registry (never DEFAULT_REGISTRY, to avoid polluting production).
+    registry = HarnessRegistry()
+    adapter = FakeHarnessAdapter()
+    registry.register(adapter)
+    assert registry.resolve("fake-harness") is adapter
+    assert "fake-harness" in registry.names()
+    with pytest.raises(OrchestrationError, match="unknown harness adapter"):
+        registry.resolve("bogus")
+
+
+def test_fake_harness_capabilities_explicit() -> None:
+    registry = HarnessRegistry()
+    registry.register(FakeHarnessAdapter())
+    caps = registry.resolve("fake-harness").capabilities()
+    assert caps.harness == "fake-harness"
+    assert set(caps.facets) == set(HarnessCapability)
+    assert caps.facets[HarnessCapability.WORKER_LAUNCH] == CapabilityLevel.SUPPORTED
+    # everything else explicitly unsupported/not-installed, never inferred
+    for cap in (
+        HarnessCapability.INTERACTIVE_ATTACH,
+        HarnessCapability.MODEL_SWITCHING,
+        HarnessCapability.CONTEXT_INJECTION,
+        HarnessCapability.TOOL_INTERCEPTION,
+    ):
+        assert caps.facets[cap] in (CapabilityLevel.UNSUPPORTED, CapabilityLevel.NOT_INSTALLED)
+
+
+def test_fake_harness_adapter_runs_offline_node(tmp_path: Path) -> None:
+    """A non-Prime harness registered through the same registry drives a
+    bounded node; the terminal carries harness="scripted", not prime-headless."""
+    registry = HarnessRegistry()
+    registry.register(FakeHarnessAdapter())
+    executor = registry.resolve("fake-harness").worker_executor(gateway="http://unused", api_key="")
+    terminal = asyncio.run(
+        executor.run("prompt", route_id="fake-cc/claude-sonnet-5", cwd=tmp_path, timeout_seconds=5)
+    )
+    assert terminal.ok
+    assert terminal.model == "fake-cc/claude-sonnet-5"
+    assert terminal.harness == "scripted"
+    assert terminal.executor_kind == "scripted"
