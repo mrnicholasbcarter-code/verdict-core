@@ -34,6 +34,8 @@
   archived (date prefix removed), that starts with that ticket, with or without
   the dash and not followed by another digit, fails the claim. `bod-7` does not
   match `bod-70-...`. A story name with no ticket is matched by its whole name.
+  Story names are lower case by schema; change directory names are compared
+  without regard to case, so `BOD-7-thing` counts.
 - **`--all` is unchanged.** An evidence file with no change names none, so an
   archived change still needs its own evidence file.
 
@@ -50,8 +52,11 @@ Alternatives considered:
 - it fails when the merged commit changed `openspec/changes/...` or
   `openspec/specs/...`;
 - it fails when a change named after the ticket exists (active with and without
-  the dash, bare, and archived), and passes beside another ticket's change;
-- partial, mixed and short-reason objects fail the schema;
+  the dash, bare, upper case, and archived), and passes beside another
+  ticket's change;
+- partial, mixed, short-reason and extra-field objects fail the schema;
+- the product-code rule and the parent-confirmation rule still fail a story
+  that uses the new form;
 - `--all` reports the story DONE and still fails on an unproven archive.
 
 Each guard is checked by a temporary edit that removes it; the matching tests

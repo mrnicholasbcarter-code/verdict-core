@@ -44,9 +44,16 @@ that names it.
 
 #### Scenario: The claim needs its exact form
 - **WHEN** the `openspec` entry is empty, lacks the reason, has a reason under
-  10 characters, uses another status, or mixes a change name with the status
+  10 characters, uses another status, mixes a change name with the status, or
+  carries an extra field
 - **THEN** the check fails on the `openspec` entry
 - **TEST** `tests/test_check_dod.py::test_no_change_needs_the_exact_shape_and_a_reason`
+
+#### Scenario: The other parts still apply
+- **WHEN** a story that states `not_applicable` is a repo-tooling story whose
+  merged commit changed product code, or is confirmed by its own author
+- **THEN** the check fails on that part as it does for any other story
+- **TEST** `tests/test_check_dod.py::test_the_other_checks_still_run_for_a_no_change_story`
 
 #### Scenario: An archived change still needs its own evidence
 - **WHEN** every evidence file is checked, one names no change, and a change

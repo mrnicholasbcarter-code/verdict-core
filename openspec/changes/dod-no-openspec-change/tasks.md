@@ -13,22 +13,22 @@ Owned files: `scripts/check_dod.py`, `proof/dod.schema.json`,
 ## 2. Tests first
 - [x] 2.1 The new tests fail on unchanged `scripts/check_dod.py` and
   `proof/dod.schema.json`. Result on base `8b3b1cf9` with only the tests
-  changed: 10 failed, 45 passed in `tests/test_check_dod.py`. The 10 are every
-  new test except the five `test_no_change_needs_the_exact_shape_and_a_reason`
+  changed: 12 failed, 46 passed in `tests/test_check_dod.py`. The 12 are every
+  new test except the six `test_no_change_needs_the_exact_shape_and_a_reason`
   cases, which pass there as they must: the old schema rejects every object
   without `change`.
 
 ## 3. Implementation
 - [x] 3.1 The schema takes `{"change": ...}` or `{"status": "not_applicable",
   "reason": ...}`, and `scripts/check_dod.py` checks the second form against
-  the merged commit and the change names. After: 55 passed in
-  `tests/test_check_dod.py`; 80 passed with `tests/test_check_openspec_tasks.py`
-  and `tests/test_drill_gates.py` (run before the last two tests were added).
-  Ruff, ruff format and `mypy scripts/check_dod.py` are clean.
+  the merged commit and the change names. After: 58 passed in
+  `tests/test_check_dod.py`; 85 passed with `tests/test_check_openspec_tasks.py`
+  and `tests/test_drill_gates.py`. Ruff, ruff format and
+  `mypy scripts/check_dod.py` are clean.
 - [x] 3.2 Each guard is needed. Temporary edits, each restored afterwards:
-  no merged-commit rule, 2 failed; no name rule, 5 failed; no digit boundary
-  after the ticket number, 1 failed; no checks at all for the new form,
-  7 failed.
+  no merged-commit rule, 2 failed; no name rule, 6 failed; no digit boundary
+  after the ticket number, 1 failed; case-sensitive change names, 1 failed;
+  no checks at all for the new form, 8 failed.
 
 ## 4. Docs
 - [x] 4.1 AGENTS.md "Definition of done" part 5, CONTRIBUTING.md and the

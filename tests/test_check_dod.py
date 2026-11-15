@@ -329,6 +329,7 @@ def test_no_change_claim_fails_when_the_merged_commit_changed_openspec(
         "openspec/changes/bod-7",
         "openspec/changes/bod-7-thing",
         "openspec/changes/bod7-thing",
+        "openspec/changes/BOD-7-thing",
         "openspec/changes/archive/2026-10-20-bod-7-thing",
     ],
 )
@@ -372,6 +373,7 @@ def test_a_story_without_a_ticket_is_matched_by_its_whole_name(
         {"status": "not_applicable", "reason": "short"},
         {"status": "skipped", "reason": NO_CHANGE["reason"]},
         {"change": "gate", **NO_CHANGE},
+        {**NO_CHANGE, "extra": "x"},
     ],
 )
 def test_no_change_needs_the_exact_shape_and_a_reason(
@@ -382,6 +384,16 @@ def test_no_change_needs_the_exact_shape_and_a_reason(
     story["openspec"] = openspec
     errors = _check_story(root, story)
     assert any(e.startswith("openspec") for e in errors), errors
+
+
+def test_the_other_checks_still_run_for_a_no_change_story(
+    repo: tuple[Path, dict[str, Any]],
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence, extra="verdict/thing.py")
+    assert any("changed product code" in e for e in _check_story(root, story))
+    story["parent_confirmation"]["by"] = story["author"]
+    assert any("cannot confirm their own story" in e for e in _check_story(root, story))
 
 
 def test_all_still_flags_an_unproven_archive_beside_a_no_change_story(

@@ -148,8 +148,10 @@ def _no_openspec_change(root: Path, story: str, merged: str, errors: list[str]) 
         )
     ticket = TICKET.match(story)
     # Changes are named "bod-384-..." or "bod384-..."; "bod-3840-..." is another ticket.
+    # Story names are lower case (schema); a change directory may not be.
     owned = re.compile(
-        rf"{ticket.group(1)}-?{ticket.group(2)}(?!\d)" if ticket else rf"{re.escape(story)}(-|$)"
+        rf"{ticket.group(1)}-?{ticket.group(2)}(?!\d)" if ticket else rf"{re.escape(story)}(-|$)",
+        re.IGNORECASE,
     )
     changes = root / "openspec/changes"
     found = [p for p in (*changes.glob("*"), *(root / ARCHIVE_DIR).glob("*")) if p.is_dir()]
