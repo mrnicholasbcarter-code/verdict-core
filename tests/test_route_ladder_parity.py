@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,7 +20,20 @@ from verdict.metadata.records import (
     SoftScores,
 )
 from verdict.metadata.store import MetadataSnapshot
+from verdict.orchestration.contracts import (
+    CapacityClass,
+    EligibilityStage,
+    FailureClassification,
+    NodeKind,
+    RouteVerdict,
+    RunOutcome,
+    TaskRequirements,
+    WorkerTerminal,
+    WorkGraph,
+    WorkNode,
+)
 from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 from verdict.subagent_selection import HealthResult
 
 
@@ -363,3 +378,128 @@ def test_allow_legacy_selector_flag_uses_the_gate_and_never_the_ladder(
     assert capsys.readouterr().out == "legacy/route\n"
     assert len(contexts) == 1
     assert contexts[0][CONTEXT_ALLOW_LEGACY] is True
+
+
+class SimpleClassifier:
+    def classify(self, terminal: WorkerTerminal, *, now: datetime) -> FailureClassification:
+        return FailureClassification("worker_error", "REROUTE", 300, "route", terminal.error[:200])
+
+
+class _FirstRouteSelector:
+    """Fake ModelSelector that returns a known first route."""
+
+    def __init__(self, first_route: str) -> None:
+        self.first_route = first_route
+        self.calls: list[TaskRequirements] = []
+
+    def evaluate(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict, ...]:
+        return self.select(requirements, now=now)[1]
+
+    def select(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        self.calls.append(requirements)
+        provider = self.first_route.split("/", 1)[0]
+        verdict = RouteVerdict(
+            route_id=self.first_route,
+            provider=provider,
+            reached=EligibilityStage.SELECTED,
+            failed_stage=None,
+            reason="ok",
+            capacity_class=CapacityClass.FREE,
+            rank=1,
+        )
+        return verdict, (verdict,)
+
+    def record_success(self, route_id: str, *, now: datetime) -> None:
+        pass
+
+    def record_failure(self, route_id: str, failure: Any, *, now: datetime) -> None:
+        pass
+
+
+class _SuccessExecutor:
+    """Fake executor that always succeeds on the route it is given."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        node_id = prompt.split(":", 1)[0]
+        self.calls.append((node_id, route_id))
+        (cwd / f"{node_id}.txt").write_text(f"{node_id} done by {route_id}\n")
+        return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+
+
+def test_runtime_first_attempt_matches_selector_first_route(
+    live_pool: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A DagRuntime node's first dispatch attempt route_id equals the shared
+    selector's first route for the same evidence."""
+    selector = _FirstRouteSelector("free/weak")
+    executor = _SuccessExecutor()
+    events_rows: list[dict[str, Any]] = []
+
+    class Events:
+        def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+            events_rows.append({"type": type, "node_id": node_id, **data})
+
+    def of(type: str) -> list[dict[str, Any]]:
+        return [r for r in events_rows if r["type"] == type]
+
+    def prompt_for(node: WorkNode, cwd: Path, **kw: Any) -> str:
+        return f"{node.node_id}: {node.objective}"
+
+    node = WorkNode(
+        "a",
+        "do it",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("a.txt",),
+        verification_command=("true",),
+    )
+    graph = WorkGraph("g", (node,))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", *args], cwd=repo_root, check=True)
+    (repo_root / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo_root, check=True)
+
+    runtime = DagRuntime(
+        repo=repo_root,
+        run_dir=run_dir,
+        graph=graph,
+        selector=selector,
+        executor=executor,
+        classifier=SimpleClassifier(),
+        events=Events(),
+        prompt_for=prompt_for,
+        reviewer=None,
+        policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+        now=lambda: datetime.now(timezone.utc),
+    )
+
+    result = asyncio.run(runtime.run())
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+    run = runtime.nodes["a"]
+    assert run.attempt == 1
+    assert run.route_id == "free/weak"
+
+    first_selection = [e for e in of("selection") if e.get("attempt") == 1]
+    assert first_selection
+    assert first_selection[0]["route_id"] == selector.first_route
+
+    assert executor.calls == [("a", "free/weak")]
