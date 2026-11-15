@@ -840,8 +840,12 @@ class EligibilityLadder:
                 return "effort_duplicate"
         # Agentic gate: a FREE route qualifies as an implementation worker
         # only when a FRESH AGENTIC probe PASS is in the health cache.
-        # A single-call PASS alone qualifies for chat/summary (frontier_worthy).
-        if capacity == CapacityClass.FREE and not req.frontier_worthy:
+        # A single-call PASS alone qualifies for chat/summary (frontier_worthy
+        # reasoning-only). Tool-requiring work needs agentic proof even when
+        # frontier_worthy is set.
+        if capacity == CapacityClass.FREE and (
+            not req.frontier_worthy or "tools" in req.required_capabilities
+        ):
             cache = getattr(self, "_health_cache", None)
             if cache is None:
                 return "no_health_cache"
