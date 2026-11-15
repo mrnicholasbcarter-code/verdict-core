@@ -3442,7 +3442,6 @@ def main() -> None:
     parsers_census.register(subparsers)
     parsers_identify.register(subparsers)
     parsers_outcome.register(subparsers)
-    parsers_routing.register(subparsers)
 
     from verdict.commands.dispatch import dispatch
 
