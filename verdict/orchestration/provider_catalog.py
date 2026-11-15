@@ -263,7 +263,13 @@ NOT_FREE_OVERRIDE_TTL_SECONDS: float = 21600.0  # 6 hours
 
 
 def record_not_free_override(
-    state: dict[str, Any], route_id: str, *, pool: str, until_iso: str, reason: str
+    state: dict[str, Any],
+    route_id: str,
+    *,
+    pool: str,
+    until_iso: str,
+    reason: str,
+    include_pool: bool = True,
 ) -> None:
     """Record a not-free override in the ladder state.
 
@@ -275,10 +281,17 @@ def record_not_free_override(
 
         { "route:<route_id>": {"until": "<iso>", "pool": "<pool>", "reason": "..."},
           "pool:<pool>":      {"until": "<iso>", "reason": "..."} }
+
+    ``include_pool=False`` writes only the route-scoped entry.  Use it when
+    the failure is known to be about this one route (for example a paid
+    OpenRouter key-limit 403 on a route outside the public 0/0 set) so the
+    pool entry cannot exclude genuine free siblings.
     """
     overrides = state.setdefault("not_free_overrides", {})
     entry = {"until": until_iso, "reason": reason}
     overrides[f"route:{route_id}"] = {**entry, "pool": pool}
+    if not include_pool:
+        return
     # Pool-level: only extend, never shorten an existing override.
     pool_key = f"pool:{pool}"
     existing = overrides.get(pool_key)
