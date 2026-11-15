@@ -32,11 +32,7 @@ def test_selector_emits_accounting_without_claiming_a_dispatch(tmp_path):
     rows[-1]["capabilities"] = {}
     # frontier_worthy=True with tools needs fresh agentic proof on FREE routes
     # (BOD-299 AC2); seed the health cache so selection reaches ranking.
-    from verdict.orchestration.health_cache import (
-        CATEGORY_OK,
-        HealthCache,
-        ProbeResult,
-    )
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
 
     cache = HealthCache(tmp_path / "health-cache.json")
     for route_id in ("free/good", "free/weak", "free/no-tools"):
