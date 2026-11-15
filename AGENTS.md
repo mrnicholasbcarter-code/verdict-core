@@ -150,6 +150,11 @@ schema [`proof/dod.schema.json`](proof/dod.schema.json)):
    open task unless the pull request has the `wip` label. `scripts/check_dod.py`
    counts them like every other task: until they are ticked the story is not
    done, and archiving its change fails `check_dod.py --all`.
+   A story that changed no behaviour has no OpenSpec change (Workflow, step 1).
+   Its evidence file says `"openspec": {"status": "not_applicable", "reason":
+   "<why>"}`. `check_dod.py` fails that when the merged commit changed anything
+   under `openspec/` or when a change is named after the story's ticket. Never
+   write a change only to have one to name.
 6. **On main.** Exact-head CI green, squash-merged, clean-main verification.
 7. **Confirmed by the parent.** Someone other than the author re-ran an
    acceptance command and recorded the raw output.
