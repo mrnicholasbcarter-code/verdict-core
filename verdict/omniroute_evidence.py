@@ -565,11 +565,11 @@ def parse_omniroute_evidence(
         MappingProxyType(capacities),
         frozenset(inventory),
         MappingProxyType(traffic_by_route),
-        MappingProxyType(capacity_rules),
-        MappingProxyType(
+        route_capacity_evidence=MappingProxyType(capacity_rules),
+        live_candidates=MappingProxyType(
             _live_candidates(candidates["candidates"]) if "candidates" not in errors else {}
         ),
-        tuple(model_cooldowns),
+        model_cooldowns=tuple(model_cooldowns),
     )
 
 

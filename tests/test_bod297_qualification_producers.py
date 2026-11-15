@@ -546,7 +546,7 @@ def test_identify_screen_orders_strongest_task_rating_first(tmp_path: Path) -> N
         clock=lambda: NOW,
     )
     checked = [r["route_id"] for r in report["routes"] if r["turns_sent"]]
-    assert checked == ["p/strong", "q/model"], f"screen order was {checked}"
+    assert checked == ["alias/strong", "q/model"], f"screen order was {checked}"
 
 
 @red("verdict census sends live model requests without an explicit consent flag")
