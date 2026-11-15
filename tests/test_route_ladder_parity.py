@@ -503,3 +503,117 @@ def test_runtime_first_attempt_matches_selector_first_route(
     assert first_selection[0]["route_id"] == selector.first_route
 
     assert executor.calls == [("a", "free/weak")]
+
+
+@pytest.mark.parametrize("surface", ["route", "run", "choose", "orchestrate"])
+def test_legacy_contract_no_silent_fallback_on_missing_supply(
+    surface, live_pool, monkeypatch, tmp_path, capsys, no_gateway_network
+):
+    from verdict.orchestration import run
+
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    monkeypatch.setattr(run, "fetch_inventory", lambda *a, **kw: [])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(f"{surface} fell back to a legacy selector")
+
+    monkeypatch.setattr("verdict.gate.Gate.route", forbidden)
+    monkeypatch.setattr("verdict.gate.Gate.route_with_strategy", forbidden)
+    monkeypatch.setattr("verdict.eligibility.EligibilityGate.evaluate", forbidden)
+    if surface == "orchestrate":
+        # Fail at the real discovery boundary, before any planning/model call.
+        def unavailable(*args, **kwargs):
+            raise OSError("legacy-contract inventory unavailable")
+
+        monkeypatch.setattr(run, "fetch_inventory", unavailable)
+        monkeypatch.setattr(run, "resolve_api_key", lambda: "fixture-key")
+        argv = [surface, "fix code", "--repo", str(tmp_path), "--plain"]
+    elif surface == "choose":
+        argv = [surface, "--task", "fix code", "--json"]
+    else:
+        argv = [surface, "fix code", "--terse"]
+    monkeypatch.setattr("sys.argv", ["verdict", *argv])
+    if surface == "orchestrate":
+        from verdict.orchestration.eligibility_report import GatewayDiscoveryError
+
+        with pytest.raises(GatewayDiscoveryError, match=r"gateway /v1/models failed"):
+            cli.main()
+        return
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "no_eligible_route"
+
+
+@pytest.mark.parametrize("surface", ["route", "run", "serve"])
+def test_legacy_contract_escape_is_request_local_and_durably_logged(
+    surface, monkeypatch, tmp_path, capsys, no_gateway_network
+):
+    import asyncio
+
+    from verdict import api
+    from verdict.execution_path import ExecutionPathError
+    from verdict.gate import Gate
+    from verdict.intelligence import IntelligenceService
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY, LEGACY_NON_AUTHORITY_FLAG
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    path = tmp_path / "legacy-decisions.jsonl"
+    service = IntelligenceService(
+        primary_model="fixture/primary",
+        providers={},
+        profile="production",
+        log_path=str(path),
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        require_execution_path_authority=True,
+    )
+    gate = Gate(providers={}, intelligence_service=service, allow_offline=True)
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", lambda **kw: gate)
+    monkeypatch.setattr(api, "intelligence_instance", service)
+
+    if surface == "serve":
+        with pytest.raises(api.HTTPException, match="missing ExecutionPathDecision"):
+            asyncio.run(api._route_with_intelligence("fix code", "low"))
+        decision = asyncio.run(
+            api._route_with_intelligence("fix code", "low", context={CONTEXT_ALLOW_LEGACY: True})
+        )
+        assert LEGACY_NON_AUTHORITY_FLAG in decision.safety_flags
+        # The next request on the same service must not inherit the escape.
+        with pytest.raises(api.HTTPException, match="missing ExecutionPathDecision"):
+            asyncio.run(api._route_with_intelligence("fix code", "low"))
+    else:
+        command = cli.cmd_route if surface == "route" else cli.cmd_run
+        # Offline catalog mode alone does not bypass authority. Use the action
+        # boundary because the CLI renderer expects a decision on offline runs.
+        from verdict.actions.registry import run_action
+
+        refused = run_action(
+            "route", {"task": "fix code", "gate": gate, "terse": True, "allow_offline": True}
+        )
+        assert not refused.ok
+        assert "missing ExecutionPathDecision" in refused.data["error"]
+        assert not path.exists()
+        with pytest.raises(SystemExit) as exc:
+            command("fix code", "low", terse=True, allow_offline=True, allow_legacy_selector=True)
+        assert exc.value.code == 1  # offline is never execution authority
+        assert json.loads(capsys.readouterr().out)["reason"] == (
+            "offline routing does not execute a provider completion"
+        )
+        refused = run_action(
+            "route", {"task": "fix code", "gate": gate, "terse": True, "allow_offline": True}
+        )
+        assert not refused.ok
+        assert "missing ExecutionPathDecision" in refused.data["error"]
+
+    # Read real JSONL from disk, not a mocked logger or captured context.
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["model_chosen"] == "fixture/primary"
+    assert LEGACY_NON_AUTHORITY_FLAG in records[0]["safety_flags"]
+    assert "bod104_execution_path_authority" not in records[0]["safety_flags"]
+    with pytest.raises(ExecutionPathError, match="missing ExecutionPathDecision"):
+        asyncio.run(service.route("fix code", context={CONTEXT_ALLOW_LEGACY: False}))
