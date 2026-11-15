@@ -122,6 +122,44 @@ def test_choose_and_route_terse_parity(
     assert route_out == chosen_id
 
 
+def test_choose_and_route_json_parity(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """verdict choose --json and verdict route --json name the same first route."""
+    task_text = "fix a failing unit test"
+
+    # Run choose --json
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "choose",
+            "--task",
+            task_text,
+            "--task-class",
+            "implementation",
+            "--requires",
+            "tools,code",
+            "--json",
+        ],
+    )
+    cli.main()
+    choose_out = capsys.readouterr().out
+    choose_payload = json.loads(choose_out)
+    chosen_id = choose_payload["selected"]["route_id"]
+
+    # Run route --json with the same task text
+    monkeypatch.setattr("sys.argv", ["verdict", "route", "--task", task_text, "--json"])
+    cli.main()
+    route_out = capsys.readouterr().out
+    route_payload = json.loads(route_out)
+    route_id = route_payload["selected"]["route_id"]
+
+    assert route_id == chosen_id
+
+
 def test_orchestrate_selector_and_choose_share_first_route(live_pool, monkeypatch, capsys):
     from verdict.orchestration.cli import build_selector
     from verdict.orchestration.contracts import TaskRequirements
