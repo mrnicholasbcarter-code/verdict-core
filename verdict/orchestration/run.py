@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import json
 import os
+import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.availability import opaque_connection_token
-from verdict.context_pack import ContextPlan
+from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassification,
@@ -50,7 +51,12 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
 from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
-from verdict.orchestration.worker_context import WorkerPrompt
+from verdict.orchestration.worker_context import (
+    ResearchPack,
+    WorkerPrompt,
+    project_research_pack,
+    reuse_research_pack,
+)
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalProvider
@@ -1145,14 +1151,71 @@ async def run_golden_path(
             )
             events.emit("executor_map_unmatched", unmatched_keys=unmatched)
 
-    def prompt_for(
+    def _git_head(cwd: Path) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+
+    def hydrate_with_research_pack(
         node: WorkNode,
         cwd: Path,
+        run_dir: Path,
         *,
+        goal: str,
         context_budget_bytes: int = 60_000,
         context_plan: ContextPlan | None = None,
         mandatory_suffix: str = "",
     ) -> WorkerPrompt:
+        """Hydrate a node prompt, reusing a persisted research pack when available.
+
+        On retry/replacement the persisted ResearchPack (same
+        research_pack_id/research_revision) is re-bound with any accumulated
+        failure/review deltas and passed as prepared_context, so the worker
+        does not repeat settled research. A stale or non-fitting pack falls
+        back to building fresh context.
+        """
+        pack_path = run_dir / "context_artifacts" / f"{node.node_id}.json"
+        prepared = None
+        if pack_path.exists():
+            try:
+                research = ResearchPack.from_dict(json.loads(pack_path.read_text()))
+                repo_revision = _git_head(cwd)
+                research = reuse_research_pack(
+                    node,
+                    research,
+                    repo_revision=repo_revision,
+                    source_revisions=dict(research.source_revisions),
+                )
+                prepared = project_research_pack(
+                    research,
+                    max_context_bytes=context_budget_bytes,
+                    context_plan=context_plan,
+                    mandatory_prompt_tokens=estimate_tokens(mandatory_suffix) + 1,
+                )
+            except (ValueError, OSError, json.JSONDecodeError, subprocess.SubprocessError):
+                # Stale pack or unreadable worktree: build fresh context.
+                prepared = None
+        if prepared is not None:
+            try:
+                return hydrate_node_prompt(
+                    node,
+                    repo=cwd,
+                    goal=goal,
+                    max_context_bytes=context_budget_bytes,
+                    max_prompt_bytes=context_budget_bytes,
+                    context_plan=context_plan,
+                    mandatory_suffix=mandatory_suffix,
+                    structured=True,
+                    prepared_context=prepared,
+                )
+            except ValueError:
+                # Prepared context exceeds the budget: build fresh instead.
+                prepared = None
         return hydrate_node_prompt(
             node,
             repo=cwd,
@@ -1162,6 +1225,24 @@ async def run_golden_path(
             context_plan=context_plan,
             mandatory_suffix=mandatory_suffix,
             structured=True,
+        )
+
+    def prompt_for(
+        node: WorkNode,
+        cwd: Path,
+        *,
+        context_budget_bytes: int = 60_000,
+        context_plan: ContextPlan | None = None,
+        mandatory_suffix: str = "",
+    ) -> WorkerPrompt:
+        return hydrate_with_research_pack(
+            node,
+            cwd,
+            run_dir,
+            goal=goal,
+            context_budget_bytes=context_budget_bytes,
+            context_plan=context_plan,
+            mandatory_suffix=mandatory_suffix,
         )
 
     runtime = DagRuntime(

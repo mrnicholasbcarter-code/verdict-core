@@ -406,6 +406,78 @@ def test_known_subscription_tokens_always_before_unknown(monkeypatch):
     assert prepared.pool_receipt.shortlist[0].route_id == live.STRONG
 
 
+def _usage_series(route, totals, family="code_edit"):
+    """Distinct accepted attempts with varying token totals for a real median."""
+    from verdict.candidate_pool import OutcomeObservation
+
+    return tuple(
+        OutcomeObservation(
+            route_id=route,
+            task_family=family,
+            success=True,
+            quality_credit=1.0,
+            total_tokens=total,
+            observation_id=f"{route}:{i}",
+        )
+        for i, total in enumerate(totals)
+    )
+
+
+def _subscription_order(tmp_path, monkeypatch, quotas, observations):
+    """Rank subscription routes once, with the given per-provider quota headroom."""
+    _history(monkeypatch, observations)
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
+    conns = []
+    for route in ids:
+        provider = route.split("/", 1)[0]
+        conn = _conn(provider, auth="oauth")
+        conn["quota_percent"] = quotas[provider]
+        conns.append(conn)
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / f"state-{','.join(str(q) for q in quotas.values())}.json",
+        metadata=_snapshot(_record("aaa/low", ids[0], aa_coding=_score(90))),
+    )
+    verdicts = ladder.evaluate(TaskRequirements(), now=NOW)
+    ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+    return [v.route_id for v in ranked], {v.route_id: v for v in verdicts}
+
+
+def test_subscription_order_follows_token_median_not_quota_headroom(tmp_path, monkeypatch):
+    """Measured subscription usage orders routes; remaining quota never does."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    observations = (
+        _usage_series(ids[0], (800, 1000, 1400))  # median 1000
+        + _usage_series(ids[1], (2000, 3000, 4000))  # median 3000
+        + _usage_series(ids[2], (100, 200))  # below the three-sample minimum
+    )
+    # Sparse route gets the most headroom; measured routes get the least.
+    order_a, verdicts_a = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 10.0, "bbb": 20.0, "ccc": 95.0}, observations
+    )
+    assert order_a == [ids[0], ids[1], ids[2]]
+    assert verdicts_a[ids[0]].rank_components["expected_tokens"] == 1000
+    assert verdicts_a[ids[1]].rank_components["expected_tokens"] == 3000
+    assert verdicts_a[ids[2]].rank_components["expected_tokens"] is None
+    # Flip every headroom value; the order and token estimates must not move.
+    order_b, verdicts_b = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 95.0, "bbb": 5.0, "ccc": 50.0}, observations
+    )
+    assert order_b == order_a
+    for route in ids:
+        assert (
+            verdicts_b[route].rank_components["expected_tokens"]
+            == verdicts_a[route].rank_components["expected_tokens"]
+        )
+    assert verdicts_b[ids[0]].rank_components["quota_percent"] == 95.0
+    assert verdicts_b[ids[2]].rank_components["quota_percent"] == 50.0
+
+
 def test_subscription_token_tie_uses_rating(monkeypatch):
     """Use rating to break ties between equal subscription token estimates."""
     service = _service()
@@ -906,3 +978,71 @@ def test_relay_three_free_failures_report_budget_exhaustion(monkeypatch, tmp_pat
     assert terminal["termination_reason"] == "budget_exhausted"
     assert [row["model"] for row in terminal["attempted_routes"]] == list(ids[:3])
     assert not any(row.get("details", {}).get("fallback") for row in events)
+
+
+def test_permitted_metered_sorts_after_capable_free_and_subscription(tmp_path, monkeypatch):
+    """Order a mixed-tier ladder free, then subscription, then metered last."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage
+    from verdict.orchestration.health_cache import ProbeResult
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+
+    free_id, sub_id, paid_id = "freeco/model", "subco/model", "paidco/model"
+    rows = [
+        _ladder_row(free_id, pricing={"input": 1}, tier=2),
+        _ladder_row(sub_id, pricing={"input": 1}, tier=2),
+        _ladder_row(paid_id, pricing={"input": 1}, tier=2),
+    ]
+    conns = [
+        _conn("freeco", auth="apikey", free=True),
+        _conn("subco", auth="oauth"),
+        _conn("paidco", auth="apikey"),
+    ]
+    cache = HealthCache(tmp_path / "health.json")
+    for route in (free_id, sub_id, paid_id):
+        cache.record(
+            route,
+            ProbeResult(
+                category="ok", chat_ok=True, tool_ok=True, agentic_ok=True, probe_class="agentic"
+            ),
+            NOW,
+        )
+    cache.save()
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / "state.json",
+        health_cache=cache,
+        metadata=None,
+    )
+    requirements = TaskRequirements(max_capability_tier=3)
+
+    verdicts = {v.route_id: v for v in ladder.evaluate(requirements, now=NOW)}
+    ranked = sorted((v for v in verdicts.values() if v.rank is not None), key=lambda v: v.rank)
+    assert [v.route_id for v in ranked] == [free_id, sub_id, paid_id]
+    assert [v.capacity_class for v in ranked] == [
+        CapacityClass.FREE,
+        CapacityClass.SUBSCRIPTION,
+        CapacityClass.METERED,
+    ]
+    assert [v.rank_components["capacity_order"] for v in ranked] == [0, 1, 2]
+
+    # A payment-required negative still excludes the metered route outright.
+    # The failure is recorded one second later so it wins the cache's
+    # strictly-newer checked_at merge over the earlier healthy probe.
+    later = NOW + timedelta(seconds=1)
+    cache.record(
+        paid_id,
+        ProbeResult(category="payment_required", chat_ok=False, tool_ok=False, http_status=402),
+        later,
+    )
+    cache.save()
+    excluded = {v.route_id: v for v in ladder.evaluate(requirements, now=later)}
+    paid = excluded[paid_id]
+    assert paid.rank is None
+    assert paid.failed_stage is EligibilityStage.HEALTHY
+    assert paid.reason == "payment_required"
