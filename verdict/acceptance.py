@@ -91,19 +91,56 @@ def run_cli(
 
 Judge = Callable[[int, str, str], tuple[bool, str, dict[str, Any]]]
 
+#: Failure signatures that mean "the gateway was momentarily unreachable or
+#: busy", not "the route/selection is wrong". A check that fails with one of
+#: these is retried once; the retry's result decides the check.
+_TRANSIENT_GATEWAY_MARKERS = (
+    "connection error",
+    "timed out",
+    "gateway_discovery_failed",
+    "catalog_build_timeout",
+    "service_unavailable",
+)
+
+
+def _is_transient_gateway_failure(check: Check, raw_output: str = "") -> bool:
+    """True when a failed check smells like a transient gateway outage."""
+    if check.passed:
+        return False
+    haystack = " ".join(
+        part
+        for part in (
+            check.reason,
+            str(check.detail.get("stderr_tail") or ""),
+            str(check.detail.get("error") or ""),
+            raw_output,
+        )
+        if part
+    ).lower()
+    return any(marker in haystack for marker in _TRANSIENT_GATEWAY_MARKERS)
+
 
 def gateway_env(gateway: str) -> dict[str, str]:
     """Every check runs against the one gateway this job measures."""
     return {**os.environ, "OMNIROUTE_BASE_URL": gateway}
 
 
-def _cli_check(name: str, args: list[str], timeout: float, judge: Judge, gateway: str) -> Check:
+def _cli_check(
+    name: str,
+    args: list[str],
+    timeout: float,
+    judge: Judge,
+    gateway: str,
+    *,
+    _run_cli: Callable[..., tuple[int, str, str]] | None = None,
+) -> Check:
+    _run = _run_cli or run_cli
     started = time.monotonic()
-    code, out, err = run_cli(args, timeout, gateway_env(gateway))
+    code, out, err = _run(args, timeout, gateway_env(gateway))
     passed, reason, detail = judge(code, out, err)
     if not passed and err.strip():
         detail.setdefault("stderr_tail", _tail(err))
-    return Check(
+    check = Check(
         name,
         ["verdict", *args],
         passed,
@@ -114,6 +151,43 @@ def _cli_check(name: str, args: list[str], timeout: float, judge: Judge, gateway
         stderr_sha256=_digest(err),
         detail=detail,
     )
+    if _is_transient_gateway_failure(check, raw_output=out + " " + err):
+        # The gateway intermittently stalls /v1/models rebuilds and other
+        # Retry the whole command once before recording a failure; a flaky
+        # gateway must not turn an hourly acceptance run red by itself.
+        first = {
+            "attempt": 1,
+            "exit_code": check.exit_code,
+            "reason": check.reason,
+            "stdout_sha256": check.stdout_sha256,
+            "stderr_sha256": check.stderr_sha256,
+        }
+        retry_started = time.monotonic()
+        code2, out2, err2 = _run(args, timeout, gateway_env(gateway))
+        passed2, reason2, detail2 = judge(code2, out2, err2)
+        if not passed2 and err2.strip():
+            detail2.setdefault("stderr_tail", _tail(err2))
+        check.passed = passed2
+        check.reason = reason2
+        check.exit_code = code2
+        check.seconds = round(time.monotonic() - started, 1)
+        check.stdout_sha256 = _digest(out2)
+        check.stderr_sha256 = _digest(err2)
+        check.detail = detail2
+        check.detail["attempts"] = [
+            first,
+            {
+                "attempt": 2,
+                "exit_code": code2,
+                "reason": reason2,
+                "stdout_sha256": check.stdout_sha256,
+                "stderr_sha256": check.stderr_sha256,
+                "seconds": round(time.monotonic() - retry_started, 1),
+            },
+        ]
+        if check.passed:
+            check.reason = f"{reason2} (retry after transient gateway failure)"
+    return check
 
 
 def _json(out: str) -> Any:
@@ -356,18 +430,61 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
     if code != 0 or not isinstance(verdicts, list):
         check.reason = f"eligibility failed (exit {code})"
         check.detail = {"stderr_tail": _tail(err)}
-    else:
-        listed = free_eligible(verdicts)
+        if _is_transient_gateway_failure(check, raw_output=out + " " + err):
+            # Same retry policy as _cli_check: a stalled gateway catalog build
+            # must not turn the hourly run red by itself.
+            first = {
+                "attempt": 1,
+                "exit_code": code,
+                "reason": check.reason,
+                "stdout_sha256": check.stdout_sha256,
+                "stderr_sha256": check.stderr_sha256,
+            }
+            code, out, err = run_cli(args, 900, gateway_env(gateway))
+            check.exit_code = code
+            check.stdout_sha256 = _digest(out)
+            check.stderr_sha256 = _digest(err)
+            payload = _json(out)
+            verdicts = payload.get("verdicts") if isinstance(payload, dict) else None
+            second_reason = f"eligibility failed (exit {code})"
+            if code == 0 and isinstance(verdicts, list):
+                check.passed = True
+                check.reason = "eligibility retried after transient gateway failure"
+            else:
+                check.reason = second_reason
+                check.detail = {"stderr_tail": _tail(err)}
+            check.detail["attempts"] = [
+                first,
+                {
+                    "attempt": 2,
+                    "exit_code": code,
+                    "reason": check.reason,
+                    "stdout_sha256": check.stdout_sha256,
+                    "stderr_sha256": check.stderr_sha256,
+                },
+            ]
+            if check.passed:
+                # Fall through to the normal measurement path below with the
+                # retried payload.
+                pass
+            else:
+                check.seconds = round(time.monotonic() - started, 1)
+                return check
+    if check.passed or isinstance(verdicts, list):
+        listed = free_eligible(verdicts or [])
         unproven = sorted(
             str(v["route_id"])
             for v in listed
             if not (v.get("agentic_capability") or {}).get("qualified")
         )
+        attempts = check.detail.pop("attempts", None)
         check.detail = {
-            "summary": payload.get("summary"),
+            "summary": payload.get("summary") if isinstance(payload, dict) else None,
             "eligible_free": len(listed),
             "listed_without_agentic_proof": unproven,
         }
+        if attempts:
+            check.detail["attempts"] = attempts
         try:
             synced = gateway_get(gateway, api_key, "/api/synced-available-models")
             providers = gateway_get(gateway, api_key, "/api/providers")
@@ -393,7 +510,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
             # Runs even with nothing listed: the sample shows what Verdict misses.
             quality = measure(
                 listed,
-                verdicts,
+                verdicts or [],
                 synced=synced if isinstance(synced, dict) else {},
                 catalog=catalog if isinstance(catalog, dict) else None,
                 cooling=cooling,
