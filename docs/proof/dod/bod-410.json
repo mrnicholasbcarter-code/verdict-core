@@ -63,12 +63,12 @@
   "change": "identify-maintenance"
  },
  "parent_confirmation": {
-  "by": "pending",
-  "at": "2026-11-13T06:53:31Z",
+  "by": "operator session 20261112_160311_8b80fd",
+  "at": "2026-11-15T04:14:44Z",
   "command": "verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 2 --max-routes 20 --json",
   "raw_output": {
-   "path": "docs/proof/dod/bod-410/identify_screen_after.json",
-   "sha256": "d83231c4d327f489945bc459519fb22b171ef32f40939358ec8002cba1315408"
+   "path": "docs/proof/dod/bod-410/identify_screen_confirm.json",
+   "sha256": "5112b6527799bd20f67286161972532b9dff814827834c2032fa78db058d4232"
   }
  }
 }
