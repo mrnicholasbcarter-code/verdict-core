@@ -140,6 +140,102 @@ class TestG1PoolNotCooledByPaidKeyLimit:
             if v.route_id in (FREE_A, FREE_B):
                 assert v.reason != "cooldown:provider", (v.route_id, v.reason)
 
+    def test_paid_key_limit_403_writes_no_pool_not_free_override(self, tmp_path: Path) -> None:
+        """BOD-418 review: a paid OpenRouter key-limit 403 must not write a
+        ``pool:`` not-free override that would exclude free siblings."""
+        results = _probe_with(paid_403=True)
+
+        def probe(route_id: str) -> HealthResult:
+            return results[route_id]
+
+        ladder = EligibilityLadder(
+            [_row(PAID), _row(FREE_A), _row(FREE_B)],
+            [_conn()],
+            probe,
+            tmp_path / "state.json",
+            openrouter_free_set=_free_set(),
+        )
+        ladder.select(REQ, now=NOW)
+
+        state = json.loads((tmp_path / "state.json").read_text())
+        overrides = state.get("not_free_overrides", {})
+        # Paid key-limit 403 is permission category — not a not-free signal —
+        # so no override is written at all. The route-scoped cooldown is the
+        # only record, and it must not touch the free pool.
+        assert "pool:openrouter-free" not in overrides, overrides.keys()
+        assert "pool:openrouter" not in overrides, overrides.keys()
+        # Free siblings remain selectable: no pool/provider cooldown and no
+        # pool-level not-free override.
+        for v in ladder.select(REQ, now=NOW)[1]:
+            if v.route_id in (FREE_A, FREE_B):
+                assert v.reason != "cooldown:provider", (v.route_id, v.reason)
+
+    def test_payment_required_paid_free_suffix_route_writes_route_only_override(
+        self, tmp_path: Path
+    ) -> None:
+        """A paid OpenRouter route whose id ends in ``:free`` maps to the shared
+        ``openrouter-free`` pool via ``backend_pool``. A real not-free signal on
+        it must write only the route override — never ``pool:openrouter-free`` —
+        so genuine free siblings are not excluded."""
+        paid_free_suffix = "openrouter/some-paid-model:free"
+        results = {
+            paid_free_suffix: HealthResult(
+                healthy=False,
+                category="payment_required",
+                status_code=402,
+                error_message=f"[{paid_free_suffix}] [402]: insufficient credits",
+            ),
+            FREE_A: HealthResult(healthy=False, category="timeout", status_code=None),
+            FREE_B: HealthResult(healthy=False, category="timeout", status_code=None),
+        }
+
+        def probe(route_id: str) -> HealthResult:
+            return results[route_id]
+
+        ladder = EligibilityLadder(
+            [_row(paid_free_suffix), _row(FREE_A), _row(FREE_B)],
+            [_conn()],
+            probe,
+            tmp_path / "state.json",
+            openrouter_free_set=_free_set(),
+        )
+        ladder.select(REQ, now=NOW)
+
+        state = json.loads((tmp_path / "state.json").read_text())
+        overrides = state.get("not_free_overrides", {})
+        assert f"route:{paid_free_suffix}" in overrides, overrides.keys()
+        assert "pool:openrouter-free" not in overrides, overrides.keys()
+
+    def test_confirmed_free_payment_required_keeps_pool_override(self, tmp_path: Path) -> None:
+        """Account-level fail-closed: a real not-free signal (payment_required)
+        on a route inside the public 0/0 set still records route+pool override."""
+        results = {
+            FREE_A: HealthResult(
+                healthy=False,
+                category="payment_required",
+                status_code=402,
+                error_message=f"[{FREE_A}] [402]: insufficient credits",
+            ),
+            FREE_B: HealthResult(healthy=False, category="timeout", status_code=None),
+        }
+
+        def probe(route_id: str) -> HealthResult:
+            return results[route_id]
+
+        ladder = EligibilityLadder(
+            [_row(FREE_A), _row(FREE_B)],
+            [_conn()],
+            probe,
+            tmp_path / "state.json",
+            openrouter_free_set=_free_set(),
+        )
+        ladder.select(REQ, now=NOW)
+
+        state = json.loads((tmp_path / "state.json").read_text())
+        overrides = state.get("not_free_overrides", {})
+        assert f"route:{FREE_A}" in overrides, overrides.keys()
+        assert "pool:openrouter-free" in overrides, overrides.keys()
+
 
 # ---------------------------------------------------------------------------
 # G2: free-set injection into evidence classifiers
