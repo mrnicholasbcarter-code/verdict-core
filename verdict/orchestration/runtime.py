@@ -31,7 +31,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.models import AdmissionProof
@@ -472,6 +472,9 @@ class DagRuntime:
         self._base_sha = ""
         self._integration = run_dir / "worktrees" / "_integration"
         self._capacity: dict[str, str] = {}
+        # Session ledger writes are advisory: the first failure latches this
+        # guard so a broken ledger fails open once and never fails the run.
+        self._session_evidence_error: str | None = None
         # Controls -------------------------------------------------------
         self._controls = ControlReader(run_dir)
         self._cancel_requested = False
@@ -1772,6 +1775,7 @@ class DagRuntime:
                 )
                 self._persist_research_pack(node, hydrated, base, evidence)
                 self._set(run, NodeState.VALIDATED, commit=run.commit)
+                self._record_session_outcome(run, terminal, outcome="pass")
                 return True
             finally:
                 if worktree.exists():
@@ -2082,6 +2086,83 @@ class DagRuntime:
             }
         )
 
+    def _session_failure_class(self, failure: FailureClassification) -> str:
+        """Map an orchestration failure category onto SessionLedger's fixed classes.
+
+        SessionLedger admits only ``gave_up``, ``narrates_tool_calls``,
+        ``false_success_claim``, ``transport_error``, ``timeout`` and
+        ``wrong_result``. Availability/transport categories collapse onto
+        ``transport_error``; verification and ownership failures are wrong
+        results; everything else is ``wrong_result``.
+        """
+        category = failure.category
+        if category == "timeout":
+            return "timeout"
+        if category in {
+            "rate_limited",
+            "quota_exhausted",
+            "payment_required",
+            "authentication",
+            "permission",
+            "unsupported",
+            "model_unavailable",
+            "gone",
+            "bad_request",
+            "upstream_temporary",
+            "gateway_busy",
+            "transport_temporary",
+            "no_final_answer",
+            "empty_output",
+            "malformed_response",
+            "model_mismatch",
+            "unknown",
+        }:
+            return "transport_error"
+        # verification_failed, ownership_violation, worker_blocked,
+        # harness_configuration, ownership_refused and anything unmapped are
+        # task-level wrong results, not transport faults.
+        return "wrong_result"
+
+    def _record_session_outcome(
+        self, run: NodeRun, terminal: WorkerTerminal, *, outcome: Literal["pass", "fail"]
+    ) -> None:
+        """Append this attempt's verified outcome to the SessionLedger.
+
+        Only model attempts on real routes are recorded; mechanical integrate
+        and review nodes carry no route and are skipped. The ledger write is
+        advisory: an unreadable or failing ledger must never fail the run, so
+        every error path returns silently after the first failure.
+        """
+        if self._session_evidence_error is not None:
+            return
+        route_id = run.route_id
+        if not route_id or route_id.startswith("local/"):
+            return
+        if terminal.executor_kind == "fault-injected":
+            return
+        try:
+            from verdict.orchestration.session_evidence import SessionLedger, SessionOutcome
+
+            failure_class = (
+                None
+                if outcome == "pass"
+                else self._session_failure_class(self.classifier.classify(terminal, now=self.now()))
+            )
+            item = SessionOutcome(
+                route_id=route_id,
+                outcome=outcome,
+                kind="real_task",
+                failure_class=failure_class,
+                verified_by_controller=True,
+                at=self.now(),
+                source="verdict.orchestration.receipt",
+                child_id=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
+            )
+            SessionLedger().append(item)
+        except Exception:
+            self._session_evidence_error = "unreadable"
+            return
+
     async def _fail(
         self,
         run: NodeRun,
@@ -2093,6 +2174,10 @@ class DagRuntime:
     ) -> bool:
         try:
             self._record_failure(run, terminal, failures, validated=validated)
+            # A validated=True _fail is a checker/verification failure: the
+            # worker's terminal was accepted but independent checks rejected it.
+            # That is a verified fail for session evidence, never a pass.
+            self._record_session_outcome(run, terminal, outcome="fail")
             permit = run.permit
             if permit is not None and failures[-1].category in _REVOKING_CATEGORIES:
                 event_id = f"{self.run_dir.name}:{permit.permit_id}:{failures[-1].category}"
