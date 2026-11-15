@@ -588,6 +588,10 @@
     "reason": "UNTRIAGED: register has no resolved reference; OpenSpec lifecycle CLI commands (verdict/commands/parsers_openspec.py)."
   },
   {
+    "qualified_name": "verdict.commands.parsers_routing.register",
+    "reason": "KEEP: argparse registrar for the routing command family, called from verdict/cli.py main() registrar loop (verdict/cli.py, parsers_routing in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop. Same precedent as parsers_harness/parsers_models/parsers_runtime."
+  },
+  {
     "qualified_name": "verdict.commands.parsers_runtime.register",
     "reason": "KEEP: argparse registrar for the runtime command family, called from verdict/cli.py main() registrar loop (verdict/cli.py:3282-3293, parsers_runtime in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop."
   },
