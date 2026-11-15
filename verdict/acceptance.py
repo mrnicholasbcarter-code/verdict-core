@@ -449,16 +449,18 @@ def eligibility_check(
             }
             code, out, err = _run(args, 900, gateway_env(gateway))
             check.exit_code = code
+            check.seconds = round(time.monotonic() - started, 1)
             check.stdout_sha256 = _digest(out)
             check.stderr_sha256 = _digest(err)
             payload = _json(out)
             verdicts = payload.get("verdicts") if isinstance(payload, dict) else None
-            second_reason = f"eligibility failed (exit {code})"
             if code == 0 and isinstance(verdicts, list):
                 check.passed = True
                 check.reason = "eligibility retried after transient gateway failure"
+                check.detail = {}
             else:
-                check.reason = second_reason
+                check.passed = False
+                check.reason = f"eligibility failed (exit {code})"
                 check.detail = {"stderr_tail": _tail(err)}
             check.detail["attempts"] = [
                 first,
@@ -470,12 +472,7 @@ def eligibility_check(
                     "stderr_sha256": check.stderr_sha256,
                 },
             ]
-            if check.passed:
-                # Fall through to the normal measurement path below with the
-                # retried payload.
-                pass
-            else:
-                check.seconds = round(time.monotonic() - started, 1)
+            if not check.passed:
                 return check
     if check.passed or isinstance(verdicts, list):
         listed = free_eligible(verdicts or [])

@@ -1002,3 +1002,21 @@ def test_eligibility_check_retries_on_transient_gateway_failure(live: Path) -> N
     assert check.detail["attempts"][1]["attempt"] == 2
     # The retried payload still feeds the independent measurement path.
     assert check.detail["eligible_free"] == 1
+
+
+def test_eligibility_check_retry_both_fail_records_second_attempt() -> None:
+    """When both eligibility attempts fail, the check records both and stays failed."""
+    calls: list[list[str]] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(list(args))
+        return (1, json.dumps({"error": "gateway /v1/models failed (connection error)"}), "")
+
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=fake_cli)
+    assert len(calls) == 2
+    assert check.passed is False
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+    assert "stderr_tail" in check.detail
