@@ -397,11 +397,11 @@
   },
   {
     "qualified_name": "verdict.orchestration.provider_catalog.is_not_free_overridden",
-    "reason": "UNTRIAGED: is_not_free_overridden has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+    "reason": "KEEP: check-side of the not-free override pair (record_not_free_override); BOD-418 gates its pool write via include_pool. No production caller yet \u2014 the FREE-tier ranking consumer from design \u00a7B item 3 was never wired; retained as the module's public contract and exercised by tests/test_catalog_truth.py."
   },
   {
     "qualified_name": "verdict.orchestration.provider_catalog.routes_share_pool",
-    "reason": "UNTRIAGED: routes_share_pool has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+    "reason": "KEEP: public pool-identity helper documented for review/claims independence checks; production callers were planned but not wired. Exercised by tests/test_catalog_truth.py; retained as provider_catalog's public API alongside backend_pool/pool_aware_families."
   },
   {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
