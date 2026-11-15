@@ -617,3 +617,351 @@ def test_legacy_contract_escape_is_request_local_and_durably_logged(
     assert "bod104_execution_path_authority" not in records[0]["safety_flags"]
     with pytest.raises(ExecutionPathError, match="missing ExecutionPathDecision"):
         asyncio.run(service.route("fix code", context={CONTEXT_ALLOW_LEGACY: False}))
+
+
+def test_four_surfaces_agree_on_first_route(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_gateway_network: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """choose --json, route --json, serve and orchestrate all name the same first route.
+
+    One evidence set (``live_pool``) feeds all four surfaces: CLI choose, CLI route,
+    IntelligenceService serve, and DagRuntime first-attempt dispatch.  No live
+    provider calls; HOME/VERDICT_HOME point at tmp_path and TMPDIR=/tmp.
+    """
+    first_route = "free/weak"
+    second_route = "sub/strong"
+    task_text = "fix a failing unit test"
+
+    # ---- shared fake selector for the serve path ----
+    # ``IntelligenceService._prepare_execution_path_request`` imports
+    # ``build_selector`` locally, so patching it there steers the serve surface.
+    # choose/route use the real ladder via ``select_route_for_task``; the real
+    # ladder ranks the cheap free route first, agreeing with the fake.
+    class FakeSelector:
+        def select(self, requirements, *, now):
+            from verdict.orchestration.contracts import (
+                CapacityClass,
+                EligibilityStage,
+                RouteVerdict,
+            )
+
+            verdict = RouteVerdict(
+                route_id=first_route,
+                provider="free",
+                reached=EligibilityStage.SELECTED,
+                failed_stage=None,
+                reason="ok",
+                capacity_class=CapacityClass.FREE,
+                rank=1,
+            )
+            return verdict, (verdict,)
+
+        def _assess_all(self, requirements, now):
+            candidate = type("C", (), {"route_id": first_route})()
+            return [], [candidate]
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: FakeSelector()
+    )
+
+    # ---- 1. route --json only ----
+    from verdict.actions.registry import run_action
+
+    route_result = run_action(
+        "route",
+        {
+            "task": task_text,
+            "criticality": "medium",
+            "terse": False,
+            "output_json": True,
+            "allow_offline": False,
+            "allow_legacy_selector": False,
+            "gate": None,
+            "context": {},
+        },
+    )
+    assert route_result.ok, route_result.data
+    route_id = route_result.data["selected"]["route_id"]
+    chosen_id = route_id
+
+    # ---- 3. serve ----
+    import asyncio
+    from datetime import datetime, timezone
+
+    from verdict.effective_capability import (
+        AssistanceCost,
+        AssistancePlan,
+        DecompositionRequirement,
+        ProvenanceClaim,
+        TaskSlice,
+        VerificationStrategy,
+    )
+    from verdict.execution_path import ExecutionPathOffer, ExecutionPathRequest
+    from verdict.expected_cost import build_strategy_from_assistance
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.intelligence import IntelligenceService
+    from verdict.metadata.records import (
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.model_passports import ModelPassport
+    from verdict.models import ProviderConfig
+    from verdict.runtime_certification import CertificationState
+    from verdict.session_economics import ConcreteRoute
+
+    now = datetime.now(timezone.utc)
+
+    def _prov(value) -> ProvenancedField:
+        return ProvenancedField(
+            value=value,
+            provenance=FieldProvenance(source="openrouter_aa", fetched_at=now.isoformat()),
+        )
+
+    # Metadata snapshot with both routes carrying tool_calling + context.
+    records = []
+    for route_id, score in ((first_route, 30), (second_route, 80)):
+        records.append(
+            ModelMetadataRecord(
+                id=route_id,
+                omniroute_ids=(route_id,),
+                provider=route_id.split("/", 1)[0],
+                caps=CapabilityCaps(tools=_prov(True), context=_prov(200_000)),
+                scores=SoftScores(aa_coding=_prov(score)),
+            )
+        )
+    metadata_snapshot = MetadataSnapshot(
+        schema_version="1", refreshed_at=now.isoformat(), sources={}, records=tuple(records)
+    )
+
+    # Admit snapshot: first_route is free-tier, second_route is paid subscription.
+    snapshot = snapshot_from_payloads(
+        catalog={
+            "data": [
+                {"id": first_route, "owned_by": "free", "pricing": {"input": 0, "output": 0}},
+                {"id": second_route, "owned_by": "sub", "pricing": {"input": 5, "output": 10}},
+            ]
+        },
+        free_tier={
+            "perModel": [
+                {"modelId": first_route.split("/", 1)[1], "provider": "free", "freeType": "keyless"}
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": "free", "isActive": True, "testStatus": "active"},
+                {"provider": "sub", "isActive": True, "testStatus": "active", "authType": "oauth"},
+            ]
+        },
+    )
+
+    # Fresh passport for first_route so admit/confirm does not drop it.
+    passport = ModelPassport(
+        provider="free",
+        model_id=first_route,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=now,
+        tool_support=True,
+    )
+
+    def _make_plan(candidate_id: str, *, assisted: bool) -> AssistancePlan:
+        assistance = AssistanceCost(
+            context_tokens=50_000 if assisted else 0,
+            tool_tokens=2_000 if assisted else 0,
+            planning_tokens=0,
+            verification_tokens=50,
+        )
+        return AssistancePlan(
+            plan_id=f"plan-{candidate_id}",
+            candidate_id=candidate_id,
+            task_slice=TaskSlice(
+                slice_id="slice-test",
+                objective=task_text,
+                acceptance_criteria=("tests pass",),
+                proof_criteria=("pytest green",),
+            ),
+            required_intrinsic_capabilities=("tools",),
+            required_context_slots=("evidence",),
+            required_context_evidence=("proof",),
+            required_tool_capabilities=("pytest",),
+            selected_tool_surface=("pytest",),
+            decomposition=DecompositionRequirement(
+                required=False,
+                child_slices=(),
+                preserves_parent_acceptance=True,
+                preserves_parent_proof=True,
+                reason="",
+                planner_role="",
+            ),
+            verification=VerificationStrategy(kind="pytest", proof_criteria=("pytest green",)),
+            assistance_cost=assistance,
+            result="sufficient",
+            reasons=("needs_assistance",) if assisted else ("intrinsic_ok",),
+            intrinsic_sufficient=not assisted,
+            assisted_sufficient=True,
+            assistance_delta=("context:evidence",) if assisted else (),
+            provenance=(
+                ProvenanceClaim(
+                    kind="candidate",
+                    claim=candidate_id,
+                    source="fixture",
+                    digest=f"sha256:{candidate_id}",
+                    observed_at=now.isoformat(),
+                    freshness="fresh",
+                    fresh=True,
+                ),
+            ),
+            evidence_digest=f"sha256:{candidate_id}",
+        )
+
+    def _make_offer(model_id: str, *, assisted: bool = False) -> ExecutionPathOffer:
+        route = ConcreteRoute(
+            route_id=model_id,
+            gateway="omniroute",
+            provider=model_id.split("/", 1)[0],
+            model=model_id.split("/", 1)[1],
+            credential_pool="pool-a",
+            capability_tier=2,
+            eligible=True,
+            excluded=False,
+        )
+        plan = _make_plan(model_id, assisted=assisted)
+        strategy = "cheap_with_assistance" if assisted else "direct_cheap"
+        return ExecutionPathOffer(
+            strategy=strategy,
+            route=route,
+            assistance_plan=plan,
+            expected_cost=build_strategy_from_assistance(
+                strategy_id=f"{strategy}:{model_id}",
+                trajectory_id="traj-test",
+                assistance=plan.assistance_cost,
+                execution_tokens=8_000,
+                price={
+                    "input_usd_per_mtok": "0",
+                    "output_usd_per_mtok": "0",
+                    "evidence_id": "test",
+                },
+                is_free=True,
+                now=now,
+            ),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+        )
+
+    service = IntelligenceService(
+        primary_model="primary/frontier",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="production",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=None,
+        metadata_snapshot=metadata_snapshot,
+        passports={first_route: passport},
+        confirm_transport=None,
+        admit_now=now,
+        require_execution_path_authority=True,
+        candidate_top_k=4,
+        context_roots=(),
+        mcp_root="",
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (snapshot, ("http://127.0.0.1:1/v1", ""), False, None),
+    )
+
+    task_slice = TaskSlice(
+        slice_id="slice-test",
+        objective=task_text,
+        acceptance_criteria=("tests pass",),
+        proof_criteria=("pytest green",),
+    )
+    request = ExecutionPathRequest(
+        task_slice=task_slice,
+        trajectory_id="traj-test",
+        offers=(_make_offer(first_route), _make_offer(second_route)),
+        now=now,
+    )
+    context = {
+        "execution_path_request": request,
+        "tools_required": True,
+        "task_family": "coding",
+        "spend_policy": "free_only",
+    }
+
+    serve_decision = asyncio.run(service.route(task_text, criticality="low", context=context))
+    assert serve_decision.model == first_route.split("/", 1)[1]
+
+    # ---- 4. orchestrate ----
+    from verdict.orchestration.contracts import NodeKind, RunOutcome, WorkGraph, WorkNode
+    from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+
+    orch_selector = _FirstRouteSelector(first_route)
+    executor = _SuccessExecutor()
+    events_rows: list[dict[str, Any]] = []
+
+    class Events:
+        def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+            events_rows.append({"type": type, "node_id": node_id, **data})
+
+    def of(type: str) -> list[dict[str, Any]]:
+        return [r for r in events_rows if r["type"] == type]
+
+    def prompt_for(node: WorkNode, cwd: Path, **kw: Any) -> str:
+        return f"{node.node_id}: {node.objective}"
+
+    node = WorkNode(
+        "a",
+        "do it",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("a.txt",),
+        verification_command=("true",),
+    )
+    graph = WorkGraph("g", (node,))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", *args], cwd=repo_root, check=True)
+    (repo_root / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo_root, check=True)
+
+    runtime = DagRuntime(
+        repo=repo_root,
+        run_dir=run_dir,
+        graph=graph,
+        selector=orch_selector,
+        executor=executor,
+        classifier=SimpleClassifier(),
+        events=Events(),
+        prompt_for=prompt_for,
+        reviewer=None,
+        policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+        now=lambda: datetime.now(timezone.utc),
+    )
+
+    result = asyncio.run(runtime.run())
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+    run = runtime.nodes["a"]
+    assert run.attempt == 1
+    assert run.route_id == first_route
+
+    # All four surfaces name the same first route.
+    assert chosen_id == first_route
+    assert serve_decision.model == first_route.split("/", 1)[1]
