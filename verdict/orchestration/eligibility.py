@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 from verdict.capacity import CAPACITY_ORDER, billing_capacity_override, classify_route_capacity
 from verdict.identify_rank import RatedModel, rate_model, rating_key
-from verdict.openrouter_free_set import OpenRouterFreeSet, key_limit_on_non_free_is_route_scoped
+from verdict.openrouter_free_set import (
+    OpenRouterFreeSet,
+    is_openrouter_catalog_route,
+    key_limit_on_non_free_is_route_scoped,
+    openrouter_route_is_public_free,
+)
 from verdict.orchestration.contracts import (
     CapacityClass,
     EligibilityStage,
@@ -1458,20 +1463,33 @@ class EligibilityLadder:
                 seconds = cooldown_seconds_for(category, result.retry_after_seconds)
                 entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
                 self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
+                route_scoped_key_limit = key_limit_on_non_free_is_route_scoped(
+                    route_id=route_id,
+                    http_status=getattr(result, "status_code", None),
+                    detail=result.error_message or "",
+                    free_set=self.openrouter_free_set,
+                )
+                # A paid OpenRouter route outside the public 0/0 set is
+                # route-scoped for BOTH cooldowns and not-free overrides, even
+                # when its id carries a misleading ``:free`` suffix that maps
+                # it into the shared ``openrouter-free`` pool (BOD-418).
+                route_scoped_openrouter = route_scoped_key_limit or (
+                    is_openrouter_catalog_route(route_id)
+                    and self.openrouter_free_set is not None
+                    and not openrouter_route_is_public_free(route_id, self.openrouter_free_set)
+                )
                 if (
                     provider
                     and category in _PROVIDER_SCOPE_CATEGORIES
-                    and not key_limit_on_non_free_is_route_scoped(
-                        route_id=route_id,
-                        http_status=getattr(result, "status_code", None),
-                        detail=result.error_message or "",
-                        free_set=self.openrouter_free_set,
-                    )
+                    and not route_scoped_key_limit
                 ):
                     self._state["cooldowns"][f"pool:{pool_of(route_id)}"] = dict(entry)
                     self._state["cooldowns"][f"provider:{provider}"] = dict(entry)
                 # Live-evidence not-free override: mark the route and pool so
                 # capacity classification reflects the override (design §B, item 3).
+                # A paid OpenRouter key-limit 403 on a route positively outside the
+                # public 0/0 set is route-scoped: it must not write a pool override
+                # that would exclude genuine free siblings (BOD-418).
                 if is_not_free_signal(
                     category=category, status_code=getattr(result, "status_code", None)
                 ):
@@ -1483,7 +1501,12 @@ class EligibilityLadder:
                         )
                     )
                     record_not_free_override(
-                        self._state, route_id, pool=pool, until_iso=until, reason=category
+                        self._state,
+                        route_id,
+                        pool=pool,
+                        until_iso=until,
+                        reason=category,
+                        include_pool=not route_scoped_openrouter,
                     )
             self._persist()
 
